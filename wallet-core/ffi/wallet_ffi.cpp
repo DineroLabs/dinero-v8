@@ -214,7 +214,7 @@ int dinero_wallet_init(const char* datadir) {
     
     try {
         g_wallet_datadir = datadir;
-        
+
         // Initialize WalletManager
         g_wallet_manager = std::make_unique<dinero::WalletManager>(datadir);
         if (g_wallet_manager->exists(kDefaultFFIWalletName)) {
@@ -2063,7 +2063,8 @@ int dinero_wallet_get_tx_confirmations(const char* txid, int32_t* confirmations_
     }
 }
 
-int dinero_wallet_parse_uri(const char* uri, FFI_QRPayment* out) {
+template <typename Payment>
+static int parse_uri_impl(const char* uri, Payment* out) {
     if (!uri || !out) {
         return -1;
     }
@@ -2081,8 +2082,9 @@ int dinero_wallet_parse_uri(const char* uri, FFI_QRPayment* out) {
         std::string addr = s.substr(7, (pos_q == std::string::npos) ? std::string::npos : (pos_q - 7));
         
         // Copy address to output
-        strncpy(out->address, addr.c_str(), 127);
-        out->address[127] = '\0';
+        if (addr.size() >= sizeof(out->address)) return -1;
+        std::memcpy(out->address, addr.data(), addr.size());
+        out->address[addr.size()] = '\0';
         
         // Initialize defaults
         out->amount = 0.0;
@@ -2121,8 +2123,9 @@ int dinero_wallet_parse_uri(const char* uri, FFI_QRPayment* out) {
                 if (key == "amount") {
                     out->amount = std::atof(decoded_value.c_str());
                 } else if (key == "label") {
-                    strncpy(out->label, decoded_value.c_str(), 127);
-                    out->label[127] = '\0';
+                    if (decoded_value.size() >= sizeof(out->label)) return -1;
+                    std::memcpy(out->label, decoded_value.data(), decoded_value.size());
+                    out->label[decoded_value.size()] = '\0';
                 }
             }
         }
@@ -2131,6 +2134,14 @@ int dinero_wallet_parse_uri(const char* uri, FFI_QRPayment* out) {
     } catch (...) {
         return -1;
     }
+}
+
+int dinero_wallet_parse_uri(const char* uri, FFI_QRPayment* out) {
+    return parse_uri_impl(uri, out);
+}
+
+int dinero_wallet_parse_uri_v2(const char* uri, FFI_QRPaymentV2* out) {
+    return parse_uri_impl(uri, out);
 }
 
 int dinero_wallet_generate_uri(
@@ -2196,8 +2207,9 @@ int dinero_wallet_generate_uri(
 // Track last checked transaction timestamp for notifications
 static int64_t g_last_check_timestamp = 0;
 
-int dinero_wallet_check_new_transactions(
-    FFI_TransactionNotification** notifications_out,
+template <typename Notification>
+static int check_new_transactions_impl(
+    Notification** notifications_out,
     int32_t* count_out
 ) {
     if (!notifications_out || !count_out) {
@@ -2218,18 +2230,19 @@ int dinero_wallet_check_new_transactions(
         auto txs = wm->getTransactionHistory(100, 0);
         
         // Filter for new transactions (after last check timestamp)
-        std::vector<FFI_TransactionNotification> new_txs;
+        std::vector<Notification> new_txs;
         
         for (const auto& tx : txs) {
             // Check if this transaction is new (timestamp > last check)
             bool is_new = (tx.time > g_last_check_timestamp);
             
             if (is_new || g_last_check_timestamp == 0) {
-                FFI_TransactionNotification notif;
+                Notification notif{};
                 strncpy(notif.txid, tx.txid.c_str(), 64);
                 notif.txid[64] = '\0';
-                strncpy(notif.address, tx.address.c_str(), 127);
-                notif.address[127] = '\0';
+                if (tx.address.size() >= sizeof(notif.address)) return -1;
+                std::memcpy(notif.address, tx.address.data(), tx.address.size());
+                notif.address[tx.address.size()] = '\0';
                 notif.amount = tx.amount;
                 notif.confirmations = tx.confirmations;
                 notif.timestamp = tx.time;
@@ -2255,8 +2268,8 @@ int dinero_wallet_check_new_transactions(
         }
         
         // Allocate notification array
-        FFI_TransactionNotification* notif_array = static_cast<FFI_TransactionNotification*>(
-            malloc(sizeof(FFI_TransactionNotification) * new_txs.size())
+        Notification* notif_array = static_cast<Notification*>(
+            malloc(sizeof(Notification) * new_txs.size())
         );
         
         if (!notif_array) {
@@ -2275,6 +2288,18 @@ int dinero_wallet_check_new_transactions(
     } catch (...) {
         return -1;
     }
+}
+
+int dinero_wallet_check_new_transactions(
+    FFI_TransactionNotification** notifications_out,
+    int32_t* count_out) {
+    return check_new_transactions_impl(notifications_out, count_out);
+}
+
+int dinero_wallet_check_new_transactions_v2(
+    FFI_TransactionNotificationV2** notifications_out,
+    int32_t* count_out) {
+    return check_new_transactions_impl(notifications_out, count_out);
 }
 
 // ============================================================================
@@ -2320,6 +2345,11 @@ void dinero_wallet_free_notifications(FFI_TransactionNotification* ptr, int32_t 
     
     // Notifications don't contain allocated strings (all fixed-size arrays)
     free(ptr);
+}
+
+void dinero_wallet_free_notifications_v2(FFI_TransactionNotificationV2* ptr,
+                                         int32_t count) {
+    if (ptr && count > 0) free(ptr);
 }
 
 // ============================================================================
@@ -2534,13 +2564,14 @@ int dinero_wallet_get_exchange_rate(
     }
 }
 
-int dinero_wallet_create_swap_tx(
+template <typename Swap>
+static int create_swap_tx_impl(
     const char* from_address,
     const char* to_address,
     double amount,
     const char* from_symbol,
     const char* to_symbol,
-    FFI_SwapTransaction* swap_out
+    Swap* swap_out
 ) {
     if (!from_address || !to_address || !from_symbol || !to_symbol || !swap_out || amount <= 0.0) {
         g_last_error = DINERO_ERROR_GENERIC;
@@ -2555,14 +2586,16 @@ int dinero_wallet_create_swap_tx(
             g_last_error = DINERO_ERROR_WALLET_LOCKED;
             return -1;
         }
-        
+
         // Initialize swap structure
-        memset(swap_out, 0, sizeof(FFI_SwapTransaction));
-        
-        strncpy(swap_out->from_address, from_address, 127);
-        swap_out->from_address[127] = '\0';
-        strncpy(swap_out->to_address, to_address, 127);
-        swap_out->to_address[127] = '\0';
+        memset(swap_out, 0, sizeof(Swap));
+
+        if (strlen(from_address) >= sizeof(swap_out->from_address) ||
+            strlen(to_address) >= sizeof(swap_out->to_address)) return -1;
+        strncpy(swap_out->from_address, from_address,
+                sizeof(swap_out->from_address) - 1);
+        strncpy(swap_out->to_address, to_address,
+                sizeof(swap_out->to_address) - 1);
         strncpy(swap_out->from_symbol, from_symbol, 7);
         swap_out->from_symbol[7] = '\0';
         strncpy(swap_out->to_symbol, to_symbol, 7);
@@ -2605,9 +2638,26 @@ int dinero_wallet_create_swap_tx(
     }
 }
 
-int dinero_wallet_get_swap_status(
+int dinero_wallet_create_swap_tx(
+    const char* from_address, const char* to_address, double amount,
+    const char* from_symbol, const char* to_symbol,
+    FFI_SwapTransaction* swap_out) {
+    return create_swap_tx_impl(from_address, to_address, amount, from_symbol,
+                               to_symbol, swap_out);
+}
+
+int dinero_wallet_create_swap_tx_v2(
+    const char* from_address, const char* to_address, double amount,
+    const char* from_symbol, const char* to_symbol,
+    FFI_SwapTransactionV2* swap_out) {
+    return create_swap_tx_impl(from_address, to_address, amount, from_symbol,
+                               to_symbol, swap_out);
+}
+
+template <typename Swap>
+static int get_swap_status_impl(
     const char* swap_id,
-    FFI_SwapTransaction* swap_out
+    Swap* swap_out
 ) {
     if (!swap_id || !swap_out) {
         g_last_error = DINERO_ERROR_GENERIC;
@@ -2619,7 +2669,7 @@ int dinero_wallet_get_swap_status(
         // This would call the provider's API with swap_id
         
         // For now, return mock status
-        memset(swap_out, 0, sizeof(FFI_SwapTransaction));
+        memset(swap_out, 0, sizeof(Swap));
         strncpy(swap_out->txid, swap_id, 64);
         swap_out->txid[64] = '\0';
         strncpy(swap_out->status, "processing", 31);
@@ -2632,6 +2682,16 @@ int dinero_wallet_get_swap_status(
         g_last_error = DINERO_ERROR_NETWORK;
         return -1;
     }
+}
+
+int dinero_wallet_get_swap_status(
+    const char* swap_id, FFI_SwapTransaction* swap_out) {
+    return get_swap_status_impl(swap_id, swap_out);
+}
+
+int dinero_wallet_get_swap_status_v2(
+    const char* swap_id, FFI_SwapTransactionV2* swap_out) {
+    return get_swap_status_impl(swap_id, swap_out);
 }
 
 // ============================================================================

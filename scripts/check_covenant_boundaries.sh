@@ -32,8 +32,8 @@ fi
 # Check 1b: Wallet can use ComputeCTVHash for template CREATION but not VALIDATION
 echo "  → Checking ComputeCTVHash usage context..."
 # Find files with ComputeCTVHash calls
-COMPUTE_FILES=$(grep -rl "consensus::ComputeCTVHash" src/wallet/ 2>/dev/null || true)
-CALL_COUNT=$(grep -r "consensus::ComputeCTVHash" src/wallet/ 2>/dev/null | grep -v "^Binary file" | wc -l | tr -d ' ')
+COMPUTE_FILES=$(grep -Elr "consensus::(Try)?ComputeCTVHash" src/wallet/ 2>/dev/null || true)
+CALL_COUNT=$(grep -Er "consensus::(Try)?ComputeCTVHash" src/wallet/ 2>/dev/null | grep -v "^Binary file" | wc -l | tr -d ' ')
 
 if [ "$CALL_COUNT" -eq 0 ]; then
     echo "   ✅ No ComputeCTVHash calls in wallet layer"

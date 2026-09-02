@@ -10,13 +10,15 @@ ERRORS=0
 
 echo "🔍 Checking covenant mempool policy..."
 
-# Check 1: Mempool uses SCRIPT_VERIFY_COVENANTS (via SCRIPT_VERIFY_STANDARD)
-echo "  → Checking mempool uses covenant flags..."
-if ! grep -r "SCRIPT_VERIFY_STANDARD" src/consensus/tx_validation.cpp | grep -q "SCRIPT_VERIFY_STANDARD"; then
-    echo "❌ FAIL: Mempool validation doesn't use SCRIPT_VERIFY_STANDARD"
+# Check 1: canonical transaction validation derives height-dependent standard
+# flags through CovenantActivationParams. SCRIPT_VERIFY_STANDARD by itself is
+# intentionally covenant-free so dormant opcodes cannot be enabled globally.
+echo "  → Checking canonical validation derives height-gated covenant flags..."
+if ! grep -q "CovenantActivationParams::StandardFlags" src/consensus/tx_validation.cpp; then
+    echo "❌ FAIL: Canonical validation doesn't derive height-gated standard flags"
     ERRORS=$((ERRORS + 1))
 else
-    echo "   ✅ Mempool uses SCRIPT_VERIFY_STANDARD (includes covenants)"
+    echo "   ✅ Canonical validation uses height-gated standard flags"
 fi
 
 # Check 2: No wallet includes in mempool
@@ -35,9 +37,12 @@ else
     echo "   ✅ No wallet includes in mempool (except primitives/transaction.h)"
 fi
 
-# Check 3: Covenant policy uses ChainStateView only (not wallet types)
+# Check 3: the current mempool implementation uses the read-only ChainStateView
+# abstraction. It moved from src/mempool to src/daemon; pin both the abstraction
+# and its overlay so a future path move cannot turn this into a false pass.
 echo "  → Checking mempool uses ChainStateView..."
-if ! grep -q "ChainStateView" src/mempool/mempool.cpp; then
+if ! grep -q "ChainStateView" src/daemon/mempool.cpp || \
+   ! grep -q "ChainStateView" include/mempool/coins_view_mempool.h; then
     echo "❌ FAIL: Mempool doesn't use ChainStateView abstraction"
     ERRORS=$((ERRORS + 1))
 else
@@ -56,14 +61,17 @@ if [ -n "$COVENANT_RPC" ]; then
     # Not a hard error for now
 fi
 
-# Check 5: Mempool covenant detection is heuristic only
-echo "  → Checking covenant detection is marked as heuristic..."
-if ! grep -q "POLICY HEURISTIC\|policy heuristic" src/mempool/mempool.cpp; then
-    echo "⚠️  WARNING: Covenant detection not clearly marked as policy heuristic"
-    echo "   Add comment: 'POLICY HEURISTIC' to distinguish from consensus"
+# Check 5: a reorg can cross an activation boundary while entries remain in
+# the mempool. Selection must notice a flag-state change and re-run canonical
+# validation at the candidate block height.
+echo "  → Checking activation-boundary revalidation..."
+if ! grep -q "CovenantActivationParams::CovenantFlags" src/daemon/mempool.cpp || \
+   ! grep -q "validateTransaction" src/daemon/mempool.cpp; then
+    echo "❌ FAIL: Mempool lacks covenant activation-boundary revalidation"
+    ERRORS=$((ERRORS + 1))
+else
+    echo "   ✅ Mempool revalidates across covenant activation boundaries"
 fi
-
-echo "   ✅ Covenant detection properly documented as policy heuristic"
 
 # Summary
 echo ""
@@ -74,9 +82,9 @@ else
     echo "❌ Found $ERRORS covenant policy violation(s)"
     echo ""
     echo "Covenant Policy Rules:"
-    echo "  1. Mempool uses SCRIPT_VERIFY_STANDARD (includes covenants)"
+    echo "  1. Canonical validation derives height-gated covenant flags"
     echo "  2. No wallet types in mempool (ChainStateView only)"
-    echo "  3. Covenant detection is policy heuristic, not consensus"
+    echo "  3. Mempool revalidates entries across activation boundaries"
     echo "  4. RPC is boundary adapter only (no validation)"
     exit 1
 fi

@@ -71,6 +71,28 @@ set_tests_properties(QtMiningOutputLifetime PROPERTIES
   TIMEOUT 5
 )
 
+add_test(
+  NAME QtVaultConsumerParity
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/vaultpanel.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_vault_consumer_parity.cmake
+)
+set_tests_properties(QtVaultConsumerParity PROPERTIES
+  LABELS "qt;vault;regression;mandatory"
+  TIMEOUT 5
+)
+add_test(
+  NAME QtContractProductionWiring
+  COMMAND ${CMAKE_COMMAND}
+    -DMAINWINDOW_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -DRPC_SOURCE=${CMAKE_SOURCE_DIR}/src/rpc/methods_wallet_covenant_profile.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_contract_production_wiring.cmake
+)
+set_tests_properties(QtContractProductionWiring PROPERTIES
+  LABELS "qt;covenant;regression;mandatory"
+  TIMEOUT 5
+)
+
 # Production Qt builds keep WebSocket-only features disabled, so the Overview
 # mempool must retain its canonical verbose polling feed, visible rows, and
 # wallet-history refresh behavior in the ordinary build.
@@ -84,7 +106,6 @@ set_tests_properties(QtMempoolOverview PROPERTIES
   LABELS "qt;mempool;regression"
   TIMEOUT 5
 )
-
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp
@@ -2001,6 +2022,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   add_executable(test_shielded_validation
     src/test/shielded_validation_tests.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_validation gtest dinero_shielded)
   target_link_libraries(test_shielded_validation PRIVATE
@@ -2008,6 +2030,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
     GTest::gtest_main
     dinero_shielded
     dinero_wallet  # shielded_derivation.cpp: EncryptNoteForRecipient + DeriveNoteSpendKey
+    wallet_test_deps
     sqlite3
   )
   target_include_directories(test_shielded_validation BEFORE PRIVATE
@@ -2030,6 +2053,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   add_executable(test_shielded_cv_binding
     tests/consensus/test_shielded_cv_binding.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_cv_binding gtest dinero_shielded)
   target_link_libraries(test_shielded_cv_binding PRIVATE
@@ -2037,6 +2061,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
     GTest::gtest_main
     dinero_shielded
     dinero_wallet
+    wallet_test_deps
     dinero_zk
     sqlite3
   )
@@ -2142,6 +2167,7 @@ endif()
 if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
   add_executable(test_shielded_prover_kit
     src/test/shielded_prover_kit_tests.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_prover_kit gtest dinero_shielded_prover_kit)
   target_link_libraries(test_shielded_prover_kit PRIVATE
@@ -2150,6 +2176,7 @@ if(TARGET dinero_shielded_prover_kit AND TARGET gtest)
     dinero_shielded_prover_kit
     dinero_shielded
     dinero_wallet
+    wallet_test_deps
     dinero_zk
     dinero_tx_primitives
     dinero_crypto
@@ -2259,12 +2286,14 @@ endif()
 if(TARGET dinero_wallet AND TARGET gtest)
   add_executable(test_shielded_note_store_rollback
     tests/wallet/test_shielded_note_store_rollback.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_note_store_rollback gtest dinero_wallet)
   target_link_libraries(test_shielded_note_store_rollback PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
+    wallet_test_deps
     dinero_shielded
     sqlite3
   )
@@ -2285,12 +2314,14 @@ if(TARGET dinero_wallet AND TARGET gtest)
 
   add_executable(test_shielded_derivation
     src/test/shielded_derivation_tests.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_derivation gtest dinero_wallet)
   target_link_libraries(test_shielded_derivation PRIVATE
     GTest::gtest
     GTest::gtest_main
     dinero_wallet
+    wallet_test_deps
     dinero_shielded
     sqlite3
   )
@@ -12078,6 +12109,12 @@ add_test(
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/tools/fleet-watcher
 )
 set_tests_properties(FleetWatcherTests PROPERTIES TIMEOUT 120)
+add_executable(test_contract_signing_package tests/security/test_contract_signing_package.cpp)
+target_link_libraries(test_contract_signing_package PRIVATE dinero_core)
+target_include_directories(test_contract_signing_package PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME ContractSigningPackageSecurity COMMAND test_contract_signing_package)
+set_tests_properties(ContractSigningPackageSecurity PROPERTIES LABELS "contract;security;mandatory")
+
 # Embedded daemon lifetimes reuse the process-global RPC registry. Verify that
 # a new runtime wiring cycle drops handlers capturing the prior DaemonContext
 # while retaining static registrations.

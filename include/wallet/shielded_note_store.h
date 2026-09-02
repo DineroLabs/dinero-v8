@@ -51,6 +51,9 @@ struct ShieldedNote {
     consensus::shielded::Hash secret_key;
     consensus::shielded::Hash public_key;
     consensus::shielded::Hash randomness;
+    /// Packed 11-byte diversifier, zero-padded to 32 bytes. Required by the
+    /// note-commitment spend witness and therefore persisted with auth notes.
+    consensus::shielded::Hash d{};
     consensus::shielded::Hash commitment;
     uint64_t leaf_index = 0;
     consensus::shielded::Hash nullifier;
@@ -93,7 +96,8 @@ public:
                         const consensus::shielded::Hash& commitment,
                         uint32_t created_height,
                         NoteKeyScheme key_scheme =
-                            NoteKeyScheme::LegacySenderKey);
+                            NoteKeyScheme::LegacySenderKey,
+                        const consensus::shielded::Hash& diversifier = {});
 
     /** Mark a note as spent (nullifier published). */
     bool MarkSpent(uint64_t leaf_index);

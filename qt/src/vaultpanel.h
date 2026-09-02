@@ -20,7 +20,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QSpinBox>
 #include <QTextEdit>
 #include <QTimer>
 #include <QWidget>
@@ -66,11 +65,20 @@ private:
     static QString formatAmountPlain(qint64 una);
     static QString formatAmountRich(qint64 una);
     static QString formatMetricTitle(const QString& title, const QString& helper);
+    static bool parseDinAmount(const QString& text, qint64* unaOut);
+    static bool isTaprootAddress(const QString& address);
     static QString accountKeyForWalletScope(const QString& walletName);
+    static QString journalKeyForWalletScope(const QString& walletName);
     QString activeAccountKey() const;
     void clearWalletScopedFields(const QString& operatorText);
     void requestWalletPrimaryBinding();
     void updateDeveloperSummary();
+    void loadWithdrawalJournal();
+    bool saveWithdrawalJournal(const QString&, const QString&, qint64, const QString&, const QString& = {});
+    void setWithdrawalSubmitting(bool submitting);
+    void reconcileWithdrawalJournal();
+    void markVaultConnectionHealthy();
+    bool isTransientConnectionError(int code, const QString& message) const;
 
     RpcClient* rpc_;
     QTimer refresh_timer_;
@@ -78,11 +86,20 @@ private:
     bool operator_bind_attempted_ = false;
     bool waiting_for_wallet_primary_ = false;
     bool operator_bind_inflight_ = false;
+    bool withdrawal_submitting_ = false;
+    bool withdrawal_waiting_wallet_status_ = false;
+    bool transient_connection_error_ = false;
+    QString withdrawal_journal_stage_;
+    QString pending_withdrawal_account_;
+    QString pending_withdrawal_destination_;
+    qint64 pending_withdrawal_amount_ = 0;
+    qint64 account_spendable_una_ = 0;
     QString developer_summary_ = QStringLiteral("Vault raw metrics: waiting for first refresh...");
 
     // Service-level metrics panel.
     QGroupBox* service_group_;
     QLabel* lbl_runtime_status_;
+    QLabel* lbl_connection_status_;
     QLabel* lbl_operator_address_;
     QLabel* lbl_total_credits_;
     QLabel* lbl_total_loss_;
@@ -102,7 +119,7 @@ private:
     // Withdrawal form.
     QGroupBox* withdraw_group_;
     QLineEdit* withdraw_account_input_;
-    QSpinBox* withdraw_amount_input_;
+    QLineEdit* withdraw_amount_input_;
     QLineEdit* withdraw_destination_input_;
     QPushButton* btn_withdraw_;
     QLabel* lbl_last_request_id_;
@@ -112,6 +129,7 @@ private:
 
     // Activity log.
     QTextEdit* event_log_;
+    QGroupBox* advanced_group_;
 
     static constexpr int REFRESH_INTERVAL_MS = 6000;
 };

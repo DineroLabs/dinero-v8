@@ -555,7 +555,11 @@ void Mempool::addUnchecked(const Transaction& tx) {
     rebuildCoinsViewLocked();
 }
 
-TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const std::string& source, bool relay) {
+TxAcceptResult Mempool::submitTransactionInternal(
+    const Transaction& tx,
+    const std::string& source,
+    bool relay,
+    bool test_only) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 
     // Phase M.0: GetTxid() returns TxId, use directly
@@ -574,7 +578,9 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
     std::string error;
     if (!validateTransaction(tx, error)) {
         MPLOG_WARN("Transaction validation failed for " + txid_u256.GetHex() + ": " + error);
-        m_total_tx_rejected.fetch_add(1);
+        if (!test_only) {
+            m_total_tx_rejected.fetch_add(1);
+        }
         return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX,
             "Transaction validation failed: " + error, txid_u256);
     }
@@ -607,7 +613,9 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
         // Check if RBF is signaled in the replacement transaction
         if (!m_rbf_policy || !m_rbf_policy->isRBFSignaled(tx)) {
             MPLOG_WARN("Double spend rejected (RBF not signaled): " + txid_u256.GetHex());
-            m_total_tx_rejected.fetch_add(1);
+            if (!test_only) {
+                m_total_tx_rejected.fetch_add(1);
+            }
             return TxAcceptResult::Rejected(TxRejectCode::DOUBLE_SPEND_NO_RBF,
                 "Transaction conflicts with mempool transaction(s) and RBF not signaled", txid_u256);
         }
@@ -647,14 +655,18 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
 
         if (rbf_result != policy::RBFValidationResult::VALID) {
             MPLOG_WARN("RBF replacement rejected for " + txid_u256.GetHex() + ": " + rbf_error);
-            m_total_tx_rejected.fetch_add(1);
+            if (!test_only) {
+                m_total_tx_rejected.fetch_add(1);
+            }
             return TxAcceptResult::Rejected(TxRejectCode::RBF_REJECTED,
                 "RBF replacement rejected: " + rbf_error, txid_u256);
         }
 
         // RBF validation passed - remove all conflicting transactions
-        MPLOG_INFO("RBF replacement accepted: " + txid_u256.GetHex() + " replaces " +
-                    std::to_string(conflict_set.conflict_count) + " transactions");
+        MPLOG_INFO(std::string(test_only ? "RBF replacement test accepted: "
+                                        : "RBF replacement accepted: ") +
+                   txid_u256.GetHex() + " replaces " +
+                   std::to_string(conflict_set.conflict_count) + " transactions");
 
         // Create a copy of direct and descendant conflicts for removal (Phase M.0: uint256)
         std::vector<uint256> txids_to_remove;
@@ -665,12 +677,14 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
                               conflict_set.descendant_conflicts.begin(),
                               conflict_set.descendant_conflicts.end());
 
-        // Remove conflicting transactions
-        for (const auto& conflict_txid : txids_to_remove) {
-            removeTransactionLocked(conflict_txid);
-            MPLOG_DEBUG("Removed conflicting transaction: " + conflict_txid.GetHex());
+        // A dry-run must never evict or otherwise mutate existing entries.
+        if (!test_only) {
+            for (const auto& conflict_txid : txids_to_remove) {
+                removeTransactionLocked(conflict_txid);
+                MPLOG_DEBUG("Removed conflicting transaction: " + conflict_txid.GetHex());
+            }
+            rebuildCoinsViewLocked();
         }
-        rebuildCoinsViewLocked();
     }
 
     // Calculate fee
@@ -683,7 +697,9 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
     if (fee_rate < m_min_fee_rate) {
         MPLOG_WARN("Transaction fee rate too low: " + std::to_string(fee_rate) +
                         " (min: " + std::to_string(m_min_fee_rate) + ") for " + txid_u256.GetHex());
-        m_total_tx_rejected.fetch_add(1);
+        if (!test_only) {
+            m_total_tx_rejected.fetch_add(1);
+        }
         return TxAcceptResult::Rejected(TxRejectCode::INSUFFICIENT_FEE,
             "Transaction fee rate " + std::to_string(fee_rate) + " sat/byte below minimum " +
             std::to_string(m_min_fee_rate) + " sat/byte", txid_u256);
@@ -746,7 +762,9 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
     if (ancestor_count > MAX_ANCESTORS) {
         MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: too many ancestors (" +
                     std::to_string(ancestor_count) + " > " + std::to_string(MAX_ANCESTORS) + ")");
-        m_total_tx_rejected.fetch_add(1);
+        if (!test_only) {
+            m_total_tx_rejected.fetch_add(1);
+        }
         return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_ANCESTORS,
             "Transaction has " + std::to_string(ancestor_count) + " ancestors (limit: " +
             std::to_string(MAX_ANCESTORS) + ")", txid_u256);
@@ -755,7 +773,9 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
     if (ancestor_size > MAX_ANCESTOR_SIZE) {
         MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: ancestor size too large (" +
                     std::to_string(ancestor_size) + " > " + std::to_string(MAX_ANCESTOR_SIZE) + " bytes)");
-        m_total_tx_rejected.fetch_add(1);
+        if (!test_only) {
+            m_total_tx_rejected.fetch_add(1);
+        }
         return TxAcceptResult::Rejected(TxRejectCode::ANCESTOR_SIZE_EXCEEDED,
             "Ancestor size " + std::to_string(ancestor_size) + " bytes exceeds limit " +
             std::to_string(MAX_ANCESTOR_SIZE) + " bytes", txid_u256);
@@ -826,7 +846,9 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
             MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
                         parent_txid.AsUint256().GetHex() + " to exceed descendant limit (" +
                         std::to_string(descendant_count) + " > " + std::to_string(MAX_DESCENDANTS) + ")");
-            m_total_tx_rejected.fetch_add(1);
+            if (!test_only) {
+                m_total_tx_rejected.fetch_add(1);
+            }
             return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_DESCENDANTS,
                 "Would cause parent " + parent_txid.AsUint256().GetHex().substr(0, 16) + "... to have " +
                 std::to_string(descendant_count) + " descendants (limit: " + std::to_string(MAX_DESCENDANTS) + ")",
@@ -837,7 +859,9 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
             MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
                         parent_txid.AsUint256().GetHex() + " to exceed descendant size limit (" +
                         std::to_string(descendant_size) + " > " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)");
-            m_total_tx_rejected.fetch_add(1);
+            if (!test_only) {
+                m_total_tx_rejected.fetch_add(1);
+            }
             return TxAcceptResult::Rejected(TxRejectCode::DESCENDANT_SIZE_EXCEEDED,
                 "Would cause parent descendant size " + std::to_string(descendant_size) +
                 " bytes (limit: " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)", txid_u256);
@@ -847,6 +871,13 @@ TxAcceptResult Mempool::submitTransactionInternal(const Transaction& tx, const s
     if (ancestor_count > 0) {
         MPLOG_DEBUG("Transaction " + txid_u256.GetHex() + " has " + std::to_string(ancestor_count) +
                      " ancestors (" + std::to_string(ancestor_size) + " bytes)");
+    }
+
+    // All canonical validation and policy checks have passed. A
+    // testmempoolaccept request ends here so it cannot alter conflicts,
+    // dependency indexes, the UTXO overlay, counters, or relay state.
+    if (test_only) {
+        return TxAcceptResult::Accepted(txid_u256);
     }
 
     // Get current blockchain height from ChainDB
@@ -1057,6 +1088,9 @@ bool Mempool::hasTransaction(const uint256& txid) const {
 }
 
 TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const std::string& source) {
+    return submitTransactionInternal(tx, source, false, true);
+
+#if 0
     // STEP 2: TEST_ONLY transaction submission (bypasses signature validation)
     // This enables mempool policy testing without Phase 34 (signing)
     // Only available in regtest mode - never relayed to network
@@ -1633,6 +1667,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
     m_total_tx_added.fetch_add(1);
 
     return TxAcceptResult::Accepted(txid_u256);
+#endif
 }
 
 // STEP 3: Check if output is spent in mempool (for wallet coin selection)
@@ -2234,7 +2269,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     const uint32_t shielded_reset_height =
         dinero::Params().shielded_epoch_reset_height;
     if (consensus::shielded::IsShieldedEpochResetHeight(next_block_height,
-                                                        shielded_reset_height)) {
+            shielded_reset_height,
+            dinero::Params().shielded_spend_auth_epoch_reset_height)) {
         if (reason) {
             *reason = "shielded tx not allowed at the epoch reset height";
         }
@@ -2343,7 +2379,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         dinero::Params().shielded_activation_height,
         /*anchor_history=*/nullptr,
         binding_activation,
-        dinero::Params().shielded_cv_binding_activation_height);
+        dinero::Params().shielded_cv_binding_activation_height,
+        dinero::Params().shielded_spend_auth_activation_height);
     const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != consensus::shielded::ShieldedValidationError::Ok) {
         set_reason("shielded validation failed: " +
@@ -3164,7 +3201,8 @@ bool Mempool::validateTransaction(
             dinero::Params().shielded_activation_height,
             /*anchor_history=*/nullptr,
             dinero::Params().shielded_input_binding_activation_height,
-            dinero::Params().shielded_cv_binding_activation_height);
+            dinero::Params().shielded_cv_binding_activation_height,
+            dinero::Params().shielded_spend_auth_activation_height);
         const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
         if (validation != consensus::shielded::ShieldedValidationError::Ok) {
             error = "Shielded validation failed: " +

@@ -62,6 +62,8 @@ NC='\033[0m'
 # PIDs for cleanup
 PID_A=""
 PID_B=""
+MINING_ADDR_A=""
+MINING_ADDR_B=""
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Utility Functions
@@ -384,29 +386,28 @@ start_mining() {
     log_step "Step B" "Starting mining ($MINERS_PER_NODE threads per node)..."
 
     # Get mining addresses
-    local addr_a addr_b
-    addr_a=$(rpc_a "wallet.listaddresses" | jq -r 'if type=="array" then .[0].address else empty end' 2>/dev/null)
-    addr_b=$(rpc_b "wallet.listaddresses" | jq -r 'if type=="array" then .[0].address else empty end' 2>/dev/null)
+    MINING_ADDR_A=$(rpc_a "wallet.listaddresses" | jq -r 'if type=="array" then .[0].address else empty end' 2>/dev/null)
+    MINING_ADDR_B=$(rpc_b "wallet.listaddresses" | jq -r 'if type=="array" then .[0].address else empty end' 2>/dev/null)
 
-    if [ -z "$addr_a" ]; then
+    if [ -z "$MINING_ADDR_A" ]; then
         log_info "Creating wallet on Node A..."
-        addr_a=$(rpc_a "wallet.createhd" "stress_a" | jq -r '.first_address // empty' 2>/dev/null)
+        MINING_ADDR_A=$(rpc_a "wallet.createhd" "stress_a" | jq -r '.first_address // empty' 2>/dev/null)
     fi
 
-    if [ -z "$addr_b" ]; then
+    if [ -z "$MINING_ADDR_B" ]; then
         log_info "Creating wallet on Node B..."
-        addr_b=$(rpc_b "wallet.createhd" "stress_b" | jq -r '.first_address // empty' 2>/dev/null)
+        MINING_ADDR_B=$(rpc_b "wallet.createhd" "stress_b" | jq -r '.first_address // empty' 2>/dev/null)
     fi
 
-    log_info "Mining address A: ${addr_a:-<default>}"
-    log_info "Mining address B: ${addr_b:-<default>}"
+    log_info "Mining address A: ${MINING_ADDR_A:-<default>}"
+    log_info "Mining address B: ${MINING_ADDR_B:-<default>}"
 
     # Set mining addresses if available
-    if [ -n "$addr_a" ]; then
-        rpc_a "mining.setaddress" "$addr_a" >/dev/null 2>&1 || true
+    if [ -n "$MINING_ADDR_A" ]; then
+        rpc_a "mining.setaddress" "$MINING_ADDR_A" >/dev/null 2>&1 || true
     fi
-    if [ -n "$addr_b" ]; then
-        rpc_b "mining.setaddress" "$addr_b" >/dev/null 2>&1 || true
+    if [ -n "$MINING_ADDR_B" ]; then
+        rpc_b "mining.setaddress" "$MINING_ADDR_B" >/dev/null 2>&1 || true
     fi
 
     local info_a info_b ibd_a ibd_b
@@ -420,7 +421,7 @@ start_mining() {
     if [[ "$ibd_a" == "true" || "$ibd_b" == "true" ]]; then
         log_info "Nodes still report IBD; bootstrapping 2 blocks on Node A before stress mining..."
         local bootstrap
-        bootstrap=$(rpc_a "generatetoaddress" 2 "$addr_a" 2>&1) || {
+        bootstrap=$(rpc_a "generatetoaddress" 2 "$MINING_ADDR_A" 2>&1) || {
             log_fail "Bootstrap mining failed on Node A: $bootstrap"
             exit 1
         }
@@ -579,6 +580,30 @@ stop_and_converge() {
     rpc_a "announcetip" >/dev/null 2>&1 || true
     rpc_b "announcetip" >/dev/null 2>&1 || true
     sleep 2
+
+    # If mining stopped on an equal-height fork, neither branch has strictly
+    # more work and both nodes are allowed to retain their own tip forever.
+    # A timeout in that state is not evidence of broken relay or reorg logic.
+    # Mine one deterministic tie-break block, then test that the peer follows
+    # the now-higher-work chain. This supplies the chain-selection event that a
+    # real network would eventually receive from its next block.
+    local settled_tip_a settled_tip_b settled_height_a settled_height_b tie_break
+    settled_tip_a=$(rpc_a "blockchain.getbestblockhash" 2>/dev/null) || settled_tip_a=""
+    settled_tip_b=$(rpc_b "blockchain.getbestblockhash" 2>/dev/null) || settled_tip_b=""
+    settled_height_a=$(rpc_a "blockchain.getblockcount" 2>/dev/null) || settled_height_a=0
+    settled_height_b=$(rpc_b "blockchain.getblockcount" 2>/dev/null) || settled_height_b=0
+
+    if [ -n "$settled_tip_a" ] && [ -n "$settled_tip_b" ] && \
+       [ "$settled_tip_a" != "$settled_tip_b" ] && \
+       [ "$settled_height_a" = "$settled_height_b" ]; then
+        log_info "Equal-height fork detected at $settled_height_a; mining one tie-break block on Node A..."
+        tie_break=$(rpc_a "generatetoaddress" 1 "$MINING_ADDR_A" 2>&1) || {
+            log_fail "Tie-break block generation failed on Node A: $tie_break"
+            return 1
+        }
+        rpc_a "announcetip" >/dev/null 2>&1 || true
+        log_pass "Tie-break block generated; waiting for the higher-work chain to propagate"
+    fi
 
     # Wait for convergence (hash comparison is the key invariant)
     log_info "Waiting for tips to match (timeout: ${CONVERGENCE_TIMEOUT}s)..."

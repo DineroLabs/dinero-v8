@@ -259,13 +259,21 @@ struct ChainParams {
     // so activation requires a paired epoch reset. That costs nothing while the
     // pool is empty and strands real value once it is not.
     //
-    // DORMANT ON EVERY NETWORK (UINT32_MAX), deliberately — including regtest,
-    // which would otherwise reject every note the current wallet can build,
-    // since the wallet still commits to Poseidon(sk, 0). regtest flips only when
-    // the wallet side lands. Any activation height MUST be chosen by a human and
+    // DORMANT ON EVERY NETWORK (UINT32_MAX), deliberately — including regtest.
+    // The wallet and circuit groundwork can build auth notes, but consensus has
+    // only the already-deployed CV-binding reset at height 61,000; a distinct
+    // spend-auth epoch-reset boundary must land before this can activate. Any
+    // activation height MUST be chosen by a human and
     // fleet-coordinated before it ships — a wrong boundary splits the chain.
     // ===========================================================================
     uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
+
+    // Distinct epoch reset paired with spend-authority activation. MUST equal
+    // shielded_spend_auth_activation_height. This cannot reuse the historical
+    // cv-binding reset: nodes may need to discard the then-current cv-bound,
+    // sender-authorized note epoch immediately before recipient-only authority
+    // begins. Dormant until a coordinated activation height is selected.
+    uint32_t shielded_spend_auth_epoch_reset_height = UINT32_MAX;
 
     // Shielded epoch reset (hard-fork cutover). At this height the shielded pool
     // is reset to a fresh empty epoch (tree/anchor-history/nullifiers discarded),

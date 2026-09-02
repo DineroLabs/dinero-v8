@@ -577,6 +577,18 @@ din::Json rpc_context_contract_getsighash(const ExecutionContext& ctx, const din
 
 extern RpcRegistry g_rpcRegistry;
 
+void registerContractReadOnlyMethodsContext() {
+    g_rpcRegistry.registerHandler("contract.status",
+                                 rpc_context_contract_status,
+                                 RegisterMode::Overwrite,
+                                 "context-aware-read-only");
+    g_rpcRegistry.registerHandler("contract.list",
+                                 rpc_context_contract_list,
+                                 RegisterMode::Overwrite,
+                                 "context-aware-read-only");
+    dinero::g_logger.info("[RPC Context] ✅ 2 read-only contract handlers registered");
+}
+
 void registerContractMethodsContext() {
     // Core contract methods (fully implemented)
     g_rpcRegistry.registerHandler("contract.createescrow",

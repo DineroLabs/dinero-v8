@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "release": "v8.1.10",
+  "source_repo": "DineroLabs/dinero-v8",
+  "required_assets": [
+    "Dinero-8.1.10-windows-x86_64-Setup.exe",
+    "Dinero-Server-8.1.10-windows-x86_64-Setup.exe",
+    "Dinero-v8.1.10-macOS-arm64-qt.zip",
+    "Dinero-v8.1.10-macOS-arm64.dmg",
+    "Dinero-v8.1.10-macOS-x86_64-qt.zip",
+    "Dinero-v8.1.10-macOS-x86_64.dmg",
+    "Dinero-v8.1.10-ventura-macOS-x86_64-qt.zip",
+    "Dinero-v8.1.10-ventura-macOS-x86_64.dmg",
+    "SHA256SUMS-assumeutxo-84131",
+    "SHA256SUMS-dinero-core-8.1.10",
+    "SHA256SUMS-linux-x86_64-8.1.10",
+    "SHA256SUMS-linux-x86_64-desktop-8.1.10",
+    "SHA256SUMS-macos-8.1.10",
+    "SHA256SUMS-macos-arm64-8.1.10",
+    "SHA256SUMS-macos-arm64-desktop-8.1.10",
+    "SHA256SUMS-macos-x86_64-8.1.10",
+    "SHA256SUMS-macos-x86_64-8.1.10-ventura",
+    "SHA256SUMS-macos-x86_64-desktop-8.1.10",
+    "SHA256SUMS-macos-x86_64-desktop-8.1.10-ventura",
+    "SHA256SUMS-nodecore-v8.1.10",
+    "SHA256SUMS-windows-x86_64-8.1.10",
+    "desktop-release-provenance-linux.txt",
+    "dinero-assumeutxo-73035-v4.dat",
+    "dinero-assumeutxo-73035-v4.manifest.json",
+    "dinero-assumeutxo-84131-v4.dat",
+    "dinero-assumeutxo-84131-v4.manifest.json",
+    "dinero-assumeutxo-84131-v4.publisher.manifest.json",
+    "dinero-assumeutxo-84131-v4.publisher.manifest.sig",
+    "dinero-core_8.1.10-1_amd64.deb",
+    "dinero-linux-x86_64-8.1.10.tar.gz",
+    "dinero-nodecore-v8.1.10.xcframework.zip",
+    "dinero-nodecore-v8.1.10.provenance.json",
+    "dinero-operator-v8.1.10-macOS-arm64.tar.gz",
+    "dinero-operator-v8.1.10-macOS-x86_64.tar.gz",
+    "dinero-operator-v8.1.10-ventura-macOS-x86_64.tar.gz",
+    "dinero-qt-desktop_8.1.10-1_amd64.deb",
+    "dinero-v8.1.10-linux-x86_64-qt.tar.gz",
+    "dinero-v8.1.10-linux-x86_64.AppImage",
+    "dinero-v8.1.10-windows-x86_64-msvc.zip"
+  ],
+  "companion_releases": [
+    {
+      "repo": "DineroLabs/dinero-sv2",
+      "tag": "miner-v0.2.8",
+      "source_commit": "8f9d7f688080483fbeb2f62b234031d5d5567ec5"
+    },
+    {
+      "repo": "DineroLabs/DineroDPI",
+      "tag": "v1.3.6",
+      "required_assets": [
+        "DineroDPI-1.3.6-macOS-arm64.zip",
+        "DineroDPI-1.3.6-macOS-arm64.dmg",
+        "DineroDPI-1.3.6-ventura-macOS-x86_64.zip",
+        "DineroDPI-1.3.6-ventura-macOS-x86_64.dmg",
+        "DineroDPI-1.3.6-iOS-archive.zip",
+        "SHA256SUMS-DineroDPI-1.3.6",
+        "DineroDPI-1.3.6.provenance.json"
+      ]
+    }
+  ]
+}

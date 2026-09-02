@@ -1022,6 +1022,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_s
     message(STATUS "  ✓ WalletListUnspentExcludesMempoolSpent registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_mempool_test_accept_read_only.sh)
+    add_test(
+        NAME MempoolTestAcceptReadOnly
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_mempool_test_accept_read_only.sh
+    )
+    set_tests_properties(MempoolTestAcceptReadOnly PROPERTIES
+        LABELS "integration;rpc;mempool;read-only;regression"
+        TIMEOUT 180
+    )
+    message(STATUS "  ✓ MempoolTestAcceptReadOnly registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_rbf_policy_reporting.sh)
     add_test(
         NAME RbfPolicyReporting

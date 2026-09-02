@@ -30,6 +30,24 @@ bool ConnectBlockShieldedSection(
     AnchorHistory* anchors,
     std::optional<ShieldedEpochSnapshot>& pre_reset_snapshot_out,
     std::string& error) {
+    return ConnectBlockShieldedSection(
+        bundles, deltas, height, reset_height, kShieldedEpochResetDormant,
+        activation_height, tree, nullifiers, anchors,
+        pre_reset_snapshot_out, error);
+}
+
+bool ConnectBlockShieldedSection(
+    const std::vector<ShieldedBundle>& bundles,
+    const std::vector<int64_t>& deltas,
+    uint32_t height,
+    uint32_t cv_reset_height,
+    uint32_t spend_auth_reset_height,
+    uint32_t activation_height,
+    CommitmentTree& tree,
+    NullifierSet& nullifiers,
+    AnchorHistory* anchors,
+    std::optional<ShieldedEpochSnapshot>& pre_reset_snapshot_out,
+    std::string& error) {
     // ─────────────────────────────────────────────────────────────────────
     // Shielded epoch reset (hard-fork cutover). See shielded_epoch.h.
     // ─────────────────────────────────────────────────────────────────────
@@ -38,7 +56,8 @@ bool ConnectBlockShieldedSection(
     // shielded-empty (wall rule) so the reset has nothing to race. Capture the
     // full pre-reset pool into the undo record FIRST (so a reorg disconnecting
     // across the cutover can restore the old epoch), THEN discard it.
-    if (IsShieldedEpochResetHeight(height, reset_height)) {
+    if (IsShieldedEpochResetHeight(height, cv_reset_height,
+                                   spend_auth_reset_height)) {
         if (!bundles.empty()) {
             error = "shielded-tx-at-epoch-reset-height";
             return false;

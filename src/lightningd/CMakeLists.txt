@@ -10,6 +10,10 @@
 #   cmake -DBUILD_DINEROD=OFF -DBUILD_LIGHTNINGD=ON .. && make lightningd
 
 if(BUILD_LIGHTNINGD)
+  if(DINERO_RELEASE)
+    message(FATAL_ERROR
+      "lightningd is not release-ready: mock chain/wallet/funding oracles, a placeholder node key, and incomplete reorg/justice handling remain. Build it only in non-release development configurations.")
+  endif()
   message(STATUS "Building lightningd (standalone Lightning daemon)")
 
   # Phase 3 COMPLETE: Minimal lightningd - just link dinero_lightning!

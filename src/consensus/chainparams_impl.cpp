@@ -40,13 +40,11 @@ static constexpr const char* EXPECTED_MERKLE_ROOT =
 // CTV and CCV are one reviewed mainnet profile. A single constant prevents a
 // partial-activation window from being introduced by changing only one field.
 //
-// DEFERRED 2026-08-22: importing the complete upstream BIP119 interpreter
-// corpus (#483) exposed and fixed P2WSH/Taproot script-path CLEANSTACK
-// handling after the original review freeze. The activation policy requires a
-// material semantic finding to restart review and forbids preserving height
-// 100,000 by shortening that window. Keep both opcodes dormant until a new
-// activation height is explicitly reviewed and authorized.
-static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = UINT32_MAX;
+// AUTHORIZED 2026-08-30: CTV and CCV activate together at block 100,000 after
+// the restarted review, exact-release mutation/resource gates, and physical
+// three-host restart/reorg rehearsal. Keeping this as one constant prevents a
+// partial-activation window from being introduced by changing only one field.
+static constexpr uint32_t MAINNET_COVENANT_PROFILE_V1_HEIGHT = 100000;
 
 // ============================================================================
 // MAINNET PARAMETERS - Dinero Official Mainnet
@@ -86,7 +84,7 @@ static ChainParams g_mainnet = {
     .confidential_activation_height = 1,
 
     // BIP341 script paths retain their deployed height-1 behavior. The
-    // transparent CTV/CCV profile remains coupled but is currently deferred.
+    // transparent CTV/CCV profile activates atomically at block 100,000.
     // CSFS and TXHASH remain deliberately dormant pending separate
     // specifications, resource analysis, vectors, and assurance records.
     .taproot_scriptpath_activation_height = 1,
@@ -120,6 +118,7 @@ static ChainParams g_mainnet = {
     // it forward. The fork-aware binary MUST be deployed to every fleet node
     // BEFORE height 61000; a node still on an older binary at the cutover splits.
     .shielded_cv_binding_activation_height = 61000,
+    .shielded_spend_auth_epoch_reset_height = UINT32_MAX,
     .shielded_epoch_reset_height = 61000,
 
     // Reject a coinbase carrying a shielded bundle, MAINNET. DORMANT — the
@@ -601,6 +600,21 @@ static void ValidateChainParams(const ChainParams& params) {
         throw std::runtime_error(
             "invalid chainparams: shielded_spend_auth_activation_height must be "
             ">= shielded_cv_binding_activation_height");
+    }
+
+    if (params.shielded_spend_auth_epoch_reset_height !=
+        params.shielded_spend_auth_activation_height) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_spend_auth_epoch_reset_height must "
+            "equal shielded_spend_auth_activation_height");
+    }
+
+    if (params.shielded_spend_auth_epoch_reset_height != UINT32_MAX &&
+        params.shielded_spend_auth_epoch_reset_height ==
+            params.shielded_epoch_reset_height) {
+        throw std::runtime_error(
+            "invalid chainparams: spend-auth and cv-binding epoch resets must "
+            "be distinct");
     }
 }
 

@@ -455,6 +455,50 @@ TEST_F(
 
 TEST_F(
     CovenantProfileWalletTest,
+    PersonalVaultHasDelayedAndEmergencyPathsWithCanonicalRecovery) {
+    std::vector<uint8_t> hotSecret(32, 0);
+    std::vector<uint8_t> recoverySecret(32, 0);
+    hotSecret.back() = 21;
+    recoverySecret.back() = 22;
+    const auto hotKey = OwnerXOnlyPublicKey(hotSecret);
+    const auto recoveryKey = OwnerXOnlyPublicKey(recoverySecret);
+    const VaultPlan plan = BuildVaultPlan(
+        144, hotKey, recoveryKey,
+        "m/86'/1448'/0'/2/0", "m/86'/1448'/0'/3/0");
+    const VaultPlan recovered = RecoverVaultPlan(plan.recoveryDescriptor);
+
+    EXPECT_EQ(DescriptorType(plan.recoveryDescriptor), ProfileType::VAULT);
+    EXPECT_EQ(recovered.descriptorId, plan.descriptorId);
+    EXPECT_EQ(recovered.unvaultDelayBlocks, 144U);
+    EXPECT_EQ(recovered.unvaultPublicKey, hotKey);
+    EXPECT_EQ(recovered.recoveryPublicKey, recoveryKey);
+    EXPECT_EQ(recovered.delayedUnvault.scriptPubKey,
+              recovered.emergencyRecovery.scriptPubKey);
+    EXPECT_EQ(recovered.delayedUnvault.controlBlock.size(), 65U);
+    EXPECT_EQ(recovered.emergencyRecovery.controlBlock.size(), 65U);
+    EXPECT_NE(recovered.delayedUnvault.tapscript,
+              recovered.emergencyRecovery.tapscript);
+    EXPECT_NE(std::find(
+        recovered.delayedUnvault.tapscript.begin(),
+        recovered.delayedUnvault.tapscript.end(),
+        static_cast<uint8_t>(OP_CHECKSEQUENCEVERIFY)),
+        recovered.delayedUnvault.tapscript.end());
+    EXPECT_EQ(recovered.emergencyRecovery.tapscript.back(),
+              static_cast<uint8_t>(OP_CHECKSIG));
+
+    std::string corrupt = plan.recoveryDescriptor;
+    corrupt.back() = corrupt.back() == 'a' ? 'b' : 'a';
+    EXPECT_THROW(RecoverVaultPlan(corrupt), std::invalid_argument);
+    EXPECT_THROW(
+        BuildVaultPlan(0, hotKey, recoveryKey, "hot", "recovery"),
+        std::invalid_argument);
+    EXPECT_THROW(
+        BuildVaultPlan(144, hotKey, hotKey, "hot", "same"),
+        std::invalid_argument);
+}
+
+TEST_F(
+    CovenantProfileWalletTest,
     BuildersRejectInvalidMoneyRangesAndDuplicatePrevouts) {
     EXPECT_THROW(
         BuildCTVPlan(

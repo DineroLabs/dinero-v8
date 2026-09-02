@@ -57,6 +57,19 @@ Longer campaign, same binary:
 DINERO_COVENANT_FUZZ_ITERATIONS=200000 ./build/test_covenant_fuzz
 ```
 
+The reproducible two-pass sanitizer campaign is:
+
+```sh
+./scripts/covenant-sanitizer-campaign.sh --iterations 200000
+```
+
+It runs fail-fast UBSan separately from unsigned-overflow instrumentation. The
+second pass records full output, accepts primary diagnostics only from the
+documented modular-arithmetic implementations in SHA-256 and secp256k1, and
+fails if a primary diagnostic originates anywhere else. Stack frames that call
+hashing from covenant code are not misclassified as covenant overflows; the
+primary diagnostic location is the classification boundary.
+
 Budget realistically. Each CCV iteration runs `VerifyTaproot` **twice** for the
 determinism oracle, and each call performs the internal-key retry search plus a
 Taproot tweak, so secp256k1 dominates the cost. Uninstrumented that is cheap;
@@ -129,6 +142,16 @@ covenant decoder and transition verifier are findings.
 ## Observed results
 
 Recorded at the commit introducing this document, macOS arm64, Apple clang 17.
+
+An extended rerun on 2026-08-30 used 200,000 iterations per target under
+fail-fast UBSan. All four tests passed in 10.7 seconds with a maximum resident
+set of approximately 14.3 MB. No undefined-behavior diagnostic was emitted.
+
+The companion unsigned-overflow pass used 20,000 iterations per target. All
+four tests passed. Primary diagnostics were confined to the repository SHA-256
+implementation and vendored secp256k1 fixed-width modular arithmetic; there
+were zero primary diagnostics in `covenants.cpp`,
+`tapscript_interpreter.cpp`, or `script_verify.cpp`.
 
 ### Unsigned-overflow pass
 

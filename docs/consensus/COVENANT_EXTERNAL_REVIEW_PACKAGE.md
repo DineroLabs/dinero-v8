@@ -274,8 +274,7 @@ reinterpret hidden trees without explicit deployment planning.
 
 ## 8. Known limitations and blockers
 
-- Mainnet and testnet CTV/CCV remain dormant. The former block-100,000 proposal
-  is superseded and no replacement height is authorized.
+- Mainnet CTV/CCV activate together at block 100,000. Testnet remains dormant.
 - Activation has no miner-signalling or versionbits phase. Because testnet also
   remains dormant, mainnet would be the profile's first public-network
   enforcement. The controlled four-node fleet permits coordinated deployment
@@ -285,9 +284,9 @@ reinterpret hidden trees without explicit deployment planning.
   invited, and every substantive report must be resolved publicly, but release
   readiness is determined by the reproducible open-source assurance gates in
   `COVENANT_MAINNET_ACTIVATION_100000.md`.
-- The profile-v1 wallet/RPC surface remains intentionally regtest-only. The
-  consensus activation does not silently expose mainnet construction RPCs;
-  production wallet enablement requires a separate reviewed release.
+- The profile-v1 wallet/RPC surface permits descriptor construction on
+  mainnet, but spend construction remains locked until candidate block
+  100,000. Testnet fails closed because the profile is dormant there.
 - The default profile-v1 wallet CCV artifact is owner-authorized with BIP340.
   The legacy permissionless form remains available only after explicit
   acknowledgement.

@@ -1,5 +1,21 @@
 # Covenant protocol status
 
+## Local assurance command
+
+Run the complete covenant-labelled implementation, wallet, recovery,
+restart/reorg, boundary, and policy lane with:
+
+```sh
+./scripts/covenant-readiness.sh --build-dir build
+```
+
+Add `--mutation` to require the complete consensus mutation score and write a
+machine-readable report into the build directory. The runner deliberately uses
+CTest's `--no-tests=error`; a renamed or de-registered covenant test must fail
+closed instead of producing an empty green run. Passing this command does not
+deploy the activation binary: production behavior remains governed by the
+chain parameters and the release gates below.
+
 This file is the operator-facing status summary. It does not replace the
 normative opcode specifications or activation parameters.
 
@@ -32,7 +48,7 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   validation inputs. CTV and CCV may each execute at most once per revealed
   tapscript. Limits, neuter evidence, and scaling results are recorded in
   `COVENANT_RESOURCE_LIMITS.md`.
-- The regtest-only wallet/RPC profile constructs CTV and CCV Taproot
+- The regtest/mainnet wallet/RPC profile constructs CTV and CCV Taproot
   script-path artifacts, stores checksummed public recovery descriptors and
   watch scripts atomically, and re-derives them after wallet restart. Its
   construction and recovery contract is documented in
@@ -52,13 +68,10 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
 
 ## Activation policy
 
-- Mainnet CTV and CCV are deferred and dormant (`UINT32_MAX`). The previously
-  proposed block-100,000 activation was superseded after complete upstream
-  BIP119 transaction vectors exposed a material interpreter-semantic defect.
-  No replacement height is authorized by this change. The associated
-  consensus-loosening P2WSH/Taproot outer-stack correction is staged behind
-  the same CTV verification flag, so deferral preserves deployed mainnet
-  acceptance behavior during mixed-version operation.
+- Mainnet CTV and CCV activate atomically at block 100,000. The complete
+  upstream BIP119 corpus exposed a P2WSH/Taproot outer-stack defect in the
+  earlier candidate; that defect was corrected and the review and assurance
+  gates were restarted before this activation was re-authorized.
 - Testnet CTV and CCV remain dormant (`UINT32_MAX`).
 - CSFS and TXHASH do not yet have an approved normative specification or
   external review. They remain dormant on every production network, and their
@@ -67,10 +80,10 @@ reviewer handoff is `COVENANT_EXTERNAL_REVIEW_PACKAGE.md`.
   unaudited commitment extension.
 
 Regtest activates CTV and CCV at height 20 so boundary, wallet, recovery, and
-multi-node work can exercise the candidate semantics. Mainnet remains dormant;
-the regtest height is not a production activation signal.
+multi-node work can exercise the same semantics cheaply. Mainnet uses the
+separately pinned block-100,000 boundary.
 
-The regtest wallet refuses to construct spends before the candidate height has
+The wallet refuses to construct spends before the candidate height has
 the relevant rule active. Mempool admission and block-template selection also
 reject revealed CTV, CCV, CSFS, or TXHASH scripts before that individual
 opcode's activation height while preserving historical consensus NOP/

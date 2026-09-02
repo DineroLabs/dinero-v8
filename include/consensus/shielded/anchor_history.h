@@ -130,6 +130,20 @@ public:
     /// and version; corrupt input leaves the in-memory state empty.
     IoResult DeserializeBytes(const std::vector<uint8_t>& bytes);
 
+    /**
+     * Durable v2 envelope used by ChainDB / flat-file persistence.  Unlike
+     * SerializeBytes(), this includes the bounded eviction journal required to
+     * restore a full anchor window after restart + disconnect.  Keeping this
+     * separate preserves the historical v1 bytes consumed by DSR2 consensus
+     * state fingerprints and epoch snapshots.
+     *
+     * DeserializePersistenceBytes accepts both legacy v1 SerializeBytes()
+     * payloads and the v2 envelope, providing an in-place migration on the
+     * next successful persist.
+     */
+    std::vector<uint8_t> SerializePersistenceBytes() const;
+    IoResult DeserializePersistenceBytes(const std::vector<uint8_t>& bytes);
+
 private:
     // (height, root) pairs in insertion order. New entries appended at
     // the back; oldest evicted from the front when size > kDepth.
@@ -143,14 +157,10 @@ private:
     /// RollbackAbove can put them back. Ascending by height; the back is the
     /// most recently evicted (i.e. the one immediately below roots_.front()).
     ///
-    /// DELIBERATELY NOT PERSISTED. Serializing it would change
-    /// AnchorHistory::SerializeBytes(), which feeds ComputeShieldedReorgStateHash
-    /// (DSR2) — so a format change here would invalidate stored journal digests
-    /// and demand a migration, for a benefit limited to reorgs that straddle a
-    /// restart. The residual gap is documented rather than papered over: a
-    /// disconnect immediately after restart still cannot restore, because the
-    /// evicted entries were never on disk. That is strictly smaller than the
-    /// current hole, which loses them on EVERY disconnect.
+    /// Persisted by the v2 persistence envelope, but intentionally excluded
+    /// from SerializeBytes() so the historical DSR2 consensus fingerprint is
+    /// byte-identical. Legacy v1 payloads load with an empty journal and migrate
+    /// to v2 on the next persist.
     static constexpr size_t kEvictionRetention = kDepth;
     std::deque<std::pair<uint32_t, Hash>> evicted_;
 };

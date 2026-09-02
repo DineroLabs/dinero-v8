@@ -56,7 +56,8 @@ This spec does **not** define:
 | ECDH shared secret | x-coordinate of `s · P` under even-y convention |
 
 **Why x-only / even-y:** secp256k1 compressed encoding is 33 bytes (1-byte
-prefix + 32-byte x), but Sapling-shape addresses are 43 bytes (11 + 32).
+prefix plus two 32-byte x-only keys); the current address payload is 75 bytes
+(11 + 32 + 32).
 To stay 32 bytes per public key, we adopt BIP340's even-y canonical form:
 every public key point is the unique `(x, y)` representative with `y` even.
 ECDH then takes the x-coordinate of `s · P` and is well-defined for both
@@ -248,7 +249,7 @@ representative when computing ECDH.
 ### 5.4 Address payload
 
 ```
-address_payload = d || pk_d_bytes      // 11 + 32 = 43 bytes
+address_payload = d || pk_d_enc || pk_d_spend // 11 + 32 + 32 = 75 bytes
 ```
 
 ### 5.5 Bech32m encoding
@@ -265,12 +266,12 @@ address = bech32m_encode(HRP, convertbits(address_payload, 8, 5, pad=true))
 
 **No witness-version byte is prepended.** These addresses are NOT
 BIP173/BIP350 witness programs — they do not appear in scriptPubKey.
-The full payload is the 43 raw bytes from §5.4, bech32m-encoded
+The full payload is the 75 raw bytes from §5.4, bech32m-encoded
 directly. Length-disambiguation from `din1p`/`din1r` (which are 33-byte
 witness programs) is by encoded-string length: shielded addresses are
 deterministically longer.
 
-Example shape: `dins1q...` (about 76 characters total for mainnet).
+Example shape: `dins1q...` (about 132 characters total for mainnet).
 
 ---
 
@@ -385,7 +386,7 @@ bytes, raw scalars, or descriptor hex. The daemon's RPC handler:
    `dins` / `tdins` / `rdins` matching the active network. In
    particular, `din1p`, `din1r`, `bc1*`, and any non-Dinero-shielded
    HRP MUST be rejected at parse time, before any cryptographic work.
-3. Decodes the 43-byte payload (11-byte `d` ∥ 32-byte `pk_d`) and only
+3. Decodes the 75-byte payload (`d` ∥ `pk_d_enc` ∥ `pk_d_spend`) and only
    then constructs the output, computing `addr_bind` per §6.2 with the
    exact `(d, pk_d)` parsed from the address string.
 
@@ -456,7 +457,7 @@ d (after ChaCha20, 11 bytes):
 pk_d  (x-only, even-y, 32 bytes):
        981db4b85ce150d7e74768cd6d9147148cba846857289d5c585b0681f9a469f9
 
-address_payload (43 bytes) = d || pk_d:
+address_payload (75 bytes) = d || pk_d_enc || pk_d_spend:
        6b92d6a2de35177cada44c
        981db4b85ce150d7e74768cd6d9147148cba846857289d5c585b0681f9a469f9
 
@@ -614,7 +615,7 @@ they touch:
 - `src/wallet/shielded_derivation.cpp` — new
 - `src/wallet/utxo_index.cpp:43` — extend path-prefix allowlist with `m/99'/`
 - `src/wallet/key_origin.cpp` — extend parser to accept purpose 99
-- `include/wallet/address_validator.h` + impl — add `dins`/`tdins`/`rdins` HRPs and length checks for 43-byte payload
+- `include/wallet/address_validator.h` + impl — validate `dins`/`tdins`/`rdins` HRPs and the 75-byte payload
 - `src/wallet/dinero_wallet_api.h` — `GetNetworkHRP()` callers do not change; shielded HRPs are queried via a new accessor
 - `src/test/shielded_derivation_tests.cpp` — new, must include all vectors from §8
 
@@ -648,10 +649,11 @@ the test (recurring CMake gotcha — test entries are near the end of the
    additional checksum is added. Document in §5.5 to forestall the
    "should we add HMAC?" question.
 
-5. **Activation height.** This spec defines key derivation, not
-   activation. Activation of shielded UI surface in DineroDPI / dinero-qt
-   is a separate operator decision tracked elsewhere (project memory:
-   "shielded pool parked").
+5. **Activation height.** This spec defines key derivation, not consensus
+   activation. The shielded pool is active on mainnet, while fund-moving
+   wallet RPCs and the Qt surface remain locked pending the spend-authority
+   cutover and its distinct epoch reset. Network heights are normative in
+   chain parameters, not in this derivation document.
 
 ---
 

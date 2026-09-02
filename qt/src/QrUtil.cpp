@@ -2,6 +2,9 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QColor>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QtGlobal>
 
 #ifdef DIN_HAVE_QRENCODE
@@ -14,10 +17,12 @@ namespace QrUtil {
 }
 #endif
 
-QImage QrUtil::makeQr(const QString& text, int sizePx, int margin, int ecLevel) {
+namespace {
+
+QImage makePlainQr(const QString& text, int sizePx, int margin, int ecLevel) {
 #ifndef DIN_HAVE_QRENCODE
 #ifdef Q_OS_MACOS
-    QImage nativeQr = makeMacQr(text, sizePx, margin, ecLevel);
+    QImage nativeQr = QrUtil::makeMacQr(text, sizePx, margin, ecLevel);
     if (!nativeQr.isNull()) {
         return nativeQr;
     }
@@ -95,9 +100,24 @@ QImage QrUtil::makeQr(const QString& text, int sizePx, int margin, int ecLevel) 
 #endif
 }
 
+QString bundledLogoPath() {
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList candidates{
+        appDir + QStringLiteral("/../Resources/Dinero-Coin.png"),
+        appDir + QStringLiteral("/Dinero-Coin.png"),
+        QDir::currentPath() + QStringLiteral("/Dinero-Coin.png")
+    };
+    for (const QString& candidate : candidates) {
+        if (QFileInfo::exists(candidate)) return QDir::cleanPath(candidate);
+    }
+    return {};
+}
+
+} // namespace
+
 QImage QrUtil::makeQrWithLogo(const QString& text, const QString& logoPath, int sizePx, int margin) {
     // Generate QR with HIGH error correction (30% damage tolerance) for logo overlay
-    QImage qrImage = makeQr(text, sizePx, margin, /*ecLevel=*/3);
+    QImage qrImage = makePlainQr(text, sizePx, margin, /*ecLevel=*/3);
 
     // Load the logo image
     QImage logo(logoPath);
@@ -139,4 +159,14 @@ QImage QrUtil::makeQrWithLogo(const QString& text, const QString& logoPath, int 
     painter.drawImage(logoRect, logo);
 
     return qrImage;
+}
+
+QImage QrUtil::makeQr(const QString& text, int sizePx, int margin, int ecLevel) {
+    const QString logoPath = bundledLogoPath();
+    if (!logoPath.isEmpty()) {
+        // A center mark requires high error correction regardless of the caller's
+        // previous default. This keeps every Qt QR branded and still scannable.
+        return makeQrWithLogo(text, logoPath, sizePx, margin);
+    }
+    return makePlainQr(text, sizePx, margin, ecLevel);
 }

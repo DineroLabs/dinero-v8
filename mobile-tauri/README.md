@@ -1,5 +1,11 @@
 # Dinero Mobile Wallet - Tauri + Rust
 
+> **Status: deprecated experimental prototype.** This directory is not a
+> production Dinero mobile client and is not part of the v8.1.9 shielded
+> activation or release gates. Production mobile applications are the native
+> Xcode DineroDPI app and the native Android DineroDPI app. Do not use this
+> prototype as evidence of native mobile readiness.
+
 Cross-platform mobile wallet for DineroCoin built with Tauri, Rust, and React.
 
 ## 🏗️ Architecture
@@ -133,4 +139,3 @@ The Rust FFI bridge (`src-tauri/src/wallet.rs`) provides safe wrappers around th
 - [Tauri Documentation](https://tauri.app/)
 - [Tauri Mobile Guide](https://tauri.app/v1/guides/mobile/)
 - [Rust FFI Guide](https://doc.rust-lang.org/nomicon/ffi.html)
-

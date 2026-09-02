@@ -10,6 +10,7 @@
 #include "advisorybanner.h"
 #include "walletwizard.h"
 #include "qrcodegen.h"
+#include "QrUtil.h"
 #include "hardwarewalletwidget.h"  // Hardware wallet support (production-ready)
 #include "dpiwidget.h"             // DPI Pay/Collect
 #include "aipanel.h"
@@ -3048,10 +3049,10 @@ void MainWindow::setupUI() {
     templateRow->addWidget(new QLabel("Template:"));
     cmbContractTemplate_ = new QComboBox;
     cmbContractTemplate_->addItem("Simple Lock", "vault");
-    cmbContractTemplate_->addItem("Lock with Recovery Key", "conditional");
+    cmbContractTemplate_->addItem("Lock with Recovery Key (Unavailable)", "conditional");
     cmbContractTemplate_->addItem("Time Lock", "timelock");
     cmbContractTemplate_->addItem("Batch Payment", "payroll");
-    cmbContractTemplate_->addItem("Custom (Advanced)", "custom");
+    cmbContractTemplate_->addItem("Custom (Advanced, Unavailable)", "custom");
     cmbContractTemplate_->setToolTip("Simple Lock: funds locked to a spending template\n"
                                      "Timelock: funds locked for N blocks/hours/days\n"
                                      "Payroll: batch payment to multiple recipients (CTV)\n"
@@ -3077,9 +3078,8 @@ void MainWindow::setupUI() {
     contractConditionalPage_ = new QWidget;
     auto *condPageLayout = new QVBoxLayout(contractConditionalPage_);
     auto *condInfo = new QLabel(
-        "Lock with a backup recovery key.\n\n"
-        "Primary: funds go to the preset destination automatically.\n"
-        "Backup: if something goes wrong, use the recovery key to rescue funds.");
+        "Unavailable in this build. Recovery contracts require a descriptor-backed\n"
+        "multi-path Taproot profile. The former prototype was not safe for funds.");
     condInfo->setWordWrap(true);
     condInfo->setStyleSheet("QLabel { color: #9fb3c8; padding: 4px; }");
     condPageLayout->addWidget(condInfo);
@@ -3090,6 +3090,7 @@ void MainWindow::setupUI() {
     edtRecoveryPubkey_->setPlaceholderText("Paste your recovery key here (64 characters)");
     edtRecoveryPubkey_->setMaxLength(64);
     edtRecoveryPubkey_->setStyleSheet("QLineEdit { font-family: monospace; font-size: 11px; }");
+    edtRecoveryPubkey_->setEnabled(false);
     recoveryRow->addWidget(edtRecoveryPubkey_);
     condPageLayout->addLayout(recoveryRow);
     condPageLayout->addStretch();
@@ -3179,14 +3180,15 @@ void MainWindow::setupUI() {
     contractCustomPage_ = new QWidget;
     auto *customPageLayout = new QVBoxLayout(contractCustomPage_);
     lblCustomScriptWarning_ = new QLabel(QString::fromUtf8(
-      "\xE2\x9A\xA0\xEF\xB8\x8F Advanced: Enter raw Tapscript hex. "
-      "Incorrect scripts will fail verification."));
+      "\xE2\x9A\xA0\xEF\xB8\x8F Unavailable: arbitrary Tapscript funding is disabled. "
+      "Use a versioned, descriptor-backed covenant profile."));
     lblCustomScriptWarning_->setWordWrap(true);
     lblCustomScriptWarning_->setStyleSheet("QLabel { color: #ffa94d; padding: 4px; font-weight: bold; }");
     customPageLayout->addWidget(lblCustomScriptWarning_);
     edtCustomScript_ = new QLineEdit;
     edtCustomScript_->setPlaceholderText("Enter Tapscript hex...");
     edtCustomScript_->setStyleSheet("QLineEdit { font-family: monospace; }");
+    edtCustomScript_->setEnabled(false);
     customPageLayout->addWidget(edtCustomScript_);
     contractTemplateStack_->addWidget(contractCustomPage_);
 
@@ -3456,15 +3458,15 @@ void MainWindow::setupUI() {
   // ═══════════════════════════════════════════════════════════════════
 #endif // DIN_EXPERIMENTAL_FEATURES
 
-  // === Liquidity Vault Tab (Track C — daemon-side custodial vault) ===
-  // Production feature, not gated behind DIN_EXPERIMENTAL_FEATURES.
-  // Talks to vault.* RPC family on the embedded dinerod (boots in
-  // shadow mode by default; flip vault.shadow=0 once you're past
-  // Stage 0).
+#if defined(DIN_ENABLE_LIQUIDITY_VAULT_UI) && DIN_ENABLE_LIQUIDITY_VAULT_UI
+  // === Liquidity Vault Tab (daemon-side custodial vault) ===
+  // Disabled in normal builds until its consumer product model is finalized.
+  // Explicit operator/developer builds may opt in at configure time.
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
     tabs->addTab(vaultPanel_, "🏦 Liquidity Vault");
   }
+#endif
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
   // chainparams.shielded_activation_height). On mainnet/testnet the
@@ -4282,6 +4284,14 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::templateChanged, this,
             [this](int height, quint32 difficultyBits) {
+      // A fresh template is authoritative evidence that the miner recovered.
+      // Remove prior recoverable rejection/template errors from the live view;
+      // their full diagnostics remain available in the daemon log.
+      const auto recoveredErrors = transientMiningErrorGenerations_.keys();
+      transientMiningErrorGenerations_.clear();
+      for (const QString& displayLine : recoveredErrors) {
+        removeMiningOutputLine(txtMiningOutput_, displayLine);
+      }
       if (lblMiningHeight_) lblMiningHeight_->setText(QString::number(height));
       if (lblMiningDifficulty_) {
         lblMiningDifficulty_->setText(dinero::qt::compactDifficultyText(difficultyBits));
@@ -7097,8 +7107,8 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     lblConnectionStatus_->setText("Wallet unload failed");
     lblConnectionStatus_->setStyleSheet(headerPillStyle());
     lblConnectionStatus_->setToolTip(errorText);
-  } else if (method == "sendpubliccovenant" || method == "wallet.sendpubliccovenant") {
-    // Handle sendpubliccovenant result (public/auditable covenant)
+  } else if (method == "wallet.covenant.ctvfund") {
+    // Handle descriptor-backed, consensus-enforced CTV funding.
     if (btnSend_) {
       btnSend_->setEnabled(true);
       updateSendModeUi();
@@ -7115,38 +7125,37 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         return;
       }
 
-      const QString txid = obj.value("txid").toString();
-      const double amountSent = obj.value("amount_sent").toDouble(0.0);
-      const double fee = obj.value("fee").toDouble(0.0);
-      const QString covenantScript = obj.value("covenant_script").toString();
-      const QString visibility = obj.value("visibility").toString("public");
-      const QString status = obj.value("status").toString("broadcast");
-      const QString warning = obj.value("warning").toString();
+      const QJsonObject funding = obj.value("funding").toObject();
+      const QString txid = funding.value("txid").toString();
+      const double amountSent = obj.value("funding_value_una").toDouble() / 100000000.0;
+      const double fee = funding.value("fee").toDouble(0.0);
+      const QString descriptorId = obj.value("descriptor_id").toString();
+      const QString descriptor = obj.value("recovery_descriptor").toString();
+      const QString status = funding.value("status").toString("broadcast");
 
       if (lblSendStatus_) {
         lblSendStatus_->setText(status == "broadcast"
-          ? QString::fromUtf8("\xE2\x9C\x85 Public contract broadcast complete.")
-          : QString::fromUtf8("\xE2\x9C\x85 Public contract signed but not broadcast."));
+          ? QString::fromUtf8("\xE2\x9C\x85 Covenant funded and recovery descriptor saved.")
+          : QString::fromUtf8("\xE2\x9C\x85 Covenant funding transaction created."));
         lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; font-weight: 600; }");
       }
 
       if (txtSendResult_) {
         txtSendResult_->setHtml(QString(
-          "<b>Public Contract Created</b><br><br>"
+          "<b>Consensus-Enforced CTV Contract Created</b><br><br>"
           "<b>Transaction ID:</b><br>"
           "<span style='font-family: monospace; font-size: 11px;'>%1</span><br><br>"
           "<b>Amount:</b> %2 DIN<br>"
           "<b>Fee:</b> %3 DIN<br>"
-          "<b>Visibility:</b> %4<br>"
-          "<b>Tx version:</b> v2<br>"
-          "<b>Status:</b> %5"
-          "%6"
+          "<b>Descriptor ID:</b><br><span style='font-family: monospace; font-size: 10px;'>%4</span><br><br>"
+          "<b>Status:</b> %5<br><br>"
+          "<b>Recovery descriptor:</b><br><span style='font-family: monospace; font-size: 9px;'>%6</span>"
         ).arg(txid,
               QString::number(amountSent, 'f', 8),
               QString::number(fee, 'f', 8),
-              visibility,
+              descriptorId,
               status,
-              warning.isEmpty() ? QString() : QString("<br><b>Warning:</b> %1").arg(warning)));
+              descriptor.toHtmlEscaped()));
       }
 
       if (edtRecipient_) edtRecipient_->clear();
@@ -7155,45 +7164,16 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       refresh();
       loadTransactionHistory();
     }
-  } else if (method == "withdrawfromvault" || method == "wallet.withdrawfromvault") {
-    if (result.isObject()) {
-      auto obj = result.toObject();
-      QString error = obj.value("error").toString();
-      if (!error.isEmpty()) {
-        QMessageBox::warning(this, "Contract Spend Failed", error);
-      } else {
-        QString wtxid = obj.value("txid").toString();
-        double withdrawn = obj.value("amount_withdrawn").toDouble(0.0);
-        double fee = obj.value("fee").toDouble(0.0);
-        QString wstatus = obj.value("status").toString("unknown");
-        QMessageBox::information(this, "Contract Spend",
-          QString("<b>Contract Spend %1</b><br><br>"
-                  "<b>Transaction ID:</b><br>"
-                  "<span style='font-family: monospace; font-size: 11px;'>%2</span><br><br>"
-                  "<b>Amount:</b> %3 DIN<br>"
-                  "<b>Fee:</b> %4 DIN<br>"
-                  "<b>Status:</b> %5")
-            .arg(wstatus == "broadcast" ? "Complete" : "Submitted")
-            .arg(wtxid)
-            .arg(QString::number(withdrawn, 'f', 8))
-            .arg(QString::number(fee, 'f', 8))
-            .arg(wstatus));
-        refresh();
-        loadTransactionHistory();
-      }
-    }
   } else if (method == "wallet.consolidate") {
-    // Re-enable consolidate button
-    if (btnConsolidate_) {
-      btnConsolidate_->setEnabled(true);
-    }
-
     QJsonObject obj = result.toObject();
     const bool isPreview = obj.value("dry_run").toBool(false) && obj.value("ok").toBool(false);
     const int sel = obj.value("selected_inputs").toInt(0);
 
     if (isPreview && sel == 0) {
+      consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
+      if (btnConsolidate_) btnConsolidate_->setEnabled(
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Daemon found nothing eligible to consolidate.
       QMessageBox::information(this, "Consolidation",
         "Nothing to consolidate — no eligible UTXOs.");
@@ -7217,17 +7197,24 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         if (btnConsolidate_) btnConsolidate_->setEnabled(false);
         rpc_->callNamed("wallet.consolidate", p);
       } else {
+        consolidationInFlight_ = false;
         pendingConsolidateParams_ = {};
+        if (btnConsolidate_) btnConsolidate_->setEnabled(
+          dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
         if (btnConsolidate_ && cachedUtxoCount_ > 50) {
           btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
         }
       }
     } else if (!obj.value("ok").toBool(true)) {
+      consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
+      if (btnConsolidate_) btnConsolidate_->setEnabled(
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
       // Fee gate or execution error — surface the daemon's reason.
       QMessageBox::warning(this, "Consolidation Failed",
         obj.value("reason").toString(obj.value("error").toString("Consolidation could not be completed.")));
     } else {
+      consolidationInFlight_ = false;
       pendingConsolidateParams_ = {};
       // Executed + broadcast.
       const QString txid = obj.value("txid").toString();
@@ -7236,6 +7223,23 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
                        : QString("Consolidation broadcast.\nTXID: %1").arg(txid));
       refresh();
       loadTransactionHistory();
+    }
+  } else if (method == "wallet.covenant.list") {
+    pendingContractsRefresh_ = false;
+    updateContractsTable(result);
+  } else if (method == "wallet.covenant.inspect") {
+    const QJsonObject obj = result.toObject();
+    if (!obj.value("success").toBool(false)) {
+      QMessageBox::warning(this, "Contract Inspection",
+        obj.value("error").toString("Unable to inspect descriptor."));
+    } else {
+      QMessageBox::information(this, "Verified Contract Descriptor",
+        QString("<b>Profile:</b> %1<br><b>Descriptor ID:</b><br><span style='font-family:monospace'>%2</span><br><br>"
+                "<b>Template hash:</b><br><span style='font-family:monospace'>%3</span><br><br>"
+                "The descriptor checksum and Taproot artifacts were re-derived successfully.")
+          .arg(obj.value("profile").toString().toHtmlEscaped(),
+               obj.value("descriptor_id").toString().toHtmlEscaped(),
+               obj.value("template_hash").toString().toHtmlEscaped()));
     }
   } else if (method == "wallet.listtransactions") {
     if (result.isArray()) {
@@ -7249,11 +7253,6 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       item->setTextAlignment(Qt::AlignCenter);
       tblTransactions_->setItem(0, 0, item);
       tblTransactions_->setSpan(0, 0, 1, 7);
-    }
-    // Phase 4: also update contracts table if a refresh was requested
-    if (pendingContractsRefresh_) {
-      pendingContractsRefresh_ = false;
-      updateContractsTable(result);
     }
   } else if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
@@ -7574,7 +7573,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
 
   // Keep send UI usable after RPC failures.
   if (method == "wallet.sendtoaddress" || method == "sendtoaddress" ||
-      method == "sendpubliccovenant" || method == "wallet.sendpubliccovenant" ||
+      method == "wallet.covenant.ctvfund" ||
       method == "wallet.transfer" || method == "wallet.unshield" || method == "wallet.shield" ||
       method == "wallet.sendrawtransaction" || method == "sendrawtransaction") {
     if (btnSend_) {
@@ -7592,6 +7591,7 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
   }
 
   if (method == "wallet.consolidate") {
+    consolidationInFlight_ = false;
     pendingConsolidateParams_ = {};
     // Re-enable the consolidate button on error
     if (btnConsolidate_) {
@@ -10485,8 +10485,9 @@ void MainWindow::updateTransactionTable(const QJsonArray& transactions) {
 
     // v7: only transparent CTV covenants are recognized as "contract" txs.
     const bool hasCovenant = tx.contains("covenant_script") || tx.contains("covenant");
-    const bool isPublicCovenant = type == "sendpubliccovenant" ||
-                                  (tx["visibility"].toString() == "public" && hasCovenant);
+    const bool isPublicCovenant =
+      tx.value("covenant_profile").toString() == "ctv" ||
+      (tx["visibility"].toString() == "public" && hasCovenant);
 
     if (isPublicCovenant) {
       typeIcon = amount < 0.0
@@ -10755,6 +10756,8 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
     if (cachedUtxoCount_ > 50) {
       btnConsolidate_->setText(QString("\xF0\x9F\xA7\xB9 Consolidate (%1 UTXOs)").arg(cachedUtxoCount_));
       btnConsolidate_->setVisible(true);
+      btnConsolidate_->setEnabled(
+        dinero::qt::shouldEnableConsolidation(cachedUtxoCount_, consolidationInFlight_));
     } else {
       btnConsolidate_->setVisible(false);
     }
@@ -10766,19 +10769,50 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
 // ═══════════════════════════════════════════════════════════════════
 
 void MainWindow::refreshContractsList() {
-  // Reuse wallet.listtransactions — the result handler checks pendingContractsRefresh_
   pendingContractsRefresh_ = true;
-  QJsonObject params{
-    {"count", 200},
-    {"offset", 0},
-    {"type", "all"}
-  };
-  rpc_->callNamed("wallet.listtransactions", params);
+  rpc_->callNamed("wallet.covenant.list", QJsonObject{});
 }
 
 void MainWindow::updateContractsTable(const QJsonValue& txList) {
   if (!tblContracts_) return;
   tblContracts_->setRowCount(0);
+
+  // Production covenant inventory is descriptor-backed. Transaction-history
+  // heuristics cannot prove ownership, recovery, or spending conditions.
+  if (txList.isObject() && txList.toObject().contains("descriptors")) {
+    const QJsonArray descriptors = txList.toObject().value("descriptors").toArray();
+    for (const auto& value : descriptors) {
+      const QJsonObject descriptor = value.toObject();
+      const int row = tblContracts_->rowCount();
+      tblContracts_->insertRow(row);
+      const QString profile = descriptor.value("profile").toString("unknown");
+      const QString label = descriptor.value("label").toString();
+      tblContracts_->setItem(row, 0, new QTableWidgetItem(
+        label.isEmpty() ? profile.toUpper() : label));
+      tblContracts_->setItem(row, 1, new QTableWidgetItem("Public / Taproot"));
+      tblContracts_->setItem(row, 2, new QTableWidgetItem("descriptor tracked"));
+      const qint64 created = descriptor.value("created_at").toVariant().toLongLong();
+      tblContracts_->setItem(row, 3, new QTableWidgetItem(
+        created > 0 ? QDateTime::fromSecsSinceEpoch(created).toString(Qt::ISODate) : "Unknown"));
+      auto *status = new QTableWidgetItem("Tracked");
+      status->setToolTip("Recovery descriptor and watch script are persisted in the active wallet.");
+      status->setForeground(QColor("#2ecc71"));
+      tblContracts_->setItem(row, 4, status);
+      auto *inspect = new QPushButton("Inspect");
+      inspect->setStyleSheet(chromeButtonStyle());
+      const QString recovery = descriptor.value("recovery_descriptor").toString();
+      connect(inspect, &QPushButton::clicked, this, [this, recovery]() {
+        rpc_->callNamed("wallet.covenant.inspect", QJsonObject{{"descriptor", recovery}});
+      });
+      tblContracts_->setCellWidget(row, 5, inspect);
+    }
+    if (lblContractsSummary_) {
+      lblContractsSummary_->setText(QString("%1 descriptor-backed contract(s). Spending is offered only when a confirmed matching covenant UTXO is discovered.")
+        .arg(descriptors.size()));
+    }
+    tblContracts_->resizeColumnsToContents();
+    return;
+  }
 
   int contractCount = 0;
   double totalLocked = 0.0;
@@ -10892,11 +10926,10 @@ void MainWindow::updateContractsTable(const QJsonValue& txList) {
         confirmBox.exec();
         if (confirmBox.clickedButton() != confirmBtn) return;
 
-        QJsonObject params;
-        params["txid"] = txid;
-        params["vout"] = contractVout;
-        params["destination"] = dest.trimmed();
-        rpc_->callNamed("withdrawfromvault", params);
+        QMessageBox::warning(this, "Legacy Contract Record",
+          "This transaction-history record has no recovery descriptor. "
+          "The wallet will not guess its spending conditions. Import the "
+          "original descriptor before attempting a spend.");
       });
       tblContracts_->setCellWidget(row, 5, btnWithdraw);
 
@@ -14497,41 +14530,66 @@ void MainWindow::onSendTransaction() {
     qint64 feeUna = privateModeFeeUna(feeRate);
     rpc_->call("wallet.unshield", QJsonArray{amount, static_cast<double>(feeUna)});
   } else if (mode == "public_contract") {
-    // Public contract -- transparent send with covenant metadata (auditable vault)
+    // Public contracts use the descriptor-backed CTV profile. Never fall
+    // back to metadata-only scripts: every enabled template must be enforced
+    // by consensus and recoverable after restart.
     QString templateKey = cmbContractTemplate_ ? cmbContractTemplate_->currentData().toString() : "vault";
     QString templateLabel;
-    QString covenantScriptHex;
     QString covenantDescription;
+    QJsonArray covenantOutputs;
+    constexpr qint64 kContractSpendFeeUna = 1000;
+    qint64 fundingValueUna = static_cast<qint64>(std::llround(amount * 100000000.0));
+    quint32 covenantSequence = 0xfffffffeU;
 
     if (templateKey == "vault") {
       templateLabel = "Simple Lock";
-      covenantScriptHex = "auto";
-      covenantDescription = "Simple lock \xe2\x80\x94 funds locked to specific spending template";
-    } else if (templateKey == "conditional") {
-      templateLabel = "Lock with Recovery Key";
-      QString recoveryKey = edtRecoveryPubkey_ ? edtRecoveryPubkey_->text().trimmed() : "";
-      if (recoveryKey.length() != 64) {
-        lblSendStatus_->setText(QString::fromUtf8(
-          "\xE2\x9D\x8C Error: Recovery pubkey must be 64 hex characters."));
+      if (fundingValueUna <= kContractSpendFeeUna) {
+        lblSendStatus_->setText("\xe2\x9d\x8c Contract amount is too small after the fixed spend fee.");
         btnSend_->setEnabled(true); updateSendModeUi(); return;
       }
-      covenantScriptHex = "6320" + QString(64, '0') + "b36720" + recoveryKey.toLower() + "ac68";
-      covenantDescription = "Conditional: CTV OR recovery key " + recoveryKey.left(8) + "...";
+      covenantOutputs.append(QJsonObject{
+        {"value_una", fundingValueUna - kContractSpendFeeUna},
+        {"address", recipient}});
+      covenantDescription = "CTV-enforced exact payment; recovery descriptor stored in this wallet";
+    } else if (templateKey == "conditional") {
+      lblSendStatus_->setText(QString::fromUtf8(
+        "\xE2\x9D\x8C Recovery contracts are disabled until the multi-path descriptor profile is available."));
+      btnSend_->setEnabled(true); updateSendModeUi(); return;
     } else if (templateKey == "timelock") {
       templateLabel = "Timelock";
-      covenantScriptHex = "auto";
-      covenantDescription = "Timelock \xe2\x80\x94 using vault script (timelock wiring pending)";
+      int delay = spnTimelockDuration_ ? spnTimelockDuration_->value() : 144;
+      const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
+      if (unit == "hours") delay *= 6;
+      else if (unit == "days") delay *= 144;
+      if (delay <= 0 || delay > 65535) {
+        lblSendStatus_->setText("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks.");
+        btnSend_->setEnabled(true); updateSendModeUi(); return;
+      }
+      covenantSequence = static_cast<quint32>(delay);
+      if (fundingValueUna <= kContractSpendFeeUna) {
+        lblSendStatus_->setText("\xe2\x9d\x8c Contract amount is too small after the fixed spend fee.");
+        btnSend_->setEnabled(true); updateSendModeUi(); return;
+      }
+      covenantOutputs.append(QJsonObject{
+        {"value_una", fundingValueUna - kContractSpendFeeUna},
+        {"address", recipient}});
+      covenantDescription = QString("CTV payment spendable only after %1 blocks").arg(delay);
     } else if (templateKey == "payroll") {
       templateLabel = "Payroll";
       int recipientCount = 0;
-      double totalAmount = 0;
+      qint64 totalOutputUna = 0;
       if (tblPayrollRecipients_) {
         for (int r = 0; r < tblPayrollRecipients_->rowCount(); ++r) {
           auto *addrItem = tblPayrollRecipients_->item(r, 0);
           auto *amtItem = tblPayrollRecipients_->item(r, 1);
-          if (addrItem && amtItem && !addrItem->text().trimmed().isEmpty() && amtItem->text().toDouble() > 0) {
+          bool amountOk = false;
+          const double rowAmount = amtItem ? amtItem->text().toDouble(&amountOk) : 0.0;
+          const qint64 rowUna = static_cast<qint64>(std::llround(rowAmount * 100000000.0));
+          if (addrItem && amountOk && !addrItem->text().trimmed().isEmpty() && rowUna > 0) {
             recipientCount++;
-            totalAmount += amtItem->text().toDouble();
+            totalOutputUna += rowUna;
+            covenantOutputs.append(QJsonObject{
+              {"value_una", rowUna}, {"address", addrItem->text().trimmed()}});
           }
         }
       }
@@ -14542,32 +14600,16 @@ void MainWindow::onSendTransaction() {
         updateSendModeUi();
         return;
       }
-      covenantScriptHex = "auto";
+      fundingValueUna = totalOutputUna + kContractSpendFeeUna;
       covenantDescription = "Payroll batch payment: " + QString::number(recipientCount) +
-        " recipients, total " + QString::number(totalAmount, 'f', 8) + " DIN";
+        " recipients, exact output set committed by CTV";
     } else if (templateKey == "custom") {
-      templateLabel = "Custom Script (Advanced)";
-      covenantScriptHex = edtCustomScript_ ? edtCustomScript_->text().trimmed() : QString();
-      if (covenantScriptHex.isEmpty()) {
-        lblSendStatus_->setText(QString::fromUtf8("\xE2\x9D\x8C Error: Custom script hex is required."));
-        lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
-        btnSend_->setEnabled(true);
-        updateSendModeUi();
-        return;
-      }
-      QRegularExpression hexRe("^[0-9a-fA-F]+$");
-      if (!hexRe.match(covenantScriptHex).hasMatch()) {
-        lblSendStatus_->setText(QString::fromUtf8("\xE2\x9D\x8C Error: Custom script must be valid hex."));
-        lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
-        btnSend_->setEnabled(true);
-        updateSendModeUi();
-        return;
-      }
-      covenantDescription = "Custom Tapscript";
+      lblSendStatus_->setText(QString::fromUtf8(
+        "\xE2\x9D\x8C Arbitrary scripts are disabled in the consumer wallet."));
+      btnSend_->setEnabled(true); updateSendModeUi(); return;
     } else {
-      templateLabel = templateKey;
-      covenantScriptHex = "20" + QString(64, '0') + "b3";
-      covenantDescription = "Unknown template \xe2\x80\x94 using vault fallback";
+      lblSendStatus_->setText("\xe2\x9d\x8c Unknown contract template; refusing to create a fallback script.");
+      btnSend_->setEnabled(true); updateSendModeUi(); return;
     }
 
     // === Review dialog ===
@@ -14621,17 +14663,18 @@ void MainWindow::onSendTransaction() {
       return;
     }
 
-    // Call sendpubliccovenant RPC
+    // Atomically construct, persist, and fund the descriptor-backed CTV.
     QJsonObject params;
-    params["amount"] = amount;
-    params["destination"] = recipient;
-    params["covenant_script"] = covenantScriptHex;
+    params["outputs"] = covenantOutputs;
+    params["spend_fee_una"] = kContractSpendFeeUna;
+    params["sequence"] = static_cast<qint64>(covenantSequence);
+    params["label"] = templateLabel;
     // rc8: pass through the priority-preset fee rate when present. The RPC
     // ignores fee_rate if it's omitted, so 0.0 falls back to daemon default.
     if (feeRate > 0.0) {
       params["fee_rate"] = feeRate;
     }
-    rpc_->callNamed("sendpubliccovenant", params);
+    rpc_->callNamed("wallet.covenant.ctvfund", params);
   } else {
     // public_transfer (default) — Use named-param sendtoaddress with optional change address
     rpc_->sendToAddressNamed(recipient, amount, feeRate, changeAddress);
@@ -14665,6 +14708,9 @@ void MainWindow::onCreatePSBT() {
 }
 
 void MainWindow::onConsolidateUTXOs() {
+  if (consolidationInFlight_) {
+    return;
+  }
   // Check wallet unlock state
   if (!walletUnlocked_) {
     QMessageBox::StandardButton reply = QMessageBox::warning(this,
@@ -14720,6 +14766,7 @@ void MainWindow::onConsolidateUTXOs() {
     btnConsolidate_->setEnabled(false);
     btnConsolidate_->setText("Consolidating...");
   }
+  consolidationInFlight_ = true;
 
   // Preview first: dry-run plan drives the confirmation dialog, then broadcast.
   QJsonObject params;
@@ -15011,14 +15058,16 @@ void MainWindow::onGenerateQR() {
   }
 
   // Validate address format
-  if (!address.startsWith("din1q") && !address.startsWith("tdin1q") && !address.startsWith("rdin1q")) {
+  if (!address.startsWith("din1") && !address.startsWith("tdin1") &&
+      !address.startsWith("rdin1") && !address.startsWith("dins1") &&
+      !address.startsWith("tdins1") && !address.startsWith("rdins1")) {
     QMessageBox::warning(this, "Invalid Address",
-      "Invalid Dinero address format.\n\nAddress must start with din1q (mainnet), tdin1q (testnet), or rdin1q (regtest).");
+      "Invalid Dinero address format.\n\nEnter a Dinero transparent or shielded address.");
     return;
   }
 
-  // Generate QR code using our custom generator
-  QPixmap qrCode = dinero::QRCodeGenerator::generate(address, 300, 4);
+  // All Dinero QRs are generated with the centered brand mark and high error correction.
+  QPixmap qrCode = QPixmap::fromImage(QrUtil::makeQr(address, 300, 4, /*ecLevel=*/3));
 
   if (qrCode.isNull()) {
     QMessageBox::critical(this, "QR Generation Failed", "Failed to generate QR code.");

@@ -49,7 +49,18 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "wallet.abortrescan",
     "wallet.backup",
     "wallet.sendtoaddress",
+    "wallet.sendmany",
     "wallet.consolidate",
+    "wallet.shield",
+    "wallet.unshield",
+    "wallet.transfer",
+    "wallet.createfundedpsbt",
+    "wallet.processpsbt",
+    "wallet.signpsbt",
+    "wallet.signrawtransaction",
+    "wallet.signp2mr",
+    "wallet.signcommitment",
+    "wallet.fundchannel",
     "wallet.sendrawtransaction",
     "sendrawtransaction",
     "wallet.recordsend",
@@ -57,6 +68,16 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "submitblock",
     "invalidateblock",
     "reconsiderblock",
+    "blockchain.invalidateblock",
+    "blockchain.reconsiderblock",
+    "blockchain.submitblock",
+    "blockchain.loadtxoutset",
+    "blockchain.resetassumeutxofatal",
+    "descriptor.import",
+    "descriptor.setactive",
+    "hwallet.signpsbt",
+    "hwallet.importpsbtfromfile",
+    "ln.sendpayment",
     "pool.authorizeworker",
     "pool.submitshare",
     "pool.disconnectworker",
@@ -68,6 +89,18 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "vault.withdraw",
     "vault.processnext",
     "vault.setoperator",
+    // Contract registry and spending methods. v8.1.9 keeps spending disabled,
+    // but these remain admin-classified so future registration cannot silently
+    // expose them to read-only credentials.
+    "contract.createescrow",
+    "contract.setlocktx",
+    "contract.release",
+    "contract.refund",
+    "contract.broadcastrelease",
+    "contract.broadcastrefund",
+    "multiasset.createescrow",
+    "multiasset.releaseescrow",
+    "multiasset.refundescrow",
     // Seeder process lifecycle — fork/execv a child process. Must NOT be callable
     // by read-only RPC clients (security fix: seeder.start RCE vector).
     "seeder.start",
@@ -78,8 +111,28 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "network.setrelayservice",
 };
 
+static const std::unordered_set<std::string> DEV_ONLY_METHODS = {
+    "debug.computesighash",
+    "debug.attachwitness",
+    "blockchain.debugclearundoflag",
+};
+
+static bool MatchesCanonicalOrFlatAlias(
+    const std::unordered_set<std::string>& methods, const std::string& method) {
+    if (methods.count(method) > 0) return true;
+    for (const auto& canonical : methods) {
+        const auto dot = canonical.find('.');
+        if (dot != std::string::npos && canonical.substr(dot + 1) == method) return true;
+    }
+    return false;
+}
+
 bool HttpRpcServer::isAdminMethod(const std::string& method) {
-    return ADMIN_METHODS.count(method) > 0;
+    // RpcRegistry creates flat aliases directly in handlers_ rather than in its
+    // explicit aliases_ table. Therefore getAliasInfo() cannot canonicalize
+    // aliases such as `withdraw`, `sendtoaddress`, or `transfer`. Derive every
+    // generated flat spelling here so aliases inherit the canonical policy.
+    return MatchesCanonicalOrFlatAlias(ADMIN_METHODS, method);
 }
 
 namespace {
@@ -619,6 +672,10 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
     };
 
     try {
+        if (!dev_mode_ && MatchesCanonicalOrFlatAlias(DEV_ONLY_METHODS, method)) {
+            return dinero::rpc::RpcError(dinero::rpc::RPC_FORBIDDEN,
+                "Method '" + method + "' is available only in explicit development mode");
+        }
         // RPC access control: reject admin methods in read-only mode.
         //
         // SECURITY (readonly-bypass fix): the admin check must run on the CANONICAL

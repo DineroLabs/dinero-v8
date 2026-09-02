@@ -28,8 +28,9 @@ class RpcClient;
 // reset. The mainnet pool is empty (shielded_tree_size = 0), so holding the UI
 // closed strands nothing.
 //
-// UI ONLY. wallet.shield / wallet.unshield / wallet.transfer stay callable over
-// RPC; this stops accidental use in the GUI, not deliberate use.
+// The daemon independently rejects wallet.shield / wallet.unshield /
+// wallet.transfer on mainnet. This UI gate prevents accidental presentation;
+// neither gate substitutes for the dormant consensus activation.
 //
 // Consumed by BOTH shieldedwidget.cpp (tab controls) and mainwindow.cpp (the
 // Send tab's mode list). Set to false to restore the feature.
@@ -81,6 +82,12 @@ private:
     // network's prefix (dins on mainnet, tdins testnet, rdins regtest),
     // derived from the loaded receive address, instead of listing all three.
     void applyActiveHrp();
+    void loadTransferJournal();
+    bool saveTransferJournal(const QString& stage, const QString& address,
+                             qint64 amountUna, const QString& memo = {},
+                             const QString& txid = {}, qint64 feeUna = 0);
+    void clearTransferJournal();
+    void setTransferSubmitting(bool submitting);
 
     RpcClient* rpc_;
 
@@ -125,6 +132,8 @@ private:
     QPushButton* transferBtn_ = nullptr;
     QLabel* transferResultLabel_ = nullptr;
     bool amountUpdating_ = false;  // re-entrancy guard for DIN↔una mirroring
+    bool transferSubmitting_ = false;
+    QString transferJournalStage_;
 
     // Unshield form
     QLineEdit* unshieldAmountEdit_ = nullptr;

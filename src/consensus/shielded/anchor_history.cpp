@@ -11,6 +11,8 @@ namespace dinero::consensus::shielded {
 namespace {
 constexpr uint32_t kFileMagic   = 0xA0C30001;
 constexpr uint16_t kFileVersion = 1;
+constexpr uint32_t kPersistenceMagic = 0xA0C30002;
+constexpr uint16_t kPersistenceVersion = 2;
 
 template <typename T>
 void WriteLE(std::ostream& os, T v) {
@@ -182,6 +184,104 @@ AnchorHistory::IoResult AnchorHistory::DeserializeBytes(const std::vector<uint8_
     }
 
     roots_ = std::move(staged);
+    evicted_.clear();
+    return IoResult::Ok;
+}
+
+std::vector<uint8_t> AnchorHistory::SerializePersistenceBytes() const {
+    // v2 durable envelope:
+    // magic(u32) | version(u16) | root_count(u16) | evicted_count(u16) |
+    // reserved(u16) | roots[] | evicted[], each entry height(u32)|root(32).
+    std::vector<uint8_t> out;
+    out.reserve(12 + (roots_.size() + evicted_.size()) * 36);
+    auto put16 = [&out](uint16_t v) {
+        out.push_back(static_cast<uint8_t>(v));
+        out.push_back(static_cast<uint8_t>(v >> 8));
+    };
+    auto put32 = [&out](uint32_t v) {
+        for (unsigned i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    };
+    put32(kPersistenceMagic);
+    put16(kPersistenceVersion);
+    put16(static_cast<uint16_t>(roots_.size()));
+    put16(static_cast<uint16_t>(evicted_.size()));
+    put16(0);
+    const auto append = [&](const auto& entries) {
+        for (const auto& [height, root] : entries) {
+            put32(height);
+            out.insert(out.end(), root.begin(), root.end());
+        }
+    };
+    append(roots_);
+    append(evicted_);
+    return out;
+}
+
+AnchorHistory::IoResult AnchorHistory::DeserializePersistenceBytes(
+    const std::vector<uint8_t>& bytes) {
+    if (bytes.size() >= 4) {
+        const uint32_t magic = static_cast<uint32_t>(bytes[0]) |
+            (static_cast<uint32_t>(bytes[1]) << 8) |
+            (static_cast<uint32_t>(bytes[2]) << 16) |
+            (static_cast<uint32_t>(bytes[3]) << 24);
+        if (magic == kFileMagic) return DeserializeBytes(bytes);  // v1 migration
+        if (magic != kPersistenceMagic) {
+            Clear();
+            return IoResult::FormatError;
+        }
+    }
+    if (bytes.size() < 12) {
+        Clear();
+        return IoResult::Truncated;
+    }
+    auto get16 = [&bytes](size_t off) -> uint16_t {
+        return static_cast<uint16_t>(bytes[off]) |
+            (static_cast<uint16_t>(bytes[off + 1]) << 8);
+    };
+    auto get32 = [&bytes](size_t off) -> uint32_t {
+        return static_cast<uint32_t>(bytes[off]) |
+            (static_cast<uint32_t>(bytes[off + 1]) << 8) |
+            (static_cast<uint32_t>(bytes[off + 2]) << 16) |
+            (static_cast<uint32_t>(bytes[off + 3]) << 24);
+    };
+    if (get16(4) != kPersistenceVersion) {
+        Clear();
+        return IoResult::VersionMismatch;
+    }
+    const uint16_t root_count = get16(6);
+    const uint16_t evicted_count = get16(8);
+    if (get16(10) != 0 || root_count > kDepth || evicted_count > kEvictionRetention) {
+        Clear();
+        return IoResult::FormatError;
+    }
+    constexpr size_t kEntrySize = 36;
+    if (bytes.size() != 12 + static_cast<size_t>(root_count + evicted_count) * kEntrySize) {
+        Clear();
+        return bytes.size() < 12 + static_cast<size_t>(root_count + evicted_count) * kEntrySize
+            ? IoResult::Truncated : IoResult::FormatError;
+    }
+    decltype(roots_) roots;
+    decltype(evicted_) evicted;
+    size_t off = 12;
+    auto read_entries = [&](uint16_t count, auto& dst) -> bool {
+        for (uint16_t i = 0; i < count; ++i) {
+            const uint32_t height = get32(off);
+            off += 4;
+            Hash root{};
+            std::memcpy(root.data(), bytes.data() + off, root.size());
+            off += root.size();
+            if (!dst.empty() && dst.back().first >= height) return false;
+            dst.emplace_back(height, root);
+        }
+        return true;
+    };
+    if (!read_entries(root_count, roots) || !read_entries(evicted_count, evicted) ||
+        (!roots.empty() && !evicted.empty() && evicted.back().first >= roots.front().first)) {
+        Clear();
+        return IoResult::FormatError;
+    }
+    roots_ = std::move(roots);
+    evicted_ = std::move(evicted);
     return IoResult::Ok;
 }
 
@@ -190,14 +290,9 @@ AnchorHistory::IoResult AnchorHistory::Save(const std::string& path) const {
     {
         std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
         if (!out) return IoResult::IoError;
-        WriteLE<uint32_t>(out, kFileMagic);
-        WriteLE<uint16_t>(out, kFileVersion);
-        WriteLE<uint16_t>(out, static_cast<uint16_t>(roots_.size()));
-        for (const auto& [height, root] : roots_) {
-            WriteLE<uint32_t>(out, height);
-            out.write(reinterpret_cast<const char*>(root.data()),
-                      static_cast<std::streamsize>(root.size()));
-        }
+        const auto bytes = SerializePersistenceBytes();
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
         if (!out) return IoResult::IoError;
     }
     std::error_code ec;
@@ -210,43 +305,15 @@ AnchorHistory::IoResult AnchorHistory::Save(const std::string& path) const {
 }
 
 AnchorHistory::IoResult AnchorHistory::Load(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
     if (!in) return IoResult::IoError;
-
-    uint32_t magic = 0;
-    if (!ReadLE(in, magic) || magic != kFileMagic) return IoResult::FormatError;
-
-    uint16_t version = 0;
-    if (!ReadLE(in, version)) return IoResult::Truncated;
-    if (version != kFileVersion) return IoResult::VersionMismatch;
-
-    uint16_t count = 0;
-    if (!ReadLE(in, count)) return IoResult::Truncated;
-    if (count > kDepth) return IoResult::FormatError;
-
-    decltype(roots_) staged;
-    for (uint16_t i = 0; i < count; ++i) {
-        uint32_t height = 0;
-        if (!ReadLE(in, height)) return IoResult::Truncated;
-        Hash root{};
-        in.read(reinterpret_cast<char*>(root.data()),
-                static_cast<std::streamsize>(root.size()));
-        if (in.gcount() != static_cast<std::streamsize>(root.size())) {
-            return IoResult::Truncated;
-        }
-        // Reject same-height duplicates / non-monotonic input — the
-        // wire format is defined as in insertion order, oldest first.
-        if (!staged.empty() && staged.back().first > height) {
-            return IoResult::FormatError;
-        }
-        staged.emplace_back(height, root);
-    }
-    // Reject extra trailing bytes — strict format.
-    in.peek();
-    if (!in.eof()) return IoResult::FormatError;
-
-    roots_ = std::move(staged);
-    return IoResult::Ok;
+    const auto size = in.tellg();
+    if (size < 0) return IoResult::IoError;
+    in.seekg(0);
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    if (!bytes.empty()) in.read(reinterpret_cast<char*>(bytes.data()), size);
+    if (!in && !bytes.empty()) return IoResult::IoError;
+    return DeserializePersistenceBytes(bytes);
 }
 
 }  // namespace dinero::consensus::shielded

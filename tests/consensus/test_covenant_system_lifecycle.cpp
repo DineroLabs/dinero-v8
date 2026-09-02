@@ -415,4 +415,69 @@ TEST_F(
     }
 }
 
+TEST_F(
+    CovenantSystemLifecycleTest,
+    Mainnet99998Through100001MempoolRestartAndReorgBoundary) {
+    SelectParams(Chain::MAINNET);
+    const auto persistence_file = root_ / "mainnet-boundary-mempool.dat";
+
+    // Tip 99,998 admits transactions for candidate block 99,999, where the
+    // revealed CTV opcode is still premature policy even though consensus
+    // retains historical NOP4 behavior.
+    SetTip(db_, 99'998, 0x91);
+    {
+        Mempool pool(&db_);
+        pool.setMinFeeRate(0);
+        const auto premature =
+            pool.submitTransaction(spend_.tx, "mainnet-boundary", false);
+        EXPECT_FALSE(premature.accepted());
+        EXPECT_NE(
+            premature.message.find(
+                "premature revealed OP_CHECKTEMPLATEVERIFY"),
+            std::string::npos)
+            << premature.message;
+
+        // Tip 99,999 admits for activation block 100,000 and selects the same
+        // transaction for both activation and post-activation templates.
+        SetTip(db_, 99'999, 0x92);
+        const auto active =
+            pool.submitTransaction(spend_.tx, "mainnet-boundary", false);
+        ASSERT_TRUE(active.accepted()) << active.message;
+        ASSERT_EQ(
+            pool.selectTransactionsForBlock(1'000'000, 4'000'000, 100'000)
+                .size(),
+            1U);
+        ASSERT_EQ(
+            pool.selectTransactionsForBlock(1'000'000, 4'000'000, 100'001)
+                .size(),
+            1U);
+        ASSERT_TRUE(pool.saveToDisk(persistence_file.string()));
+
+        // A reorg back below the boundary makes the persisted transaction
+        // unselectable and triggers height-gated revalidation.
+        SetTip(db_, 99'998, 0x93);
+        pool.onBlockDisconnected(Block{}, 99'999);
+        EXPECT_TRUE(
+            pool.selectTransactionsForBlock(
+                1'000'000, 4'000'000, 99'999).empty());
+    }
+
+    {
+        Mempool restarted_preactivation(&db_);
+        restarted_preactivation.setMinFeeRate(0);
+        EXPECT_TRUE(restarted_preactivation.loadFromDisk(
+            persistence_file.string()));
+        EXPECT_EQ(restarted_preactivation.size(), 0U);
+    }
+
+    SetTip(db_, 99'999, 0x94);
+    {
+        Mempool restarted_active(&db_);
+        restarted_active.setMinFeeRate(0);
+        EXPECT_TRUE(restarted_active.loadFromDisk(
+            persistence_file.string()));
+        EXPECT_EQ(restarted_active.size(), 1U);
+    }
+}
+
 } // namespace

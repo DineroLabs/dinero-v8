@@ -21,9 +21,12 @@ cmake_minimum_required(VERSION 3.21)
 # In a monorepo release the root owns the shared version. Keep a standalone
 # fallback for legacy direct builds of qt/.
 if(NOT DEFINED DINERO_MONOREPO_VERSION)
-  set(DINERO_MONOREPO_VERSION 8.1.9)
+  set(DINERO_MONOREPO_VERSION 8.1.10)
 endif()
 project(dinero-qt VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
+
+option(DIN_ENABLE_LIQUIDITY_VAULT_UI
+  "Expose the custodial Liquidity Vault panel in dinero-qt" OFF)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Qt firewall — directory-scope include reset (Phase 2 Step 7 finding, 2026-05-12)
@@ -730,6 +733,10 @@ if(DIN_EXPERIMENTAL_FEATURES)
   target_compile_definitions(dinero-qt PRIVATE DIN_EXPERIMENTAL_FEATURES)
 endif()
 
+if(DIN_ENABLE_LIQUIDITY_VAULT_UI)
+  target_compile_definitions(dinero-qt PRIVATE DIN_ENABLE_LIQUIDITY_VAULT_UI=1)
+endif()
+
 target_compile_definitions(dinero-qt PRIVATE QT_NO_KEYWORDS)
 if(WIN32)
   target_compile_definitions(dinero-qt PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -1384,6 +1391,17 @@ if(BUILD_TESTING)
 
   target_compile_definitions(test_wallet_scoped_state PRIVATE QT_NO_KEYWORDS)
   add_test(NAME WalletScopedState COMMAND test_wallet_scoped_state)
+
+  add_executable(test_shielded_transfer_policy
+    tests/test_shielded_transfer_policy.cpp
+    src/shieldedtransferpolicy.h
+  )
+  target_link_libraries(test_shielded_transfer_policy PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  target_compile_definitions(test_shielded_transfer_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME ShieldedTransferPolicy COMMAND test_shielded_transfer_policy)
 
   add_executable(test_node_poller
     tests/test_node_poller.cpp

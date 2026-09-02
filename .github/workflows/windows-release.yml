@@ -52,6 +52,12 @@ jobs:
           # not whichever commit happens to be at the selected workflow ref.
           ref: ${{ inputs.release_tag || github.ref }}
           submodules: recursive
+          # Release-lineage validation needs the ancestry of the immutable tag.
+          fetch-depth: 0
+
+      - name: Require current persisted-state readers
+        shell: bash
+        run: ./scripts/check_release_lineage.sh HEAD
 
       # Strip the leading "v" from the tag; fall back to the dispatch input,
       # else a dev marker so an unflagged run never embeds an empty version.

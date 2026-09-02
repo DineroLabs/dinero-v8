@@ -178,10 +178,10 @@ bool RejectIfShieldedSpendLocked(Json& err) {
 // Phase 1 activation gate. Returns true and writes a JSON-RPC error
 // into `err` when the shielded pool is not yet active on this network
 // (chainparams.shielded_activation_height == UINT32_MAX). Once Phase
-// 4/5 sets a real activation height, this should additionally compare
-// the active tip height — for now the chainparams sentinel is enough,
-// since regtest sets it to 0 (active) and mainnet/testnet keep
-// UINT32_MAX (parked).
+// The sentinel disables networks with no scheduled activation. The consensus
+// validation path separately enforces the configured height; mainnet has a
+// historical activation and regtest is active from height zero, while testnet
+// remains disabled.
 bool RejectIfShieldedNotActive(Json& err) {
     if (Params().shielded_activation_height == UINT32_MAX) {
         err["error"]         = "shielded_not_active";

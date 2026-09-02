@@ -73,6 +73,13 @@ mkdir -p "$BUILD_DIR" "$RELEASE_DIR"
 cd "$PROJECT_ROOT"
 
 # =============================================================================
+# RELEASE LINEAGE GATE (PERSISTED-STATE COMPATIBILITY)
+# =============================================================================
+
+echo "🧬 Verifying release lineage and persisted-state readers"
+./scripts/check_release_lineage.sh HEAD
+
+# =============================================================================
 # WALLET RELEASE GATES (STRICT)
 # =============================================================================
 

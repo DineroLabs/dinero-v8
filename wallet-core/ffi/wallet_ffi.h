@@ -673,6 +673,15 @@ typedef struct {
     char label[128];
 } FFI_QRPayment;
 
+// ABI v2: supports the ~132-character shielded Bech32m address plus NUL.
+// Legacy structs/functions remain exported for binary compatibility.
+#define DINERO_FFI_ADDRESS_V2_CAPACITY 192
+typedef struct {
+    char address[DINERO_FFI_ADDRESS_V2_CAPACITY];
+    double amount;
+    char label[128];
+} FFI_QRPaymentV2;
+
 /**
  * Export transaction history to CSV or JSON format
  * @param format "csv" or "json"
@@ -711,6 +720,7 @@ int dinero_wallet_get_tx_confirmations(const char* txid, int32_t* confirmations_
  * @return 0 on success, non-zero on error
  */
 int dinero_wallet_parse_uri(const char* uri, FFI_QRPayment* out);
+int dinero_wallet_parse_uri_v2(const char* uri, FFI_QRPaymentV2* out);
 
 /**
  * Generate Dinero payment URI for QR code
@@ -740,6 +750,16 @@ typedef struct {
     bool is_new;        // true if this is a new transaction since last check
 } FFI_TransactionNotification;
 
+typedef struct {
+    char txid[65];
+    char address[DINERO_FFI_ADDRESS_V2_CAPACITY];
+    double amount;
+    int32_t confirmations;
+    int64_t timestamp;
+    char category[32];
+    bool is_new;
+} FFI_TransactionNotificationV2;
+
 /**
  * Check for new transactions since last call
  * @param notifications_out Output array of notifications (caller must free with dinero_wallet_free_notifications)
@@ -750,6 +770,12 @@ int dinero_wallet_check_new_transactions(
     FFI_TransactionNotification** notifications_out,
     int32_t* count_out
 );
+int dinero_wallet_check_new_transactions_v2(
+    FFI_TransactionNotificationV2** notifications_out,
+    int32_t* count_out
+);
+void dinero_wallet_free_notifications_v2(FFI_TransactionNotificationV2* ptr,
+                                         int32_t count);
 
 // ============================================================================
 // Memory Management
@@ -893,6 +919,19 @@ typedef struct {
     int64_t timestamp;
 } FFI_SwapTransaction;
 
+typedef struct {
+    char txid[65];
+    char from_address[DINERO_FFI_ADDRESS_V2_CAPACITY];
+    char to_address[DINERO_FFI_ADDRESS_V2_CAPACITY];
+    double from_amount;
+    double to_amount;
+    char from_symbol[8];
+    char to_symbol[8];
+    double fee;
+    char status[32];
+    int64_t timestamp;
+} FFI_SwapTransactionV2;
+
 /**
  * Create swap transaction
  * @param from_address Source address (Dinero address)
@@ -911,6 +950,14 @@ int dinero_wallet_create_swap_tx(
     const char* to_symbol,
     FFI_SwapTransaction* swap_out
 );
+int dinero_wallet_create_swap_tx_v2(
+    const char* from_address,
+    const char* to_address,
+    double amount,
+    const char* from_symbol,
+    const char* to_symbol,
+    FFI_SwapTransactionV2* swap_out
+);
 
 /**
  * Get swap transaction status
@@ -921,6 +968,10 @@ int dinero_wallet_create_swap_tx(
 int dinero_wallet_get_swap_status(
     const char* swap_id,
     FFI_SwapTransaction* swap_out
+);
+int dinero_wallet_get_swap_status_v2(
+    const char* swap_id,
+    FFI_SwapTransactionV2* swap_out
 );
 
 // ============================================================================

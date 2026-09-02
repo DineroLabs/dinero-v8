@@ -62,6 +62,12 @@ private Q_SLOTS:
     QVERIFY(!dinero::qt::shouldRunHashEngine(true, false, true));
   }
 
+  void consolidationIsSingleFlight() {
+    QVERIFY(dinero::qt::shouldEnableConsolidation(51, false));
+    QVERIFY(!dinero::qt::shouldEnableConsolidation(50, false));
+    QVERIFY(!dinero::qt::shouldEnableConsolidation(200, true));
+  }
+
   void recoverableTemplateErrorsExpireFromTheLiveView() {
     QCOMPARE(dinero::qt::kTransientMiningErrorMs, 15000);
     QVERIFY(dinero::qt::isTransientMiningError(
@@ -73,6 +79,10 @@ private Q_SLOTS:
     QCOMPARE(dinero::qt::miningOutputDisplayText(
                QStringLiteral("Miner started successfully")),
              QStringLiteral("Miner started successfully"));
+    const QString rejected = QStringLiteral(
+      "❌ Error: Block rejected: bad-utreexo-root: computed=abc header=def");
+    QVERIFY(dinero::qt::isTransientMiningError(rejected));
+    QCOMPARE(dinero::qt::miningOutputDisplayText(rejected), rejected);
     QVERIFY(!dinero::qt::isTransientMiningError(
       QStringLiteral("Daemon RPC is unavailable; stopping embedded miner")));
   }

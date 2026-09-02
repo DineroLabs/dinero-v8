@@ -17,6 +17,12 @@ enum class ProfileType : uint8_t {
     CTV = 1,
     CCV = 2,
     CCV_OWNER = 3,
+    VAULT = 4,
+};
+
+enum class VaultSpendPath : uint8_t {
+    DelayedUnvault = 0,
+    EmergencyRecovery = 1,
 };
 
 enum class CCVAuthorization : uint8_t {
@@ -42,6 +48,33 @@ struct TaprootArtifact {
     std::vector<uint8_t> controlBlock;
     std::vector<uint8_t> scriptPubKey;
 };
+
+/** A two-path personal vault with no key-path escape hatch. */
+struct VaultPlan {
+    uint32_t unvaultDelayBlocks{0};
+    std::array<uint8_t, 32> unvaultPublicKey{};
+    std::array<uint8_t, 32> recoveryPublicKey{};
+    std::string unvaultKeyOrigin;
+    std::string recoveryKeyOrigin;
+    TaprootArtifact delayedUnvault;
+    TaprootArtifact emergencyRecovery;
+    std::string recoveryDescriptor;
+    std::string descriptorId;
+};
+
+/**
+ * Build a personal vault whose normal key can spend only after CSV delay and
+ * whose distinct recovery key can immediately cancel/sweep. The Taproot
+ * internal key is NUMS, so no undocumented key-path bypass exists.
+ */
+VaultPlan BuildVaultPlan(
+    uint32_t unvaultDelayBlocks,
+    const std::array<uint8_t, 32>& unvaultPublicKey,
+    const std::array<uint8_t, 32>& recoveryPublicKey,
+    const std::string& unvaultKeyOrigin,
+    const std::string& recoveryKeyOrigin);
+
+VaultPlan RecoverVaultPlan(const std::string& descriptor);
 
 /**
  * A complete, deterministic CTV construction artifact.

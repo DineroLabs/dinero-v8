@@ -1,21 +1,19 @@
 # Mainnet CTV/CCV activation at block 100,000
 
-Status: **SUPERSEDED AND DEFERRED** on 2026-08-22. Block 100,000 no longer
-activates CTV or CCV. Both mainnet heights are `UINT32_MAX`; this document is
-retained as the historical decision and must not be used as an active rollout
-plan. No replacement activation height is authorized.
+Status: **RE-AUTHORIZED** on 2026-08-30 after the restarted review and
+exact-release assurance work. Block 100,000 activates CTV and CCV together.
 
 The complete upstream BIP119 transaction corpus exposed a material
-P2WSH/Taproot CLEANSTACK semantic defect after the original freeze. Project
-policy therefore requires a new review window rather than shortening the old
-one. The current deferred-parameter consensus checksum is:
+P2WSH/Taproot CLEANSTACK semantic defect after the original freeze. The defect
+was fixed and the review, mutation, resource, restart/reorg, and multi-host
+gates were rerun. The authorized consensus checksum is:
 
 ```text
-48bb4b27879a492dd8a83fd1e4826ec422f6b9ac3b1ae6797c9469783036c76e
+68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a
 ```
 
-See `../audits/COVENANT_DEFERRAL_2026-08-22.md`. Everything below this notice
-is historical and describes the superseded proposal.
+See `../audits/COVENANT_DEFERRAL_2026-08-22.md` for the historical stop and
+the readiness evidence package for the subsequent re-authorization.
 
 Decision date: 2026-08-01.
 
@@ -212,10 +210,9 @@ node must nevertheless report the same consensus checksum.
    block is stable, use a deliberately small reproducible CTV/CCV canary before
    placing material value under the new rules.
 
-The wallet/RPC profile remains regtest-only in this activation change.
-Consensus is available to transaction builders at the boundary, but the
-project wallet must not imply production construction support until its
-separate chain guard, packaging, recovery, and client rollout are approved.
+The wallet/RPC profile permits public descriptor construction on mainnet but
+fails closed on spend construction until the next candidate block is at least
+100,000. Testnet remains unsupported because the profile is dormant there.
 
 ## Abort and recovery rules
 

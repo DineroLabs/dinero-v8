@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include "wallet_ffi.h"
 
 #define TEST_ASSERT(condition, message) \
@@ -52,6 +53,16 @@ static bool test_uri_parsing() {
     const char* uri3 = "invalid:uri";
     result = dinero_wallet_parse_uri(uri3, &payment);
     TEST_ASSERT(result != 0, "Should reject invalid URI");
+
+    const std::string shielded_address = "dins1" + std::string(127, 'q');
+    const std::string shielded_uri = "dinero:" + shielded_address;
+    FFI_QRPaymentV2 payment_v2{};
+    result = dinero_wallet_parse_uri_v2(shielded_uri.c_str(), &payment_v2);
+    TEST_ASSERT(result == 0, "V2 ABI should retain a 132-character shielded address");
+    TEST_ASSERT(shielded_address == payment_v2.address,
+                "V2 ABI must not truncate shielded addresses");
+    result = dinero_wallet_parse_uri(shielded_uri.c_str(), &payment);
+    TEST_ASSERT(result != 0, "legacy ABI must fail instead of silently truncating");
     
     std::cout << "  ✓ URI parsing test passed\n";
     return true;
@@ -121,4 +132,3 @@ int main() {
         return 1;
     }
 }
-

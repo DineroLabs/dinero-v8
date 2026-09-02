@@ -469,6 +469,8 @@ struct AttachAddressedTransferResult {
     consensus::shielded::Hash change_secret_key{};
     consensus::shielded::Hash change_public_key{};
     consensus::shielded::Hash change_randomness{};
+    consensus::shielded::Hash change_d{};
+    NoteKeyScheme             change_key_scheme = NoteKeyScheme::LegacySenderKey;
     uint64_t                  change_value_una = 0;
     uint64_t                  bundle_bytes = 0;
     std::string error;
@@ -485,10 +487,10 @@ struct AttachAddressedTransferResult {
  *   - commitment = NoteCommitment(d_packed, pk_note, value, rcm)
  *     where pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0)
  *   - encrypted_note = EncryptNoteForRecipient(d, pk_d, plaintext)
- * The change output uses the legacy self-recipient convention so the
- * existing wallet-side bookkeeping (AddPendingNote) keeps working
- * without the receive-side scanner shipping. (Wave 3e migrates change
- * to the same addressed convention as the recipient.)
+ * Before spend-authority activation, change uses the legacy self-recipient
+ * convention. In the auth era `change_recipient` is required and change uses
+ * the addressed convention; its recipient-derived secret and diversifier are
+ * persisted by the wallet wrapper.
  */
 /// Optional 512-byte memo for the addressed recipient note. Zero-pad
 /// shorter memos; truncate longer ones at the call site. nullptr =
@@ -500,13 +502,14 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     uint64_t change_value_una,
     uint64_t fee_una,
     const std::array<uint8_t, 512>* recipient_memo = nullptr,
-    bool cv_bound = false);
+    bool cv_bound = false,
+    bool spend_auth = false,
+    const AddressedRecipient* change_recipient = nullptr);
 
 /**
  * Wallet-bound wrapper. Looks up `note_leaf_indices`, decodes
  * `recipient_address`, builds the bundle, marks spends pending-spent,
- * and persists the legacy-style change note (if any) via
- * `AddPendingNote`.
+ * and persists the change note (if any) via `AddPendingNote`.
  *
  * `persist=false` is the dry-run mode for size-aware fee measurement
  * (issue #273): build + attach only — no pending-spent marks, no pending
@@ -537,6 +540,7 @@ struct AddressedRecipientOutput {
     std::string error;
     consensus::shielded::PlannedOutput planned;
     consensus::shielded::Hash          commitment{};
+    consensus::shielded::Hash          randomness{};
 };
 
 /**
@@ -590,7 +594,8 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     dinero::Transaction& tx,
     const AddressedRecipient& recipient,
     const std::array<uint8_t, 512>* recipient_memo = nullptr,
-    bool cv_bound = false);
+    bool cv_bound = false,
+    bool spend_auth = false);
 
 /**
  * Wallet-bound wrapper. Decodes `recipient_address` (rejecting a non-dins /

@@ -35,6 +35,12 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     src/daemon/mempool.cpp
     src/daemon/db_repair.cpp
 
+    # Read-only contract inspection RPC dependencies. Fund-moving handlers
+    # remain unregistered, but contract.list/status must link on embedded nodes.
+    src/contracts/contract_registry.cpp
+    src/contracts/escrow_contract.cpp
+    src/contracts/daemon_mediator.cpp
+
     # Socket wallet server (always enabled)
     ${SOCKET_SERVER_SOURCES}
 

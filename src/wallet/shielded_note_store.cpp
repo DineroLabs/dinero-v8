@@ -34,7 +34,8 @@ constexpr const char* kCreateSql =
     // Which convention binds this note's committed key (NoteKeyScheme).
     // 0 = legacy Poseidon(sk,0) sender-invented key; 1 = pk_d = s.G.
     // Fixed at note CREATION, so it must travel with the row.
-    "  key_scheme      INTEGER NOT NULL DEFAULT 0"
+    "  key_scheme      INTEGER NOT NULL DEFAULT 0,"
+    "  diversifier     BLOB NOT NULL DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000'"
     ");"
     "CREATE INDEX IF NOT EXISTS idx_shielded_notes_unspent "
     "  ON shielded_notes(spent) WHERE spent = 0;"
@@ -288,6 +289,16 @@ ShieldedNoteStore::OpenResult ShieldedNoteStore::Open(const std::string& path) {
             return OpenResult::SchemaError;
         }
     }
+    if (!ColumnExists(db_, "shielded_notes", "diversifier")) {
+        const char* add_diversifier_sql =
+            "ALTER TABLE shielded_notes ADD COLUMN diversifier BLOB NOT NULL "
+            "DEFAULT X'0000000000000000000000000000000000000000000000000000000000000000';";
+        if (sqlite3_exec(db_, add_diversifier_sql, nullptr, nullptr, &err) != SQLITE_OK) {
+            if (err) sqlite3_free(err);
+            Close();
+            return OpenResult::SchemaError;
+        }
+    }
     // #324: heal wallets corrupted by the pre-fix re-append-on-rescan bug.
     DedupChainLeaves(db_);
     return OpenResult::Ok;
@@ -335,15 +346,16 @@ bool ShieldedNoteStore::AddPendingNote(uint64_t value_una,
                                        const sh::Hash& randomness,
                                        const sh::Hash& commitment,
                                        uint32_t created_height,
-                                       NoteKeyScheme key_scheme) {
+                                       NoteKeyScheme key_scheme,
+                                       const sh::Hash& diversifier) {
     if (!db_) return false;
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "INSERT INTO shielded_notes "
         "(value_una, secret_key, public_key, randomness, commitment, "
         " confirmed, spent, created_height, confirmed_height, spent_height, "
-        " key_scheme) "
-        "VALUES (?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?)";
+        " key_scheme, diversifier) "
+        "VALUES (?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?, ?)";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
 
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(value_una));
@@ -353,6 +365,7 @@ bool ShieldedNoteStore::AddPendingNote(uint64_t value_una,
     BindHash(stmt, 5, commitment);
     sqlite3_bind_int(stmt, 6, static_cast<int>(created_height));
     sqlite3_bind_int(stmt, 7, static_cast<int>(key_scheme));
+    BindHash(stmt, 8, diversifier);
 
     const bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
@@ -537,7 +550,7 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListUnspent() const {
         "SELECT id, value_una, secret_key, public_key, randomness, "
         "       commitment, leaf_index, nullifier, confirmed, spent, "
         "       created_height, confirmed_height, spent_height, "
-        "       key_scheme "
+        "       key_scheme, diversifier "
         "FROM shielded_notes WHERE spent = 0 AND confirmed = 1 ORDER BY value_una DESC";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
 
@@ -556,8 +569,8 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListUnspent() const {
         n.created_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 10));
         n.confirmed_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 11));
         n.spent_height   = static_cast<uint32_t>(sqlite3_column_int(stmt, 12));
-    n.key_scheme     = ReadKeyScheme(stmt, 13);
         n.key_scheme     = ReadKeyScheme(stmt, 13);
+        ReadHash(stmt, 14, n.d);
         out.push_back(n);
     }
     sqlite3_finalize(stmt);
@@ -572,7 +585,7 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListAll() const {
         "SELECT id, value_una, secret_key, public_key, randomness, "
         "       commitment, leaf_index, nullifier, confirmed, spent, "
         "       created_height, confirmed_height, spent_height, "
-        "       key_scheme "
+        "       key_scheme, diversifier "
         "FROM shielded_notes ORDER BY id ASC";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
 
@@ -595,8 +608,8 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListAll() const {
         n.created_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 10));
         n.confirmed_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 11));
         n.spent_height   = static_cast<uint32_t>(sqlite3_column_int(stmt, 12));
-    n.key_scheme     = ReadKeyScheme(stmt, 13);
         n.key_scheme     = ReadKeyScheme(stmt, 13);
+        ReadHash(stmt, 14, n.d);
         out.push_back(n);
     }
     sqlite3_finalize(stmt);
@@ -610,7 +623,7 @@ std::optional<ShieldedNote> ShieldedNoteStore::GetByLeafIndex(uint64_t leaf_inde
         "SELECT id, value_una, secret_key, public_key, randomness, "
         "       commitment, leaf_index, nullifier, confirmed, spent, "
         "       created_height, confirmed_height, spent_height, "
-        "       key_scheme "
+        "       key_scheme, diversifier "
         "FROM shielded_notes WHERE leaf_index = ? AND confirmed = 1";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(leaf_index));
@@ -634,6 +647,7 @@ std::optional<ShieldedNote> ShieldedNoteStore::GetByLeafIndex(uint64_t leaf_inde
     n.confirmed_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 11));
     n.spent_height   = static_cast<uint32_t>(sqlite3_column_int(stmt, 12));
     n.key_scheme     = ReadKeyScheme(stmt, 13);
+    ReadHash(stmt, 14, n.d);
     sqlite3_finalize(stmt);
     return n;
 }

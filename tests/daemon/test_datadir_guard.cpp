@@ -8,6 +8,8 @@
 #include <string>
 
 #ifndef _WIN32
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #else
@@ -109,5 +111,91 @@ TEST(DatadirGuard, BlocksSecondProcessWhileHeld) {
     ASSERT_EQ(waitpid(child, &status, 0), child);
     ASSERT_TRUE(WIFEXITED(status));
     EXPECT_EQ(WEXITSTATUS(status), 0);
+}
+
+TEST(DatadirGuard, ExecChildDoesNotInheritLock) {
+    TempDir tmp("datadir-guard-cloexec");
+    dinero::daemon::DatadirGuard guard;
+    std::string error;
+    ASSERT_TRUE(guard.Acquire(tmp.path, error)) << error;
+
+    int exec_sync[2] = {-1, -1};
+    ASSERT_EQ(pipe(exec_sync), 0);
+    ASSERT_NE(fcntl(exec_sync[1], F_SETFD, FD_CLOEXEC), -1);
+
+    const pid_t child = fork();
+    ASSERT_GE(child, 0);
+    if (child == 0) {
+        close(exec_sync[0]);
+        execl("/bin/sleep", "sleep", "2", static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    close(exec_sync[1]);
+    char byte = 0;
+    // EOF proves exec() closed the synchronization descriptor, so the child
+    // is now alive in the new image while we test whether it retained flock.
+    ASSERT_EQ(read(exec_sync[0], &byte, 1), 0);
+    close(exec_sync[0]);
+
+    guard.Release();
+    dinero::daemon::DatadirGuard replacement;
+    std::string replacement_error;
+    EXPECT_TRUE(replacement.Acquire(tmp.path, replacement_error)) << replacement_error;
+
+    kill(child, SIGTERM);
+    int status = 0;
+    ASSERT_EQ(waitpid(child, &status, 0), child);
+}
+
+TEST(DatadirGuard, EmbeddedHelperSurvivesDaemonExitWithoutBlockingRelaunch) {
+    TempDir tmp("datadir-guard-embedded-helper");
+    int helper_pid_pipe[2] = {-1, -1};
+    ASSERT_EQ(pipe(helper_pid_pipe), 0);
+
+    const pid_t daemon = fork();
+    ASSERT_GE(daemon, 0);
+    if (daemon == 0) {
+        close(helper_pid_pipe[0]);
+        dinero::daemon::DatadirGuard guard;
+        std::string error;
+        if (!guard.Acquire(tmp.path, error)) _exit(120);
+
+        int exec_sync[2] = {-1, -1};
+        if (pipe(exec_sync) != 0) _exit(121);
+        if (fcntl(exec_sync[1], F_SETFD, FD_CLOEXEC) == -1) _exit(122);
+        const pid_t helper = fork();
+        if (helper < 0) _exit(123);
+        if (helper == 0) {
+            close(helper_pid_pipe[1]);
+            close(exec_sync[0]);
+            execl("/bin/sleep", "sleep", "5", static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        close(exec_sync[1]);
+        char byte = 0;
+        if (read(exec_sync[0], &byte, 1) != 0) _exit(124);
+        close(exec_sync[0]);
+        if (write(helper_pid_pipe[1], &helper, sizeof(helper)) != sizeof(helper)) _exit(125);
+        close(helper_pid_pipe[1]);
+        _exit(0); // models dinerod exiting while its Tor/helper remains alive
+    }
+
+    close(helper_pid_pipe[1]);
+    pid_t helper = -1;
+    ASSERT_EQ(read(helper_pid_pipe[0], &helper, sizeof(helper)), sizeof(helper));
+    close(helper_pid_pipe[0]);
+    ASSERT_GT(helper, 0);
+
+    int daemon_status = 0;
+    ASSERT_EQ(waitpid(daemon, &daemon_status, 0), daemon);
+    ASSERT_TRUE(WIFEXITED(daemon_status));
+    ASSERT_EQ(WEXITSTATUS(daemon_status), 0);
+
+    dinero::daemon::DatadirGuard relaunched_daemon;
+    std::string relaunch_error;
+    EXPECT_TRUE(relaunched_daemon.Acquire(tmp.path, relaunch_error)) << relaunch_error;
+
+    kill(helper, SIGTERM);
 }
 #endif

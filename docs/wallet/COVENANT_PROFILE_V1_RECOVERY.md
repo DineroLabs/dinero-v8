@@ -1,8 +1,7 @@
 # Covenant profile v1 wallet construction and recovery
 
-Status: implemented and exercised on regtest. The mainnet consensus profile is
-scheduled for block 100,000, but these construction RPCs remain regtest-only
-until a separate production-wallet release enables them.
+Status: implemented on regtest and enabled for mainnet construction. Mainnet
+spend construction remains locked until candidate block 100,000.
 
 The wallet layer constructs and recovers the transparent CTV and CCV forms
 defined by `../consensus/DINERO_COVENANT_PROFILE_V1.md`. It does not introduce
@@ -10,9 +9,10 @@ new consensus rules and it does not authorize an activation height.
 
 ## Safety boundary
 
-- Every handler fails closed unless the selected chain is regtest.
+- Every handler fails closed unless CTV and CCV are atomically scheduled on
+  the selected chain. This permits regtest and mainnet but rejects testnet.
 - Mainnet CTV/CCV consensus activation is block 100,000; testnet remains
-  dormant. The RPC chain guard remains independent and fail-closed.
+  dormant. Spend construction derives its gate from the next candidate block.
 - Descriptors contain public construction data only. They contain no seed,
   private key, or signing capability.
 - CTV outputs use the BIP341 recommended NUMS internal key, so the wallet does

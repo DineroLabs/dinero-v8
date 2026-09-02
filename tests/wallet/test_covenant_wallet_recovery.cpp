@@ -47,6 +47,18 @@ CovenantDescriptorRecord Record(
 }
 
 CovenantDescriptorRecord Record(
+    const VaultPlan& plan,
+    const std::string& label = {}) {
+    CovenantDescriptorRecord result;
+    result.descriptor_id = plan.descriptorId;
+    result.profile = "vault";
+    result.descriptor = plan.recoveryDescriptor;
+    result.script_pubkey = plan.delayedUnvault.scriptPubKey;
+    result.label = label;
+    return result;
+}
+
+CovenantDescriptorRecord Record(
     const CCVPlan& plan,
     const std::string& label = {},
     const std::string& parent = {}) {
@@ -58,6 +70,43 @@ CovenantDescriptorRecord Record(
     result.label = label;
     result.parent_descriptor_id = parent;
     return result;
+}
+
+TEST_F(
+    CovenantWalletRecoveryTest,
+    VaultDescriptorSurvivesWalletSwitchRestartAndSameWalletRecovery) {
+    std::vector<uint8_t> hotSecret(32, 0);
+    std::vector<uint8_t> recoverySecret(32, 0);
+    hotSecret.back() = 31;
+    recoverySecret.back() = 32;
+    const VaultPlan vault = BuildVaultPlan(
+        288,
+        OwnerXOnlyPublicKey(hotSecret),
+        OwnerXOnlyPublicKey(recoverySecret),
+        "m/86'/1448'/0'/2/1",
+        "m/86'/1448'/0'/3/1");
+
+    {
+        WalletManager wallet(root_);
+        wallet.create("owner");
+        wallet.open("owner");
+        ASSERT_TRUE(wallet.storeCovenantDescriptor(Record(vault, "personal-vault")));
+        wallet.create("other");
+        wallet.open("other");
+        EXPECT_TRUE(wallet.listCovenantDescriptors().empty());
+        wallet.open("owner");
+        ASSERT_EQ(wallet.listCovenantDescriptors().size(), 1U);
+    }
+    {
+        WalletManager restarted(root_);
+        restarted.open("owner");
+        const auto record = restarted.getCovenantDescriptor(vault.descriptorId);
+        ASSERT_TRUE(record.has_value());
+        const VaultPlan recovered = RecoverVaultPlan(record->descriptor);
+        EXPECT_EQ(recovered.delayedUnvault.scriptPubKey,
+                  vault.delayedUnvault.scriptPubKey);
+        EXPECT_EQ(recovered.recoveryKeyOrigin, vault.recoveryKeyOrigin);
+    }
 }
 
 TEST_F(
@@ -144,7 +193,7 @@ TEST_F(
                 nullptr),
             SQLITE_OK);
         ASSERT_EQ(sqlite3_step(statement), SQLITE_ROW);
-        EXPECT_EQ(sqlite3_column_int(statement, 0), 26);
+        EXPECT_EQ(sqlite3_column_int(statement, 0), 27);
         sqlite3_finalize(statement);
     }
 

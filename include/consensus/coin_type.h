@@ -23,7 +23,7 @@ constexpr uint32_t DINERO_COIN_TYPE = 1448;
 // Purpose codes — one per cryptographic scheme.
 constexpr uint32_t PURPOSE_TAPROOT  = 86;   ///< BIP-86: secp256k1 Schnorr (P2TR)
 constexpr uint32_t PURPOSE_P2MR     = 88;   ///< Dinero v7: ML-DSA-65 post-quantum (P2MR)
-constexpr uint32_t PURPOSE_SHIELDED = 77;   ///< Dinero v7: ZK nullifier model (shielded pool, parked)
+constexpr uint32_t PURPOSE_SHIELDED = 77;   ///< Dinero shielded ZK nullifier model
 
 /**
  * BIP84 purpose constant (Native SegWit / P2WPKH).

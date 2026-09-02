@@ -502,7 +502,6 @@ static QString daemonLogTail(const QString& datadir, int maxLines = 20) {
     const QStringList candidates = {
         QDir(datadir).filePath("debug.log"),
         QDir(datadir).filePath("dinero.log"),
-        QDir(datadir).filePath("wallet.log"),
         QDir(datadir).filePath("p2p.log")};
     QFile log;
     QString selected;
@@ -532,6 +531,45 @@ static QString daemonLogTail(const QString& datadir, int maxLines = 20) {
         .arg(selected, lines.mid(start).join('\n'));
 }
 
+static QString datadirLockDiagnostic(const QString& datadir) {
+    const QString lockPath = QDir(datadir).filePath("dinerod.lock");
+    const QString pidPath = QDir(datadir).filePath("dinerod.pid");
+    QStringList details{QStringLiteral("Datadir lock: %1").arg(lockPath)};
+
+    QFile pidFile(pidPath);
+    if (pidFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        details << QStringLiteral("PID file: %1").arg(QString::fromUtf8(pidFile.readAll()).trimmed());
+    } else {
+        details << QStringLiteral("PID file: absent");
+    }
+
+#ifdef Q_OS_MAC
+    QProcess lsof;
+    lsof.start(QStringLiteral("/usr/sbin/lsof"),
+               {QStringLiteral("-t"), QStringLiteral("--"), lockPath});
+    if (lsof.waitForFinished(2000)) {
+        const QStringList owners = QString::fromUtf8(lsof.readAllStandardOutput())
+                                       .split('\n', Qt::SkipEmptyParts);
+        if (owners.isEmpty()) {
+            details << QStringLiteral("Current lock owner: none");
+        } else {
+            for (const QString& pid : owners) {
+                QProcess ps;
+                ps.start(QStringLiteral("/bin/ps"),
+                         {QStringLiteral("-p"), pid, QStringLiteral("-o"), QStringLiteral("comm=")});
+                ps.waitForFinished(1000);
+                const QString command = QString::fromUtf8(ps.readAllStandardOutput()).trimmed();
+                details << QStringLiteral("Current lock owner: PID %1%2")
+                               .arg(pid, command.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(command));
+            }
+        }
+    } else {
+        details << QStringLiteral("Current lock owner: unavailable (lsof timed out)");
+    }
+#endif
+    return details.join('\n');
+}
+
 static QString daemonFailureDetails(QProcess* process, const QString& datadir) {
     if (process) {
         const QString captured = QString::fromUtf8(
@@ -539,11 +577,12 @@ static QString daemonFailureDetails(QProcess* process, const QString& datadir) {
         if (!captured.isEmpty()) {
             const QStringList lines = captured.split('\n', Qt::SkipEmptyParts);
             const int start = qMax(0, static_cast<int>(lines.size()) - 40);
-            return QStringLiteral("Captured dinerod output:\n\n%1")
-                .arg(lines.mid(start).join('\n'));
+            return QStringLiteral("Captured dinerod output:\n\n%1\n\n%2")
+                .arg(lines.mid(start).join('\n'), datadirLockDiagnostic(datadir));
         }
     }
-    return daemonLogTail(datadir, 40);
+    return QStringLiteral("%1\n\n%2")
+        .arg(daemonLogTail(datadir, 40), datadirLockDiagnostic(datadir));
 }
 
 static void gracefulShutdownDaemon(QProcess* daemonProc) {

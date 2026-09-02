@@ -68,6 +68,10 @@ echo "---------------------"
 
 cd "$PROJECT_ROOT"
 
+# A release cut from a stale feature branch may compile while being unable to
+# open datadirs written by current shielded persistence formats.
+check "Release lineage includes current shielded datadir readers" "./scripts/check_release_lineage.sh HEAD"
+
 # Check build system
 check "CMake available" "command -v cmake"
 check "Build directory exists" "test -d build"

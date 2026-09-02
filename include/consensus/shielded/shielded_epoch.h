@@ -33,6 +33,16 @@ inline bool IsShieldedEpochResetHeight(uint32_t height, uint32_t reset_height) {
     return reset_height != kShieldedEpochResetDormant && height == reset_height;
 }
 
+// Multiple incompatible note-format transitions require distinct reset
+// boundaries. The first argument is the historical cv-binding reset and the
+// second is the spend-authority reset. Dormant entries are ignored.
+inline bool IsShieldedEpochResetHeight(uint32_t height,
+                                       uint32_t cv_reset_height,
+                                       uint32_t spend_auth_reset_height) {
+    return IsShieldedEpochResetHeight(height, cv_reset_height) ||
+           IsShieldedEpochResetHeight(height, spend_auth_reset_height);
+}
+
 // The reset MUST coincide with cv-binding activation: cv-binding is enforced from
 // block 1 of the new epoch, and no window may exist where balance is enforced
 // over cv while cv is unbound. Both dormant (UINT32_MAX) trivially satisfies this.
@@ -51,6 +61,13 @@ inline bool ShieldedEpochParamsConsistent(uint32_t reset_height, uint32_t cv_bin
 // contains a shielded tx and this returns false.
 inline bool ShieldedTxAllowedAtHeight(uint32_t height, uint32_t reset_height) {
     return !IsShieldedEpochResetHeight(height, reset_height);
+}
+
+inline bool ShieldedTxAllowedAtHeight(uint32_t height,
+                                      uint32_t cv_reset_height,
+                                      uint32_t spend_auth_reset_height) {
+    return !IsShieldedEpochResetHeight(height, cv_reset_height,
+                                       spend_auth_reset_height);
 }
 
 // Reset the shielded pool state to a fresh empty epoch. Deterministic: the

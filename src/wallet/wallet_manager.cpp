@@ -1508,6 +1508,35 @@ void WalletManager::migrate(sqlite3* db) {
         setUserVersion(db, 26);
         WLOG_INFO("Database migrated to schema version 26 with covenant recovery descriptors");
     }
+
+    if (version < 27) {
+        // Expand the closed profile discriminator without weakening any of
+        // the descriptor/script uniqueness guarantees introduced in v26.
+        exec(db, R"(
+            CREATE TABLE covenant_descriptors_v27 (
+                descriptor_id TEXT PRIMARY KEY,
+                profile TEXT NOT NULL CHECK(profile IN ('ctv', 'ccv', 'vault')),
+                descriptor TEXT NOT NULL UNIQUE,
+                script_pubkey BLOB NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                parent_descriptor_id TEXT,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+            )
+        )");
+        exec(db, R"(
+            INSERT INTO covenant_descriptors_v27
+            SELECT descriptor_id, profile, descriptor, script_pubkey, label,
+                   parent_descriptor_id, created_at
+            FROM covenant_descriptors
+        )");
+        exec(db, "DROP TABLE covenant_descriptors");
+        exec(db, "ALTER TABLE covenant_descriptors_v27 RENAME TO covenant_descriptors");
+        exec(db, "CREATE UNIQUE INDEX idx_covenant_descriptors_script ON covenant_descriptors(script_pubkey)");
+        exec(db, "CREATE INDEX idx_covenant_descriptors_profile ON covenant_descriptors(profile)");
+        exec(db, "CREATE INDEX idx_covenant_descriptors_parent ON covenant_descriptors(parent_descriptor_id)");
+        setUserVersion(db, 27);
+        WLOG_INFO("Database migrated to schema version 27 with personal vault descriptors");
+    }
 }
 
 std::vector<std::string> WalletManager::listWallets() const {
@@ -7132,6 +7161,20 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
         return false;
     }
 
+    // Re-importing the active recovery phrase is an idempotent wallet bind,
+    // not a wallet replacement. In particular, embedded/mobile clients bind
+    // on every process start and may explicitly skip address derivation after
+    // the first successful bind. Clearing address state here would therefore
+    // erase watch_scripts and make the otherwise valid retry unusable.
+    if (master_seed_.empty() && !wallet_locked_) {
+        auto existing_seed = loadMasterSeed("");
+        if (existing_seed.has_value()) {
+            master_seed_ = std::move(existing_seed.value());
+        }
+    }
+    const bool replaces_wallet_identity =
+        reset_address_state && !ConstantTimeEqual(seed, master_seed_);
+
     // ═══════════════════════════════════════════════════════════════════════
     // Optional address-state reset
     // ═══════════════════════════════════════════════════════════════════════
@@ -7140,7 +7183,7 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
     // the same seed.
     // ═══════════════════════════════════════════════════════════════════════
 
-    if (reset_address_state) {
+    if (replaces_wallet_identity) {
         WLOG_INFO("Clearing address tables for new HD seed import...");
 
         // Clear addresses table (resets derivation index to 0)
@@ -7328,7 +7371,7 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
         // Any operation that replaces the seed invalidates the old mnemonic
         // binding. Clear it after the seed write succeeds; encryption passes
         // reset_address_state=false because they preserve the same identity.
-        if (reset_address_state) {
+        if (replaces_wallet_identity) {
             try {
                 setSetting(kBip39RecoverySetting, "");
                 setSetting(kBip39BackupAcknowledgedSetting, "0");
@@ -8133,7 +8176,8 @@ bool WalletManager::storeCovenantDescriptor(
     const CovenantDescriptorRecord& record) {
     if (!db_ ||
         record.descriptor_id.size() != 64 ||
-        (record.profile != "ctv" && record.profile != "ccv") ||
+        (record.profile != "ctv" && record.profile != "ccv" &&
+         record.profile != "vault") ||
         record.descriptor.empty() ||
         record.script_pubkey.size() != 34 ||
         record.script_pubkey[0] != 0x51 ||
