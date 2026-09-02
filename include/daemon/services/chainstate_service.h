@@ -193,6 +193,13 @@ public:
     // tracked container changes the hash.
     uint256 ComputeShieldedReorgStateHash() const;
 
+    /// Shielded-state root: the fingerprint a future block-header commitment
+    /// would carry (`consensus::shielded::ComputeShieldedRoot`). Distinct from
+    /// ComputeShieldedReorgStateHash — it excludes the utreexo forest, which
+    /// `header.utreexo_root` already commits, and length-prefixes each
+    /// variable-length section. Committed nowhere yet; read-only.
+    uint256 ComputeShieldedRoot() const;
+
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row §1.4 names. After ActivateBestChain settles on the
     // canonical tip and the in-memory shielded state is loaded,

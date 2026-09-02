@@ -49,6 +49,7 @@
 #include "consensus/consensus_write_batch.h"  // Phase 3a: atomic persistence scaffold
 #include "consensus/proof_gossip.h"  // Phase 9.3+: Tip-proof prewarm
 #include "consensus/assume_utxo.h"  // Snapshot trust anchors (optional hard gate)
+#include "consensus/shielded/shielded_root.h"  // Shielded-state root (step 1; committed nowhere yet)
 #include "consensus/utxo_set_digest.h"  // Canonical per-UTXO record serializer (Task 2)
 #include "consensus/active_chain_ancestry.h"  // Active-chain hash lookup by height
 #include "consensus/block_index.h"   // REORG FIX: For global FindBlockIndex fallback
@@ -1579,6 +1580,14 @@ uint256 ChainstateService::ComputeShieldedReorgStateHash() const {
     uint256 out;
     std::memcpy(out.data, digest, 32);
     return out;
+}
+
+uint256 ChainstateService::ComputeShieldedRoot() const {
+    // Thin wrapper: the layout lives in consensus/shielded/shielded_root.cpp so
+    // it is a pure function testable with vectors, not something that can drift
+    // with daemon state. See that header for why it is not DSR2.
+    return consensus::shielded::ComputeShieldedRoot(
+        shielded_tree_, shielded_nullifiers_, shielded_anchor_history_);
 }
 
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
