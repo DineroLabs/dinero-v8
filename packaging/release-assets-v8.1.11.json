@@ -25,6 +25,8 @@
     "SHA256SUMS-nodecore-v8.1.11",
     "SHA256SUMS-windows-x86_64-8.1.11",
     "desktop-release-provenance-linux.txt",
+    "dinero-assumeutxo-73035-v4.dat",
+    "dinero-assumeutxo-73035-v4.manifest.json",
     "dinero-assumeutxo-99677-v4.dat",
     "dinero-assumeutxo-99677-v4.manifest.json",
     "dinero-assumeutxo-99677-v4.publisher.manifest.json",
@@ -44,7 +46,38 @@
   "companion_releases": [
     {
       "repo": "DineroLabs/dinero-sv2",
-      "tag": "pool-v0.1.3"
+      "releases": [
+        {
+          "component": "pool",
+          "tag": "pool-v0.1.3",
+          "source_commit": "e8e846246ee1b0d1e1027acda1945da8829a56af",
+          "required_assets": [
+            "dinero-sv2-pool-aarch64-unknown-linux-gnu",
+            "dinero-sv2-pool-x86_64-unknown-linux-gnu",
+            "dinero-sv2-pool.service",
+            "install-pool.sh",
+            "SHA256SUMS"
+          ]
+        },
+        {
+          "component": "cpu-gpu-miners",
+          "tag": "miner-v0.2.8",
+          "source_commit": "8f9d7f688080483fbeb2f62b234031d5d5567ec5",
+          "required_assets": [
+            "dinero-sv2-miner-aarch64-apple-darwin",
+            "dinero-sv2-miner-aarch64-unknown-linux-gnu",
+            "dinero-sv2-miner-x86_64-apple-darwin",
+            "dinero-sv2-miner-x86_64-pc-windows-msvc.exe",
+            "dinero-sv2-miner-x86_64-unknown-linux-gnu",
+            "dinero-sv2-gpu-miner-aarch64-apple-darwin",
+            "dinero-sv2-gpu-miner-x86_64-apple-darwin",
+            "dinero-sv2-gpu-miner-x86_64-pc-windows-msvc.exe",
+            "dinero-sv2-gpu-miner-x86_64-unknown-linux-gnu",
+            "macos-notarization.json",
+            "SHA256SUMS"
+          ]
+        }
+      ]
     },
     {
       "repo": "DineroLabs/DineroDPI",
