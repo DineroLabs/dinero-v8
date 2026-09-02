@@ -82,6 +82,17 @@ set_tests_properties(QtVaultConsumerParity PROPERTIES
   TIMEOUT 5
 )
 add_test(
+  NAME QtPoolPanelSafety
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/poolpanel.cpp
+    -DHEADER_FILE=${CMAKE_SOURCE_DIR}/qt/src/poolpanel.h
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_pool_panel_safety.cmake
+)
+set_tests_properties(QtPoolPanelSafety PROPERTIES
+  LABELS "qt;pool;security;regression;mandatory"
+  TIMEOUT 5
+)
+add_test(
   NAME QtContractProductionWiring
   COMMAND ${CMAKE_COMMAND}
     -DMAINWINDOW_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp

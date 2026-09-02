@@ -8,6 +8,7 @@
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -24,6 +25,11 @@
 namespace {
 
 constexpr qint64 kUnaPerDin = 100000000;
+/// Marks which request a reply belongs to. One QNetworkAccessManager serves
+/// both the status GET and the payout POST, and `finished` fires for both.
+constexpr QNetworkRequest::Attribute kKindAttr = QNetworkRequest::User;
+constexpr int kKindStatus = 0;
+constexpr int kKindPayout = 1;
 
 qint64 safeInt(const QJsonValue& v) {
     if (v.isDouble()) {
@@ -268,7 +274,8 @@ void PoolPanel::setupConnections() {
 void PoolPanel::refresh() {
     // Only poll once the operator has successfully asked at least once;
     // otherwise a user who never runs a pool gets an error every 15s.
-    if (ops_attempted_ && !ops_token_input_->text().trimmed().isEmpty()) {
+    if (ops_attempted_ && !status_in_flight_ &&
+        !ops_token_input_->text().trimmed().isEmpty()) {
         onFetchStatusClicked();
     }
 }
@@ -277,7 +284,27 @@ void PoolPanel::setStatusMessage(const QString& html) {
     lbl_status_message_->setText(html);
 }
 
+bool PoolPanel::validateOpsUrl(const QUrl& url, QLabel* error_target) const {
+    const QString scheme = url.scheme().toLower();
+    const QString host = url.host().toLower();
+    QHostAddress address;
+    const bool numeric_loopback = address.setAddress(host) && address.isLoopback();
+    const bool loopback = host == QStringLiteral("localhost") || numeric_loopback;
+    if (!url.isValid() || host.isEmpty() || !url.userInfo().isEmpty() ||
+        (scheme != QStringLiteral("https") &&
+         !(scheme == QStringLiteral("http") && loopback))) {
+        error_target->setText(
+            "<span style='color:#e06c75;'>Use HTTPS, or plain HTTP only through a "
+            "loopback/SSH-tunnel endpoint such as 127.0.0.1.</span>");
+        return false;
+    }
+    return true;
+}
+
 void PoolPanel::onFetchStatusClicked() {
+    if (status_in_flight_) {
+        return;
+    }
     const QString base = ops_url_input_->text().trimmed();
     const QString token = ops_token_input_->text().trimmed();
     if (base.isEmpty() || token.isEmpty()) {
@@ -291,23 +318,17 @@ void PoolPanel::onFetchStatusClicked() {
         earnings_group_->setVisible(true);
     }
     QUrl url(base + (base.endsWith('/') ? "status" : "/status"));
-    if (!url.isValid() || url.scheme().isEmpty()) {
-        setStatusMessage("<span style='color:#e06c75;'>That endpoint is not a valid URL.</span>");
+    if (!validateOpsUrl(url, lbl_status_message_)) {
         return;
     }
     QNetworkRequest req(url);
     req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
     req.setTransferTimeout(8000);
+    req.setAttribute(kKindAttr, kKindStatus);
+    status_in_flight_ = true;
+    btn_fetch_status_->setEnabled(false);
     net_->get(req);
 }
-
-namespace {
-/// Marks which request a reply belongs to. One QNetworkAccessManager serves
-/// both the status GET and the payout POST, and `finished` fires for both.
-constexpr QNetworkRequest::Attribute kKindAttr = QNetworkRequest::User;
-constexpr int kKindStatus = 0;
-constexpr int kKindPayout = 1;
-}  // namespace
 
 void PoolPanel::setPayoutMessage(const QString& html) {
     lbl_payout_message_->setText(html);
@@ -315,6 +336,9 @@ void PoolPanel::setPayoutMessage(const QString& html) {
 }
 
 void PoolPanel::onChangePayoutClicked() {
+    if (payout_in_flight_) {
+        return;
+    }
     const QString addr = payout_input_->text().trimmed();
     if (addr.isEmpty()) {
         setPayoutMessage("<span style='color:#d8a37b;'>Enter the address you want fees paid to.</span>");
@@ -345,13 +369,20 @@ void PoolPanel::onChangePayoutClicked() {
         return;
     }
     QUrl url(base + (base.endsWith('/') ? "payout-address" : "/payout-address"));
+    if (!validateOpsUrl(url, lbl_payout_message_)) {
+        lbl_payout_message_->setVisible(true);
+        return;
+    }
     QNetworkRequest req(url);
     req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     req.setAttribute(kKindAttr, kKindPayout);
+    req.setTransferTimeout(8000);
     QJsonObject body;
     body["address"] = addr;
     setPayoutMessage("<span style='color:#9fb3c8;'>Asking the pool to verify that address\xE2\x80\xA6</span>");
+    payout_in_flight_ = true;
+    btn_change_payout_->setEnabled(false);
     net_->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
 }
 
@@ -395,6 +426,8 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
     const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const int kind = reply->request().attribute(kKindAttr, kKindStatus).toInt();
     if (kind == kKindPayout) {
+        payout_in_flight_ = false;
+        btn_change_payout_->setEnabled(true);
         if (reply->error() != QNetworkReply::NoError && http == 0) {
             setPayoutMessage(QString("<span style='color:#e06c75;'>Could not reach the pool: %1</span>")
                                  .arg(reply->errorString().toHtmlEscaped()));
@@ -403,6 +436,8 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
         handlePayoutReply(reply, http);
         return;
     }
+    status_in_flight_ = false;
+    btn_fetch_status_->setEnabled(true);
     if (reply->error() != QNetworkReply::NoError && http == 0) {
         status_group_->setVisible(false);
         setStatusMessage(QString("<span style='color:#e06c75;'>Could not reach the pool: %1</span>"
@@ -481,12 +516,17 @@ void PoolPanel::applyStatus(const QJsonObject& s) {
 }
 
 void PoolPanel::onCheckEarningsClicked() {
+    if (earnings_in_flight_) {
+        return;
+    }
     const QString addr = fee_address_input_->text().trimmed();
     if (addr.isEmpty()) {
         lbl_earnings_->setText("<span style='color:#d8a37b;'>Enter your fee address.</span>");
         return;
     }
     lbl_earnings_->setText("checking the chain\xE2\x80\xA6");
+    earnings_in_flight_ = true;
+    btn_check_earnings_->setEnabled(false);
     rpc_->call("blockchain.getaddressbalance", QJsonArray{addr});
 }
 
@@ -494,6 +534,8 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
     if (method != "blockchain.getaddressbalance") {
         return;
     }
+    earnings_in_flight_ = false;
+    btn_check_earnings_->setEnabled(true);
     if (!result.isObject()) {
         lbl_earnings_->setText("<span style='color:#e06c75;'>Unexpected reply from the node.</span>");
         return;
@@ -522,6 +564,8 @@ void PoolPanel::onRpcError(const QString& method, int code, const QString& messa
     if (method != "blockchain.getaddressbalance") {
         return;
     }
+    earnings_in_flight_ = false;
+    btn_check_earnings_->setEnabled(true);
     lbl_earnings_->setText(QString("<span style='color:#e06c75;'>Node could not answer: %1 [%2]</span>")
                                .arg(message.toHtmlEscaped())
                                .arg(code));

@@ -36,6 +36,7 @@
 class RpcClient;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QUrl;
 
 class PoolPanel : public QWidget {
     Q_OBJECT
@@ -62,6 +63,7 @@ private:
     void handlePayoutReply(QNetworkReply* reply, int http);
     void setPayoutMessage(const QString& html);
     void setStatusMessage(const QString& html);
+    bool validateOpsUrl(const QUrl& url, QLabel* error_target) const;
     static QString formatDin(qint64 una);
 
     RpcClient* rpc_;
@@ -70,6 +72,9 @@ private:
     /// Suppresses the "no pool configured" nag until the operator has
     /// actually asked for a connection once.
     bool ops_attempted_ = false;
+    bool status_in_flight_ = false;
+    bool payout_in_flight_ = false;
+    bool earnings_in_flight_ = false;
 
     // Connection settings.
     QLineEdit* ops_url_input_;
