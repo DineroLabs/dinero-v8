@@ -18,14 +18,22 @@
 #
 # Dependencies: same as dinerod minus gRPC/GUI/Stratum
 # ─────────────────────────────────────────────────────────────────────────
-option(BUILD_NODECORE "Build NodeCore FFI library for iOS embedding" OFF)
+option(BUILD_NODECORE "Build NodeCore FFI library for mobile embedding" OFF)
 
 if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
-  message(STATUS "📱 Building NodeCore FFI (embedded full node for iOS)")
+  message(STATUS "📱 Building NodeCore FFI (embedded full node for mobile)")
 
-  add_library(nodecore_ffi STATIC
+  set(NODECORE_LIBRARY_TYPE STATIC)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set(NODECORE_LIBRARY_TYPE SHARED)
+  endif()
+
+  add_library(nodecore_ffi ${NODECORE_LIBRARY_TYPE}
     src/nodecore/nodecore_ffi.cpp
-    src/nodecore/zk_stubs_ios.cpp
+    src/nodecore/sync_profile_policy.cpp
+    $<$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>:src/nodecore/nodecore_jni_android.cpp>
+    $<$<STREQUAL:${CMAKE_SYSTEM_NAME},iOS>:src/nodecore/zk_stubs_ios.cpp>
+    $<$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>:src/nodecore/socket_wallet_stub_android.cpp>
 
     # DaemonApp lifecycle (same as dinerod, minus main.cpp)
     src/daemon/daemon_app.cpp
@@ -83,7 +91,9 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
   endif()
 
   target_compile_definitions(nodecore_ffi PRIVATE
-    IOS_BUILD
+    MOBILE_NODECORE_BUILD
+    $<$<STREQUAL:${CMAKE_SYSTEM_NAME},iOS>:IOS_BUILD>
+    $<$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>:ANDROID_NODECORE_BUILD>
     DISABLE_GRPC
     CMAKE_SOURCE_DIR="${DINERO_RUNTIME_SOURCE_DIR}"
     DINERO_CLI_VERSION=${PROJECT_VERSION}
@@ -107,6 +117,15 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
       "-framework Security"
       "-framework Foundation"
     )
+  endif()
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    set_target_properties(nodecore_ffi PROPERTIES
+      ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+      LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+      POSITION_INDEPENDENT_CODE ON
+    )
+    target_link_libraries(nodecore_ffi PUBLIC log android)
   endif()
 
   message(STATUS "📱 NodeCore FFI target configured")

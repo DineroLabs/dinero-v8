@@ -84,7 +84,7 @@ if(DINERO_USE_VENDORED_DEPS)
     )
   endif()
 
-  if(APPLE)
+  if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")
     list(APPEND _rocksdb_cmake_args -DFORCE_NO_LIBATOMIC=ON)
     if(CMAKE_OSX_SYSROOT)
       list(APPEND _rocksdb_cmake_args -DCMAKE_OSX_SYSROOT=${CMAKE_OSX_SYSROOT})
@@ -107,6 +107,16 @@ if(DINERO_USE_VENDORED_DEPS)
     list(APPEND _rocksdb_cmake_args
       "-DCMAKE_CXX_ARCHIVE_CREATE=<CMAKE_AR> qc <TARGET> <LINK_FLAGS> <OBJECTS>"
       "-DCMAKE_CXX_ARCHIVE_FINISH="
+    )
+  endif()
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    list(APPEND _rocksdb_cmake_args
+      -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+      -DANDROID_ABI=${ANDROID_ABI}
+      -DANDROID_PLATFORM=${ANDROID_PLATFORM}
+      -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+      "-DCMAKE_CXX_FLAGS=-include ${CMAKE_SOURCE_DIR}/cmake/android_rocksdb_compat.h"
     )
   endif()
 

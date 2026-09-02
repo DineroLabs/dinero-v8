@@ -307,7 +307,8 @@ din::Json HeadersFirstSync::getMetrics() const {
     
     if (sync_start_time_.time_since_epoch().count() > 0) {
         auto elapsed = std::chrono::steady_clock::now() - sync_start_time_;
-        metrics["sync_duration_seconds"] = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
+        metrics["sync_duration_seconds"] = Json::Int64(
+            std::chrono::duration_cast<std::chrono::seconds>(elapsed).count());
     }
     
     metrics["rpc_schema"] = "din.rpc.v1";
