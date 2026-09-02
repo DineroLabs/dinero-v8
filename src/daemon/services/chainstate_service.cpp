@@ -10664,6 +10664,7 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         const std::string snapshot_commitment_hex = records_digest.Finalize().GetHex();
 
         std::optional<consensus::UtreexoForest> snapshot_forest;
+        std::optional<consensus::HeaderIndexEntry> snapshot_base_header;
         if (has_v3_utreexo_section) {
             if (!consensus_utxo_set_) {
                 result.error_message = "Consensus UTXO set not available for v3 snapshot import";
@@ -10684,6 +10685,7 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                 consensus::HeaderIndexEntry hcs_copy{};
                 if (header_chain_selector_->GetHeaderCopy(header.block_hash, hcs_copy)) {
                     header_utreexo_root = hcs_copy.header.utreexo_root;
+                    snapshot_base_header = hcs_copy;
                     logger_->info("[LoadSnapshot] Using HeaderChainSelector for utreexo_root verification");
                 } else {
                     result.error_message = "Failed to load snapshot base block for utreexo_root verification";
@@ -10728,6 +10730,31 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
 
             snapshot_forest = std::move(deserialized_forest);
             logger_->info("[LoadSnapshot] v3 Utreexo root binding verified against base block header");
+
+            // A fresh snapshot bootstrap knows the base through the persistent
+            // header selector before it has downloaded that block's body.  The
+            // forest checkpoint verifier, however, reads the committed header
+            // from ChainDB.  Persist the already-PoW-validated selector copy so
+            // the first post-base disconnect/reorg can restore the snapshot
+            // checkpoint without depending on a body having arrived first.
+            // putHeader touches only the header CF; it does not promote the
+            // pre-base canonical height index before background validation.
+            if (snapshot_base_header.has_value() && chain_db_) {
+                ChainWriteToken token;
+                const auto header_status = chain_db_->putHeader(
+                    token,
+                    snapshot_base_header->hash,
+                    snapshot_base_header->header,
+                    static_cast<int>(snapshot_base_header->height),
+                    snapshot_base_header->chainwork);
+                if (header_status != Status::Ok) {
+                    result.error_message =
+                        "Failed to persist verified snapshot base header";
+                    logger_->error("[LoadSnapshot] " + result.error_message);
+                    return result;
+                }
+                logger_->info("[LoadSnapshot] Persisted verified snapshot base header");
+            }
         }
 
         // Pass 2: BulkLoad consensus UTXO set
