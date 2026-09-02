@@ -201,16 +201,16 @@ jobs:
           mkdir -p release-inputs
           gh release download "${{ inputs.release_tag }}" \
             --repo DineroLabs/dinero-v8 \
-            --pattern dinero-assumeutxo-84131-v4.dat \
-            --pattern dinero-assumeutxo-84131-v4.manifest.json \
+            --pattern dinero-assumeutxo-99677-v4.dat \
+            --pattern dinero-assumeutxo-99677-v4.manifest.json \
             --dir release-inputs
           gh release download v8.0.17 \
             --repo DineroLabs/dinero-v8 \
             --pattern utxo-snapshot-65300.dat \
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
-          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-84131-v4.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-84131-v4.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json" >> "$GITHUB_ENV"
 
@@ -432,16 +432,16 @@ jobs:
           mkdir -p release-inputs
           gh release download "${{ inputs.release_tag }}" \
             --repo DineroLabs/dinero-v8 \
-            --pattern dinero-assumeutxo-84131-v4.dat \
-            --pattern dinero-assumeutxo-84131-v4.manifest.json \
+            --pattern dinero-assumeutxo-99677-v4.dat \
+            --pattern dinero-assumeutxo-99677-v4.manifest.json \
             --dir release-inputs
           gh release download v8.0.17 \
             --repo DineroLabs/dinero-v8 \
             --pattern utxo-snapshot-65300.dat \
             --pattern utxo-snapshot-65300.dat.manifest.json \
             --dir release-inputs
-          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-84131-v4.dat" >> "$GITHUB_ENV"
-          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-84131-v4.manifest.json" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_DAT=$PWD/release-inputs/dinero-assumeutxo-99677-v4.dat" >> "$GITHUB_ENV"
+          echo "DINERO_SNAPSHOT_MANIFEST=$PWD/release-inputs/dinero-assumeutxo-99677-v4.manifest.json" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_DAT=$PWD/release-inputs/utxo-snapshot-65300.dat" >> "$GITHUB_ENV"
           echo "DINERO_SNAPSHOT_FALLBACK_MANIFEST=$PWD/release-inputs/utxo-snapshot-65300.dat.manifest.json" >> "$GITHUB_ENV"
 

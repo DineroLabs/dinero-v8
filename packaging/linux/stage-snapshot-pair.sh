@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stage the v8.1.2 desktop snapshot primary and exact prior-lifecycle fallback.
+# Stage the v8.1.11 desktop snapshot primary and exact prior-lifecycle fallback.
 #
 # Usage: stage-snapshot-pair.sh DESTINATION_DIRECTORY
 # Set DINERO_SKIP_SNAPSHOTS=1 only for an explicitly snapshot-free developer
@@ -16,7 +16,7 @@ if [[ "${DINERO_SKIP_SNAPSHOTS:-0}" == "1" ]]; then
     exit 0
 fi
 
-PRIMARY_NAME="dinero-assumeutxo-84131-v4.dat"
+PRIMARY_NAME="dinero-assumeutxo-99677-v4.dat"
 FALLBACK_NAME="utxo-snapshot-65300.dat"
 PRIMARY_DATA="${DINERO_SNAPSHOT_DAT:-${PROJECT_ROOT}/packaging/linux/snapshot/${PRIMARY_NAME}}"
 PRIMARY_MANIFEST="${DINERO_SNAPSHOT_MANIFEST:-${PRIMARY_DATA%.dat}.manifest.json}"
