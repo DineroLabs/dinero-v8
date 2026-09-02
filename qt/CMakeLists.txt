@@ -564,6 +564,9 @@ set(GUI_SOURCES
   # Track C — Liquidity Vault (production, daemon-side custodial vault).
   src/vaultpanel.cpp
   src/vaultpanel.h
+  # Pool operator dashboard (SV2 pool ops endpoint + chain-verified fee).
+  src/poolpanel.cpp
+  src/poolpanel.h
   # MyNodeDashboard — Phase 1 MVP (Tasks 1-9).
   src/dashboardtypes.h
   src/nodepoller.cpp
