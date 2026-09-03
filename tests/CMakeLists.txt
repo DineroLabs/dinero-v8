@@ -86,6 +86,7 @@ add_test(
   COMMAND ${CMAKE_COMMAND}
     -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/poolpanel.cpp
     -DHEADER_FILE=${CMAKE_SOURCE_DIR}/qt/src/poolpanel.h
+    -DMAINWINDOW_FILE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
     -P ${CMAKE_SOURCE_DIR}/qt/tests/test_pool_panel_safety.cmake
 )
 set_tests_properties(QtPoolPanelSafety PROPERTIES

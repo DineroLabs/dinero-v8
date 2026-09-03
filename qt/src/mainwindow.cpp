@@ -3466,12 +3466,16 @@ void MainWindow::setupUI() {
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
     tabs->addTab(vaultPanel_, "🏦 Liquidity Vault");
-    // Pool operator dashboard. Scrollable: the explainer + live status +
-    // contributor table together exceed a laptop viewport.
+  }
+#endif
+
+  // Pool operator dashboard. This is independent of the disabled custodial
+  // Liquidity Vault product. Scrollable because the explainer, live status,
+  // and contributor table together exceed a laptop viewport.
+  {
     poolPanel_ = new PoolPanel(rpc_, this);
     tabs->addTab(makeScrollableTab(poolPanel_), "👥 Pool");
   }
-#endif
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
   // chainparams.shielded_activation_height). On mainnet/testnet the
