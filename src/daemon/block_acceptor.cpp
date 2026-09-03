@@ -70,12 +70,6 @@ using namespace dinero;
 // Week 3: Static context pointer (initialized by ChainstateService)
 DaemonContext* BlockAcceptor::ctx_ = nullptr;
 
-// Consensus-safety serialization gate:
-// Block ingress (ConnectBlock + ActivateBestChain) must not run concurrently.
-// Parallel ingress caused interleaved ConnectTip calls (height/order assertions)
-// and transient Utreexo root mismatches under peer storm conditions.
-static std::mutex g_block_ingress_mutex;
-
 // Simple logging macros for now
 #define LOG_INFO(msg) std::cout << "[BlockAcceptor INFO] " << msg << std::endl
 #define LOG_ERROR(msg) std::cerr << "[BlockAcceptor ERROR] " << msg << std::endl
@@ -88,8 +82,20 @@ static std::mutex g_block_ingress_mutex;
 static constexpr size_t MAX_WS_MESSAGE_SIZE = 256 * 1024;
 
 BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex, const std::string& source) {
-    std::lock_guard<std::mutex> ingress_guard(g_block_ingress_mutex);
     try {
+        // Use the canonical activation lock for the complete read/validate/store/
+        // activate sequence.  A separate ingress-only mutex serialized peers
+        // with each other but did not serialize them with AssumeUTXO promotion,
+        // allowing a torn view (old ChainDB tip + promoted Utreexo forest).
+        // ActivateBestChain takes this mutex recursively later in this method.
+        auto* activation_ctx = DaemonContext::instance();
+        auto activation_chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
+            activation_ctx ? activation_ctx->chainstate : nullptr);
+        std::unique_lock<std::recursive_mutex> activation_guard;
+        if (activation_chainstate) {
+            activation_guard = activation_chainstate->AcquireBlockIngressActivationLock();
+        }
+
         LOG_INFO("🔍 BlockAcceptor: Processing " + std::to_string(blockHex.length()) + " hex chars from " + source);
         std::cout << "[ACCEPTOR-DEBUG] >>> AcceptBlockFromRPC ENTRY hex_size=" << blockHex.length() << " source=" << source << std::endl;
 

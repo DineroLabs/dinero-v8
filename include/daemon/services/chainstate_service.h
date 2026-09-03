@@ -945,6 +945,19 @@ public:
                                             std::vector<dinero::SpentCoin>& out_spent,
                                             std::string& out_error) const;
 
+    /**
+     * Serialize block ingress with activation, reorg, and AssumeUTXO promotion.
+     *
+     * BlockAcceptor performs tip classification and reads the live consensus
+     * forest before it calls ActivateBestChain.  Those reads must share the
+     * same lock as promotion; otherwise it can observe the old ChainDB tip and
+     * the newly promoted forest in one acceptance attempt.  The mutex is
+     * recursive because acceptance calls ActivateBestChain before returning.
+     */
+    std::unique_lock<std::recursive_mutex> AcquireBlockIngressActivationLock() {
+        return std::unique_lock<std::recursive_mutex>(activation_mutex_);
+    }
+
 private:
     struct ShieldedStateSnapshot {
         uint256 root;
