@@ -81,6 +81,7 @@ SRC_DIR="$WORK/source"; CON_DIR="$WORK/consumer"
 SNAP="$WORK/utxo-snapshot.dat"; HEADERS_AT_BASE="$WORK/headers_at_base"
 KEEP_ON_FAIL="${KEEP_ON_FAIL:-0}"
 FAILED=0
+LAST_NODE_PID=""
 
 info()   { printf '[INFO] %s\n' "$*"; }
 ck_pass(){ printf '[PASS] %s\n' "$*"; }
@@ -102,7 +103,7 @@ cleanup() {
     pkill -f "datadir=$WORK" 2>/dev/null || true
     sleep 1
     pkill -9 -f "datadir=$WORK" 2>/dev/null || true
-    if [[ "$KEEP_ON_FAIL" != "1" ]]; then rm -rf "$WORK"
+    if [[ "$KEEP_ON_FAIL" != "1" && "$FAILED" == "0" ]]; then rm -rf "$WORK"
     else printf '[INFO] keeping work dir for debugging: %s\n' "$WORK" >&2; fi
 }
 trap cleanup EXIT
@@ -132,6 +133,7 @@ start_node() {  # <datadir> <rpcport> <p2pport> <wsport> <logfile> [extra args..
     "$DINEROD" --regtest --datadir="$datadir" \
         --rpcport="$rpcport" --port="$p2pport" --wallet-socket-port="$wsport" \
         --listen=1 "$@" > "$logfile" 2>&1 &
+    LAST_NODE_PID=$!
     local i
     for i in $(seq 1 90); do
         if rpc "$rpcport" "$datadir" getblockcount 2>/dev/null | jq -e '.result >= 0' >/dev/null 2>&1; then
@@ -259,6 +261,7 @@ fi
 stop_node "$CON_DIR"
 start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon2.log" \
     --assumeutxo_bg_stall_timeout=3600 --assumeutxo_snapshot="$SNAP"
+CONSUMER_PID="$LAST_NODE_PID"
 wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == true' 60 "snapshot rehydrated after restart" \
     || fail "consumer did not rehydrate the snapshot lifecycle after restart"
 info "consumer restarted with --assumeutxo_snapshot (lifecycle rehydrated, active)"
@@ -289,6 +292,11 @@ MODE_EXITED=0
 RACE_START=$SECONDS
 LAST_LOG=$SECONDS
 while (( SECONDS - RACE_START < PROMO_TIMEOUT )); do
+    if ! kill -0 "$CONSUMER_PID" 2>/dev/null; then
+        wait "$CONSUMER_PID" 2>/dev/null
+        consumer_status=$?
+        fail "consumer daemon exited during promotion (pid=$CONSUMER_PID status=$consumer_status)"
+    fi
     if grep -qs "$HOLD_LINE" "$CON_DIR"/daemon*.log 2>/dev/null; then HOLD_SEEN=1; fi
     ST="$(snap_status "$CON_RPC" "$CON_DIR")"
     ACTIVE="$(jq -r '.assumeutxo_active // empty' <<<"$ST")"
