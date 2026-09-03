@@ -1,7 +1,7 @@
 // dinero_crypto_minimal.cpp
 // One-file amalgamation: RNG + sha256 + ripemd160 + hmac_sha512-SHA512 + Bech32 + libsecp256k1 facade.
 // Build (example):
-//   clang++ -std=c++17 dinero_crypto_minimal.cpp -o crypto_demo -DDINERO_CRYPTO_DEMO \
+//   clang++ -std=c++20 dinero_crypto_minimal.cpp -o crypto_demo -DDINERO_CRYPTO_DEMO \
 //           -I/path/to/secp256k1/include -L/path/to/secp256k1/lib -lsecp256k1
 //
 // In your daemon, just copy the functions under "PUBLIC API (call these)" and remove the demo main().

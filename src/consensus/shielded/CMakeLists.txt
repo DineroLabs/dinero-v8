@@ -48,7 +48,8 @@ target_link_libraries(dinero_shielded PRIVATE
 )
 
 set_target_properties(dinero_shielded PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
 )

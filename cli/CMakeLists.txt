@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.16)
 project(DineroCLI VERSION 1.0.0 LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 # CLI Core Library - single source of truth
 add_library(dinero_cli_core STATIC
     src/net/url_parser.cpp
@@ -12,7 +16,7 @@ target_include_directories(dinero_cli_core PUBLIC
     include
 )
 
-target_compile_features(dinero_cli_core PUBLIC cxx_std_17)
+target_compile_features(dinero_cli_core PUBLIC cxx_std_20)
 
 # Get git information for build metadata
 find_package(Git QUIET)

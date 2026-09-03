@@ -144,6 +144,9 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
+      - name: Verify generated C++20 compile commands
+        run: cmake --build build --target check_first_party_compile_commands_cxx20
+
       # ─── build daemon ──────────────────────────────────────────────────
       # v1 deliberately builds only the daemon target. The Qt UI, the
       # standalone miner, and the various test-only targets are skipped

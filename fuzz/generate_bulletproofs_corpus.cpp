@@ -5,7 +5,7 @@
  * The fuzzer will mutate these to find edge cases.
  *
  * Build:
- *   g++ -O2 -std=c++17 -I../include generate_bulletproofs_corpus.cpp \
+ *   g++ -O2 -std=c++20 -I../include generate_bulletproofs_corpus.cpp \
  *       -L../build -ldinero_zk -o generate_bulletproofs_corpus
  *
  * Run:

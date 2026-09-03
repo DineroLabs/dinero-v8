@@ -14,7 +14,7 @@ OUTPUT_FILE="/tmp/test_bip39_simple"
 echo "🧪 Compiling BIP39 test..."
 
 # Compile the test with proper sanitizer flags and library linking
-c++ -std=c++17 \
+c++ -std=c++20 \
     -fno-omit-frame-pointer \
     -fsanitize=address,undefined \
     -I./include \

@@ -5,7 +5,7 @@
  * No external library dependencies - all parsing logic inlined.
  *
  * Build:
- *   clang++ -std=c++17 -O2 -g -DAFL_MAIN fuzz_p2p_header_standalone.cpp -o fuzz_p2p_header
+ *   clang++ -std=c++20 -O2 -g -DAFL_MAIN fuzz_p2p_header_standalone.cpp -o fuzz_p2p_header
  *
  * Run with AFL:
  *   afl-fuzz -i corpus/p2p_header -o findings ./fuzz_p2p_header @@

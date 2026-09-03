@@ -364,7 +364,7 @@ int main() {
 EOF
 
 # Compile and run validation test
-if g++ -std=c++17 -I"$PROJECT_ROOT/include" -L"$PROJECT_ROOT/build" \
+if g++ -std=c++20 -I"$PROJECT_ROOT/include" -L"$PROJECT_ROOT/build" \
    -o /tmp/test_genesis_premine /tmp/test_genesis_premine.cpp \
    -ldinero_common 2>/dev/null; then
     

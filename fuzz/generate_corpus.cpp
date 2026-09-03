@@ -13,7 +13,7 @@
  * [witness data...]
  *
  * Build:
- *   clang++ -std=c++17 -O2 generate_corpus.cpp -o generate_corpus
+ *   clang++ -std=c++20 -O2 generate_corpus.cpp -o generate_corpus
  *
  * Run:
  *   ./generate_corpus corpus/

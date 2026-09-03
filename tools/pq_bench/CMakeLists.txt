@@ -6,7 +6,7 @@
 add_executable(ml_dsa_bench ml_dsa_bench.cpp)
 target_link_libraries(ml_dsa_bench PRIVATE pqclean_ml_dsa_65)
 set_target_properties(ml_dsa_bench PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -16,7 +16,7 @@ set_target_properties(ml_dsa_bench PROPERTIES
 add_executable(pq_roundtrip_test pq_roundtrip_test.cpp)
 target_link_libraries(pq_roundtrip_test PRIVATE dinero_pq OpenSSL::Crypto)
 set_target_properties(pq_roundtrip_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -24,7 +24,7 @@ set_target_properties(pq_roundtrip_test PROPERTIES
 add_executable(pq_derivation_test pq_derivation_test.cpp)
 target_link_libraries(pq_derivation_test PRIVATE dinero_pq OpenSSL::Crypto)
 set_target_properties(pq_derivation_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -43,7 +43,7 @@ target_include_directories(v7_pq_rpc_test PRIVATE
 )
 target_link_libraries(v7_pq_rpc_test PRIVATE dinero_pq OpenSSL::Crypto sqlite3)
 set_target_properties(v7_pq_rpc_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -63,7 +63,7 @@ target_include_directories(v7_p2mr_store_test PRIVATE
 )
 target_link_libraries(v7_p2mr_store_test PRIVATE dinero_pq OpenSSL::Crypto sqlite3)
 set_target_properties(v7_p2mr_store_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -89,7 +89,7 @@ target_include_directories(p2mr_verify_test PRIVATE
 )
 target_link_libraries(p2mr_verify_test PRIVATE dinero_pq dinero_consensus_core OpenSSL::Crypto)
 set_target_properties(p2mr_verify_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -108,7 +108,7 @@ target_include_directories(p2mr_address_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/daemon   # bech32_encoder.h has no "daemon/" path prefix inside itself
 )
 set_target_properties(p2mr_address_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
 )
 
@@ -132,7 +132,7 @@ target_include_directories(shielded_pool_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 set_target_properties(shielded_pool_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     EXCLUDE_FROM_ALL FALSE
 )
@@ -144,7 +144,7 @@ add_executable(shielded_adversarial_test
 )
 target_link_libraries(shielded_adversarial_test PRIVATE dinero_shielded dinero_tx_primitives dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
 set_target_properties(shielded_adversarial_test PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
     EXCLUDE_FROM_ALL FALSE
 )

@@ -1,5 +1,5 @@
 // BIP39 Demo - Real Seed Phrase Generation and Wallet Restoration
-// Compile: g++ -std=c++17 -I../include examples/bip39_demo.cpp -L../build -ldinero_wallet -ldinero_crypto -lsecp256k1 -framework Security
+// Compile: g++ -std=c++20 -I../include examples/bip39_demo.cpp -L../build -ldinero_wallet -ldinero_crypto -lsecp256k1 -framework Security
 
 #include "wallet/bip39.h"
 #include "wallet/hd_wallet.h"
@@ -138,4 +138,3 @@ int main() {
     
     return 0;
 }
-

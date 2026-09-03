@@ -78,7 +78,7 @@ else()
     set(IOS_VERSION_FLAG "-miphoneos-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
 endif()
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fembed-bitcode-marker ${IOS_VERSION_FLAG}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fembed-bitcode-marker -std=c++17 ${IOS_VERSION_FLAG}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fembed-bitcode-marker -std=c++20 ${IOS_VERSION_FLAG}")
 
 # Suppress warnings that are noisy for cross-compilation
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-shorten-64-to-32")

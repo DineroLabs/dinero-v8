@@ -39,7 +39,7 @@ target_link_libraries(dinero_explorer PUBLIC
 )
 
 # Compiler features
-target_compile_features(dinero_explorer PUBLIC cxx_std_17)
+target_compile_features(dinero_explorer PUBLIC cxx_std_20)
 
 # Link Explorer API to your daemon
 target_link_libraries(dinerod PRIVATE dinero_explorer)

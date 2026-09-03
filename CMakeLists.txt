@@ -132,9 +132,11 @@ if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW)  # Use upper-case <PACKAGENAME>_ROOT variables
 endif()
 
-# C++ standard (C++17 baseline for std::optional, std::string_view, std::variant)
+# Authoritative first-party C++ language contract. Subprojects that can also
+# build standalone repeat this policy in their own top-level CMakeLists.txt.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Windows compatibility — must be before any target definitions
 if(WIN32)
@@ -203,7 +205,27 @@ function(dinero_attach_win32_versioninfo target description)
   )
   target_sources(${target} PRIVATE "${_gen}")
 endfunction()
-set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Fail configuration if first-party CMake files reintroduce an older language
+# mode. Vendored projects under third_party/ own their toolchain contracts and
+# are deliberately excluded.
+add_custom_target(check_first_party_cxx20
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/check_first_party_cxx20.sh
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Checking strict C++20 policy for first-party targets"
+)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND CMAKE_EXPORT_COMPILE_COMMANDS)
+  add_custom_target(check_first_party_compile_commands_cxx20
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tools/check_compile_commands_cxx20.py
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+            --source-root ${CMAKE_SOURCE_DIR}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Checking generated first-party compile commands for strict C++20"
+  )
+endif()
 
 # Build options and mode switches live in cmake/.
 include(cmake/BuildOptions.cmake)

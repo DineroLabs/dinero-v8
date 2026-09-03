@@ -57,10 +57,11 @@ target_compile_options(dinero_common PRIVATE
     ${JSONCPP_CFLAGS_OTHER}
 )
 
-# Set C++ standard for common module
+# Set the repository-wide C++ standard for the common module.
 set_target_properties(dinero_common PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
 )
 
-message(STATUS "  ✅ dinero_common - Shared code library") 
+message(STATUS "  ✅ dinero_common - Shared code library")
