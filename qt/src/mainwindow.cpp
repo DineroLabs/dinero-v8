@@ -2411,6 +2411,41 @@ void MainWindow::setupUI() {
     layout->addLayout(topRow);
 
     // ═══════════════════════════════════════════════════════════════════
+    // LATEST BLOCKS — the Explorer's most-looked-at content, surfaced here
+    // so the Explorer no longer needs a tab of its own. The table itself is
+    // created later (in the Explorer section) and re-parented into this
+    // layout, so there is exactly ONE recent-blocks table and one code path
+    // filling it.
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      auto* blocksCard = new QGroupBox("Latest Blocks");
+      // Hug the content. Without this the card absorbs the slack created by
+      // overview->setMinimumHeight() and renders as a mostly-empty box.
+      blocksCard->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+      auto* cardLayout = new QVBoxLayout(blocksCard);
+      cardLayout->setContentsMargins(10, 6, 10, 8);
+      cardLayout->setSpacing(6);
+
+      auto* header = new QHBoxLayout();
+      auto* hint = new QLabel("Newest blocks from your node. Double-click one to open it in the explorer.");
+      // Transparent: the surrounding page styles bare QLabels with a filled
+      // background, which made this read as a disabled text input.
+      hint->setStyleSheet("QLabel { color: #9fb3c8; background: transparent; padding: 0; }");
+      hint->setWordWrap(true);
+      header->addWidget(hint, 1);
+      auto* btnOpenExplorer = new QPushButton("Open Explorer");
+      btnOpenExplorer->setStyleSheet(chromeButtonStyle());
+      btnOpenExplorer->setToolTip("Search blocks, transactions and addresses in a separate window.");
+      connect(btnOpenExplorer, &QPushButton::clicked, this, &MainWindow::showExplorerWindow);
+      header->addWidget(btnOpenExplorer, 0);
+      cardLayout->addLayout(header);
+
+      overviewBlocksLayout_ = cardLayout;
+      layout->addWidget(blocksCard);
+    }
+
+
+    // ═══════════════════════════════════════════════════════════════════
     // 📊 MONITORING DASHBOARD (bottom half of Overview)
     // ═══════════════════════════════════════════════════════════════════
     
@@ -3574,8 +3609,9 @@ void MainWindow::setupUI() {
 
     layout->addWidget(searchGroup);
 
-    auto *blocksGroup = new QGroupBox("Latest Blocks");
-    auto *blocksLayout = new QVBoxLayout(blocksGroup);
+    // NOTE: this table is added to Overview's "Latest Blocks" card, not to
+    // the Explorer. Everything that populates it keys off the
+    // tblRecentBlocks_ pointer, so that machinery is unchanged.
     tblRecentBlocks_ = new QTableWidget(0, 5);
     tblRecentBlocks_->setHorizontalHeaderLabels({"Height", "Hash", "Time", "Txns", "Nonce"});
     styleExplorerTable(tblRecentBlocks_);
@@ -3584,9 +3620,20 @@ void MainWindow::setupUI() {
     tblRecentBlocks_->setColumnWidth(2, 125);
     tblRecentBlocks_->setColumnWidth(3, 60);
     tblRecentBlocks_->setColumnWidth(4, 120);
-    tblRecentBlocks_->setMaximumHeight(270);
-    tblRecentBlocks_->setToolTip("Double-click a row to open block detail.");
-    blocksLayout->addWidget(tblRecentBlocks_);
+    // Shorter than the old Explorer-tab sizing: on Overview this is a card
+    // among many, not the focus of a dedicated page.
+    // Sized to show all six rows without a scrollbar: header + 6 * row.
+    tblRecentBlocks_->verticalHeader()->setDefaultSectionSize(26);
+    tblRecentBlocks_->setFixedHeight(26 * 6 + 30);
+    tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Let Hash absorb the width instead of Nonce, which otherwise stretches
+    // into a column of mostly empty space.
+    tblRecentBlocks_->horizontalHeader()->setStretchLastSection(false);
+    tblRecentBlocks_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    tblRecentBlocks_->setToolTip("Double-click a row to open block detail in the explorer.");
+    if (overviewBlocksLayout_) {
+      overviewBlocksLayout_->addWidget(tblRecentBlocks_);
+    }
 
     connect(tblRecentBlocks_, &QTableWidget::cellDoubleClicked, this,
         [this](int row, int) {
@@ -3601,9 +3648,10 @@ void MainWindow::setupUI() {
           resetExplorerDetailTables();
           setExplorerStatus(QString("Loading block %1...").arg(explorerShortValue(hash)));
           rpc_->call("blockchain.getblock", QJsonArray{hash, 1});
+          // The table now lives on Overview, so the detail this loads is in
+          // a window the user cannot see yet. Bring it up.
+          showExplorerWindow();
         });
-
-    layout->addWidget(blocksGroup);
 
     auto *detailGroup = new QGroupBox("Explorer Detail");
     auto *detailLayout = new QVBoxLayout(detailGroup);
@@ -3705,7 +3753,15 @@ void MainWindow::setupUI() {
     connect(btnGetBlock_, &QPushButton::clicked, this, &MainWindow::onRefreshBlocks);
     connect(edtBlockHash_, &QLineEdit::returnPressed, this, &MainWindow::onRefreshBlocks);
 
-    tabs->addTab(makeScrollableTab(explorer), "Explorer");
+    // Deliberately NOT added as a tab. The top bar is the scarcest space in
+    // this window, and the Explorer's headline content is on Overview now.
+    // Parented to `this` so it is owned and destroyed with the window.
+    explorerWindow_ = makeScrollableTab(explorer);
+    explorerWindow_->setParent(this);
+    explorerWindow_->setWindowFlags(Qt::Window);
+    explorerWindow_->setWindowTitle("Dinero Chain Explorer");
+    explorerWindow_->resize(1100, 820);
+    explorerWindow_->hide();
   }
   
   // === Mining Tab ===
@@ -8216,6 +8272,15 @@ void MainWindow::updateExplorer(const QJsonValue& block) {
   txtBlockData_->setText(doc.toJson(QJsonDocument::Indented));
 }
 
+void MainWindow::showExplorerWindow() {
+  if (!explorerWindow_) {
+    return;
+  }
+  explorerWindow_->show();
+  explorerWindow_->raise();
+  explorerWindow_->activateWindow();
+}
+
 void MainWindow::updateExplorerRecentBlocks(int height) {
   if (!tblRecentBlocks_ || height < 0) {
     return;
@@ -8229,7 +8294,8 @@ void MainWindow::updateExplorerRecentBlocks(int height) {
   explorerRecentBlockRows_.clear();
   pendingExplorerRecentHeight_ = -1;
 
-  const int rowCount = std::min(10, height + 1);
+  // Six, not ten: this renders in Overview's compact "Latest Blocks" card.
+  const int rowCount = std::min(6, height + 1);
   tblRecentBlocks_->setRowCount(rowCount);
   for (int row = 0; row < rowCount; ++row) {
     const int blockHeight = height - row;

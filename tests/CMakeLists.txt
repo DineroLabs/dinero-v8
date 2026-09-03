@@ -118,6 +118,18 @@ set_tests_properties(QtMempoolOverview PROPERTIES
   LABELS "qt;mempool;regression"
   TIMEOUT 5
 )
+
+add_test(
+  NAME QtOverviewLatestBlocks
+  COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_FILE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -DHEADER_FILE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.h
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_overview_latest_blocks.cmake
+)
+set_tests_properties(QtOverviewLatestBlocks PROPERTIES
+  LABELS "qt;overview;explorer;regression"
+  TIMEOUT 5
+)
 add_executable(test_ripemd160_src_vectors
   tests/crypto/test_ripemd160_vectors.cpp
   src/crypto/ripemd160.cpp
