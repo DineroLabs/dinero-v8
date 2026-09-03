@@ -1,5 +1,6 @@
 file(READ "${SOURCE_FILE}" POOL_SOURCE)
 file(READ "${HEADER_FILE}" POOL_HEADER)
+file(READ "${MAINWINDOW_FILE}" MAINWINDOW_SOURCE)
 
 foreach(REQUIRED_TEXT
     "address.isLoopback()"
@@ -15,6 +16,28 @@ foreach(REQUIRED_TEXT
     message(FATAL_ERROR "Pool panel safety regression: missing '${REQUIRED_TEXT}'")
   endif()
 endforeach()
+
+string(FIND "${MAINWINDOW_SOURCE}" "poolPanel_ = new PoolPanel(rpc_, this);" POOL_TAB_AT)
+if(POOL_TAB_AT EQUAL -1)
+  message(FATAL_ERROR "Pool panel visibility regression: Pool tab is not created")
+endif()
+
+string(FIND "${MAINWINDOW_SOURCE}"
+  "#if defined(DIN_ENABLE_LIQUIDITY_VAULT_UI)" VAULT_GATE_START)
+if(VAULT_GATE_START EQUAL -1)
+  message(FATAL_ERROR "Pool panel visibility regression: Liquidity Vault gate is missing")
+endif()
+string(SUBSTRING "${MAINWINDOW_SOURCE}" ${VAULT_GATE_START} -1 VAULT_GATE_TAIL)
+string(FIND "${VAULT_GATE_TAIL}" "#endif" VAULT_GATE_END)
+if(VAULT_GATE_END EQUAL -1)
+  message(FATAL_ERROR "Pool panel visibility regression: Liquidity Vault gate is unterminated")
+endif()
+string(SUBSTRING "${VAULT_GATE_TAIL}" 0 ${VAULT_GATE_END} VAULT_GATED_SOURCE)
+string(FIND "${VAULT_GATED_SOURCE}" "poolPanel_ = new PoolPanel" POOL_IN_VAULT_GATE)
+if(NOT POOL_IN_VAULT_GATE EQUAL -1)
+  message(FATAL_ERROR
+    "Pool panel visibility regression: Pool tab is coupled to the disabled Liquidity Vault gate")
+endif()
 
 message(STATUS "Qt Pool panel transport and single-flight safety checks passed")
 
