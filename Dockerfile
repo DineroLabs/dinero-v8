@@ -23,18 +23,18 @@
 ARG DINERO_VERSION=8.1.9
 # The snapshot release is explicit rather than inferred from the daemon version.
 # Bump it only when that release actually publishes the named snapshot artifacts.
-# v8.1.3 retains backward-compatible snapshot upgrades: fresh volumes choose 84131,
+# v8.1.11 retains backward-compatible snapshot upgrades: fresh volumes choose 99677,
 # while a persisted lifecycle created by v8.1.1 can select the exact 73035 artifact.
 # Never remove a fallback until no supported image can have an active lifecycle at
 # that base. A newer primary alone would recreate the interrupted-first-sync brick.
 ARG SNAPSHOT_RELEASE=v8.1.9
-ARG SNAPSHOT_NAME=dinero-assumeutxo-84131-v4
+ARG SNAPSHOT_NAME=dinero-assumeutxo-99677-v4
 ARG SNAPSHOT_FALLBACK_NAME=dinero-assumeutxo-73035-v4
 # Filename the snapshot is installed under inside the image. It MUST equal the
 # manifest's "snapshot_file" field: the daemon's manifest trust gate compares the
 # on-disk filename to that field and refuses the snapshot when they differ
 # (chainstate_service.cpp ValidateSnapshotManifestPreflight). Asserted at build time.
-ARG SNAPSHOT_INSTALL_NAME=dinero-assumeutxo-84131-v4.dat
+ARG SNAPSHOT_INSTALL_NAME=dinero-assumeutxo-99677-v4.dat
 ARG SNAPSHOT_FALLBACK_INSTALL_NAME=dinero-assumeutxo-73035-v4.dat
 
 # ---------- stage 1: fetch + verify ----------
