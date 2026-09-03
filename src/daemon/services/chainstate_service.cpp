@@ -11029,6 +11029,22 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                                  std::to_string(header.block_height));
             }
             logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored (frontier + anchor history + nullifiers)");
+
+            // Record the shielded root AFTER restore — recording it earlier
+            // captures pre-restore state, which is what an initial version of
+            // this instrumentation did and what the first regtest run caught.
+            // This is the value the genesis->base replay is compared against.
+            if (utxo_index_) {
+                if (const auto shielded_root = ComputeShieldedRoot()) {
+                    utxo_index_->SetMetadata(assumeutxo::kExpectedShieldedRootKey,
+                                             shielded_root->GetHex());
+                    logger_->info("[LoadSnapshot] shielded root recorded for replay comparison: " +
+                                  shielded_root->GetHex());
+                } else {
+                    logger_->warning("[LoadSnapshot] shielded root unavailable (nullifier set "
+                                     "unreadable) — replay comparison will be skipped");
+                }
+            }
         }
 
         logger_->warning("⚠️  AssumeUTXO mode ACTIVE - UTXO set loaded from snapshot at height " +
@@ -16191,6 +16207,53 @@ void ChainstateService::BackgroundValidationWorker() {
         bool root_match = true;
         if (auto expected_root = utxo_index_->GetMetadata(assumeutxo::kExpectedUtreexoRootKey)) {
             root_match = (replay->UtreexoRootHex() == expected_root.value());
+        }
+
+        // ── Shielded half — ADVISORY (state_commitment_v1 evidence) ─────────
+        //
+        // Everything compared above covers only the transparent set; the
+        // engine's own header says so ("the records digest commits only the
+        // transparent set"). So a snapshot whose shielded section was forged is
+        // accepted at load, never contradicted here, and the node is then
+        // promoted to FullyValidated while running shielded state nothing ever
+        // verified.
+        //
+        // The replay already re-derives shielded state from genesis (it must,
+        // or a stateful BlockValidator would reject every shielded tx in honest
+        // history), so the comparison costs one hash of state we already hold.
+        //
+        // DELIBERATELY NOT FATAL YET. The replay is a third construction path —
+        // not live ConnectTip, not --reindex — and nothing has ever compared its
+        // shielded output. Divergences were found in both other paths, so
+        // enforcing before real snapshots have proven agreement risks failing
+        // HONEST nodes into a full resync. Log first; enforce once the evidence
+        // is in.
+        if (auto expected_shielded =
+                utxo_index_->GetMetadata(assumeutxo::kExpectedShieldedRootKey)) {
+            const auto* tree = replay->ShieldedTree();
+            const auto* nulls = replay->ShieldedNullifiers();
+            const auto* anchors = replay->ShieldedAnchors();
+            if (tree != nullptr && nulls != nullptr && anchors != nullptr) {
+                const auto replayed =
+                    consensus::shielded::ComputeShieldedRoot(*tree, *nulls, *anchors);
+                if (!replayed) {
+                    logger_->warning("[BackgroundValidation] shielded root: replay nullifier "
+                                     "set unreadable — comparison skipped");
+                } else if (replayed->GetHex() == expected_shielded.value()) {
+                    logger_->info("[BackgroundValidation] shielded root MATCHES the snapshot: " +
+                                  replayed->GetHex());
+                } else {
+                    logger_->error(
+                        "[BackgroundValidation] SHIELDED ROOT MISMATCH (advisory, not fatal) "
+                        "at base height " + std::to_string(target_height) +
+                        " — snapshot=" + expected_shielded.value() +
+                        " replayed=" + replayed->GetHex() +
+                        ". Either the snapshot's shielded section does not match genesis "
+                        "history, or the replay reconstructs shielded state differently from "
+                        "the live path. Both need explaining before state_commitment_v1 "
+                        "activates.");
+                }
+            }
         }
 
         const bool lifecycle_promoted_to_fully_validated =
