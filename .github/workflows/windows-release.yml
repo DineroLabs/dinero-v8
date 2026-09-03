@@ -108,6 +108,13 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Install CUDA Toolkit 12.2 for the embedded solo miner
+        uses: Jimver/cuda-toolkit@f1b76035ffe6d08118acdd33faf5ce002cf7c023 # v0.2.25
+        with:
+          cuda: '12.2.0'
+          method: local
+          sub-packages: '["nvcc", "nvrtc"]'
+
       - name: Install Qt 6.9.1 (MSVC 2022 x86_64)
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
         with:
@@ -191,12 +198,17 @@ jobs:
             -DDINERO_BUILD_MINER=ON `
             -DDINERO_BUILD_SEEDER=ON `
             -DENABLE_GPU_MINING=ON `
+            -DMINER_ENABLE_CUDA=ON `
             -DENABLE_GRPC=OFF `
             -DDINERO_ENABLE_QUIC=ON `
             -DDINERO_RELEASE_TAG='${{ steps.ver.outputs.version }}' `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
           if ($LASTEXITCODE -ne 0) { throw 'desktop configure failed' }
+          if (-not (Select-String -Path 'build-msvc-native\CMakeCache.txt' `
+              -Pattern '^MINER_ENABLE_CUDA:BOOL=ON$' -Quiet)) {
+            throw 'release configure silently disabled the embedded CUDA backend'
+          }
           cmake --build build-msvc-native --config Release --parallel 2 --target `
             dinerod dinero-cli dinero-qt dinero-miner dinero-stratum-worker `
             dinero-wallet-cli dinero-gpu-miner dinero-solo-miner-cli dinero-seeder
@@ -208,6 +220,11 @@ jobs:
             if (-not (Test-Path $_ -PathType Leaf)) {
               throw "expected desktop build output is missing: $_"
             }
+          }
+          $qtImports = (& dumpbin /dependents 'build-msvc-native\bin\Release\dinero-qt.exe') -join "`n"
+          if ($qtImports -notmatch '(?im)^\s+nvcuda\.dll\s*$' -or
+              $qtImports -notmatch '(?im)^\s+nvrtc64_.*\.dll\s*$') {
+            throw 'dinero-qt.exe does not import the CUDA driver and NVRTC runtime'
           }
 
       - name: Build Windows server release and installer
@@ -227,6 +244,7 @@ jobs:
             -DaemonBuildDir 'build-msvc-native\Release' `
             -QtBuildDir 'build-msvc-native\bin\Release' `
             -QtBin "$env:QT_ROOT_DIR\bin" `
+            -CudaBin "$env:CUDA_PATH\bin" `
             -Sv2BuildDir 'dinero-sv2\target\release' `
             -SnapshotPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.dat' `
             -SnapshotManifestPath 'packaging\windows\dist\dinero-assumeutxo-99677-v4.manifest.json'

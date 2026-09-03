@@ -45,6 +45,7 @@ param(
     [string]$QtBuildDir    = '',
     [string]$QtRepoDir     = '',
     [string]$QtBin         = 'C:\Qt\6.9.1\msvc2022_64\bin',
+    [string]$CudaBin       = "$env:CUDA_PATH\bin",
     [string]$VcpkgBin      = "$env:USERPROFILE\vcpkg\installed\x64-windows\bin",
     [string]$Makensis      = 'C:\Program Files (x86)\NSIS\makensis.exe',
     # DineroLabs/dinero-sv2 release-build output. Defaults to the conventional
@@ -274,6 +275,22 @@ foreach ($entry in $optionalBinaries) {
     }
 }
 Copy-Item (Join-Path $ProjectRoot 'LICENSE') (Join-Path $Stage 'LICENSE')
+
+# The embedded CUDA miner compiles its kernel with NVRTC at runtime. The
+# NVIDIA display driver supplies nvcuda.dll, but ordinary driver-only systems
+# do not include NVRTC, so ship the redistributable compiler runtime beside
+# dinero-qt.exe.
+$cudaRuntimeDlls = @(
+    Get-ChildItem -LiteralPath $CudaBin -Filter 'nvrtc64_*.dll' -File
+    Get-ChildItem -LiteralPath $CudaBin -Filter 'nvrtc-builtins64_*.dll' -File
+)
+if ($cudaRuntimeDlls.Count -lt 2) {
+    throw "CUDA NVRTC runtime DLLs were not found under $CudaBin"
+}
+foreach ($dll in $cudaRuntimeDlls) {
+    Copy-Item $dll.FullName (Join-Path $Stage $dll.Name)
+    Write-Host "  $($dll.Name) (embedded CUDA runtime)"
+}
 
 # Bundle the dinero-qt window icon. mainwindow.cpp calls
 # resolveBundledAssetPath("Dinero-Coin.png") which checks first for an
