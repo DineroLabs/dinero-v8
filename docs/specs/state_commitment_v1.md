@@ -109,12 +109,59 @@ or a nullifier omission that unlocks a specific note — was deliberately not
 attempted. The gap it establishes is integrity, and integrity is the
 precondition for the theft scenarios described above.
 
-### An open question, not a finding
+### Background validation does not catch it either — settled
 
-Background validation replays forward **from** the snapshot base. A forged
-*base* state may therefore never be re-derived, and so may never be caught at
-all — as opposed to being caught late. This has not been verified and should be
-before any activation decision.
+This was an open question; it is now answered from the code.
+
+Background validation does **not** merely validate forward from the base. It
+performs a real genesis→base replay into an isolated in-memory consensus set,
+and that replay **includes shielded state** — the engine owns a genesis-fresh
+`CommitmentTree`, `NullifierSet` and `AnchorHistory`, replayed alongside the
+transparent set, because without them a stateful `BlockValidator` would
+hard-reject every shielded transaction in honest history.
+
+So the honest shielded state *is* re-derived. It is simply never compared. At
+completion the worker checks exactly three things, all transparent:
+
+| check | source | covers |
+|---|---|---|
+| `VerifyUTXOSetMatch()` | snapshot metadata | UTXO count |
+| `replay->RecordsDigestHex()` | `kExpectedCommitmentKey` | transparent records |
+| `replay->UtreexoRootHex()` | `kExpectedUtreexoRootKey` | forest |
+
+The engine's own header states the scope limitation:
+
+> *"The records digest commits only the transparent set (shielded commitment
+> scope: see plan Task 10 accounting)."*
+
+**Consequence.** A snapshot with a forged shielded section is accepted at load
+(demonstrated above), is never contradicted by background validation, and the
+node is then **promoted to FullyValidated** — formally retiring the trust
+assumption — while running on shielded state nothing ever verified.
+
+### This one is fixable today, without the fork
+
+The comparison is a small local addition, not a new subsystem, and it does
+**not** depend on the header commitment. The replay engine already exposes
+
+```cpp
+const CommitmentTree* ShieldedTree()      const;
+const NullifierSet*   ShieldedNullifiers() const;
+const AnchorHistory*  ShieldedAnchors()    const;
+```
+
+which is exactly the trio `ComputeShieldedRoot()` takes. Persisting the
+snapshot's shielded root at load beside `kExpectedUtreexoRootKey`, then
+comparing it against the replay's at completion, closes the gap for the
+snapshot-forgery case — because the replayed value is derived from genesis
+history rather than from the file.
+
+It is weaker than the header commitment in two ways, and does not replace it:
+detection arrives only at replay completion (hours on mainnet) rather than at
+load, and it protects a node that performs the replay rather than establishing
+a value the whole network agrees on. But it upgrades the current outcome from
+*"promotes itself to FullyValidated on forged state"* to *"fails validation"*,
+and it is symmetric with the transparent check that already exists.
 
 ## The value
 
@@ -267,6 +314,7 @@ empty live state `a950379977bd7cf7…`, mainnet @ 99,677
 | canonical ordering + fail-closed enumeration | `test_nullifier_accumulator.cpp`, 10 tests | PASS |
 | forged shielded section is accepted at a non-anchored height | live 100,793 artifact, one bit + recomputed checksum | **ACCEPTED — the gap** |
 | same forgery at an anchored height | 99,677 artifact | rejected, by the anchor's file hash only |
+| does background validation catch a forged shielded base? | code review of `BackgroundValidationWorker` | **NO — compares transparent set only** |
 
 ## Still owed before any activation
 
