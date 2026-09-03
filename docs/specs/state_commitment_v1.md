@@ -43,6 +43,79 @@ the anchor history to validate incoming spends and the nullifier set to reject
 double-spends, and neither is derivable without replaying the blocks the
 snapshot exists to skip.
 
+## Demonstrated: a forged shielded section is accepted today
+
+This is not hypothetical. Reproduced end to end against the live production
+artifact on 2026-09-02.
+
+**Setup.** Downloaded the fleet's live signed snapshot at **height 100,793**
+(39,041,138 bytes). That height has **no compiled trust anchor** — which is the
+point: it is exactly the artifact an anchor-free model accepts, and exactly what
+the publisher serves today.
+
+Flipped **one bit** inside the v4 `SHLD` section's anchor-history bytes, then
+recomputed the file's trailing checksum. That checksum is simply
+`sha256(file[:-32])` stored in the last 32 bytes, so whoever produces the file
+controls it — it authenticates transport, not authorship.
+
+The UTXO/forest section was left untouched, so the header `utreexo_root`
+binding still matches.
+
+**Result — both nodes loaded, at the same height:**
+
+```
+good     shielded_root = 4e38370945bd61291354ef588947af22e1f3a1b41ee39a488937010ce9873596
+forged   shielded_root = 40f4e7d7fa85751bb9b90453ddda0bec061d7737afb0dffa283ae77623fe3795
+
+[LoadSnapshot] Checksum verified successfully
+[LoadSnapshot] v4 shielded section: frontier=1032B anchors=3608B nullifiers=14B
+[snapshot] loaded — node usable at height 100793; background validation running
+```
+
+The forged snapshot passed every check that exists:
+
+| check | outcome on the forged file |
+|---|---|
+| in-file trailing checksum | passes — recomputed by the forger |
+| header `utreexo_root` binding | passes — the UTXO section was not touched |
+| compiled trust anchor | **not consulted — height 100,793 is not registered** |
+| shielded state | **nothing checks it** |
+
+The shielded root *detects* the tamper — the two values differ. Nothing
+*consults* the shielded root, because no header commits it. That single sentence
+is the whole case for this document.
+
+### The anchor is what catches this today, and it is what we are removing
+
+The same bit-flip applied to the **99,677** snapshot *was* rejected:
+
+```
+[LoadSnapshot] Snapshot content does not match built-in trust anchor at height 99677
+  (expected d4b8d88c..., got f286c7ee...)
+[snapshot] rejected — base present but load failed; fallback to full sync
+```
+
+Note what did the work: the anchor's pinned **file hash**, not any
+shielded-aware check. That protection exists only at registered heights, needs a
+release per snapshot, and is precisely what the ~3,800-blocks-per-day drift
+forces operators to abandon. **Moving to the anchor-free model removes the only
+mechanism currently catching this** — unless the header commitment replaces it.
+
+### Scope of this demonstration
+
+It shows **undetected acceptance of altered shielded state**. It is *not* a
+working theft: crafting a value-stealing forgery — a valid-but-malicious anchor,
+or a nullifier omission that unlocks a specific note — was deliberately not
+attempted. The gap it establishes is integrity, and integrity is the
+precondition for the theft scenarios described above.
+
+### An open question, not a finding
+
+Background validation replays forward **from** the snapshot base. A forged
+*base* state may therefore never be re-derived, and so may never be caught at
+all — as opposed to being caught late. This has not been verified and should be
+before any activation decision.
+
 ## The value
 
 Tag `SHR1`, **version 2**. SHA-256 over:
@@ -192,6 +265,8 @@ empty live state `a950379977bd7cf7…`, mainnet @ 99,677
 | connect/disconnect/reorg invertibility | `test_shielded_reorg_invertibility.sh` | PASS |
 | cross-node agreement + deep reorg through a shielded spend | `test_shielded_root_multinode_deep_reorg.sh` | PASS |
 | canonical ordering + fail-closed enumeration | `test_nullifier_accumulator.cpp`, 10 tests | PASS |
+| forged shielded section is accepted at a non-anchored height | live 100,793 artifact, one bit + recomputed checksum | **ACCEPTED — the gap** |
+| same forgery at an anchored height | 99,677 artifact | rejected, by the anchor's file hash only |
 
 ## Still owed before any activation
 
