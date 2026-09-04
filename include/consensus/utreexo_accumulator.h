@@ -275,6 +275,26 @@ public:
     UtreexoForest();
     ~UtreexoForest();
 
+    // Rule of Five, stated explicitly.
+    //
+    // `~UtreexoForest()` is user-declared (and empty), which under the Rule of
+    // Five SUPPRESSES the implicit move constructor and move assignment. Every
+    // rvalue then bound to the copy constructor, so `std::move(forest)` silently
+    // deep-copied the roots/nodes vectors, the leaf-position map for every leaf,
+    // and the deleted-position set.
+    //
+    // That is expensive and invisible: `std::is_move_constructible` still
+    // reports true, because a const-lvalue-ref binds to an rvalue. Only the
+    // NOTHROW form discriminates, which is what UtreexoForestMove asserts.
+    //
+    // Every member is a RAII container and the destructor does nothing, so
+    // defaulting these is safe. Copying stays available and deliberate — the
+    // validation paths use clone() and the copy constructor on purpose.
+    UtreexoForest(UtreexoForest&&) noexcept = default;
+    UtreexoForest& operator=(UtreexoForest&&) noexcept = default;
+    UtreexoForest(const UtreexoForest&) = default;
+    UtreexoForest& operator=(const UtreexoForest&) = default;
+
     // ───────────────────────────────────────────────────────────────────────
     // Core Operations
     // ───────────────────────────────────────────────────────────────────────
@@ -1186,6 +1206,21 @@ struct UtreexoTransitionProof {
      */
     static UtreexoTransitionProof generate(
         const UtreexoForest& forest_before,
+        const Block& block,
+        const BlockUtreexoProof& spend_proof,
+        uint32_t block_height = 0);
+
+    /**
+     * Ownership-taking overload: the caller already holds a private forest it
+     * does not need afterwards, so generate() adopts it instead of cloning.
+     *
+     * ConnectBlock previously copied the live forest out from under
+     * LockForestShared() purely to escape the lock, then handed that copy to
+     * the const& overload, which cloned it AGAIN — two full deep copies of a
+     * ~300k-leaf structure per block. This overload removes the second one.
+     */
+    static UtreexoTransitionProof generate(
+        UtreexoForest&& forest_snapshot,
         const Block& block,
         const BlockUtreexoProof& spend_proof,
         uint32_t block_height = 0);
