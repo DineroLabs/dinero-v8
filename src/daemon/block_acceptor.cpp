@@ -10,6 +10,7 @@
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
 #include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
+#include "daemon/assumeutxo_precheck.h"  // side-chain precheck exemptions
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "consensus/tx_parser.h"    // Phase 3D: Transaction parsing for wallet notifications
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
@@ -266,18 +267,48 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                   utreexo_error);
                     }
                 } else if (chain_db_for_utreexo &&
-                           !(cs->IsAssumeUTXOActive() &&
-                             parentHeight < cs->GetAssumeUTXOBaseHeight())) {
+                           !dinero::daemon::ShouldSkipSideChainPrecheck(
+                               dinero::daemon::AssumeUTXOPrecheckContext{
+                                   cs->IsAssumeUTXOActive(),
+                                   cs->IsAssumeUTXOForwardConnectEnabled(),
+                                   cs->GetAssumeUTXOBaseHeight(),
+                                   cs->GetAssumeUTXOBaseBlock()},
+                               static_cast<uint32_t>(parentHeight),
+                               dinero::uint256::FromHexUnsafe(block.prevBlockHash))) {
                     // Side-chain. Confirm parent is on main chain.
                     //
-                    // While AssumeUTXO background validation is replaying
-                    // genesis..base, those historical bodies also traverse
-                    // BlockAcceptor as non-tip blocks. Pre-base checkpoints
-                    // and delta sidecars are deliberately not promoted into
-                    // ChainDB until that replay proves the snapshot. Do not
-                    // misroute them through this live side-chain precheck:
-                    // AssumeUtxoReplayEngine verifies every historical root,
-                    // and the below-base fork guard prevents activation.
+                    // Two AssumeUTXO cases skip this precheck entirely; see
+                    // daemon/assumeutxo_precheck.h for why each is safe.
+                    //
+                    //  - Pre-base historical bodies. While background
+                    //    validation replays genesis..base, those bodies also
+                    //    traverse BlockAcceptor as non-tip blocks. They are
+                    //    deliberately not promoted into ChainDB until the
+                    //    replay proves the snapshot, so routing them through
+                    //    this live precheck misroutes them.
+                    //    AssumeUtxoReplayEngine verifies every historical
+                    //    root, and the below-base fork guard blocks
+                    //    activation.
+                    //
+                    //  - Classic deferred mode, parent == snapshot base.
+                    //    isMainChainExtension compares against
+                    //    ChainDB::getTip(), which still trails the base
+                    //    during replay, so the base's own child is
+                    //    misclassified as a side chain. Restoring a
+                    //    historical forest to ask "is the parent on the main
+                    //    chain?" is pointless when the parent IS the
+                    //    compiled-in trust anchor -- and it ran on every
+                    //    duplicate delivery (measured: 250,135 times for one
+                    //    height) on a scheduler thread, starving
+                    //    DispatchDeferredSends() until peer deadlines expired
+                    //    and the download collapsed to ~6 KB/s.
+                    //
+                    // Skipping is safe because acceptance is storage, not
+                    // connection: this whole precheck is best-effort (every
+                    // failure path below merely logs and stores the block
+                    // anyway), and ConnectBlock hard-rejects a bad Utreexo
+                    // root when the block is actually connected after
+                    // promotion.
                     const dinero::uint256 parent_hash =
                         dinero::uint256::FromHexUnsafe(block.prevBlockHash);
                     dinero::uint256 canonical_parent;

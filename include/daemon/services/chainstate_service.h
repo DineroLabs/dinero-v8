@@ -386,6 +386,12 @@ public:
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
     uint256 GetAssumeUTXOBaseBlock() const { return assumeutxo_base_block_; }
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
+    // Mirrors GetConfig().assumeutxo_forward_connect -- the same source the
+    // deferral gate reads. Defined out-of-line so this header need not pull
+    // in the config. Used by BlockAcceptor to tell classic deferred mode
+    // (where ChainDB's tip trails the snapshot base) from forward-connect
+    // mode (where the tip legitimately advances past it).
+    bool IsAssumeUTXOForwardConnectEnabled() const;
     // Resolve canonical identity without assuming the durable height index is
     // complete. During AssumeUTXO, pre-base height entries are deliberately
     // withheld until background validation promotes the history; active-tip

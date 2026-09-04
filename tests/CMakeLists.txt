@@ -3612,6 +3612,35 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_daemon_invariants.cpp)
   message(STATUS "✅ Daemon Invariants test enabled")
 endif()
 
+# AssumeUTXO side-chain precheck exemptions. Guards the deferred-mode
+# base-child fix: without it, the canonical child of the snapshot base is
+# misclassified as a side chain and re-runs RestoreHistoricalForest on every
+# duplicate delivery, starving the block-download scheduler.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_precheck.cpp)
+  add_executable(test_assumeutxo_precheck
+    tests/daemon/test_assumeutxo_precheck.cpp
+    src/daemon/assumeutxo_precheck.cpp
+    src/primitives/uint256.cpp   # uint256::operator== is out-of-line
+  )
+  add_dependencies(test_assumeutxo_precheck gtest gtest_main)
+  target_link_libraries(test_assumeutxo_precheck PRIVATE
+    GTest::gtest_main
+    dinero_crypto
+    ${OPENSSL_SSL_LIBRARY}
+    ${OPENSSL_CRYPTO_LIBRARY}
+  )
+  target_include_directories(test_assumeutxo_precheck PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME AssumeUTXOPrecheck COMMAND test_assumeutxo_precheck)
+  set_tests_properties(AssumeUTXOPrecheck PROPERTIES
+    LABELS "daemon;assumeutxo"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ AssumeUTXO precheck exemption test enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_archival_config_defaults.cpp)
   add_executable(test_archival_config_defaults
     tests/daemon/test_archival_config_defaults.cpp

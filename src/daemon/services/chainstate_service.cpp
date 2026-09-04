@@ -18025,4 +18025,12 @@ void ChainstateService::RequestParentBlock(const uint256& parent_hash, const std
     }
 }
 
+
+// Single source of truth for "is forward-connect on?", read from the same
+// config the deferral gate consults, so a precheck exemption gated on classic
+// deferred mode cannot fire in a mode where deferral is not actually active.
+bool ChainstateService::IsAssumeUTXOForwardConnectEnabled() const {
+    return GetConfig().assumeutxo_forward_connect;
+}
+
 } // namespace dinero
