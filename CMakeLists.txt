@@ -541,6 +541,27 @@ if(APPLE)
   target_link_libraries(dinero_crypto INTERFACE "-framework Security")
 endif()
 
+# Stateless BIP32 key derivation is shared by wallet, shielded, NodeCore, and
+# Lightning code. Keep it below those consumers so no higher-level library has
+# to own the implementation or introduce a static-library dependency cycle.
+add_library(dinero_bip32 STATIC
+  src/wallet/bip32_deriver.cpp
+)
+target_include_directories(dinero_bip32 PUBLIC
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include
+)
+target_link_libraries(dinero_bip32 PUBLIC
+  dinero_crypto
+  secp256k1
+  OpenSSL::Crypto
+)
+
+# dinero_shielded is declared before the foundational crypto targets so its
+# sources can be consumed throughout the tree. Complete this lower-level
+# dependency after dinero_bip32 exists.
+target_link_libraries(dinero_shielded PRIVATE dinero_bip32)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Transaction Primitives Library (Phase 2: Lightning Wallet Detachment)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -580,7 +601,7 @@ target_include_directories(dinero_lightning_keys PUBLIC
   ${CMAKE_SOURCE_DIR}/vendor/include
 )
 target_link_libraries(dinero_lightning_keys PUBLIC
-  dinero_crypto      # BIP32Deriver
+  dinero_bip32       # BIP32Deriver
   secp256k1          # Public key derivation
   OpenSSL::Crypto    # HMAC, OPENSSL_cleanse
 )
