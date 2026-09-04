@@ -1809,7 +1809,13 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
                 dinero::wallet::V7P2MRStore::OpenResult::Ok) {
                 for (const auto& p2mr : p2mr_store.ListByWallet(1)) {
                     din::Json addr_obj;
-                    auto balance = wallet_service->get().getAddressBalance(p2mr.address);
+                    // Wallet UTXOs are indexed by canonical scriptPubKey, not by
+                    // the human-readable din1r address.  Querying by address here
+                    // therefore reported zero for otherwise spendable P2MR coins.
+                    const auto script_pubkey =
+                        dinero::wallet::BuildP2MRScriptPubKey(p2mr.merkle_root);
+                    const std::string script_pubkey_hex = BytesToHex(script_pubkey);
+                    auto balance = wallet_service->get().getScriptPubKeyBalance(script_pubkey_hex);
                     addr_obj["address"]    = p2mr.address;
                     if (!p2mr.label.empty()) {
                         addr_obj["label"]  = p2mr.label;
@@ -1822,6 +1828,7 @@ din::Json rpc_context_wallet_listaddresses(const ExecutionContext& ctx, const di
                     addr_obj["index"]      = static_cast<int64_t>(p2mr.leaf_index);
                     addr_obj["external"]   = true;
                     addr_obj["type"]       = "p2mr";
+                    addr_obj["scriptPubKey"] = script_pubkey_hex;
                     addr_obj["path"]       = p2mr.derivation_path;
                     addr_obj["balance"]    = balance.total;
                     addr_obj["confirmed"]  = balance.confirmed;
