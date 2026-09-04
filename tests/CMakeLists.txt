@@ -3625,9 +3625,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_precheck.cpp)
   add_dependencies(test_assumeutxo_precheck gtest gtest_main)
   target_link_libraries(test_assumeutxo_precheck PRIVATE
     GTest::gtest_main
-    dinero_crypto
-    ${OPENSSL_SSL_LIBRARY}
-    ${OPENSSL_CRYPTO_LIBRARY}
   )
   target_include_directories(test_assumeutxo_precheck PRIVATE
     ${CMAKE_SOURCE_DIR}/include

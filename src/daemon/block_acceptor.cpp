@@ -269,10 +269,14 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                 } else if (chain_db_for_utreexo &&
                            !dinero::daemon::ShouldSkipSideChainPrecheck(
                                dinero::daemon::AssumeUTXOPrecheckContext{
-                                   cs->IsAssumeUTXOActive(),
-                                   cs->IsAssumeUTXOForwardConnectEnabled(),
-                                   cs->GetAssumeUTXOBaseHeight(),
-                                   cs->GetAssumeUTXOBaseBlock()},
+                                   // Designated: the first two members are
+                                   // both bool, and a positional swap would
+                                   // silently invert the mode gating.
+                                   .assumeutxo_active = cs->IsAssumeUTXOActive(),
+                                   .forward_connect_enabled =
+                                       cs->IsAssumeUTXOForwardConnectEnabled(),
+                                   .base_height = cs->GetAssumeUTXOBaseHeight(),
+                                   .base_block = cs->GetAssumeUTXOBaseBlock()},
                                static_cast<uint32_t>(parentHeight),
                                dinero::uint256::FromHexUnsafe(block.prevBlockHash))) {
                     // Side-chain. Confirm parent is on main chain.
