@@ -4365,7 +4365,9 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::blockFoundDetailed, this,
             [this](const QString& hash, int height, quint32 nonce,
+                   const QString& prevHash,
                    const QString& merkleRoot, const QString& utreexoRoot,
+                   quint32 version, quint64 timestamp,
                    quint32 difficultyBits) {
       miningSessionFinds_.append(
         {height, hash, merkleRoot, utreexoRoot, nonce, difficultyBits});
@@ -4375,11 +4377,14 @@ void MainWindow::setupUI() {
           QString("Session finds (%1)").arg(miningSessionFinds_.size()));
       }
       const QString liveRecord = QString(
-        "BLOCK_FOUND height=%1 hash=%2 merkle=%3 utreexo=%4 "
-        "bits=0x%5 nonce=0x%6")
-          .arg(height).arg(hash, merkleRoot, utreexoRoot)
+        "nonce=0x%1 hash=%2 prev=%3 merkle=%4 utreexo=%5 version=0x%6 "
+        "time=%7 bits=0x%8 reserved=000000000000000000000000 height=%9")
+          .arg(nonce, 8, 16, QChar('0'))
+          .arg(hash, prevHash, merkleRoot, utreexoRoot)
+          .arg(version, 8, 16, QChar('0'))
+          .arg(timestamp)
           .arg(difficultyBits, 8, 16, QChar('0'))
-          .arg(nonce, 8, 16, QChar('0'));
+          .arg(height);
       miningHashSamples_.append({nonce, hash, liveRecord, true,
         QDateTime::currentMSecsSinceEpoch() +
           dinero::qt::kBlockFoundHighlightMs});
