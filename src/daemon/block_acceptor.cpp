@@ -2150,35 +2150,6 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
         // ========================================================================
         std::optional<FilePosition> flatfile_pos;
         if (archival_flatfiles_available) {
-            // Known-body early return: if this exact block already has a durable
-            // flatfile body, reuse its position instead of writing a second copy.
-            //
-            // writeBlock() fsyncs. Without this guard a block that is delivered
-            // repeatedly pays a full write + fsync every single time. Measured on
-            // a live deferred-AssumeUTXO node: one height re-delivered 83,738
-            // times, each one re-writing a body already on disk, which saturated
-            // the storage path and starved background replay of pre-base bodies.
-            //
-            // Metadata is the right source: putHeaderMetadataPreservingExistingUndo
-            // below records file_number/data_pos/data_size alongside
-            // BLOCK_HAVE_DATA, so a row carrying both is proof the body is durable.
-            bool reused_existing_body = false;
-            {
-                auto existing = chain_db->getHeaderMetadata(blockHash);
-                if (existing.status() == dinero::Status::Ok &&
-                    (existing.value().status_flags & dinero::BLOCK_HAVE_DATA) != 0u &&
-                    existing.value().data_size > 0) {
-                    flatfile_pos = FilePosition(existing.value().file_number,
-                                                existing.value().data_pos,
-                                                existing.value().data_size);
-                    reused_existing_body = true;
-                    ++dinero::daemon::g_duplicate_body_writes_avoided;
-                    LogDuplicateBodySuppressed(blockHash, height);
-                }
-            }
-            if (reused_existing_body) {
-                // fall through with flatfile_pos already set; no write, no fsync
-            } else {
             auto pos_result = ctx_->block_storage->writeBlock(blockHash, consensus_block);
             if (pos_result.status() != dinero::Status::Ok) {
                 error = "Failed to store block body in BlockStorage";
@@ -2190,7 +2161,6 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
             LOG_INFO("📦 BlockStorage write complete: file=" + std::to_string(flatfile_pos->file_number) +
                      " offset=" + std::to_string(flatfile_pos->offset) +
                      " size=" + std::to_string(flatfile_pos->size));
-            }
         } else {
             error = "Archival block acceptance requires BlockStorage for block bodies";
             LOG_ERROR("❌ " + error);
