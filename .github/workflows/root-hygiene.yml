@@ -16,3 +16,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check root hygiene
         run: bash scripts/ci/check_root_hygiene.sh
+      - name: Enforce strict C++20 for first-party builds
+        run: bash tools/check_first_party_cxx20.sh

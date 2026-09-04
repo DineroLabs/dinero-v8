@@ -8,7 +8,7 @@ project(dinero-solo-miner VERSION ${DINERO_MONOREPO_VERSION} LANGUAGES CXX)
 
 # C++20 required: src/build_identity.cpp uses designated initializers, which
 # are a C++20 feature. Clang/GCC accept them as a C++17 extension, but MSVC
-# enforces the standard and rejects them under /std:c++17.
+# enforces the standard and rejects older language modes.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

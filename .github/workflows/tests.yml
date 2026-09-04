@@ -102,6 +102,9 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
+      - name: Verify generated C++20 compile commands
+        run: cmake --build build-tests --target check_first_party_compile_commands_cxx20
+
       - name: Full default build
         id: build
         run: cmake --build build-tests -j

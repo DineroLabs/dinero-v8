@@ -405,8 +405,9 @@ string(TIMESTAMP DINERO_QT_BUILD_TIME "%Y-%m-%dT%H:%M:%S+0000" UTC)
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/release_identity.json.in
                ${CMAKE_BINARY_DIR}/release-identity.json @ONLY)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)

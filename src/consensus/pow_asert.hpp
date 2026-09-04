@@ -79,9 +79,9 @@ inline uint32_t CalculateASERT_Target(
     //
     // NB: this is a signed MULTIPLY, not `excessTime << 16`. excessTime is
     // negative on the fast-block branch, and left-shifting a negative signed
-    // value is UNDEFINED BEHAVIOR before C++20 — and the iOS/NodeCore toolchain
-    // still builds this consensus code with -std=c++17. The multiply is
-    // well-defined in every standard and, on two's-complement platforms, yields
+    // value is UNDEFINED BEHAVIOR before C++20. Dinero now requires C++20 on
+    // every first-party target, but the multiply also remains well-defined on
+    // older compilers and, on two's-complement platforms, yields
     // the exact value the arithmetic shift produced, so the ASERT result is
     // unchanged. (excessTime is bounded by the 32-bit header timestamp, so the
     // 2^16 scaling cannot overflow int64 for any real block — the same bound the

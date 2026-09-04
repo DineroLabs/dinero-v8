@@ -348,7 +348,7 @@ echo ""
 # Compile oracle if needed
 if [[ ! -f "$ORACLE_BIN" ]]; then
     echo -e "${YELLOW}Compiling wallet oracle...${NC}"
-    g++ -std=c++17 -o "$ORACLE_BIN" \
+    g++ -std=c++20 -o "$ORACLE_BIN" \
         "/Users/haydarevich/Documents/DineroCoin/tests/wallet/chaos/wallet_oracle.cpp" \
         -lsqlite3 2>/dev/null || echo -e "${YELLOW}⚠ Oracle compilation failed, using fallback mode${NC}"
 fi

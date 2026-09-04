@@ -5,7 +5,7 @@
  * Tests the critical deserialization path without external dependencies.
  *
  * Build:
- *   clang++ -std=c++17 -O2 -g -DAFL_MAIN fuzz_tx_standalone.cpp -o fuzz_tx
+ *   clang++ -std=c++20 -O2 -g -DAFL_MAIN fuzz_tx_standalone.cpp -o fuzz_tx
  *
  * Run:
  *   echo -n "test" | ./fuzz_tx

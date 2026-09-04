@@ -120,7 +120,7 @@ target_link_libraries(fuzz_script PRIVATE
 # Corpus generator (standalone, no fuzzing flags)
 add_executable(generate_corpus generate_corpus.cpp)
 set_target_properties(generate_corpus PROPERTIES
-    COMPILE_FLAGS "-O2 -std=c++17"
+    COMPILE_FLAGS "-O2 -std=c++20"
     LINK_FLAGS ""
 )
 
@@ -510,7 +510,7 @@ target_include_directories(fuzz_bulletproofs_standalone PRIVATE
 )
 target_compile_definitions(fuzz_bulletproofs_standalone PRIVATE FUZZ_STANDALONE)
 set_target_properties(fuzz_bulletproofs_standalone PROPERTIES
-    COMPILE_FLAGS "-O2 -std=c++17"
+    COMPILE_FLAGS "-O2 -std=c++20"
     LINK_FLAGS ""
 )
 target_link_libraries(fuzz_bulletproofs_standalone PRIVATE
@@ -590,7 +590,7 @@ target_include_directories(fuzz_compact_block_standalone PRIVATE
 )
 target_compile_definitions(fuzz_compact_block_standalone PRIVATE FUZZ_STANDALONE)
 set_target_properties(fuzz_compact_block_standalone PROPERTIES
-    COMPILE_FLAGS "-O2 -std=c++17"
+    COMPILE_FLAGS "-O2 -std=c++20"
     LINK_FLAGS ""
 )
 target_link_libraries(fuzz_compact_block_standalone PRIVATE dinero_core)
@@ -672,7 +672,7 @@ target_include_directories(fuzz_clsag_deserialize_standalone PRIVATE
 )
 target_compile_definitions(fuzz_clsag_deserialize_standalone PRIVATE FUZZ_STANDALONE)
 set_target_properties(fuzz_clsag_deserialize_standalone PROPERTIES
-    COMPILE_FLAGS "-O2 -std=c++17"
+    COMPILE_FLAGS "-O2 -std=c++20"
     LINK_FLAGS ""
 )
 target_link_libraries(fuzz_clsag_deserialize_standalone PRIVATE
@@ -705,7 +705,7 @@ target_include_directories(fuzz_parse_point_standalone PRIVATE
 )
 target_compile_definitions(fuzz_parse_point_standalone PRIVATE FUZZ_STANDALONE)
 set_target_properties(fuzz_parse_point_standalone PROPERTIES
-    COMPILE_FLAGS "-O2 -std=c++17"
+    COMPILE_FLAGS "-O2 -std=c++20"
     LINK_FLAGS ""
 )
 target_link_libraries(fuzz_parse_point_standalone PRIVATE
@@ -739,7 +739,7 @@ target_include_directories(fuzz_ring_validator_standalone PRIVATE
 )
 target_compile_definitions(fuzz_ring_validator_standalone PRIVATE FUZZ_STANDALONE)
 set_target_properties(fuzz_ring_validator_standalone PROPERTIES
-    COMPILE_FLAGS "-O2 -std=c++17"
+    COMPILE_FLAGS "-O2 -std=c++20"
     LINK_FLAGS ""
 )
 target_link_libraries(fuzz_ring_validator_standalone PRIVATE

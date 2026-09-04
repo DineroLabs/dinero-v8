@@ -17,8 +17,6 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/key_origin.cpp      # Week 1: KeyOriginInfo for descriptor wallet
   ${CMAKE_CURRENT_SOURCE_DIR}/script_ownership.cpp # Week 1: IsMine script ownership
   ${CMAKE_CURRENT_SOURCE_DIR}/hd_wallet.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/bip32_deriver.cpp   # BIP32 derivation helper (deduplicates lambdas)
-  ${CMAKE_CURRENT_SOURCE_DIR}/shielded_derivation.cpp  # Phase 5 Wave 1: Sapling-shape sk → ask/nsk → ak/nk → ivk
   ${CMAKE_CURRENT_SOURCE_DIR}/bip39.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/key_store_impl.cpp  # Phase 3A: BIP32 HD keystore (replaces HdKeyStoreAdapter)
   ${CMAKE_CURRENT_SOURCE_DIR}/psbt.cpp
@@ -100,6 +98,8 @@ target_include_directories(dinero_wallet PUBLIC
 )
 
 target_link_libraries(dinero_wallet PUBLIC
+  dinero_address_encoding
+  dinero_bip32
   dinero_tx_primitives # ← Transaction structures and Schnorr/Taproot signing
   dinero_crypto
   dinero_consensus  # ← Needed for CoinbaseMaturity::isCoinbaseMature()

@@ -454,7 +454,7 @@ export DINERO_WALLET_SYNC="${DINERO_WALLET_SYNC:-NORMAL}"
 # Compile the comprehensive test
 say "🔨 Compiling comprehensive SQLite wallet test..."
 
-clang++ -std=c++17 -O2 \
+clang++ -std=c++20 -O2 \
     -I"$ROOT_DIR/include" -I"$JSON_INC" \
     /tmp/test_sqlite_wallet.cpp \
     "$DINERO_LIB" "$SQLITE_LIB" "$JSON_LIB" \

@@ -32,7 +32,7 @@ echo ""
 
 # Compiler flags
 CFLAGS="-arch arm64 -isysroot ${IOS_SDK} -miphoneos-version-min=${IOS_DEPLOYMENT_TARGET} -O2 -fPIC"
-CXXFLAGS="${CFLAGS} -std=c++17"
+CXXFLAGS="${CFLAGS} -std=c++20"
 
 # Include directories
 INCLUDES="-I${PROJECT_DIR}/include"

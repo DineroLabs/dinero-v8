@@ -27,6 +27,7 @@ add_library(dinero_shielded STATIC
     shielded_block_section.cpp
     # Wallet-layer shielded operations (note store + shield/unshield handlers).
     # Lives in dinero_shielded rather than dinero_wallet to avoid circular deps.
+    ${CMAKE_SOURCE_DIR}/src/wallet/shielded_derivation.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_note_store.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_wallet_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/wallet_routing_engine.cpp
@@ -48,7 +49,8 @@ target_link_libraries(dinero_shielded PRIVATE
 )
 
 set_target_properties(dinero_shielded PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
 )

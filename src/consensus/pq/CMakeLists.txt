@@ -66,8 +66,9 @@ target_link_libraries(dinero_pq PRIVATE
 )
 
 set_target_properties(dinero_pq PROPERTIES
-    CXX_STANDARD 17
+    CXX_STANDARD 20
     CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
     C_STANDARD 99
     C_STANDARD_REQUIRED ON
     POSITION_INDEPENDENT_CODE ON

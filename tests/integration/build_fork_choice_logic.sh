@@ -15,7 +15,7 @@ echo "Building Fork-Choice Logic Test (Day 2.1)"
 echo "========================================="
 
 CXX="g++"
-CXXFLAGS="-std=c++17 -Wall -Wextra -I$PROJECT_ROOT/include -I$PROJECT_ROOT -I$TEST_DIR"
+CXXFLAGS="-std=c++20 -Wall -Wextra -I$PROJECT_ROOT/include -I$PROJECT_ROOT -I$TEST_DIR"
 LDFLAGS="-lpthread"
 
 echo ""

@@ -232,6 +232,7 @@ endif()
 # enforced by Linux/Mac CI on every tag, so gate them off the Windows build.
 if(NOT WIN32)
   add_dependencies(dinerod
+    check_first_party_cxx20
     check_no_legacy_mempool_prod
     check_no_deprecated_openssl_hmac
     check_no_deprecated_openssl_sha256

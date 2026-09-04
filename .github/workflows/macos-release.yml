@@ -158,6 +158,9 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
+      - name: Verify generated C++20 compile commands
+        run: cmake --build build --target check_first_party_compile_commands_cxx20
+
       - name: Build daemon + CLI
         run: cmake --build build --target dinerod dinero-cli -j$(sysctl -n hw.ncpu)
 

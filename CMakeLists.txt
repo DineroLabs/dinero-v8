@@ -132,9 +132,11 @@ if(POLICY CMP0144)
   cmake_policy(SET CMP0144 NEW)  # Use upper-case <PACKAGENAME>_ROOT variables
 endif()
 
-# C++ standard (C++17 baseline for std::optional, std::string_view, std::variant)
+# Authoritative first-party C++ language contract. Subprojects that can also
+# build standalone repeat this policy in their own top-level CMakeLists.txt.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Windows compatibility — must be before any target definitions
 if(WIN32)
@@ -203,7 +205,27 @@ function(dinero_attach_win32_versioninfo target description)
   )
   target_sources(${target} PRIVATE "${_gen}")
 endfunction()
-set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Fail configuration if first-party CMake files reintroduce an older language
+# mode. Vendored projects under third_party/ own their toolchain contracts and
+# are deliberately excluded.
+add_custom_target(check_first_party_cxx20
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/check_first_party_cxx20.sh
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Checking strict C++20 policy for first-party targets"
+)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND AND CMAKE_EXPORT_COMPILE_COMMANDS)
+  add_custom_target(check_first_party_compile_commands_cxx20
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tools/check_compile_commands_cxx20.py
+            ${CMAKE_BINARY_DIR}/compile_commands.json
+            --source-root ${CMAKE_SOURCE_DIR}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Checking generated first-party compile commands for strict C++20"
+  )
+endif()
 
 # Build options and mode switches live in cmake/.
 include(cmake/BuildOptions.cmake)
@@ -236,6 +258,19 @@ include(cmake/VendorNgtcp2.cmake)
 add_subdirectory(src/consensus/pq EXCLUDE_FROM_ALL)   # dinero_pq lib
 add_subdirectory(tools/pq_bench   EXCLUDE_FROM_ALL)   # bench + tests
 add_subdirectory(src/consensus/shielded EXCLUDE_FROM_ALL)  # dinero_shielded: commitment tree, nullifiers, validation
+
+# Address codecs are shared by wallet and daemon code. Keep them below both
+# layers so static-library link order cannot create a wallet <-> core cycle.
+add_library(dinero_address_encoding STATIC
+  src/daemon/bech32_decode.cpp
+  src/daemon/bech32_encoder.cpp
+  src/wallet/p2mr_address.cpp
+)
+target_include_directories(dinero_address_encoding PUBLIC
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/src
+)
 
 # Hardware wallet mock signing guard.
 include(cmake/HardwareWalletMock.cmake)
@@ -506,6 +541,27 @@ if(APPLE)
   target_link_libraries(dinero_crypto INTERFACE "-framework Security")
 endif()
 
+# Stateless BIP32 key derivation is shared by wallet, shielded, NodeCore, and
+# Lightning code. Keep it below those consumers so no higher-level library has
+# to own the implementation or introduce a static-library dependency cycle.
+add_library(dinero_bip32 STATIC
+  src/wallet/bip32_deriver.cpp
+)
+target_include_directories(dinero_bip32 PUBLIC
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include
+)
+target_link_libraries(dinero_bip32 PUBLIC
+  dinero_crypto
+  secp256k1
+  OpenSSL::Crypto
+)
+
+# dinero_shielded is declared before the foundational crypto targets so its
+# sources can be consumed throughout the tree. Complete this lower-level
+# dependency after dinero_bip32 exists.
+target_link_libraries(dinero_shielded PRIVATE dinero_bip32)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Transaction Primitives Library (Phase 2: Lightning Wallet Detachment)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -545,7 +601,7 @@ target_include_directories(dinero_lightning_keys PUBLIC
   ${CMAKE_SOURCE_DIR}/vendor/include
 )
 target_link_libraries(dinero_lightning_keys PUBLIC
-  dinero_crypto      # BIP32Deriver
+  dinero_bip32       # BIP32Deriver
   secp256k1          # Public key derivation
   OpenSSL::Crypto    # HMAC, OPENSSL_cleanse
 )
@@ -893,12 +949,6 @@ set(DINERO_CORE_MINING_TELEMETRY_SOURCES
   src/daemon/mining_metrics.cpp
 )
 
-set(DINERO_CORE_ENCODING_SOURCES
-  src/daemon/bech32_decode.cpp
-  src/daemon/bech32_encoder.cpp
-  src/wallet/p2mr_address.cpp
-)
-
 set(DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES
   src/mining/block_template.cpp
   src/mining/block_assembly_context.cpp
@@ -1049,9 +1099,6 @@ add_library(dinero_core STATIC
   # Privacy
   ${DINERO_CORE_PRIVACY_SOURCES}
 
-  # Encoding/decoding
-  ${DINERO_CORE_ENCODING_SOURCES}
-
   # Genesis initialization (subsidy now in dinero_consensus library)
   src/daemon/genesis_init.cpp
 
@@ -1084,6 +1131,7 @@ else()
 endif()
 
 target_link_libraries(dinero_core PUBLIC
+  dinero_address_encoding
   dinero_crypto
   dinero_chainstate
   dinero_consensus

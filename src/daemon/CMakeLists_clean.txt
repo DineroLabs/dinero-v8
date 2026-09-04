@@ -19,7 +19,7 @@ target_link_libraries(dinerod-clean PRIVATE
 )
 
 # Compiler features and flags
-target_compile_features(dinerod-clean PRIVATE cxx_std_17)
+target_compile_features(dinerod-clean PRIVATE cxx_std_20)
 
 # Platform-specific definitions
 if(APPLE)

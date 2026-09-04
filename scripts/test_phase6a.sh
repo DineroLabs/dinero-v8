@@ -36,7 +36,7 @@ echo "Running CMake..."
 cmake .. \
     -DDIN_ENABLE_ROCKSDB=ON \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_STANDARD=17
+    -DCMAKE_CXX_STANDARD=20
 
 echo "Building..."
 cmake --build . --parallel 8 -- \

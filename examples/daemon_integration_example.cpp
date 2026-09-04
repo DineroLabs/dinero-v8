@@ -336,7 +336,7 @@ int main(int argc, char* argv[]) {
 /*
  * Compilation example:
  * 
- * g++ -std=c++17 -I../include \
+ * g++ -std=c++20 -I../include \
  *     daemon_integration_example.cpp \
  *     -ldinero_explorer -ldinero_common \
  *     -lsqlite3 -ljsoncpp -lssl -lcrypto \
