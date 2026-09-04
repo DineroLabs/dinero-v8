@@ -2776,5 +2776,151 @@ int main() {
         std::filesystem::remove_all(storage_dir);
         std::cout << "   ✅ connect_attempts=1 retries=1 amplification=0" << std::endl;
     }
+
+    {
+        std::cout << "\n19. deferred AssumeUTXO ceiling: repeated base+1 delivery must not "
+                     "spin the drain, must not re-connect the same body thousands of "
+                     "times, and must not starve pre-base backfill..." << std::endl;
+
+        // Reproduces the live failure. On a deferred node the active chain
+        // deliberately stops at the snapshot base, so the drain's
+        // "is this hash on the active chain?" test can never succeed for
+        // base+1. The CONNECTED -> RECEIVED downgrade then re-reads and
+        // re-connects the same body forever: 83,738 re-connections of one
+        // height were observed, each paying an fsync, while background replay
+        // sat idle waiting for pre-base bodies that were never fetched.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // index == height
+        try {
+            BuildLinearHeaders(selector, 10, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const uint32_t kBase = 8;  // snapshot base; base+1 == 9
+
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_sched_deferred_ceiling_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::remove_all(storage_dir);
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "temporary block storage must initialize")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetLocalTipHeight(kBase);
+        scheduler.OnHeadersProcessed();
+
+        // The deferred condition: the active chain carries nothing above the
+        // base, so base+1 can never satisfy the drain's active-chain check.
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&hashes, kBase](uint32_t height, uint256& out) -> bool {
+                if (height > kBase || height >= hashes.size()) return false;
+                out = hashes[height];
+                return true;
+            });
+
+        // Count real connect attempts per height. This is the durable-write
+        // proxy at the layer the 83,738 writes came from: every drain connect
+        // reached BlockAcceptor::ConnectBlock, which wrote and fsynced a body.
+        int base_child_connect_count = 0;
+        const uint256 base_child_hash = hashes[kBase + 1];
+        scheduler.SetConnectBlockCallback(
+            [&base_child_connect_count, base_child_hash](
+                const Block& b, const std::string&) -> dcs::ConnectBlockResult {
+                if (b.GetHash() == base_child_hash) ++base_child_connect_count;
+                return dcs::ConnectBlockResult::CONNECTED;
+            });
+
+        std::vector<uint32_t> requested_heights;
+        scheduler.SetSendGetDataCallback(
+            [&requested_heights](const uint256&, uint32_t height) {
+                requested_heights.push_back(height);
+            });
+
+        scheduler.SetDeferredDrainCeiling(true, kBase);
+
+        // Deliver base+1 over and over, as peers do when it never connects.
+        const int kDeliveries = 2000;
+        for (int i = 0; i < kDeliveries; ++i) {
+            scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[kBase + 1]));
+            scheduler.Tick();
+        }
+
+        const int base_child_connects = base_child_connect_count;
+        if (!Require(base_child_connects <= 1,
+                     "base+1 must be connected at most once across " +
+                     std::to_string(kDeliveries) + " deliveries, got " +
+                     std::to_string(base_child_connects))) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        if (!Require(scheduler.GetDeferredCeilingStopsForTest() > 0,
+                     "the drain must report stopping at the deferred ceiling")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        // The point of the fix: the pipeline stays available for pre-base work.
+        requested_heights.clear();
+        scheduler.EnableBackfill(1, kBase, hashes[kBase]);
+        scheduler.Tick();
+        int pre_base_requests = 0;
+        for (uint32_t h : requested_heights) {
+            if (h <= kBase) ++pre_base_requests;
+        }
+        if (!Require(pre_base_requests > 0,
+                     "pre-base backfill must still be requested while base+1 is "
+                     "repeatedly announced (got 0 requests)")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        // Control arm: without the ceiling the drain spins. This is what makes
+        // the assertions above meaningful rather than vacuous.
+        dcs::BlockDownloadScheduler unfixed(&selector, &storage);
+        unfixed.SetLocalTipHeight(kBase);
+        unfixed.OnHeadersProcessed();
+        unfixed.SetGetBlockHashAtHeightCallback(
+            [&hashes, kBase](uint32_t height, uint256& out) -> bool {
+                if (height > kBase || height >= hashes.size()) return false;
+                out = hashes[height];
+                return true;
+            });
+        int unfixed_connect_count = 0;
+        unfixed.SetConnectBlockCallback(
+            [&unfixed_connect_count, base_child_hash](
+                const Block& b, const std::string&) -> dcs::ConnectBlockResult {
+                if (b.GetHash() == base_child_hash) ++unfixed_connect_count;
+                return dcs::ConnectBlockResult::CONNECTED;
+            });
+        unfixed.SetSendGetDataCallback([](const uint256&, uint32_t) {});
+        unfixed.SetDeferredDrainCeiling(false, kBase);  // ceiling disabled
+        for (int i = 0; i < 200; ++i) {
+            unfixed.OnBlockReceived(MakeBlockForHash(selector, hashes[kBase + 1]));
+            unfixed.Tick();
+        }
+        const int unfixed_connects = unfixed_connect_count;
+        if (!Require(unfixed_connects > base_child_connects,
+                     "control: without the ceiling base+1 must re-connect more often "
+                     "(fixed=" + std::to_string(base_child_connects) +
+                     " unfixed=" + std::to_string(unfixed_connects) + ")")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        storage.close();
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ base+1 connects: fixed=" << base_child_connects
+                  << " unfixed=" << unfixed_connects
+                  << "  ceiling_stops=" << scheduler.GetDeferredCeilingStopsForTest()
+                  << "  pre_base_requests=" << pre_base_requests << std::endl;
+    }
     return 0;
 }

@@ -16010,6 +16010,14 @@ void ChainstateService::BackgroundValidationWorker() {
                 } else {
                     sched->SetBackfillValidationFrontier(uint256(), 0);
                 }
+                // Deferred-mode drain ceiling. Derived from exactly the same
+                // facts as the BlockAcceptor side-chain exemption
+                // (daemon/assumeutxo_precheck.h) so the two cannot drift into
+                // disagreeing about what "deferred mode" means.
+                const bool deferred_mode =
+                    IsAssumeUTXOActive() && !IsAssumeUTXOForwardConnectEnabled();
+                sched->SetDeferredDrainCeiling(deferred_mode,
+                                               GetAssumeUTXOBaseHeight());
             }
             // #298 refinement: only re-request once backfill has reported its
             // window COMPLETE (completed >= total) yet validation still finds

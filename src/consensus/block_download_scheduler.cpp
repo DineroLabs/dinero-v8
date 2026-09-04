@@ -2103,6 +2103,30 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
 
         auto& fetch_state = *want_it;
 
+        // Deferred-AssumeUTXO ceiling. MUST precede the CONNECTED branch
+        // below: that branch downgrades CONNECTED -> RECEIVED whenever the
+        // active chain does not carry this hash, and in deferred mode the
+        // active chain cannot carry base+1 until promotion. The downgrade is
+        // the engine of the livelock, so checking after it would only move
+        // the spin one frame earlier.
+        if (deferred_drain_ceiling_active_ && want > deferred_drain_ceiling_height_) {
+            ++deferred_ceiling_stops_;
+            const auto now = std::chrono::steady_clock::now();
+            if (last_ceiling_log_.time_since_epoch().count() == 0 ||
+                now - last_ceiling_log_ >= std::chrono::seconds(60)) {
+                last_ceiling_log_ = now;
+                g_logger.info(
+                    "[BlockDownloadScheduler] Drain stopped at deferred snapshot "
+                    "ceiling: want_height=" + std::to_string(want) +
+                    " base=" + std::to_string(deferred_drain_ceiling_height_) +
+                    " (the active chain cannot advance past the base until "
+                    "background replay completes; backfill continues). "
+                    "Total stops since start: " +
+                    std::to_string(deferred_ceiling_stops_));
+            }
+            break;
+        }
+
         if (fetch_state.status == FetchStatus::CONNECTED) {
             // Only trust CONNECTED when the active chain actually has this
             // hash at this height. Older queue state can be polluted by
