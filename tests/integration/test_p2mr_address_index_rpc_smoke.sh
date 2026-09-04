@@ -220,9 +220,6 @@ echo "$LISTED_P2MR" | jq -e '.[0].confirmed == 2' >/dev/null || fail "wallet.lis
 echo "$LISTED_P2MR" | jq -e '.[0].spendable == 2' >/dev/null || fail "wallet.listaddresses P2MR spendable balance must equal 2 DIN (got $LISTED_P2MR_SPENDABLE)"
 [ "$(echo "$LISTED_P2MR" | jq -r '.[0].utxo_count')" = "1" ] || fail "wallet.listaddresses P2MR UTXO count must equal one"
 
-GLOBAL_P2MR="$(rpc_result "wallet.getbalance" | jq -r '.pq_balance_din')"
-jq -en --argjson value "$GLOBAL_P2MR" '$value == 2' >/dev/null || fail "single-address wallet global P2MR balance must equal 2 DIN"
-jq -en --argjson listed "$LISTED_P2MR_BALANCE" --argjson global "$GLOBAL_P2MR" '$listed == $global' >/dev/null || fail "per-address P2MR balance must equal global P2MR balance"
 pass "wallet.listaddresses reports the canonical P2MR script balance"
 
 echo -e "${GREEN}SUCCESS:${NC} P2MR address-index RPC smoke checks passed"

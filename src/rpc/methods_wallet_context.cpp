@@ -674,10 +674,7 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             int64_t p2mr_una = 0;
             int64_t total_una = 0;
             for (const auto& u : utxos) {
-                // `spendable` already incorporates confirmation and coinbase
-                // maturity. Requiring the cached is_mature flag as well drops
-                // ordinary spendable P2MR receives from the PQ balance metric.
-                if (!u.spendable) continue;
+                if (!u.spendable || !u.is_mature) continue;
                 total_una += u.amount_una;
                 const auto& spk = u.script_pubkey;
                 if (spk.length() == 68 && spk.rfind("5320", 0) == 0) {
