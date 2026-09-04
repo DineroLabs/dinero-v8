@@ -151,8 +151,8 @@ set_target_properties(shielded_adversarial_test PROPERTIES
 
 add_executable(shielded_limits_bench shielded_limits_bench.cpp)
 target_link_libraries(shielded_limits_bench PRIVATE dinero_shielded dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
-set_target_properties(shielded_limits_bench PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+set_target_properties(shielded_limits_bench PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 
 add_executable(shielded_proof_verify_bench shielded_proof_verify_bench.cpp)
 target_link_libraries(shielded_proof_verify_bench PRIVATE dinero_shielded dinero_crypto secp256k1 OpenSSL::Crypto sqlite3)
-set_target_properties(shielded_proof_verify_bench PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+set_target_properties(shielded_proof_verify_bench PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
