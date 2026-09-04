@@ -259,6 +259,19 @@ add_subdirectory(src/consensus/pq EXCLUDE_FROM_ALL)   # dinero_pq lib
 add_subdirectory(tools/pq_bench   EXCLUDE_FROM_ALL)   # bench + tests
 add_subdirectory(src/consensus/shielded EXCLUDE_FROM_ALL)  # dinero_shielded: commitment tree, nullifiers, validation
 
+# Address codecs are shared by wallet and daemon code. Keep them below both
+# layers so static-library link order cannot create a wallet <-> core cycle.
+add_library(dinero_address_encoding STATIC
+  src/daemon/bech32_decode.cpp
+  src/daemon/bech32_encoder.cpp
+  src/wallet/p2mr_address.cpp
+)
+target_include_directories(dinero_address_encoding PUBLIC
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}
+  ${CMAKE_SOURCE_DIR}/src
+)
+
 # Hardware wallet mock signing guard.
 include(cmake/HardwareWalletMock.cmake)
 
@@ -915,12 +928,6 @@ set(DINERO_CORE_MINING_TELEMETRY_SOURCES
   src/daemon/mining_metrics.cpp
 )
 
-set(DINERO_CORE_ENCODING_SOURCES
-  src/daemon/bech32_decode.cpp
-  src/daemon/bech32_encoder.cpp
-  src/wallet/p2mr_address.cpp
-)
-
 set(DINERO_CORE_MINING_TEMPLATE_SUPPORT_SOURCES
   src/mining/block_template.cpp
   src/mining/block_assembly_context.cpp
@@ -1071,9 +1078,6 @@ add_library(dinero_core STATIC
   # Privacy
   ${DINERO_CORE_PRIVACY_SOURCES}
 
-  # Encoding/decoding
-  ${DINERO_CORE_ENCODING_SOURCES}
-
   # Genesis initialization (subsidy now in dinero_consensus library)
   src/daemon/genesis_init.cpp
 
@@ -1106,6 +1110,7 @@ else()
 endif()
 
 target_link_libraries(dinero_core PUBLIC
+  dinero_address_encoding
   dinero_crypto
   dinero_chainstate
   dinero_consensus

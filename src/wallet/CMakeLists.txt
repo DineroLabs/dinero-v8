@@ -99,6 +99,7 @@ target_include_directories(dinero_wallet PUBLIC
 )
 
 target_link_libraries(dinero_wallet PUBLIC
+  dinero_address_encoding
   dinero_tx_primitives # ← Transaction structures and Schnorr/Taproot signing
   dinero_crypto
   dinero_consensus  # ← Needed for CoinbaseMaturity::isCoinbaseMature()
