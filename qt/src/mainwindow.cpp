@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
 #include "rpcclient.h"
 #include <QMenu>
@@ -1138,6 +1139,32 @@ QString peerHeightDisplayText(int peerHeight, int localTip) {
     return QString("%1 seen").arg(peerHeight);
   }
   return QString::number(peerHeight);
+}
+
+QString peerHeightBreakdownTooltip(int startHeight,
+                                   int syncedHeaders,
+                                   int syncedBlocks,
+                                   int bestKnown,
+                                   int localTip);
+
+QString peerSeenHeightTooltip(const QString& kind,
+                              int value,
+                              int startHeight,
+                              int syncedHeaders,
+                              int syncedBlocks,
+                              int bestKnown,
+                              int localTip) {
+  QString tooltip = peerHeightBreakdownTooltip(startHeight,
+                                                syncedHeaders,
+                                                syncedBlocks,
+                                                bestKnown,
+                                                localTip);
+  tooltip.prepend(
+      QString("%1 seen through local P2P telemetry: %2\n"
+              "This does not prove the remote node's active validated tip.\n"
+              "Use that node's authenticated blockchain RPC for validation.\n\n")
+          .arg(kind, value >= 0 ? QString::number(value) : QStringLiteral("N/A")));
+  return tooltip;
 }
 
 QString peerHeightBreakdownTooltip(int startHeight,
@@ -2572,12 +2599,16 @@ void MainWindow::setupUI() {
     peersLayout->addWidget(lblPeersCount_);
     peersLayout->addWidget(lblPeersStatus_);
 
-    tblPeersOverview_ = new QTableWidget(0, 5);  // 5 columns
-    tblPeersOverview_->setHorizontalHeaderLabels({"Location", "Activity", "Last Seen", "Seen Height", "Client"});
-    if (auto* advertisedHeader = tblPeersOverview_->horizontalHeaderItem(3)) {
-      advertisedHeader->setToolTip(
-          "Last height this local node observed for the peer.\n"
-          "This is P2P telemetry, not a live RPC query to that server.");
+    tblPeersOverview_ = new QTableWidget(0, 6);
+    tblPeersOverview_->setHorizontalHeaderLabels(
+        {"Location", "Activity", "Last Seen", "Blocks Seen", "Headers Seen", "Client"});
+    for (int column : {3, 4}) {
+      if (auto* seenHeader = tblPeersOverview_->horizontalHeaderItem(column)) {
+        seenHeader->setToolTip(
+            "Observed through this local node's P2P connection.\n"
+            "This is not the remote node's active validated tip.\n"
+            "Validation requires that node's authenticated blockchain RPC.");
+      }
     }
     tblPeersOverview_->horizontalHeader()->setStretchLastSection(true);
     tblPeersOverview_->verticalHeader()->setVisible(false);
@@ -4598,12 +4629,16 @@ void MainWindow::setupUI() {
     layout->addWidget(statusGroup);
 
     // Peer table
-    tblPeers_ = new QTableWidget(0, 6);
-    tblPeers_->setHorizontalHeaderLabels({"ID", "Location", "Type", "Client", "Seen Height", "Direction"});
-    if (auto* advertisedHeader = tblPeers_->horizontalHeaderItem(4)) {
-      advertisedHeader->setToolTip(
-          "Last height this local node observed for the peer.\n"
-          "This is P2P telemetry, not a live RPC query to that server.");
+    tblPeers_ = new QTableWidget(0, 7);
+    tblPeers_->setHorizontalHeaderLabels(
+        {"ID", "Location", "Type", "Client", "Blocks Seen", "Headers Seen", "Direction"});
+    for (int column : {4, 5}) {
+      if (auto* seenHeader = tblPeers_->horizontalHeaderItem(column)) {
+        seenHeader->setToolTip(
+            "Observed through this local node's P2P connection.\n"
+            "This is not the remote node's active validated tip.\n"
+            "Validation requires that node's authenticated blockchain RPC.");
+      }
     }
     tblPeers_->horizontalHeader()->setStretchLastSection(true);
     tblPeers_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -6902,32 +6937,38 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         }
         tblPeersOverview_->setItem(row, 2, lastSeenItem);
         
-        // Peer height (best available from daemon fields)
+        // Keep observed block and header progress separate. Taking the maximum
+        // of these fields previously made a header-only peer look fully
+        // validated in the dashboard.
         const int syncedBlocks = peer["synced_blocks"].toInt(-1);
         const int syncedHeaders = peer["synced_headers"].toInt(-1);
         const int startHeight = peer["startingheight"].toInt(-1);
         const int bestKnown = peer["best_known_height"].toInt(-1);
-        int peerHeight = syncedBlocks;
-        if (syncedHeaders > peerHeight) peerHeight = syncedHeaders;
-        if (startHeight > peerHeight) peerHeight = startHeight;
-        if (bestKnown > peerHeight) peerHeight = bestKnown;
-        const QString peerHeightText = peerHeightDisplayText(peerHeight, cachedHeight_);
-        auto* heightItem = new QTableWidgetItem(peerHeightText);
-        heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight,
-                                                          syncedHeaders,
-                                                          syncedBlocks,
-                                                          bestKnown,
-                                                          cachedHeight_));
-        if (cachedHeight_ > 0 && peerHeight >= 0 && peerHeight + 2 < cachedHeight_) {
-          heightItem->setForeground(QColor("#d9b36a"));
+        const int blocksSeen = dinero::qt::peerBlocksSeen(startHeight, syncedBlocks);
+        const int headersSeen = dinero::qt::peerHeadersSeen(startHeight, syncedHeaders, bestKnown);
+        auto* blocksItem = new QTableWidgetItem(peerHeightDisplayText(blocksSeen, cachedHeight_));
+        blocksItem->setToolTip(peerSeenHeightTooltip("Blocks", blocksSeen, startHeight,
+                                                     syncedHeaders, syncedBlocks, bestKnown,
+                                                     cachedHeight_));
+        if (cachedHeight_ > 0 && blocksSeen >= 0 && blocksSeen + 2 < cachedHeight_) {
+          blocksItem->setForeground(QColor("#d9b36a"));
         }
-        tblPeersOverview_->setItem(row, 3, heightItem);
+        tblPeersOverview_->setItem(row, 3, blocksItem);
+
+        auto* headersItem = new QTableWidgetItem(peerHeightDisplayText(headersSeen, cachedHeaders_));
+        headersItem->setToolTip(peerSeenHeightTooltip("Headers", headersSeen, startHeight,
+                                                      syncedHeaders, syncedBlocks, bestKnown,
+                                                      cachedHeight_));
+        if (cachedHeaders_ > 0 && headersSeen >= 0 && headersSeen + 2 < cachedHeaders_) {
+          headersItem->setForeground(QColor("#d9b36a"));
+        }
+        tblPeersOverview_->setItem(row, 4, headersItem);
 
         // Client
         const QString rawClient = peer["subver"].toString();
         auto* clientItem = new QTableWidgetItem(peerClientLabel(rawClient));
         clientItem->setToolTip(peerClientTooltip(rawClient));
-        tblPeersOverview_->setItem(row, 4, clientItem);
+        tblPeersOverview_->setItem(row, 5, clientItem);
       }
       
       tblPeersOverview_->setSortingEnabled(true);
@@ -15738,8 +15779,9 @@ QString MainWindow::networkDiagnosticsText() const {
       peer["endpoint"] = locationItem ? locationItem->data(Qt::UserRole).toString() : "";
       peer["type"] = tblPeers_->item(row, 2) ? tblPeers_->item(row, 2)->text() : "";
       peer["client"] = tblPeers_->item(row, 3) ? tblPeers_->item(row, 3)->text() : "";
-      peer["height"] = tblPeers_->item(row, 4) ? tblPeers_->item(row, 4)->text() : "";
-      peer["direction"] = tblPeers_->item(row, 5) ? tblPeers_->item(row, 5)->text() : "";
+      peer["blocks_seen"] = tblPeers_->item(row, 4) ? tblPeers_->item(row, 4)->text() : "";
+      peer["headers_seen"] = tblPeers_->item(row, 5) ? tblPeers_->item(row, 5)->text() : "";
+      peer["direction"] = tblPeers_->item(row, 6) ? tblPeers_->item(row, 6)->text() : "";
       peers.append(peer);
     }
   }
@@ -15771,11 +15813,8 @@ void MainWindow::updatePeerTable(const QJsonArray& peers) {
     int bestKnown = peer["best_known_height"].toInt(-1);
     bool inbound = peer["inbound"].toBool();
 
-    // Best available height: prefer best_known > synced_blocks > synced_headers > startingheight
-    int bestHeight = startHeight;
-    if (syncedHeaders > bestHeight) bestHeight = syncedHeaders;
-    if (syncedBlocks > bestHeight) bestHeight = syncedBlocks;
-    if (bestKnown > bestHeight) bestHeight = bestKnown;
+    const int blocksSeen = dinero::qt::peerBlocksSeen(startHeight, syncedBlocks);
+    const int headersSeen = dinero::qt::peerHeadersSeen(startHeight, syncedHeaders, bestKnown);
 
     tblPeers_->setItem(row, 0, new QTableWidgetItem(QString::number(id)));
     const QString location = peerLocationLabel(addr, row);
@@ -15787,17 +15826,23 @@ void MainWindow::updatePeerTable(const QJsonArray& peers) {
     auto* clientItem = new QTableWidgetItem(peerClientLabel(rawClient));
     clientItem->setToolTip(peerClientTooltip(rawClient));
     tblPeers_->setItem(row, 3, clientItem);
-    auto* heightItem = new QTableWidgetItem(peerHeightDisplayText(bestHeight, cachedHeight_));
-    heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight,
-                                                      syncedHeaders,
-                                                      syncedBlocks,
-                                                      bestKnown,
-                                                      cachedHeight_));
-    if (cachedHeight_ > 0 && bestHeight >= 0 && bestHeight + 2 < cachedHeight_) {
-      heightItem->setForeground(QColor("#d9b36a"));
+    auto* blocksItem = new QTableWidgetItem(peerHeightDisplayText(blocksSeen, cachedHeight_));
+    blocksItem->setToolTip(peerSeenHeightTooltip("Blocks", blocksSeen, startHeight,
+                                                 syncedHeaders, syncedBlocks, bestKnown,
+                                                 cachedHeight_));
+    if (cachedHeight_ > 0 && blocksSeen >= 0 && blocksSeen + 2 < cachedHeight_) {
+      blocksItem->setForeground(QColor("#d9b36a"));
     }
-    tblPeers_->setItem(row, 4, heightItem);
-    tblPeers_->setItem(row, 5, new QTableWidgetItem(inbound ? "Inbound" : "Outbound"));
+    tblPeers_->setItem(row, 4, blocksItem);
+    auto* headersItem = new QTableWidgetItem(peerHeightDisplayText(headersSeen, cachedHeaders_));
+    headersItem->setToolTip(peerSeenHeightTooltip("Headers", headersSeen, startHeight,
+                                                  syncedHeaders, syncedBlocks, bestKnown,
+                                                  cachedHeight_));
+    if (cachedHeaders_ > 0 && headersSeen >= 0 && headersSeen + 2 < cachedHeaders_) {
+      headersItem->setForeground(QColor("#d9b36a"));
+    }
+    tblPeers_->setItem(row, 5, headersItem);
+    tblPeers_->setItem(row, 6, new QTableWidgetItem(inbound ? "Inbound" : "Outbound"));
   }
 }
 
@@ -15902,8 +15947,9 @@ void MainWindow::onExportMetrics() {
       peer["endpoint"] = locationItem ? locationItem->data(Qt::UserRole).toString() : "";
       peer["activity"] = tblPeersOverview_->item(i, 1) ? tblPeersOverview_->item(i, 1)->text() : "";
       peer["uptime"] = tblPeersOverview_->item(i, 2) ? tblPeersOverview_->item(i, 2)->text() : "";
-      peer["height"] = tblPeersOverview_->item(i, 3) ? tblPeersOverview_->item(i, 3)->text() : "";
-      peer["client"] = tblPeersOverview_->item(i, 4) ? tblPeersOverview_->item(i, 4)->text() : "";
+      peer["blocks_seen"] = tblPeersOverview_->item(i, 3) ? tblPeersOverview_->item(i, 3)->text() : "";
+      peer["headers_seen"] = tblPeersOverview_->item(i, 4) ? tblPeersOverview_->item(i, 4)->text() : "";
+      peer["client"] = tblPeersOverview_->item(i, 5) ? tblPeersOverview_->item(i, 5)->text() : "";
       peers.append(peer);
     }
   }
@@ -15970,14 +16016,15 @@ void MainWindow::onExportMetrics() {
     
     // Add peers
     out << "\nPeers\n";
-    out << "Location,Endpoint,Activity,Uptime,Seen Height,Client\n";
+    out << "Location,Endpoint,Activity,Uptime,Blocks Seen,Headers Seen,Client\n";
     for (const QJsonValue& peerVal : peers) {
       QJsonObject peer = peerVal.toObject();
       out << peer["location"].toString() << ","
           << peer["endpoint"].toString() << ","
           << peer["activity"].toString() << ","
           << peer["uptime"].toString() << ","
-          << peer["height"].toString() << ","
+          << peer["blocks_seen"].toString() << ","
+          << peer["headers_seen"].toString() << ","
           << peer["client"].toString() << "\n";
     }
     
