@@ -247,6 +247,32 @@ TEST(UtreexoConnectPerf, GenerateFastForManyTargets) {
 
 }  // namespace
 
+// ConnectBlock hands its private forest to generate()'s rvalue overload rather
+// than letting generate() clone it a second time (block_validation.cpp ~2102).
+// Two full deep copies of a ~300k-leaf forest per block became one. That is a
+// pure optimisation ONLY if adopting the forest yields the identical proof.
+TEST(UtreexoConnectPerf, GenerateOverloadsAgreeByteForByte) {
+  UtreexoForest forest = BuildForest(1024);
+  const Block block = CoinbaseOnlyBlock(7);
+  BlockUtreexoProof spend_proof;
+
+  // Pre-existing path: caller keeps its forest, generate() clones internally.
+  const auto from_const_ref =
+      UtreexoTransitionProof::generate(forest, block, spend_proof, 7);
+
+  // New path: caller owns a private forest and hands ownership over.
+  UtreexoForest owned = forest.clone();
+  const auto from_rvalue =
+      UtreexoTransitionProof::generate(std::move(owned), block, spend_proof, 7);
+
+  EXPECT_EQ(from_const_ref.serialize(), from_rvalue.serialize())
+      << "adopting the forest must produce a byte-identical transition proof; "
+         "any difference here is a consensus change, not an optimisation";
+
+  // The const& overload must leave the caller's forest untouched.
+  EXPECT_EQ(forest.getNumLeaves(), 1024u);
+}
+
 int main(int argc, char** argv) {
   // computeAdditionHashes' activation dispatch consults chain params.
   dinero::SelectParams(dinero::Chain::REGTEST);

@@ -1814,6 +1814,22 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/commitment_tree_tests.cpp)
 endif()
 
 # shielded-epoch-reset fork (cutover) — reset transformation tests
+# UtreexoForest must be movable — an empty user-declared destructor silently
+# suppressed the implicit move ops, making every std::move a deep copy.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_utreexo_forest_move.cpp)
+  add_executable(test_utreexo_forest_move tests/consensus/test_utreexo_forest_move.cpp)
+  add_dependencies(test_utreexo_forest_move gtest dinero_consensus)
+  target_link_libraries(test_utreexo_forest_move PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> dinero_consensus)
+  target_include_directories(test_utreexo_forest_move BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  add_test(NAME UtreexoForestMove COMMAND test_utreexo_forest_move)
+  set_tests_properties(UtreexoForestMove PROPERTIES
+    LABELS "utreexo;consensus;perf" TIMEOUT 60)
+  message(STATUS "UtreexoForest move-semantics test enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_epoch_reset.cpp)
   add_executable(test_shielded_epoch_reset
     tests/consensus/test_shielded_epoch_reset.cpp

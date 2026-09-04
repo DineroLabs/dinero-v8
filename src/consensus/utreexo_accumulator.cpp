@@ -3509,8 +3509,19 @@ std::vector<UtreexoHash> UtreexoTransitionProof::computeAdditionHashes(
     return additions;
 }
 
+// const& entry point: the caller keeps its forest, so we take our own copy and
+// hand ownership to the rvalue overload below. Exactly one deep copy.
 UtreexoTransitionProof UtreexoTransitionProof::generate(
     const UtreexoForest& forest_before,
+    const dinero::Block& block,
+    const BlockUtreexoProof& spend_proof,
+    uint32_t block_height
+) {
+    return generate(forest_before.clone(), block, spend_proof, block_height);
+}
+
+UtreexoTransitionProof UtreexoTransitionProof::generate(
+    UtreexoForest&& forest_before,
     const dinero::Block& block,
     const BlockUtreexoProof& spend_proof,
     uint32_t block_height
@@ -3526,8 +3537,11 @@ UtreexoTransitionProof UtreexoTransitionProof::generate(
     tp.deletion_positions = spend_proof.positions;
     tp.deletion_proof_hashes = spend_proof.proof_hashes;
 
-    // Clone forest for non-destructive simulation
-    UtreexoForest snapshot = forest_before.clone();
+    // Adopt the caller's forest for the non-destructive simulation. The
+    // pre-state above was already read from it, so moving here is safe and
+    // saves a full deep copy. (Reachable only via the const& overload's clone
+    // or a caller that owns a private forest — never the live one.)
+    UtreexoForest snapshot = std::move(forest_before);
 
     // PASS 1 (batched): resolve each spend target to its live position via
     // the clone's leaf index, then remove them all in ONE call so the roots
