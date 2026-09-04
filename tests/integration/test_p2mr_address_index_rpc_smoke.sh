@@ -205,4 +205,24 @@ CONFIRMED_BALANCE="$(rpc_result "getaddressbalance" "[\"$P2MR_ADDR\"]")"
 [ "$(rpc_result "getaddressmempool" "[\"$P2MR_ADDR\"]" | jq -r '.transactions | length')" = "0" ] || fail "P2MR mempool overlay should clear after confirmation"
 pass "confirmed P2MR address-index balance converges after mining"
 
+# wallet.listaddresses backs the Receive address table. P2MR UTXOs are stored
+# under their canonical 5320... scriptPubKey, so the per-address row must use
+# that script lookup rather than looking up the human-readable din1r address.
+LISTED_P2MR="$(rpc_result "wallet.listaddresses" | jq -c --arg address "$P2MR_ADDR" '[.[] | select(.address == $address)]')"
+[ "$(echo "$LISTED_P2MR" | jq -r 'length')" = "1" ] || fail "wallet.listaddresses must contain exactly one derived P2MR row"
+[ "$(echo "$LISTED_P2MR" | jq -r '.[0].type')" = "p2mr" ] || fail "wallet.listaddresses P2MR row has wrong type"
+[[ "$(echo "$LISTED_P2MR" | jq -r '.[0].scriptPubKey // empty')" =~ ^5320[0-9a-f]{64}$ ]] || fail "wallet.listaddresses P2MR row must expose its canonical scriptPubKey"
+LISTED_P2MR_BALANCE="$(echo "$LISTED_P2MR" | jq -r '.[0].balance')"
+LISTED_P2MR_CONFIRMED="$(echo "$LISTED_P2MR" | jq -r '.[0].confirmed')"
+LISTED_P2MR_SPENDABLE="$(echo "$LISTED_P2MR" | jq -r '.[0].spendable')"
+echo "$LISTED_P2MR" | jq -e '.[0].balance == 2' >/dev/null || fail "wallet.listaddresses P2MR balance must equal 2 DIN (got $LISTED_P2MR_BALANCE; row=$LISTED_P2MR)"
+echo "$LISTED_P2MR" | jq -e '.[0].confirmed == 2' >/dev/null || fail "wallet.listaddresses P2MR confirmed balance must equal 2 DIN (got $LISTED_P2MR_CONFIRMED)"
+echo "$LISTED_P2MR" | jq -e '.[0].spendable == 2' >/dev/null || fail "wallet.listaddresses P2MR spendable balance must equal 2 DIN (got $LISTED_P2MR_SPENDABLE)"
+[ "$(echo "$LISTED_P2MR" | jq -r '.[0].utxo_count')" = "1" ] || fail "wallet.listaddresses P2MR UTXO count must equal one"
+
+GLOBAL_P2MR="$(rpc_result "wallet.getbalance" | jq -r '.pq_balance_din')"
+jq -en --argjson value "$GLOBAL_P2MR" '$value == 2' >/dev/null || fail "single-address wallet global P2MR balance must equal 2 DIN"
+jq -en --argjson listed "$LISTED_P2MR_BALANCE" --argjson global "$GLOBAL_P2MR" '$listed == $global' >/dev/null || fail "per-address P2MR balance must equal global P2MR balance"
+pass "wallet.listaddresses reports the canonical P2MR script balance"
+
 echo -e "${GREEN}SUCCESS:${NC} P2MR address-index RPC smoke checks passed"
