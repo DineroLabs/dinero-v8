@@ -7122,20 +7122,16 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       QString pa = obj.value("primary_address").toString();
       if (!pa.isEmpty()) cachedPrimaryAddress_ = pa;
 
-      // Apply to receive tab
-      applyPrimaryAddressesToReceiveTab();
-    }
-  } else if (method == "wallet.getviewkeyinfo") {
-    // Phase 6: wallet identity = fingerprint:accountIndex (matches DineroDPI model)
-    if (result.isObject()) {
-      const auto obj = result.toObject();
-      const QString fp = obj.value("fingerprint").toString();
+      const QString fingerprint = obj.value("fingerprint").toString();
       const int accountIndex = obj.value("account_index").toInt(0);
-      if (!fp.isEmpty() && changeAddrMgr_) {
+      if (!fingerprint.isEmpty() && changeAddrMgr_) {
         changeAddrMgr_->setWalletIdentityKey(
-            QString("%1:%2").arg(fp).arg(accountIndex));
+            QString("%1:%2").arg(fingerprint).arg(accountIndex));
         changeAddrMgr_->reconcileStaleReservations();
       }
+
+      // Apply to receive tab
+      applyPrimaryAddressesToReceiveTab();
     }
   } else if (method == "wallet.listwallets") {
     if (cmbWalletSelector_) {
@@ -7234,7 +7230,6 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         rpc_->call("wallet.listunspent", QJsonArray());
         loadTransactionHistory();
         rpc_->call("wallet.getsyncstatus", QJsonArray());
-        rpc_->call("wallet.getviewkeyinfo", QJsonArray()); // Phase 6: get fingerprint for change reservation
         return;
       }
 
@@ -7252,7 +7247,6 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
       rpc_->call("wallet.listunspent", QJsonArray());
       loadTransactionHistory();
-      rpc_->call("wallet.getviewkeyinfo", QJsonArray());
     }
     QMessageBox::warning(this, "Wallet Load Failed",
       QString("Could not load selected wallet.\n\n%1").arg(errorText));
@@ -7837,7 +7831,6 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
       rpc_->call("wallet.listunspent", QJsonArray());
       loadTransactionHistory();
-      rpc_->call("wallet.getviewkeyinfo", QJsonArray());
     }
     QMessageBox::warning(this, "Wallet Load Failed",
       QString("Could not load selected wallet.\n\n%1").arg(message));
@@ -12539,7 +12532,6 @@ void MainWindow::onWalletCreated(const QString& walletName, const QString& finge
   rpc_->call("wallet.listwallets", QJsonArray());
   rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
   rpc_->call("wallet.listunspent", QJsonArray());
-  rpc_->call("wallet.getviewkeyinfo", QJsonArray());
   loadTransactionHistory();
 
   // Primary addresses are now computed by the daemon on open/unlock
@@ -13746,7 +13738,6 @@ bool MainWindow::shouldIgnoreWalletScopedResult(const QString& method) const {
     // Loaded on-demand when user opens receive tab instead
     QStringLiteral("wallet.listunspent"),
     QStringLiteral("wallet.listtransactions"),
-    QStringLiteral("wallet.getviewkeyinfo"),
     QStringLiteral("wallet.getsyncstatus"),
     QStringLiteral("wallet.getreorginfo"),
     QStringLiteral("wallet.rescanblockchain"),
@@ -13969,9 +13960,7 @@ void MainWindow::checkRescanStatus() {
         // Clear stale data from previous wallet
         clearWalletScopedUiState();
         refreshWalletMiningAddress();
-        if (!currentWalletName_.isEmpty()) {
-          rpc_->call("wallet.getviewkeyinfo", QJsonArray());
-        } else if (changeAddrMgr_) {
+        if (currentWalletName_.isEmpty() && changeAddrMgr_) {
           changeAddrMgr_->setWalletIdentityKey(QString());
         }
 

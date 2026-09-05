@@ -157,6 +157,8 @@ private:
 
     // Activity
     QTextEdit* activityLog_ = nullptr;
+    bool rpcEverConnected_ = false;
+    bool rpcUnavailable_ = false;
 
     // Notes table
     QTableWidget* notesTable_ = nullptr;
