@@ -1847,6 +1847,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/dump_shielded_vectors.cpp)
   add_executable(dump_shielded_vectors
     tests/consensus/dump_shielded_vectors.cpp
+    src/consensus/state_commitment.cpp
     src/primitives/uint256.cpp
   )
   add_dependencies(dump_shielded_vectors dinero_shielded)
@@ -1885,6 +1886,32 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/dump_shielded_vectors.cpp)
     TIMEOUT 60
   )
   message(STATUS "Shielded deterministic vector dumper enabled")
+endif()
+
+# state_commitment_v1 coinbase encoding lock. Freezes the byte layout BEFORE
+# any activation height exists -- after activation a layout change is a split.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_encoding.cpp)
+  add_executable(test_state_commitment_encoding
+    tests/consensus/test_state_commitment_encoding.cpp
+    src/consensus/state_commitment.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_state_commitment_encoding gtest gtest_main dinero_shielded)
+  target_link_libraries(test_state_commitment_encoding PRIVATE
+    GTest::gtest_main
+    dinero_shielded
+  )
+  target_include_directories(test_state_commitment_encoding BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentEncoding COMMAND test_state_commitment_encoding)
+  set_tests_properties(StateCommitmentEncoding PROPERTIES
+    LABELS "shielded;consensus;encoding;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "state_commitment_v1 encoding tests enabled")
 endif()
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_root.cpp)

@@ -20,6 +20,7 @@
 
 #include "consensus/shielded/nullifier_accumulator.h"
 #include "consensus/shielded/shielded_root.h"
+#include "consensus/state_commitment.h"
 #include "primitives/uint256.h"
 
 namespace sh = dinero::consensus::shielded;
@@ -140,6 +141,19 @@ int main() {
         EmitAcc("many_256_ascending", many);
         std::vector<sh::NullifierEntry> rev(many.rbegin(), many.rend());
         EmitAcc("many_256_descending", rev);  // must equal ascending
+    }
+
+    // --- coinbase encoding (state_commitment_v1) ---------------------------
+    // In the determinism matrix too: the script is consensus data, so an
+    // architecture-dependent encoding would fork the chain exactly as an
+    // architecture-dependent digest would.
+    for (uint8_t seed : {0x00, 0x01, 0x7f, 0x80, 0xff}) {
+        dinero::uint256 r;
+        const auto p = Pattern(32, seed);
+        std::memcpy(r.data, p.data(), 32);
+        const auto script = dinero::consensus::BuildStateCommitmentScript(r);
+        std::printf("cbsc seed_%02x                     len=%zu script=%s\n",
+                    seed, script.size(), Hex(script).c_str());
     }
 
     std::printf("# end\n");
