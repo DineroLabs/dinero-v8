@@ -15,7 +15,7 @@ foreach(required
     "explorerWindow_ = makeScrollableTab(explorer)"
     "void MainWindow::showExplorerWindow()"
     "const int rowCount = std::min(10, height + 1)"
-    "tblRecentBlocks_->setFixedHeight(26 * 4 + 30)"
+    "tblRecentBlocks_->setFixedHeight(26 * 5 + 30)"
     "tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded)"
     "tblRecentBlocks_->setAlternatingRowColors(false)"
     "QTableWidget::item { background-color: #1d2126; padding: 4px; }")

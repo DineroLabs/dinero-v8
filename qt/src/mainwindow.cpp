@@ -2501,8 +2501,8 @@ void MainWindow::setupUI() {
     connectivityLayout->setSpacing(8);
     auto* contributionHeader = new QHBoxLayout;
     auto* contributionSummary = new QLabel(
-        "A live, read-only summary of how this node participates in the Dinero network. "
-        "Tor and relay controls are available under Network & Privacy in Settings.",
+        "Live node participation status. Manage Tor and relay controls in "
+        "Settings → Network & Privacy.",
         connectivityBox);
     contributionSummary->setWordWrap(true);
     contributionSummary->setStyleSheet("QLabel { color: #9fb3c8; background: transparent; }");
@@ -3697,9 +3697,9 @@ void MainWindow::setupUI() {
     tblRecentBlocks_->setColumnWidth(3, 60);
     tblRecentBlocks_->setColumnWidth(4, 120);
     // Keep the Overview compact while retaining enough recent history to be
-    // useful: four rows are visible and the remaining six are scrollable.
+    // useful: five rows are visible and the remaining five are scrollable.
     tblRecentBlocks_->verticalHeader()->setDefaultSectionSize(26);
-    tblRecentBlocks_->setFixedHeight(26 * 4 + 30);
+    tblRecentBlocks_->setFixedHeight(26 * 5 + 30);
     tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     // The generic Explorer table uses alternating rows. Inside Overview those
     // lighter stripes look detached from the surrounding dark card, so use a
@@ -8432,7 +8432,7 @@ void MainWindow::updateExplorerRecentBlocks(int height) {
   explorerRecentBlockRows_.clear();
   pendingExplorerRecentHeight_ = -1;
 
-  // Retain ten recent blocks; the compact Overview card shows four at once
+  // Retain ten recent blocks; the compact Overview card shows five at once
   // and exposes the rest through its vertical scrollbar.
   const int rowCount = std::min(10, height + 1);
   tblRecentBlocks_->setRowCount(rowCount);
