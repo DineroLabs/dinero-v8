@@ -2483,25 +2483,65 @@ void MainWindow::setupUI() {
     monitoringGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     monitoringGroup->setMaximumHeight(650);
     
-    // Row 1: resilient network controls + compact resource telemetry.
+    // Row 1: read-only node contribution + compact resource telemetry.
     auto *row1 = new QHBoxLayout;
     row1->setSpacing(12);
 
-    auto* connectivityBox = new QGroupBox("Connectivity & contribution");
+    auto* connectivityBox = new QGroupBox("Your Node Contribution");
     auto* connectivityLayout = new QVBoxLayout(connectivityBox);
-    connectivityLayout->setContentsMargins(4, 6, 4, 4);
-    overviewConnectivityCard_ = new dinero::qt::OverviewConnectivityCard(connectivityBox);
-    connectivityLayout->addWidget(overviewConnectivityCard_);
+    connectivityLayout->setContentsMargins(10, 10, 10, 8);
+    connectivityLayout->setSpacing(8);
+    auto* contributionSummary = new QLabel(
+        "A live, read-only summary of how this node participates in the Dinero network.",
+        connectivityBox);
+    contributionSummary->setWordWrap(true);
+    contributionSummary->setStyleSheet("QLabel { color: #9fb3c8; background: transparent; }");
+    connectivityLayout->addWidget(contributionSummary);
+
+    auto* contributionTiles = new QHBoxLayout;
+    contributionTiles->setSpacing(8);
+    auto addContributionTile = [contributionTiles, connectivityBox](const QString& title,
+                                                                    QLabel*& valueLabel) {
+      auto* tile = new QWidget(connectivityBox);
+      tile->setStyleSheet(
+          "QWidget { background: #171b20; border: 1px solid #2f363f; border-radius: 6px; }");
+      auto* tileLayout = new QVBoxLayout(tile);
+      tileLayout->setContentsMargins(10, 7, 10, 7);
+      tileLayout->setSpacing(2);
+      auto* titleLabel = new QLabel(title, tile);
+      titleLabel->setStyleSheet(
+          "QLabel { color: #8f9ba8; font-size: 10px; border: none; background: transparent; }");
+      valueLabel = new QLabel("Checking…", tile);
+      valueLabel->setStyleSheet(
+          "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+      tileLayout->addWidget(titleLabel);
+      tileLayout->addWidget(valueLabel);
+      contributionTiles->addWidget(tile, 1);
+    };
+    addContributionTile("REACHABILITY", lblOverviewReachability_);
+    addContributionTile("CONTRIBUTION", lblOverviewContribution_);
+    addContributionTile("CONNECTIVITY", lblOverviewConnectivity_);
+    connectivityLayout->addLayout(contributionTiles);
+
+    auto* contributionFooter = new QHBoxLayout;
+    auto* contributionHint = new QLabel(
+        "Tor and relay controls are available under Network & Privacy in Settings.", connectivityBox);
+    contributionHint->setStyleSheet("QLabel { color: #8f9ba8; font-size: 11px; }");
+    auto* btnNetworkSettings = new QPushButton("Network settings", connectivityBox);
+    btnNetworkSettings->setStyleSheet(chromeButtonStyle());
+    connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
+      for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
+          tabs->setCurrentIndex(i);
+          return;
+        }
+      }
+    });
+    contributionFooter->addWidget(contributionHint, 1);
+    contributionFooter->addWidget(btnNetworkSettings);
+    connectivityLayout->addLayout(contributionFooter);
     connectivityBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     connectivityBox->setMaximumHeight(235);
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::torModeRequested,
-            this, [this](const QString& mode) {
-      rpc_->callNamed("network.setonionservice", QJsonObject{{"mode", mode}});
-    });
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
-            this, [this](const QString& mode) {
-      rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
-    });
     row1->addWidget(connectivityBox, 2);
 
     auto *cpuBox = new QGroupBox("Resources & mining");
@@ -4955,6 +4995,27 @@ void MainWindow::setupUI() {
     runtimeLayout->addLayout(runtimeButtons, 3, 0, 1, 2);
     layout->addWidget(runtimeGroup);
 
+    auto* networkPrivacyGroup = new QGroupBox("Network & Privacy");
+    auto* networkPrivacyLayout = new QVBoxLayout(networkPrivacyGroup);
+    networkPrivacyLayout->setSpacing(8);
+    auto* networkPrivacySummary = new QLabel(
+        "Choose how this node connects privately and whether it contributes relay capacity. "
+        "These settings affect Dinero P2P traffic only.", networkPrivacyGroup);
+    networkPrivacySummary->setWordWrap(true);
+    networkPrivacySummary->setStyleSheet(backupPanelStyle());
+    networkPrivacyLayout->addWidget(networkPrivacySummary);
+    overviewConnectivityCard_ = new dinero::qt::OverviewConnectivityCard(networkPrivacyGroup);
+    networkPrivacyLayout->addWidget(overviewConnectivityCard_);
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::torModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setonionservice", QJsonObject{{"mode", mode}});
+    });
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
+    });
+    layout->addWidget(networkPrivacyGroup);
+
     auto *developerGroup = new QGroupBox("🧪 Developer Menu");
     auto *developerLayout = new QVBoxLayout(developerGroup);
     developerLayout->setSpacing(10);
@@ -6839,11 +6900,17 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   } else if (method == "network.getrelayservice" || method == "network.setrelayservice") {
     if (overviewConnectivityCard_ && result.isObject()) {
-      overviewConnectivityCard_->setRelayServiceStatus(result.toObject());
+      const QJsonObject status = result.toObject();
+      overviewConnectivityCard_->setRelayServiceStatus(status);
+      overviewRelayActive_ = status["enabled"].toBool(false);
+      updateOverviewContribution();
     }
   } else if (method == "network.setonionservice") {
     if (overviewConnectivityCard_ && result.isObject()) {
-      overviewConnectivityCard_->setOnionServiceStatus(result.toObject());
+      const QJsonObject status = result.toObject();
+      overviewConnectivityCard_->setOnionServiceStatus(status);
+      overviewTorActive_ = status["active"].toBool(false);
+      updateOverviewContribution();
     }
   } else if (method == "getpeerinfo" || method == "getpeerinfo") {
     // Week 7: Backend returns { "peers": [...], "connected_peers": N }
@@ -6867,6 +6934,15 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     
     // Feed real peer count to AI tools + status strip
     cachedPeerCount_ = peerCount;
+    overviewInboundPeers_ = 0;
+    for (const QJsonValue& value : peers) {
+      const QJsonObject peer = value.toObject();
+      if (peer["inbound"].toBool(false) ||
+          peer["direction"].toString().compare("inbound", Qt::CaseInsensitive) == 0) {
+        ++overviewInboundPeers_;
+      }
+    }
+    updateOverviewContribution();
     refreshAiStatusStrip();
 
     // Update monitoring dashboard
@@ -15637,6 +15713,12 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   const bool localRelay = relay["local"].toBool(networkInfo["localrelay"].toBool(false));
   const bool miningRelayActive =
       relay["mining_active"].toBool(networkInfo["mining_relay_active"].toBool(false));
+  const QJsonObject onionService = networkInfo["onion_service"].toObject();
+  overviewNetworkActive_ = networkActive;
+  overviewDirectReachable_ = directReachable;
+  overviewTorActive_ = onionService["active"].toBool(false);
+  overviewRelayActive_ = relay["enabled"].toBool(localRelay || miningRelayActive);
+  overviewInboundPeers_ = inbound;
 
   cachedPeerCount_ = connections;
   if (lblConnections_) {
@@ -15774,6 +15856,42 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   }
 
   refreshAiStatusStrip();
+  updateOverviewContribution();
+}
+
+void MainWindow::updateOverviewContribution() {
+  if (lblOverviewReachability_) {
+    if (!overviewNetworkActive_) {
+      lblOverviewReachability_->setText("P2P disabled");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #a9b2bc; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else if (overviewDirectReachable_) {
+      lblOverviewReachability_->setText("Direct inbound");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #80d39b; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else if (overviewTorActive_) {
+      lblOverviewReachability_->setText("Tor available");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #a9c5ff; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else {
+      lblOverviewReachability_->setText("Outbound only");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #d8c08a; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    }
+  }
+  if (lblOverviewContribution_) {
+    lblOverviewContribution_->setText(overviewRelayActive_ ? "Relay active" : "Ordinary peer");
+    lblOverviewContribution_->setStyleSheet(QString(
+        "QLabel { color: %1; font-size: 13px; font-weight: 600; border: none; background: transparent; }")
+        .arg(overviewRelayActive_ ? "#80d39b" : "#d6dde6"));
+  }
+  if (lblOverviewConnectivity_) {
+    const int peers = std::max(0, cachedPeerCount_);
+    lblOverviewConnectivity_->setText(QString("%1 peers · %2 inbound")
+        .arg(peers).arg(std::max(0, overviewInboundPeers_)));
+    lblOverviewConnectivity_->setStyleSheet(
+        "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+  }
 }
 
 QString MainWindow::networkDiagnosticsText() const {
