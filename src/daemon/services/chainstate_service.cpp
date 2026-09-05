@@ -1,4 +1,5 @@
 #include "daemon/services/chainstate_service.h"
+#include "consensus/assumeutxo_fork_guard.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/chainstate_commit_batch.h"
 #include "daemon/coinbase_readback_gate.h"  // maturity gate for coinbase read-back
@@ -49,6 +50,7 @@
 #include "consensus/consensus_write_batch.h"  // Phase 3a: atomic persistence scaffold
 #include "consensus/proof_gossip.h"  // Phase 9.3+: Tip-proof prewarm
 #include "consensus/assume_utxo.h"  // Snapshot trust anchors (optional hard gate)
+#include "consensus/shielded/shielded_root.h"  // Shielded-state root (step 1; committed nowhere yet)
 #include "consensus/utxo_set_digest.h"  // Canonical per-UTXO record serializer (Task 2)
 #include "consensus/active_chain_ancestry.h"  // Active-chain hash lookup by height
 #include "consensus/block_index.h"   // REORG FIX: For global FindBlockIndex fallback
@@ -975,6 +977,13 @@ bool ChainstateService::ResolveCanonicalBlockHash(uint32_t height,
 }
 
 bool ChainstateService::LoadShieldedState() {
+    // Publish the network decision once, before any shielded bundle can be
+    // applied. Hooks inside consensus translation units read this flag rather
+    // than dinero::Params(), so those TUs stay free of a chainparams link
+    // dependency — gating one on Params() broke four test targets at link time.
+    dinero::testing::CrashHooksEnabled().store(
+        dinero::Params().network_id == "regtest");
+
     const std::string nullifier_path =
         (std::filesystem::path(datadir_) / "blockchain" / "shielded_nullifiers.db").string();
     const auto open_result = shielded_nullifiers_.Open(nullifier_path);
@@ -1082,8 +1091,33 @@ bool ChainstateService::LoadShieldedState() {
                     "[ChainstateService] Sqlite nullifier cache rehydrated from ChainDB "
                     "(rows=" + std::to_string(hydrated) + ")");
             }
+        } else if (chaindb_count == 0 && sqlite_count_before > 0 &&
+                   shielded_nullifiers_.GetProvenance() !=
+                       consensus::shielded::NullifierSet::Provenance::LegacyCandidate) {
+            // AMBIGUITY RESOLVED. "ChainDB empty, sqlite populated" is NOT
+            // evidence of a legacy database: the crash window produces exactly
+            // that state. The first shielded block commits its nullifier batch
+            // to sqlite, the process dies before the ChainDB write, and the
+            // node restarts with an empty ChainDB and a populated cache.
+            //
+            // Promoting those rows would make an UNCONNECTED block's
+            // nullifiers authoritative and its notes permanently unspendable —
+            // a persistent false-spend denial that no later reorg undoes.
+            //
+            // The file's provenance discriminates. Anything stamped as a cache
+            // is treated as a cache: wipe it, exactly as Mode B would.
+            if (logger_) {
+                logger_->warning(
+                    "[ChainstateService] sqlite holds " +
+                    std::to_string(sqlite_count_before) +
+                    " nullifier row(s) while ChainDB has none, but the file is "
+                    "stamped as a cache — treating as post-crash residue and "
+                    "discarding. Rows are NOT promoted to authoritative.");
+            }
+            shielded_nullifiers_.Clear();
         } else if (chaindb_count == 0 && sqlite_count_before > 0) {
-            // Mode C: one-shot migration from legacy sqlite into the
+            // Mode C: one-shot migration from a genuine pre-authority sqlite
+            // database (unstamped user_version AND populated) into the
             // ChainDB column family. Parse SerializeContent's byte
             // stream — format is:
             //   tag 'NSCF' (4) || version=1 (2) || count_LE_u64 (8) ||
@@ -1129,6 +1163,92 @@ bool ChainstateService::LoadShieldedState() {
                 return false;
             }
 
+            // ── UPGRADE POLICY: verify against canonical history ──────────
+            //
+            // An unstamped populated database is NOT automatically a legacy
+            // one. It can also be crash residue from a build predating the
+            // stamp, and no stamp resolves that retrospectively.
+            //
+            // Height alone is NOT sufficient. "height <= tip" is satisfied by
+            // residue from a DISCONNECTED or losing-fork block, which would
+            // then be promoted and permanently refuse a valid spend. So every
+            // candidate row is verified against the CANONICAL BLOCK at its
+            // recorded height: the nullifier must actually be spent in that
+            // block. Anything unverifiable — block unreadable, bundle
+            // undecodable, nullifier absent — quarantines the whole migration.
+            //
+            // Fail-closed by construction: promotion requires positive proof,
+            // never the absence of a disproof.
+            {
+                uint64_t unverified = 0;
+                uint32_t first_bad_height = 0;
+                std::string reason;
+                for (uint64_t i = 0; i < expected && unverified == 0; ++i) {
+                    const size_t off = kHeaderBytes + i * kRowBytes;
+                    uint32_t h = 0;
+                    for (int j = 0; j < 4; ++j) {
+                        h |= static_cast<uint32_t>(bytes[off + j]) << (j * 8);
+                    }
+                    consensus::shielded::Hash want{};
+                    std::memcpy(want.data(), &bytes[off + 4], 32);
+
+                    uint256 canonical;
+                    if (!ResolveCanonicalBlockHash(h, canonical)) {
+                        ++unverified; first_bad_height = h;
+                        reason = "no canonical block at that height";
+                        break;
+                    }
+                    const auto blk = ReadStoredBlock(canonical);
+                    if (blk.status() != Status::Ok) {
+                        ++unverified; first_bad_height = h;
+                        reason = "canonical block body unreadable";
+                        break;
+                    }
+                    bool found = false;
+                    for (const auto& tx : blk.value().vtx) {
+                        if (!tx.IsShielded()) continue;
+                        consensus::shielded::ShieldedBundle bundle;
+                        if (consensus::shielded::DeserializeShieldedBundle(
+                                tx.shielded_bundle_bytes, &bundle) !=
+                            consensus::shielded::BundleDecodeError::Ok) {
+                            continue;
+                        }
+                        for (const auto& sp : bundle.spends) {
+                            if (sp.nullifier == want) { found = true; break; }
+                        }
+                        if (found) break;
+                    }
+                    if (!found) {
+                        ++unverified; first_bad_height = h;
+                        reason = "nullifier not spent in the canonical block at that height";
+                    }
+                }
+
+                if (unverified > 0) {
+                    if (logger_) {
+                        logger_->error(
+                            "[ChainstateService] QUARANTINE: sqlite nullifier database is "
+                            "unstamped and populated, but a row at height " +
+                            std::to_string(first_bad_height) + " could not be verified "
+                            "against canonical history (" + reason + "). This is crash or "
+                            "fork residue rather than a legacy database. Refusing to "
+                            "promote it to authoritative — that would make an unconnected "
+                            "block's nullifiers permanent and its notes unspendable. "
+                            "Recover by removing the sqlite nullifier cache (ChainDB is "
+                            "authoritative and it is rebuilt automatically), or investigate "
+                            "the datadir if you believe this is a genuine pre-authority "
+                            "wallet.");
+                    }
+                    return false;
+                }
+                if (logger_) {
+                    logger_->warning(
+                        "[ChainstateService] All " + std::to_string(expected) +
+                        " legacy nullifier row(s) verified against canonical blocks; "
+                        "migration may proceed");
+                }
+            }
+
             rocksdb::WriteBatch migration_batch;
             ChainWriteToken token = ChainWriteToken::CreateForTesting();
             for (uint64_t i = 0; i < expected; ++i) {
@@ -1161,10 +1281,25 @@ bool ChainstateService::LoadShieldedState() {
                 }
                 return false;
             }
+            // COMPLETION MARKER. Stamp the file so this migration can never
+            // run twice and the same rows can never be read as legacy again.
+            // Without it, a subsequent crash-window restart on this datadir
+            // would present the identical "ChainDB empty, sqlite populated"
+            // shape and re-promote residue.
+            if (!shielded_nullifiers_.MarkAsCache()) {
+                if (logger_) {
+                    logger_->error(
+                        "[ChainstateService] Sqlite nullifier migration committed but the "
+                        "cache stamp FAILED — refusing startup rather than leaving a file "
+                        "that could be re-read as legacy");
+                }
+                return false;
+            }
             if (logger_) {
                 logger_->warning(
                     "[ChainstateService] Migrated " + std::to_string(expected) +
-                    " sqlite nullifier rows into ChainDB; ChainDB is now authoritative");
+                    " sqlite nullifier rows into ChainDB; ChainDB is now authoritative "
+                    "and the sqlite file is permanently stamped as a cache");
             }
         }
     }
@@ -1579,6 +1714,14 @@ uint256 ChainstateService::ComputeShieldedReorgStateHash() const {
     uint256 out;
     std::memcpy(out.data, digest, 32);
     return out;
+}
+
+std::optional<uint256> ChainstateService::ComputeShieldedRoot() const {
+    // Thin wrapper: the layout lives in consensus/shielded/shielded_root.cpp so
+    // it is a pure function testable with vectors, not something that can drift
+    // with daemon state. See that header for why it is not DSR2.
+    return consensus::shielded::ComputeShieldedRoot(
+        shielded_tree_, shielded_nullifiers_, shielded_anchor_history_);
 }
 
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
@@ -8378,11 +8521,18 @@ void ChainstateService::ActivateBestChain() {
     // and the deep-reorg branch of this same function already call it while
     // holding the lock.
     {
-        const uint32_t effective_base = std::max(
-            assumeutxo_active_ ? assumeutxo_base_height_ : 0u,
-            promoted_base_height_);
-        if (fork_point && fork_point != active_tip_ && effective_base > 0 &&
-            fork_point->height < static_cast<int>(effective_base)) {
+        // Predicate lives in consensus/assumeutxo_fork_guard.h so the boundary
+        // cases (fork AT the base vs one below it, pre- vs post-promotion) can
+        // be enumerated in a unit test instead of only in integration.
+        const consensus::ForkGuardContext fork_ctx{
+            /*assumeutxo_active=*/assumeutxo_active_,
+            /*assumeutxo_base_height=*/assumeutxo_base_height_,
+            /*promoted_base_height=*/promoted_base_height_};
+        const uint32_t effective_base = consensus::EffectiveSnapshotBase(fork_ctx);
+        if (consensus::IsForkBelowSnapshotBaseFatal(
+                fork_ctx, /*has_fork_point=*/fork_point != nullptr,
+                /*fork_is_active_tip=*/fork_point == active_tip_,
+                /*fork_point_height=*/fork_point ? fork_point->height : 0)) {
             const std::string reason =
                 "reorg below assumeutxo base: fork height " +
                 std::to_string(fork_point->height) + " < base " +
@@ -11020,6 +11170,22 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                                  std::to_string(header.block_height));
             }
             logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored (frontier + anchor history + nullifiers)");
+
+            // Record the shielded root AFTER restore — recording it earlier
+            // captures pre-restore state, which is what an initial version of
+            // this instrumentation did and what the first regtest run caught.
+            // This is the value the genesis->base replay is compared against.
+            if (utxo_index_) {
+                if (const auto shielded_root = ComputeShieldedRoot()) {
+                    utxo_index_->SetMetadata(assumeutxo::kExpectedShieldedRootKey,
+                                             shielded_root->GetHex());
+                    logger_->info("[LoadSnapshot] shielded root recorded for replay comparison: " +
+                                  shielded_root->GetHex());
+                } else {
+                    logger_->warning("[LoadSnapshot] shielded root unavailable (nullifier set "
+                                     "unreadable) — replay comparison will be skipped");
+                }
+            }
         }
 
         logger_->warning("⚠️  AssumeUTXO mode ACTIVE - UTXO set loaded from snapshot at height " +
@@ -11485,6 +11651,44 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
 // Production InvalidateBlock / ReconsiderBlock (Bitcoin Core model)
 // ============================================================================
 
+consensus::BlockStatusGeneration ChainstateService::CurrentBlockStatusGeneration() const {
+    if (!chain_db_) return 0;
+    const auto raw = chain_db_->getUtreexoMeta(consensus::kBlockStatusGenerationKey);
+    if (raw.status() != Status::Ok) return 0;
+    return consensus::ParseBlockStatusGeneration(raw.value());
+}
+
+consensus::BlockStatusGeneration ChainstateService::BumpBlockStatusGeneration(
+    const ChainWriteToken& token, rocksdb::WriteBatch* wb) {
+    const auto current = CurrentBlockStatusGeneration();
+    // Never wrap. Wrapping to 0 would make every in-flight result compare
+    // "stale" forever (0 never equals a real generation) and, worse, a later
+    // wrap could make a genuinely stale capture compare EQUAL to the current
+    // value. Saturate instead and refuse to advance; at one bump per operator
+    // invalidate/reconsider this is unreachable in practice, but a consensus
+    // counter must not have a defined-by-accident overflow.
+    if (current == std::numeric_limits<consensus::BlockStatusGeneration>::max()) {
+        if (logger_) {
+            logger_->error("[BlockStatusGeneration] counter is saturated at "
+                           "UINT64_MAX — refusing to advance rather than wrap. "
+                           "Operator status transitions are blocked until this "
+                           "is investigated.");
+        }
+        return current;
+    }
+    const auto next = current + 1;
+    if (chain_db_) {
+        chain_db_->putUtreexoMeta(token, consensus::kBlockStatusGenerationKey,
+                                  consensus::FormatBlockStatusGeneration(next), wb);
+    }
+    if (logger_) {
+        logger_->info("[BlockStatusGeneration] advanced to " + std::to_string(next) +
+                      " — results captured before this are stale and may not "
+                      "assert or preserve failure flags");
+    }
+    return next;
+}
+
 bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error) {
     // #586 bolt 3: this runs on the RPC thread and walks DisconnectTip in a
     // loop — WITHOUT this lock it races ActivateBestChain's ConnectTips on
@@ -11583,6 +11787,10 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
             logger_->warning("[InvalidateBlock] Failed to persist BLOCK_FAILED_VALID for "
                              + target->hash.GetHex().substr(0, 16) + "... — flag is in-memory only");
         }
+        // Advance the operator-decision generation alongside the invalidation,
+        // so an acceptance that began BEFORE this decision cannot commit a
+        // result that contradicts it either.
+        BumpBlockStatusGeneration(token);
     }
 
     dinero::testing::MaybeAbortAt("after_invalid_target_before_descendants",
@@ -11664,6 +11872,19 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
 }
 
 bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error) {
+    // Serialize against block acceptance, exactly as InvalidateBlock does.
+    //
+    // Without this the generation rule has a TOCTOU hole: ConnectBlock runs
+    // under activation_mutex_ and compares the captured generation to the
+    // current one, but an UNLOCKED ReconsiderBlock could bump the generation
+    // and clear the flags in the window between that compare and the write —
+    // so the acceptance would re-assert flags the operator had just cleared,
+    // which is the very bug the generation rule exists to prevent.
+    //
+    // Taking the same lock puts the compare and the write on one side of the
+    // decision and the bump and the clear on the other.
+    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+
     CBlockIndex* target = FindBlockIndex(hash);
     if (!target) {
         error = "Block not found in block index";
@@ -11731,6 +11952,13 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
             }
         }
 
+        // Advance the operator-decision generation in the SAME batch as the
+        // cleared flags. Any block-processing result captured before this point
+        // is now stale and may not re-assert the flags we are clearing — which
+        // is exactly what continuous re-relay was doing (650 re-assertions
+        // observed after a reconsider, tip never recovered).
+        BumpBlockStatusGeneration(token, &status_batch);
+
         const auto write_status = chain_db_->writeBatch(token, std::move(status_batch), true);
         if (write_status != Status::Ok) {
             error = "Failed to persist reconsidered invalidity batch";
@@ -11765,6 +11993,14 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
             }
         }
     }
+
+    // Crash boundary: the cleared flags and the advanced generation are
+    // DURABLE at this point, but the chain has not been re-activated. A restart
+    // here must preserve the operator's decision (flags stay cleared, the
+    // generation stays advanced) and must still reach the correct tip, because
+    // nothing has re-activated it yet.
+    dinero::testing::MaybeAbortAt("after_reconsider_persist_before_activate",
+                                  dinero::testing::CrashHooksEnabled().load());
 
     // Re-evaluate best chain
     ActivateBestChain();
@@ -16182,6 +16418,53 @@ void ChainstateService::BackgroundValidationWorker() {
         bool root_match = true;
         if (auto expected_root = utxo_index_->GetMetadata(assumeutxo::kExpectedUtreexoRootKey)) {
             root_match = (replay->UtreexoRootHex() == expected_root.value());
+        }
+
+        // ── Shielded half — ADVISORY (state_commitment_v1 evidence) ─────────
+        //
+        // Everything compared above covers only the transparent set; the
+        // engine's own header says so ("the records digest commits only the
+        // transparent set"). So a snapshot whose shielded section was forged is
+        // accepted at load, never contradicted here, and the node is then
+        // promoted to FullyValidated while running shielded state nothing ever
+        // verified.
+        //
+        // The replay already re-derives shielded state from genesis (it must,
+        // or a stateful BlockValidator would reject every shielded tx in honest
+        // history), so the comparison costs one hash of state we already hold.
+        //
+        // DELIBERATELY NOT FATAL YET. The replay is a third construction path —
+        // not live ConnectTip, not --reindex — and nothing has ever compared its
+        // shielded output. Divergences were found in both other paths, so
+        // enforcing before real snapshots have proven agreement risks failing
+        // HONEST nodes into a full resync. Log first; enforce once the evidence
+        // is in.
+        if (auto expected_shielded =
+                utxo_index_->GetMetadata(assumeutxo::kExpectedShieldedRootKey)) {
+            const auto* tree = replay->ShieldedTree();
+            const auto* nulls = replay->ShieldedNullifiers();
+            const auto* anchors = replay->ShieldedAnchors();
+            if (tree != nullptr && nulls != nullptr && anchors != nullptr) {
+                const auto replayed =
+                    consensus::shielded::ComputeShieldedRoot(*tree, *nulls, *anchors);
+                if (!replayed) {
+                    logger_->warning("[BackgroundValidation] shielded root: replay nullifier "
+                                     "set unreadable — comparison skipped");
+                } else if (replayed->GetHex() == expected_shielded.value()) {
+                    logger_->info("[BackgroundValidation] shielded root MATCHES the snapshot: " +
+                                  replayed->GetHex());
+                } else {
+                    logger_->error(
+                        "[BackgroundValidation] SHIELDED ROOT MISMATCH (advisory, not fatal) "
+                        "at base height " + std::to_string(target_height) +
+                        " — snapshot=" + expected_shielded.value() +
+                        " replayed=" + replayed->GetHex() +
+                        ". Either the snapshot's shielded section does not match genesis "
+                        "history, or the replay reconstructs shielded state differently from "
+                        "the live path. Both need explaining before state_commitment_v1 "
+                        "activates.");
+                }
+            }
         }
 
         const bool lifecycle_promoted_to_fully_validated =

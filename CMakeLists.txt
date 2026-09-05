@@ -987,6 +987,12 @@ add_library(dinero_core STATIC
   # only — opt-in via -consensus.atomic_persist=1, default off.
   src/consensus/consensus_write_batch.cpp
 
+  # state_commitment_v1 coinbase encoder/parser. Format only --
+  # advisory, no activation height, no consensus enforcement.
+  src/consensus/state_commitment.cpp
+  src/consensus/assumeutxo_fork_guard.cpp
+  src/consensus/block_status_generation.cpp
+
   # Service wrappers (dependency injection containers)
   src/daemon/services/config_service.cpp
   src/daemon/services/wallet_service.cpp

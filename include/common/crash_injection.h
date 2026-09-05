@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -8,6 +9,23 @@
 #include <unordered_map>
 
 namespace dinero::testing {
+
+/**
+ * Process-wide enable for crash hooks, set once by the daemon at startup when
+ * it knows the network.
+ *
+ * Exists so low-level consensus translation units can carry a hook WITHOUT
+ * referencing dinero::Params(). Gating a hook on Params() inside
+ * shielded_validation.cpp pulled ParamsImpl() into every target that links
+ * that TU and broke four of them at link time; the dependency belongs at the
+ * daemon layer that already knows the network, not in consensus code.
+ *
+ * Defaults to false, so a tool or test binary that never sets it cannot abort.
+ */
+inline std::atomic<bool>& CrashHooksEnabled() {
+    static std::atomic<bool> enabled{false};
+    return enabled;
+}
 
 inline bool CrashHookAllowed(bool enabled_for_this_process) {
     return enabled_for_this_process;

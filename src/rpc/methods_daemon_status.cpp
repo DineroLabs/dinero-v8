@@ -279,6 +279,32 @@ static din::Json rpc_shielded_state_hash(const ExecutionContext& ctx, const din:
 }
 
 // ═══════════════════════════════════════════════════════════════
+// daemon.shieldedroot — the shielded half of a snapshot's chain
+// binding. Read-only, committed nowhere yet: this is the value a
+// future block-header commitment would carry, exposed now so the
+// fleet can be cross-checked for determinism BEFORE anything about
+// it becomes consensus.
+// ═══════════════════════════════════════════════════════════════
+static din::Json rpc_shielded_root(const ExecutionContext& ctx, const din::Json& params) {
+    (void)params;
+    din::Json result;
+    auto* daemon_ctx = ctx.daemon ? ctx.daemon : DaemonContext::instance();
+    if (!daemon_ctx || !daemon_ctx->chainstate) {
+        result["error"] = "chainstate_not_initialized";
+        return result;
+    }
+    const auto root = daemon_ctx->chainstate->ComputeShieldedRoot();
+    if (!root.has_value()) {
+        // The nullifier set could not be enumerated. Report that, never a
+        // digest — an unreadable set and an empty set are different facts.
+        result["error"] = "nullifier_set_unreadable";
+        return result;
+    }
+    result["shielded_root"] = root->GetHex();
+    return result;
+}
+
+// ═══════════════════════════════════════════════════════════════
 // safemode.exit — operator manually clears safe mode
 //
 // Required to recover after a deep-reorg-triggered safe mode without
@@ -478,6 +504,27 @@ void register_daemon_status_rpc_methods(RpcRegistry& registry) {
     state_hash_meta.result.desc = "{ state_hash: string (hex) }";
     registry.registerHandler("daemon.shieldedstatehash", rpc_shielded_state_hash,
                              state_hash_meta, "Reorg Invertibility");
+
+    // daemon.shieldedroot — shielded-only fingerprint (header-commitment candidate)
+    RpcMethodMeta shielded_root_meta;
+    shielded_root_meta.name = "shieldedroot";
+    shielded_root_meta.ns = "daemon";
+    shielded_root_meta.description =
+        "32-byte SHA256 fingerprint (tag 'SHR1' v1) of the SHIELDED state only: "
+        "commitment tree root + size, nullifier set content, and anchor history. "
+        "Deliberately EXCLUDES the utreexo forest, which header.utreexo_root "
+        "already commits — including it would tie this value to forest "
+        "serialization. Every variable-length section is length-prefixed, so the "
+        "boundary between nullifier content and anchor bytes is unambiguous "
+        "(DSR2 concatenates them without lengths, which is fine for a reorg "
+        "oracle but not for a value a header would commit). This is the "
+        "candidate for state_commitment_v1. It is committed NOWHERE today and "
+        "enforces nothing; it is exposed so independently-synced nodes can be "
+        "compared at equal heights to prove determinism before activation.";
+    shielded_root_meta.result.type = "object";
+    shielded_root_meta.result.desc = "{ shielded_root: string (hex) }";
+    registry.registerHandler("daemon.shieldedroot", rpc_shielded_root,
+                             shielded_root_meta, "Reorg Invertibility");
 
     // safemode.status — read current safe-mode state
     RpcMethodMeta sm_status_meta;

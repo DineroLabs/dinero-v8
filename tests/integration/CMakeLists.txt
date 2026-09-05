@@ -1656,6 +1656,26 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_reorg_invertibility.sh)
     message(STATUS "  ✓ ShieldedReorgInvertibility registered")
 endif()
 
+# state_commitment_v1 evidence: the shielded-only root must agree across nodes
+# that built their state independently, and must be invertible across a deep
+# reorg that disconnects real shielded transactions.
+#
+# Distinct from ShieldedReorgInvertibility above, which runs ONE node over a
+# chain with no shielded activity — so its nullifier set stays empty and is
+# never exercised. This one shields, unshields (producing a real nullifier),
+# then reorgs through all of it on two peered nodes.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_root_multinode_deep_reorg.sh)
+    add_test(
+        NAME ShieldedRootMultinodeDeepReorg
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_root_multinode_deep_reorg.sh
+    )
+    set_tests_properties(ShieldedRootMultinodeDeepReorg PROPERTIES
+        LABELS "integration;shielded;reorg;invertibility;canonical-state;state-commitment"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ ShieldedRootMultinodeDeepReorg registered")
+endif()
+
 # Shielded epoch reset (hard-fork cutover) boundary acceptance test. Drives a
 # regtest daemon (cutover forced low via --consensus-shielded-epoch-reset-height)
 # across the reset with a populated pre-cutover pool, then asserts: pre-cutover
@@ -1697,6 +1717,35 @@ endif()
 # bookkeeping batch commits but before in-memory publication, then restarts
 # offline. The test proves the purge, post-reset marker/blobs, canonical tip,
 # and height index are one durable unit rather than a startup-bricking split.
+# Nullifier-commit / tree-append crash boundary and the sqlite provenance
+# policy. "ChainDB empty + sqlite populated" is produced BOTH by a legacy
+# database and by the crash window; promoting the latter would make an
+# unconnected block's nullifiers authoritative and its notes unspendable.
+# Six promotion-boundary cases for state_commitment_v1. Requires BOTH the
+# shielded root comparison and the AssumeUTXO scheduler fix, so it is run on
+# the validation-only combined branch.
+add_test(
+    NAME ShieldedPromotionBoundary
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_promotion_boundary.sh
+)
+set_tests_properties(ShieldedPromotionBoundary PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;shielded;assumeutxo;promotion;boundary"
+    TIMEOUT 1800
+)
+message(STATUS "  ✓ ShieldedPromotionBoundary registered")
+
+add_test(
+    NAME ShieldedNullifierCrashBoundary
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_nullifier_crash_boundary.sh
+)
+set_tests_properties(ShieldedNullifierCrashBoundary PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;shielded;crash;recovery;provenance;nullifier"
+    TIMEOUT 900
+)
+message(STATUS "  ✓ ShieldedNullifierCrashBoundary registered")
+
 add_test(
     NAME CsnEpochResetCrashAtomicity
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_epoch_reset_crash_atomicity.sh

@@ -162,6 +162,25 @@ wait_rpc() {
 # composition only exercised the first four indirectly; this RPC
 # closes the audit's "anchor history is only covered indirectly"
 # caveat.
+# Shielded-state root via `daemon.shieldedroot` — the SHIELDED-ONLY
+# fingerprint that a future block-header commitment would carry
+# (state_commitment_v1). Distinct from state_hash() above: it excludes the
+# utreexo forest (already committed by header.utreexo_root) and
+# length-prefixes each variable-length section.
+#
+# Asserted through the same Connect/Disconnect/Connect cycle because this is
+# the value that would become consensus: if it is not a perfect inverse under
+# DisconnectBlock, a reorg across the activation height is a chain split.
+#
+# Empty when the daemon predates the RPC; the caller treats that as "skip",
+# never as a pass, so an older binary cannot silently green this assertion.
+shielded_root() {
+    local resp h
+    resp="$(rpc daemon.shieldedroot)"
+    h="$(rpc_field_string "${resp}" shielded_root)"
+    printf '%s' "${h}"
+}
+
 state_hash() {
     local resp h
     resp="$(rpc daemon.shieldedstatehash)"
@@ -301,6 +320,10 @@ info "tip is ${TIP_HEIGHT} ${TIP_HASH:0:16}"
 
 S0="$(state_hash)"
 info "S0 = ${S0}"
+R0="$(shielded_root)"
+if [[ -n "${R0}" ]]; then info "R0 = ${R0} (shielded-only root)"; else
+    info "R0 = <daemon has no daemon.shieldedroot — shielded-root assertion SKIPPED>"
+fi
 
 # ── 4. invalidateblock at height 2, forcing disconnect of [2..tip] ────
 
@@ -341,6 +364,8 @@ NEW_TIP_HASH="$(rpc_top_string "$(rpc getbestblockhash)")"
 
 S2="$(state_hash)"
 info "S2 = ${S2}"
+R2="$(shielded_root)"
+[[ -n "${R2}" ]] && info "R2 = ${R2} (shielded-only root)"
 
 # ── 7. The invertibility property ─────────────────────────────────────
 
@@ -352,6 +377,25 @@ This means at least one of: utreexo forest, shielded tree, nullifier
 set, or anchor history is not a perfect inverse under DisconnectBlock.
 See docs/specs/shielded_reorg_invertibility_audit.md for the open
 gaps that could produce this symptom."
+fi
+
+# ── 8. The same property for the shielded-only root ───────────────────
+#
+# Skipped (not passed) on a daemon without the RPC, so a mixed-version run
+# cannot report success for an assertion it never made.
+
+if [[ -z "${R0}" || -z "${R2}" ]]; then
+    info "shielded-root invertibility SKIPPED (RPC absent on this binary)"
+elif [[ "${R0}" != "${R2}" ]]; then
+    fail "SHIELDED-ROOT INVERTIBILITY VIOLATED across Connect/Disconnect/Connect
+  R0 (original tip)  = ${R0}
+  R2 (restored tip)  = ${R2}
+This is the value state_commitment_v1 would put in the block header. A
+divergence here means a reorg across the activation height would split the
+chain: at least one of the shielded commitment tree, nullifier set, or anchor
+history is not a perfect inverse under DisconnectBlock."
+else
+    pass "shielded-root invertibility holds: R0 == R2 = ${R0}"
 fi
 
 pass "shielded-era reorg invertibility holds across ${CHAIN_HEIGHT}-block reorg"

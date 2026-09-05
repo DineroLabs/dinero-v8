@@ -1,6 +1,7 @@
 #pragma once
 #include "daemon/iservice.h"
 #include "storage/chain_db.h"
+#include "consensus/block_status_generation.h"
 #include "wallet/utxo_index.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
@@ -192,6 +193,13 @@ public:
     // restarts and across nodes at the same tip — any drift in any
     // tracked container changes the hash.
     uint256 ComputeShieldedReorgStateHash() const;
+
+    /// Shielded-state root: the fingerprint a future block-header commitment
+    /// would carry (`consensus::shielded::ComputeShieldedRoot`). Distinct from
+    /// ComputeShieldedReorgStateHash — it excludes the utreexo forest, which
+    /// `header.utreexo_root` already commits, and length-prefixes each
+    /// variable-length section. Committed nowhere yet; read-only.
+    std::optional<uint256> ComputeShieldedRoot() const;
 
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row §1.4 names. After ActivateBestChain settles on the
@@ -385,6 +393,18 @@ public:
     // Phase 42: AssumeUTXO State Management
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
     uint256 GetAssumeUTXOBaseBlock() const { return assumeutxo_base_block_; }
+
+    /// Current operator-decision generation (consensus/block_status_generation.h).
+    /// Acceptance captures this BEFORE processing and must not preserve or
+    /// write failure flags if it has advanced by commit time.
+    consensus::BlockStatusGeneration CurrentBlockStatusGeneration() const;
+
+    /// Bump and persist. Called by InvalidateBlock and ReconsiderBlock so a
+    /// relay in flight across either decision is detectably stale. `wb` folds
+    /// the write into a caller-owned batch so the bump and the flag change
+    /// commit atomically.
+    consensus::BlockStatusGeneration BumpBlockStatusGeneration(
+        const ChainWriteToken& token, rocksdb::WriteBatch* wb = nullptr);
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
     // Resolve canonical identity without assuming the durable height index is
     // complete. During AssumeUTXO, pre-base height entries are deliberately
