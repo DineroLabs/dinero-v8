@@ -5,6 +5,9 @@
 
 #include "consensus/shielded/shielded_validation.h"
 
+#include "common/crash_injection.h"
+#include "consensus/chainparams.h"
+
 #include <set>
 #include <utility>
 #include "consensus/shielded/binding_sig.h"
@@ -338,6 +341,18 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
             return false;
         }
     }
+
+    // Crash boundary, regtest only: the nullifier batch has COMMITTED durably
+    // but the commitment tree has not been appended. A process death here
+    // leaves the two stores momentarily inconsistent. It does not violate the
+    // "false means no mutation" contract -- the function never returns -- so
+    // recovery is what has to hold: ChainDB is the authoritative nullifier
+    // store and startup wipes the sqlite cache and rehydrates from it
+    // (ChainstateService::.. "Always wipe sqlite and rehydrate from ChainDB"),
+    // which erases rows this block committed but never finished connecting.
+    // Hook exists so that recovery can be proven rather than argued.
+    dinero::testing::MaybeAbortAt("after_nullifier_batch_before_tree_append",
+                                  dinero::Params().network_id == "regtest");
 
     // This is the ONLY place shielded outputs enter consensus state.
     // They NEVER enter Utreexo.
