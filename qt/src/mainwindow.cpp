@@ -2638,8 +2638,12 @@ void MainWindow::setupUI() {
     lblPeersCount_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblPeersStatus_ = new QLabel("Disconnected");
     lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
-    peersLayout->addWidget(lblPeersCount_);
-    peersLayout->addWidget(lblPeersStatus_);
+    auto* peersSummary = new QHBoxLayout;
+    peersSummary->setSpacing(10);
+    peersSummary->addWidget(lblPeersCount_);
+    peersSummary->addWidget(lblPeersStatus_);
+    peersSummary->addStretch();
+    peersLayout->addLayout(peersSummary);
 
     tblPeersOverview_ = new QTableWidget(0, 6);
     tblPeersOverview_->setHorizontalHeaderLabels(
