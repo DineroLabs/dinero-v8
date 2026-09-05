@@ -296,3 +296,105 @@ TEST(Transitions, DuplicateApplyIsRefusedBEFOREAnyStateMutation) {
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
 }
+
+TEST(Transitions, IntraBundleDuplicateNullifierIsRejectedWithoutMutation) {
+    // Contains() is a PERSISTENCE check. It cannot see a nullifier repeated
+    // inside the incoming bundle: on an empty set both preflight lookups
+    // return false, outputs get appended, the first Insert succeeds and the
+    // second fails -- the same partial-mutation defect the preflight was added
+    // to remove, one layer in.
+    sh::CommitmentTree tree;
+    sh::NullifierSet nulls;
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero_sc_intra_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    ASSERT_EQ(nulls.Open((dir / "n.sqlite").string()), sh::NullifierSet::OpenResult::Ok);
+
+    const uint64_t size_before = tree.Size();
+    const auto root_before = tree.Root();
+    const uint64_t nf_before = nulls.Size();
+
+    sh::ShieldedBundle bundle;
+    sh::ShieldedOutput out{};
+    out.commitment = MakeHash(21, 1);
+    bundle.outputs.push_back(out);
+    sh::ShieldedSpend a{};
+    a.nullifier = MakeHash(21, 2);
+    sh::ShieldedSpend b{};
+    b.nullifier = a.nullifier;          // the same nullifier twice
+    bundle.spends.push_back(a);
+    bundle.spends.push_back(b);
+
+    EXPECT_FALSE(sh::ApplyShieldedBundle(bundle, &tree, &nulls, 1))
+        << "a bundle spending the same nullifier twice must be refused";
+    EXPECT_EQ(tree.Size(), size_before)
+        << "refusal must not have appended outputs";
+    EXPECT_EQ(tree.Root(), root_before)
+        << "refusal must leave the tree byte-identical";
+    EXPECT_EQ(nulls.Size(), nf_before)
+        << "refusal must not have persisted a partial nullifier insert";
+
+    nulls.Close();
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(Transitions, IntraBundleDuplicateLeavesNothingPersistedAcrossRestart) {
+    // The in-process assertions above could pass while a partial write sat in
+    // sqlite. Reopen the same database and confirm the refusal persisted
+    // nothing -- this is the check that would catch a rejected bundle whose
+    // first nullifier survived a crash.
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero_sc_restart_" + std::to_string(::getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto db = (dir / "n.sqlite").string();
+
+    sh::ShieldedSpend a{};
+    a.nullifier = MakeHash(31, 2);
+    sh::ShieldedBundle bundle;
+    sh::ShieldedOutput out{};
+    out.commitment = MakeHash(31, 1);
+    bundle.outputs.push_back(out);
+    bundle.spends.push_back(a);
+    bundle.spends.push_back(a);  // duplicate within the bundle
+
+    {
+        sh::CommitmentTree tree;
+        sh::NullifierSet nulls;
+        ASSERT_EQ(nulls.Open(db), sh::NullifierSet::OpenResult::Ok);
+        EXPECT_FALSE(sh::ApplyShieldedBundle(bundle, &tree, &nulls, 7));
+        nulls.Close();
+    }
+    {
+        sh::NullifierSet reopened;
+        ASSERT_EQ(reopened.Open(db), sh::NullifierSet::OpenResult::Ok);
+        EXPECT_EQ(reopened.Size(), 0u)
+            << "a refused bundle must persist no nullifier rows";
+        EXPECT_FALSE(reopened.Contains(a.nullifier))
+            << "the refused nullifier must not be spendable-blocked after restart";
+        reopened.Close();
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(Transitions, DuplicateOutputCommitmentIsAllowedNoConsensusRuleForbidsIt) {
+    // Pinning the ABSENCE of a rule, deliberately. ValidateShieldedBundle has
+    // no duplicate-output check and ShieldedValidationError has no code for
+    // one, so ApplyShieldedBundle must not invent it: refusing here would
+    // reject a bundle that other nodes accept. Appending the same leaf twice
+    // is well defined. If the protocol ever forbids this, the rule belongs in
+    // ValidateShieldedBundle with its own error code, and this test should
+    // then be inverted deliberately rather than quietly.
+    sh::CommitmentTree tree;
+    const uint64_t before = tree.Size();
+    sh::ShieldedBundle bundle;
+    sh::ShieldedOutput o{};
+    o.commitment = MakeHash(41, 1);
+    bundle.outputs.push_back(o);
+    bundle.outputs.push_back(o);
+    EXPECT_TRUE(sh::ApplyShieldedBundle(bundle, &tree, nullptr, 1));
+    EXPECT_EQ(tree.Size(), before + 2) << "both leaves must be appended";
+}

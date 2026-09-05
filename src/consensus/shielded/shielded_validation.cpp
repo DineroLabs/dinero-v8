@@ -4,6 +4,8 @@
  */
 
 #include "consensus/shielded/shielded_validation.h"
+
+#include <set>
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/pedersen_generators.h"
 #include "consensus/shielded/range_proof.h"
@@ -259,27 +261,73 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,
                          uint32_t              block_height) {
-    // Pre-check BEFORE any mutation: refuse a bundle whose nullifiers are
-    // already spent without touching the tree.
+    // ── PHASE 1: validate. Nothing below this line mutates anything. ───────
     //
-    // This used to be act-then-check. Outputs were appended first and the
-    // duplicate was only discovered on Insert() below, so a double-applied
-    // block mutated the commitment tree and then relied on the caller's
-    // rollback to undo it. Detectability is not prevention: the safe ordering
-    // is to reject before state changes, so a failed rollback cannot leave a
-    // tree carrying commitments from a block that was refused.
+    // Two distinct duplicate classes, and checking only the first is a trap:
     //
-    // Cost is one Contains() per spend on the honest path, which is the same
-    // lookup Insert() performs anyway.
+    //   against PERSISTENT state   Contains() -- the nullifier was spent in an
+    //                              earlier block, or this block is being
+    //                              applied twice.
+    //   WITHIN this bundle         Contains() cannot see it. On an empty set a
+    //                              bundle spending [N, N] passes both preflight
+    //                              lookups, and the failure only surfaces on the
+    //                              second Insert -- after outputs are appended
+    //                              and the first nullifier is already persisted.
+    //
+    // Measured before this change: such a bundle left the commitment tree
+    // mutated AND a nullifier row written, on a path that returns false.
     if (nullifiers) {
+        std::set<Hash> seen_in_bundle;
         for (const auto& spend : bundle.spends) {
             if (nullifiers->Contains(spend.nullifier)) {
-                return false;  // nothing mutated
+                return false;  // already spent in persistent state
+            }
+            if (!seen_in_bundle.insert(spend.nullifier).second) {
+                return false;  // repeated inside this bundle
+            }
+        }
+    } else {
+        // Even with no nullifier set to consult, a self-conflicting bundle is
+        // malformed and must not be applied.
+        std::set<Hash> seen_in_bundle;
+        for (const auto& spend : bundle.spends) {
+            if (!seen_in_bundle.insert(spend.nullifier).second) {
+                return false;
             }
         }
     }
 
-    // Append new commitments to the tree.
+    // NOT checked: repeated output commitments. No consensus rule prohibits
+    // them -- ValidateShieldedBundle has no such check and the error enum has
+    // no code for it -- so rejecting here would invent a rule this function
+    // does not own and could refuse a block that other nodes accept. Appending
+    // the same leaf twice is well defined and deterministic. If the protocol
+    // ever forbids it, that belongs in ValidateShieldedBundle with its own
+    // error code, not here.
+
+    // ── PHASE 2: mutate. Validation above means neither step should now fail
+    // for a reason this function can foresee. ──────────────────────────────
+    //
+    // Nullifiers go FIRST, deliberately. Insert() is the only fallible step
+    // (it touches sqlite), and CommitmentTree::Append() is in-memory and does
+    // not report failure. Doing the fallible work first means an I/O failure
+    // returns with the commitment tree completely untouched.
+    //
+    // The asymmetry matters: a stray nullifier row is fail-SAFE (it can only
+    // refuse a spend) and is rebuilt from ChainDB at startup, whereas a stray
+    // tree leaf changes the shielded root and every anchor derived from it.
+    // If one of the two has to be left dirty by an I/O fault, it must be the
+    // recoverable one.
+    if (nullifiers) {
+        for (const auto& spend : bundle.spends) {
+            if (!nullifiers->Insert(spend.nullifier, block_height)) {
+                // Unreachable via validation above; only an I/O fault reaches
+                // here. Tree is untouched; the caller aborts the block.
+                return false;
+            }
+        }
+    }
+
     // This is the ONLY place shielded outputs enter consensus state.
     // They NEVER enter Utreexo.
     if (tree) {
@@ -288,21 +336,6 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
         }
     }
 
-    // Insert nullifiers. Already validated unique by ValidateShieldedBundle.
-    //
-    // Insert()'s return value is load-bearing and used to be discarded while
-    // this function returned void — there was no channel to report a failure
-    // even if it had been read. A failed insert means the spend is committed
-    // on-chain but ABSENT from the in-memory set every Contains() consults,
-    // so the same note could be spent again until a restart rehydrates the
-    // set from ChainDB. Propagate instead: the caller aborts the block.
-    if (nullifiers) {
-        for (const auto& spend : bundle.spends) {
-            if (!nullifiers->Insert(spend.nullifier, block_height)) {
-                return false;
-            }
-        }
-    }
     return true;
 }
 
