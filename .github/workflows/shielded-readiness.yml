@@ -13,6 +13,9 @@ on:
       - 'scripts/shielded-*.sh'
       - 'tools/shielded_*'
       - '.github/workflows/shielded-readiness.yml'
+      - 'tests/vectors/**'
+      - 'tests/consensus/dump_shielded_vectors.cpp'
+      - 'scripts/check_shielded_vectors.sh'
   schedule:
     - cron: '23 3 * * 1'
 
@@ -42,6 +45,56 @@ jobs:
         with:
           name: shielded-readiness-${{ github.sha }}
           path: ${{ runner.temp }}/shielded-readiness
+
+  # Cross-architecture determinism for the shielded state commitment.
+  # A consensus digest that differs by architecture would fork the network
+  # along build lines, and a single-arch test suite cannot see it: that build
+  # agrees with itself. x86-64 and aarch64 must both reproduce the committed
+  # golden vectors byte for byte.
+  vectors:
+    name: shielded vectors (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build clang cmake curl perl pkg-config
+          libudev-dev libusb-1.0-0-dev
+      - name: Build pinned vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Report the architecture actually under test
+        run: |
+          echo "uname -m: $(uname -m)"
+          echo "cpu: $(grep -m1 'model name\|Model' /proc/cpuinfo || true)"
+      - name: Configure
+        run: cmake -S . -B build-vectors -DCMAKE_BUILD_TYPE=Release
+      - name: Build the vector dumper
+        run: cmake --build build-vectors --target dump_shielded_vectors -j "$(nproc)"
+      - name: Compare against the golden vectors
+        run: |
+          ./build-vectors/dump_shielded_vectors > actual.txt
+          echo "actual  sha256: $(sha256sum actual.txt | cut -d' ' -f1)"
+          echo "golden  sha256: $(sha256sum tests/vectors/shielded_state_commitment_v1.txt | cut -d' ' -f1)"
+          if ! cmp -s actual.txt tests/vectors/shielded_state_commitment_v1.txt; then
+            echo "::error::shielded vectors differ on $(uname -m) — consensus digests are architecture-dependent"
+            diff tests/vectors/shielded_state_commitment_v1.txt actual.txt | head -40
+            exit 1
+          fi
+          echo "vectors byte-identical on $(uname -m)"
+      - name: Upload the produced vectors
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shielded-vectors-${{ matrix.runner }}-${{ github.sha }}
+          path: actual.txt
 
   linux-sanitizers:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
