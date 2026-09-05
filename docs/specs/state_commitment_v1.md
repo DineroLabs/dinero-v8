@@ -305,6 +305,30 @@ from `SHIELDED_ROOT_VERSION`, so the two can move independently.
 5. The committed value is **post-block** shielded state. A coinbase transaction
    cannot itself alter shielded state, so there is no circularity.
 
+### Canonical byte representation (pinned)
+
+`uint256::GetHex()` emits `data[31]` **first**: the display string is the
+*reverse* of the raw array, and `FromHex()` reverses back. Three
+representations are therefore legitimately in play, and mixing them is the
+easiest way to fork the chain by accident.
+
+| where | representation |
+|---|---|
+| coinbase script bytes `[7..38]` | **raw internal order**, `data[0..31]` as produced |
+| RPC output, snapshot metadata (`assumeutxo_expected_shielded_root`) | **display hex**, `GetHex()` — reversed |
+| snapshot ↔ replay comparison | `GetHex()` on both sides, so string equality is well defined |
+
+The wire form is the raw array. Nothing may place `GetHex()` output into the
+script, and nothing may treat script bytes as a display string.
+
+**A self-consistent reversal is the dangerous failure.** If both the writer and
+the parser were flipped, every round-trip test would still pass while the bytes
+on the wire were wrong. Verified by mutation: with writer and parser both
+reversed, 7 of the 8 canonical tests still pass. Only the one that compares
+script bytes against the raw `uint256` array — refusing to use the parser as its
+own oracle — catches it. Any future test of this encoding must keep that
+property.
+
 ### Status
 
 The **format is frozen**; activation is not. No activation height is selected

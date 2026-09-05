@@ -1890,6 +1890,33 @@ endif()
 
 # state_commitment_v1 coinbase encoding lock. Freezes the byte layout BEFORE
 # any activation height exists -- after activation a layout change is a split.
+# Item 9: one canonical byte representation across script, wire, hashing, and
+# the display/snapshot string form. Must pass BEFORE enforcement is written --
+# otherwise enforcement could validate one representation while production
+# uses another and both look green.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_canonical.cpp)
+  add_executable(test_state_commitment_canonical
+    tests/consensus/test_state_commitment_canonical.cpp
+    src/consensus/state_commitment.cpp
+  )
+  add_dependencies(test_state_commitment_canonical gtest gtest_main dinero_core)
+  target_link_libraries(test_state_commitment_canonical PRIVATE
+    GTest::gtest_main
+    dinero_core
+  )
+  target_include_directories(test_state_commitment_canonical BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentCanonical COMMAND test_state_commitment_canonical)
+  set_tests_properties(StateCommitmentCanonical PROPERTIES
+    LABELS "shielded;consensus;encoding;canonical;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "state_commitment_v1 canonical-representation tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_encoding.cpp)
   add_executable(test_state_commitment_encoding
     tests/consensus/test_state_commitment_encoding.cpp
