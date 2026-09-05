@@ -10,7 +10,8 @@
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
 #include "consensus/utreexo_activation.h"
-#include "consensus/block_status_generation.h"  // Phase 11a: IsUtreexoActive check
+#include "consensus/block_status_generation.h"
+#include "common/crash_injection.h"  // Phase 11a: IsUtreexoActive check
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "consensus/tx_parser.h"    // Phase 3D: Transaction parsing for wallet notifications
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
@@ -2252,6 +2253,23 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                     const bool decision_unchanged =
                         dinero::consensus::GenerationStillCurrent(accept_status_generation,
                                                                   gen_now);
+                    // DETERMINISTIC RACE BARRIER (regtest only, inert
+                    // otherwise). Sits exactly between the generation
+                    // COMPARISON above and the flag WRITE below — the TOCTOU
+                    // window. A test parks the daemon here, invokes
+                    // reconsiderblock concurrently, and releases:
+                    //   with activation_mutex_ on ReconsiderBlock, the
+                    //     reconsider must WAIT, so this write lands first and
+                    //     the reconsider then clears it;
+                    //   without it, the reconsider runs ahead and this write
+                    //     re-asserts flags it just cleared — which the test
+                    //     detects.
+                    // Deterministic in both directions; no sleep decides
+                    // correctness.
+                    dinero::testing::MaybeBarrierAt(
+                        "connectblock_after_generation_compare",
+                        dinero::testing::CrashHooksEnabled().load());
+
                     const uint32_t preserved_failure_flags =
                         decision_unchanged
                             ? (block_index->status &

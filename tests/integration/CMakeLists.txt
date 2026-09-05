@@ -1726,6 +1726,19 @@ endif()
 # the validation-only combined branch.
 # Crash between the reconsider commit and re-activation: the operator decision
 # is durable but unapplied. Restart must preserve it and still reach the tip.
+# Deterministic TOCTOU barrier: proves ReconsiderBlock's activation_mutex_ is
+# load-bearing. Removing that lock must make this test FAIL.
+add_test(
+    NAME GenerationToctouBarrier
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_generation_toctou_barrier.sh
+)
+set_tests_properties(GenerationToctouBarrier PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;reorg;invalidate;race;mandatory"
+    TIMEOUT 900
+)
+message(STATUS "  ✓ GenerationToctouBarrier registered")
+
 add_test(
     NAME ReconsiderRestartBoundary
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_reconsider_restart_boundary.sh
