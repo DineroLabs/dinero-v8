@@ -2495,16 +2495,30 @@ void MainWindow::setupUI() {
     auto *activityColumn = new QVBoxLayout;
     activityColumn->setSpacing(10);
 
-    auto* connectivityBox = new QGroupBox("Your Node Contribution");
+    auto* connectivityBox = new QWidget;
     auto* connectivityLayout = new QVBoxLayout(connectivityBox);
-    connectivityLayout->setContentsMargins(10, 10, 10, 8);
+    connectivityLayout->setContentsMargins(0, 0, 0, 0);
     connectivityLayout->setSpacing(8);
+    auto* contributionHeader = new QHBoxLayout;
     auto* contributionSummary = new QLabel(
-        "A live, read-only summary of how this node participates in the Dinero network.",
+        "A live, read-only summary of how this node participates in the Dinero network. "
+        "Tor and relay controls are available under Network & Privacy in Settings.",
         connectivityBox);
     contributionSummary->setWordWrap(true);
     contributionSummary->setStyleSheet("QLabel { color: #9fb3c8; background: transparent; }");
-    connectivityLayout->addWidget(contributionSummary);
+    auto* btnNetworkSettings = new QPushButton("Network settings", connectivityBox);
+    btnNetworkSettings->setStyleSheet(chromeButtonStyle());
+    connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
+      for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
+          tabs->setCurrentIndex(i);
+          return;
+        }
+      }
+    });
+    contributionHeader->addWidget(contributionSummary, 1);
+    contributionHeader->addWidget(btnNetworkSettings);
+    connectivityLayout->addLayout(contributionHeader);
 
     auto* contributionTiles = new QHBoxLayout;
     contributionTiles->setSpacing(8);
@@ -2531,23 +2545,6 @@ void MainWindow::setupUI() {
     addContributionTile("CONNECTIVITY", lblOverviewConnectivity_);
     connectivityLayout->addLayout(contributionTiles);
 
-    auto* contributionFooter = new QHBoxLayout;
-    auto* contributionHint = new QLabel(
-        "Tor and relay controls are available under Network & Privacy in Settings.", connectivityBox);
-    contributionHint->setStyleSheet("QLabel { color: #8f9ba8; font-size: 11px; }");
-    auto* btnNetworkSettings = new QPushButton("Network settings", connectivityBox);
-    btnNetworkSettings->setStyleSheet(chromeButtonStyle());
-    connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
-      for (int i = 0; i < tabs->count(); ++i) {
-        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
-          tabs->setCurrentIndex(i);
-          return;
-        }
-      }
-    });
-    contributionFooter->addWidget(contributionHint, 1);
-    contributionFooter->addWidget(btnNetworkSettings);
-    connectivityLayout->addLayout(contributionFooter);
     connectivityBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     connectivityBox->setMaximumHeight(235);
     networkColumn->addWidget(connectivityBox);
