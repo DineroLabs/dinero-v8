@@ -94,6 +94,18 @@ set_tests_properties(QtPoolPanelSafety PROPERTIES
   TIMEOUT 5
 )
 add_test(
+  NAME QtShieldedRpcStatus
+  COMMAND ${CMAKE_COMMAND}
+    -DSHIELDED_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/shieldedwidget.cpp
+    -DMAINWINDOW_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -DWALLET_RPC_SOURCE=${CMAKE_SOURCE_DIR}/src/rpc/methods_wallet_context.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_shielded_rpc_status.cmake
+)
+set_tests_properties(QtShieldedRpcStatus PROPERTIES
+  LABELS "qt;shielded;rpc;regression;mandatory"
+  TIMEOUT 5
+)
+add_test(
   NAME QtContractProductionWiring
   COMMAND ${CMAKE_COMMAND}
     -DMAINWINDOW_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
