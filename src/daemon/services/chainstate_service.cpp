@@ -1084,8 +1084,33 @@ bool ChainstateService::LoadShieldedState() {
                     "[ChainstateService] Sqlite nullifier cache rehydrated from ChainDB "
                     "(rows=" + std::to_string(hydrated) + ")");
             }
+        } else if (chaindb_count == 0 && sqlite_count_before > 0 &&
+                   shielded_nullifiers_.GetProvenance() !=
+                       consensus::shielded::NullifierSet::Provenance::LegacyCandidate) {
+            // AMBIGUITY RESOLVED. "ChainDB empty, sqlite populated" is NOT
+            // evidence of a legacy database: the crash window produces exactly
+            // that state. The first shielded block commits its nullifier batch
+            // to sqlite, the process dies before the ChainDB write, and the
+            // node restarts with an empty ChainDB and a populated cache.
+            //
+            // Promoting those rows would make an UNCONNECTED block's
+            // nullifiers authoritative and its notes permanently unspendable —
+            // a persistent false-spend denial that no later reorg undoes.
+            //
+            // The file's provenance discriminates. Anything stamped as a cache
+            // is treated as a cache: wipe it, exactly as Mode B would.
+            if (logger_) {
+                logger_->warning(
+                    "[ChainstateService] sqlite holds " +
+                    std::to_string(sqlite_count_before) +
+                    " nullifier row(s) while ChainDB has none, but the file is "
+                    "stamped as a cache — treating as post-crash residue and "
+                    "discarding. Rows are NOT promoted to authoritative.");
+            }
+            shielded_nullifiers_.Clear();
         } else if (chaindb_count == 0 && sqlite_count_before > 0) {
-            // Mode C: one-shot migration from legacy sqlite into the
+            // Mode C: one-shot migration from a genuine pre-authority sqlite
+            // database (unstamped user_version AND populated) into the
             // ChainDB column family. Parse SerializeContent's byte
             // stream — format is:
             //   tag 'NSCF' (4) || version=1 (2) || count_LE_u64 (8) ||
@@ -1163,10 +1188,25 @@ bool ChainstateService::LoadShieldedState() {
                 }
                 return false;
             }
+            // COMPLETION MARKER. Stamp the file so this migration can never
+            // run twice and the same rows can never be read as legacy again.
+            // Without it, a subsequent crash-window restart on this datadir
+            // would present the identical "ChainDB empty, sqlite populated"
+            // shape and re-promote residue.
+            if (!shielded_nullifiers_.MarkAsCache()) {
+                if (logger_) {
+                    logger_->error(
+                        "[ChainstateService] Sqlite nullifier migration committed but the "
+                        "cache stamp FAILED — refusing startup rather than leaving a file "
+                        "that could be re-read as legacy");
+                }
+                return false;
+            }
             if (logger_) {
                 logger_->warning(
                     "[ChainstateService] Migrated " + std::to_string(expected) +
-                    " sqlite nullifier rows into ChainDB; ChainDB is now authoritative");
+                    " sqlite nullifier rows into ChainDB; ChainDB is now authoritative "
+                    "and the sqlite file is permanently stamped as a cache");
             }
         }
     }

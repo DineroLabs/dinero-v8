@@ -12,6 +12,7 @@
 
 #include <cstdio>
 #include <unistd.h>
+#include <sqlite3.h>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -507,4 +508,108 @@ TEST(BatchFault, SuccessfulBatchCommitsEveryRow) {
         EXPECT_TRUE(n.Contains(MakeHash(70, static_cast<uint8_t>(i)))) << "entry " << i;
     }
     n.Close();
+}
+
+// --- provenance: legacy migration vs post-crash residue --------------------
+//
+// "ChainDB empty, sqlite populated" is produced by BOTH a genuine legacy
+// database AND the crash window (first shielded block commits its nullifier
+// batch, dies before the ChainDB write). Row counts cannot tell them apart.
+// Promoting crash residue would make an unconnected block's nullifiers
+// authoritative and its notes permanently unspendable.
+
+TEST(Provenance, FreshDatabaseIsStampedAsACacheImmediately) {
+    BatchFaultFixture f("prov_fresh");
+    sh::NullifierSet n;
+    ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+    // Empty and unstamped -> stamped NOW, before anything can populate it.
+    // It reports Cache rather than FreshCache because the stamp is already
+    // durable; FreshCache is only the transient pre-stamp classification.
+    // The load-bearing property is that it is not, and can never become,
+    // a migration candidate.
+    EXPECT_EQ(n.GetProvenance(), sh::NullifierSet::Provenance::Cache);
+    EXPECT_NE(n.GetProvenance(), sh::NullifierSet::Provenance::LegacyCandidate);
+    n.Close();
+}
+
+TEST(Provenance, CrashResidueIsRecognisedAsCacheNotLegacy) {
+    // The exact hazard. Create a database this build owns, put rows in it as
+    // the crash window would, reopen, and require it to still read as a cache.
+    BatchFaultFixture f("prov_crash");
+    {
+        sh::NullifierSet n;
+        ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        ASSERT_TRUE(n.Insert(MakeHash(80, 1), 5));
+        ASSERT_TRUE(n.Insert(MakeHash(80, 2), 5));
+        n.Close();  // stands in for the crash: rows committed, ChainDB never written
+    }
+    {
+        sh::NullifierSet re;
+        ASSERT_EQ(re.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        EXPECT_EQ(re.Size(), 2u) << "rows are present, as after a crash";
+        EXPECT_EQ(re.GetProvenance(), sh::NullifierSet::Provenance::Cache)
+            << "populated + ChainDB-empty must NOT read as legacy; these rows "
+               "must never be promoted to authoritative";
+        EXPECT_NE(re.GetProvenance(), sh::NullifierSet::Provenance::LegacyCandidate);
+        re.Close();
+    }
+}
+
+TEST(Provenance, GenuineLegacyDatabaseIsStillMigratable) {
+    // Do not fix the crash case by breaking real legacy wallets. A file with
+    // rows and NO cache stamp is a pre-authority database and must remain
+    // eligible for the one-shot migration.
+    BatchFaultFixture f("prov_legacy");
+    {
+        sh::NullifierSet n;
+        ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        ASSERT_TRUE(n.Insert(MakeHash(81, 1), 3));
+        n.Close();
+    }
+    // Strip the stamp to reproduce a genuine pre-authority file.
+    {
+        sqlite3* raw = nullptr;
+        ASSERT_EQ(sqlite3_open(f.db.c_str(), &raw), SQLITE_OK);
+        ASSERT_EQ(sqlite3_exec(raw, "PRAGMA user_version = 0", nullptr, nullptr, nullptr),
+                  SQLITE_OK);
+        sqlite3_close(raw);
+    }
+    {
+        sh::NullifierSet legacy;
+        ASSERT_EQ(legacy.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        EXPECT_EQ(legacy.GetProvenance(), sh::NullifierSet::Provenance::LegacyCandidate)
+            << "an unstamped populated file is a real legacy database";
+        legacy.Close();
+    }
+}
+
+TEST(Provenance, MigrationStampIsPermanentSoItCannotRunTwice) {
+    BatchFaultFixture f("prov_once");
+    {
+        sh::NullifierSet n;
+        ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        ASSERT_TRUE(n.Insert(MakeHash(82, 1), 3));
+        n.Close();
+    }
+    {
+        sqlite3* raw = nullptr;
+        ASSERT_EQ(sqlite3_open(f.db.c_str(), &raw), SQLITE_OK);
+        sqlite3_exec(raw, "PRAGMA user_version = 0", nullptr, nullptr, nullptr);
+        sqlite3_close(raw);
+    }
+    {
+        sh::NullifierSet legacy;
+        ASSERT_EQ(legacy.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        ASSERT_EQ(legacy.GetProvenance(), sh::NullifierSet::Provenance::LegacyCandidate);
+        ASSERT_TRUE(legacy.MarkAsCache());  // what a completed migration does
+        EXPECT_EQ(legacy.GetProvenance(), sh::NullifierSet::Provenance::Cache);
+        legacy.Close();
+    }
+    {
+        sh::NullifierSet again;
+        ASSERT_EQ(again.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        EXPECT_EQ(again.GetProvenance(), sh::NullifierSet::Provenance::Cache)
+            << "a migrated file must never be eligible for migration again";
+        again.Close();
+    }
 }

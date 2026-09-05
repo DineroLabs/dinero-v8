@@ -8,6 +8,7 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <cstring>
+#include <string>
 
 namespace dinero::consensus::shielded {
 
@@ -31,11 +32,40 @@ NullifierSet::OpenResult NullifierSet::Open(const std::string& path) {
         Close();
         return OpenResult::IoError;
     }
+    // Read user_version BEFORE creating the schema. A legacy file predating
+    // ChainDB authority leaves it at sqlite's default of 0; every file this
+    // build creates or migrates is stamped kCacheSchemaVersion.
+    int existing_version = 0;
+    {
+        sqlite3_stmt* v = nullptr;
+        if (sqlite3_prepare_v2(db_, "PRAGMA user_version", -1, &v, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(v) == SQLITE_ROW) existing_version = sqlite3_column_int(v, 0);
+            sqlite3_finalize(v);
+        }
+    }
+
     char* err = nullptr;
     if (sqlite3_exec(db_, kCreateSql, nullptr, nullptr, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
         Close();
         return OpenResult::SchemaError;
+    }
+
+    if (existing_version >= kCacheSchemaVersion) {
+        // Already declared a cache. Its rows are NEVER authoritative, whatever
+        // ChainDB's count happens to be -- which is what closes the crash
+        // window: a post-crash cache looks identical to a legacy file by row
+        // count alone, and differs only here.
+        provenance_ = Provenance::Cache;
+    } else if (Size() > 0) {
+        // Unstamped AND populated: a genuine pre-authority database. This is
+        // the only state in which sqlite rows may be promoted, and only once.
+        provenance_ = Provenance::LegacyCandidate;
+    } else {
+        // Unstamped and empty: nothing to migrate. Stamp it now so a crash
+        // that fills it cannot later be mistaken for legacy.
+        provenance_ = Provenance::FreshCache;
+        MarkAsCache();
     }
     return OpenResult::Ok;
 }
@@ -86,6 +116,17 @@ bool NullifierSet::Insert(const Hash& nullifier, uint32_t block_height) {
     const bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
     return ok;
+}
+
+bool NullifierSet::MarkAsCache() {
+    if (!db_) return false;
+    const std::string sql =
+        "PRAGMA user_version = " + std::to_string(kCacheSchemaVersion);
+    if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    provenance_ = Provenance::Cache;
+    return true;
 }
 
 bool NullifierSet::InsertBatch(const std::vector<std::pair<Hash, uint32_t>>& entries) {

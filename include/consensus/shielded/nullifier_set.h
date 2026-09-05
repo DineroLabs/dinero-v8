@@ -45,8 +45,41 @@ public:
     NullifierSet(const NullifierSet&) = delete;
     NullifierSet& operator=(const NullifierSet&) = delete;
 
+    /**
+     * Where this database's rows came from — the discriminator that decides
+     * whether they may ever be treated as authoritative.
+     *
+     * "ChainDB has no nullifiers and sqlite has some" is NOT evidence of a
+     * legacy database. The crash window produces exactly that state: the first
+     * shielded block commits its nullifier batch to sqlite, dies before the
+     * ChainDB write, and restarts with an empty ChainDB and a populated cache.
+     * Promoting those rows would make an unconnected block's nullifiers
+     * authoritative and permanently unspendable — a false-spend denial.
+     *
+     * Stored in sqlite's user_version pragma, which legacy files leave at 0.
+     */
+    enum class Provenance : uint8_t {
+        Unknown        = 0,  ///< not opened
+        FreshCache     = 1,  ///< created by this build; empty; never authoritative
+        Cache          = 2,  ///< marked as cache-under-ChainDB-authority
+        LegacyCandidate = 3, ///< pre-authority file WITH rows: migration eligible
+    };
+
+    /** Schema version written by builds that treat sqlite as a cache. */
+    static constexpr int kCacheSchemaVersion = 1;
+
     /** Open or create the nullifier database at `path`. Idempotent. */
     OpenResult Open(const std::string& path);
+
+    /** Provenance determined at Open time. */
+    Provenance GetProvenance() const { return provenance_; }
+
+    /**
+     * Mark this database as a cache, permanently. Called after a legacy
+     * migration completes so the same file can never be read as legacy again,
+     * and on any file this build creates.
+     */
+    bool MarkAsCache();
     void Close() noexcept;
 
     /**
@@ -136,6 +169,7 @@ public:
 
 private:
     sqlite3* db_ = nullptr;
+    Provenance provenance_ = Provenance::Unknown;
 };
 
 } // namespace dinero::consensus::shielded
