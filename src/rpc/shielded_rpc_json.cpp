@@ -248,7 +248,8 @@ void StoreCachedShieldedAddress(WalletManager& wm,
 // ---------------------------------------------------------------------------
 // wallet.shield
 //
-// Params: { "amount": <DIN as float>, "fee_una": <int|optional> }
+// Params: { "amount_una": <exact int>|"amount": <legacy DIN float>,
+//           "fee_una": <int|optional> }
 //
 // Builds a v5 transaction:
 //   - vin   = transparent UTXOs covering (value_una + fee_una)
@@ -281,11 +282,23 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     // transparent → an external shielded (dins1) address, in one step. With
     // no `address`, behaviour is byte-unchanged self-shield.
     double   amount_din   = 0;
+    uint64_t value_una    = 0;
+    bool     have_exact_amount = false;
     uint64_t fee_una      = 1000;  // provisional default (auto-sized below)
     bool     fee_explicit = false;
     std::string recipient_address;
     std::string recipient_memo;
     if (params.isObject()) {
+        if (params.isMember("amount_una")) {
+            const int64_t exact = params["amount_una"].asInt64();
+            if (exact <= 0) {
+                result["error"] = "invalid_params";
+                result["error_message"] = "amount_una must be positive";
+                return result;
+            }
+            value_una = static_cast<uint64_t>(exact);
+            have_exact_amount = true;
+        }
         if (params.isMember("amount"))  amount_din = params["amount"].asDouble();
         if (params.isMember("fee_una")) {
             fee_una      = static_cast<uint64_t>(params["fee_una"].asInt64());
@@ -302,12 +315,14 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         if (params.size() >= 3) recipient_address = params[2].asString();
         if (params.size() >= 4) recipient_memo    = params[3].asString();
     }
-    if (amount_din <= 0) {
+    if (!have_exact_amount && amount_din <= 0) {
         result["error"] = "invalid_params";
-        result["error_message"] = "amount must be positive";
+        result["error_message"] = "amount_una or amount must be positive";
         return result;
     }
-    const uint64_t value_una = static_cast<uint64_t>(amount_din * 1e8);
+    if (!have_exact_amount) {
+        value_una = static_cast<uint64_t>(amount_din * 1e8);
+    }
 
     // Shield-to-recipient: validate the address (dins1 + active network)
     // BEFORE any tx work so a bad recipient fails fast with a clear error.
@@ -664,7 +679,8 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
 // ---------------------------------------------------------------------------
 // wallet.unshield
 //
-// Params: { "amount": <DIN as float>, "fee_una": <int|optional> }
+// Params: { "amount_una": <exact int>|"amount": <legacy DIN float>,
+//           "fee_una": <int|optional> }
 //
 // Spends the smallest unspent confirmed shielded note with value >= amount,
 // re-emerging note_value - fee_una as a fresh transparent UTXO controlled by
@@ -689,9 +705,21 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     // Issue #273: no explicit fee → provisional default, auto-sized below
     // against the measured tx vsize. Explicit fee → respected verbatim.
     double   amount_din   = 0;
+    uint64_t requested_una = 0;
+    bool     have_exact_amount = false;
     uint64_t fee_una      = 1000;  // provisional default (auto-sized below)
     bool     fee_explicit = false;
     if (params.isObject()) {
+        if (params.isMember("amount_una")) {
+            const int64_t exact = params["amount_una"].asInt64();
+            if (exact <= 0) {
+                result["error"] = "invalid_params";
+                result["error_message"] = "amount_una must be positive";
+                return result;
+            }
+            requested_una = static_cast<uint64_t>(exact);
+            have_exact_amount = true;
+        }
         if (params.isMember("amount"))  amount_din = params["amount"].asDouble();
         if (params.isMember("fee_una")) {
             fee_una      = static_cast<uint64_t>(params["fee_una"].asInt64());
@@ -704,12 +732,14 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
             fee_explicit = true;
         }
     }
-    if (amount_din <= 0) {
+    if (!have_exact_amount && amount_din <= 0) {
         result["error"] = "invalid_params";
-        result["error_message"] = "amount must be positive";
+        result["error_message"] = "amount_una or amount must be positive";
         return result;
     }
-    const uint64_t requested_una = static_cast<uint64_t>(amount_din * 1e8);
+    if (!have_exact_amount) {
+        requested_una = static_cast<uint64_t>(amount_din * 1e8);
+    }
 
     // ── Mempool service for submit ────────────────────────────────────
     auto mempool_service = std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool);

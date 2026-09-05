@@ -1,4 +1,5 @@
 #include <QtTest/QtTest>
+#include <limits>
 #include "../src/shieldedtransferpolicy.h"
 
 class ShieldedTransferPolicyTest : public QObject {
@@ -6,6 +7,9 @@ class ShieldedTransferPolicyTest : public QObject {
 private Q_SLOTS:
     void onlyFreshOrRejectedIntentMaySubmit();
     void uncertainRestartNeverRetries();
+    void parsesDinExactly();
+    void rejectsInvalidDin();
+    void productionLockoutIsReadOnly();
 };
 
 void ShieldedTransferPolicyTest::onlyFreshOrRejectedIntentMaySubmit() {
@@ -18,6 +22,33 @@ void ShieldedTransferPolicyTest::onlyFreshOrRejectedIntentMaySubmit() {
 void ShieldedTransferPolicyTest::uncertainRestartNeverRetries() {
     QVERIFY(ShieldedTransferPolicy::uncertainAfterRestart("submitting"));
     QVERIFY(!ShieldedTransferPolicy::maySubmit("submitting", false));
+}
+
+void ShieldedTransferPolicyTest::parsesDinExactly() {
+    qint64 una = 0;
+    QVERIFY(ShieldedTransferPolicy::parseDinToUna("1", &una));
+    QCOMPARE(una, 100000000LL);
+    QVERIFY(ShieldedTransferPolicy::parseDinToUna("0.00000001", &una));
+    QCOMPARE(una, 1LL);
+    QVERIFY(ShieldedTransferPolicy::parseDinToUna("92233720368.54775807", &una));
+    QCOMPARE(una, std::numeric_limits<qint64>::max());
+}
+
+void ShieldedTransferPolicyTest::rejectsInvalidDin() {
+    qint64 una = 0;
+    QVERIFY(!ShieldedTransferPolicy::parseDinToUna("", &una));
+    QVERIFY(!ShieldedTransferPolicy::parseDinToUna("0", &una));
+    QVERIFY(!ShieldedTransferPolicy::parseDinToUna("1.000000001", &una));
+    QVERIFY(!ShieldedTransferPolicy::parseDinToUna("1.", &una));
+    QVERIFY(!ShieldedTransferPolicy::parseDinToUna("-1", &una));
+    QVERIFY(!ShieldedTransferPolicy::parseDinToUna("92233720368.54775808", &una));
+}
+
+void ShieldedTransferPolicyTest::productionLockoutIsReadOnly() {
+    QVERIFY(!ShieldedTransferPolicy::showFundMovingControls(true, "dins"));
+    QVERIFY(!ShieldedTransferPolicy::showFundMovingControls(true, "tdins"));
+    QVERIFY(ShieldedTransferPolicy::showFundMovingControls(true, "rdins"));
+    QVERIFY(ShieldedTransferPolicy::showFundMovingControls(false, "dins"));
 }
 
 QTEST_MAIN(ShieldedTransferPolicyTest)

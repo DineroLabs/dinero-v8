@@ -88,6 +88,13 @@ private:
                              const QString& txid = {}, qint64 feeUna = 0);
     void clearTransferJournal();
     void setTransferSubmitting(bool submitting);
+    bool saveOperationJournal(const QString& operation, const QString& stage,
+                              qint64 amountUna, qint64 feeUna = 0,
+                              const QString& txid = {});
+    void clearOperationJournal(const QString& operation);
+    void loadOperationJournals();
+    void setShieldSubmitting(bool submitting);
+    void setUnshieldSubmitting(bool submitting);
 
     RpcClient* rpc_;
 
@@ -121,6 +128,8 @@ private:
     QLineEdit* shieldFeeEdit_ = nullptr;
     QPushButton* shieldBtn_ = nullptr;
     QLabel* shieldResultLabel_ = nullptr;
+    bool shieldSubmitting_ = false;
+    QString shieldJournalStage_;
 
     // Transfer form
     QGroupBox* transferBox_ = nullptr;
@@ -141,6 +150,10 @@ private:
     QPushButton* unshieldBtn_ = nullptr;
     QLabel* unshieldResultLabel_ = nullptr;
     QLabel* unshieldAddressLabel_ = nullptr;
+    bool unshieldSubmitting_ = false;
+    QString unshieldJournalStage_;
+
+    QWidget* fundMovingSurface_ = nullptr;
 
     // Activity
     QTextEdit* activityLog_ = nullptr;
