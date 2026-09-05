@@ -46,6 +46,8 @@
 #include <QTextEdit>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QIcon>
 #include <QTimer>
 #include <QPointer>
 #include <QThread>
@@ -115,6 +117,118 @@
 #endif
 
 namespace {
+
+enum class NavigationGlyph {
+  Dashboard,
+  Wallet,
+  Document,
+  Send,
+  Receive,
+  Transactions,
+  Link,
+  Hardware,
+  Card,
+  Pool,
+  Shield,
+  Mining,
+  Settings,
+  Proof,
+  Peers,
+  Template,
+};
+
+QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
+  QPixmap pixmap(40, 40);
+  pixmap.fill(Qt::transparent);
+
+  QPainter painter(&pixmap);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  QPen pen(color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+  painter.setPen(pen);
+  painter.setBrush(Qt::NoBrush);
+
+  auto line = [&painter](qreal x1, qreal y1, qreal x2, qreal y2) {
+    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2));
+  };
+  auto rect = [&painter](qreal x, qreal y, qreal w, qreal h, qreal radius = 0.0) {
+    painter.drawRoundedRect(QRectF(x, y, w, h), radius, radius);
+  };
+
+  switch (glyph) {
+    case NavigationGlyph::Dashboard:
+      painter.drawArc(QRectF(7, 8, 26, 26), 0, 180 * 16);
+      line(20, 21, 28, 14);
+      line(9, 29, 31, 29);
+      break;
+    case NavigationGlyph::Wallet:
+      rect(6, 10, 28, 21, 4);
+      rect(24, 16, 10, 9, 3);
+      painter.drawPoint(QPointF(28, 20.5));
+      break;
+    case NavigationGlyph::Document:
+      line(10, 5, 25, 5); line(25, 5, 32, 12); line(32, 12, 32, 35);
+      line(32, 35, 10, 35); line(10, 35, 10, 5); line(25, 5, 25, 13); line(25, 13, 32, 13);
+      line(15, 20, 27, 20); line(15, 26, 27, 26);
+      break;
+    case NavigationGlyph::Send:
+      line(7, 20, 31, 20); line(23, 12, 31, 20); line(31, 20, 23, 28);
+      break;
+    case NavigationGlyph::Receive:
+      line(7, 20, 31, 20); line(15, 12, 7, 20); line(7, 20, 15, 28);
+      break;
+    case NavigationGlyph::Transactions:
+      line(9, 10, 31, 10); line(9, 20, 31, 20); line(9, 30, 25, 30);
+      painter.drawPoint(QPointF(5, 10)); painter.drawPoint(QPointF(5, 20)); painter.drawPoint(QPointF(5, 30));
+      break;
+    case NavigationGlyph::Link:
+      painter.drawArc(QRectF(5, 12, 18, 16), 45 * 16, 270 * 16);
+      painter.drawArc(QRectF(17, 12, 18, 16), 225 * 16, 270 * 16);
+      line(14, 20, 26, 20);
+      break;
+    case NavigationGlyph::Hardware:
+      rect(10, 9, 20, 22, 3); line(15, 5, 15, 9); line(25, 5, 25, 9);
+      line(15, 31, 15, 35); line(25, 31, 25, 35); line(15, 20, 25, 20);
+      break;
+    case NavigationGlyph::Card:
+      rect(5, 10, 30, 21, 4); line(6, 17, 34, 17); line(10, 25, 18, 25);
+      break;
+    case NavigationGlyph::Pool:
+      painter.drawEllipse(QRectF(8, 7, 9, 9)); painter.drawEllipse(QRectF(23, 7, 9, 9));
+      painter.drawArc(QRectF(4, 17, 17, 17), 0, 180 * 16); painter.drawArc(QRectF(19, 17, 17, 17), 0, 180 * 16);
+      break;
+    case NavigationGlyph::Shield:
+      line(20, 4, 32, 9); line(32, 9, 30, 24); line(30, 24, 20, 35);
+      line(20, 35, 10, 24); line(10, 24, 8, 9); line(8, 9, 20, 4);
+      break;
+    case NavigationGlyph::Mining:
+      line(8, 31, 29, 10); line(20, 8, 32, 20); line(5, 34, 12, 27);
+      break;
+    case NavigationGlyph::Settings:
+      painter.drawEllipse(QRectF(14, 14, 12, 12));
+      painter.drawEllipse(QRectF(7, 7, 26, 26));
+      line(20, 3, 20, 8); line(20, 32, 20, 37); line(3, 20, 8, 20); line(32, 20, 37, 20);
+      break;
+    case NavigationGlyph::Proof:
+      painter.drawEllipse(QRectF(5, 5, 30, 30)); line(12, 20, 18, 26); line(18, 26, 29, 13);
+      break;
+    case NavigationGlyph::Peers:
+      painter.drawEllipse(QRectF(15, 5, 10, 10)); painter.drawArc(QRectF(9, 16, 22, 18), 0, 180 * 16);
+      line(7, 10, 12, 15); line(33, 10, 28, 15);
+      break;
+    case NavigationGlyph::Template:
+      rect(8, 5, 24, 30, 3); line(14, 13, 26, 13); line(14, 20, 26, 20); line(14, 27, 23, 27);
+      break;
+  }
+  return pixmap;
+}
+
+QIcon navigationIcon(NavigationGlyph glyph) {
+  QIcon icon;
+  icon.addPixmap(drawNavigationGlyph(glyph, QColor("#aeb8c4")), QIcon::Normal, QIcon::Off);
+  icon.addPixmap(drawNavigationGlyph(glyph, QColor("#f2f5f8")), QIcon::Selected, QIcon::Off);
+  icon.addPixmap(drawNavigationGlyph(glyph, QColor("#d3dbe4")), QIcon::Active, QIcon::Off);
+  return icon;
+}
 
 // Temporary product gate: Cmd+K should expose only My Node Dashboard while
 // the AI assistant surface is parked for release polish.
@@ -2250,9 +2364,11 @@ void MainWindow::setupUI() {
   central->setStyleSheet(
     "QWidget { background: #181b20; color: #d6dde6; } "
     "QTabWidget::pane { border: 1px solid #2f343c; background: #1a1d22; border-radius: 8px; margin-top: 6px; } "
-    "QTabBar::tab { background: #242932; color: #c8d0d9; border: 1px solid #353b45; border-bottom: none; "
-    "padding: 6px 10px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 3px; } "
-    "QTabBar::tab:selected { background: #2d323b; color: #eef2f6; } "
+    "QTabBar::tab { background: #242932; color: #d5dce5; border: 1px solid #353b45; border-bottom: 3px solid transparent; "
+    "padding: 9px 12px; min-height: 22px; font-size: 13px; font-weight: 500; "
+    "border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 3px; } "
+    "QTabBar::tab:hover { background: #2a3039; color: #e7ecf2; border-color: #46505d; border-bottom-color: #46505d; } "
+    "QTabBar::tab:selected { background: #303844; color: #f2f5f8; border-color: #46505d; border-bottom: 3px solid #d58a32; } "
     "QGroupBox { border: 1px solid #30353d; border-radius: 10px; margin-top: 10px; padding-top: 8px; background: #20242a; font-weight: 600; } "
     "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #cad2db; } "
     "QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit { background: #1f2328; color: #d7dde5; "
@@ -2316,6 +2432,7 @@ void MainWindow::setupUI() {
 
   // Tab widget
   auto *tabs = new QTabWidget;
+  tabs->setIconSize(QSize(18, 18));
   mainTabs_ = tabs;
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
@@ -2715,7 +2832,7 @@ void MainWindow::setupUI() {
     
     overview->setMinimumHeight(1120); // Scroll area still handles smaller screens.
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
-    tabs->addTab(makeScrollableTab(overview), "Overview");
+    tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
 
   // === Wallet Tab ===
@@ -2974,7 +3091,7 @@ void MainWindow::setupUI() {
     
     wallet->setMinimumHeight(1800); // v7: must be tall enough for all sections to scroll
     wallet->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
-    tabs->addTab(makeScrollableTab(wallet), "\xF0\x9F\x92\xB0 Wallet");
+    tabs->addTab(makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), "Wallet");
   }
 
   // === Contracts Tab (Phase 4) ===
@@ -3048,7 +3165,7 @@ void MainWindow::setupUI() {
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
 
-    tabs->addTab(makeScrollableTab(contracts), "\xF0\x9F\x93\x9C Contracts");
+    tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Contracts");
   }
 
   // === Send Tab ===
@@ -3368,7 +3485,7 @@ void MainWindow::setupUI() {
     
     layout->addStretch();
     
-    tabs->addTab(makeScrollableTab(send), "\xF0\x9F\x93\xA4 Send");
+    tabs->addTab(makeScrollableTab(send), navigationIcon(NavigationGlyph::Send), "Send");
   }
   
   // === Receive Tab (HD Address List) ===
@@ -3430,7 +3547,7 @@ void MainWindow::setupUI() {
     });
     layout->addWidget(btnLoadAllAddresses_);
 
-    tabs->addTab(makeScrollableTab(receive), "📥 Receive");
+    tabs->addTab(makeScrollableTab(receive), navigationIcon(NavigationGlyph::Receive), "Receive");
   }
   
   // === Transactions Tab (History) ===
@@ -3480,7 +3597,7 @@ void MainWindow::setupUI() {
     // Auto-load transaction history after 5 seconds
     QTimer::singleShot(5000, this, &MainWindow::loadTransactionHistory);
     
-    tabs->addTab(transactions, "📜 Transactions");
+    tabs->addTab(transactions, navigationIcon(NavigationGlyph::Transactions), "Transactions");
   }
   
   // === UTXOs Tab (Advanced) ===
@@ -3535,7 +3652,7 @@ void MainWindow::setupUI() {
     pageLayout->addWidget(btnNextUtxoPage_);
     layout->addLayout(pageLayout);
     
-    tabs->addTab(utxos, "🔗 UTXOs");
+    tabs->addTab(utxos, navigationIcon(NavigationGlyph::Link), "UTXOs");
   }
 
   // === Hardware Wallet Tab (Production-Ready) ===
@@ -3544,13 +3661,13 @@ void MainWindow::setupUI() {
     hardwareWalletWidget_ = new HardwareWalletWidget(rpc_);
     connect(hardwareWalletWidget_, &HardwareWalletWidget::transactionBroadcasted,
             this, &MainWindow::handleHardwareWalletBroadcast);
-    tabs->addTab(hardwareWalletWidget_, "🔐 Hardware Wallet");
+    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware Wallet");
   }
 
   // === DPI Pay/Collect Tab ===
   {
     dpiWidget_ = new DpiWidget(rpc_, this);
-    tabs->addTab(dpiWidget_, "💳 Pay/Collect");
+    tabs->addTab(dpiWidget_, navigationIcon(NavigationGlyph::Card), "Pay/Collect");
   }
 
 #ifdef DIN_EXPERIMENTAL_FEATURES
@@ -3564,19 +3681,19 @@ void MainWindow::setupUI() {
   // === Payments Tab ===
   {
     paymentsWidget_ = new PaymentsWidget(rpc_, ws_, this);
-    tabs->addTab(paymentsWidget_, "💳 Payments");
+    tabs->addTab(paymentsWidget_, navigationIcon(NavigationGlyph::Card), "Payments");
   }
 
   // === Escrow Tab ===
   {
     escrowWidget_ = new EscrowWidget(rpc_, ws_, this);
-    tabs->addTab(escrowWidget_, "⚖️ Escrow");
+    tabs->addTab(escrowWidget_, navigationIcon(NavigationGlyph::Document), "Escrow");
   }
 
   // === Marketplace Tab ===
   {
     marketplaceWidget_ = new MarketplaceWidget(rpc_, ws_, this);
-    tabs->addTab(marketplaceWidget_, "🛒 Marketplace");
+    tabs->addTab(marketplaceWidget_, navigationIcon(NavigationGlyph::Transactions), "Marketplace");
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -3590,7 +3707,7 @@ void MainWindow::setupUI() {
   // Explicit operator/developer builds may opt in at configure time.
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
-    tabs->addTab(vaultPanel_, "🏦 Liquidity Vault");
+    tabs->addTab(vaultPanel_, navigationIcon(NavigationGlyph::Shield), "Liquidity Vault");
   }
 #endif
 
@@ -3599,7 +3716,7 @@ void MainWindow::setupUI() {
   // and contributor table together exceed a laptop viewport.
   {
     poolPanel_ = new PoolPanel(rpc_, this);
-    tabs->addTab(makeScrollableTab(poolPanel_), "👥 Pool");
+    tabs->addTab(makeScrollableTab(poolPanel_), navigationIcon(NavigationGlyph::Pool), "Pool");
   }
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
@@ -3608,7 +3725,7 @@ void MainWindow::setupUI() {
   // banner; on regtest it is fully functional.
   {
     shieldedWidget_ = new ShieldedWidget(rpc_, this);
-    tabs->addTab(shieldedWidget_, "🛡 Shielded");
+    tabs->addTab(shieldedWidget_, navigationIcon(NavigationGlyph::Shield), "Shielded");
   }
 
   // === ⚡ Lightning Network Tab (Phase 7) ===
@@ -3916,7 +4033,7 @@ void MainWindow::setupUI() {
             throw std::runtime_error("QML failed to load");
         }
         
-        tabs->addTab(miningWidget_, "⛏️ Mining");
+        tabs->addTab(miningWidget_, navigationIcon(NavigationGlyph::Mining), "Mining");
         miningTabWidget_ = miningWidget_;
     } catch (...) {
         // Fallback to simple message if QML fails
@@ -3936,7 +4053,7 @@ void MainWindow::setupUI() {
         layout->addWidget(label);
         layout->addStretch();
         auto* miningPage = makeScrollableTab(mining);
-        tabs->addTab(miningPage, "⛏️ Mining");
+        tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
         miningTabWidget_ = miningPage;
     }
 #else
@@ -4373,7 +4490,7 @@ void MainWindow::setupUI() {
     setMiningOutputCinematicEnabled(false);
     
     auto* miningPage = makeScrollableTab(mining);
-    tabs->addTab(miningPage, "⛏️ Mining");
+    tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
     miningTabWidget_ = miningPage;
 
     // Create embedded miner controller (in-process via dinero-solo-miner library)
@@ -4670,7 +4787,7 @@ void MainWindow::setupUI() {
     layout->addLayout(grid);
     layout->addStretch();
 
-    const int bridgeTabIndex = tabs->addTab(makeScrollableTab(bridge), "Utreexo Proofs");
+    const int bridgeTabIndex = tabs->addTab(makeScrollableTab(bridge), navigationIcon(NavigationGlyph::Proof), "Utreexo Proofs");
     tabs->setTabVisible(bridgeTabIndex, false);  // Advanced diagnostics; surfaced on Overview.
   }
 
@@ -4766,7 +4883,7 @@ void MainWindow::setupUI() {
     btnLayout->addStretch();
     layout->addLayout(btnLayout);
 
-    const int peersTabIndex = tabs->addTab(makeScrollableTab(peers), "🌐 Peers");
+    const int peersTabIndex = tabs->addTab(makeScrollableTab(peers), navigationIcon(NavigationGlyph::Peers), "Peers");
     tabs->setTabVisible(peersTabIndex, false);  // Advanced diagnostics; surfaced on Overview.
   }
 
@@ -4826,7 +4943,7 @@ void MainWindow::setupUI() {
     jsonLayout->addWidget(txtBlockTemplate_);
     layout->addWidget(jsonGroup);
 
-    const int templateTabIndex = tabs->addTab(makeScrollableTab(templateWidget), "📋 Template");
+    const int templateTabIndex = tabs->addTab(makeScrollableTab(templateWidget), navigationIcon(NavigationGlyph::Template), "Template");
     tabs->setTabVisible(templateTabIndex, false);  // Advanced mining diagnostics; Mining tab covers normal use.
   }
 
@@ -5289,7 +5406,7 @@ void MainWindow::setupUI() {
     layout->addWidget(note);
 
     layout->addStretch();
-    tabs->addTab(makeScrollableTab(settings), "\xE2\x9A\x99\xEF\xB8\x8F Settings");
+    tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), "Settings");
   }
 
   // === Error Message Bar (at very bottom) ===
