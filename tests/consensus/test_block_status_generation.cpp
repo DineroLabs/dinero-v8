@@ -12,6 +12,8 @@
 // effectively irreversible.
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "consensus/block_status_generation.h"
 
 using dinero::consensus::BlockStatusGeneration;
@@ -68,4 +70,42 @@ TEST(BlockStatusGeneration, ZeroIsDistinguishableFromARealDecision) {
     EXPECT_TRUE(GenerationStillCurrent(0, 0));
     EXPECT_FALSE(GenerationStillCurrent(0, 1));
     EXPECT_FALSE(GenerationStillCurrent(1, 0));
+}
+
+TEST(BlockStatusGeneration, MalformedValueCannotCompareEqualToAZeroExpectation) {
+    // The dangerous corner: if the EXPECTED generation is 0 (never recorded,
+    // or itself unreadable) and a malformed persisted value also decodes to 0,
+    // a naive comparison would say "unchanged" and let a stale result through.
+    //
+    // Fail-closed only works if 0 is treated as "no valid decision recorded",
+    // never as a generation that can match. Every real invalidate/reconsider
+    // produces >= 1, so a 0-vs-0 comparison can only arise when NOTHING has
+    // been decided — in which case there is no operator decision to protect
+    // and preserving flags is harmless.
+    const auto junk = ParseBlockStatusGeneration("not-a-number");
+    ASSERT_EQ(junk, 0u);
+    // 0 == 0 is structurally "current", and that is safe ONLY because no
+    // decision exists at generation 0. Pin the reasoning so a future change
+    // that starts real generations at 0 has to confront it.
+    EXPECT_TRUE(GenerationStillCurrent(junk, 0))
+        << "0 vs 0 means no decision has ever been recorded";
+    // The moment ANY decision exists, a malformed read can never match it.
+    for (BlockStatusGeneration real = 1; real < 6; ++real) {
+        EXPECT_FALSE(GenerationStillCurrent(junk, real))
+            << "a malformed read must never equal real generation " << real;
+        EXPECT_FALSE(GenerationStillCurrent(real, junk))
+            << "a real capture must never equal a malformed current value";
+    }
+}
+
+TEST(BlockStatusGeneration, SaturationNeverWrapsToZero) {
+    // Wrapping would be the worst outcome: every in-flight result would read
+    // stale forever, and a later wrap could make a genuinely stale capture
+    // compare EQUAL to the current value. The counter saturates instead.
+    constexpr auto kMax = std::numeric_limits<BlockStatusGeneration>::max();
+    EXPECT_TRUE(GenerationStillCurrent(kMax, kMax));
+    EXPECT_FALSE(GenerationStillCurrent(kMax, 0))
+        << "if the counter ever wrapped to 0, a max-generation capture must "
+           "still read as stale";
+    EXPECT_EQ(ParseBlockStatusGeneration(FormatBlockStatusGeneration(kMax)), kMax);
 }

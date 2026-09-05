@@ -11660,7 +11660,23 @@ consensus::BlockStatusGeneration ChainstateService::CurrentBlockStatusGeneration
 
 consensus::BlockStatusGeneration ChainstateService::BumpBlockStatusGeneration(
     const ChainWriteToken& token, rocksdb::WriteBatch* wb) {
-    const auto next = CurrentBlockStatusGeneration() + 1;
+    const auto current = CurrentBlockStatusGeneration();
+    // Never wrap. Wrapping to 0 would make every in-flight result compare
+    // "stale" forever (0 never equals a real generation) and, worse, a later
+    // wrap could make a genuinely stale capture compare EQUAL to the current
+    // value. Saturate instead and refuse to advance; at one bump per operator
+    // invalidate/reconsider this is unreachable in practice, but a consensus
+    // counter must not have a defined-by-accident overflow.
+    if (current == std::numeric_limits<consensus::BlockStatusGeneration>::max()) {
+        if (logger_) {
+            logger_->error("[BlockStatusGeneration] counter is saturated at "
+                           "UINT64_MAX — refusing to advance rather than wrap. "
+                           "Operator status transitions are blocked until this "
+                           "is investigated.");
+        }
+        return current;
+    }
+    const auto next = current + 1;
     if (chain_db_) {
         chain_db_->putUtreexoMeta(token, consensus::kBlockStatusGenerationKey,
                                   consensus::FormatBlockStatusGeneration(next), wb);
@@ -11856,6 +11872,19 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
 }
 
 bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error) {
+    // Serialize against block acceptance, exactly as InvalidateBlock does.
+    //
+    // Without this the generation rule has a TOCTOU hole: ConnectBlock runs
+    // under activation_mutex_ and compares the captured generation to the
+    // current one, but an UNLOCKED ReconsiderBlock could bump the generation
+    // and clear the flags in the window between that compare and the write —
+    // so the acceptance would re-assert flags the operator had just cleared,
+    // which is the very bug the generation rule exists to prevent.
+    //
+    // Taking the same lock puts the compare and the write on one side of the
+    // decision and the bump and the clear on the other.
+    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+
     CBlockIndex* target = FindBlockIndex(hash);
     if (!target) {
         error = "Block not found in block index";
@@ -11964,6 +11993,14 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
             }
         }
     }
+
+    // Crash boundary: the cleared flags and the advanced generation are
+    // DURABLE at this point, but the chain has not been re-activated. A restart
+    // here must preserve the operator's decision (flags stay cleared, the
+    // generation stays advanced) and must still reach the correct tip, because
+    // nothing has re-activated it yet.
+    dinero::testing::MaybeAbortAt("after_reconsider_persist_before_activate",
+                                  dinero::testing::CrashHooksEnabled().load());
 
     // Re-evaluate best chain
     ActivateBestChain();

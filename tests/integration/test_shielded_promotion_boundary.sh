@@ -449,6 +449,39 @@ if [[ "$B1_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
         [[ "$RT_ROOT" == "$RT_ROOT_BEFORE" ]] \
             || fail "case 4: round trip to tip $RT_TIP_BEFORE changed the commitment ($RT_ROOT != $RT_ROOT_BEFORE)"
         pass "case 4: reorg to base and forward reproduces the commitment at tip $RT_TIP_BEFORE"
+
+        # Assert EVERY descendant directly. Tip 207 alone only proves the chain
+        # got there; it does not prove each intermediate block had its failure
+        # flags cleared and is a legitimate chain member. A block still carrying
+        # BLOCK_FAILED_* while the tip sits above it is a latent trap that
+        # surfaces on the next reorg.
+        DESC_BAD=0
+        for h in $(seq $((BASE + 1)) "$RT_TIP_BEFORE"); do
+            hh="$(rpc "$CON_RPC" "$CON_DIR" getblockhash "[$h]" | jq -r '.result // ""')"
+            if [[ ! "$hh" =~ ^[0-9a-fA-F]{64}$ ]]; then
+                info "  descendant $h: NO canonical hash"
+                DESC_BAD=$((DESC_BAD + 1)); continue
+            fi
+            # A block the node still considers failed is not returned as part of
+            # the active chain by getblock; require it to be readable AND at the
+            # height we asked for.
+            bh="$(rpc "$CON_RPC" "$CON_DIR" getblock "[\"$hh\", 1]" | jq -r '.result.height // ""')"
+            if [[ "$bh" != "$h" ]]; then
+                info "  descendant $h: getblock returned height '\''$bh'\''"
+                DESC_BAD=$((DESC_BAD + 1))
+            fi
+        done
+        [[ "$DESC_BAD" -eq 0 ]] \
+            || fail "case 4: $DESC_BAD descendant(s) between $((BASE + 1)) and $RT_TIP_BEFORE are not cleanly on the active chain"
+        pass "case 4: all $((RT_TIP_BEFORE - BASE)) descendants cleared and on the active chain"
+
+        # Candidate membership: the restored tip must be reported as the best
+        # chain tip, not merely reachable.
+        BEST="$(rpc "$CON_RPC" "$CON_DIR" getbestblockhash | jq -r '.result // ""')"
+        TIP_HASH="$(rpc "$CON_RPC" "$CON_DIR" getblockhash "[$RT_TIP_BEFORE]" | jq -r '.result // ""')"
+        [[ -n "$BEST" && "$BEST" == "$TIP_HASH" ]] \
+            || fail "case 4: best block hash ($BEST) is not the restored tip ($TIP_HASH) — candidate membership did not recover"
+        pass "case 4: restored tip is the best chain tip (candidate membership recovered)"
     else
         # HARD FAILURE. The round trip is the property under test; if it does
         # not happen, the commitment claim is unverified and this must not go
