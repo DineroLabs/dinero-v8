@@ -2444,6 +2444,8 @@ void MainWindow::setupUI() {
     // layout, so there is exactly ONE recent-blocks table and one code path
     // filling it.
     // ═══════════════════════════════════════════════════════════════════
+    auto* chainActivityRow = new QHBoxLayout;
+    chainActivityRow->setSpacing(12);
     {
       auto* blocksCard = new QGroupBox("Latest Blocks");
       // Hug the content. Without this the card absorbs the slack created by
@@ -2468,8 +2470,9 @@ void MainWindow::setupUI() {
       cardLayout->addLayout(header);
 
       overviewBlocksLayout_ = cardLayout;
-      layout->addWidget(blocksCard);
+      chainActivityRow->addWidget(blocksCard, 7);
     }
+    layout->addLayout(chainActivityRow);
 
 
     // ═══════════════════════════════════════════════════════════════════
@@ -2607,7 +2610,9 @@ void MainWindow::setupUI() {
     // counter that can remain visually indistinguishable from "unavailable".
     auto *mempoolBox = new QGroupBox("📦 Mempool");
     auto *mempoolLayout = new QVBoxLayout(mempoolBox);
+    mempoolBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     mempoolBox->setMinimumHeight(210);
+    mempoolBox->setMaximumHeight(235);
     lblMempoolSize_ = new QLabel("Loading…");
     lblMempoolSize_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblMempoolBytes_ = new QLabel("Waiting for local node");
@@ -2627,7 +2632,7 @@ void MainWindow::setupUI() {
     tblMempoolOverview_->setMinimumHeight(120);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
-    activityColumn->addWidget(mempoolBox);
+    chainActivityRow->addWidget(mempoolBox, 3);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
