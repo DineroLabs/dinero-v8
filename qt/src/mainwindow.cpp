@@ -2479,21 +2479,16 @@ void MainWindow::setupUI() {
     // 📊 MONITORING DASHBOARD (bottom half of Overview)
     // ═══════════════════════════════════════════════════════════════════
     
-    auto *monitoringGroup = new QGroupBox("Node operation");
-    auto *monitoringLayout = new QVBoxLayout(monitoringGroup);
-    monitoringLayout->setContentsMargins(10, 12, 10, 10);
-    monitoringLayout->setSpacing(10);
-    monitoringGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    monitoringGroup->setMaximumHeight(650);
-    
-    // Two semantic columns: network participation on the left, transaction
-    // workload and mining resources on the right.
+    // Keep node participation and local resources as fully independent cards.
+    // The exposed page background between them provides the same section
+    // separation used by the rows above, without drawing divider rules.
     auto *monitoringColumns = new QHBoxLayout;
-    monitoringColumns->setSpacing(12);
-    auto *networkColumn = new QVBoxLayout;
+    monitoringColumns->setContentsMargins(0, 0, 0, 0);
+    monitoringColumns->setSpacing(0);
+    auto *nodeOperationBox = new QGroupBox("Node operation");
+    auto *networkColumn = new QVBoxLayout(nodeOperationBox);
+    networkColumn->setContentsMargins(10, 12, 10, 10);
     networkColumn->setSpacing(10);
-    auto *activityColumn = new QVBoxLayout;
-    activityColumn->setSpacing(10);
 
     auto* connectivityBox = new QWidget;
     auto* connectivityLayout = new QVBoxLayout(connectivityBox);
@@ -2600,7 +2595,6 @@ void MainWindow::setupUI() {
     cpuLayout->addWidget(lblGpuLoadOverview_);
     cpuLayout->addWidget(lblGpuMemoryOverview_);
     cpuLayout->addWidget(lblGpuThermalsOverview_);
-    activityColumn->addWidget(cpuBox);
     
     // Live mempool summary. The transaction rows make short-lived pending
     // activity observable instead of reducing it to a periodically sampled
@@ -2670,19 +2664,13 @@ void MainWindow::setupUI() {
     peersLayout->addWidget(tblPeersOverview_);
     networkColumn->addWidget(peersBox);
     networkColumn->addStretch();
-    activityColumn->addStretch();
-    monitoringColumns->addLayout(networkColumn, 2);
-    auto* columnGutter = new QWidget(monitoringGroup);
+    monitoringColumns->addWidget(nodeOperationBox, 2);
+    auto* columnGutter = new QWidget;
     columnGutter->setStyleSheet("QWidget { background: #14191f; }");
-    columnGutter->setFixedWidth(10);
+    columnGutter->setFixedWidth(12);
     monitoringColumns->addWidget(columnGutter);
-    monitoringColumns->addLayout(activityColumn, 1);
-    monitoringLayout->addLayout(monitoringColumns);
-
-    auto* alertsGutter = new QWidget(monitoringGroup);
-    alertsGutter->setStyleSheet("QWidget { background: #14191f; }");
-    alertsGutter->setFixedHeight(10);
-    monitoringLayout->addWidget(alertsGutter);
+    monitoringColumns->addWidget(cpuBox, 1, Qt::AlignTop);
+    layout->addLayout(monitoringColumns);
 
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
@@ -2695,7 +2683,7 @@ void MainWindow::setupUI() {
     );
     txtAlerts_->setPlaceholderText("No recent alerts");
     alertsLayout->addWidget(txtAlerts_);
-    monitoringLayout->addWidget(alertsBox);
+    layout->addWidget(alertsBox);
     
     // Row 5: Export Button
     auto *exportLayout = new QHBoxLayout;
@@ -2704,9 +2692,7 @@ void MainWindow::setupUI() {
     btnExportMetrics->setStyleSheet(chromeButtonStyle());
     connect(btnExportMetrics, &QPushButton::clicked, this, &MainWindow::onExportMetrics);
     exportLayout->addWidget(btnExportMetrics);
-    monitoringLayout->addLayout(exportLayout);
-    
-    layout->addWidget(monitoringGroup);
+    layout->addLayout(exportLayout);
     
     // ═══════════════════════════════════════════════════════════════════
     // END MONITORING DASHBOARD
