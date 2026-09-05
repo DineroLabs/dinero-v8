@@ -977,6 +977,13 @@ bool ChainstateService::ResolveCanonicalBlockHash(uint32_t height,
 }
 
 bool ChainstateService::LoadShieldedState() {
+    // Publish the network decision once, before any shielded bundle can be
+    // applied. Hooks inside consensus translation units read this flag rather
+    // than dinero::Params(), so those TUs stay free of a chainparams link
+    // dependency — gating one on Params() broke four test targets at link time.
+    dinero::testing::CrashHooksEnabled().store(
+        dinero::Params().network_id == "regtest");
+
     const std::string nullifier_path =
         (std::filesystem::path(datadir_) / "blockchain" / "shielded_nullifiers.db").string();
     const auto open_result = shielded_nullifiers_.Open(nullifier_path);

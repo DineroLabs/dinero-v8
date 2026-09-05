@@ -1928,9 +1928,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_transitions.
     tests/consensus/test_state_commitment_transitions.cpp
     src/consensus/state_commitment.cpp
     src/primitives/uint256.cpp
-    # See test_shielded_block_section: shielded_validation.cpp's crash hook
-    # pulls in dinero::Params().
-    src/consensus/chainparams_impl.cpp
   )
   add_dependencies(test_state_commitment_transitions gtest gtest_main dinero_shielded)
   target_link_libraries(test_state_commitment_transitions PRIVATE
@@ -2098,10 +2095,6 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_block_section.cpp)
   add_executable(test_shielded_block_section
     tests/consensus/test_shielded_block_section.cpp
-    # ApplyShieldedBundle carries a regtest-gated crash hook, so the TU that
-    # defines it now references dinero::Params(). Every target that links
-    # shielded_validation.cpp must therefore supply ParamsImpl().
-    src/consensus/chainparams_impl.cpp
   )
   add_dependencies(test_shielded_block_section gtest dinero_shielded)
   target_link_libraries(test_shielded_block_section PRIVATE

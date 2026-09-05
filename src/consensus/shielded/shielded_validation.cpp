@@ -6,7 +6,6 @@
 #include "consensus/shielded/shielded_validation.h"
 
 #include "common/crash_injection.h"
-#include "consensus/chainparams.h"
 
 #include <set>
 #include <utility>
@@ -351,8 +350,11 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
     // (ChainstateService::.. "Always wipe sqlite and rehydrate from ChainDB"),
     // which erases rows this block committed but never finished connecting.
     // Hook exists so that recovery can be proven rather than argued.
+    // Gated on the process-wide flag, NOT on dinero::Params(): referencing
+    // Params() here pulled ParamsImpl() into every target linking this TU and
+    // broke four of them at link time. The daemon sets the flag for regtest.
     dinero::testing::MaybeAbortAt("after_nullifier_batch_before_tree_append",
-                                  dinero::Params().network_id == "regtest");
+                                  dinero::testing::CrashHooksEnabled().load());
 
     // This is the ONLY place shielded outputs enter consensus state.
     // They NEVER enter Utreexo.
