@@ -20,6 +20,8 @@ using dinero::consensus::BlockStatusGeneration;
 using dinero::consensus::FormatBlockStatusGeneration;
 using dinero::consensus::GenerationStillCurrent;
 using dinero::consensus::NextGeneration;
+using dinero::consensus::PreservedFailureFlags;
+using dinero::consensus::CompareThenCommitFailureFlags;
 using dinero::consensus::ParseBlockStatusGeneration;
 
 TEST(BlockStatusGeneration, ResultCapturedBeforeADecisionIsStale) {
@@ -127,4 +129,104 @@ TEST(BlockStatusGeneration, OverflowRefusesAndLeavesTheCounterUnchanged) {
         EXPECT_EQ(*n, g + 1) << "g=" << g;
         EXPECT_NE(*n, 0u) << "an advance must never produce 0";
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TOCTOU between the generation comparison and the failure-flag commit.
+//
+// This is deliberately a LOW-LEVEL test with a fake store. A two-daemon
+// fixture could park ConnectBlock at the exact boundary, but removing
+// ReconsiderBlock's activation_mutex_ still produced no observable difference
+// there: the stale path only does damage when it is carrying non-zero flags
+// AND its metadata write is the last writer. ActivateBestChain, relay handling
+// and candidate processing all sit in between and mask it, so the fixture
+// tested too much surrounding machinery to isolate one lock.
+//
+// Here the payload is guaranteed: a captured FAILED flag, an old generation,
+// and a commit that nothing else can overwrite.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+constexpr uint32_t kFailedValid = 1u << 0;   // stands in for BLOCK_FAILED_VALID
+
+/// Minimal fake of the persistent decision state.
+struct FakeStore {
+    BlockStatusGeneration generation = 7;
+    uint32_t flags = kFailedValid;
+    uint32_t committed = 0xFFFFFFFF;   // sentinel: nothing committed yet
+
+    /// What ReconsiderBlock does: clear the flags and advance the generation.
+    void Reconsider() {
+        flags = 0;
+        generation = *NextGeneration(generation);
+    }
+};
+}  // namespace
+
+TEST(GenerationToctou, UnsynchronizedWindowLetsAStaleResultReassertClearedFlags) {
+    // THE HAZARD. Acceptance compares at generation 7, a reconsider lands in
+    // the window, and the stale commit carries the old flag forward.
+    FakeStore store;
+    const auto captured = store.generation;            // 7
+    const uint32_t observed = store.flags;             // FAILED_VALID
+    ASSERT_NE(observed, 0u) << "the fixture must supply a damaging payload";
+
+    CompareThenCommitFailureFlags(
+        captured,
+        [&] { return store.generation; },
+        observed,
+        [&] { store.Reconsider(); },                   // window: unsynchronized
+        [&](uint32_t f) { store.committed = f; });
+
+    EXPECT_EQ(store.generation, 8u) << "the reconsider did advance the generation";
+    EXPECT_EQ(store.flags, 0u) << "the reconsider did clear the flags";
+    EXPECT_EQ(store.committed, kFailedValid)
+        << "UNSYNCHRONIZED: the stale commit re-asserted a flag the operator "
+           "had just cleared — this is the bug activation_mutex_ prevents";
+}
+
+TEST(GenerationToctou, SerializedWindowCommitsNothingStale) {
+    // WITH serialization the reconsider cannot run inside the window, so the
+    // commit reflects the state the comparison actually saw.
+    FakeStore store;
+    const auto captured = store.generation;
+    const uint32_t observed = store.flags;
+
+    CompareThenCommitFailureFlags(
+        captured,
+        [&] { return store.generation; },
+        observed,
+        [] { /* serialized: nothing may run here */ },
+        [&](uint32_t f) { store.committed = f; });
+
+    EXPECT_EQ(store.committed, kFailedValid)
+        << "no decision intervened, so preserving the observed flag is correct";
+
+    // And once the reconsider DOES run — after the sequence, as the lock
+    // guarantees — a subsequent acceptance sees the new generation and carries
+    // nothing forward.
+    store.Reconsider();
+    const auto after = store.generation;
+    EXPECT_EQ(PreservedFailureFlags(captured, after, kFailedValid), 0u)
+        << "a result captured before the reconsider must carry nothing forward";
+}
+
+TEST(GenerationToctou, RecapturingAfterTheDecisionIsSafe) {
+    // The ordering the mutex enforces: capture, compare and commit all sit on
+    // one side of the decision. A result that captures AFTER the reconsider is
+    // current and may legitimately record failure again.
+    FakeStore store;
+    store.Reconsider();                       // generation 8, flags cleared
+    const auto captured = store.generation;   // captured AFTER
+    store.flags = kFailedValid;               // genuinely invalid this time
+
+    CompareThenCommitFailureFlags(
+        captured,
+        [&] { return store.generation; },
+        store.flags,
+        [] {},
+        [&](uint32_t f) { store.committed = f; });
+
+    EXPECT_EQ(store.committed, kFailedValid)
+        << "a post-decision validation must still be able to record failure";
 }

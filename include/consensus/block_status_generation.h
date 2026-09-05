@@ -63,6 +63,43 @@ inline bool GenerationStillCurrent(BlockStatusGeneration captured,
 /// instead of only reasoned about at the call site.
 std::optional<BlockStatusGeneration> NextGeneration(BlockStatusGeneration current);
 
+/// Which failure flags a block-acceptance result may carry forward.
+///
+/// Pure, so the decision can be tested without a daemon: a stale result
+/// (captured != current) carries NOTHING forward, a current one carries the
+/// flags it observed.
+inline uint32_t PreservedFailureFlags(BlockStatusGeneration captured,
+                                      BlockStatusGeneration current,
+                                      uint32_t observed_failure_flags) {
+    return GenerationStillCurrent(captured, current) ? observed_failure_flags : 0u;
+}
+
+/// The compare-then-commit sequence, with the window between them made
+/// explicit so a test can act inside it.
+///
+/// This models exactly what ConnectBlock does: read the current generation,
+/// decide which flags survive, then commit. `in_window` runs BETWEEN those two
+/// steps — the TOCTOU window that ReconsiderBlock's activation_mutex_ exists to
+/// eliminate. In production nothing can run there because the whole sequence
+/// holds that lock; in a test, `in_window` is where the damaging interleaving
+/// is injected.
+///
+/// Templated so tests can supply fakes with no daemon, no ChainDB, and no
+/// ActivateBestChain to mask the write — the surrounding machinery is exactly
+/// what made this unprovable at integration level.
+template <typename ReadGeneration, typename InWindow, typename CommitFlags>
+void CompareThenCommitFailureFlags(BlockStatusGeneration captured,
+                                   ReadGeneration read_generation,
+                                   uint32_t observed_failure_flags,
+                                   InWindow in_window,
+                                   CommitFlags commit) {
+    const BlockStatusGeneration current = read_generation();
+    const uint32_t preserved =
+        PreservedFailureFlags(captured, current, observed_failure_flags);
+    in_window();          // <-- the race window
+    commit(preserved);
+}
+
 /// Parse a persisted counter. Malformed or absent reads as 0, which is never
 /// equal to a bumped generation — so an unreadable counter fails CLOSED
 /// (results treated as stale) rather than silently allowing a stale write.

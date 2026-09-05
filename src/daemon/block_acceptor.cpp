@@ -2270,11 +2270,14 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                         "connectblock_after_generation_compare",
                         dinero::testing::CrashHooksEnabled().load());
 
+                    // Same decision as consensus/block_status_generation.h's
+                    // PreservedFailureFlags, which exists so this rule is
+                    // unit-testable without a daemon.
                     const uint32_t preserved_failure_flags =
-                        decision_unchanged
-                            ? (block_index->status &
-                               (dinero::BLOCK_FAILED_VALID | dinero::BLOCK_FAILED_CHILD))
-                            : 0u;
+                        dinero::consensus::PreservedFailureFlags(
+                            accept_status_generation, gen_now,
+                            block_index->status &
+                                (dinero::BLOCK_FAILED_VALID | dinero::BLOCK_FAILED_CHILD));
                     if (!decision_unchanged) {
                         LOG_INFO("♻️  Stale acceptance (generation " +
                                  std::to_string(accept_status_generation) + " -> " +
