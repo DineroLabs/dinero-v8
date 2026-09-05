@@ -592,16 +592,6 @@ private:
   QTimer* miningFocusDimTimer_; // Delayed dimming when mining tab is active
   QTimer* miningCinematicTimer_; // Cinematic matrix background while mining
   int miningCinematicFrame_ = 0;
-  int miningCinematicLastLongCometFrame_ = -100000;
-  int miningCinematicLastUltraCometFrame_ = 0;
-  struct MiningCinematicSpark {
-    qint64 worldRow = 0;
-    int col = 0;
-    int bornFrame = 0;
-    int lifetimeFrames = 0;
-    int streakLength = 1; // 1 = single spark glyph; >1 = short comet streak.
-  };
-  QVector<MiningCinematicSpark> miningCinematicSparks_;
   struct MiningHashSample {
     quint32 nonce = 0;
     QString hash;

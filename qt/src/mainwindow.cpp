@@ -9922,9 +9922,6 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
   if (shouldRun && miningCinematicTimer_) {
     if (!miningCinematicTimer_->isActive()) {
       miningCinematicFrame_ = 0;
-      miningCinematicLastLongCometFrame_ = -100000;
-      miningCinematicLastUltraCometFrame_ = 0;
-      miningCinematicSparks_.clear();
       miningCinematicTimer_->start();
     }
     updateMiningOutputCinematicFrame();
@@ -9948,9 +9945,6 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
     miningHashOverlay_->clear();
   }
   miningCinematicFrame_ = 0;
-  miningCinematicLastLongCometFrame_ = -100000;
-  miningCinematicLastUltraCometFrame_ = 0;
-  miningCinematicSparks_.clear();
 
   QPalette palette = viewport->palette();
   palette.setColor(QPalette::Base, QColor(kMiningOutputIdleBackground));
@@ -10114,6 +10108,9 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     painter.drawText(0, y, line);
   }
 
+  // Comet/spark effects are intentionally disabled. They were barely visible
+  // but multiplied per-frame text draws enough to make the hash field stutter.
+#if 0
   // Sparse highlight layer: random bright glyph sparks + comet streaks.
   auto spawnSpark = [&](int lifetimeMin, int lifetimeMax, int streakMin, int streakMax) {
     if (charsPerLine <= 0 || visibleRows <= 0) {
@@ -10237,6 +10234,8 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       }
     }
   }
+
+#endif
 
   // ── Motto ticker as floating overlay (not in background pixmap) ──
   {
