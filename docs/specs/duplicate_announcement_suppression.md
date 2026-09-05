@@ -58,6 +58,44 @@ Accept path:
    cached result immediately, before parse/validate/store
 3. otherwise process normally, then record `(hash, result, epoch_)`
 
+### What may be cached — and what must never be
+
+Cache **only** outcomes that are successfully handled or definitively terminal:
+
+| outcome | cacheable | why |
+|---|---|---|
+| accepted and stored | yes | the work is genuinely done |
+| rejected for a permanent consensus reason (bad PoW, bad merkle root, invalid utreexo root, malformed) | yes | the same bytes can never become valid |
+| duplicate of an already-handled hash | yes | terminal by construction |
+| **transient failure** (I/O error, disk full, lock contention, DB unavailable) | **NO** | retryable; caching it makes a temporary fault permanent |
+| **interrupted processing** (exception, early return, shutdown mid-accept) | **NO** | the block was never actually handled |
+| **retryable rejection** (missing parent, orphan, not-yet-connectable) | **NO** | becomes valid once the parent arrives |
+
+The failure mode this prevents is worse than the problem being solved: a cached
+transient failure converts a recoverable fault into a block the node refuses to
+reconsider until the next epoch bump, and if that block is the one the chain
+needs, the node stalls. A missing-parent rejection is the sharpest case — it is
+*expected* to be retried the moment the parent lands.
+
+Implementation rule: record into the cache at exactly one place, on the success
+path and on explicitly-enumerated terminal rejection codes. Never in a `catch`,
+never in a generic error return, never by defaulting — a new rejection code must
+be opted IN, not inherited.
+
+### Epoch bumps go through one function
+
+```
+void BumpAcceptEpoch(EpochBumpReason reason);   // the ONLY writer of epoch_
+```
+
+Every transition calls it; nothing else touches `epoch_`. A scattered `epoch_++`
+is how one path gets missed, and a missed bump means a stale suppression
+survives a state change that should have invalidated it — silently, and only
+under reorg.
+
+Each transition below gets its own mutation test: remove that single call, and
+a test must fail.
+
 Bump `epoch_` — invalidating every cached entry at once — on:
 
 - active tip change (connect or disconnect)
@@ -92,7 +130,13 @@ covers **sequential** ones. They compose; neither replaces the other.
    with `ConnectTip` successes still exactly 1.
 4. A reorg immediately after a suppressed duplicate still reprocesses that
    block — the epoch bump is load-bearing and must be mutation-tested by
-   removing it.
+   removing it. One mutation PER transition, not one for the mechanism: drop
+   each individual `BumpAcceptEpoch` call in turn and require a distinct
+   failure. A bump that no test misses is a bump that is not doing anything.
+7. A transient failure is NOT cached: inject an I/O fault, confirm the block is
+   reprocessed on the next delivery rather than suppressed.
+8. A missing-parent rejection is NOT cached: deliver an orphan, then its parent,
+   and confirm the orphan is reconsidered without waiting for an epoch bump.
 5. Restart clears the cache: a block suppressed before restart is reprocessed
    after it.
 6. Memory is bounded under a sustained announcement flood.
