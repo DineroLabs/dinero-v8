@@ -28,6 +28,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QDateTime>
+#include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTimer>
@@ -51,6 +53,7 @@ public Q_SLOTS:
 private Q_SLOTS:
     void onFetchStatusClicked();
     void onChangePayoutClicked();
+    void onChangeFeeClicked();
     void onCheckEarningsClicked();
     void onOpsReplyFinished(QNetworkReply* reply);
     void onRpcResult(const QString& method, const QJsonValue& result);
@@ -60,7 +63,20 @@ private:
     void setupUi();
     void setupConnections();
     void applyStatus(const QJsonObject& status);
+    bool validateStatus(const QJsonObject& status, QString* error) const;
+    void markStatusStale(const QString& reason);
+    void updateHealth(const QJsonObject& status, bool legacy);
+    void recordHistory(const QJsonObject& status);
+    void renderHistory();
+    void restorePayoutJournal();
+    bool persistPayoutJournal(const QString& stage, const QString& from, const QString& to);
+    void reconcilePayoutJournal(const QString& observed);
+    QString endpointKey() const;
     void handlePayoutReply(QNetworkReply* reply, int http);
+    void handleFeeReply(QNetworkReply* reply, int http);
+    bool persistFeeJournal(const QString& stage, qint64 from, qint64 to);
+    void restoreFeeJournal();
+    void reconcileFeeJournal(qint64 observed);
     void setPayoutMessage(const QString& html);
     void setStatusMessage(const QString& html);
     bool validateOpsUrl(const QUrl& url, QLabel* error_target) const;
@@ -74,7 +90,12 @@ private:
     bool ops_attempted_ = false;
     bool status_in_flight_ = false;
     bool payout_in_flight_ = false;
+    bool fee_in_flight_ = false;
     bool earnings_in_flight_ = false;
+    bool has_valid_status_ = false;
+    QDateTime last_valid_status_;
+    QGroupBox* why_group_ = nullptr;
+    QPushButton* btn_about_ = nullptr;
 
     // Connection settings.
     QLineEdit* ops_url_input_;
@@ -91,6 +112,16 @@ private:
     QLabel* lbl_producer_;
     QLabel* lbl_shares_;
     QLabel* lbl_blocks_;
+    QLabel* lbl_health_;
+    QLabel* lbl_health_detail_;
+    QLabel* lbl_daemon_;
+    QLabel* lbl_stratum_;
+    QLabel* lbl_last_share_;
+    QLabel* lbl_last_block_;
+    QLabel* lbl_rejections_;
+    QLabel* lbl_history_5m_;
+    QLabel* lbl_history_1h_;
+    QLabel* lbl_history_24h_;
     QTableWidget* miners_table_;
 
     // Fee address, as reported and as changed.
@@ -105,6 +136,17 @@ private:
     /// Last address /status reported. Used to avoid clobbering what the
     /// operator is mid-way through typing on a background refresh.
     QString live_payout_address_;
+    QString journal_stage_;
+    QString journal_from_;
+    QString journal_to_;
+
+    QDoubleSpinBox* fee_percent_input_;
+    QPushButton* btn_change_fee_;
+    QLabel* lbl_fee_message_;
+    qint64 live_fee_bps_ = -1;
+    QString fee_journal_stage_;
+    qint64 fee_journal_from_ = -1;
+    qint64 fee_journal_to_ = -1;
 
     // Chain-verified earnings.
     QLineEdit* fee_address_input_;
