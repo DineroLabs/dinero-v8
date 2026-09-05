@@ -33,6 +33,8 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
+#include <optional>
 #include <string>
 
 namespace dinero {
@@ -51,6 +53,15 @@ inline bool GenerationStillCurrent(BlockStatusGeneration captured,
                                    BlockStatusGeneration current) {
     return captured == current;
 }
+
+/// The next generation, or nullopt when the counter is saturated.
+///
+/// Saturation must REFUSE rather than wrap. Wrapping to 0 would make every
+/// in-flight result read stale forever, and a later wrap could make a genuinely
+/// stale capture compare EQUAL to the current value — the one outcome the whole
+/// mechanism exists to prevent. Extracted so the refusal is unit-testable
+/// instead of only reasoned about at the call site.
+std::optional<BlockStatusGeneration> NextGeneration(BlockStatusGeneration current);
 
 /// Parse a persisted counter. Malformed or absent reads as 0, which is never
 /// equal to a bumped generation — so an unreadable counter fails CLOSED

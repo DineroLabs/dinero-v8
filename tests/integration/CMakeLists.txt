@@ -1724,6 +1724,19 @@ endif()
 # Six promotion-boundary cases for state_commitment_v1. Requires BOTH the
 # shielded root comparison and the AssumeUTXO scheduler fix, so it is run on
 # the validation-only combined branch.
+# Crash between the reconsider commit and re-activation: the operator decision
+# is durable but unapplied. Restart must preserve it and still reach the tip.
+add_test(
+    NAME ReconsiderRestartBoundary
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_reconsider_restart_boundary.sh
+)
+set_tests_properties(ReconsiderRestartBoundary PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;reorg;invalidate;crash;recovery"
+    TIMEOUT 900
+)
+message(STATUS "  ✓ ReconsiderRestartBoundary registered")
+
 add_test(
     NAME ShieldedPromotionBoundary
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_promotion_boundary.sh

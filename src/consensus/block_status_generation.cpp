@@ -6,6 +6,13 @@
 namespace dinero {
 namespace consensus {
 
+std::optional<BlockStatusGeneration> NextGeneration(BlockStatusGeneration current) {
+    if (current == std::numeric_limits<BlockStatusGeneration>::max()) {
+        return std::nullopt;  // refuse; never wrap
+    }
+    return current + 1;
+}
+
 BlockStatusGeneration ParseBlockStatusGeneration(const std::string& raw) {
     if (raw.empty()) return 0;
     // Reject anything that is not a bare run of digits BEFORE handing it to

@@ -19,6 +19,7 @@
 using dinero::consensus::BlockStatusGeneration;
 using dinero::consensus::FormatBlockStatusGeneration;
 using dinero::consensus::GenerationStillCurrent;
+using dinero::consensus::NextGeneration;
 using dinero::consensus::ParseBlockStatusGeneration;
 
 TEST(BlockStatusGeneration, ResultCapturedBeforeADecisionIsStale) {
@@ -108,4 +109,22 @@ TEST(BlockStatusGeneration, SaturationNeverWrapsToZero) {
         << "if the counter ever wrapped to 0, a max-generation capture must "
            "still read as stale";
     EXPECT_EQ(ParseBlockStatusGeneration(FormatBlockStatusGeneration(kMax)), kMax);
+}
+
+TEST(BlockStatusGeneration, OverflowRefusesAndLeavesTheCounterUnchanged) {
+    // The refusal must return "no next value" so the caller leaves BOTH the
+    // generation and the failure flags untouched — a partial application here
+    // would be worse than the overflow.
+    constexpr auto kMax = std::numeric_limits<BlockStatusGeneration>::max();
+    EXPECT_FALSE(NextGeneration(kMax).has_value())
+        << "a saturated counter must refuse, never wrap to 0";
+
+    // Everything below saturation advances by exactly one.
+    for (BlockStatusGeneration g : {uint64_t{0}, uint64_t{1}, uint64_t{650},
+                                    uint64_t{kMax - 2}, uint64_t{kMax - 1}}) {
+        const auto n = NextGeneration(g);
+        ASSERT_TRUE(n.has_value()) << "g=" << g;
+        EXPECT_EQ(*n, g + 1) << "g=" << g;
+        EXPECT_NE(*n, 0u) << "an advance must never produce 0";
+    }
 }

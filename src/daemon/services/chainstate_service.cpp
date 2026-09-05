@@ -11667,16 +11667,17 @@ consensus::BlockStatusGeneration ChainstateService::BumpBlockStatusGeneration(
     // value. Saturate instead and refuse to advance; at one bump per operator
     // invalidate/reconsider this is unreachable in practice, but a consensus
     // counter must not have a defined-by-accident overflow.
-    if (current == std::numeric_limits<consensus::BlockStatusGeneration>::max()) {
+    const auto next_opt = consensus::NextGeneration(current);
+    if (!next_opt.has_value()) {
         if (logger_) {
             logger_->error("[BlockStatusGeneration] counter is saturated at "
                            "UINT64_MAX — refusing to advance rather than wrap. "
                            "Operator status transitions are blocked until this "
                            "is investigated.");
         }
-        return current;
+        return current;  // generation UNCHANGED, and no flag write follows
     }
-    const auto next = current + 1;
+    const auto next = *next_opt;
     if (chain_db_) {
         chain_db_->putUtreexoMeta(token, consensus::kBlockStatusGenerationKey,
                                   consensus::FormatBlockStatusGeneration(next), wb);
