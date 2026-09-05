@@ -450,8 +450,23 @@ if [[ "$B1_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
             || fail "case 4: round trip to tip $RT_TIP_BEFORE changed the commitment ($RT_ROOT != $RT_ROOT_BEFORE)"
         pass "case 4: reorg to base and forward reproduces the commitment at tip $RT_TIP_BEFORE"
     else
-        info "case 4: tip did not return to $RT_TIP_BEFORE (now $RT_TIP_AFTER); cannot compare at equal heights"
-        fail "case 4: chain did not restore the pre-reorg tip"
+        # HARD FAILURE. The round trip is the property under test; if it does
+        # not happen, the commitment claim is unverified and this must not go
+        # green. Diagnostics first, so the next run explains WHY rather than
+        # only that it timed out.
+        info "case 4 DIAGNOSTICS ─────────────────────────────────────────────"
+        info "  expected tip $RT_TIP_BEFORE, observed $RT_TIP_AFTER (base=$BASE)"
+        # The node reports its own conclusion; ReconsiderBlock calls
+        # ActivateBestChain directly and logs the resulting tip.
+        grep -E "\[ReconsiderBlock\]" "$CON_DIR"/daemon*.log 2>/dev/null | tail -6 \
+            | sed 's/^/  node: /' || info "  node: no [ReconsiderBlock] lines"
+        grep -E "\[InvalidateBlock\]|BLOCK_FAILED" "$CON_DIR"/daemon*.log 2>/dev/null | tail -4 \
+            | sed 's/^/  node: /' || true
+        info "  chain tips:"
+        rpc "$CON_RPC" "$CON_DIR" getchaintips 2>/dev/null | head -c 600 | sed 's/^/    /' || true
+        info "  peers: $(rpc "$CON_RPC" "$CON_DIR" getconnectioncount 2>/dev/null | jq -r '.result // "?"')"
+        info "────────────────────────────────────────────────────────────────"
+        fail "case 4: chain did not restore the pre-reorg tip $RT_TIP_BEFORE (got $RT_TIP_AFTER) — round trip UNVERIFIED"
     fi
 else
     info "case 4: base+1 hash unavailable on consumer; skipping round trip"
