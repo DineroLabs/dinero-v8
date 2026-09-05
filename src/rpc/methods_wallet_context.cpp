@@ -2244,6 +2244,15 @@ din::Json rpc_context_wallet_getinfo(const ExecutionContext& ctx, const din::Jso
             result["locked"] = mgr.isWalletLocked();
             result["hd_enabled"] = true;  // All Dinero wallets are HD (BIP86)
             result["unlocked"] = !mgr.isWalletLocked();
+            result["account_index"] = 0;
+            // The fingerprint is public wallet metadata, but deriving it uses
+            // the in-memory HD seed. Only do so while the wallet is unlocked;
+            // Qt will retain its last wallet-scoped identity while locked.
+            if (!mgr.isWalletLocked()) {
+                if (auto* hd_wallet = mgr.getHDWallet()) {
+                    result["fingerprint"] = hd_wallet->GetMasterFingerprintHex();
+                }
+            }
 
             const bool mnemonic_backed = mgr.hasAuthoritativeBip39Mnemonic();
             const bool backup_acknowledged =

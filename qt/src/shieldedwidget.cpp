@@ -38,6 +38,15 @@ void appendLog(QTextEdit* log, const QString& line) {
     if (!log) return;
     log->append(line);
 }
+
+bool isShieldedWidgetRpc(const QString& method) {
+    return method == "wallet.shieldedbalance" ||
+           method == "wallet.getshieldedaddress" ||
+           method == "wallet.listshielded" ||
+           method == "wallet.shield" ||
+           method == "wallet.transfer" ||
+           method == "wallet.unshield";
+}
 }  // namespace
 
 ShieldedWidget::ShieldedWidget(RpcClient* rpc, QWidget* parent)
@@ -786,6 +795,18 @@ void ShieldedWidget::updateReceiveAddress(const QJsonValue& result) {
 }
 
 void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result) {
+    if (rpcUnavailable_) {
+        // Startup commonly races the embedded daemon. Replace that transient
+        // placeholder once RPC is live; after a real disconnect, retain prior
+        // activity and add a recovery marker instead.
+        if (!rpcEverConnected_ && activityLog_) {
+            activityLog_->clear();
+        }
+        appendLog(activityLog_, "[status] daemon RPC connected");
+        rpcUnavailable_ = false;
+    }
+    rpcEverConnected_ = true;
+
     if (method == "getblockcount") {
         // Auto-refresh path: refresh() if tip advanced.
         const qint64 tip = result.toVariant().toLongLong();
@@ -912,6 +933,23 @@ void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result
 }
 
 void ShieldedWidget::onRpcError(const QString& method, int code, const QString& message) {
+    // RpcClient is shared by the whole window. Never surface failures from
+    // unrelated wallet panels in Shielded activity.
+    if (!isShieldedWidgetRpc(method)) {
+        return;
+    }
+    if (message.contains("Connection refused", Qt::CaseInsensitive)) {
+        if (!rpcUnavailable_) {
+            if (!rpcEverConnected_ && activityLog_) {
+                activityLog_->clear();
+                appendLog(activityLog_, "[status] waiting for embedded daemon RPC...");
+            } else {
+                appendLog(activityLog_, "[status] daemon RPC temporarily unavailable");
+            }
+        }
+        rpcUnavailable_ = true;
+        return;
+    }
     if (method == "wallet.shieldedbalance" && message.contains("shielded_not_active",
                                                               Qt::CaseInsensitive)) {
         setActiveBanner(false, "daemon: " + message);
