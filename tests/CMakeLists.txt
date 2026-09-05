@@ -1894,6 +1894,34 @@ endif()
 # the display/snapshot string form. Must pass BEFORE enforcement is written --
 # otherwise enforcement could validate one representation while production
 # uses another and both look green.
+# GUARDRAIL: golden constants computed by an INDEPENDENT implementation from
+# the spec text, pasted as literals. Every other vector here is produced by the
+# production serializer, so a coordinated writer+parser+regenerate change would
+# stay green. These cannot update themselves.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_external_vectors.cpp)
+  add_executable(test_state_commitment_external_vectors
+    tests/consensus/test_state_commitment_external_vectors.cpp
+    src/consensus/state_commitment.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_state_commitment_external_vectors gtest gtest_main dinero_shielded)
+  target_link_libraries(test_state_commitment_external_vectors PRIVATE
+    GTest::gtest_main
+    dinero_shielded
+  )
+  target_include_directories(test_state_commitment_external_vectors BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentExternalVectors COMMAND test_state_commitment_external_vectors)
+  set_tests_properties(StateCommitmentExternalVectors PROPERTIES
+    LABELS "shielded;consensus;encoding;guardrail;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "state_commitment_v1 EXTERNAL golden vectors enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_canonical.cpp)
   add_executable(test_state_commitment_canonical
     tests/consensus/test_state_commitment_canonical.cpp
