@@ -240,28 +240,77 @@ Point 2 is enforced by `ShieldedRoot.SectionBoundaryIsUnambiguous`, which is
 neuter-verified: removing the length prefixes (i.e. adopting DSR2's layout)
 makes it fail.
 
-## Placement — undecided, both viable
+## Placement — FROZEN: coinbase commitment
 
 A node performing snapshot bootstrap **has headers and no blocks**. That single
-fact decides the trade:
+fact drove the trade:
 
-| option | verification cost | fork type |
-|---|---|---|
-| new header field | zero extra fetches | hard fork; header grows past 128 B |
-| the 12 reserved header bytes | zero extra fetches | hard fork (reserved is consensus-zero), **no size change** |
-| coinbase commitment | one block — the snapshot base, whose merkle root is already checkable against the validated header | soft-forkable |
+| option | verification cost | fork type | verdict |
+|---|---|---|---|
+| new header field | zero extra fetches | hard fork; header grows past 128 B | **avoided** |
+| the 12 reserved header bytes | zero extra fetches | hard fork (reserved is consensus-zero), no size change | **rejected** |
+| coinbase commitment | one block — the snapshot base, whose merkle root is already checkable against the validated header | soft-forkable | **CHOSEN** |
 
-Precedent exists for height-gated forks: `UTREEXO_MATURITY_LEAF_HEIGHT_MAINNET`
-= 60,000 and `shielded_epoch_reset_height` = 61,000.
+**Chosen: coinbase commitment.** It is still cryptographically bound to the
+header, through the transaction merkle root:
 
-**The reserved-bytes option is only 96 bits.** Against an attacker who is not
-the miner the relevant attack is second-preimage (2⁹⁶, safe). Against a mining
-attacker who can vary transactions while grinding a fake state it is a
-collision (2⁴⁸ by birthday bound) — mitigated by each attempt requiring a full
-shielded-state serialization and by the burial requirement, but thinner than a
-money-protecting consensus value deserves. It buys a fork with **no wire-format
-size change**, which matters because the live pool and miner stack assume a
-128-byte header.
+```
+commitment  <-  coinbase  <-  merkle_root  <-  PoW-validated header
+```
+
+the same trust chain the DNRF filter commitment already uses. The 128-byte
+header stays frozen, so every CPU/GPU/SV2 mining implementation, template,
+hardware assumption, and wire format is untouched. This remains a **consensus
+fork**; it is not a **mining-format fork**.
+
+**Rejected — the 12 reserved bytes.** 96 bits cannot hold a 256-bit commitment
+without truncation or an indirect scheme. Against an attacker who is not the
+miner the relevant attack is second-preimage (2⁹⁶, safe); against a mining
+attacker who grinds transactions while varying a fake state it is a collision
+(2⁴⁸ by birthday bound). Too thin for a value that protects money.
+
+**Avoided — growing the header.** It would change PoW serialization, miners,
+GPU kernels, SV2 templates, hardware assumptions, and networking, without
+adding cryptographic strength over a properly proven coinbase commitment.
+
+### Canonical script (39 bytes)
+
+```
+[0]     0x6a                OP_RETURN
+[1]     0x25                push 37
+[2..5]  0x44 4E 52 53       "DNRS" magic
+[6]     0x01                script encoding version
+[7..38] 32-byte root        state_commitment_v1, big-endian as produced
+```
+
+`DNRS` is deliberately distinct from the `SHR1` preimage tag: one
+domain-separates the coinbase encoding, the other the digest preimage. A value
+from one must never parse as the other. The script encoding version is separate
+from `SHIELDED_ROOT_VERSION`, so the two can move independently.
+
+### Rules
+
+1. After activation, **exactly one** tagged, versioned commitment output in the
+   coinbase. Zero is a rejection; two or more is a rejection — a second
+   commitment would let one block claim two different shielded states. Note the
+   DNRF precedent scans backwards and lets the last match win; this does not.
+2. Before activation, **no** commitment is recognized.
+3. After activation, **missing, duplicated, truncated, malformed, or incorrect**
+   commitments are all rejections. A tagged-but-corrupt script must report
+   *malformed*, never *absent* — treating corruption as absence is how a
+   truncation slips past a presence check.
+4. Snapshots carry the base block's **coinbase transaction and merkle branch**,
+   so a bootstrapping node verifies the commitment against the PoW-authenticated
+   header without fetching the block.
+5. The committed value is **post-block** shielded state. A coinbase transaction
+   cannot itself alter shielded state, so there is no circularity.
+
+### Status
+
+The **format is frozen**; activation is not. No activation height is selected
+and no consensus enforcement is wired: `RequiresStateCommitment()` returns false
+at every height and a test pins that. Enforcement belongs in a separate reviewed
+change after this format has been reviewed.
 
 ## Adoption rule (post-activation)
 

@@ -77,4 +77,9 @@ acc  height_max                   n=1 digest=b5553a681f6219a6a545a9ecc174d4eb9fe
 acc  height_boundary_61000        n=3 digest=9a17f36a27f8c49146a11e627ca1382e7238e79a356718dfbb26af96495b22dc
 acc  many_256_ascending           n=256 digest=e4de3fcba05271edc061a1934b5e6767e185e1349c2147cf16d362aa1c13dce5
 acc  many_256_descending          n=256 digest=e4de3fcba05271edc061a1934b5e6767e185e1349c2147cf16d362aa1c13dce5
+cbsc seed_00                     len=39 script=6a25444e525301001f3e5d7c9bbad9f91837567594b3d2f211304f6e8daccbeb0a29486786a5c4
+cbsc seed_01                     len=39 script=6a25444e52530101203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c5
+cbsc seed_7f                     len=39 script=6a25444e5253017f9ebddcfb1a39587897b6d5f41332517190afceed0c2b4a6a89a8c7e6052443
+cbsc seed_80                     len=39 script=6a25444e525301809fbeddfc1b3a597998b7d6f51433527291b0cfee0d2c4b6b8aa9c8e7062544
+cbsc seed_ff                     len=39 script=6a25444e525301ff1e3d5c7b9ab9d8f81736557493b2d1f1102f4e6d8cabcaea0928476685a4c3
 # end
