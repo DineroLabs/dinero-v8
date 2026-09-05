@@ -2489,6 +2489,7 @@ void MainWindow::setupUI() {
     auto *networkColumn = new QVBoxLayout(nodeOperationBox);
     networkColumn->setContentsMargins(10, 12, 10, 10);
     networkColumn->setSpacing(10);
+    nodeOperationBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 
     auto* connectivityBox = new QWidget;
     auto* connectivityLayout = new QVBoxLayout(connectivityBox);
@@ -2663,8 +2664,7 @@ void MainWindow::setupUI() {
     );
     peersLayout->addWidget(tblPeersOverview_);
     networkColumn->addWidget(peersBox);
-    networkColumn->addStretch();
-    monitoringColumns->addWidget(nodeOperationBox, 2);
+    monitoringColumns->addWidget(nodeOperationBox, 2, Qt::AlignTop);
     auto* columnGutter = new QWidget;
     columnGutter->setStyleSheet("QWidget { background: #14191f; }");
     columnGutter->setFixedWidth(12);
