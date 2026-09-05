@@ -16010,6 +16010,14 @@ void ChainstateService::BackgroundValidationWorker() {
                 } else {
                     sched->SetBackfillValidationFrontier(uint256(), 0);
                 }
+                // Deferred-mode drain ceiling. Derived from exactly the same
+                // facts as the BlockAcceptor side-chain exemption
+                // (daemon/assumeutxo_precheck.h) so the two cannot drift into
+                // disagreeing about what "deferred mode" means.
+                const bool deferred_mode =
+                    IsAssumeUTXOActive() && !IsAssumeUTXOForwardConnectEnabled();
+                sched->SetDeferredDrainCeiling(deferred_mode,
+                                               GetAssumeUTXOBaseHeight());
             }
             // #298 refinement: only re-request once backfill has reported its
             // window COMPLETE (completed >= total) yet validation still finds
@@ -18023,6 +18031,14 @@ void ChainstateService::RequestParentBlock(const uint256& parent_hash, const std
     } else {
         logger_->debug("[ChainstateService] No relay or P2P path available to request parent block");
     }
+}
+
+
+// Single source of truth for "is forward-connect on?", read from the same
+// config the deferral gate consults, so a precheck exemption gated on classic
+// deferred mode cannot fire in a mode where deferral is not actually active.
+bool ChainstateService::IsAssumeUTXOForwardConnectEnabled() const {
+    return GetConfig().assumeutxo_forward_connect;
 }
 
 } // namespace dinero

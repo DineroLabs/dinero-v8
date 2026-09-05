@@ -1093,6 +1093,8 @@ add_library(dinero_core STATIC
 
   # Validation
   src/daemon/block_acceptor.cpp
+  src/daemon/assumeutxo_precheck.cpp
+  src/daemon/block_write_metrics.cpp
   src/daemon/block_relay_manager.cpp  # Phase G.2: Block propagation
   src/daemon/tx_relay_manager.cpp  # Phase G.3: Mempool relay
 

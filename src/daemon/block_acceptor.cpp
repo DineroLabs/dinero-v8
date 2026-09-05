@@ -10,6 +10,8 @@
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
 #include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
+#include "daemon/assumeutxo_precheck.h"  // side-chain precheck exemptions
+#include "daemon/block_write_metrics.h"  // duplicate-write counters + log rate limit
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "consensus/tx_parser.h"    // Phase 3D: Transaction parsing for wallet notifications
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
@@ -53,6 +55,7 @@ extern void notifyWalletNewBlock(int height, const std::string& blockHash, const
 #include <deque>
 #include <limits>
 #include <mutex>
+#include <unordered_set>
 #include <optional>
 #include <cstdlib>  // getenv, strtol — regtest fault-injection hook (#356 Task 3)
 #include <cerrno>   // errno for strtol error checking
@@ -65,6 +68,8 @@ extern void notifyWalletNewBlock(int height, const std::string& blockHash, const
 
 using namespace dinero;
 
+
+
 // BlockRejectCodeToString moved to daemon/interfaces/ingress_types.cpp (Step 5)
 
 // Week 3: Static context pointer (initialized by ChainstateService)
@@ -73,6 +78,29 @@ DaemonContext* BlockAcceptor::ctx_ = nullptr;
 // Simple logging macros for now
 #define LOG_INFO(msg) std::cout << "[BlockAcceptor INFO] " << msg << std::endl
 #define LOG_ERROR(msg) std::cerr << "[BlockAcceptor ERROR] " << msg << std::endl
+
+namespace {
+
+// Rate-limited notice that a duplicate body write was skipped. Unlimited, this
+// is one line per delivery -- the pattern that produced 9.3 MB/min of logging.
+// Emits at most once a minute and reports the aggregate when it does.
+void LogDuplicateBodySuppressed(const dinero::uint256& hash, uint64_t height) {
+    static std::atomic<uint64_t> s_last_emit{0};
+    if (dinero::daemon::ShouldEmitRateLimited(s_last_emit, 60)) {
+        LOG_INFO("♻️  Duplicate body: reusing stored flatfile position at height " +
+                 std::to_string(height) + " hash=" + hash.GetHex().substr(0, 16) +
+                 "... (no write, no fsync). Writes avoided so far: " +
+                 std::to_string(
+                     dinero::daemon::g_duplicate_body_writes_avoided.load()) +
+                 "; log lines suppressed: " +
+                 std::to_string(
+                     dinero::daemon::g_duplicate_logs_suppressed.load()));
+    } else {
+        ++dinero::daemon::g_duplicate_logs_suppressed;
+    }
+}
+
+}  // namespace
 
 // Phase 3F: WebSocket notifications disabled (global g_subscriptions removed)
 // Previously: Per-topic sequence managed by Subscriptions class
@@ -266,18 +294,52 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                   utreexo_error);
                     }
                 } else if (chain_db_for_utreexo &&
-                           !(cs->IsAssumeUTXOActive() &&
-                             parentHeight < cs->GetAssumeUTXOBaseHeight())) {
+                           !dinero::daemon::ShouldSkipSideChainPrecheck(
+                               dinero::daemon::AssumeUTXOPrecheckContext{
+                                   // Designated: the first two members are
+                                   // both bool, and a positional swap would
+                                   // silently invert the mode gating.
+                                   .assumeutxo_active = cs->IsAssumeUTXOActive(),
+                                   .forward_connect_enabled =
+                                       cs->IsAssumeUTXOForwardConnectEnabled(),
+                                   .base_height = cs->GetAssumeUTXOBaseHeight(),
+                                   .base_block = cs->GetAssumeUTXOBaseBlock()},
+                               static_cast<uint32_t>(parentHeight),
+                               dinero::uint256::FromHexUnsafe(block.prevBlockHash))) {
                     // Side-chain. Confirm parent is on main chain.
                     //
-                    // While AssumeUTXO background validation is replaying
-                    // genesis..base, those historical bodies also traverse
-                    // BlockAcceptor as non-tip blocks. Pre-base checkpoints
-                    // and delta sidecars are deliberately not promoted into
-                    // ChainDB until that replay proves the snapshot. Do not
-                    // misroute them through this live side-chain precheck:
-                    // AssumeUtxoReplayEngine verifies every historical root,
-                    // and the below-base fork guard prevents activation.
+                    // Two AssumeUTXO cases skip this precheck entirely; see
+                    // daemon/assumeutxo_precheck.h for why each is safe.
+                    //
+                    //  - Pre-base historical bodies. While background
+                    //    validation replays genesis..base, those bodies also
+                    //    traverse BlockAcceptor as non-tip blocks. They are
+                    //    deliberately not promoted into ChainDB until the
+                    //    replay proves the snapshot, so routing them through
+                    //    this live precheck misroutes them.
+                    //    AssumeUtxoReplayEngine verifies every historical
+                    //    root, and the below-base fork guard blocks
+                    //    activation.
+                    //
+                    //  - Classic deferred mode, parent == snapshot base.
+                    //    isMainChainExtension compares against
+                    //    ChainDB::getTip(), which still trails the base
+                    //    during replay, so the base's own child is
+                    //    misclassified as a side chain. Restoring a
+                    //    historical forest to ask "is the parent on the main
+                    //    chain?" is pointless when the parent IS the
+                    //    compiled-in trust anchor -- and it ran on every
+                    //    duplicate delivery (measured: 250,135 times for one
+                    //    height) on a scheduler thread, starving
+                    //    DispatchDeferredSends() until peer deadlines expired
+                    //    and the download collapsed to ~6 KB/s.
+                    //
+                    // Skipping is safe because acceptance is storage, not
+                    // connection: this whole precheck is best-effort (every
+                    // failure path below merely logs and stores the block
+                    // anyway), and ConnectBlock hard-rejects a bad Utreexo
+                    // root when the block is actually connected after
+                    // promotion.
                     const dinero::uint256 parent_hash =
                         dinero::uint256::FromHexUnsafe(block.prevBlockHash);
                     dinero::uint256 canonical_parent;
@@ -558,6 +620,43 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 }
 
 AcceptResult BlockAcceptor::AcceptBlockFromPeer(const Block& block, const std::string& peer_id) {
+    // Single-flight: one in-flight acceptance per block hash.
+    //
+    // The same block arrives from several peers at once, and in deferred
+    // AssumeUTXO mode base+1 is announced continuously because it never
+    // connects. Everything below this point -- serialize, hex-encode, re-parse,
+    // validate -- is pure waste for a hash already being processed. Suppressing
+    // here is strictly better than suppressing deeper: it skips the
+    // serialize/hex/parse round trip too.
+    //
+    // Scope note: this dedups CONCURRENT deliveries. Sequential re-delivery of
+    // an already-stored body is handled by the known-body guard in
+    // ConnectBlock, which is what prevents the repeat fsync.
+    const dinero::uint256 in_flight_hash = block.GetHash();
+    static std::mutex s_in_flight_mutex;
+    static std::unordered_set<dinero::uint256> s_in_flight;
+    {
+        std::lock_guard<std::mutex> lock(s_in_flight_mutex);
+        if (!s_in_flight.insert(in_flight_hash).second) {
+            ++dinero::daemon::g_duplicate_body_writes_avoided;
+            LogDuplicateBodySuppressed(in_flight_hash, 0);
+            return BlockAcceptResult::Rejected(
+                BlockRejectCode::DUPLICATE,
+                "block already being processed (single-flight)",
+                in_flight_hash, 0);
+        }
+    }
+    // Released on every exit path, including exceptions thrown deeper in.
+    struct InFlightGuard {
+        std::mutex& m;
+        std::unordered_set<dinero::uint256>& set;
+        dinero::uint256 h;
+        ~InFlightGuard() {
+            std::lock_guard<std::mutex> lock(m);
+            set.erase(h);
+        }
+    } in_flight_guard{s_in_flight_mutex, s_in_flight, in_flight_hash};
+
     // Serialize the Block object to binary format
     std::string blockBinary = block.Serialize();
 
@@ -1913,7 +2012,20 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 // Continue for now - ActivateBestChain will catch it
             }
         } else if (!updateTip) {
-            LOG_INFO("🔀 SIDE-CHAIN BLOCK: Skipping Utreexo validation (will validate after reorg disconnect)");
+            {
+                // Rate limited: one line per delivery is what produced
+                // 9.3 MB/min (~13 GB/day) on a node seeing repeated base+1.
+                static std::atomic<uint64_t> s_last_sidechain_log{0};
+                if (dinero::daemon::ShouldEmitRateLimited(s_last_sidechain_log, 60)) {
+                    LOG_INFO("🔀 SIDE-CHAIN BLOCK: Skipping Utreexo validation "
+                             "(will validate after reorg disconnect). Suppressed "
+                             "since last line: " +
+                             std::to_string(
+                                 dinero::daemon::g_duplicate_logs_suppressed.load()));
+                } else {
+                    ++dinero::daemon::g_duplicate_logs_suppressed;
+                }
+            }
         }
 
         // 🔍 DIAGNOSTIC: Log what we're storing
@@ -2045,6 +2157,7 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 return false;
             }
             flatfile_pos = pos_result.value();
+            ++dinero::daemon::g_durable_body_writes;
             LOG_INFO("📦 BlockStorage write complete: file=" + std::to_string(flatfile_pos->file_number) +
                      " offset=" + std::to_string(flatfile_pos->offset) +
                      " size=" + std::to_string(flatfile_pos->size));
