@@ -236,8 +236,37 @@ ValidationContext BuildShieldedValidationContext(
  * Does NOT touch Utreexo. The transparent side of the same tx is
  * handled by the existing block-connect path (Utreexo add/remove).
  */
-// Returns false if a nullifier insert failed — the caller MUST abort the
-// block rather than connect it with shielded state that is missing a spend.
+// ─── CONTRACT ──────────────────────────────────────────────────────────────
+//
+// Returns false if the bundle is refused. The caller MUST abort the block
+// rather than connect it with shielded state that is missing a spend.
+//
+// "false" guarantees the COMMITMENT TREE is untouched. It does NOT guarantee
+// the nullifier set is untouched. Be precise about which:
+//
+//   validation refusal (already-spent, or a nullifier repeated inside the
+//   bundle) — nothing at all was mutated. This is the ordinary refusal path
+//   and it is fully atomic.
+//
+//   I/O failure during insertion — nullifiers are inserted sequentially, so a
+//   failure on the Nth insert can leave the first N-1 rows written even though
+//   this returns false. The tree is still untouched, because insertion runs
+//   BEFORE any append precisely so that this is true.
+//
+// The residue is fail-SAFE, not fail-open: a surplus nullifier row can only
+// refuse a spend, never admit one, so it cannot inflate supply. It can
+// temporarily reject a VALID spend until startup rebuilds the set from
+// ChainDB, which is the authoritative store.
+//
+// KNOWN LIMITATION, recorded rather than hidden: this violates a strict
+// "false means no mutation" contract under SQLite failure. The durable fix is
+// a transactional batch-nullifier API — begin, insert the whole batch, append
+// the validated commitments, commit, with an in-memory tree undo available if
+// the commit fails — instead of sequential standalone inserts. Until that
+// exists, a caller that cannot tolerate the residue must supply its own undo
+// transaction; do not use this function directly in such a context.
+// Fault-injection coverage for the first/intermediate/final insert failures is
+// a tracked follow-up and is NOT yet present.
 bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,
