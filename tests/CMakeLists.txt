@@ -1898,6 +1898,33 @@ endif()
 # the spec text, pasted as literals. Every other vector here is produced by the
 # production serializer, so a coordinated writer+parser+regenerate change would
 # stay green. These cannot update themselves.
+# Connect/disconnect/reorg state transitions at the state-model level.
+# Complements the daemon-level integration suites, which cannot isolate a
+# single transition deterministically.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_transitions.cpp)
+  add_executable(test_state_commitment_transitions
+    tests/consensus/test_state_commitment_transitions.cpp
+    src/consensus/state_commitment.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_state_commitment_transitions gtest gtest_main dinero_shielded)
+  target_link_libraries(test_state_commitment_transitions PRIVATE
+    GTest::gtest_main
+    dinero_shielded
+  )
+  target_include_directories(test_state_commitment_transitions BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentTransitions COMMAND test_state_commitment_transitions)
+  set_tests_properties(StateCommitmentTransitions PROPERTIES
+    LABELS "shielded;consensus;reorg;mandatory"
+    TIMEOUT 120
+  )
+  message(STATUS "state_commitment_v1 transition tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_external_vectors.cpp)
   add_executable(test_state_commitment_external_vectors
     tests/consensus/test_state_commitment_external_vectors.cpp
