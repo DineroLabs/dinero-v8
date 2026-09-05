@@ -291,6 +291,43 @@ grep -qE '^\|' "$DISTINCT" \
     && fail "case 2: observed an empty shielded root during promotion (partial state exposed)"
 pass "case 2: no partially promoted state observed across $SAMPLES samples"
 
+# ── CASE 2b: inject a REORG NOTIFICATION during promotion ───────────────
+# Case 2 samples passively. This one perturbs: while the replay is still
+# running, the source reorgs its own tip, so the consumer receives competing
+# headers mid-promotion. No partially promoted state may become externally
+# visible as a result, and the node must not go fatal.
+if [[ "$(active_of "$CON_RPC" "$CON_DIR")" == "true" ]]; then
+    info "=== case 2b: reorging the SOURCE while the consumer is mid-promotion ==="
+    SRC_TIP_NOW="$(tip_of "$SRC_RPC" "$SRC_DIR")"
+    RB_HASH="$(rpc "$SRC_RPC" "$SRC_DIR" getblockhash "[$SRC_TIP_NOW]" | jq -r '.result // ""')"
+    if [[ "$RB_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        rpc "$SRC_RPC" "$SRC_DIR" invalidateblock "[\"$RB_HASH\"]" >/dev/null 2>&1 || true
+        mine_chunked "$SRC_RPC" "$SRC_DIR" "$((SRC_TIP_NOW + 2))" >/dev/null 2>&1 || true
+        info "case 2b: source reorged and re-mined to $(tip_of "$SRC_RPC" "$SRC_DIR")"
+        # Sample the consumer through the disturbance.
+        BAD=0
+        for _ in $(seq 1 15); do
+            r="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+            a="$(active_of "$CON_RPC" "$CON_DIR")"
+            # An empty root while still active is the observable signature of
+            # partially published state.
+            [[ "$a" == "true" && -z "$r" ]] && BAD=$((BAD + 1))
+            [[ "$a" == "false" ]] && break
+            sleep 2
+        done
+        [[ "$BAD" -eq 0 ]] \
+            || fail "case 2b: $BAD sample(s) showed an empty shielded root while active — partial state exposed by the reorg"
+        if grep -qiE "FATAL|assumeutxo.*fatal" "$CON_DIR"/daemon*.log 2>/dev/null | grep -v resetassumeutxofatal; then
+            fail "case 2b: consumer went fatal on a reorg notification during promotion"
+        fi
+        pass "case 2b: reorg during promotion exposed no partial state and did not go fatal"
+    else
+        info "case 2b: could not read source tip hash; skipping injection"
+    fi
+else
+    info "case 2b: promotion already finished before injection; case 2 covers the window"
+fi
+
 # ── Wait for promotion to complete ───────────────────────────────────────
 wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == false' "$PROMO_TIMEOUT" "promotion" \
     || fail "promotion did not complete within ${PROMO_TIMEOUT}s"
