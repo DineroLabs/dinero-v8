@@ -148,3 +148,47 @@ In deferred mode base+1 can *never* connect until promotion, so every delivery
 is knowably futile and suppression is most valuable exactly there — but that is
 also the regime where the livelock lived, and where a wrong suppression is
 hardest to observe.
+
+---
+
+## Related: the compare/commit race and its residual coverage gap
+
+Separate mechanism, recorded here because reviewers hit both together.
+
+`ConnectBlock` compares the operator-decision generation and then writes block
+failure flags. `ReconsiderBlock` clears those flags and advances the generation.
+Serializing the two is what stops a stale acceptance re-asserting a flag the
+operator just cleared — the failure that made an invalidation irreversible
+(650 re-assertions after a reconsider; tip stuck; see
+consensus/block_status_generation.h).
+
+**What is proven**
+
+- the hazard, deterministically, at model level with a fake store
+  (`CompareThenCommitFailureFlags`, 12/12)
+- the invariant, enforced in release builds and mutation-proven: removing
+  `ReconsiderBlock`'s lock fails an existing test with
+  "lock invariant violated: ReconsiderBlock clear+bump requires the activation
+  lock" (`AnnotatedRecursiveMutex::AssertHeld`, throwing — `assert()` is a
+  no-op under NDEBUG and would not gate CI or production)
+
+**Residual gap, deliberately not closed here**
+
+There is no test in which the PRODUCTION compare/write race is observed end to
+end. Closing it today would require a double mutant — removing both the lock
+AND the assertion — plus barrier machinery at or near the compare site, i.e.
+test-conditional logic inside a consensus path. That is a worse trade than the
+gap.
+
+**Deferred, and paired**
+
+Component-level reproduction (real ChainstateService + BlockAcceptor + real
+ChainDB, no P2P) is deferred and pairs with the proposed **commit-time
+generation re-check** in the ChainDB write path — comparing the captured
+generation against the current one inside the same serialization domain as the
+metadata write, optimistic-concurrency style. If that lands, it becomes the
+primary fix with the mutex as belt-and-braces, doubles as a runtime race
+detector, and makes the race directly observable — so the component test can
+mutation-prove it without any payload-conditional branch in the compare path.
+
+Both belong to the consensus review, not to this branch.
