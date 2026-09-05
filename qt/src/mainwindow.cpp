@@ -3165,7 +3165,7 @@ void MainWindow::setupUI() {
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
 
-    tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Contracts");
+    tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Covenants");
   }
 
   // === Send Tab ===
