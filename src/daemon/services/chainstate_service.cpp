@@ -1,4 +1,5 @@
 #include "daemon/services/chainstate_service.h"
+#include "consensus/assumeutxo_fork_guard.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/chainstate_commit_batch.h"
 #include "daemon/coinbase_readback_gate.h"  // maturity gate for coinbase read-back
@@ -8387,11 +8388,18 @@ void ChainstateService::ActivateBestChain() {
     // and the deep-reorg branch of this same function already call it while
     // holding the lock.
     {
-        const uint32_t effective_base = std::max(
-            assumeutxo_active_ ? assumeutxo_base_height_ : 0u,
-            promoted_base_height_);
-        if (fork_point && fork_point != active_tip_ && effective_base > 0 &&
-            fork_point->height < static_cast<int>(effective_base)) {
+        // Predicate lives in consensus/assumeutxo_fork_guard.h so the boundary
+        // cases (fork AT the base vs one below it, pre- vs post-promotion) can
+        // be enumerated in a unit test instead of only in integration.
+        const consensus::ForkGuardContext fork_ctx{
+            /*assumeutxo_active=*/assumeutxo_active_,
+            /*assumeutxo_base_height=*/assumeutxo_base_height_,
+            /*promoted_base_height=*/promoted_base_height_};
+        const uint32_t effective_base = consensus::EffectiveSnapshotBase(fork_ctx);
+        if (consensus::IsForkBelowSnapshotBaseFatal(
+                fork_ctx, /*has_fork_point=*/fork_point != nullptr,
+                /*fork_is_active_tip=*/fork_point == active_tip_,
+                /*fork_point_height=*/fork_point ? fork_point->height : 0)) {
             const std::string reason =
                 "reorg below assumeutxo base: fork height " +
                 std::to_string(fork_point->height) + " < base " +

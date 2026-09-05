@@ -1901,6 +1901,28 @@ endif()
 # Connect/disconnect/reorg state transitions at the state-model level.
 # Complements the daemon-level integration suites, which cannot isolate a
 # single transition deterministically.
+# Snapshot/promotion boundary: which reorgs are fatal. Boundary cases are all
+# off-by-one or mode transitions, which integration tests cannot enumerate.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_assumeutxo_fork_guard.cpp)
+  add_executable(test_assumeutxo_fork_guard
+    tests/consensus/test_assumeutxo_fork_guard.cpp
+    src/consensus/assumeutxo_fork_guard.cpp
+  )
+  add_dependencies(test_assumeutxo_fork_guard gtest gtest_main)
+  target_link_libraries(test_assumeutxo_fork_guard PRIVATE GTest::gtest_main)
+  target_include_directories(test_assumeutxo_fork_guard BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME AssumeUTXOForkGuard COMMAND test_assumeutxo_fork_guard)
+  set_tests_properties(AssumeUTXOForkGuard PROPERTIES
+    LABELS "consensus;assumeutxo;reorg;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "AssumeUTXO fork-guard boundary tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_transitions.cpp)
   add_executable(test_state_commitment_transitions
     tests/consensus/test_state_commitment_transitions.cpp

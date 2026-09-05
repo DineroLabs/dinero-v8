@@ -20,6 +20,7 @@
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/nullifier_set.h"
 #include "consensus/shielded/shielded_root.h"
+#include "consensus/shielded/shielded_validation.h"
 #include "consensus/state_commitment.h"
 
 namespace sh = dinero::consensus::shielded;
@@ -251,4 +252,47 @@ TEST(Transitions, ActivationRemainsDisabledThroughout) {
                        uint64_t{1000000}}) {
         EXPECT_FALSE(dinero::consensus::RequiresStateCommitment(h));
     }
+}
+
+// --- prevention, not merely detection --------------------------------------
+
+TEST(Transitions, DuplicateApplyIsRefusedBEFOREAnyStateMutation) {
+    // Detectability is not safety. ApplyShieldedBundle used to append outputs
+    // to the tree FIRST and only discover the already-spent nullifier on
+    // insert, leaving the caller's rollback as the only thing standing between
+    // a double-applied block and a corrupted tree. This asserts the safe
+    // ordering: on refusal, nothing was mutated.
+    ShieldedState s("preapply");
+    ASSERT_TRUE(s.ok());
+
+    sh::CommitmentTree tree;
+    sh::NullifierSet nulls;
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("dinero_sc_preapply_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    ASSERT_EQ(nulls.Open((dir / "n.sqlite").string()), sh::NullifierSet::OpenResult::Ok);
+
+    sh::ShieldedBundle bundle;
+    sh::ShieldedOutput out{};
+    out.commitment = MakeHash(9, 1);
+    bundle.outputs.push_back(out);
+    sh::ShieldedSpend spend{};
+    spend.nullifier = MakeHash(9, 2);
+    bundle.spends.push_back(spend);
+
+    ASSERT_TRUE(sh::ApplyShieldedBundle(bundle, &tree, &nulls, 1));
+    const uint64_t size_after_first = tree.Size();
+    const auto root_after_first = tree.Root();
+    ASSERT_EQ(size_after_first, 1u);
+
+    // Second application: must be refused, and must not have appended.
+    EXPECT_FALSE(sh::ApplyShieldedBundle(bundle, &tree, &nulls, 1));
+    EXPECT_EQ(tree.Size(), size_after_first)
+        << "a refused bundle must not have appended its outputs";
+    EXPECT_EQ(tree.Root(), root_after_first)
+        << "a refused bundle must leave the commitment tree byte-identical";
+
+    nulls.Close();
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
 }

@@ -940,6 +940,7 @@ add_library(dinero_core STATIC
   # state_commitment_v1 coinbase encoder/parser. Format only --
   # advisory, no activation height, no consensus enforcement.
   src/consensus/state_commitment.cpp
+  src/consensus/assumeutxo_fork_guard.cpp
 
   # Service wrappers (dependency injection containers)
   src/daemon/services/config_service.cpp

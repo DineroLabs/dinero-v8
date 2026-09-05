@@ -259,6 +259,26 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,
                          uint32_t              block_height) {
+    // Pre-check BEFORE any mutation: refuse a bundle whose nullifiers are
+    // already spent without touching the tree.
+    //
+    // This used to be act-then-check. Outputs were appended first and the
+    // duplicate was only discovered on Insert() below, so a double-applied
+    // block mutated the commitment tree and then relied on the caller's
+    // rollback to undo it. Detectability is not prevention: the safe ordering
+    // is to reject before state changes, so a failed rollback cannot leave a
+    // tree carrying commitments from a block that was refused.
+    //
+    // Cost is one Contains() per spend on the honest path, which is the same
+    // lookup Insert() performs anyway.
+    if (nullifiers) {
+        for (const auto& spend : bundle.spends) {
+            if (nullifiers->Contains(spend.nullifier)) {
+                return false;  // nothing mutated
+            }
+        }
+    }
+
     // Append new commitments to the tree.
     // This is the ONLY place shielded outputs enter consensus state.
     // They NEVER enter Utreexo.
