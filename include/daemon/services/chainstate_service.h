@@ -2,6 +2,7 @@
 #include "daemon/iservice.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
+#include "common/annotated_mutex.h"
 #include "wallet/utxo_index.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
@@ -397,6 +398,12 @@ public:
     /// Current operator-decision generation (consensus/block_status_generation.h).
     /// Acceptance captures this BEFORE processing and must not preserve or
     /// write failure flags if it has advanced by commit time.
+    /// Throws unless the caller holds the activation lock. Lets external
+    /// consensus paths (BlockAcceptor) assert the same invariant.
+    void AssertActivationLockHeld(const char* where) const {
+        activation_mutex_.AssertHeld(where);
+    }
+
     consensus::BlockStatusGeneration CurrentBlockStatusGeneration() const;
 
     /// Bump and persist. Called by InvalidateBlock and ReconsiderBlock so a
@@ -974,8 +981,8 @@ public:
      * the newly promoted forest in one acceptance attempt.  The mutex is
      * recursive because acceptance calls ActivateBestChain before returning.
      */
-    std::unique_lock<std::recursive_mutex> AcquireBlockIngressActivationLock() {
-        return std::unique_lock<std::recursive_mutex>(activation_mutex_);
+    std::unique_lock<AnnotatedRecursiveMutex> AcquireBlockIngressActivationLock() {
+        return std::unique_lock<AnnotatedRecursiveMutex>(activation_mutex_);
     }
 
 private:
@@ -1241,7 +1248,11 @@ private:
     bool     published_tip_valid_ = false;
     uint256  published_tip_hash_;
     uint32_t published_tip_height_ = 0;
-    mutable std::recursive_mutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
+    // AnnotatedRecursiveMutex, not std::recursive_mutex: the paths that compare
+    // and then write block failure flags MUST hold this, and AssertHeld turns
+    // that from a comment into an enforced invariant. Satisfies Lockable, so
+    // every existing lock_guard/unique_lock site is unchanged.
+    mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
 
     // Phase 43: Safe mode state (deep reorg protection)
     bool safe_mode_active_ = false;

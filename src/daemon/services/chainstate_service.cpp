@@ -2197,7 +2197,7 @@ void ChainstateService::SetAssumeUTXOState(const uint256& base_block,
         // ActivateBestChain reads/writes this flag under activation_mutex_.
         // Snapshot loading is independently serialized, so take the same lock
         // here rather than introducing a plain-bool data race with P2P activation.
-        std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+        std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
         assumeutxo_header_import_deferred_logged_ = false;
     }
     assumeutxo::SetState(
@@ -3151,7 +3151,7 @@ bool ChainstateService::Start() {
                     const uint32_t failure_flags =
                         idx->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
                     if (failure_flags == 0 && (idx->status & BLOCK_HAVE_DATA)) {
-                        std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+                        std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
                         if (idx->pprev) {
                             candidates_.erase(idx->pprev);
                         }
@@ -5479,7 +5479,7 @@ ChainstateService::UndoMetadataRestampReport
 ChainstateService::AuditUndoMetadataForRestamp(uint32_t max_blocks_back,
                                                bool apply,
                                                bool include_ok) {
-    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
 
     UndoMetadataRestampReport report;
     report.apply = apply;
@@ -7797,7 +7797,7 @@ const ChainDB* ChainstateService::GetChainDB() const {
  */
 void ChainstateService::ActivateBestChain() {
     // Thread safety: prevent concurrent entry from P2P handler + P1 reorg tick
-    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
 
     std::cout << "\n════════════════════════════════════════════════════════════════" << std::endl;
     std::cout << "🔍 [ActivateBestChain] ENTRY" << std::endl;
@@ -9514,7 +9514,7 @@ uint32_t ChainstateService::getBlockHeight() const {
 
 bool ChainstateService::ForEachActiveUTXO(
     const std::function<bool(const OutPoint&, const consensus::UTXOEntry&)>& callback) const {
-    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!consensus_utxo_set_) return false;
     for (const auto& [outpoint, coin] : consensus_utxo_set_->GetUTXOs()) {
         if (!callback(outpoint, coin)) break;
@@ -9524,7 +9524,7 @@ bool ChainstateService::ForEachActiveUTXO(
 
 std::optional<consensus::UTXOEntry> ChainstateService::GetActiveUTXO(
     const OutPoint& outpoint) const {
-    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!consensus_utxo_set_) return std::nullopt;
     const auto* coin = consensus_utxo_set_->GetCoin(outpoint);
     return coin ? std::optional<consensus::UTXOEntry>(*coin) : std::nullopt;
@@ -9532,7 +9532,7 @@ std::optional<consensus::UTXOEntry> ChainstateService::GetActiveUTXO(
 
 std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
     const OutPoint& outpoint) const {
-    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!chain_db_ || !consensus_utxo_set_) {
         return std::nullopt;
     }
@@ -9598,7 +9598,7 @@ std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
 
 std::optional<consensus::UTXOEntry> ChainstateService::ResolvePreBaseCoinForUndo(
     const OutPoint& outpoint) const {
-    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!chain_db_) {
         return std::nullopt;
     }
@@ -11510,7 +11510,7 @@ void ChainstateService::UpdateChainwork(CBlockIndex* block_index) {
 }
 
 void ChainstateService::AddCandidate(CBlockIndex* block_index) {
-    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!block_index) return;
 
     // P0 invariant: single eligibility gate for all candidate paths.
@@ -11549,7 +11549,7 @@ void ChainstateService::AddCandidate(CBlockIndex* block_index) {
 }
 
 void ChainstateService::RemoveCandidate(CBlockIndex* block_index) {
-    std::lock_guard<std::recursive_mutex> lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!block_index) return;
     candidates_.erase(block_index);
 }
@@ -11700,7 +11700,7 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
     // utreexo-add-failed livelock). Serializing the whole invalidation walk
     // against activation closes the interleave; recursive_mutex, same
     // acquisition order as ABC (activation -> forest), no inversion.
-    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
     CBlockIndex* target = FindBlockIndex(hash);
     if (!target) {
         error = "Block not found in block index";
@@ -11788,6 +11788,7 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
             logger_->warning("[InvalidateBlock] Failed to persist BLOCK_FAILED_VALID for "
                              + target->hash.GetHex().substr(0, 16) + "... — flag is in-memory only");
         }
+        activation_mutex_.AssertHeld("InvalidateBlock persist+bump");
         // Advance the operator-decision generation alongside the invalidation,
         // so an acceptance that began BEFORE this decision cannot commit a
         // result that contradicts it either.
@@ -11884,7 +11885,7 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     //
     // Taking the same lock puts the compare and the write on one side of the
     // decision and the bump and the clear on the other.
-    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
 
     CBlockIndex* target = FindBlockIndex(hash);
     if (!target) {
@@ -11952,6 +11953,11 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
                 return false;
             }
         }
+
+        // Enforced, not assumed: this clear+bump must be serialized against
+        // ConnectBlock's compare-then-write. Removing the lock_guard above is
+        // now caught by every test that reaches this line.
+        activation_mutex_.AssertHeld("ReconsiderBlock clear+bump");
 
         // Advance the operator-decision generation in the SAME batch as the
         // cleared flags. Any block-processing result captured before this point
@@ -16616,7 +16622,7 @@ bool ChainstateService::PromoteValidatedHistory(
     }
 
     // Serialise all writes against ConnectTip (see locking comment above).
-    std::lock_guard<std::recursive_mutex> activation_lock(activation_mutex_);
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
 
     // Defensive ordering guard (the caller also gates on this): once the
     // ChainDB tip is at/above the base — either a previous promotion landed

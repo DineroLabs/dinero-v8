@@ -93,7 +93,7 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         auto* activation_ctx = DaemonContext::instance();
         auto activation_chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
             activation_ctx ? activation_ctx->chainstate : nullptr);
-        std::unique_lock<std::recursive_mutex> activation_guard;
+        std::unique_lock<dinero::AnnotatedRecursiveMutex> activation_guard;
         if (activation_chainstate) {
             activation_guard = activation_chainstate->AcquireBlockIngressActivationLock();
         }
@@ -2249,6 +2249,11 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                     // Fails CLOSED on an unreadable counter: a 0 read never
                     // equals a bumped generation, so the flags are dropped
                     // rather than wrongly preserved.
+                    // The compare below and the write that follows must be
+                    // atomic w.r.t. an operator decision. Enforced here so
+                    // dropping the serialization is caught by every test that
+                    // re-accepts a block, not only by a race that reproduces.
+                    chainstate->AssertActivationLockHeld("ConnectBlock compare+write");
                     const auto gen_now = chainstate->CurrentBlockStatusGeneration();
                     const bool decision_unchanged =
                         dinero::consensus::GenerationStillCurrent(accept_status_generation,
