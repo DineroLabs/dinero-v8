@@ -2523,10 +2523,10 @@ void MainWindow::setupUI() {
       auto* tile = new QWidget(connectivityBox);
       tile->setStyleSheet(
           "QWidget { background: #171b20; border: 1px solid #2f363f; border-radius: 6px; }");
-      auto* tileLayout = new QVBoxLayout(tile);
-      tileLayout->setContentsMargins(10, 7, 10, 7);
-      tileLayout->setSpacing(2);
-      auto* titleLabel = new QLabel(title, tile);
+      auto* tileLayout = new QHBoxLayout(tile);
+      tileLayout->setContentsMargins(10, 6, 10, 6);
+      tileLayout->setSpacing(7);
+      auto* titleLabel = new QLabel(title + QStringLiteral(" —"), tile);
       titleLabel->setStyleSheet(
           "QLabel { color: #8f9ba8; font-size: 10px; border: none; background: transparent; }");
       valueLabel = new QLabel("Checking…", tile);
@@ -2534,6 +2534,7 @@ void MainWindow::setupUI() {
           "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
       tileLayout->addWidget(titleLabel);
       tileLayout->addWidget(valueLabel);
+      tileLayout->addStretch();
       contributionTiles->addWidget(tile, 1);
     };
     addContributionTile("REACHABILITY", lblOverviewReachability_);
