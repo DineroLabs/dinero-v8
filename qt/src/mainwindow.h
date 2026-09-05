@@ -602,6 +602,7 @@ private:
     qint64 highlightUntilMs = 0;
   };
   QVector<MiningHashSample> miningHashSamples_;
+  QString miningSessionHeader_;
   QLabel* miningHashOverlay_ = nullptr;
   QHash<QString, quint64> transientMiningErrorGenerations_;
   struct MiningSessionFind {

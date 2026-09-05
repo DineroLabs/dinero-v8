@@ -1649,6 +1649,20 @@ void appendMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   appendMiningConsoleText(output, line);
 }
 
+void replaceMiningOutputFirstLine(QTextEdit* output, const QString& line) {
+  if (!output) {
+    return;
+  }
+  if (output->document()->isEmpty()) {
+    output->setPlainText(line);
+    return;
+  }
+  QTextCursor cursor(output->document());
+  cursor.movePosition(QTextCursor::Start);
+  cursor.select(QTextCursor::BlockUnderCursor);
+  cursor.insertText(line);
+}
+
 void removeMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   if (!output) {
     return;
@@ -4396,6 +4410,12 @@ void MainWindow::setupUI() {
     });
 
     connect(minerCtrl_, &MinerController::logLine, this, [this](const QString& line) {
+        // The embedded GPU startup state is already part of the persistent
+        // one-line session header. Do not spend a second console row saying
+        // the same thing again.
+        if (line.startsWith(QStringLiteral("GPU miner started successfully"))) {
+            return;
+        }
         const bool transientError = dinero::qt::isTransientMiningError(line);
         const QString displayLine = dinero::qt::miningOutputDisplayText(line);
         if (txtMiningOutput_) {
@@ -4436,6 +4456,9 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::templateChanged, this,
             [this](int height, quint32 difficultyBits) {
+      if (!miningSessionHeader_.isEmpty()) {
+        replaceMiningOutputFirstLine(txtMiningOutput_, miningSessionHeader_);
+      }
       // A fresh template is authoritative evidence that the miner recovered.
       // Remove prior recoverable rejection/template errors from the live view;
       // their full diagnostics remain available in the daemon log.
@@ -4458,6 +4481,12 @@ void MainWindow::setupUI() {
                    quint32 difficultyBits) {
       miningSessionFinds_.append(
         {height, hash, merkleRoot, utreexoRoot, nonce, difficultyBits});
+      if (!miningSessionHeader_.isEmpty()) {
+        replaceMiningOutputFirstLine(
+          txtMiningOutput_,
+          miningSessionHeader_ +
+            QStringLiteral(" · Block found — confirming and loading next template…"));
+      }
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
         btnMiningSessionFinds_->setText(
@@ -11289,8 +11318,11 @@ void MainWindow::startInternalMiner(bool useGpu) {
                                   : QString("Embedded CPU solo miner · %1 threads").arg(threads);
     const QString auth = cookiePath.isEmpty() ? QStringLiteral("cookie auth unavailable")
                                               : QStringLiteral("cookie auth active");
-    txtMiningOutput_->setPlainText(
-      QString("%1 · payout %2 · %3").arg(engine, addr, auth));
+    const QString backend = useGpu ? QStringLiteral("Metal active")
+                                   : QStringLiteral("CPU active");
+    miningSessionHeader_ = QString("%1 · payout %2 · %3 · %4")
+                             .arg(engine, addr, auth, backend);
+    txtMiningOutput_->setPlainText(miningSessionHeader_);
   }
 
   mining_stats_.blocks_found = 0;
