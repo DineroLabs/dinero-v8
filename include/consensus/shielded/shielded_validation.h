@@ -241,32 +241,27 @@ ValidationContext BuildShieldedValidationContext(
 // Returns false if the bundle is refused. The caller MUST abort the block
 // rather than connect it with shielded state that is missing a spend.
 //
-// "false" guarantees the COMMITMENT TREE is untouched. It does NOT guarantee
-// the nullifier set is untouched. Be precise about which:
+// "false" means NO MUTATION. Both stores are unchanged on every refusal path:
 //
 //   validation refusal (already-spent, or a nullifier repeated inside the
-//   bundle) — nothing at all was mutated. This is the ordinary refusal path
-//   and it is fully atomic.
+//   bundle) — detected before anything is written.
 //
-//   I/O failure during insertion — nullifiers are inserted sequentially, so a
-//   failure on the Nth insert can leave the first N-1 rows written even though
-//   this returns false. The tree is still untouched, because insertion runs
-//   BEFORE any append precisely so that this is true.
+//   durable-write failure — nullifiers are written by NullifierSet::InsertBatch
+//   inside ONE sqlite transaction, so a failure at any position rolls the whole
+//   batch back. The commitment tree is appended only AFTER that write commits,
+//   so a failed write leaves the tree untouched as well.
 //
-// The residue is fail-SAFE, not fail-open: a surplus nullifier row can only
-// refuse a spend, never admit one, so it cannot inflate supply. It can
-// temporarily reject a VALID spend until startup rebuilds the set from
-// ChainDB, which is the authoritative store.
+// The ordering is deliberate and load-bearing: the fallible, atomic store is
+// written first; the infallible in-memory one second. Reversing it would
+// reintroduce a partial state on the rejecting path.
 //
-// KNOWN LIMITATION, recorded rather than hidden: this violates a strict
-// "false means no mutation" contract under SQLite failure. The durable fix is
-// a transactional batch-nullifier API — begin, insert the whole batch, append
-// the validated commitments, commit, with an in-memory tree undo available if
-// the commit fails — instead of sequential standalone inserts. Until that
-// exists, a caller that cannot tolerate the residue must supply its own undo
-// transaction; do not use this function directly in such a context.
-// Fault-injection coverage for the first/intermediate/final insert failures is
-// a tracked follow-up and is NOT yet present.
+// This previously held only for the tree. Sequential inserts could leave the
+// first N-1 nullifier rows written after the Nth failed — fail-safe against
+// inflation, since a surplus nullifier can only refuse a spend, but capable of
+// rejecting a VALID spend until startup rebuilt the set from ChainDB. That is
+// a denial of service, so it is fixed rather than documented.
+// Covered by fault injection at the first, intermediate and final insert,
+// including a restart check that the rollback is durable.
 bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,

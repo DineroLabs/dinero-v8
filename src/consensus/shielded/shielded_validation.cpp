@@ -6,6 +6,7 @@
 #include "consensus/shielded/shielded_validation.h"
 
 #include <set>
+#include <utility>
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/pedersen_generators.h"
 #include "consensus/shielded/range_proof.h"
@@ -308,23 +309,33 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
     // ── PHASE 2: mutate. Validation above means neither step should now fail
     // for a reason this function can foresee. ──────────────────────────────
     //
-    // Nullifiers go FIRST, deliberately. Insert() is the only fallible step
-    // (it touches sqlite), and CommitmentTree::Append() is in-memory and does
-    // not report failure. Doing the fallible work first means an I/O failure
-    // returns with the commitment tree completely untouched.
+    // Nullifiers go FIRST and transactionally. InsertBatch is the only
+    // fallible step (it touches sqlite); CommitmentTree::Append() is in-memory
+    // and cannot report failure. Doing the fallible, atomic work first means a
+    // failure returns with BOTH stores unchanged -- the batch rolled back and
+    // the tree never appended. That is the strict "false means no mutation"
+    // contract, now actually held rather than documented as an exception.
     //
     // The asymmetry matters: a stray nullifier row is fail-SAFE (it can only
     // refuse a spend) and is rebuilt from ChainDB at startup, whereas a stray
     // tree leaf changes the shielded root and every anchor derived from it.
     // If one of the two has to be left dirty by an I/O fault, it must be the
     // recoverable one.
-    if (nullifiers) {
+    if (nullifiers && !bundle.spends.empty()) {
+        // ONE transaction: every row commits or none does. Sequential inserts
+        // could leave the first N-1 rows written after the Nth failed, which
+        // is fail-safe against inflation but can reject a VALID spend until
+        // startup rebuilds from ChainDB -- a denial of service, not a
+        // harmless artefact.
+        std::vector<std::pair<Hash, uint32_t>> batch;
+        batch.reserve(bundle.spends.size());
         for (const auto& spend : bundle.spends) {
-            if (!nullifiers->Insert(spend.nullifier, block_height)) {
-                // Unreachable via validation above; only an I/O fault reaches
-                // here. Tree is untouched; the caller aborts the block.
-                return false;
-            }
+            batch.emplace_back(spend.nullifier, block_height);
+        }
+        if (!nullifiers->InsertBatch(batch)) {
+            // Rolled back. Tree still untouched -- it is appended only below,
+            // after the durable write has committed.
+            return false;
         }
     }
 

@@ -88,6 +88,48 @@ bool NullifierSet::Insert(const Hash& nullifier, uint32_t block_height) {
     return ok;
 }
 
+bool NullifierSet::InsertBatch(const std::vector<std::pair<Hash, uint32_t>>& entries) {
+    if (!db_) return false;
+    if (entries.empty()) return true;
+
+    // BEGIN IMMEDIATE, not deferred: take the write lock up front so the
+    // transaction cannot fail to upgrade partway through.
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    bool ok = true;
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT INTO nullifiers (nullifier, block_height) VALUES (?, ?)";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        ok = false;
+    } else {
+        for (const auto& [nullifier, height] : entries) {
+            sqlite3_reset(stmt);
+            sqlite3_clear_bindings(stmt);
+            sqlite3_bind_blob(stmt, 1, nullifier.data(), HASH_BYTES, SQLITE_STATIC);
+            sqlite3_bind_int(stmt, 2, static_cast<int>(height));
+            if (sqlite3_step(stmt) != SQLITE_DONE) {
+                // Covers a duplicate inside the batch (UNIQUE violation) as
+                // well as any I/O fault. Either way the whole batch is void.
+                ok = false;
+                break;
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    if (!ok) {
+        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+    if (sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
+        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+        return false;
+    }
+    return true;
+}
+
 void NullifierSet::RollbackAbove(uint32_t height) {
     if (!db_) return;
     sqlite3_stmt* stmt = nullptr;

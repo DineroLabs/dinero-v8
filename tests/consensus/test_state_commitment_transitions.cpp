@@ -398,3 +398,113 @@ TEST(Transitions, DuplicateOutputCommitmentIsAllowedNoConsensusRuleForbidsIt) {
     EXPECT_TRUE(sh::ApplyShieldedBundle(bundle, &tree, nullptr, 1));
     EXPECT_EQ(tree.Size(), before + 2) << "both leaves must be appended";
 }
+
+// --- fault injection: first / intermediate / final insert failure ----------
+//
+// A duplicate inside the batch violates the nullifier PRIMARY KEY, so sqlite
+// fails that exact step. Placing the duplicate at position 1, 2 or 3 injects
+// a failure at the first, intermediate and final insert with no test hook in
+// production code.
+
+namespace {
+
+struct BatchFaultFixture {
+    std::filesystem::path dir;
+    std::string db;
+    explicit BatchFaultFixture(const char* tag) {
+        dir = std::filesystem::temp_directory_path() /
+              (std::string("dinero_batch_") + tag + "_" + std::to_string(::getpid()));
+        std::filesystem::remove_all(dir);
+        std::filesystem::create_directories(dir);
+        db = (dir / "n.sqlite").string();
+    }
+    ~BatchFaultFixture() { std::error_code ec; std::filesystem::remove_all(dir, ec); }
+};
+
+// Batch of three where entry `dup_index` repeats entry 0, so THAT insert fails.
+std::vector<std::pair<sh::Hash, uint32_t>> BatchFailingAt(size_t dup_index) {
+    std::vector<std::pair<sh::Hash, uint32_t>> b;
+    for (size_t i = 0; i < 3; ++i) b.emplace_back(MakeHash(60, static_cast<uint8_t>(i)), 5);
+    b[dup_index].first = b[0].first;
+    return b;
+}
+
+}  // namespace
+
+TEST(BatchFault, FirstInsertFailureLeavesNothingWritten) {
+    BatchFaultFixture f("first");
+    sh::NullifierSet n;
+    ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+    // Pre-seed the value so the FIRST insert of the batch collides.
+    ASSERT_TRUE(n.Insert(MakeHash(60, 0), 4));
+    const uint64_t before = n.Size();
+
+    std::vector<std::pair<sh::Hash, uint32_t>> batch;
+    for (size_t i = 0; i < 3; ++i) batch.emplace_back(MakeHash(60, static_cast<uint8_t>(i)), 5);
+
+    EXPECT_FALSE(n.InsertBatch(batch));
+    EXPECT_EQ(n.Size(), before) << "a failed batch must not leave later rows behind";
+    n.Close();
+}
+
+TEST(BatchFault, IntermediateInsertFailureRollsBackTheWholeBatch) {
+    BatchFaultFixture f("mid");
+    sh::NullifierSet n;
+    ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+    const uint64_t before = n.Size();
+    ASSERT_EQ(before, 0u);
+
+    // Fails on entry 1: entry 0 has ALREADY been inserted inside the
+    // transaction, which is precisely the partial-write case.
+    EXPECT_FALSE(n.InsertBatch(BatchFailingAt(1)));
+    EXPECT_EQ(n.Size(), before)
+        << "the already-inserted first row must be rolled back, not retained";
+    n.Close();
+}
+
+TEST(BatchFault, FinalInsertFailureRollsBackTheWholeBatch) {
+    BatchFaultFixture f("last");
+    sh::NullifierSet n;
+    ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+    const uint64_t before = n.Size();
+
+    // Fails on the LAST entry, after two successful inserts.
+    EXPECT_FALSE(n.InsertBatch(BatchFailingAt(2)));
+    EXPECT_EQ(n.Size(), before) << "two committed-in-transaction rows must both vanish";
+    n.Close();
+}
+
+TEST(BatchFault, RollbackSurvivesRestartReconstruction) {
+    // The in-process Size() could read a cache. Reopen and confirm the
+    // rollback is what is actually durable.
+    BatchFaultFixture f("restart");
+    {
+        sh::NullifierSet n;
+        ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        EXPECT_FALSE(n.InsertBatch(BatchFailingAt(1)));
+        n.Close();
+    }
+    {
+        sh::NullifierSet re;
+        ASSERT_EQ(re.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+        EXPECT_EQ(re.Size(), 0u) << "no row from the failed batch may survive restart";
+        EXPECT_FALSE(re.Contains(MakeHash(60, 0)));
+        EXPECT_FALSE(re.Contains(MakeHash(60, 2)));
+        re.Close();
+    }
+}
+
+TEST(BatchFault, SuccessfulBatchCommitsEveryRow) {
+    // The negative tests would also pass if InsertBatch never wrote anything.
+    BatchFaultFixture f("ok");
+    sh::NullifierSet n;
+    ASSERT_EQ(n.Open(f.db), sh::NullifierSet::OpenResult::Ok);
+    std::vector<std::pair<sh::Hash, uint32_t>> batch;
+    for (size_t i = 0; i < 3; ++i) batch.emplace_back(MakeHash(70, static_cast<uint8_t>(i)), 9);
+    EXPECT_TRUE(n.InsertBatch(batch));
+    EXPECT_EQ(n.Size(), 3u);
+    for (size_t i = 0; i < 3; ++i) {
+        EXPECT_TRUE(n.Contains(MakeHash(70, static_cast<uint8_t>(i)))) << "entry " << i;
+    }
+    n.Close();
+}
