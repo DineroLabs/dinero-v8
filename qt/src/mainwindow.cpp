@@ -2444,6 +2444,8 @@ void MainWindow::setupUI() {
     // layout, so there is exactly ONE recent-blocks table and one code path
     // filling it.
     // ═══════════════════════════════════════════════════════════════════
+    auto* chainActivityRow = new QHBoxLayout;
+    chainActivityRow->setSpacing(12);
     {
       auto* blocksCard = new QGroupBox("Latest Blocks");
       // Hug the content. Without this the card absorbs the slack created by
@@ -2468,41 +2470,81 @@ void MainWindow::setupUI() {
       cardLayout->addLayout(header);
 
       overviewBlocksLayout_ = cardLayout;
-      layout->addWidget(blocksCard);
+      chainActivityRow->addWidget(blocksCard, 7);
     }
+    layout->addLayout(chainActivityRow);
 
 
     // ═══════════════════════════════════════════════════════════════════
     // 📊 MONITORING DASHBOARD (bottom half of Overview)
     // ═══════════════════════════════════════════════════════════════════
     
-    auto *monitoringGroup = new QGroupBox("Node operation");
-    auto *monitoringLayout = new QVBoxLayout(monitoringGroup);
-    monitoringLayout->setContentsMargins(10, 12, 10, 10);
-    monitoringLayout->setSpacing(10);
-    monitoringGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    monitoringGroup->setMaximumHeight(650);
-    
-    // Row 1: resilient network controls + compact resource telemetry.
-    auto *row1 = new QHBoxLayout;
-    row1->setSpacing(12);
+    // Keep node participation and local resources as fully independent cards.
+    // The exposed page background between them provides the same section
+    // separation used by the rows above, without drawing divider rules.
+    auto *monitoringColumns = new QHBoxLayout;
+    monitoringColumns->setContentsMargins(0, 0, 0, 0);
+    monitoringColumns->setSpacing(0);
+    auto *nodeOperationBox = new QGroupBox("Node operation");
+    auto *networkColumn = new QVBoxLayout(nodeOperationBox);
+    networkColumn->setContentsMargins(10, 12, 10, 10);
+    networkColumn->setSpacing(10);
+    nodeOperationBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 
-    auto* connectivityBox = new QGroupBox("Connectivity & contribution");
+    auto* connectivityBox = new QWidget;
     auto* connectivityLayout = new QVBoxLayout(connectivityBox);
-    connectivityLayout->setContentsMargins(4, 6, 4, 4);
-    overviewConnectivityCard_ = new dinero::qt::OverviewConnectivityCard(connectivityBox);
-    connectivityLayout->addWidget(overviewConnectivityCard_);
+    connectivityLayout->setContentsMargins(0, 0, 0, 0);
+    connectivityLayout->setSpacing(8);
+    auto* contributionHeader = new QHBoxLayout;
+    auto* contributionSummary = new QLabel(
+        "Live node participation status. Manage Tor and relay controls in "
+        "Settings → Network & Privacy.",
+        connectivityBox);
+    contributionSummary->setWordWrap(true);
+    contributionSummary->setStyleSheet("QLabel { color: #9fb3c8; background: transparent; }");
+    auto* btnNetworkSettings = new QPushButton("Network settings", connectivityBox);
+    btnNetworkSettings->setStyleSheet(chromeButtonStyle());
+    connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
+      for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
+          tabs->setCurrentIndex(i);
+          return;
+        }
+      }
+    });
+    contributionHeader->addWidget(contributionSummary, 1);
+    contributionHeader->addWidget(btnNetworkSettings);
+    connectivityLayout->addLayout(contributionHeader);
+
+    auto* contributionTiles = new QHBoxLayout;
+    contributionTiles->setSpacing(8);
+    auto addContributionTile = [contributionTiles, connectivityBox](const QString& title,
+                                                                    QLabel*& valueLabel) {
+      auto* tile = new QWidget(connectivityBox);
+      tile->setStyleSheet(
+          "QWidget { background: #171b20; border: 1px solid #2f363f; border-radius: 6px; }");
+      auto* tileLayout = new QHBoxLayout(tile);
+      tileLayout->setContentsMargins(10, 6, 10, 6);
+      tileLayout->setSpacing(7);
+      auto* titleLabel = new QLabel(title + QStringLiteral(" —"), tile);
+      titleLabel->setStyleSheet(
+          "QLabel { color: #8f9ba8; font-size: 10px; border: none; background: transparent; }");
+      valueLabel = new QLabel("Checking…", tile);
+      valueLabel->setStyleSheet(
+          "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+      tileLayout->addWidget(titleLabel);
+      tileLayout->addWidget(valueLabel);
+      tileLayout->addStretch();
+      contributionTiles->addWidget(tile, 1);
+    };
+    addContributionTile("REACHABILITY", lblOverviewReachability_);
+    addContributionTile("CONTRIBUTION", lblOverviewContribution_);
+    addContributionTile("CONNECTIVITY", lblOverviewConnectivity_);
+    connectivityLayout->addLayout(contributionTiles);
+
     connectivityBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     connectivityBox->setMaximumHeight(235);
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::torModeRequested,
-            this, [this](const QString& mode) {
-      rpc_->callNamed("network.setonionservice", QJsonObject{{"mode", mode}});
-    });
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
-            this, [this](const QString& mode) {
-      rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
-    });
-    row1->addWidget(connectivityBox, 2);
+    networkColumn->addWidget(connectivityBox);
 
     auto *cpuBox = new QGroupBox("Resources & mining");
     auto *cpuLayout = new QVBoxLayout(cpuBox);
@@ -2555,19 +2597,15 @@ void MainWindow::setupUI() {
     cpuLayout->addWidget(lblGpuLoadOverview_);
     cpuLayout->addWidget(lblGpuMemoryOverview_);
     cpuLayout->addWidget(lblGpuThermalsOverview_);
-    row1->addWidget(cpuBox, 1);
-    
-    monitoringLayout->addLayout(row1);
-    
-    // Row 2: Mempool + Peers Summary
-    auto *row2 = new QHBoxLayout;
     
     // Live mempool summary. The transaction rows make short-lived pending
     // activity observable instead of reducing it to a periodically sampled
     // counter that can remain visually indistinguishable from "unavailable".
     auto *mempoolBox = new QGroupBox("📦 Mempool");
     auto *mempoolLayout = new QVBoxLayout(mempoolBox);
+    mempoolBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     mempoolBox->setMinimumHeight(210);
+    mempoolBox->setMaximumHeight(235);
     lblMempoolSize_ = new QLabel("Loading…");
     lblMempoolSize_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblMempoolBytes_ = new QLabel("Waiting for local node");
@@ -2587,7 +2625,7 @@ void MainWindow::setupUI() {
     tblMempoolOverview_->setMinimumHeight(120);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
-    row2->addWidget(mempoolBox, 1, Qt::AlignTop);
+    chainActivityRow->addWidget(mempoolBox, 3);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
@@ -2596,8 +2634,12 @@ void MainWindow::setupUI() {
     lblPeersCount_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblPeersStatus_ = new QLabel("Disconnected");
     lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
-    peersLayout->addWidget(lblPeersCount_);
-    peersLayout->addWidget(lblPeersStatus_);
+    auto* peersSummary = new QHBoxLayout;
+    peersSummary->setSpacing(10);
+    peersSummary->addWidget(lblPeersCount_);
+    peersSummary->addWidget(lblPeersStatus_);
+    peersSummary->addStretch();
+    peersLayout->addLayout(peersSummary);
 
     tblPeersOverview_ = new QTableWidget(0, 6);
     tblPeersOverview_->setHorizontalHeaderLabels(
@@ -2622,10 +2664,15 @@ void MainWindow::setupUI() {
       "QHeaderView::section { background: #272c33; color: #d5dde6; padding: 4px; font-weight: bold; border: 1px solid #373d46; }"
     );
     peersLayout->addWidget(tblPeersOverview_);
-    row2->addWidget(peersBox, 2);
+    networkColumn->addWidget(peersBox);
+    monitoringColumns->addWidget(nodeOperationBox, 2, Qt::AlignTop);
+    auto* columnGutter = new QWidget;
+    columnGutter->setStyleSheet("QWidget { background: #14191f; }");
+    columnGutter->setFixedWidth(12);
+    monitoringColumns->addWidget(columnGutter);
+    monitoringColumns->addWidget(cpuBox, 1, Qt::AlignTop);
+    layout->addLayout(monitoringColumns);
 
-    monitoringLayout->addLayout(row2);
-    
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
     auto *alertsLayout = new QVBoxLayout(alertsBox);
@@ -2637,7 +2684,7 @@ void MainWindow::setupUI() {
     );
     txtAlerts_->setPlaceholderText("No recent alerts");
     alertsLayout->addWidget(txtAlerts_);
-    monitoringLayout->addWidget(alertsBox);
+    layout->addWidget(alertsBox);
     
     // Row 5: Export Button
     auto *exportLayout = new QHBoxLayout;
@@ -2646,9 +2693,7 @@ void MainWindow::setupUI() {
     btnExportMetrics->setStyleSheet(chromeButtonStyle());
     connect(btnExportMetrics, &QPushButton::clicked, this, &MainWindow::onExportMetrics);
     exportLayout->addWidget(btnExportMetrics);
-    monitoringLayout->addLayout(exportLayout);
-    
-    layout->addWidget(monitoringGroup);
+    layout->addLayout(exportLayout);
     
     // ═══════════════════════════════════════════════════════════════════
     // END MONITORING DASHBOARD
@@ -3651,12 +3696,23 @@ void MainWindow::setupUI() {
     tblRecentBlocks_->setColumnWidth(2, 125);
     tblRecentBlocks_->setColumnWidth(3, 60);
     tblRecentBlocks_->setColumnWidth(4, 120);
-    // Shorter than the old Explorer-tab sizing: on Overview this is a card
-    // among many, not the focus of a dedicated page.
-    // Sized to show all six rows without a scrollbar: header + 6 * row.
+    // Keep the Overview compact while retaining enough recent history to be
+    // useful: five rows are visible and the remaining five are scrollable.
     tblRecentBlocks_->verticalHeader()->setDefaultSectionSize(26);
-    tblRecentBlocks_->setFixedHeight(26 * 6 + 30);
-    tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tblRecentBlocks_->setFixedHeight(26 * 5 + 30);
+    tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // The generic Explorer table uses alternating rows. Inside Overview those
+    // lighter stripes look detached from the surrounding dark card, so use a
+    // uniform card-compatible viewport and retain a distinct selected state.
+    tblRecentBlocks_->setAlternatingRowColors(false);
+    tblRecentBlocks_->setStyleSheet(
+        "QTableWidget { gridline-color: #343a43; background-color: #1d2126; "
+        "color: #d8dee7; selection-background-color: #3e4550; "
+        "selection-color: #f1f4f7; } "
+        "QTableWidget::item { background-color: #1d2126; padding: 4px; } "
+        "QTableWidget::item:selected { background-color: #3e4550; color: #f1f4f7; } "
+        "QHeaderView::section { background-color: #272c33; color: #d8dee7; "
+        "padding: 5px; font-weight: bold; border: 1px solid #373d46; }");
     // Let Hash absorb the width instead of Nonce, which otherwise stretches
     // into a column of mostly empty space.
     tblRecentBlocks_->horizontalHeader()->setStretchLastSection(false);
@@ -4943,6 +4999,27 @@ void MainWindow::setupUI() {
     runtimeButtons->addStretch();
     runtimeLayout->addLayout(runtimeButtons, 3, 0, 1, 2);
     layout->addWidget(runtimeGroup);
+
+    auto* networkPrivacyGroup = new QGroupBox("Network & Privacy");
+    auto* networkPrivacyLayout = new QVBoxLayout(networkPrivacyGroup);
+    networkPrivacyLayout->setSpacing(8);
+    auto* networkPrivacySummary = new QLabel(
+        "Choose how this node connects privately and whether it contributes relay capacity. "
+        "These settings affect Dinero P2P traffic only.", networkPrivacyGroup);
+    networkPrivacySummary->setWordWrap(true);
+    networkPrivacySummary->setStyleSheet(backupPanelStyle());
+    networkPrivacyLayout->addWidget(networkPrivacySummary);
+    overviewConnectivityCard_ = new dinero::qt::OverviewConnectivityCard(networkPrivacyGroup);
+    networkPrivacyLayout->addWidget(overviewConnectivityCard_);
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::torModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setonionservice", QJsonObject{{"mode", mode}});
+    });
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
+    });
+    layout->addWidget(networkPrivacyGroup);
 
     auto *developerGroup = new QGroupBox("🧪 Developer Menu");
     auto *developerLayout = new QVBoxLayout(developerGroup);
@@ -6828,11 +6905,17 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   } else if (method == "network.getrelayservice" || method == "network.setrelayservice") {
     if (overviewConnectivityCard_ && result.isObject()) {
-      overviewConnectivityCard_->setRelayServiceStatus(result.toObject());
+      const QJsonObject status = result.toObject();
+      overviewConnectivityCard_->setRelayServiceStatus(status);
+      overviewRelayActive_ = status["enabled"].toBool(false);
+      updateOverviewContribution();
     }
   } else if (method == "network.setonionservice") {
     if (overviewConnectivityCard_ && result.isObject()) {
-      overviewConnectivityCard_->setOnionServiceStatus(result.toObject());
+      const QJsonObject status = result.toObject();
+      overviewConnectivityCard_->setOnionServiceStatus(status);
+      overviewTorActive_ = status["active"].toBool(false);
+      updateOverviewContribution();
     }
   } else if (method == "getpeerinfo" || method == "getpeerinfo") {
     // Week 7: Backend returns { "peers": [...], "connected_peers": N }
@@ -6856,6 +6939,15 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     
     // Feed real peer count to AI tools + status strip
     cachedPeerCount_ = peerCount;
+    overviewInboundPeers_ = 0;
+    for (const QJsonValue& value : peers) {
+      const QJsonObject peer = value.toObject();
+      if (peer["inbound"].toBool(false) ||
+          peer["direction"].toString().compare("inbound", Qt::CaseInsensitive) == 0) {
+        ++overviewInboundPeers_;
+      }
+    }
+    updateOverviewContribution();
     refreshAiStatusStrip();
 
     // Update monitoring dashboard
@@ -8340,8 +8432,9 @@ void MainWindow::updateExplorerRecentBlocks(int height) {
   explorerRecentBlockRows_.clear();
   pendingExplorerRecentHeight_ = -1;
 
-  // Six, not ten: this renders in Overview's compact "Latest Blocks" card.
-  const int rowCount = std::min(6, height + 1);
+  // Retain ten recent blocks; the compact Overview card shows five at once
+  // and exposes the rest through its vertical scrollbar.
+  const int rowCount = std::min(10, height + 1);
   tblRecentBlocks_->setRowCount(rowCount);
   for (int row = 0; row < rowCount; ++row) {
     const int blockHeight = height - row;
@@ -15625,6 +15718,12 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   const bool localRelay = relay["local"].toBool(networkInfo["localrelay"].toBool(false));
   const bool miningRelayActive =
       relay["mining_active"].toBool(networkInfo["mining_relay_active"].toBool(false));
+  const QJsonObject onionService = networkInfo["onion_service"].toObject();
+  overviewNetworkActive_ = networkActive;
+  overviewDirectReachable_ = directReachable;
+  overviewTorActive_ = onionService["active"].toBool(false);
+  overviewRelayActive_ = relay["enabled"].toBool(localRelay || miningRelayActive);
+  overviewInboundPeers_ = inbound;
 
   cachedPeerCount_ = connections;
   if (lblConnections_) {
@@ -15762,6 +15861,42 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   }
 
   refreshAiStatusStrip();
+  updateOverviewContribution();
+}
+
+void MainWindow::updateOverviewContribution() {
+  if (lblOverviewReachability_) {
+    if (!overviewNetworkActive_) {
+      lblOverviewReachability_->setText("P2P disabled");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #a9b2bc; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else if (overviewDirectReachable_) {
+      lblOverviewReachability_->setText("Direct inbound");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #80d39b; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else if (overviewTorActive_) {
+      lblOverviewReachability_->setText("Tor available");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #a9c5ff; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else {
+      lblOverviewReachability_->setText("Outbound only");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #d8c08a; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    }
+  }
+  if (lblOverviewContribution_) {
+    lblOverviewContribution_->setText(overviewRelayActive_ ? "Relay active" : "Ordinary peer");
+    lblOverviewContribution_->setStyleSheet(QString(
+        "QLabel { color: %1; font-size: 13px; font-weight: 600; border: none; background: transparent; }")
+        .arg(overviewRelayActive_ ? "#80d39b" : "#d6dde6"));
+  }
+  if (lblOverviewConnectivity_) {
+    const int peers = std::max(0, cachedPeerCount_);
+    lblOverviewConnectivity_->setText(QString("%1 peers · %2 inbound")
+        .arg(peers).arg(std::max(0, overviewInboundPeers_)));
+    lblOverviewConnectivity_->setStyleSheet(
+        "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+  }
 }
 
 QString MainWindow::networkDiagnosticsText() const {

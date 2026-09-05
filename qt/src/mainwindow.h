@@ -206,6 +206,7 @@ private:
   void resetMiningReadinessDisplay(const QString& summary, const QString& detail = QString());
   void updateNodeStatus(const QJsonObject& blockchainInfo, const QJsonObject& networkInfo, const QJsonObject& mempoolInfo);
   void updateNetworkInfo(const QJsonObject& networkInfo);
+  void updateOverviewContribution();
   QString networkDiagnosticsText() const;
   void updatePeerTable(const QJsonArray& peers);
   void updateBlockTemplate(const QJsonObject& blockTemplate);
@@ -283,6 +284,14 @@ private:
   // Monitoring Dashboard widgets (Overview bottom half)
   dinero::qt::OverviewConnectivityCard* overviewConnectivityCard_ = nullptr;
   bool overviewRelayRpcSupported_ = true;
+  QLabel* lblOverviewReachability_ = nullptr;
+  QLabel* lblOverviewContribution_ = nullptr;
+  QLabel* lblOverviewConnectivity_ = nullptr;
+  bool overviewDirectReachable_ = false;
+  bool overviewTorActive_ = false;
+  bool overviewRelayActive_ = false;
+  bool overviewNetworkActive_ = false;
+  int overviewInboundPeers_ = 0;
   QProgressBar* cpuProgressBar_;
   QLabel* lblCpuUsage_;
   QLabel* lblCpuTemp_;
