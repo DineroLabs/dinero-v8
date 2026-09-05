@@ -10178,9 +10178,9 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
       if (sample.blockFound && sample.highlightUntilMs > nowMs) {
-        painter.setPen(QColor(255, 212, 59, 255));
+        painter.setPen(QColor(213, 138, 50, 255));
       } else if (sample.blockFound) {
-        painter.setPen(QColor(105, 219, 124, 185));
+        painter.setPen(QColor(213, 138, 50, 205));
       } else {
         painter.setPen(QColor(151, 163, 174, 150));
       }
