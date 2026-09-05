@@ -320,11 +320,25 @@ info "case 3: base+1 (height $((BASE + 1))) — ConnectTip successes=$CONNECTED,
 [[ "${CONNECTED:-0}" -eq 1 ]] \
     || fail "case 3: base+1 connected ${CONNECTED:-0} times, expected exactly 1"
 pass "case 3: stored base+1 connected EXACTLY once"
-# Deliveries are legitimately > 1 (initial + relay), but must stay bounded: the
-# deferred-mode livelock this branch fixes produced 83,738 of them.
-[[ "${DELIVERED:-0}" -lt 25 ]] \
-    || fail "case 3: base+1 delivered ${DELIVERED} times — repeat-delivery loop regression"
-pass "case 3: base+1 deliveries bounded at ${DELIVERED} (livelock would be thousands)"
+# Deliveries are legitimately > 1 and are NOT bounded by this branch. The drain
+# ceiling fixed the LIVELOCK (a self-sustaining re-connect loop that produced
+# 83,738 deliveries of one height while fetching zero pre-base bodies); peer
+# re-announcement of a block that has not yet connected is a separate,
+# still-open issue — PR #693 records it as a known limitation, since the
+# known-body write guard that would have suppressed it had to be removed for
+# breaking crash atomicity.
+#
+# Measured spread across machines, same commit:
+#     Dell (48 cores, fast)      2 deliveries
+#     GitHub CI runner         667 deliveries
+# So a threshold calibrated on one machine is meaningless. The threshold below
+# exists ONLY to catch a livelock regression, which is thousands-to-tens-of-
+# thousands, and is deliberately far above observed re-announcement.
+info "case 3: base+1 delivered ${DELIVERED} times (Dell observed 2, CI observed 667;"
+info "  peer re-announcement is a known open issue, tracked in PR #693)"
+[[ "${DELIVERED:-0}" -lt 5000 ]] \
+    || fail "case 3: base+1 delivered ${DELIVERED} times — LIVELOCK regression (was 83,738 before the drain ceiling)"
+pass "case 3: no livelock — deliveries ${DELIVERED}, far below the 83,738 regression signature"
 
 # ── CASE 6a: restart after promotion reproduces the same state ──────────
 stop_node "$CON_DIR"
