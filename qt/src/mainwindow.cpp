@@ -1649,6 +1649,20 @@ void appendMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   appendMiningConsoleText(output, line);
 }
 
+void replaceMiningOutputFirstLine(QTextEdit* output, const QString& line) {
+  if (!output) {
+    return;
+  }
+  if (output->document()->isEmpty()) {
+    output->setPlainText(line);
+    return;
+  }
+  QTextCursor cursor(output->document());
+  cursor.movePosition(QTextCursor::Start);
+  cursor.select(QTextCursor::BlockUnderCursor);
+  cursor.insertText(line);
+}
+
 void removeMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   if (!output) {
     return;
@@ -2037,8 +2051,8 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     }
   });
 
-  // Live Hash Engine refresh. Ten real samples per second keeps the display
-  // visibly alive without competing with the mining hot path or the UI loop.
+  // Live Hash Engine refresh. Five real samples per second stays visibly live
+  // while keeping long header-row painting from starving the GUI event loop.
   connect(miningCinematicTimer_, &QTimer::timeout,
           this, &MainWindow::updateMiningOutputCinematicFrame);
   miningCinematicTimer_->setInterval(dinero::qt::kHashEngineIntervalMs);
@@ -4396,6 +4410,12 @@ void MainWindow::setupUI() {
     });
 
     connect(minerCtrl_, &MinerController::logLine, this, [this](const QString& line) {
+        // The embedded GPU startup state is already part of the persistent
+        // one-line session header. Do not spend a second console row saying
+        // the same thing again.
+        if (line.startsWith(QStringLiteral("GPU miner started successfully"))) {
+            return;
+        }
         const bool transientError = dinero::qt::isTransientMiningError(line);
         const QString displayLine = dinero::qt::miningOutputDisplayText(line);
         if (txtMiningOutput_) {
@@ -4436,6 +4456,9 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::templateChanged, this,
             [this](int height, quint32 difficultyBits) {
+      if (!miningSessionHeader_.isEmpty()) {
+        replaceMiningOutputFirstLine(txtMiningOutput_, miningSessionHeader_);
+      }
       // A fresh template is authoritative evidence that the miner recovered.
       // Remove prior recoverable rejection/template errors from the live view;
       // their full diagnostics remain available in the daemon log.
@@ -4458,6 +4481,12 @@ void MainWindow::setupUI() {
                    quint32 difficultyBits) {
       miningSessionFinds_.append(
         {height, hash, merkleRoot, utreexoRoot, nonce, difficultyBits});
+      if (!miningSessionHeader_.isEmpty()) {
+        replaceMiningOutputFirstLine(
+          txtMiningOutput_,
+          miningSessionHeader_ +
+            QStringLiteral(" · Block found — confirming and loading next template…"));
+      }
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
         btnMiningSessionFinds_->setText(
@@ -4472,9 +4501,16 @@ void MainWindow::setupUI() {
           .arg(timestamp)
           .arg(difficultyBits, 8, 16, QChar('0'))
           .arg(height);
-      miningHashSamples_.append({nonce, hash, liveRecord, true,
-        QDateTime::currentMSecsSinceEpoch() +
-          dinero::qt::kBlockFoundHighlightMs});
+      MiningHashSample foundSample;
+      foundSample.nonce = nonce;
+      foundSample.hash = hash;
+      foundSample.headerFields = liveRecord;
+      foundSample.renderedLine.setText(liveRecord);
+      foundSample.renderedLine.setPerformanceHint(QStaticText::AggressiveCaching);
+      foundSample.blockFound = true;
+      foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
+                                     dinero::qt::kBlockFoundHighlightMs;
+      miningHashSamples_.append(std::move(foundSample));
     });
 
     // Forward embedded miner state into the daemon's relay auto-mode so
@@ -9922,9 +9958,6 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
   if (shouldRun && miningCinematicTimer_) {
     if (!miningCinematicTimer_->isActive()) {
       miningCinematicFrame_ = 0;
-      miningCinematicLastLongCometFrame_ = -100000;
-      miningCinematicLastUltraCometFrame_ = 0;
-      miningCinematicSparks_.clear();
       miningCinematicTimer_->start();
     }
     updateMiningOutputCinematicFrame();
@@ -9948,9 +9981,6 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
     miningHashOverlay_->clear();
   }
   miningCinematicFrame_ = 0;
-  miningCinematicLastLongCometFrame_ = -100000;
-  miningCinematicLastUltraCometFrame_ = 0;
-  miningCinematicSparks_.clear();
 
   QPalette palette = viewport->palette();
   palette.setColor(QPalette::Base, QColor(kMiningOutputIdleBackground));
@@ -9994,7 +10024,13 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       if (miningHashSamples_.isEmpty() ||
           miningHashSamples_.constLast().nonce != nonce ||
           miningHashSamples_.constLast().hash != hash) {
-        miningHashSamples_.append({nonce, hash, headerFields, false, 0});
+        MiningHashSample liveSample;
+        liveSample.nonce = nonce;
+        liveSample.hash = hash;
+        liveSample.headerFields = headerFields;
+        liveSample.renderedLine.setText(headerFields);
+        liveSample.renderedLine.setPerformanceHint(QStaticText::AggressiveCaching);
+        miningHashSamples_.append(std::move(liveSample));
       }
       if (lblMiningHeight_) lblMiningHeight_->setText(QString::number(height));
       if (lblMiningDifficulty_) {
@@ -10031,10 +10067,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       } else {
         painter.setPen(QColor(151, 163, 174, 150));
       }
-      const QString line = sample.headerFields;
-      painter.drawText(8,
-                       frameSize.height() - 6 - visual * rowHeight - metrics.descent(),
-                       line);
+      painter.drawStaticText(
+        QPointF(8,
+                frameSize.height() - 6 - visual * rowHeight - metrics.ascent()),
+        sample.renderedLine);
     }
     if (miningHashOverlay_) {
       miningHashOverlay_->setGeometry(viewport->rect());
@@ -10114,6 +10150,9 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     painter.drawText(0, y, line);
   }
 
+  // Comet/spark effects are intentionally disabled. They were barely visible
+  // but multiplied per-frame text draws enough to make the hash field stutter.
+#if 0
   // Sparse highlight layer: random bright glyph sparks + comet streaks.
   auto spawnSpark = [&](int lifetimeMin, int lifetimeMax, int streakMin, int streakMax) {
     if (charsPerLine <= 0 || visibleRows <= 0) {
@@ -10237,6 +10276,8 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       }
     }
   }
+
+#endif
 
   // ── Motto ticker as floating overlay (not in background pixmap) ──
   {
@@ -11277,8 +11318,11 @@ void MainWindow::startInternalMiner(bool useGpu) {
                                   : QString("Embedded CPU solo miner · %1 threads").arg(threads);
     const QString auth = cookiePath.isEmpty() ? QStringLiteral("cookie auth unavailable")
                                               : QStringLiteral("cookie auth active");
-    txtMiningOutput_->setPlainText(
-      QString("%1 · payout %2 · %3").arg(engine, addr, auth));
+    const QString backend = useGpu ? QStringLiteral("Metal active")
+                                   : QStringLiteral("CPU active");
+    miningSessionHeader_ = QString("%1 · payout %2 · %3 · %4")
+                             .arg(engine, addr, auth, backend);
+    txtMiningOutput_->setPlainText(miningSessionHeader_);
   }
 
   mining_stats_.blocks_found = 0;
