@@ -3651,12 +3651,23 @@ void MainWindow::setupUI() {
     tblRecentBlocks_->setColumnWidth(2, 125);
     tblRecentBlocks_->setColumnWidth(3, 60);
     tblRecentBlocks_->setColumnWidth(4, 120);
-    // Shorter than the old Explorer-tab sizing: on Overview this is a card
-    // among many, not the focus of a dedicated page.
-    // Sized to show all six rows without a scrollbar: header + 6 * row.
+    // Keep the Overview compact while retaining enough recent history to be
+    // useful: four rows are visible and the remaining six are scrollable.
     tblRecentBlocks_->verticalHeader()->setDefaultSectionSize(26);
-    tblRecentBlocks_->setFixedHeight(26 * 6 + 30);
-    tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tblRecentBlocks_->setFixedHeight(26 * 4 + 30);
+    tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // The generic Explorer table uses alternating rows. Inside Overview those
+    // lighter stripes look detached from the surrounding dark card, so use a
+    // uniform card-compatible viewport and retain a distinct selected state.
+    tblRecentBlocks_->setAlternatingRowColors(false);
+    tblRecentBlocks_->setStyleSheet(
+        "QTableWidget { gridline-color: #343a43; background-color: #1d2126; "
+        "color: #d8dee7; selection-background-color: #3e4550; "
+        "selection-color: #f1f4f7; } "
+        "QTableWidget::item { background-color: #1d2126; padding: 4px; } "
+        "QTableWidget::item:selected { background-color: #3e4550; color: #f1f4f7; } "
+        "QHeaderView::section { background-color: #272c33; color: #d8dee7; "
+        "padding: 5px; font-weight: bold; border: 1px solid #373d46; }");
     // Let Hash absorb the width instead of Nonce, which otherwise stretches
     // into a column of mostly empty space.
     tblRecentBlocks_->horizontalHeader()->setStretchLastSection(false);
@@ -8340,8 +8351,9 @@ void MainWindow::updateExplorerRecentBlocks(int height) {
   explorerRecentBlockRows_.clear();
   pendingExplorerRecentHeight_ = -1;
 
-  // Six, not ten: this renders in Overview's compact "Latest Blocks" card.
-  const int rowCount = std::min(6, height + 1);
+  // Retain ten recent blocks; the compact Overview card shows four at once
+  // and exposes the rest through its vertical scrollbar.
+  const int rowCount = std::min(10, height + 1);
   tblRecentBlocks_->setRowCount(rowCount);
   for (int row = 0; row < rowCount; ++row) {
     const int blockHeight = height - row;
