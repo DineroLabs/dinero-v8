@@ -1903,6 +1903,28 @@ endif()
 # single transition deterministically.
 # Snapshot/promotion boundary: which reorgs are fatal. Boundary cases are all
 # off-by-one or mode transitions, which integration tests cannot enumerate.
+# Generation-checked block status transitions: a stale acceptance result may
+# never overwrite a newer operator decision.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_block_status_generation.cpp)
+  add_executable(test_block_status_generation
+    tests/consensus/test_block_status_generation.cpp
+    src/consensus/block_status_generation.cpp
+  )
+  add_dependencies(test_block_status_generation gtest gtest_main)
+  target_link_libraries(test_block_status_generation PRIVATE GTest::gtest_main)
+  target_include_directories(test_block_status_generation BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME BlockStatusGeneration COMMAND test_block_status_generation)
+  set_tests_properties(BlockStatusGeneration PROPERTIES
+    LABELS "consensus;reorg;invalidate;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "Block status generation tests enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_assumeutxo_fork_guard.cpp)
   add_executable(test_assumeutxo_fork_guard
     tests/consensus/test_assumeutxo_fork_guard.cpp

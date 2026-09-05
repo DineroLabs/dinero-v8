@@ -11651,6 +11651,28 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
 // Production InvalidateBlock / ReconsiderBlock (Bitcoin Core model)
 // ============================================================================
 
+consensus::BlockStatusGeneration ChainstateService::CurrentBlockStatusGeneration() const {
+    if (!chain_db_) return 0;
+    const auto raw = chain_db_->getUtreexoMeta(consensus::kBlockStatusGenerationKey);
+    if (raw.status() != Status::Ok) return 0;
+    return consensus::ParseBlockStatusGeneration(raw.value());
+}
+
+consensus::BlockStatusGeneration ChainstateService::BumpBlockStatusGeneration(
+    const ChainWriteToken& token, rocksdb::WriteBatch* wb) {
+    const auto next = CurrentBlockStatusGeneration() + 1;
+    if (chain_db_) {
+        chain_db_->putUtreexoMeta(token, consensus::kBlockStatusGenerationKey,
+                                  consensus::FormatBlockStatusGeneration(next), wb);
+    }
+    if (logger_) {
+        logger_->info("[BlockStatusGeneration] advanced to " + std::to_string(next) +
+                      " — results captured before this are stale and may not "
+                      "assert or preserve failure flags");
+    }
+    return next;
+}
+
 bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error) {
     // #586 bolt 3: this runs on the RPC thread and walks DisconnectTip in a
     // loop — WITHOUT this lock it races ActivateBestChain's ConnectTips on
@@ -11749,6 +11771,10 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
             logger_->warning("[InvalidateBlock] Failed to persist BLOCK_FAILED_VALID for "
                              + target->hash.GetHex().substr(0, 16) + "... — flag is in-memory only");
         }
+        // Advance the operator-decision generation alongside the invalidation,
+        // so an acceptance that began BEFORE this decision cannot commit a
+        // result that contradicts it either.
+        BumpBlockStatusGeneration(token);
     }
 
     dinero::testing::MaybeAbortAt("after_invalid_target_before_descendants",
@@ -11896,6 +11922,13 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
                 return false;
             }
         }
+
+        // Advance the operator-decision generation in the SAME batch as the
+        // cleared flags. Any block-processing result captured before this point
+        // is now stale and may not re-assert the flags we are clearing — which
+        // is exactly what continuous re-relay was doing (650 re-assertions
+        // observed after a reconsider, tip never recovered).
+        BumpBlockStatusGeneration(token, &status_batch);
 
         const auto write_status = chain_db_->writeBatch(token, std::move(status_batch), true);
         if (write_status != Status::Ok) {

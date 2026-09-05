@@ -941,6 +941,7 @@ add_library(dinero_core STATIC
   # advisory, no activation height, no consensus enforcement.
   src/consensus/state_commitment.cpp
   src/consensus/assumeutxo_fork_guard.cpp
+  src/consensus/block_status_generation.cpp
 
   # Service wrappers (dependency injection containers)
   src/daemon/services/config_service.cpp

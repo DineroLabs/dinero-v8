@@ -9,7 +9,8 @@
 #include "consensus/pow_context.h"
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
-#include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
+#include "consensus/utreexo_activation.h"
+#include "consensus/block_status_generation.h"  // Phase 11a: IsUtreexoActive check
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "consensus/tx_parser.h"    // Phase 3D: Transaction parsing for wallet notifications
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
@@ -1650,6 +1651,19 @@ dinero::Block BlockAcceptor::ConvertParsedBlockToBlock(const ParsedBlock& parsed
 }
 
 bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, const std::string& parentChainwork, std::string& error, bool updateTip) {
+    // Capture the operator-decision generation BEFORE any of this function's
+    // work. Storing, indexing and metadata writes all take time; if an
+    // invalidate or reconsider lands meanwhile, this result is stale and must
+    // not write or preserve failure flags — otherwise a continuously
+    // re-announced block undoes the operator's decision on the next relay.
+    // See consensus/block_status_generation.h.
+    dinero::consensus::BlockStatusGeneration accept_status_generation = 0;
+    {
+        auto* gen_ctx = DaemonContext::instance();
+        auto gen_cs = std::dynamic_pointer_cast<dinero::ChainstateService>(
+            gen_ctx ? gen_ctx->chainstate : nullptr);
+        if (gen_cs) accept_status_generation = gen_cs->CurrentBlockStatusGeneration();
+    }
     try {
         // Authorization token for ChainDB writes (compile-time enforced)
         ChainWriteToken token;
@@ -2223,8 +2237,34 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                     // silently overwrites the failure flag here and the block
                     // re-enters the candidate set on the next AddCandidate
                     // call, defeating the entire persistent invalidate fix.
-                    const uint32_t preserved_failure_flags = block_index->status &
-                        (dinero::BLOCK_FAILED_VALID | dinero::BLOCK_FAILED_CHILD);
+                    // Generation check (consensus/block_status_generation.h).
+                    // Preserving a failure flag is correct ONLY if no operator
+                    // decision landed while this block was being processed. A
+                    // continuously re-announced block always has a relay in
+                    // flight, so without this a reconsiderblock is undone by
+                    // the very next relay — measured at 650 re-assertions after
+                    // a reconsider, with the tip never recovering.
+                    //
+                    // Fails CLOSED on an unreadable counter: a 0 read never
+                    // equals a bumped generation, so the flags are dropped
+                    // rather than wrongly preserved.
+                    const auto gen_now = chainstate->CurrentBlockStatusGeneration();
+                    const bool decision_unchanged =
+                        dinero::consensus::GenerationStillCurrent(accept_status_generation,
+                                                                  gen_now);
+                    const uint32_t preserved_failure_flags =
+                        decision_unchanged
+                            ? (block_index->status &
+                               (dinero::BLOCK_FAILED_VALID | dinero::BLOCK_FAILED_CHILD))
+                            : 0u;
+                    if (!decision_unchanged) {
+                        LOG_INFO("♻️  Stale acceptance (generation " +
+                                 std::to_string(accept_status_generation) + " -> " +
+                                 std::to_string(gen_now) +
+                                 "): NOT re-asserting failure flags for " +
+                                 block.blockHash.substr(0, 16) +
+                                 "... — a newer operator decision wins");
+                    }
 
                     // Mark as fully validated (all consensus checks passed)
                     // BLOCK_HAVE_DATA: block body stored in flatfiles.
