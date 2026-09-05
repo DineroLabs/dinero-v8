@@ -336,8 +336,12 @@ grep -q "Migrated .* sqlite nullifier rows into ChainDB" "${AMB2_LOG}" 2>/dev/nu
 pass "no quarantined row reached authoritative ChainDB storage"
 stop_node "${AMB2_PID}"
 
-# ── C: genuine legacy must still migrate ────────────────────────────────────
-info "fixture C: unstamped sqlite, row at/below the tip (genuine legacy)"
+# ── C: below-tip but UNVERIFIABLE must also be quarantined ─────────────────
+# The case height alone cannot catch. A row at a perfectly valid height, whose
+# nullifier is NOT spent in the canonical block at that height, is residue from
+# a disconnected or losing-fork block. Promoting it would permanently refuse a
+# valid spend, so verification against canonical history — not height — decides.
+info "fixture C: unstamped sqlite, row at a valid height but not in that block"
 LEG_DIR="${BASE_DIR}/legacy"; LEG_RPC="$((RPC_PORT + 40))"
 run_scenario "${LEG_DIR}" "${LEG_RPC}" "${BASE_DIR}/leg.log"
 LEG_DB="$(find_nf_db "${LEG_DIR}")"
@@ -351,9 +355,15 @@ sq "${LEG_DB}" "INSERT OR REPLACE INTO nullifiers VALUES (randomblob(32), 2)" "P
 LEG2_LOG="${BASE_DIR}/leg_restart.log"
 LEG2_PID="$(start_node "${LEG_DIR}" "${LEG_RPC}" "${LEG2_LOG}")"
 sleep 15
-grep -q "QUARANTINE" "${LEG2_LOG}" 2>/dev/null \
-    && { stop_node "${LEG2_PID}"; fail "a genuine legacy database must NOT be quarantined"; }
-pass "genuine legacy database (rows at/below tip) is not quarantined"
+if grep -q "QUARANTINE" "${LEG2_LOG}" 2>/dev/null; then
+    pass "below-tip row that is NOT in its canonical block is QUARANTINED"
+else
+    stop_node "${LEG2_PID}"
+    fail "an unverifiable below-tip row must be quarantined — height is not proof"
+fi
+grep -q "Migrated .* sqlite nullifier rows into ChainDB" "${LEG2_LOG}" 2>/dev/null \
+    && { stop_node "${LEG2_PID}"; fail "an unverifiable row must never reach ChainDB"; }
+pass "no unverifiable row reached authoritative ChainDB storage"
 stop_node "${LEG2_PID}"
 
 # ── B: the crash boundary ───────────────────────────────────────────────────

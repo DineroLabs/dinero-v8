@@ -1156,63 +1156,89 @@ bool ChainstateService::LoadShieldedState() {
                 return false;
             }
 
-            // ── UPGRADE POLICY: validate before promoting ──────────────────
+            // ── UPGRADE POLICY: verify against canonical history ──────────
             //
-            // An unstamped populated database is NOT automatically a genuine
-            // legacy one. It can also be crash residue produced by a build
-            // that predates the stamp, and no stamp can tell those apart
-            // retrospectively. So validate against connected canonical
-            // history instead of trusting the file's shape.
+            // An unstamped populated database is NOT automatically a legacy
+            // one. It can also be crash residue from a build predating the
+            // stamp, and no stamp resolves that retrospectively.
             //
-            // Necessary condition, cheap and decisive: every legacy row must
-            // come from a block that is actually CONNECTED. A row whose height
-            // is above the tip cannot — its block never connected — which is
-            // exactly the crash signature (the residue's height is tip+1,
-            // because the process died connecting that block).
+            // Height alone is NOT sufficient. "height <= tip" is satisfied by
+            // residue from a DISCONNECTED or losing-fork block, which would
+            // then be promoted and permanently refuse a valid spend. So every
+            // candidate row is verified against the CANONICAL BLOCK at its
+            // recorded height: the nullifier must actually be spent in that
+            // block. Anything unverifiable — block unreadable, bundle
+            // undecodable, nullifier absent — quarantines the whole migration.
             //
-            // Honest limit: height <= tip is necessary, not sufficient. A row
-            // at or below the tip could still be residue from a block later
-            // reorged away. Full per-nullifier verification against block
-            // contents is the stronger policy and remains a follow-up; this
-            // rejects the case that actually occurs and quarantines rather
-            // than guessing.
+            // Fail-closed by construction: promotion requires positive proof,
+            // never the absence of a disproof.
             {
-                uint32_t tip_height = 0;
-                const auto tip_res = chain_db_->getTip();
-                if (tip_res.status() == Status::Ok) {
-                    tip_height = static_cast<uint32_t>(tip_res.value().height);
-                }
-                uint64_t above_tip = 0;
-                uint32_t worst = 0;
-                for (uint64_t i = 0; i < expected; ++i) {
+                uint64_t unverified = 0;
+                uint32_t first_bad_height = 0;
+                std::string reason;
+                for (uint64_t i = 0; i < expected && unverified == 0; ++i) {
                     const size_t off = kHeaderBytes + i * kRowBytes;
                     uint32_t h = 0;
                     for (int j = 0; j < 4; ++j) {
                         h |= static_cast<uint32_t>(bytes[off + j]) << (j * 8);
                     }
-                    if (h > tip_height) { ++above_tip; worst = std::max(worst, h); }
+                    consensus::shielded::Hash want{};
+                    std::memcpy(want.data(), &bytes[off + 4], 32);
+
+                    uint256 canonical;
+                    if (!ResolveCanonicalBlockHash(h, canonical)) {
+                        ++unverified; first_bad_height = h;
+                        reason = "no canonical block at that height";
+                        break;
+                    }
+                    const auto blk = ReadStoredBlock(canonical);
+                    if (blk.status() != Status::Ok) {
+                        ++unverified; first_bad_height = h;
+                        reason = "canonical block body unreadable";
+                        break;
+                    }
+                    bool found = false;
+                    for (const auto& tx : blk.value().vtx) {
+                        if (!tx.IsShielded()) continue;
+                        consensus::shielded::ShieldedBundle bundle;
+                        if (consensus::shielded::DeserializeShieldedBundle(
+                                tx.shielded_bundle_bytes, &bundle) !=
+                            consensus::shielded::BundleDecodeError::Ok) {
+                            continue;
+                        }
+                        for (const auto& sp : bundle.spends) {
+                            if (sp.nullifier == want) { found = true; break; }
+                        }
+                        if (found) break;
+                    }
+                    if (!found) {
+                        ++unverified; first_bad_height = h;
+                        reason = "nullifier not spent in the canonical block at that height";
+                    }
                 }
-                if (above_tip > 0) {
-                    // QUARANTINE. Refuse rather than promote ambiguous rows:
-                    // promoting them would make an unconnected block's
-                    // nullifiers authoritative and its notes permanently
-                    // unspendable. Refusing is recoverable; that is not.
+
+                if (unverified > 0) {
                     if (logger_) {
                         logger_->error(
                             "[ChainstateService] QUARANTINE: sqlite nullifier database is "
-                            "unstamped and populated, but " + std::to_string(above_tip) +
-                            " of " + std::to_string(expected) + " row(s) reference heights "
-                            "above the connected tip (highest=" + std::to_string(worst) +
-                            ", tip=" + std::to_string(tip_height) + "). Those rows cannot "
-                            "come from connected blocks, so this is crash residue rather "
-                            "than a legacy database. Refusing to promote them to "
-                            "authoritative — that would make an unconnected block's "
-                            "nullifiers permanent and its notes unspendable. Recover by "
-                            "removing the sqlite nullifier cache (ChainDB is authoritative "
-                            "and it will be rebuilt), or investigate the datadir if you "
-                            "believe this really is a pre-authority wallet.");
+                            "unstamped and populated, but a row at height " +
+                            std::to_string(first_bad_height) + " could not be verified "
+                            "against canonical history (" + reason + "). This is crash or "
+                            "fork residue rather than a legacy database. Refusing to "
+                            "promote it to authoritative — that would make an unconnected "
+                            "block's nullifiers permanent and its notes unspendable. "
+                            "Recover by removing the sqlite nullifier cache (ChainDB is "
+                            "authoritative and it is rebuilt automatically), or investigate "
+                            "the datadir if you believe this is a genuine pre-authority "
+                            "wallet.");
                     }
                     return false;
+                }
+                if (logger_) {
+                    logger_->warning(
+                        "[ChainstateService] All " + std::to_string(expected) +
+                        " legacy nullifier row(s) verified against canonical blocks; "
+                        "migration may proceed");
                 }
             }
 
