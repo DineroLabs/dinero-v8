@@ -50,6 +50,7 @@
 #include <QPointer>
 #include <QThread>
 #include <QGroupBox>
+#include <QFrame>
 #include <QScrollArea>
 #include <QClipboard>
 #include <QCursor>
@@ -2672,9 +2673,22 @@ void MainWindow::setupUI() {
     networkColumn->addStretch();
     activityColumn->addStretch();
     monitoringColumns->addLayout(networkColumn, 2);
+    auto* columnDivider = new QFrame(monitoringGroup);
+    columnDivider->setFrameShape(QFrame::VLine);
+    columnDivider->setFrameShadow(QFrame::Plain);
+    columnDivider->setStyleSheet("QFrame { color: #343a43; background: #343a43; }");
+    columnDivider->setFixedWidth(1);
+    monitoringColumns->addWidget(columnDivider);
     monitoringColumns->addLayout(activityColumn, 1);
     monitoringLayout->addLayout(monitoringColumns);
-    
+
+    auto* alertsDivider = new QFrame(monitoringGroup);
+    alertsDivider->setFrameShape(QFrame::HLine);
+    alertsDivider->setFrameShadow(QFrame::Plain);
+    alertsDivider->setStyleSheet("QFrame { color: #343a43; background: #343a43; }");
+    alertsDivider->setFixedHeight(1);
+    monitoringLayout->addWidget(alertsDivider);
+
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
     auto *alertsLayout = new QVBoxLayout(alertsBox);
