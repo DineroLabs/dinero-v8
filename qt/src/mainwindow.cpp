@@ -2037,8 +2037,8 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     }
   });
 
-  // Live Hash Engine refresh. Ten real samples per second keeps the display
-  // visibly alive without competing with the mining hot path or the UI loop.
+  // Live Hash Engine refresh. Five real samples per second stays visibly live
+  // while keeping long header-row painting from starving the GUI event loop.
   connect(miningCinematicTimer_, &QTimer::timeout,
           this, &MainWindow::updateMiningOutputCinematicFrame);
   miningCinematicTimer_->setInterval(dinero::qt::kHashEngineIntervalMs);
@@ -4472,9 +4472,16 @@ void MainWindow::setupUI() {
           .arg(timestamp)
           .arg(difficultyBits, 8, 16, QChar('0'))
           .arg(height);
-      miningHashSamples_.append({nonce, hash, liveRecord, true,
-        QDateTime::currentMSecsSinceEpoch() +
-          dinero::qt::kBlockFoundHighlightMs});
+      MiningHashSample foundSample;
+      foundSample.nonce = nonce;
+      foundSample.hash = hash;
+      foundSample.headerFields = liveRecord;
+      foundSample.renderedLine.setText(liveRecord);
+      foundSample.renderedLine.setPerformanceHint(QStaticText::AggressiveCaching);
+      foundSample.blockFound = true;
+      foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
+                                     dinero::qt::kBlockFoundHighlightMs;
+      miningHashSamples_.append(std::move(foundSample));
     });
 
     // Forward embedded miner state into the daemon's relay auto-mode so
@@ -9988,7 +9995,13 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       if (miningHashSamples_.isEmpty() ||
           miningHashSamples_.constLast().nonce != nonce ||
           miningHashSamples_.constLast().hash != hash) {
-        miningHashSamples_.append({nonce, hash, headerFields, false, 0});
+        MiningHashSample liveSample;
+        liveSample.nonce = nonce;
+        liveSample.hash = hash;
+        liveSample.headerFields = headerFields;
+        liveSample.renderedLine.setText(headerFields);
+        liveSample.renderedLine.setPerformanceHint(QStaticText::AggressiveCaching);
+        miningHashSamples_.append(std::move(liveSample));
       }
       if (lblMiningHeight_) lblMiningHeight_->setText(QString::number(height));
       if (lblMiningDifficulty_) {
@@ -10025,10 +10038,10 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       } else {
         painter.setPen(QColor(151, 163, 174, 150));
       }
-      const QString line = sample.headerFields;
-      painter.drawText(8,
-                       frameSize.height() - 6 - visual * rowHeight - metrics.descent(),
-                       line);
+      painter.drawStaticText(
+        QPointF(8,
+                frameSize.height() - 6 - visual * rowHeight - metrics.ascent()),
+        sample.renderedLine);
     }
     if (miningHashOverlay_) {
       miningHashOverlay_->setGeometry(viewport->rect());

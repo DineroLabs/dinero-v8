@@ -9,6 +9,7 @@
 #include <QJsonValue>
 #include <QVector>
 #include <QSet>
+#include <QStaticText>
 #include <cstdint>
 #include "debugconsole.h"
 #include "connection_manager.h"
@@ -596,6 +597,7 @@ private:
     quint32 nonce = 0;
     QString hash;
     QString headerFields;
+    QStaticText renderedLine;
     bool blockFound = false;
     qint64 highlightUntilMs = 0;
   };
