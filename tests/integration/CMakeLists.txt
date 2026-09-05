@@ -1721,6 +1721,20 @@ endif()
 # policy. "ChainDB empty + sqlite populated" is produced BOTH by a legacy
 # database and by the crash window; promoting the latter would make an
 # unconnected block's nullifiers authoritative and its notes unspendable.
+# Six promotion-boundary cases for state_commitment_v1. Requires BOTH the
+# shielded root comparison and the AssumeUTXO scheduler fix, so it is run on
+# the validation-only combined branch.
+add_test(
+    NAME ShieldedPromotionBoundary
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_promotion_boundary.sh
+)
+set_tests_properties(ShieldedPromotionBoundary PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;shielded;assumeutxo;promotion;boundary"
+    TIMEOUT 1800
+)
+message(STATUS "  ✓ ShieldedPromotionBoundary registered")
+
 add_test(
     NAME ShieldedNullifierCrashBoundary
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_nullifier_crash_boundary.sh
