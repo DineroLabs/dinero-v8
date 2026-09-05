@@ -2483,9 +2483,14 @@ void MainWindow::setupUI() {
     monitoringGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     monitoringGroup->setMaximumHeight(650);
     
-    // Row 1: read-only node contribution + compact resource telemetry.
-    auto *row1 = new QHBoxLayout;
-    row1->setSpacing(12);
+    // Two semantic columns: network participation on the left, transaction
+    // workload and mining resources on the right.
+    auto *monitoringColumns = new QHBoxLayout;
+    monitoringColumns->setSpacing(12);
+    auto *networkColumn = new QVBoxLayout;
+    networkColumn->setSpacing(10);
+    auto *activityColumn = new QVBoxLayout;
+    activityColumn->setSpacing(10);
 
     auto* connectivityBox = new QGroupBox("Your Node Contribution");
     auto* connectivityLayout = new QVBoxLayout(connectivityBox);
@@ -2542,7 +2547,7 @@ void MainWindow::setupUI() {
     connectivityLayout->addLayout(contributionFooter);
     connectivityBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     connectivityBox->setMaximumHeight(235);
-    row1->addWidget(connectivityBox, 2);
+    networkColumn->addWidget(connectivityBox);
 
     auto *cpuBox = new QGroupBox("Resources & mining");
     auto *cpuLayout = new QVBoxLayout(cpuBox);
@@ -2595,12 +2600,7 @@ void MainWindow::setupUI() {
     cpuLayout->addWidget(lblGpuLoadOverview_);
     cpuLayout->addWidget(lblGpuMemoryOverview_);
     cpuLayout->addWidget(lblGpuThermalsOverview_);
-    row1->addWidget(cpuBox, 1);
-    
-    monitoringLayout->addLayout(row1);
-    
-    // Row 2: Mempool + Peers Summary
-    auto *row2 = new QHBoxLayout;
+    activityColumn->addWidget(cpuBox);
     
     // Live mempool summary. The transaction rows make short-lived pending
     // activity observable instead of reducing it to a periodically sampled
@@ -2627,7 +2627,7 @@ void MainWindow::setupUI() {
     tblMempoolOverview_->setMinimumHeight(120);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
-    row2->addWidget(mempoolBox, 1, Qt::AlignTop);
+    activityColumn->addWidget(mempoolBox);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
@@ -2662,9 +2662,12 @@ void MainWindow::setupUI() {
       "QHeaderView::section { background: #272c33; color: #d5dde6; padding: 4px; font-weight: bold; border: 1px solid #373d46; }"
     );
     peersLayout->addWidget(tblPeersOverview_);
-    row2->addWidget(peersBox, 2);
-
-    monitoringLayout->addLayout(row2);
+    networkColumn->addWidget(peersBox);
+    networkColumn->addStretch();
+    activityColumn->addStretch();
+    monitoringColumns->addLayout(networkColumn, 2);
+    monitoringColumns->addLayout(activityColumn, 1);
+    monitoringLayout->addLayout(monitoringColumns);
     
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
