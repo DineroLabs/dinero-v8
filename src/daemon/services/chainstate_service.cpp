@@ -1156,6 +1156,66 @@ bool ChainstateService::LoadShieldedState() {
                 return false;
             }
 
+            // ── UPGRADE POLICY: validate before promoting ──────────────────
+            //
+            // An unstamped populated database is NOT automatically a genuine
+            // legacy one. It can also be crash residue produced by a build
+            // that predates the stamp, and no stamp can tell those apart
+            // retrospectively. So validate against connected canonical
+            // history instead of trusting the file's shape.
+            //
+            // Necessary condition, cheap and decisive: every legacy row must
+            // come from a block that is actually CONNECTED. A row whose height
+            // is above the tip cannot — its block never connected — which is
+            // exactly the crash signature (the residue's height is tip+1,
+            // because the process died connecting that block).
+            //
+            // Honest limit: height <= tip is necessary, not sufficient. A row
+            // at or below the tip could still be residue from a block later
+            // reorged away. Full per-nullifier verification against block
+            // contents is the stronger policy and remains a follow-up; this
+            // rejects the case that actually occurs and quarantines rather
+            // than guessing.
+            {
+                uint32_t tip_height = 0;
+                const auto tip_res = chain_db_->getTip();
+                if (tip_res.status() == Status::Ok) {
+                    tip_height = static_cast<uint32_t>(tip_res.value().height);
+                }
+                uint64_t above_tip = 0;
+                uint32_t worst = 0;
+                for (uint64_t i = 0; i < expected; ++i) {
+                    const size_t off = kHeaderBytes + i * kRowBytes;
+                    uint32_t h = 0;
+                    for (int j = 0; j < 4; ++j) {
+                        h |= static_cast<uint32_t>(bytes[off + j]) << (j * 8);
+                    }
+                    if (h > tip_height) { ++above_tip; worst = std::max(worst, h); }
+                }
+                if (above_tip > 0) {
+                    // QUARANTINE. Refuse rather than promote ambiguous rows:
+                    // promoting them would make an unconnected block's
+                    // nullifiers authoritative and its notes permanently
+                    // unspendable. Refusing is recoverable; that is not.
+                    if (logger_) {
+                        logger_->error(
+                            "[ChainstateService] QUARANTINE: sqlite nullifier database is "
+                            "unstamped and populated, but " + std::to_string(above_tip) +
+                            " of " + std::to_string(expected) + " row(s) reference heights "
+                            "above the connected tip (highest=" + std::to_string(worst) +
+                            ", tip=" + std::to_string(tip_height) + "). Those rows cannot "
+                            "come from connected blocks, so this is crash residue rather "
+                            "than a legacy database. Refusing to promote them to "
+                            "authoritative — that would make an unconnected block's "
+                            "nullifiers permanent and its notes unspendable. Recover by "
+                            "removing the sqlite nullifier cache (ChainDB is authoritative "
+                            "and it will be rebuilt), or investigate the datadir if you "
+                            "believe this really is a pre-authority wallet.");
+                    }
+                    return false;
+                }
+            }
+
             rocksdb::WriteBatch migration_batch;
             ChainWriteToken token = ChainWriteToken::CreateForTesting();
             for (uint64_t i = 0; i < expected; ++i) {

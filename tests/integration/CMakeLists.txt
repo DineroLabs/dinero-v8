@@ -1717,6 +1717,21 @@ endif()
 # bookkeeping batch commits but before in-memory publication, then restarts
 # offline. The test proves the purge, post-reset marker/blobs, canonical tip,
 # and height index are one durable unit rather than a startup-bricking split.
+# Nullifier-commit / tree-append crash boundary and the sqlite provenance
+# policy. "ChainDB empty + sqlite populated" is produced BOTH by a legacy
+# database and by the crash window; promoting the latter would make an
+# unconnected block's nullifiers authoritative and its notes unspendable.
+add_test(
+    NAME ShieldedNullifierCrashBoundary
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_nullifier_crash_boundary.sh
+)
+set_tests_properties(ShieldedNullifierCrashBoundary PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;shielded;crash;recovery;provenance;nullifier"
+    TIMEOUT 900
+)
+message(STATUS "  ✓ ShieldedNullifierCrashBoundary registered")
+
 add_test(
     NAME CsnEpochResetCrashAtomicity
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_epoch_reset_crash_atomicity.sh
