@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <cctype>
+#include <algorithm>
 
 namespace dinero {
 namespace solo {
@@ -56,6 +57,23 @@ bool isHexHash64(const std::string& hex) {
 }
 
 } // anonymous namespace
+
+BlockChainStatus classifyBlockChainStatus(
+    const std::string& candidate_hash,
+    const std::optional<std::string>& active_hash) {
+    if (!active_hash.has_value()) {
+        return BlockChainStatus::Unknown;
+    }
+    std::string canonical_active = *active_hash;
+    std::string canonical_candidate = candidate_hash;
+    std::transform(canonical_active.begin(), canonical_active.end(), canonical_active.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(canonical_candidate.begin(), canonical_candidate.end(), canonical_candidate.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return canonical_active == canonical_candidate
+        ? BlockChainStatus::Active
+        : BlockChainStatus::ConflictingActiveBlock;
+}
 
 RpcClient::RpcClient(const RpcConfig& config) : config_(config) {
     // Initialize CURL globally (thread-safe)
@@ -261,6 +279,19 @@ bool RpcClient::submitBlock(const std::string& block_hex) {
     // Unknown format - fail safe, log for debugging
     last_error_ = "Unknown submitblock response: " + result->dump();
     return false;
+}
+
+BlockChainStatus RpcClient::getBlockChainStatus(const std::string& candidate_hash,
+                                                uint32_t height) {
+    auto result = call("getblockhash", nlohmann::json::array({height}), 5);
+    if (!result.has_value()) {
+        result = call("blockchain.getblockhash", nlohmann::json::array({height}), 5);
+    }
+    if (!result.has_value() || !result->is_string()) {
+        return BlockChainStatus::Unknown;
+    }
+
+    return classifyBlockChainStatus(candidate_hash, result->get<std::string>());
 }
 
 std::optional<nlohmann::json> RpcClient::getMiningInfo() {

@@ -713,6 +713,10 @@ SoloMiner::SubmitResult SoloMiner::submitBlock(uint32_t nonce, const std::shared
         return SubmitResult::Rejected;
     }
 
+    const auto header = work->buildHeader(nonce);
+    const Hash256 candidate_hash_bytes = HashEngine::hashHeader(header.data());
+    const std::string candidate_hash = bytesToHex(candidate_hash_bytes.data(),
+                                                  candidate_hash_bytes.size());
     std::string block_hex = work->buildBlock(nonce);
     bool accepted = rpc_->submitBlock(block_hex);
 
@@ -721,12 +725,41 @@ SoloMiner::SubmitResult SoloMiner::submitBlock(uint32_t nonce, const std::shared
     }
 
     if (rpc_->lastCallTimedOut()) {
-        reportError("Block submission timed out; acceptance unknown: " + rpc_->getLastError());
+        const std::string timeout_error = rpc_->getLastError();
+        // submitblock may finish inside the daemon after the HTTP client has
+        // timed out. Reconcile the exact candidate against its intended
+        // active-chain height before showing a rejection or ambiguity.
+        reportStatus("⏳ Block submission acknowledgement delayed; checking the active chain: height=" +
+                     std::to_string(work->height) + " hash=" + candidate_hash);
+        for (int attempt = 0; attempt < 6; ++attempt) {
+            const auto status = rpc_->getBlockChainStatus(candidate_hash, work->height);
+            if (status == BlockChainStatus::Active) {
+                reportStatus("✅ Block accepted after delayed confirmation: height=" +
+                             std::to_string(work->height) + " hash=" + candidate_hash);
+                return SubmitResult::Accepted;
+            }
+            if (status == BlockChainStatus::ConflictingActiveBlock) {
+                reportError("Block submission became stale while awaiting confirmation: height=" +
+                            std::to_string(work->height) + " hash=" + candidate_hash);
+                return SubmitResult::Rejected;
+            }
+            if (attempt != 5) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }
+        reportError("Block submission timed out and remains unconfirmed; acceptance unknown: " +
+                    timeout_error + " candidate=" + candidate_hash);
         return SubmitResult::Unknown;
     }
 
     reportError("Block rejected: " + rpc_->getLastError());
     return SubmitResult::Rejected;
+}
+
+void SoloMiner::reportStatus(const std::string& status) {
+    if (on_status_) {
+        on_status_(status);
+    }
 }
 
 bool SoloMiner::benchmark(MinerBackend backend, double duration_seconds,

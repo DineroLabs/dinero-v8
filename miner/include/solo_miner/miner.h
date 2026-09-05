@@ -117,6 +117,7 @@ struct CandidateSample {
 using HashrateCb = std::function<void(double hashrate)>;
 using BlockFoundCb = std::function<void(const BlockFoundInfo& info)>;
 using ErrorCb = std::function<void(const std::string& error)>;
+using StatusCb = std::function<void(const std::string& status)>;
 using TemplateCb = std::function<void(uint32_t height, uint32_t difficulty_bits)>;
 
 /**
@@ -148,6 +149,7 @@ public:
     void setHashrateCallback(HashrateCb cb) { on_hashrate_ = std::move(cb); }
     void setBlockFoundCallback(BlockFoundCb cb) { on_block_found_ = std::move(cb); }
     void setErrorCallback(ErrorCb cb) { on_error_ = std::move(cb); }
+    void setStatusCallback(StatusCb cb) { on_status_ = std::move(cb); }
     void setTemplateCallback(TemplateCb cb) { on_template_ = std::move(cb); }
 
     /**
@@ -238,6 +240,7 @@ private:
      * Report error via callback
      */
     void reportError(const std::string& error);
+    void reportStatus(const std::string& status);
 
     // Configuration
     MinerConfig config_;
@@ -283,6 +286,7 @@ private:
     HashrateCb on_hashrate_;
     BlockFoundCb on_block_found_;
     ErrorCb on_error_;
+    StatusCb on_status_;
     TemplateCb on_template_;
 };
 

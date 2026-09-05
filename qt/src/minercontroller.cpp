@@ -90,6 +90,12 @@ void MinerController::start(const QString& rpcUrl,
         }, Qt::QueuedConnection);
     });
 
+    miner_->setStatusCallback([this](const std::string& status) {
+        QMetaObject::invokeMethod(this, [this, status]() {
+            Q_EMIT logLine(QString::fromStdString(status));
+        }, Qt::QueuedConnection);
+    });
+
     miner_->setTemplateCallback([this](uint32_t height, uint32_t diff) {
         QMetaObject::invokeMethod(this, [this, height, diff]() {
             onTemplate(height, diff);
@@ -198,6 +204,7 @@ void MinerController::shutdownSilently() {
         miner_->setHashrateCallback({});
         miner_->setBlockFoundCallback({});
         miner_->setErrorCallback({});
+        miner_->setStatusCallback({});
         miner_->setTemplateCallback({});
         miner_->stop();
         miner_.reset();
