@@ -1840,6 +1840,53 @@ endif()
 # Shielded-state root — the fingerprint a future block-header commitment would
 # carry. Consensus-shaped: asserts the exact preimage layout, because after
 # activation a layout change is a chain split.
+# Deterministic vector dumper: prints the shielded-commitment preimages and
+# digests as text so two builds can be compared with cmp. Not a ctest by
+# itself -- the assertion is a byte-for-byte diff between toolchains and
+# configurations, driven by scripts/check_shielded_vectors.sh.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/dump_shielded_vectors.cpp)
+  add_executable(dump_shielded_vectors
+    tests/consensus/dump_shielded_vectors.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(dump_shielded_vectors dinero_shielded)
+  target_link_libraries(dump_shielded_vectors PRIVATE dinero_shielded)
+  target_include_directories(dump_shielded_vectors BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  # Ordinary-CI half of the determinism gate: whatever compiler and build type
+  # this configuration uses must reproduce the committed golden vectors. The
+  # full 4-way GCC/Clang x Debug/Release comparison lives in
+  # scripts/check_shielded_vectors.sh; this catches drift on every run.
+  add_test(
+    NAME ShieldedVectorsMatchGolden
+    COMMAND ${CMAKE_COMMAND}
+            -E compare_files
+            ${CMAKE_SOURCE_DIR}/tests/vectors/shielded_state_commitment_v1.txt
+            ${CMAKE_CURRENT_BINARY_DIR}/shielded_vectors_actual.txt
+  )
+  add_test(
+    NAME ShieldedVectorsGenerate
+    COMMAND ${CMAKE_COMMAND}
+            -DEXE=$<TARGET_FILE:dump_shielded_vectors>
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/shielded_vectors_actual.txt
+            -P ${CMAKE_SOURCE_DIR}/cmake/RunShieldedVectors.cmake
+  )
+  # Generation must precede comparison, or the compare reads a stale file.
+  set_tests_properties(ShieldedVectorsGenerate PROPERTIES
+    FIXTURES_SETUP shielded_vectors
+    LABELS "shielded;consensus;determinism"
+    TIMEOUT 60
+  )
+  set_tests_properties(ShieldedVectorsMatchGolden PROPERTIES
+    FIXTURES_REQUIRED shielded_vectors
+    LABELS "shielded;consensus;determinism;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "Shielded deterministic vector dumper enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_root.cpp)
   add_executable(test_shielded_root
     tests/consensus/test_shielded_root.cpp
