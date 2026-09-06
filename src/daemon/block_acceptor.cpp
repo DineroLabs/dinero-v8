@@ -1658,12 +1658,14 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
     // not write or preserve failure flags — otherwise a continuously
     // re-announced block undoes the operator's decision on the next relay.
     // See consensus/block_status_generation.h.
-    dinero::consensus::BlockStatusGeneration accept_status_generation = 0;
+    dinero::consensus::GenerationRead accept_status_generation{};
     {
         auto* gen_ctx = DaemonContext::instance();
         auto gen_cs = std::dynamic_pointer_cast<dinero::ChainstateService>(
             gen_ctx ? gen_ctx->chainstate : nullptr);
-        if (gen_cs) accept_status_generation = gen_cs->CurrentBlockStatusGeneration();
+        if (gen_cs) accept_status_generation = gen_cs->ReadBlockStatusGeneration();
+        // No chainstate leaves it Error-by-default, which preserves flags
+        // rather than clearing them.
     }
     try {
         // Authorization token for ChainDB writes (compile-time enforced)
@@ -2254,10 +2256,19 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                     // dropping the serialization is caught by every test that
                     // re-accepts a block, not only by a race that reproduces.
                     chainstate->AssertActivationLockHeld("ConnectBlock compare+write");
-                    const auto gen_now = chainstate->CurrentBlockStatusGeneration();
+                    const auto gen_now = chainstate->ReadBlockStatusGeneration();
+                    // Unreadable on EITHER side means the operator decision is
+                    // unknown, not unchanged. Treating it as unchanged would
+                    // re-assert flags over a reconsider; treating it as changed
+                    // would CLEAR persisted invalidity. Neither is safe, so the
+                    // rule below declines to act: it carries forward exactly
+                    // what is already on disk.
+                    const bool reads_usable =
+                        accept_status_generation.usable() && gen_now.usable();
                     const bool decision_unchanged =
-                        dinero::consensus::GenerationStillCurrent(accept_status_generation,
-                                                                  gen_now);
+                        reads_usable &&
+                        dinero::consensus::GenerationStillCurrent(
+                            accept_status_generation.value, gen_now.value);
                     // DETERMINISTIC RACE BARRIER (regtest only, inert
                     // otherwise). Sits exactly between the generation
                     // COMPARISON above and the flag WRITE below — the TOCTOU
@@ -2279,14 +2290,22 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                     // PreservedFailureFlags, which exists so this rule is
                     // unit-testable without a daemon.
                     const uint32_t preserved_failure_flags =
-                        dinero::consensus::PreservedFailureFlags(
+                        dinero::consensus::PreservedFailureFlagsFromReads(
                             accept_status_generation, gen_now,
                             block_index->status &
                                 (dinero::BLOCK_FAILED_VALID | dinero::BLOCK_FAILED_CHILD));
+                    if (!reads_usable) {
+                        LOG_ERROR("⚠️  Block-status generation unreadable while "
+                                  "accepting " + block.blockHash.substr(0, 16) +
+                                  "... — PRESERVING existing failure flags "
+                                  "rather than clearing persisted invalidity. "
+                                  "An operator decision made in this window may "
+                                  "need to be re-issued.");
+                    }
                     if (!decision_unchanged) {
                         LOG_INFO("♻️  Stale acceptance (generation " +
-                                 std::to_string(accept_status_generation) + " -> " +
-                                 std::to_string(gen_now) +
+                                 std::to_string(accept_status_generation.value) + " -> " +
+                                 std::to_string(gen_now.value) +
                                  "): NOT re-asserting failure flags for " +
                                  block.blockHash.substr(0, 16) +
                                  "... — a newer operator decision wins");

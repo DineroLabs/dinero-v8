@@ -230,3 +230,68 @@ TEST(GenerationToctou, RecapturingAfterTheDecisionIsSafe) {
     EXPECT_EQ(store.committed, kFailedValid)
         << "a post-decision validation must still be able to record failure";
 }
+
+// ── a read failure must never clear persisted invalidity ──────────────────
+//
+// The counter read used to collapse four states into one number: no database,
+// a failed read, an absent key, and a genuine generation 0. Zero is also a
+// LEGITIMATE generation -- a chain on which no operator invalidate/reconsider
+// has ever run reads 0 -- so a failed read was indistinguishable from a
+// confirmed value, and the compare-then-write proceeded on unknown state.
+//
+// Worse in the other direction: with a non-zero captured generation, a failed
+// current read compared unequal, which read as "a newer operator decision
+// won" and DROPPED the failure flags. A database hiccup silently cleared
+// persisted invalidity and let an invalidated block re-enter the candidate
+// set. Nothing later undoes that.
+namespace {
+using dinero::consensus::GenerationRead;
+using dinero::consensus::GenerationReadState;
+using dinero::consensus::PreservedFailureFlagsFromReads;
+
+GenerationRead Present(dinero::consensus::BlockStatusGeneration v) {
+    return {GenerationReadState::Present, v};
+}
+GenerationRead Absent() { return {GenerationReadState::Absent, 0}; }
+GenerationRead Failed() { return {GenerationReadState::Error, 0}; }
+
+constexpr uint32_t kFailedFlags = 0x20;  // stands in for BLOCK_FAILED_VALID
+}  // namespace
+
+TEST(BlockStatusGeneration, AbsentAndUnreadableAreDifferentFacts) {
+    EXPECT_TRUE(Absent().usable()) << "no key yet is a real, comparable 0";
+    EXPECT_FALSE(Failed().usable()) << "a failed read permits no conclusion";
+    EXPECT_TRUE(Present(3).usable());
+    EXPECT_FALSE(GenerationRead{}.usable())
+        << "the default must be the safe state, not a comparable 0";
+}
+
+TEST(BlockStatusGeneration, UnreadableCounterPreservesInvalidity) {
+    // The production case: an operator decision has run, so the captured
+    // generation is non-zero, and the current read then fails.
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Present(7), Failed(), kFailedFlags),
+              kFailedFlags)
+        << "a failed read must not clear persisted invalidity";
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Failed(), Present(7), kFailedFlags),
+              kFailedFlags);
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Failed(), Failed(), kFailedFlags),
+              kFailedFlags);
+    // Fresh chain: captured 0 because nothing was ever bumped.
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Absent(), Failed(), kFailedFlags),
+              kFailedFlags);
+    EXPECT_EQ(PreservedFailureFlagsFromReads(GenerationRead{}, GenerationRead{},
+                                             kFailedFlags),
+              kFailedFlags);
+    // Preserving is not inventing: with nothing set, nothing is preserved.
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Failed(), Failed(), 0u), 0u);
+}
+
+TEST(BlockStatusGeneration, GoodReadsKeepTheExistingRule) {
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Present(7), Present(7), kFailedFlags),
+              kFailedFlags) << "unchanged generation preserves";
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Present(7), Present(8), kFailedFlags), 0u)
+        << "a bumped generation means a newer operator decision wins";
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Absent(), Absent(), kFailedFlags),
+              kFailedFlags) << "absent vs absent is a real comparison";
+    EXPECT_EQ(PreservedFailureFlagsFromReads(Absent(), Present(1), kFailedFlags), 0u);
+}

@@ -1183,6 +1183,18 @@ bool ChainstateService::LoadShieldedState() {
                 uint64_t unverified = 0;
                 uint32_t first_bad_height = 0;
                 std::string reason;
+                // MISSING evidence is not CONTRADICTING evidence.
+                //
+                // "the nullifier is not in the canonical block" disproves the
+                // row -- it is fork or crash residue. "the block is not here"
+                // proves nothing at all, and it is the NORMAL state of a
+                // pruned node (bodies below the prune horizon are gone) and of
+                // an AssumeUTXO node (no blocks below the snapshot base). Those
+                // nodes therefore fail verification by construction, and they
+                // are exactly the ones that must not be told to delete the
+                // file, because in Mode C that file is the only authoritative
+                // nullifier set that exists.
+                bool evidence_unavailable = false;
                 for (uint64_t i = 0; i < expected && unverified == 0; ++i) {
                     const size_t off = kHeaderBytes + i * kRowBytes;
                     uint32_t h = 0;
@@ -1195,13 +1207,17 @@ bool ChainstateService::LoadShieldedState() {
                     uint256 canonical;
                     if (!ResolveCanonicalBlockHash(h, canonical)) {
                         ++unverified; first_bad_height = h;
-                        reason = "no canonical block at that height";
+                        reason = "no canonical block at that height (below an "
+                                 "AssumeUTXO snapshot base, or not yet synced)";
+                        evidence_unavailable = true;
                         break;
                     }
                     const auto blk = ReadStoredBlock(canonical);
                     if (blk.status() != Status::Ok) {
                         ++unverified; first_bad_height = h;
-                        reason = "canonical block body unreadable";
+                        reason = "canonical block body unreadable (pruned away, "
+                                 "or the block file is damaged)";
+                        evidence_unavailable = true;
                         break;
                     }
                     bool found = false;
@@ -1225,19 +1241,54 @@ bool ChainstateService::LoadShieldedState() {
                 }
 
                 if (unverified > 0) {
+                    // In BOTH branches: refuse to promote. Promotion requires
+                    // positive proof, never the absence of a disproof.
+                    //
+                    // What differs is what the operator is told to DO, and the
+                    // old message was dangerous in every Mode C case. It said
+                    // "ChainDB is authoritative and it is rebuilt
+                    // automatically". Mode C is entered only when ChainDB has
+                    // ZERO nullifiers -- that is the branch condition -- so
+                    // there is nothing authoritative to fall back to and
+                    // nothing that rebuilds. Deleting the file on that advice
+                    // destroys the node's only record of its shielded spends.
+                    if (evidence_unavailable) {
+                        if (logger_) {
+                            logger_->error(
+                                "[ChainstateService] Sqlite nullifier database is unstamped "
+                                "and populated, but its rows CANNOT BE VERIFIED on this node: "
+                                "the block at height " + std::to_string(first_bad_height) +
+                                " is not available (" + reason + "). "
+                                "This is expected on a pruned or AssumeUTXO-synced node and "
+                                "is NOT evidence that the rows are bad. "
+                                "DO NOT DELETE THIS FILE — ChainDB holds no nullifiers here, "
+                                "so it is the only authoritative copy on this node and "
+                                "nothing regenerates it. "
+                                "Back it up, then resolve it one of these ways: (1) let "
+                                "background validation finish so the blocks below the "
+                                "snapshot base become available, then restart; (2) restart "
+                                "once with the blocks present (unpruned, or after a "
+                                "re-download of the affected range) so verification can run; "
+                                "or (3) if you are certain this node never held shielded "
+                                "notes, move the file aside and continue. Startup will keep "
+                                "refusing to promote until one of these is done.");
+                        }
+                        return false;
+                    }
                     if (logger_) {
                         logger_->error(
                             "[ChainstateService] QUARANTINE: sqlite nullifier database is "
                             "unstamped and populated, but a row at height " +
-                            std::to_string(first_bad_height) + " could not be verified "
-                            "against canonical history (" + reason + "). This is crash or "
-                            "fork residue rather than a legacy database. Refusing to "
-                            "promote it to authoritative — that would make an unconnected "
-                            "block's nullifiers permanent and its notes unspendable. "
-                            "Recover by removing the sqlite nullifier cache (ChainDB is "
-                            "authoritative and it is rebuilt automatically), or investigate "
-                            "the datadir if you believe this is a genuine pre-authority "
-                            "wallet.");
+                            std::to_string(first_bad_height) + " is CONTRADICTED by "
+                            "canonical history (" + reason + "). The block is present and "
+                            "does not spend that nullifier, so this is crash or fork "
+                            "residue rather than a legacy database. Refusing to promote it "
+                            "to authoritative — that would make an unconnected block's "
+                            "nullifiers permanent and its notes unspendable. "
+                            "MOVE the sqlite nullifier file aside rather than deleting it: "
+                            "ChainDB has no nullifiers in this mode, so if this turns out "
+                            "to be a genuine pre-authority wallet the file is the only "
+                            "copy of its shielded spend history.");
                     }
                     return false;
                 }
@@ -1716,12 +1767,34 @@ uint256 ChainstateService::ComputeShieldedReorgStateHash() const {
     return out;
 }
 
-std::optional<uint256> ChainstateService::ComputeShieldedRoot() const {
-    // Thin wrapper: the layout lives in consensus/shielded/shielded_root.cpp so
-    // it is a pure function testable with vectors, not something that can drift
-    // with daemon state. See that header for why it is not DSR2.
-    return consensus::shielded::ComputeShieldedRoot(
+std::optional<uint256> ChainstateService::ComputeShieldedRoot(
+    ShieldedRootStatus* status) const {
+    const auto set = [&](ShieldedRootStatus s) { if (status) *status = s; };
+
+    // Serialize against the mutators. ConnectBlock holds activation_mutex_ for
+    // the whole connect -- the same lock AssertActivationLockHeld pins on the
+    // status compare+write -- and the shielded inserts run inside it, so this
+    // is the lock that makes the three containers move together.
+    //
+    // try_lock: a busy answer is correct and immediate, where a blocking
+    // acquire would put an operator RPC behind block connection and could hang
+    // outright when a barrier hook parks the connect thread mid-section. The
+    // mutex is recursive, so a caller that already holds it (the snapshot-load
+    // path computes a root while holding the lock) proceeds without tearing.
+    std::unique_lock<AnnotatedRecursiveMutex> guard(activation_mutex_, std::try_to_lock);
+    if (!guard.owns_lock()) {
+        set(ShieldedRootStatus::StateBusy);
+        return std::nullopt;
+    }
+
+    // The layout lives in consensus/shielded/shielded_root.cpp so it is a pure
+    // function testable with vectors, not something that can drift with daemon
+    // state. See that header for why it is not DSR2.
+    auto root = consensus::shielded::ComputeShieldedRoot(
         shielded_tree_, shielded_nullifiers_, shielded_anchor_history_);
+    set(root.has_value() ? ShieldedRootStatus::Ok
+                         : ShieldedRootStatus::NullifierSetUnreadable);
+    return root;
 }
 
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
@@ -11651,16 +11724,48 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
 // Production InvalidateBlock / ReconsiderBlock (Bitcoin Core model)
 // ============================================================================
 
-consensus::BlockStatusGeneration ChainstateService::CurrentBlockStatusGeneration() const {
-    if (!chain_db_) return 0;
+consensus::GenerationRead ChainstateService::ReadBlockStatusGeneration() const {
+    using consensus::GenerationReadState;
+    // No database is not "generation 0", it is "cannot be determined".
+    if (!chain_db_) return {GenerationReadState::Error, 0};
+
     const auto raw = chain_db_->getUtreexoMeta(consensus::kBlockStatusGenerationKey);
-    if (raw.status() != Status::Ok) return 0;
-    return consensus::ParseBlockStatusGeneration(raw.value());
+    if (raw.status() == Status::NotFound) {
+        // Never bumped. A real, comparable 0 -- distinct from a failed read.
+        return {GenerationReadState::Absent, 0};
+    }
+    if (raw.status() != Status::Ok) {
+        return {GenerationReadState::Error, 0};
+    }
+    // A stored value that will not parse is corruption, not a generation.
+    // ParseBlockStatusGeneration answers 0 for junk, and 0 is a legitimate
+    // generation, so the emptiness check has to happen here.
+    const auto& text = raw.value();
+    if (text.empty()) return {GenerationReadState::Error, 0};
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') return {GenerationReadState::Error, 0};
+    }
+    return {GenerationReadState::Present,
+            consensus::ParseBlockStatusGeneration(text)};
 }
 
 consensus::BlockStatusGeneration ChainstateService::BumpBlockStatusGeneration(
     const ChainWriteToken& token, rocksdb::WriteBatch* wb) {
-    const auto current = CurrentBlockStatusGeneration();
+    const auto read = ReadBlockStatusGeneration();
+    if (!read.usable()) {
+        // Advancing from an unknown base could land on a value an in-flight
+        // capture already holds, which would make a genuinely stale result
+        // compare as current -- the one outcome this counter exists to
+        // prevent. Refuse, and let the operator retry.
+        if (logger_) {
+            logger_->error("[BlockStatusGeneration] counter unreadable — refusing "
+                           "to advance from an unknown base. The status "
+                           "transition has NOT been recorded; retry once the "
+                           "database is readable.");
+        }
+        return 0;
+    }
+    const auto current = read.value;
     // Never wrap. Wrapping to 0 would make every in-flight result compare
     // "stale" forever (0 never equals a real generation) and, worse, a later
     // wrap could make a genuinely stale capture compare EQUAL to the current

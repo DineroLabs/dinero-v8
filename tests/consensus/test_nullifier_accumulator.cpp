@@ -7,6 +7,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <string>
 
 #include "consensus/shielded/nullifier_accumulator.h"
 
@@ -98,6 +100,44 @@ TEST(NullifierAccumulator, UnreadableSetYieldsNulloptNotTheEmptyDigest) {
     const auto got = AccumulateNullifierSet(closed);
     ASSERT_FALSE(got.has_value())
         << "an unreadable set must not be reported as any digest at all";
+}
+
+// A mid-iteration sqlite error must fail closed too.
+//
+// UnreadableSetYieldsNulloptNotTheEmptyDigest above uses a never-opened set,
+// which fails at the first step. This covers the case that actually occurs in
+// production: enumeration STARTS, returns rows, and then the database errors --
+// lock contention, IO pressure, corruption. ForEach's loop ran while
+// sqlite3_step() == SQLITE_ROW and then returned success, so BUSY, IOERR,
+// CORRUPT and INTERRUPT all delivered a TRUNCATED set reported as complete,
+// and the fail-closed branch below never ran.
+//
+// sqlite3_interrupt is used because it is a REAL sqlite error delivered
+// mid-scan on demand; a competing connection cannot make this connection's
+// reader fail deterministically, and a simulated return code would not prove
+// the production path handles a real one.
+TEST(NullifierAccumulator, MidIterationDatabaseErrorYieldsNullopt) {
+    const std::string path = "/tmp/dinero_test_nf_midscan.sqlite";
+    std::remove(path.c_str());
+    NullifierSet set;
+    ASSERT_EQ(set.Open(path), NullifierSet::OpenResult::Ok);
+    for (uint8_t i = 1; i <= 5; ++i) {
+        Hash h{};
+        h.fill(i);
+        ASSERT_TRUE(set.Insert(h, i));
+    }
+    ASSERT_TRUE(AccumulateNullifierSet(set).has_value()) << "healthy set accumulates";
+
+    int rows_seen = 0;
+    const bool scan_ok = set.ForEach([&](uint32_t, const uint8_t*) {
+        if (++rows_seen == 1) set.InterruptForTesting();
+        return true;  // the VISITOR does not stop; sqlite does
+    });
+    EXPECT_FALSE(scan_ok)
+        << "a scan that ended in an error must not report success";
+    EXPECT_LT(rows_seen, 5)
+        << "the interrupt must actually have truncated the scan";
+    std::remove(path.c_str());
 }
 
 // ── regression lock ───────────────────────────────────────────────────────

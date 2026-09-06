@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -35,9 +36,17 @@ namespace dinero::consensus::shielded {
 class NullifierSet {
 public:
     enum class OpenResult : uint8_t {
-        Ok          = 0,
-        IoError     = 1,
-        SchemaError = 2,
+        Ok            = 0,
+        IoError       = 1,
+        SchemaError   = 2,
+        /**
+         * The file opened and the schema is fine, but a query needed to decide
+         * whether its rows are authoritative failed. Refusing to open is the
+         * only safe answer: guessing either way is unrecoverable -- guess
+         * "cache" and a stamp permanently demotes a real legacy set, guess
+         * "legacy" and crash residue gets promoted to authoritative.
+         */
+        Indeterminate = 3,
     };
 
     NullifierSet() = default;
@@ -67,6 +76,43 @@ public:
 
     /** Schema version written by builds that treat sqlite as a cache. */
     static constexpr int kCacheSchemaVersion = 1;
+
+    /**
+     * What Open() should conclude from the two facts it can observe.
+     *
+     * Separated from Open() so the rule is exhaustively testable without a
+     * database, including the states that only occur under sqlite failure --
+     * which is where this went wrong. `Indeterminate` exists because "we could
+     * not read it" is a THIRD answer, and collapsing it into either of the
+     * other two is what let a transient lock permanently demote a legacy
+     * database. Same idiom as consensus/block_status_generation.h.
+     */
+    enum class OpenDecision : uint8_t {
+        AlreadyCache    = 0,  ///< stamped: rows are cache, never authoritative
+        LegacyCandidate = 1,  ///< unstamped AND populated: migration eligible
+        StampFresh      = 2,  ///< unstamped AND empty: safe to stamp now
+        Indeterminate   = 3,  ///< a read failed: decide NOTHING, stamp NOTHING
+    };
+
+    /**
+     * The rule. `user_version` and `row_count` are nullopt when their query
+     * failed, which must never be read as "0".
+     */
+    static OpenDecision DecideProvenance(std::optional<int> user_version,
+                                         std::optional<uint64_t> row_count);
+
+    /**
+     * Row count, or nullopt if the query failed.
+     *
+     * Size() cannot express failure and answers 0 for both "empty" and
+     * "SQLITE_BUSY". Any code whose DECISION depends on the count must use
+     * this instead; a wrong 0 here selected the wrong migration mode and
+     * stamped a populated legacy database as a cache.
+     */
+    std::optional<uint64_t> TryCount() const;
+
+    /** user_version pragma, or nullopt if the query failed. */
+    std::optional<int> TryReadUserVersion() const;
 
     /** Open or create the nullifier database at `path`. Idempotent. */
     OpenResult Open(const std::string& path);
@@ -128,6 +174,11 @@ public:
     void Clear();
 
     /** Number of nullifiers in the set. */
+    /**
+     * Row count, 0 on ANY failure. Retained for diagnostics and reporting.
+     * Never branch on this: use TryCount(), which distinguishes an empty
+     * database from an unreadable one.
+     */
     uint64_t Size() const;
 
     /**
@@ -162,12 +213,35 @@ public:
      * order. Returning false from the visitor aborts the scan early. Used by the
      * shielded epoch reset's reorg undo to re-put the restored nullifier rows
      * into the authoritative ChainDB set on a disconnect across the cutover.
-     * Returns false on a DB error.
+     *
+     * Returns true ONLY if the whole set was enumerated: the scan reached
+     * SQLITE_DONE, every row was well-formed, and the visitor never stopped
+     * early. Any sqlite error mid-scan -- BUSY, IOERR, CORRUPT, INTERRUPT --
+     * returns false with no partial result implied. Callers accumulating a
+     * consensus digest depend on this: a truncated set reported as complete
+     * is indistinguishable from every nullifier having been deleted.
      */
     using Visitor = std::function<bool(uint32_t height, const uint8_t* nullifier_32)>;
     bool ForEach(const Visitor& visit) const;
 
+    /**
+     * TEST-ONLY. Make the next step of an in-flight scan fail with a REAL
+     * sqlite error (SQLITE_INTERRUPT) instead of a simulated one.
+     *
+     * The fail-closed enumeration contract can only be tested against a
+     * mid-iteration failure, and no ordinary operation produces one on demand:
+     * the happy path always ends in SQLITE_DONE, and a competing connection
+     * cannot make THIS connection's reader fail deterministically. Calling
+     * this from inside a ForEach visitor is the only intended use.
+     *
+     * No-op on a closed set. Never called by production code.
+     */
+    void InterruptForTesting();
+
 private:
+    /// One scalar read; nullopt unless sqlite positively returned a row.
+    std::optional<int64_t> ScalarQuery(const char* sql) const;
+
     sqlite3* db_ = nullptr;
     Provenance provenance_ = Provenance::Unknown;
 };

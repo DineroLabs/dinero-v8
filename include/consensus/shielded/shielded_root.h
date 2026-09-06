@@ -46,8 +46,11 @@
 // LAYOUT (concatenated, then SHA-256'd)
 // ─────────────────────────────────────
 //   [tag 'SHR1']                    4 B
-//   [version = 1]                   1 B
-//   [shielded tree root]           32 B   (zeros if the root is not 32 B)
+//   [version = 2]                   1 B   (SHIELDED_ROOT_VERSION; the tag
+//                                          names the scheme and does not move
+//                                          with the version)
+//   [shielded tree root]           32 B   (REQUIRED to be exactly 32 B;
+//                                          any other length is rejected)
 //   [shielded tree size LE]         8 B
 //   [nullifier accumulator]        32 B   (ComputeNullifierAccumulator, tag 'NUL1')
 //   [anchor history length LE]      8 B
@@ -78,14 +81,23 @@ inline constexpr uint8_t SHIELDED_ROOT_VERSION = 2;
 
 /// Build the preimage. Exposed so tests can assert on the exact bytes rather
 /// than only on the digest — a layout change must be visible, not just felt.
-std::vector<uint8_t> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_root,
+/// Returns nullopt unless `tree_root` is exactly 32 bytes.
+///
+/// It previously substituted 32 zero bytes for any other length, which made a
+/// corrupt or truncated root produce the SAME commitment as a genuinely empty
+/// tree. For a diagnostic that is a curiosity; for a value a block header
+/// commits to it is a forgery vector, and it is not something a caller can
+/// detect after the fact. There is no length at which guessing is safe, so
+/// there is no fallback.
+std::optional<std::vector<uint8_t>> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_root,
                                                uint64_t tree_size,
                                                const uint256& nullifier_accumulator,
                                                const std::vector<uint8_t>& anchor_bytes);
 
 /// Hash of the preimage above. Pure: no chainstate, no I/O, no globals — so
 /// it is testable with vectors and cannot drift with daemon state.
-uint256 ComputeShieldedRootFromParts(const std::vector<uint8_t>& tree_root,
+/// Returns nullopt on any input BuildShieldedRootPreimage rejects.
+std::optional<uint256> ComputeShieldedRootFromParts(const std::vector<uint8_t>& tree_root,
                                      uint64_t tree_size,
                                      const uint256& nullifier_accumulator,
                                      const std::vector<uint8_t>& anchor_bytes);

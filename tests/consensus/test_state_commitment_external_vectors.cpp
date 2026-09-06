@@ -85,17 +85,19 @@ uint256 U256Fill(uint8_t b) {
 TEST(ExternalVectors, PreimageMatchesTheIndependentImplementation) {
     const auto pre = sh::BuildShieldedRootPreimage(Fill(32, 0x11), 1, U256Fill(0x22),
                                                    {0xAA, 0xBB, 0xCC, 0xDD});
-    EXPECT_EQ(pre.size(), kExtPreimageLen);
-    EXPECT_EQ(ToHex(pre), std::string(kExtPreimageHex))
+    ASSERT_TRUE(pre.has_value()) << "the frozen vector uses a 32-byte root";
+    EXPECT_EQ(pre->size(), kExtPreimageLen);
+    EXPECT_EQ(ToHex(*pre), std::string(kExtPreimageHex))
         << "the SHR1 preimage layout no longer matches the specification";
 }
 
 TEST(ExternalVectors, ShieldedRootDigestMatchesTheIndependentImplementation) {
     const auto d = sh::ComputeShieldedRootFromParts(Fill(32, 0x11), 1, U256Fill(0x22),
                                                     {0xAA, 0xBB, 0xCC, 0xDD});
+    ASSERT_TRUE(d.has_value()) << "the frozen vector uses a 32-byte root";
     // Compare RAW bytes, not GetHex(). GetHex() reverses, so comparing display
     // strings here would accept a reversed digest and defeat the guardrail.
-    EXPECT_EQ(ToHex(d.data, 32), std::string(kExtShieldedRootHex));
+    EXPECT_EQ(ToHex(d->data, 32), std::string(kExtShieldedRootHex));
 }
 
 TEST(ExternalVectors, NullifierAccumulatorMatchesTheIndependentImplementation) {

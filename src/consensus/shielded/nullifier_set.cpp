@@ -5,6 +5,8 @@
 
 #include "consensus/shielded/nullifier_set.h"
 
+#include <optional>
+
 #include <sqlite3.h>
 #include <algorithm>
 #include <cstring>
@@ -35,14 +37,11 @@ NullifierSet::OpenResult NullifierSet::Open(const std::string& path) {
     // Read user_version BEFORE creating the schema. A legacy file predating
     // ChainDB authority leaves it at sqlite's default of 0; every file this
     // build creates or migrates is stamped kCacheSchemaVersion.
-    int existing_version = 0;
-    {
-        sqlite3_stmt* v = nullptr;
-        if (sqlite3_prepare_v2(db_, "PRAGMA user_version", -1, &v, nullptr) == SQLITE_OK) {
-            if (sqlite3_step(v) == SQLITE_ROW) existing_version = sqlite3_column_int(v, 0);
-            sqlite3_finalize(v);
-        }
-    }
+    //
+    // nullopt, not 0, when the read fails. Defaulting to 0 here meant "we
+    // could not read it" and "this is an unstamped legacy file" were the same
+    // value, and the branch below acts on that difference irreversibly.
+    const auto existing_version = TryReadUserVersion();
 
     char* err = nullptr;
     if (sqlite3_exec(db_, kCreateSql, nullptr, nullptr, &err) != SQLITE_OK) {
@@ -51,23 +50,98 @@ NullifierSet::OpenResult NullifierSet::Open(const std::string& path) {
         return OpenResult::SchemaError;
     }
 
-    if (existing_version >= kCacheSchemaVersion) {
-        // Already declared a cache. Its rows are NEVER authoritative, whatever
-        // ChainDB's count happens to be -- which is what closes the crash
-        // window: a post-crash cache looks identical to a legacy file by row
-        // count alone, and differs only here.
-        provenance_ = Provenance::Cache;
-    } else if (Size() > 0) {
-        // Unstamped AND populated: a genuine pre-authority database. This is
-        // the only state in which sqlite rows may be promoted, and only once.
-        provenance_ = Provenance::LegacyCandidate;
-    } else {
-        // Unstamped and empty: nothing to migrate. Stamp it now so a crash
-        // that fills it cannot later be mistaken for legacy.
-        provenance_ = Provenance::FreshCache;
-        MarkAsCache();
+    // Only ask for the count when the decision can actually need it, but pass
+    // its failure through rather than flattening it to 0.
+    const auto row_count = TryCount();
+
+    switch (DecideProvenance(existing_version, row_count)) {
+        case OpenDecision::AlreadyCache:
+            // Already declared a cache. Its rows are NEVER authoritative,
+            // whatever ChainDB's count happens to be -- which is what closes
+            // the crash window: a post-crash cache looks identical to a legacy
+            // file by row count alone, and differs only here.
+            provenance_ = Provenance::Cache;
+            return OpenResult::Ok;
+
+        case OpenDecision::LegacyCandidate:
+            // Unstamped AND populated: a genuine pre-authority database. This
+            // is the only state in which sqlite rows may be promoted, and only
+            // once.
+            provenance_ = Provenance::LegacyCandidate;
+            return OpenResult::Ok;
+
+        case OpenDecision::StampFresh:
+            // Unstamped and empty: nothing to migrate. Stamp it now so a crash
+            // that fills it cannot later be mistaken for legacy.
+            provenance_ = Provenance::FreshCache;
+            if (!MarkAsCache()) {
+                // The stamp is the whole mechanism. If it did not land, do not
+                // report a decided state -- reopening would see an unstamped
+                // file and could reach a different conclusion.
+                provenance_ = Provenance::Unknown;
+                Close();
+                return OpenResult::IoError;
+            }
+            return OpenResult::Ok;
+
+        case OpenDecision::Indeterminate:
+        default:
+            // A read this decision depends on failed. Do not stamp, do not
+            // guess: both wrong answers are unrecoverable. Guessing "cache"
+            // stamps a real legacy set into permanent non-authority; guessing
+            // "legacy" promotes crash residue and makes honest notes
+            // unspendable. Refusing to open is the only reversible outcome --
+            // a transient SQLITE_BUSY then costs a retry, not the user's
+            // shielded history.
+            provenance_ = Provenance::Unknown;
+            Close();
+            return OpenResult::Indeterminate;
     }
-    return OpenResult::Ok;
+}
+
+// The rule, as a pure function. Exhaustively testable, including the states
+// that only arise under sqlite failure.
+NullifierSet::OpenDecision NullifierSet::DecideProvenance(
+    std::optional<int> user_version, std::optional<uint64_t> row_count) {
+    if (!user_version.has_value()) return OpenDecision::Indeterminate;
+    if (*user_version >= kCacheSchemaVersion) return OpenDecision::AlreadyCache;
+    // Unstamped. The count now decides, so an unreadable count is fatal to the
+    // decision -- it is exactly the case that used to read as "empty".
+    if (!row_count.has_value()) return OpenDecision::Indeterminate;
+    return (*row_count > 0) ? OpenDecision::LegacyCandidate
+                            : OpenDecision::StampFresh;
+}
+
+// One scalar read, one place that decides what "failed" means.
+//
+// Both callers below are load-bearing for whether a database's rows may ever
+// be treated as authoritative, and both used to answer 0 on failure. Sharing
+// this helper means there is a single rc check to get right -- and a single
+// one to break, so a test that reaches either caller defends both.
+std::optional<int64_t> NullifierSet::ScalarQuery(const char* sql) const {
+    if (!db_) return std::nullopt;
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return std::nullopt;
+    }
+    const int rc = sqlite3_step(stmt);
+    const int64_t value =
+        (rc == SQLITE_ROW) ? sqlite3_column_int64(stmt, 0) : 0;
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_ROW) return std::nullopt;  // ONLY a row is an answer
+    return value;
+}
+
+std::optional<int> NullifierSet::TryReadUserVersion() const {
+    const auto v = ScalarQuery("PRAGMA user_version");
+    if (!v.has_value()) return std::nullopt;
+    return static_cast<int>(*v);
+}
+
+std::optional<uint64_t> NullifierSet::TryCount() const {
+    const auto v = ScalarQuery("SELECT COUNT(*) FROM nullifiers");
+    if (!v.has_value()) return std::nullopt;
+    return static_cast<uint64_t>(*v);
 }
 
 void NullifierSet::Close() noexcept {
@@ -112,7 +186,7 @@ bool NullifierSet::Insert(const Hash& nullifier, uint32_t block_height) {
     const char* sql = "INSERT INTO nullifiers (nullifier, block_height) VALUES (?, ?)";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
     sqlite3_bind_blob(stmt, 1, nullifier.data(), HASH_BYTES, SQLITE_STATIC);
-    sqlite3_bind_int(stmt, 2, static_cast<int>(block_height));
+    sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(block_height));
     const bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
     return ok;
@@ -149,7 +223,7 @@ bool NullifierSet::InsertBatch(const std::vector<std::pair<Hash, uint32_t>>& ent
             sqlite3_reset(stmt);
             sqlite3_clear_bindings(stmt);
             sqlite3_bind_blob(stmt, 1, nullifier.data(), HASH_BYTES, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 2, static_cast<int>(height));
+            sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(height));
             if (sqlite3_step(stmt) != SQLITE_DONE) {
                 // Covers a duplicate inside the batch (UNIQUE violation) as
                 // well as any I/O fault. Either way the whole batch is void.
@@ -176,7 +250,7 @@ void NullifierSet::RollbackAbove(uint32_t height) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "DELETE FROM nullifiers WHERE block_height > ?";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return;
-    sqlite3_bind_int(stmt, 1, static_cast<int>(height));
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(height));
     sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 }
@@ -188,18 +262,9 @@ void NullifierSet::Clear() {
     if (err) sqlite3_free(err);
 }
 
-uint64_t NullifierSet::Size() const {
-    if (!db_) return 0;
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT COUNT(*) FROM nullifiers";
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return 0;
-    uint64_t count = 0;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        count = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-    }
-    sqlite3_finalize(stmt);
-    return count;
-}
+// Diagnostics only. Reports 0 for both "empty" and "unreadable"; branch on
+// TryCount() instead, which keeps those apart.
+uint64_t NullifierSet::Size() const { return TryCount().value_or(0); }
 
 std::vector<uint8_t> NullifierSet::SerializeContent() const {
     std::vector<uint8_t> out;
@@ -298,6 +363,10 @@ bool NullifierSet::DeserializeContent(const std::vector<uint8_t>& bytes) {
     return true;
 }
 
+void NullifierSet::InterruptForTesting() {
+    if (db_) sqlite3_interrupt(db_);
+}
+
 bool NullifierSet::ForEach(const Visitor& visit) const {
     if (!db_) return false;
     if (!visit) return false;
@@ -309,9 +378,20 @@ bool NullifierSet::ForEach(const Visitor& visit) const {
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         return false;
     }
+    // Only SQLITE_DONE means "you have seen every row".
+    //
+    // The loop below previously exited on anything that was not SQLITE_ROW and
+    // then returned success. SQLITE_BUSY, SQLITE_IOERR, SQLITE_CORRUPT and
+    // SQLITE_INTERRUPT all take that exit, so ordinary lock contention
+    // produced a TRUNCATED row set reported as a complete one — and
+    // AccumulateNullifierSet's fail-closed guard, which exists precisely so a
+    // local fault cannot look like an attacker having deleted every
+    // nullifier, never ran because this function told it everything was fine.
     bool ok = true;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const auto height = static_cast<uint32_t>(sqlite3_column_int(stmt, 0));
+    bool stopped_by_visitor = false;
+    int rc = SQLITE_OK;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        const auto height = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
         const void* blob = sqlite3_column_blob(stmt, 1);
         const int blob_len = sqlite3_column_bytes(stmt, 1);
         if (blob == nullptr || blob_len != static_cast<int>(HASH_BYTES)) {
@@ -319,11 +399,17 @@ bool NullifierSet::ForEach(const Visitor& visit) const {
             break;
         }
         if (!visit(height, static_cast<const uint8_t*>(blob))) {
+            stopped_by_visitor = true;
             break;
         }
     }
     sqlite3_finalize(stmt);
-    return ok;
+
+    // A visitor that stops early also leaves the caller without a complete
+    // view. Both current callers already fail in that case; saying so here
+    // makes "true" mean exactly one thing: you saw the whole set.
+    if (!ok || stopped_by_visitor) return false;
+    return rc == SQLITE_DONE;
 }
 
 } // namespace dinero::consensus::shielded

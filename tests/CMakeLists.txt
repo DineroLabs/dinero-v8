@@ -2087,6 +2087,32 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_nullifier_accumulator.cpp)
   message(STATUS "Canonical nullifier accumulator tests enabled")
 endif()
 
+# Provenance: whether a sqlite nullifier database's rows may ever be treated as
+# authoritative. Deliberately labelled so the MAIN ctest lane selects it — a
+# consensus gate that no lane runs is not a gate (see
+# scripts/ci/check_mandatory_tests_execute.py).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_nullifier_set_provenance.cpp)
+  add_executable(test_nullifier_set_provenance
+    tests/consensus/test_nullifier_set_provenance.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_nullifier_set_provenance gtest dinero_shielded)
+  target_link_libraries(test_nullifier_set_provenance PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> dinero_shielded sqlite3
+  )
+  target_include_directories(test_nullifier_set_provenance BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME NullifierSetProvenance COMMAND test_nullifier_set_provenance)
+  set_tests_properties(NullifierSetProvenance PROPERTIES
+    LABELS "shielded;consensus;state-commitment"
+    TIMEOUT 30
+  )
+endif()
+
+
 # #356: pure marker-guard decision for ApplyStatelessReplayShielded. Header-only
 # free function — no dinero library link needed, just gtest. Named so the
 # ShieldedBlockSection ctest gate regex also runs it.

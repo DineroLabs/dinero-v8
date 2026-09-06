@@ -200,7 +200,32 @@ public:
     /// ComputeShieldedReorgStateHash — it excludes the utreexo forest, which
     /// `header.utreexo_root` already commits, and length-prefixes each
     /// variable-length section. Committed nowhere yet; read-only.
-    std::optional<uint256> ComputeShieldedRoot() const;
+    /**
+     * Why a shielded root could not be produced. "Unreadable" and "busy" are
+     * different facts and an operator needs to be able to tell them apart.
+     */
+    enum class ShieldedRootStatus : uint8_t {
+        Ok                     = 0,
+        NullifierSetUnreadable = 1,  ///< enumeration failed; see NullifierSet
+        StateBusy              = 2,  ///< shielded state is being mutated
+    };
+
+    /**
+     * Serialized against shielded-state mutation.
+     *
+     * The three containers this reads -- tree, nullifier set, anchor history --
+     * are mutated together while a block connects. Reading them without the
+     * lock let an RPC poll observe the tree already appended and the nullifier
+     * batch not yet inserted: a root corresponding to no state the chain ever
+     * had. Advisory or not, a torn value is worse than no value.
+     *
+     * TRY-lock, not lock: an operator RPC must never queue behind block
+     * connection, and the deterministic barrier hooks can park a connect
+     * thread inside this critical section, which would turn a blocking
+     * acquire into a hang. Busy is reported, never waited out.
+     */
+    std::optional<uint256> ComputeShieldedRoot(
+        ShieldedRootStatus* status = nullptr) const;
 
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row §1.4 names. After ActivateBestChain settles on the
@@ -404,7 +429,16 @@ public:
         activation_mutex_.AssertHeld(where);
     }
 
-    consensus::BlockStatusGeneration CurrentBlockStatusGeneration() const;
+    /**
+     * Read the persisted counter, keeping "absent" and "unreadable" apart.
+     *
+     * Replaces a bare-number accessor that returned 0 for a missing chain_db,
+     * a failed read, an absent key AND a genuine generation 0. Callers deciding
+     * whether an operator status decision landed cannot use that: on a chain
+     * where no invalidate/reconsider has run, a failed read compared EQUAL to
+     * the true value and the decision proceeded on unknown state.
+     */
+    consensus::GenerationRead ReadBlockStatusGeneration() const;
 
     /// Bump and persist. Called by InvalidateBlock and ReconsiderBlock so a
     /// relay in flight across either decision is detectably stale. `wb` folds

@@ -170,7 +170,7 @@ Tag `SHR1`, **version 2**. SHA-256 over:
 ```
 [tag 'SHR1']                    4 B
 [version = 2]                   1 B
-[shielded tree root]           32 B   (zero-filled if not exactly 32 B)
+[shielded tree root]           32 B   (REQUIRED; any other length is rejected)
 [shielded tree size]            8 B   little-endian
 [nullifier accumulator]        32 B   ComputeNullifierAccumulator, tag 'NUL1'
 [anchor history length]         8 B   little-endian

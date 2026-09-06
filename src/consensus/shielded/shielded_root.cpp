@@ -5,6 +5,7 @@
 #include "consensus/shielded/shielded_root.h"
 
 #include <cstring>
+#include <optional>
 
 #include "crypto/sha256.h"
 
@@ -32,24 +33,29 @@ void AppendLengthPrefixed(std::vector<uint8_t>& out, const std::vector<uint8_t>&
 
 }  // namespace
 
-std::vector<uint8_t> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_root,
-                                               uint64_t tree_size,
-                                               const uint256& nullifier_accumulator,
-                                               const std::vector<uint8_t>& anchor_bytes) {
+std::optional<std::vector<uint8_t>> BuildShieldedRootPreimage(
+    const std::vector<uint8_t>& tree_root,
+    uint64_t tree_size,
+    const uint256& nullifier_accumulator,
+    const std::vector<uint8_t>& anchor_bytes) {
+    // A root that is not 32 bytes is not a root. Zero-filling it, as this did
+    // before, gives a corrupt tree the SAME digest as an empty one -- two
+    // different states committing to one value, which is the single property a
+    // header commitment may not have.
+    if (tree_root.size() != 32) {
+        return std::nullopt;
+    }
+
     std::vector<uint8_t> pre;
     pre.reserve(96 + anchor_bytes.size());
 
     pre.insert(pre.end(), std::begin(SHIELDED_ROOT_TAG), std::end(SHIELDED_ROOT_TAG));
     pre.push_back(SHIELDED_ROOT_VERSION);
 
-    // Fixed 32 bytes, zero-filled if the root is not exactly 32. Never
-    // truncated and never skipped: either would shift every later field and
-    // silently change what the digest means.
-    if (tree_root.size() == 32) {
-        pre.insert(pre.end(), tree_root.begin(), tree_root.end());
-    } else {
-        pre.insert(pre.end(), 32, 0);
-    }
+    // Exactly 32 bytes, guaranteed by the check above. Never truncated and
+    // never padded: either would shift every later field and silently change
+    // what the digest means.
+    pre.insert(pre.end(), tree_root.begin(), tree_root.end());
     AppendLE64(pre, tree_size);
 
     // Fixed 32 bytes: the nullifier set enters through its own canonical
@@ -64,14 +70,18 @@ std::vector<uint8_t> BuildShieldedRootPreimage(const std::vector<uint8_t>& tree_
     return pre;
 }
 
-uint256 ComputeShieldedRootFromParts(const std::vector<uint8_t>& tree_root,
-                                     uint64_t tree_size,
-                                     const uint256& nullifier_accumulator,
-                                     const std::vector<uint8_t>& anchor_bytes) {
+std::optional<uint256> ComputeShieldedRootFromParts(
+    const std::vector<uint8_t>& tree_root,
+    uint64_t tree_size,
+    const uint256& nullifier_accumulator,
+    const std::vector<uint8_t>& anchor_bytes) {
     const auto pre =
         BuildShieldedRootPreimage(tree_root, tree_size, nullifier_accumulator, anchor_bytes);
+    if (!pre.has_value()) {
+        return std::nullopt;
+    }
     dinero::crypto::CSHA256 hasher;
-    hasher.Write(pre.data(), pre.size());
+    hasher.Write(pre->data(), pre->size());
     uint8_t digest[32];
     hasher.Finalize(digest);
     uint256 out;
@@ -88,6 +98,8 @@ std::optional<uint256> ComputeShieldedRoot(const CommitmentTree& tree,
     if (!acc.has_value()) {
         return std::nullopt;
     }
+    // Rejects rather than zero-fills if the tree ever hands back a root of the
+    // wrong length; no digest at all beats a digest that means the wrong thing.
     const auto root = tree.Root();
     return ComputeShieldedRootFromParts(std::vector<uint8_t>(root.begin(), root.end()),
                                         tree.Size(), *acc, anchors.SerializeBytes());

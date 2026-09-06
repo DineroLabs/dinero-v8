@@ -69,9 +69,18 @@ void EmitRoot(const char* name,
               const std::vector<uint8_t>& anchor) {
     const auto pre = sh::BuildShieldedRootPreimage(tree_root, tree_size, nacc, anchor);
     const auto dig = sh::ComputeShieldedRootFromParts(tree_root, tree_size, nacc, anchor);
-    std::printf("root %-28s preimage_len=%zu\n", name, pre.size());
-    std::printf("root %-28s preimage=%s\n", name, Hex(pre).c_str());
-    std::printf("root %-28s digest=%s\n", name, dig.GetHex().c_str());
+    // A rejected input must be reported as rejected, never dumped as a vector.
+    // Emitting a placeholder here would publish a digest for a root the
+    // implementation refuses to hash, and an independent implementer building
+    // from this output would encode the wrong rule.
+    if (!pre.has_value() || !dig.has_value()) {
+        std::printf("root %-28s REJECTED (tree_root is %zu bytes, must be 32)\n",
+                    name, tree_root.size());
+        return;
+    }
+    std::printf("root %-28s preimage_len=%zu\n", name, pre->size());
+    std::printf("root %-28s preimage=%s\n", name, Hex(*pre).c_str());
+    std::printf("root %-28s digest=%s\n", name, dig->GetHex().c_str());
 }
 
 void EmitAcc(const char* name, std::vector<sh::NullifierEntry> entries) {

@@ -74,6 +74,53 @@ inline uint32_t PreservedFailureFlags(BlockStatusGeneration captured,
     return GenerationStillCurrent(captured, current) ? observed_failure_flags : 0u;
 }
 
+/// Three outcomes of reading the persisted counter, kept apart.
+///
+/// Collapsing them into a bare number was the defect: "read failed" and
+/// "the counter is 0" produced the same value, and 0 is what a chain reads
+/// before any operator decision has ever been made. GenerationStillCurrent(0,0)
+/// is true, so on a fresh chain a failed read was indistinguishable from a
+/// confirmed-current one.
+enum class GenerationReadState : uint8_t {
+    Present = 0,  ///< the key exists and parsed
+    Absent  = 1,  ///< no key yet: a legitimate generation 0
+    Error   = 2,  ///< the read itself failed: nothing may be concluded
+};
+
+struct GenerationRead {
+    GenerationReadState state = GenerationReadState::Error;
+    BlockStatusGeneration value = 0;
+
+    /// True when the value may be compared. Absent counts: it is a real 0.
+    bool usable() const { return state != GenerationReadState::Error; }
+};
+
+/// Which failure flags survive, given reads that may have FAILED.
+///
+/// Fails closed in both directions by declining to act on unknown state:
+///
+///   * INVALIDATION — if either read failed, the observed failure flags are
+///     PRESERVED. Dropping them clears persisted invalidity and lets a block
+///     an operator ruled invalid re-enter the candidate set; nothing later
+///     undoes that. A read failure must never clear persisted invalidity.
+///
+///   * RECONSIDERATION — preserving is also not a re-assertion: it carries
+///     forward exactly what was already on disk and writes no new decision.
+///     A reconsider that raced a failed read is not silently undone, it is
+///     simply not observed, and the operator can re-issue it. That is
+///     recoverable; a cleared invalidity is not.
+///
+/// The asymmetry is deliberate. Both errors are bad, but only one is
+/// permanent, so uncertainty resolves toward the recoverable side.
+inline uint32_t PreservedFailureFlagsFromReads(const GenerationRead& captured,
+                                               const GenerationRead& now,
+                                               uint32_t observed_failure_flags) {
+    if (!captured.usable() || !now.usable()) {
+        return observed_failure_flags;  // preserve: never clear on uncertainty
+    }
+    return PreservedFailureFlags(captured.value, now.value, observed_failure_flags);
+}
+
 /// The compare-then-commit sequence, with the window between them made
 /// explicit so a test can act inside it.
 ///
@@ -100,9 +147,12 @@ void CompareThenCommitFailureFlags(BlockStatusGeneration captured,
     commit(preserved);
 }
 
-/// Parse a persisted counter. Malformed or absent reads as 0, which is never
-/// equal to a bumped generation — so an unreadable counter fails CLOSED
-/// (results treated as stale) rather than silently allowing a stale write.
+/// Parse a persisted counter. Malformed or absent reads as 0.
+///
+/// NOTE: 0 is also a LEGITIMATE generation — a chain on which no operator
+/// invalidate/reconsider has ever run reads 0 — so this value alone cannot
+/// tell "the counter says 0" from "the counter could not be read". Callers
+/// making a decision must use GenerationRead (above), which keeps those apart.
 BlockStatusGeneration ParseBlockStatusGeneration(const std::string& raw);
 
 /// Serialize for persistence.

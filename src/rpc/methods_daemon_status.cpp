@@ -293,11 +293,16 @@ static din::Json rpc_shielded_root(const ExecutionContext& ctx, const din::Json&
         result["error"] = "chainstate_not_initialized";
         return result;
     }
-    const auto root = daemon_ctx->chainstate->ComputeShieldedRoot();
+    using SRS = dinero::ChainstateService::ShieldedRootStatus;
+    SRS status = SRS::Ok;
+    const auto root = daemon_ctx->chainstate->ComputeShieldedRoot(&status);
     if (!root.has_value()) {
-        // The nullifier set could not be enumerated. Report that, never a
-        // digest — an unreadable set and an empty set are different facts.
-        result["error"] = "nullifier_set_unreadable";
+        // Never a digest here — an unreadable set, a set being mutated, and an
+        // empty set are three different facts, and collapsing them would let a
+        // caller read a transient condition as a state commitment.
+        result["error"] = (status == SRS::StateBusy)
+            ? "shielded_state_busy"   // retry: a block is connecting
+            : "nullifier_set_unreadable";
         return result;
     }
     result["shielded_root"] = root->GetHex();
