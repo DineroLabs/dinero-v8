@@ -44,7 +44,7 @@ def check(name, got, want):
 def executed(workflow_text, tests, build_dir="build-tests"):
     """Run the parser over an inline workflow, return the executed name set."""
     with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as f:
-        f.write(workflow_text)
+        f.write(wf(workflow_text))
         path = f.name
     try:
         same, _other = gate.execution_map(tests, [path], build_dir)
@@ -62,8 +62,16 @@ def fatal(workflow_text, tests, build_dir="build-tests"):
         return str(e.code)
 
 
-BROAD = """
-      - name: Run ctest
+def wf(steps):
+    """Wrap step fragments in a minimal but REAL workflow document.
+
+    The parser reads workflows as YAML now, so the fixtures have to be valid
+    YAML documents rather than loose fragments.
+    """
+    return "name: t\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps
+
+
+BROAD = """      - name: Run ctest
         run: |
           ctest --test-dir build-tests \\
             --output-on-failure \\
@@ -74,7 +82,10 @@ BROAD = """
 T = [("Plain", []), ("Integ", ["integration"]), ("Fuzzy", ["fuzz"]),
      ("Quic", ["quic"]), ("QuicInteg", ["quic", "integration"]),
      ("Named", ["integration"]), ("LoopA", ["integration"]),
-     ("LoopB", ["integration"]), ("Heavy", ["core-heavy-smoke"])]
+     ("LoopB", ["integration"]), ("Heavy", ["core-heavy-smoke"]),
+     # 'fuzz-torture' CONTAINS 'fuzz'. Real ctest -LE 'fuzz' excludes it;
+     # exact-string modelling credited it. Keeps that distinction in the suite.
+     ("FuzzTorture", ["fuzz-torture"])]
 
 
 def main():
@@ -161,6 +172,85 @@ def main():
     check("colliding --test-dir final components are FATAL",
           bool(msg and "share the final path component" in msg), True)
 
+    print("parser: real ctest/YAML/shell semantics, not an approximation of them")
+
+    # -LE takes a REGEX matched against each label, not a set of literal names.
+    # 'fuzz-torture' contains 'fuzz', so real ctest excludes it; modelling the
+    # flag as exact-string membership credited it as executed. A silent
+    # over-credit committed by the gate itself.
+    check("--label-exclude is a regex, not a set of literal label names",
+          "FuzzTorture" not in executed(BROAD, T),
+          True)
+
+    # YAML folds a `>` scalar's lines into one command. A line-based scan
+    # truncated the invocation at its first line, so a FILTERED ctest read as
+    # an unfiltered one and was credited with the whole suite. This repo really
+    # uses folded scalars (shielded-readiness.yml).
+    folded = executed("""      - name: Run ctest
+        run: >-
+          ctest --test-dir build-tests --no-tests=error
+          --label-exclude 'integration|fuzz'
+""", T)
+    check("a folded scalar (run: >-) keeps its filters",
+          "Integ" not in folded and "Plain" in folded, True)
+
+    # A second ctest after && used to merge into the first spec with last-wins
+    # flags, silently changing what the lane was credited with.
+    msg = fatal(BROAD + """
+      - name: compound
+        run: cd build-tests && ctest --no-tests=error -R '^Named$'
+""", T)
+    check("a compound command whose ctest has no --test-dir is FATAL",
+          bool(msg and "no --test-dir" in msg), True)
+
+    # ${VAR} in -E/-LE used to pass through as a literal regex: the exclusion
+    # matched nothing and vanished without a word.
+    msg = fatal(BROAD + """
+      - name: var-exclude
+        run: |
+          for x in Named; do
+            ctest --test-dir build-tests --no-tests=error -E "^${x}$"
+          done
+""", T)
+    check("a shell variable in an EXCLUSION is FATAL, not a silent no-op",
+          bool(msg and "driven by a shell loop" in msg), True)
+
+    # A -L loop enumerates LABELS. Treating its values as test NAMES made the
+    # lane credit zero tests while reporting nothing wrong.
+    lab = executed(BROAD + """
+      - name: label-loop
+        run: |
+          for lbl in quic; do
+            ctest --test-dir build-tests --no-tests=error -L "^${lbl}$"
+          done
+""", T)
+    check("a -L loop variable resolves to LABELS, not test names",
+          "Quic" in lab and "QuicInteg" in lab, True)
+
+    # loop_values used to search the whole file, so a variable could resolve
+    # against an unrelated job's loop -- and tests.yml has two loops named `t`.
+    msg = fatal(BROAD + """
+      - name: first
+        run: |
+          for t in Named; do
+            ctest --test-dir build-tests --no-tests=error -R "^${t}$"
+          done
+      - name: second
+        run: |
+          ctest --test-dir build-tests --no-tests=error -R "^${t}$"
+""", T)
+    check("a loop variable does not leak across run: blocks",
+          bool(msg and "unresolved shell variable" in msg), True)
+
+    # Equals form is legal for every long flag; only --show-only= was handled,
+    # so a legal respelling hard-FATALed all of CI.
+    eq = executed("""      - name: Run ctest
+        run: |
+          ctest --test-dir=build-tests --no-tests=error --label-exclude='integration|fuzz'
+""", T)
+    check("--test-dir=X and --label-exclude=X (equals form) parse",
+          eq == executed(BROAD, T), True)
+
     print("parser: prose that mentions ctest is not an invocation")
 
     # tests.yml really does contain a step named "Run ctest" and a header
@@ -184,12 +274,15 @@ def main():
 
     # A bare `ctest` selects the ENTIRE suite. Skipping it as prose would make
     # every subsequent answer wrong, so it is fatal rather than ignored.
+    # A bare `ctest` selects the ENTIRE suite from the working directory.
+    # It is refused for the more specific reason that its build directory is
+    # unknowable without tracking `cd`, which this parser does not do.
     msg = fatal(BROAD + """
       - name: bare
         run: ctest
 """, T)
-    check("a bare `ctest` with no flags is FATAL",
-          bool(msg and "no flags" in msg), True)
+    check("a bare `ctest` is FATAL (no --test-dir)",
+          bool(msg and "no --test-dir" in msg), True)
 
     print("parser: unrecognized input is fatal, never ignored")
 
@@ -233,7 +326,7 @@ def main():
     def run_gate(baseline_body, dead_extra=""):
         """Drive main() end-to-end with a stubbed ctest discovery."""
         with tempfile.TemporaryDirectory() as d:
-            wf = os.path.join(d, "w.yml"); open(wf, "w").write(BROAD + dead_extra)
+            wfp = os.path.join(d, "w.yml"); open(wfp, "w").write(wf(BROAD + dead_extra))
             bl = os.path.join(d, "b.txt"); open(bl, "w").write(baseline_body)
             script = gate.__file__
             env = dict(os.environ, GATE_FAKE_TESTS="1")
@@ -242,7 +335,7 @@ def main():
             gate.registered_tests = lambda _b: T
             try:
                 argv = sys.argv
-                sys.argv = ["g", "build-tests", wf, "--baseline", bl]
+                sys.argv = ["g", "build-tests", wfp, "--baseline", bl]
                 import io, contextlib
                 buf = io.StringIO()
                 with contextlib.redirect_stdout(buf):
@@ -253,12 +346,14 @@ def main():
                 sys.argv = argv
 
     # Everything unexecuted is in the baseline -> pass.
-    full = "\n".join(["Integ", "Fuzzy", "QuicInteg", "Named", "LoopA", "LoopB"])
+    full = "\n".join(["Integ", "Fuzzy", "QuicInteg", "Named", "LoopA", "LoopB",
+                       "FuzzTorture"])
     rc, out = run_gate(full)
     check("complete baseline passes", rc, 0)
 
     # A test drops out of every lane and is not in the baseline -> fail.
-    rc, out = run_gate("\n".join(["Integ", "Fuzzy", "QuicInteg", "Named", "LoopA"]))
+    rc, out = run_gate("\n".join(["Integ", "Fuzzy", "QuicInteg", "Named", "LoopA",
+                                  "FuzzTorture"]))
     check("new dead coverage fails", rc, 1)
     check("  and names the test", "LoopB" in out, True)
 

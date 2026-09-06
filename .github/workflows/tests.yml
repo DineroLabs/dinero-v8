@@ -570,6 +570,42 @@ jobs:
       - name: Report QUIC test inventory
         run: ctest --test-dir build-tests-quic -N -L 'quic|p2p'
 
+      # CONFIGURE ONLY -- no build. The gate below needs the DEFAULT config's
+      # test registry to work out which tests are unique to QUIC, and test
+      # registration is a configure-time artifact: ctest --show-only reads
+      # CTestTestfile.cmake, which cmake writes at configure time. Measured on
+      # dinero-main @e96f53b93: configure-only and post-build discovery both
+      # report exactly 540 tests. So this costs a few seconds of cmake, not a
+      # second full build.
+      - name: CMake configure default config (registry only, for the gate below)
+        run: |
+          cmake -S . -B build-tests \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # Execution gate for THIS configuration.
+      #
+      # The default gate runs against build-tests and therefore cannot see a
+      # test that only exists when DINERO_ENABLE_QUIC=ON. Six do, and one of
+      # them is RelayTlsKeypair -- the test the integrity gate was written for
+      # after it rotted to non-compiling in #416. The failure class this whole
+      # gate exists to catch was recurring in configuration #2, unwatched.
+      #
+      # --only-absent-from scopes this to the QUIC-only tests. The 540 shared
+      # with the default config are gated by the default invocation, and
+      # listing them here would bury the six that matter.
+      - name: Check every QUIC-only test is executed by some lane
+        run: |
+          python3 scripts/ci/check_mandatory_tests_execute.py \
+            build-tests-quic \
+            .github/workflows/tests.yml \
+            --only-absent-from build-tests \
+            --baseline scripts/ci/unexecuted_tests_baseline_quic.txt
+
       - name: Run QUIC/P2P ctest
         run: |
           # Same pre-existing-debt exclusions as the default lane; the

@@ -63,6 +63,7 @@ Scope, so a green result is not over-read:
     and over-crediting is the exact blindness this guard exists to remove.
 """
 
+import argparse
 import json
 import os
 import re
@@ -70,17 +71,19 @@ import shlex
 import subprocess
 import sys
 
+import yaml
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_BASELINE = os.path.join(HERE, "unexecuted_tests_baseline.txt")
 
-# Flags that do not affect WHICH tests are selected.
+# Flags that do not affect WHICH tests are selected. Base names only: the
+# parser splits an equals form (--no-tests=error) before looking here, so
+# entries must not carry values.
 IGNORABLE_FLAGS = {
-    "--output-on-failure", "--no-tests=error", "--parallel", "--verbose", "-V",
-    "--extra-verbose", "-VV", "--quiet", "-Q", "--stop-on-failure", "--progress",
+    "--output-on-failure", "--no-tests", "--verbose", "-V", "--extra-verbose",
+    "-VV", "--quiet", "-Q", "--stop-on-failure", "--progress",
     "--schedule-random", "--force-new-ctest-process", "--repeat-until-fail",
-    "--test-dir", "--timeout", "--repeat", "--output-junit", "--output-log", "-O",
-    "--test-output-size-passed", "--test-output-size-failed", "--build-config", "-C",
-    "--interactive-debug-mode", "--debug", "--stop-time",
+    "--interactive-debug-mode", "--debug", "--test-output-truncation",
 }
 # Flags that DO affect selection and that this parser models.
 SELECTION_FLAGS = {
@@ -88,8 +91,8 @@ SELECTION_FLAGS = {
     "-LE", "--label-exclude", "-N", "--show-only",
 }
 # Flags that affect selection and that this parser does NOT model. Encountering
-# one is FATAL. This list is the guard against repeating the exact bug that
-# invalidated the previous version: a selection mechanism silently unnoticed.
+# one is FATAL. This list is the guard against repeating the bug that
+# invalidated an earlier version: a selection mechanism silently unnoticed.
 UNMODELED_FLAGS = {
     "-I", "--tests-information", "--rerun-failed", "--union", "-U",
     "-FA", "--fixture-exclude-any", "-FS", "--fixture-exclude-setup",
@@ -128,106 +131,195 @@ def registered_tests(build_dir):
     return tests
 
 
-def ctest_blocks(text, path):
-    """Every ctest invocation, with shell line-continuations joined.
+def run_blocks(path):
+    """Every `run:` script in the workflow, as (approx_line, script_text).
 
-    Returns (line_number, argv, preceding_text) per invocation.
+    Parsed as YAML rather than scanned line-by-line. The line-based version
+    joined only backslash continuations, so a FOLDED scalar (`run: >` or
+    `run: >-`, where YAML itself joins the lines) was truncated at its first
+    line: a filtered ctest invocation read as an unfiltered one and was
+    credited with running the whole suite. This repo does use folded scalars --
+    .github/workflows/shielded-readiness.yml has two -- so that is a live
+    mis-parse, not a hypothetical one.
     """
-    lines = text.split("\n")
-    blocks, i = [], 0
-    while i < len(lines):
-        if is_command_line(lines[i]):
-            start, buf = i, []
-            while i < len(lines):
-                s = lines[i].rstrip()
-                buf.append(s[:-1] if s.endswith("\\") else s)
-                if not s.endswith("\\"):
-                    break
+    raw = open(path, encoding="utf-8").read()
+    try:
+        doc = yaml.safe_load(raw)
+    except yaml.YAMLError as exc:
+        sys.exit("FATAL: %s is not parseable YAML: %s" % (path, exc))
+    if not isinstance(doc, dict):
+        sys.exit("FATAL: %s did not parse to a mapping" % path)
+
+    lines = raw.split("\n")
+
+    def approx_line(script):
+        """Best-effort line number for reporting. YAML discards positions, so
+        locate the script's first non-empty line in the raw text."""
+        first = next((l.strip() for l in script.split("\n") if l.strip()), "")
+        if first:
+            for i, l in enumerate(lines):
+                if first in l:
+                    return i + 1
+        return 0
+
+    out = []
+    for job in (doc.get("jobs") or {}).values():
+        if not isinstance(job, dict):
+            continue
+        for step in (job.get("steps") or []):
+            if isinstance(step, dict) and isinstance(step.get("run"), str):
+                out.append((approx_line(step["run"]), step["run"]))
+    return out
+
+
+def split_unquoted(text):
+    """Split on shell command separators, ignoring any inside quotes.
+
+    Quote awareness is not a nicety here: the main lane carries
+    --label-exclude 'integration|gate|release|canonicality|fuzz', and a naive
+    split on '|' tears that argument in half.
+
+    Splitting at all is what stops `a && ctest ... && ctest ...` from
+    collapsing into one spec whose flags are silently last-wins.
+    """
+    parts, buf, quote, i = [], [], None, 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            elif ch == "\\" and quote == '"' and i + 1 < len(text):
                 i += 1
-            joined = " ".join(buf).strip()
-            joined = joined[joined.index("ctest"):]
+                buf.append(text[i])
+        elif ch in "'\"":
+            quote = ch
+            buf.append(ch)
+        elif ch in ";\n":
+            parts.append("".join(buf)); buf = []
+        elif ch in "|&":
+            # || && | & all separate commands
+            if i + 1 < len(text) and text[i + 1] == ch:
+                i += 1
+            parts.append("".join(buf)); buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return parts
+
+
+def shell_commands(script):
+    """Split a run: script into individual commands, continuations joined.
+
+    Comments are dropped first: an unscoped search for `ctest` previously
+    matched prose inside comments, and a `for t in ...` written in a comment
+    could resolve a loop variable.
+    """
+    # Join backslash continuations before anything else.
+    joined = re.sub(r"\\\n\s*", " ", script)
+    stripped = []
+    for line in joined.split("\n"):
+        # A '#' starts a comment when it begins a word. Good enough here, and
+        # erring toward dropping text only ever removes candidate commands.
+        stripped.append(re.sub(r"(^|\s)#.*$", "", line))
+    return [c.strip() for c in split_unquoted("\n".join(stripped)) if c.strip()]
+
+
+def ctest_blocks(text_or_path, path=None):
+    """Every ctest invocation: (approx_line, argv, enclosing_script)."""
+    blocks = []
+    for line_no, script in run_blocks(text_or_path if path is None else path):
+        for cmd in shell_commands(script):
+            # Strip leading VAR=value assignments and `env`.
+            probe = re.sub(r"^(?:env\s+|[A-Za-z_][\w]*=\S*\s+)*", "", cmd)
+            if not re.match(r"ctest(\s|$)", probe):
+                continue
             try:
-                argv = shlex.split(joined, comments=True)
+                argv = shlex.split(probe, comments=True)
             except ValueError as exc:
                 sys.exit("FATAL: %s:%d cannot tokenize ctest invocation: %s"
-                         % (path, start + 1, exc))
-            # Prose, not a command. "and run ctest so source drops" in a
-            # comment and the step named "Run ctest" both contain the word;
-            # neither runs anything. A real invocation carries flags.
-            if not any(a.startswith("-") for a in argv[1:]):
-                if re.match(r"^\s*(ctest\s*$|ctest\s+[^-])", joined) and \
-                   not lines[start].lstrip().startswith("#"):
-                    sys.exit("FATAL: %s:%d looks like a ctest command with no "
-                             "flags.\nA bare `ctest` runs the ENTIRE suite, which "
-                             "would change every answer this\nguard gives, so it "
-                             "must not be silently skipped as prose."
-                             % (path, start + 1))
-                i += 1
+                         % (path or text_or_path, line_no, exc))
+            if not argv:
                 continue
-            blocks.append((start + 1, argv, "\n".join(lines[:start])))
-        i += 1
+            blocks.append((line_no, argv, script))
     return blocks
 
 
-def is_command_line(line):
-    """True if this line plausibly INVOKES ctest, rather than mentioning it.
+def loop_values(script, var):
+    """Resolve a shell loop variable from `for VAR in ...; do` in THIS script.
 
-    tests.yml contains both a step named `- name: Run ctest` and comment prose
-    ("and run ctest so source drops"). Parsing either as an invocation gives it
-    no --test-dir and an empty filter set, i.e. "this lane runs everything" --
-    a wrong answer produced silently, which is the failure mode this whole
-    guard exists to remove.
+    Scoped to the enclosing run: block and applied to comment-stripped text.
+    The previous version searched the whole file, so it could resolve a
+    variable from an unrelated job's loop -- and tests.yml has two loops both
+    named `t`, which is exactly the collision that makes a wrong answer look
+    plausible.
     """
-    stripped = line.lstrip()
-    if stripped.startswith("#"):
-        return False
-    # A YAML mapping key other than `run:` is metadata (name:, id:, if:, uses:).
-    m = re.match(r"^\s*(?:-\s+)?([A-Za-z_][\w-]*):\s", line)
-    if m and m.group(1) != "run":
-        return False
-    return bool(re.search(r"(^|[\s;&|(])ctest(\s|$)", line))
+    clean = "\n".join(re.sub(r"(^|\s)#.*$", "", l) for l in script.split("\n"))
+    hits = re.findall(r"for\s+%s\s+in\s+([^\n;]+);\s*do" % re.escape(var), clean)
+    if not hits:
+        return None
+    # A run: block with two different loops over the same name cannot be
+    # resolved to one answer; refuse rather than pick.
+    values = [h.split() for h in hits]
+    if len({tuple(v) for v in values}) > 1:
+        return "AMBIGUOUS"
+    return values[-1]
 
 
-def loop_values(before, var):
-    """Resolve a shell loop variable from the nearest preceding `for VAR in ...`."""
-    hits = re.findall(r"for\s+%s\s+in\s+([^\n;]+);\s*do" % re.escape(var), before)
-    return hits[-1].split() if hits else None
-
-
-def parse_block(line_no, argv, before, path):
-    """One invocation -> {test_dir, show_only, include, label_include,
-    label_exclude, name_exclude, names}."""
+def parse_block(line_no, argv, script, path):
+    """One invocation -> a spec describing exactly which tests it selects."""
     spec = {"line": line_no, "test_dir": None, "show_only": False,
             "include": None, "label_include": None, "label_exclude": None,
-            "name_exclude": None, "names": None}
+            "name_exclude": None, "names": None, "labels": None}
+
+    # Flags taking a value, canonical name -> spec key.
+    VALUED = {
+        "--test-dir": "test_dir",
+        "-R": "include", "--tests-regex": "include",
+        "-E": "name_exclude", "--exclude-regex": "name_exclude",
+        "-L": "label_include", "--label-regex": "label_include",
+        "-LE": "label_exclude", "--label-exclude": "label_exclude",
+    }
+    # Value-taking flags that do not affect SELECTION.
+    VALUED_IGNORED = {"--timeout", "--repeat", "--output-junit", "--output-log",
+                      "-O", "--build-config", "-C", "--test-output-size-passed",
+                      "--test-output-size-failed", "--stop-time", "-j",
+                      "--parallel"}
+
     i = 1
     while i < len(argv):
         tok = argv[i]
-        if tok in UNMODELED_FLAGS:
+        # Equals form is legal for every long flag. Only --show-only= was
+        # handled before, so a lane written --test-dir=build-tests hard-FATALed
+        # all of CI on a legal respelling.
+        name, eq, value = tok.partition("=")
+        has_eq = bool(eq)
+
+        if name in UNMODELED_FLAGS:
             sys.exit("FATAL: %s:%d uses ctest flag %s, which this guard does not "
                      "model.\nIt changes which tests are selected, so ignoring it "
                      "would make this guard\nreport confident wrong answers -- the "
                      "exact failure it exists to prevent.\nTeach parse_block() "
                      "about %s, then regenerate the baseline."
-                     % (path, line_no, tok, tok))
-        if tok in ("-N", "--show-only") or tok.startswith("--show-only="):
+                     % (path, line_no, name, name))
+
+        if name in ("-N", "--show-only"):
             spec["show_only"] = True
-        elif tok == "--test-dir":
-            i += 1; spec["test_dir"] = argv[i]
-        elif tok in ("-R", "--tests-regex"):
-            i += 1; spec["include"] = argv[i]
-        elif tok in ("-E", "--exclude-regex"):
-            i += 1; spec["name_exclude"] = argv[i]
-        elif tok in ("-L", "--label-regex"):
-            i += 1; spec["label_include"] = argv[i]
-        elif tok in ("-LE", "--label-exclude"):
-            i += 1; spec["label_exclude"] = argv[i]
-        elif tok in IGNORABLE_FLAGS:
-            if tok in ("--timeout", "--repeat", "--output-junit", "--output-log",
-                       "-O", "--build-config", "-C", "--test-output-size-passed",
-                       "--test-output-size-failed", "--stop-time"):
+        elif name in VALUED:
+            if has_eq:
+                spec[VALUED[name]] = value
+            else:
                 i += 1
-        elif re.fullmatch(r"-j\d*", tok) or tok.startswith("--parallel"):
+                if i >= len(argv):
+                    sys.exit("FATAL: %s:%d flag %s has no value" % (path, line_no, name))
+                spec[VALUED[name]] = argv[i]
+        elif name in VALUED_IGNORED:
+            if not has_eq:
+                i += 1
+        elif name in IGNORABLE_FLAGS:
+            pass
+        elif re.fullmatch(r"-j\d*", tok):
             pass
         elif tok.startswith("-"):
             sys.exit("FATAL: %s:%d unrecognized ctest flag %r.\nThis guard "
@@ -235,22 +327,59 @@ def parse_block(line_no, argv, before, path):
                      "test selection. Classify it in IGNORABLE_FLAGS, "
                      "SELECTION_FLAGS or\nUNMODELED_FLAGS in %s."
                      % (path, line_no, tok, os.path.basename(__file__)))
+        else:
+            # A bare non-flag word. ctest takes no positional arguments, so this
+            # is a command this parser did not split correctly -- exactly the
+            # "everything unknown is FATAL" case the charter demands.
+            sys.exit("FATAL: %s:%d unexpected argument %r in a ctest command.\n"
+                     "ctest takes no positional arguments, so this parser has "
+                     "mis-split a\ncompound shell command and would report a "
+                     "selection that never runs."
+                     % (path, line_no, tok))
         i += 1
 
-    # Resolve shell variables in the selection patterns.
-    # A bare trailing '$' is a regex end-anchor, not a shell variable; only
-    # '$name' / '${name}' is an expansion this parser must resolve.
-    for key in ("include", "label_include"):
+    # Every ctest here must say which build it runs against. Without it the
+    # directory comes from the shell's cwd (a preceding `cd`), which this
+    # parser does not track -- so refuse rather than guess.
+    if not spec["show_only"] and spec["test_dir"] is None:
+        sys.exit("FATAL: %s:%d ctest invocation has no --test-dir.\nIts build "
+                 "directory would come from the working directory, which this\n"
+                 "guard does not model. Add --test-dir so the lane is "
+                 "attributable." % (path, line_no))
+
+    # Resolve shell variables in ALL FOUR selection patterns. Previously only
+    # -R and -L were resolved, so a ${VAR} in -E or -LE passed through as a
+    # literal regex, matched nothing, and the exclusion silently vanished.
+    for key in ("include", "label_include", "name_exclude", "label_exclude"):
         pat = spec[key]
-        if pat and re.search(r"\$\{?\w", pat):
-            m = re.fullmatch(r"\^\$\{?(\w+)\}?\$", pat)
-            vals = loop_values(before, m.group(1)) if m else None
-            if vals is None:
-                sys.exit("FATAL: %s:%d selection %r contains an unresolved shell "
-                         "variable\nand no preceding `for ... in ...; do` explains "
-                         "it. This guard cannot tell\nwhich tests run, and must not "
-                         "assume none do." % (path, line_no, pat))
+        if not pat or not re.search(r"\$\{?\w", pat):
+            continue
+        m = re.fullmatch(r"\^?\$\{?(\w+)\}?\$?", pat)
+        vals = loop_values(script, m.group(1)) if m else None
+        if vals == "AMBIGUOUS":
+            sys.exit("FATAL: %s:%d selection %r resolves to more than one "
+                     "`for` loop\nin the same run: block. This guard will not "
+                     "pick one." % (path, line_no, pat))
+        if vals is None:
+            sys.exit("FATAL: %s:%d selection %r contains an unresolved shell "
+                     "variable\nand no `for ... in ...; do` in the same run: "
+                     "block explains it. This\nguard cannot tell which tests "
+                     "run, and must not assume none do."
+                     % (path, line_no, pat))
+        # WHAT the loop values ARE depends on which flag carried them.
+        # -R/-E enumerate test NAMES; -L/-LE enumerate LABELS. Treating a
+        # label loop's values as names made such a lane credit zero tests
+        # while reporting no problem at all.
+        if key == "include":
             spec["names"] = vals
+        elif key == "label_include":
+            spec["labels"] = vals
+        else:
+            # An exclusion driven by a loop variable is a shape this parser
+            # does not model; refuse rather than approximate it.
+            sys.exit("FATAL: %s:%d exclusion %r is driven by a shell loop.\n"
+                     "This guard models exclusions as fixed patterns and would "
+                     "get the\nper-iteration semantics wrong." % (path, line_no, pat))
     return spec
 
 
@@ -258,11 +387,19 @@ def selected_by(spec, tests):
     """Names this invocation would actually run."""
     if spec["show_only"]:
         return set()                      # -N lists; it does not execute
-    lx = set(spec["label_exclude"].split("|")) if spec["label_exclude"] else set()
+
+    # -LE takes a REGEX, matched against each label, not a set of literal
+    # names. Modelling it as exact-string membership silently OVER-credited:
+    # with -LE 'integration|gate|release|canonicality|fuzz', a test labelled
+    # 'fuzz-torture' is excluded by real ctest (the regex matches within the
+    # label) but was credited as executed by the model -- the precise failure
+    # this whole gate exists to detect, committed by the gate itself.
+    lx = re.compile(spec["label_exclude"]) if spec["label_exclude"] else None
     li = re.compile(spec["label_include"]) if spec["label_include"] else None
     nx = re.compile(spec["name_exclude"]) if spec["name_exclude"] else None
     inc = re.compile(spec["include"]) if spec["include"] and not spec["names"] else None
     fixed = set(spec["names"]) if spec["names"] else None
+    fixed_labels = set(spec["labels"]) if spec["labels"] else None
 
     out = set()
     for name, labels in tests:
@@ -271,9 +408,12 @@ def selected_by(spec, tests):
                 continue
         elif inc is not None and not inc.search(name):
             continue
-        if li is not None and not any(li.search(l) for l in labels):
+        if fixed_labels is not None:
+            if not any(l in fixed_labels for l in labels):
+                continue
+        elif li is not None and not any(li.search(l) for l in labels):
             continue
-        if any(l in lx for l in labels):
+        if lx is not None and any(lx.search(l) for l in labels):
             continue
         if nx is not None and nx.search(name):
             continue
@@ -287,8 +427,8 @@ def same_build_dir(a, b):
     The workflow writes it relative to the checkout ("build-tests"); a caller
     may pass an absolute path. Compare on the final component, which is what
     actually distinguishes this repo's three build configurations
-    (build-tests, build-tests-quic, build-core-heavy). Ambiguity is rejected
-    in execution_map rather than resolved by guessing.
+    (build-tests, build-tests-quic, build-core-heavy). Ambiguity is rejected in
+    execution_map rather than resolved by guessing.
     """
     if a is None or b is None:
         return False
@@ -296,15 +436,14 @@ def same_build_dir(a, b):
            os.path.basename(os.path.normpath(b))
 
 
-def execution_map(tests, workflows, build_dir):
+def execution_map(tests, workflows, build_dir, require_broad=True):
     """name -> [lanes running it], plus the same for other build dirs."""
     same, other, broad_seen, blocks_seen = {}, {}, False, 0
     seen_dirs = {}
     for path in workflows:
-        text = open(path, encoding="utf-8").read()
-        for line_no, argv, before in ctest_blocks(text, path):
+        for line_no, argv, script in ctest_blocks(path, path):
             blocks_seen += 1
-            spec = parse_block(line_no, argv, before, path)
+            spec = parse_block(line_no, argv, script, path)
             if spec["show_only"]:
                 continue
             lane = "%s:%d" % (os.path.basename(path), line_no)
@@ -319,14 +458,19 @@ def execution_map(tests, workflows, build_dir):
                              "same_build_dir() to disambiguate."
                              % (key, prev, spec["test_dir"]))
             tgt = same if same_build_dir(spec["test_dir"], build_dir) else other
-            if tgt is same and not spec["include"] and not spec["label_include"]:
+            if tgt is same and not spec["include"] and not spec["label_include"] \
+                    and not spec["names"] and not spec["labels"]:
                 broad_seen = True
             for n in selected_by(spec, tests):
                 tgt.setdefault(n, []).append(lane)
     if blocks_seen == 0:
         sys.exit("FATAL: no ctest invocation found in %s -- this guard would "
                  "check nothing" % ", ".join(workflows))
-    if not broad_seen:
+    # A scoped secondary configuration legitimately has no broad lane: the
+    # QUIC job runs only -L 'quic|p2p'. Requiring one there would FATAL on a
+    # correct workflow. For the PRIMARY config the requirement stands -- if the
+    # main lane disappears, coverage collapses and a green run would be a lie.
+    if require_broad and not broad_seen:
         sys.exit("FATAL: no broad ctest invocation (one with neither -R nor -L) "
                  "runs against\n%s. The main lane is what executes the bulk of "
                  "the suite; if it has\ndisappeared, coverage has collapsed and "
@@ -384,27 +528,63 @@ def write_baseline(path, dead, labels_of, other, workflows):
 
 
 def main():
-    argv = sys.argv[1:]
-    update = "--update" in argv
-    explain = "--explain" in argv
-    baseline_path = DEFAULT_BASELINE
-    if "--baseline" in argv:
-        baseline_path = argv[argv.index("--baseline") + 1]
-        del argv[argv.index("--baseline"):argv.index("--baseline") + 2]
-    pos = [a for a in argv if not a.startswith("--")]
-    if len(pos) < 2:
-        sys.exit(__doc__)
-    build_dir, workflows = pos[0], pos[1:]
+    # argparse, like the sibling CI scripts. The hand-rolled parser had two
+    # real defects: a trailing `--baseline` raised IndexError instead of a
+    # message, and `--baseline=PATH` was silently DROPPED -- so `--update`
+    # rewrote the committed default baseline rather than the requested file,
+    # destroying checked-in state while reporting success.
+    ap = argparse.ArgumentParser(
+        description="Fail when a registered test is executed by no CI lane.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__)
+    ap.add_argument("build_dir", help="configured build directory to discover tests in")
+    ap.add_argument("workflows", nargs="+", help="workflow YAML files that run ctest")
+    ap.add_argument("--baseline", default=DEFAULT_BASELINE,
+                    help="known-unexecuted list (default: %(default)s)")
+    ap.add_argument("--update", action="store_true",
+                    help="rewrite the baseline instead of checking it")
+    ap.add_argument("--explain", action="store_true",
+                    help="print the executing lane for every test and exit")
+    ap.add_argument("--only-absent-from", metavar="BUILD_DIR",
+                    help="restrict the check to tests NOT registered in "
+                         "BUILD_DIR. Use when gating a second cmake "
+                         "configuration: tests it shares with the primary "
+                         "config are that config's gate's responsibility, and "
+                         "listing them here would bury this config's unique "
+                         "tests under hundreds of irrelevant entries.")
+    args = ap.parse_args()
+
+    build_dir, workflows = args.build_dir, args.workflows
+    baseline_path, update, explain = args.baseline, args.update, args.explain
     for w in workflows:
         if not os.path.exists(w):
             sys.exit("FATAL: workflow not found: %s" % w)
 
     tests = registered_tests(build_dir)
+    if args.only_absent_from:
+        # A test registered in BOTH configs is gated by the primary
+        # invocation. What no other gate can see is this config's UNIQUE
+        # registry -- e.g. the QUIC family, which exists only when
+        # DINERO_ENABLE_QUIC=ON. RelayTlsKeypair is in that set, and it is the
+        # test the CTest INTEGRITY gate was written for after it rotted to
+        # non-compiling: the same blind spot, one config over.
+        shared = {n for n, _ in registered_tests(args.only_absent_from)}
+        before = len(tests)
+        tests = [(n, l) for n, l in tests if n not in shared]
+        print("scoped to %d test(s) unique to %s (%d shared with %s are gated there)"
+              % (len(tests), build_dir, before - len(tests), args.only_absent_from))
+        if not tests:
+            sys.exit("FATAL: no tests are unique to %s. Either the two "
+                     "configurations\nnow register the same set -- in which case "
+                     "this invocation is redundant\nand should be removed -- or "
+                     "the comparison build dir is wrong."
+                     % build_dir)
     if not tests:
         sys.exit("FATAL: ctest reported zero registered tests -- a filter matching "
                  "nothing is a silent-disappearance mode, not a pass")
     labels_of = dict(tests)
-    same, other = execution_map(tests, workflows, build_dir)
+    same, other = execution_map(tests, workflows, build_dir,
+                                require_broad=not args.only_absent_from)
 
     if explain:
         for name, _ in sorted(tests):
