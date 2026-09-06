@@ -85,11 +85,9 @@ IGNORABLE_FLAGS = {
     "--schedule-random", "--force-new-ctest-process", "--repeat-until-fail",
     "--interactive-debug-mode", "--debug", "--test-output-truncation",
 }
-# Flags that DO affect selection and that this parser models.
-SELECTION_FLAGS = {
-    "-R", "--tests-regex", "-E", "--exclude-regex", "-L", "--label-regex",
-    "-LE", "--label-exclude", "-N", "--show-only",
-}
+# Selection-affecting flags are not listed here: parse_block()'s VALUED table
+# IS that list, and is the one the parser consults. A second copy would be a
+# table nobody reads that looks authoritative.
 # Flags that affect selection and that this parser does NOT model. Encountering
 # one is FATAL. This list is the guard against repeating the bug that
 # invalidated an earlier version: a selection mechanism silently unnoticed.
@@ -325,7 +323,7 @@ def parse_block(line_no, argv, script, path):
             sys.exit("FATAL: %s:%d unrecognized ctest flag %r.\nThis guard "
                      "refuses to guess whether a flag it has never seen changes\n"
                      "test selection. Classify it in IGNORABLE_FLAGS, "
-                     "SELECTION_FLAGS or\nUNMODELED_FLAGS in %s."
+                     "parse_block()'s VALUED table,\nor UNMODELED_FLAGS, in %s."
                      % (path, line_no, tok, os.path.basename(__file__)))
         else:
             # A bare non-flag word. ctest takes no positional arguments, so this
@@ -436,7 +434,8 @@ def same_build_dir(a, b):
            os.path.basename(os.path.normpath(b))
 
 
-def execution_map(tests, workflows, build_dir, require_broad=True):
+def execution_map(tests, workflows, build_dir, require_broad=True,
+                  collect_excludes=None):
     """name -> [lanes running it], plus the same for other build dirs."""
     same, other, broad_seen, blocks_seen = {}, {}, False, 0
     seen_dirs = {}
@@ -457,6 +456,9 @@ def execution_map(tests, workflows, build_dir, require_broad=True):
                              "cannot tell\nthem apart. Rename one, or teach "
                              "same_build_dir() to disambiguate."
                              % (key, prev, spec["test_dir"]))
+            if collect_excludes is not None and spec["label_exclude"] \
+                    and same_build_dir(spec["test_dir"], build_dir):
+                collect_excludes.append(re.compile(spec["label_exclude"]))
             tgt = same if same_build_dir(spec["test_dir"], build_dir) else other
             if tgt is same and not spec["include"] and not spec["label_include"] \
                     and not spec["names"] and not spec["labels"]:
@@ -489,25 +491,38 @@ def read_baseline(path):
     return names
 
 
-def reason_for(name, labels, other_lanes, workflows):
+def reason_for(name, labels, other_lanes, exclude_patterns):
+    """Why this test is unexecuted, for the baseline's grouping.
+
+    Takes the label-exclude patterns the PARSER already extracted. The previous
+    version re-scanned the raw workflow text with a single-quote-only regex and
+    then did exact-string membership on the split parts -- repeating, in the
+    explanation, the very bug that was just fixed in the selection logic. A
+    'fuzz-torture' label would have been reported as "not selected by any lane"
+    when the real reason is that -LE 'fuzz' matches it.
+    """
     if other_lanes:
+        # File name only, no line number. This string is written into a
+        # CHECKED-IN file, and a line number shifts whenever anything above it
+        # in the workflow moves -- producing diff noise that says nothing about
+        # coverage. Same reason the baseline keys on test names rather than
+        # CTest numbers. --explain still reports file:line for locating a lane.
+        files = sorted({lane.split(":", 1)[0] for lane in other_lanes})
         return "selected only in another build configuration (%s); registration " \
-               "there is unverified" % ", ".join(sorted(set(other_lanes)))
-    excl = set()
-    for path in workflows:
-        for m in re.finditer(r"--label-exclude\s+'([^']+)'", open(path).read()):
-            excl |= set(m.group(1).split("|"))
-    hit = sorted(l for l in labels if l in excl)
+               "there is unverified" % ", ".join(files)
+    hit = sorted(l for l in labels
+                 if any(pat.search(l) for pat in exclude_patterns))
     if hit:
         return "excluded by label: " + ",".join(hit)
     return "not selected by any lane"
 
 
-def write_baseline(path, dead, labels_of, other, workflows):
+def write_baseline(path, dead, labels_of, other, exclude_patterns):
     groups = {}
     for n in sorted(dead):
         groups.setdefault(
-            reason_for(n, labels_of.get(n, []), other.get(n), workflows), []).append(n)
+            reason_for(n, labels_of.get(n, []), other.get(n),
+                       exclude_patterns), []).append(n)
     with open(path, "w", encoding="utf-8") as f:
         f.write(
             "# Tests registered but executed by NO CI lane.\n"
@@ -583,8 +598,10 @@ def main():
         sys.exit("FATAL: ctest reported zero registered tests -- a filter matching "
                  "nothing is a silent-disappearance mode, not a pass")
     labels_of = dict(tests)
+    exclude_patterns = []
     same, other = execution_map(tests, workflows, build_dir,
-                                require_broad=not args.only_absent_from)
+                                require_broad=not args.only_absent_from,
+                                collect_excludes=exclude_patterns)
 
     if explain:
         for name, _ in sorted(tests):
@@ -599,7 +616,8 @@ def main():
           % (len(tests), len(same), len(dead)))
 
     if update:
-        groups = write_baseline(baseline_path, dead, labels_of, other, workflows)
+        groups = write_baseline(baseline_path, dead, labels_of, other,
+                                exclude_patterns)
         print("baseline written: %d unexecuted test(s) -> %s" % (len(dead), baseline_path))
         for reason in sorted(groups):
             print("  %3d  %s" % (len(groups[reason]), reason))

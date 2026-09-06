@@ -82,6 +82,6 @@ UtreexoDeltaReplayRestart
 UtreexoDeltaTorture
 UtreexoMempoolCanonicalSeparation
 
-# --- selected only in another build configuration (core-heavy.yml:130); registration there is unverified (2) ---
+# --- selected only in another build configuration (core-heavy.yml); registration there is unverified (2) ---
 UnifiedBatchAtomicity
 UnifiedBatchAtomicity_AtomicPersistOn
