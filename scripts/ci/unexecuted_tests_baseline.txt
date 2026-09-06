@@ -9,7 +9,7 @@
 #
 # Grouped by why each test is currently unexecuted.
 
-# --- excluded by label: canonicality,integration (20) ---
+# --- excluded by label: canonicality,integration (19) ---
 FrontierWriteGapRecovery
 FrontierWriteGapRecovery_AtomicPersistOn
 HeaderBacklogRestartEquivalence
@@ -18,7 +18,6 @@ HeaderFilterReplayEquivalence
 InterruptedReorgFailSafe
 InvalidityCrashRestartEquivalence
 InvalidityImportEquivalence
-InvalidityRestartSticky
 PositionIndexRestartEquivalence
 ReconsiderCrashRestartEquivalence
 ReindexChainstateUtreexoEquivalence
