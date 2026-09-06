@@ -120,6 +120,41 @@ jobs:
       - name: CTest integrity gate (registered => built)
         run: python3 scripts/ci/check_ctest_integrity.py build-tests
 
+      # The execution gate's own parser self-test. It runs FIRST and needs no
+      # build directory. The gate's answer is only as good as its model of how
+      # this file selects tests, and that model has been wrong once already:
+      # an earlier version understood only the main ctest step and the serial
+      # e2e loop — 2 of the ~18 selection mechanisms below — and therefore
+      # reported tests as dead coverage that have their own dedicated steps.
+      #
+      # Running it as a plain step rather than registering it with CTest is
+      # deliberate: a self-test for the unexecuted-test gate must not be able
+      # to become an unexecuted test.
+      - name: Execution-gate parser self-test
+        run: python3 scripts/ci/test_check_mandatory_tests_execute.py
+
+      # Execution gate. check_ctest_integrity proves a registered test is
+      # RUNNABLE; this proves it is RUN. Three high-value tests were
+      # registered-but-never-executed on one branch — the last carried the
+      # mutation proof for the activation-lock invariant — and each was caught
+      # only by a human grepping the green log for the test's name.
+      #
+      # Tests executed by no lane are recorded in the baseline file, so this
+      # fails on NEW dead coverage, on a baseline entry that has started
+      # running, and on one naming a test that no longer exists.
+      #
+      # core-heavy.yml is passed so its lane is accounted for. It builds a
+      # DIFFERENT cmake configuration, so it never grants execution credit
+      # here; naming it makes that visible in the baseline's reasons instead
+      # of leaving it an unexamined gap.
+      - name: Check every test is executed by some lane
+        run: |
+          python3 scripts/ci/check_mandatory_tests_execute.py \
+            build-tests \
+            .github/workflows/tests.yml \
+            .github/workflows/core-heavy.yml \
+            --baseline scripts/ci/unexecuted_tests_baseline.txt
+
       # Assertion-integrity ratchet (issue #497). tests/CMakeLists.txt appends
       # -UNDEBUG (/UNDEBUG on MSVC) to the Release test graph, and the
       # AssertionsEnabled test fails at compile time and runtime if assertions
