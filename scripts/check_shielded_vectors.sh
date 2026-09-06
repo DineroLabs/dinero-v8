@@ -32,6 +32,25 @@
 #     zero-filled them: four distinct roots committing to the same value. That
 #     collision is the defect, and this file was pinning it.
 #
+# THE PREMISE THIS RESTS ON, stated so it can be re-checked or disproved:
+# NOTHING ON A LIVE PATH HAS EVER COMPUTED A ROOT FROM A NON-32-BYTE TREE ROOT.
+# That is not an audit result, it is a type-level property:
+#
+#     consensus/shielded/commitment_tree.h:37   constexpr size_t HASH_BYTES = 32
+#     consensus/shielded/commitment_tree.h:39   using Hash = std::array<uint8_t, HASH_BYTES>
+#     consensus/shielded/commitment_tree.h:106  Hash Root() const
+#
+# Root() returns a fixed 32-byte array BY TYPE, and the sole production caller
+# of ComputeShieldedRootFromParts is ComputeShieldedRoot() in
+# shielded_root.cpp, which builds its vector from that array. A shorter or
+# longer root was unreachable outside tests and the vector dumper, so the
+# removed branch never produced a digest any node could have published.
+#
+# IF THAT PREMISE IS EVER FALSIFIED -- if a shipped caller is found that fed
+# arbitrary bytes through the old zero-fill -- THIS DECISION INVERTS and the
+# version must be bumped, because deployed nodes would then have published
+# digests the new code will not reproduce.
+#
 # The rule above still stands for any change to the bytes of an ACCEPTED input.
 set -euo pipefail
 
@@ -78,6 +97,43 @@ fi
 if (( UPDATE )); then
     cp "${OUTPUTS[0]}" "${GOLDEN}"
     echo "golden file updated -- bump SHIELDED_ROOT_VERSION if the encoding changed"
+fi
+
+# ── poison value tripwire ─────────────────────────────────────────────────
+#
+# d4414d6601c8b1307a7a4258401a11ec07abbdfe5c866648b0c714d8677fcb63 is the
+# digest the encoder produced for EVERY non-32-byte tree root while it
+# zero-filled them: tree_len_1, _31, _33 and _64 all carried it, four distinct
+# roots committing to one value. It is the fingerprint of a collision that is
+# now rejected, so it must never appear as expected output again.
+#
+# Deliberately checked in BOTH modes, and against the golden file as well as
+# the fresh builds. --update is exactly when this could come back silently: a
+# regeneration against a tree where the zero-fill had been reintroduced would
+# rewrite the file and report success. This is the two-line tripwire that
+# refuses that.
+POISON="d4414d6601c8b1307a7a4258401a11ec07abbdfe5c866648b0c714d8677fcb63"
+poisoned=0
+for f in "${GOLDEN}" "${OUTPUTS[@]}"; do
+    [[ -f "${f}" ]] || continue
+    if grep -q "${POISON}" "${f}"; then
+        echo "POISON VALUE in $(basename "${f}"):" >&2
+        grep -n "${POISON}" "${f}" | head -5 | sed 's/^/    /' >&2
+        poisoned=1
+    fi
+done
+if (( poisoned )); then
+    cat >&2 <<'POISONED'
+
+REFUSING: the zero-fill collision digest has reappeared as expected output.
+
+Every tree root that is not exactly 32 bytes used to hash to this one value,
+so a corrupt root and a genuinely empty tree produced identical commitments.
+Its return means either the zero-fill was reintroduced in
+BuildShieldedRootPreimage, or a vector row was hand-edited back to the old
+expected output. Neither may be committed: see consensus review finding 7a.
+POISONED
+    exit 3
 fi
 
 rc=0
