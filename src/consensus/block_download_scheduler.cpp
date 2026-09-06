@@ -2237,6 +2237,11 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
         // Try to connect to chainstate
         fetch_state.status = FetchStatus::CONNECTING;
         ConnectBlockResult connect_result = connect_block_callback_(block, "scheduler-drain");
+        // DELIBERATELY no `default:` label. Every enumerator is handled
+        // explicitly, so adding a new ConnectBlockResult without deciding what
+        // the drain does with it is a -Wswitch warning rather than a silent
+        // fall-through. CONCURRENT_IN_FLIGHT is exactly the kind of state that
+        // a default case would have swallowed into "treat like the others".
         switch (connect_result) {
             case ConnectBlockResult::CONNECTED:
             case ConnectBlockResult::DUPLICATE: {

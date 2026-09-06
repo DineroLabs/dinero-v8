@@ -122,6 +122,19 @@ public:
         constexpr bool operator!=(Value v) const { return value_ != v; }
         constexpr Value value() const { return value_; }
 
+        // NO operator bool, and none may be added.
+        //
+        // Implicit construction FROM bool is safe and deliberate (above).
+        // Implicit collapse TO bool is the opposite: it would let
+        // `if (outcome)` silently fold ConcurrentInFlight into the rejected
+        // branch, reinstating the peer-smearing this type exists to stop --
+        // and it would do so invisibly, because such code compiles and reads
+        // naturally.
+        //
+        // Verified impossible by construction: with no conversion operator,
+        // both `if (outcome)` and `outcome == true` are rejected by the
+        // compiler. Adding any conversion operator here re-opens that hole.
+
     private:
         Value value_;
     };
