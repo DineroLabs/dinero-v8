@@ -98,8 +98,19 @@ int main() {
                 static_cast<unsigned>(sh::SHIELDED_ROOT_VERSION));
 
     // --- shielded root: structural edges -----------------------------------
+    // These two carry a ZERO-LENGTH tree root and are now REJECTED. They are
+    // kept, not deleted: the vector file is what an independent implementer
+    // builds against, so it must state that these lengths produce no digest.
+    // Before the rejection they were zero-filled, which is why tree_len_1,
+    // _31, _33 and _64 below all used to share ONE digest -- four different
+    // roots committing to the same value.
     EmitRoot("empty_all", {}, 0, dinero::uint256(), {});
     EmitRoot("empty_tree_nonzero_size", {}, 1, dinero::uint256(), {});
+    // The minimal ACCEPTED inputs, carrying the coverage the two above used to
+    // provide by accident. A genuinely empty tree has a 32-byte zero root.
+    EmitRoot("empty_tree32", std::vector<uint8_t>(32, 0), 0, dinero::uint256(), {});
+    EmitRoot("empty_tree32_nonzero_size", std::vector<uint8_t>(32, 0), 1,
+             dinero::uint256(), {});
     EmitRoot("tree32_size0", Pattern(32, 0x11), 0, U256(0x22), {});
     EmitRoot("tree32_size1", Pattern(32, 0x11), 1, U256(0x22), {});
     EmitRoot("typical", Pattern(32, 0xA0), 61000, U256(0xB0), Pattern(64, 0xC0));

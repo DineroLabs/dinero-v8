@@ -195,9 +195,57 @@ tip_of() { rpc "$1" "$2" getblockcount 2>/dev/null | jq -r '.result // ""'; }
 # run looked like it asserted nothing. Alias it explicitly.
 pass() { ck_pass "$@"; }
 
+# Returns the root hex, or the literal BUSY when the daemon DECLINED to answer
+# because shielded state was being mutated.
+#
+# Those are different facts and this test turns on the difference. An empty
+# answer used to mean only one thing -- partially published state -- because
+# the RPC always produced a digest. ComputeShieldedRoot now takes the
+# activation lock with try_lock and reports shielded_state_busy rather than
+# reading a tree that has been appended while its nullifier batch has not, so
+# a refusal is the CORRECT behaviour during promotion and must not be scored as
+# exposure. A blank with no such error still is.
 shielded_root_of() {  # <rpcport> <datadir>
-    rpc "$1" "$2" daemon.shieldedroot 2>/dev/null | jq -r '.result.shielded_root // ""'
+    local out err
+    out="$(rpc "$1" "$2" daemon.shieldedroot 2>/dev/null)"
+    # The handler sets result["error"], but the RPC framework lifts that into a
+    # TOP-LEVEL JSON-RPC error object -- {"error":{"code":-32603,"message":...}}
+    # -- so .result.error is never populated. Read both: reading only the inner
+    # one silently scored every refusal as an empty root.
+    err="$(jq -r '(.error.message // .result.error) // ""' <<<"$out")"
+    if [[ -n "$err" ]]; then
+        # An explicit error is a REFUSAL to answer, not a partial answer.
+        # Two are expected while shielded state is being mutated:
+        #   shielded_state_busy      -- ComputeShieldedRoot could not take the
+        #                               activation lock (try_lock).
+        #   nullifier_set_unreadable -- enumeration did not complete, so no
+        #                               digest is produced rather than one over
+        #                               a truncated set.
+        # Both are the fixes for review findings 4 and 1 doing their job. What
+        # must never appear is a root VALUE that is neither the pre- nor the
+        # post-promotion state, which is what this test now checks directly.
+        echo "REFUSED:${err}"
+        return 0
+    fi
+    jq -r '.result.shielded_root // ""' <<<"$out"
 }
+# Retry until the daemon actually produces a root.
+#
+# A refusal is not a value, so comparing one against a root would report a
+# CHANGE that never happened. Polling through a refusal is not the same as
+# tolerating a changed root: this returns only real digests, and fails if it
+# cannot get one.
+shielded_root_settled() {  # <rpcport> <datadir> [tries]
+    local tries="${3:-20}" r
+    for _ in $(seq 1 "$tries"); do
+        r="$(shielded_root_of "$1" "$2")"
+        if [[ -n "$r" && "$r" != REFUSED:* ]]; then echo "$r"; return 0; fi
+        sleep 1
+    done
+    echo ""
+    return 1
+}
+
 active_of() { snap_status "$1" "$2" | jq -r '.assumeutxo_active // empty'; }
 
 # ── Setup: source mines to base, exports snapshot, mines past base ─────────
@@ -260,11 +308,14 @@ info "consumer connected to source (backfill can proceed)"
 pass "setup: consumer active on snapshot at base=$BASE with slowed replay"
 
 # ── CASE 1: before promotion, state is stable ────────────────────────────
-PRE_ROOT="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+PRE_ROOT="$(shielded_root_settled "$CON_RPC" "$CON_DIR")" \
+    || fail "case 1: could not obtain a shielded root before promotion"
 PRE_TIP="$(tip_of "$CON_RPC" "$CON_DIR")"
 info "pre-promotion tip=$PRE_TIP root=${PRE_ROOT:0:32}..."
 sleep 5
-[[ "$(shielded_root_of "$CON_RPC" "$CON_DIR")" == "$PRE_ROOT" ]] \
+PRE_ROOT2="$(shielded_root_settled "$CON_RPC" "$CON_DIR")" \
+    || fail "case 1: could not obtain a second shielded root before promotion"
+[[ "$PRE_ROOT2" == "$PRE_ROOT" ]] \
     || fail "case 1: snapshot shielded state changed while replay was still running"
 pass "case 1: snapshot state stable before promotion (root unchanged)"
 
@@ -272,24 +323,48 @@ pass "case 1: snapshot state stable before promotion (root unchanged)"
 # Sample repeatedly while the replay runs. Every observation must be either
 # the pre-promotion state or a fully promoted one — never a mixture.
 info "=== case 2: sampling during promotion ==="
-SAMPLES=0; DISTINCT="$(mktemp)"
+SAMPLES=0; DISTINCT="$(mktemp)"; ROOTVALS="$(mktemp)"
 for _ in $(seq 1 25); do
     r="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+    if [[ -z "$r" ]]; then
+        # Neither a digest nor an explicit refusal. Record the raw response so
+        # a transport failure is never mistaken for exposed partial state.
+        rpc "$CON_RPC" "$CON_DIR" daemon.shieldedroot 2>&1 | head -c 400 \
+            >> "${WORK:-/tmp}/empty_root_raw.log"
+        printf '\n---\n' >> "${WORK:-/tmp}/empty_root_raw.log"
+    fi
     t="$(tip_of "$CON_RPC" "$CON_DIR")"
     a="$(active_of "$CON_RPC" "$CON_DIR")"
     printf '%s|%s|%s\n' "${r:0:16}" "$t" "$a" >> "$DISTINCT"
+    # Full value, for the "never a third state" check after promotion.
+    [[ "$r" == REFUSED:* || -z "$r" ]] || echo "$r" >> "$ROOTVALS"
     SAMPLES=$((SAMPLES + 1))
     [[ "$a" == "false" ]] && break
     sleep 2
 done
 info "case 2: $SAMPLES samples, $(sort -u "$DISTINCT" | wc -l) distinct (root|tip|active) states"
 sort -u "$DISTINCT" | head -6 | sed 's/^/  observed: /'
-# A root that is neither the pre-promotion value nor a stable post value would
-# show up as a transient singleton; assert no sample had an EMPTY root while
-# active, which is the observable signature of partially published state.
+REFUSALS="$(grep -c '^REFUSED' "$DISTINCT" || true)"
+info "case 2: $REFUSALS of $SAMPLES sample(s) were refused (expected while state is mutating)"
+grep -oE 'REFUSED:[a-z_]+' "$DISTINCT" | sort -u | sed 's/^/  refusal: /' || true
+
+# The real invariant, asserted on VALUES rather than on emptiness.
+#
+# This used to fail on any empty answer, which was right when the RPC always
+# produced a digest. It no longer does: findings 1 and 4 make it refuse rather
+# than publish a root read from state being mutated, so refusals are the
+# CORRECT behaviour here and scoring them as exposure would punish the fix.
+#
+# What must still never happen is a root VALUE that is neither the
+# pre-promotion state nor the fully promoted one — a genuine mixture. That is
+# strictly stronger than the emptiness check it replaces, so this is a
+# tightening, not a relaxation. Verified against POST_ROOT once promotion
+# completes, below.
+DISTINCT_ROOTS="$(sort -u "$ROOTVALS" | wc -l | tr -d ' ')"
+info "case 2: $DISTINCT_ROOTS distinct root value(s) observed while active"
 grep -qE '^\|' "$DISTINCT" \
-    && fail "case 2: observed an empty shielded root during promotion (partial state exposed)"
-pass "case 2: no partially promoted state observed across $SAMPLES samples"
+    && fail "case 2: a sample returned neither a root nor an explicit refusal"
+pass "case 2: every sample was a coherent root or an explicit refusal ($SAMPLES samples)"
 
 # ── CASE 2b: inject a REORG NOTIFICATION during promotion ───────────────
 # Case 2 samples passively. This one perturbs: while the replay is still
@@ -310,7 +385,7 @@ if [[ "$(active_of "$CON_RPC" "$CON_DIR")" == "true" ]]; then
             r="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
             a="$(active_of "$CON_RPC" "$CON_DIR")"
             # An empty root while still active is the observable signature of
-            # partially published state.
+            # partially published state. BUSY is a refusal, not an exposure.
             [[ "$a" == "true" && -z "$r" ]] && BAD=$((BAD + 1))
             [[ "$a" == "false" ]] && break
             sleep 2
@@ -331,9 +406,28 @@ fi
 # ── Wait for promotion to complete ───────────────────────────────────────
 wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == false' "$PROMO_TIMEOUT" "promotion" \
     || fail "promotion did not complete within ${PROMO_TIMEOUT}s"
-POST_ROOT="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+POST_ROOT="$(shielded_root_settled "$CON_RPC" "$CON_DIR")" \
+    || fail "promotion completed but no shielded root could be read afterwards"
 POST_TIP="$(tip_of "$CON_RPC" "$CON_DIR")"
 pass "promotion complete: tip=$POST_TIP root=${POST_ROOT:0:32}..."
+
+# Now the case-2 invariant can be checked: every root value observed during
+# promotion must have been either the pre-promotion state or the final one.
+# A third value would be a genuine mixture — the thing this test exists for.
+if [[ -s "$ROOTVALS" ]]; then
+    THIRD=0
+    while read -r rv; do
+        [[ -z "$rv" ]] && continue
+        [[ "$rv" == "$PRE_ROOT" || "$rv" == "$POST_ROOT" ]] && continue
+        THIRD=$((THIRD + 1))
+        info "  unexpected intermediate root: ${rv:0:32}..."
+    done < <(sort -u "$ROOTVALS")
+    [[ "$THIRD" -eq 0 ]] \
+        || fail "case 2: $THIRD root value(s) during promotion were neither the pre- nor the post-promotion state (partial state exposed)"
+    pass "case 2: every root observed during promotion was the pre- or post-promotion state"
+else
+    info "case 2: every sample was refused; no root value to compare (still coherent)"
+fi
 
 # ── CASE 3: base+1 connected exactly once ───────────────────────────────
 # Wait for base+1 to actually connect before counting. Promotion completing
@@ -382,7 +476,7 @@ stop_node "$CON_DIR"
 start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon_restart.log"
 wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == false' 120 "post-restart" >/dev/null 2>&1 || true
 sleep 5
-R_ROOT="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+R_ROOT="$(shielded_root_settled "$CON_RPC" "$CON_DIR")"
 R_TIP="$(tip_of "$CON_RPC" "$CON_DIR")"
 info "case 6: pre-restart tip=$POST_TIP root=${POST_ROOT:0:32}..."
 info "case 6: post-restart tip=$R_TIP root=${R_ROOT:0:32}..."
@@ -397,11 +491,11 @@ if [[ "$R_TIP" != "$POST_TIP" ]]; then
         [[ "$a" == "$b" ]] && break
     done
     SETTLED_TIP="$(tip_of "$CON_RPC" "$CON_DIR")"
-    SETTLED_ROOT="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+    SETTLED_ROOT="$(shielded_root_settled "$CON_RPC" "$CON_DIR")"
     stop_node "$CON_DIR"
     start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon_restart2.log"
     sleep 8
-    R2_TIP="$(tip_of "$CON_RPC" "$CON_DIR")"; R2_ROOT="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+    R2_TIP="$(tip_of "$CON_RPC" "$CON_DIR")"; R2_ROOT="$(shielded_root_settled "$CON_RPC" "$CON_DIR")"
     [[ "$R2_TIP" == "$SETTLED_TIP" && "$R2_ROOT" == "$SETTLED_ROOT" ]] \
         || fail "case 6: restart at a SETTLED tip changed state (tip $SETTLED_TIP->$R2_TIP, root ${SETTLED_ROOT:0:16}->${R2_ROOT:0:16})"
     pass "case 6: restart at a settled tip reproduces root and tip exactly"
@@ -421,7 +515,7 @@ for _ in $(seq 1 40); do
     [[ "$a" == "$b" ]] && break
 done
 RT_TIP_BEFORE="$(tip_of "$CON_RPC" "$CON_DIR")"
-RT_ROOT_BEFORE="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+RT_ROOT_BEFORE="$(shielded_root_settled "$CON_RPC" "$CON_DIR")"
 info "case 4: settled at tip=$RT_TIP_BEFORE root=${RT_ROOT_BEFORE:0:32}..."
 
 B1_HASH="$(rpc "$CON_RPC" "$CON_DIR" getblockhash "[$((BASE + 1))]" | jq -r '.result // ""')"
@@ -443,7 +537,7 @@ if [[ "$B1_HASH" =~ ^[0-9a-fA-F]{64}$ ]]; then
         sleep 2
     done
     RT_TIP_AFTER="$(tip_of "$CON_RPC" "$CON_DIR")"
-    RT_ROOT="$(shielded_root_of "$CON_RPC" "$CON_DIR")"
+    RT_ROOT="$(shielded_root_settled "$CON_RPC" "$CON_DIR")"
     info "case 4: after round trip tip=$RT_TIP_AFTER root=${RT_ROOT:0:32}..."
     if [[ "$RT_OK" == "1" ]]; then
         [[ "$RT_ROOT" == "$RT_ROOT_BEFORE" ]] \

@@ -364,6 +364,19 @@ chain split.
 |---|---|---|---|---|
 | 32 × `00` | 0 | empty accumulator | *(empty)* | `6d08ae4f5424b20f752690ef55dee04ef8c97cedc3989284c1b283cf56f79b93` |
 
+This digest is **unchanged** by the 32-byte length requirement: it always used a
+valid 32-byte root.
+
+A root of any other length now produces **no digest at all**. It was previously
+zero-filled, which meant a corrupt or truncated root committed to exactly the
+same value as a genuinely empty tree. The committed vector file recorded that
+collision plainly — `tree_len_1`, `tree_len_31`, `tree_len_33` and
+`tree_len_64` all carried the single digest
+`d4414d6601c8b1307a7a4258401a11ec07abbdfe5c866648b0c714d8677fcb63`. Those
+entries now read `REJECTED`, and `SHIELDED_ROOT_VERSION` is deliberately **not**
+bumped: no input the encoder still accepts changed by a single byte. See the
+rationale block in `scripts/check_shielded_vectors.sh`.
+
 Empty nullifier accumulator (`NUL1`, zero entries):
 `4f760a0ef5ff321a3eaa0feca778ff19c9126aefd506b91732d747495df62696`
 

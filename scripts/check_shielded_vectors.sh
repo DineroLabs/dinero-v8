@@ -14,6 +14,25 @@
 # --update rewrites the golden file. Only legitimate when the encoding changed
 # ON PURPOSE, and such a change must bump SHIELDED_ROOT_VERSION -- a silent
 # golden-file update is exactly the failure this gate exists to catch.
+#
+# ONE RECORDED EXCEPTION, 2026-09-06 (consensus review finding 7a). Rejecting
+# tree roots that are not exactly 32 bytes changed this file WITHOUT a version
+# bump, and that is deliberate:
+#
+#   * Every input the encoder still ACCEPTS produces byte-identical output to
+#     before. No digest that any node could have computed from real state has
+#     changed -- CommitmentTree::Root() is always 32 bytes, so the production
+#     path never reached the removed branch.
+#   * What changed is the accepted DOMAIN, not the encoding of accepted values.
+#     Bumping the version would invalidate correct v2 digests to describe a
+#     change that does not affect any of them.
+#   * The entries that moved are six synthetic cases that fed a non-32-byte
+#     root and now read REJECTED. Four of them -- tree_len_1, _31, _33, _64 --
+#     previously shared ONE digest, d4414d66..., because the encoder
+#     zero-filled them: four distinct roots committing to the same value. That
+#     collision is the defect, and this file was pinning it.
+#
+# The rule above still stands for any change to the bytes of an ACCEPTED input.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

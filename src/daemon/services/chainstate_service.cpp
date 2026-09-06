@@ -1207,9 +1207,27 @@ bool ChainstateService::LoadShieldedState() {
                     uint256 canonical;
                     if (!ResolveCanonicalBlockHash(h, canonical)) {
                         ++unverified; first_bad_height = h;
-                        reason = "no canonical block at that height (below an "
-                                 "AssumeUTXO snapshot base, or not yet synced)";
-                        evidence_unavailable = true;
+                        // ABOVE the tip is not missing evidence, it is
+                        // CONTRADICTING evidence. A legacy row records a
+                        // nullifier spent in a block that was connected in the
+                        // past; a height the chain has never reached cannot
+                        // have produced one. That is the crash-residue
+                        // signature, and it must keep quarantining however the
+                        // node is configured -- pruning and AssumeUTXO remove
+                        // OLD blocks, never future ones.
+                        const auto* cls_tip = GetActiveTip();
+                        const uint32_t known_tip_height =
+                            cls_tip ? static_cast<uint32_t>(cls_tip->height) : 0u;
+                        if (h > known_tip_height) {
+                            reason = "height " + std::to_string(h) +
+                                     " is ABOVE the chain tip (" +
+                                     std::to_string(known_tip_height) +
+                                     ") — no such block has ever been connected";
+                        } else {
+                            reason = "no canonical block at that height (below an "
+                                     "AssumeUTXO snapshot base, or not yet synced)";
+                            evidence_unavailable = true;
+                        }
                         break;
                     }
                     const auto blk = ReadStoredBlock(canonical);
