@@ -28,6 +28,13 @@ inline constexpr const char* kLcProgressHeightKey = "assumeutxo_lc_progress_heig
 inline constexpr const char* kExpectedCommitmentKey  = "assumeutxo_expected_commitment";
 // v3 utreexo root (hex) persisted by LoadSnapshot. Only present for v3 snapshots.
 inline constexpr const char* kExpectedUtreexoRootKey = "assumeutxo_expected_utreexo_root";
+// Shielded half of the snapshot, persisted at load so background validation can
+// compare it against the genesis-replayed value. ADVISORY for now: a mismatch
+// is logged loudly and does NOT fail validation, because the replay engine is a
+// third independent construction path (not live ConnectTip, not --reindex) that
+// nothing has ever compared. Divergences were found in BOTH other paths, so
+// this is evidence-gathering until real snapshots prove it agrees.
+inline constexpr const char* kExpectedShieldedRootKey = "assumeutxo_expected_shielded_root";
 
 // Required confirmation token for OperatorReset (spec: Operator Reset).
 inline constexpr const char* kResetToken = "RESET-ASSUMEUTXO-FATAL";

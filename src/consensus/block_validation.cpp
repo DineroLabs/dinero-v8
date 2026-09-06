@@ -2101,8 +2101,15 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             auto forest_lock = consensus_utxo_set_->LockForestShared();
             forest_for_transition = consensus_utxo_set_->GetForest();
         }
+        // Hand the copy over rather than letting generate() clone it again.
+        // This copy exists only to escape the lock above; generate() then owns
+        // it. Before this, a ~300k-leaf forest was deep-copied TWICE per block
+        // — a profile of a live mainnet AssumeUTXO replay showed 19.4% of the
+        // pinned thread in ~UtreexoForest(), 16.4% in the copy constructor and
+        // ~45% in malloc/free, with throughput decaying 27 -> 4.1 -> 1.8
+        // blocks/min as the forest grew.
         auto transition = UtreexoTransitionProof::generate(
-            forest_for_transition,
+            std::move(forest_for_transition),
             block,
             utreexo_data.spend_proof,
             height);

@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
 #include "rpcclient.h"
 #include <QMenu>
@@ -45,6 +46,8 @@
 #include <QTextEdit>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QTabBar>
+#include <QIcon>
 #include <QTimer>
 #include <QPointer>
 #include <QThread>
@@ -114,6 +117,118 @@
 #endif
 
 namespace {
+
+enum class NavigationGlyph {
+  Dashboard,
+  Wallet,
+  Document,
+  Send,
+  Receive,
+  Transactions,
+  Link,
+  Hardware,
+  Card,
+  Pool,
+  Shield,
+  Mining,
+  Settings,
+  Proof,
+  Peers,
+  Template,
+};
+
+QPixmap drawNavigationGlyph(NavigationGlyph glyph, const QColor& color) {
+  QPixmap pixmap(40, 40);
+  pixmap.fill(Qt::transparent);
+
+  QPainter painter(&pixmap);
+  painter.setRenderHint(QPainter::Antialiasing, true);
+  QPen pen(color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+  painter.setPen(pen);
+  painter.setBrush(Qt::NoBrush);
+
+  auto line = [&painter](qreal x1, qreal y1, qreal x2, qreal y2) {
+    painter.drawLine(QPointF(x1, y1), QPointF(x2, y2));
+  };
+  auto rect = [&painter](qreal x, qreal y, qreal w, qreal h, qreal radius = 0.0) {
+    painter.drawRoundedRect(QRectF(x, y, w, h), radius, radius);
+  };
+
+  switch (glyph) {
+    case NavigationGlyph::Dashboard:
+      painter.drawArc(QRectF(7, 8, 26, 26), 0, 180 * 16);
+      line(20, 21, 28, 14);
+      line(9, 29, 31, 29);
+      break;
+    case NavigationGlyph::Wallet:
+      rect(6, 10, 28, 21, 4);
+      rect(24, 16, 10, 9, 3);
+      painter.drawPoint(QPointF(28, 20.5));
+      break;
+    case NavigationGlyph::Document:
+      line(10, 5, 25, 5); line(25, 5, 32, 12); line(32, 12, 32, 35);
+      line(32, 35, 10, 35); line(10, 35, 10, 5); line(25, 5, 25, 13); line(25, 13, 32, 13);
+      line(15, 20, 27, 20); line(15, 26, 27, 26);
+      break;
+    case NavigationGlyph::Send:
+      line(7, 20, 31, 20); line(23, 12, 31, 20); line(31, 20, 23, 28);
+      break;
+    case NavigationGlyph::Receive:
+      line(7, 20, 31, 20); line(15, 12, 7, 20); line(7, 20, 15, 28);
+      break;
+    case NavigationGlyph::Transactions:
+      line(9, 10, 31, 10); line(9, 20, 31, 20); line(9, 30, 25, 30);
+      painter.drawPoint(QPointF(5, 10)); painter.drawPoint(QPointF(5, 20)); painter.drawPoint(QPointF(5, 30));
+      break;
+    case NavigationGlyph::Link:
+      painter.drawArc(QRectF(5, 12, 18, 16), 45 * 16, 270 * 16);
+      painter.drawArc(QRectF(17, 12, 18, 16), 225 * 16, 270 * 16);
+      line(14, 20, 26, 20);
+      break;
+    case NavigationGlyph::Hardware:
+      rect(10, 9, 20, 22, 3); line(15, 5, 15, 9); line(25, 5, 25, 9);
+      line(15, 31, 15, 35); line(25, 31, 25, 35); line(15, 20, 25, 20);
+      break;
+    case NavigationGlyph::Card:
+      rect(5, 10, 30, 21, 4); line(6, 17, 34, 17); line(10, 25, 18, 25);
+      break;
+    case NavigationGlyph::Pool:
+      painter.drawEllipse(QRectF(8, 7, 9, 9)); painter.drawEllipse(QRectF(23, 7, 9, 9));
+      painter.drawArc(QRectF(4, 17, 17, 17), 0, 180 * 16); painter.drawArc(QRectF(19, 17, 17, 17), 0, 180 * 16);
+      break;
+    case NavigationGlyph::Shield:
+      line(20, 4, 32, 9); line(32, 9, 30, 24); line(30, 24, 20, 35);
+      line(20, 35, 10, 24); line(10, 24, 8, 9); line(8, 9, 20, 4);
+      break;
+    case NavigationGlyph::Mining:
+      line(8, 31, 29, 10); line(20, 8, 32, 20); line(5, 34, 12, 27);
+      break;
+    case NavigationGlyph::Settings:
+      painter.drawEllipse(QRectF(14, 14, 12, 12));
+      painter.drawEllipse(QRectF(7, 7, 26, 26));
+      line(20, 3, 20, 8); line(20, 32, 20, 37); line(3, 20, 8, 20); line(32, 20, 37, 20);
+      break;
+    case NavigationGlyph::Proof:
+      painter.drawEllipse(QRectF(5, 5, 30, 30)); line(12, 20, 18, 26); line(18, 26, 29, 13);
+      break;
+    case NavigationGlyph::Peers:
+      painter.drawEllipse(QRectF(15, 5, 10, 10)); painter.drawArc(QRectF(9, 16, 22, 18), 0, 180 * 16);
+      line(7, 10, 12, 15); line(33, 10, 28, 15);
+      break;
+    case NavigationGlyph::Template:
+      rect(8, 5, 24, 30, 3); line(14, 13, 26, 13); line(14, 20, 26, 20); line(14, 27, 23, 27);
+      break;
+  }
+  return pixmap;
+}
+
+QIcon navigationIcon(NavigationGlyph glyph) {
+  QIcon icon;
+  icon.addPixmap(drawNavigationGlyph(glyph, QColor("#aeb8c4")), QIcon::Normal, QIcon::Off);
+  icon.addPixmap(drawNavigationGlyph(glyph, QColor("#f2f5f8")), QIcon::Selected, QIcon::Off);
+  icon.addPixmap(drawNavigationGlyph(glyph, QColor("#d3dbe4")), QIcon::Active, QIcon::Off);
+  return icon;
+}
 
 // Temporary product gate: Cmd+K should expose only My Node Dashboard while
 // the AI assistant surface is parked for release polish.
@@ -1144,6 +1259,32 @@ QString peerHeightBreakdownTooltip(int startHeight,
                                    int syncedHeaders,
                                    int syncedBlocks,
                                    int bestKnown,
+                                   int localTip);
+
+QString peerSeenHeightTooltip(const QString& kind,
+                              int value,
+                              int startHeight,
+                              int syncedHeaders,
+                              int syncedBlocks,
+                              int bestKnown,
+                              int localTip) {
+  QString tooltip = peerHeightBreakdownTooltip(startHeight,
+                                                syncedHeaders,
+                                                syncedBlocks,
+                                                bestKnown,
+                                                localTip);
+  tooltip.prepend(
+      QString("%1 seen through local P2P telemetry: %2\n"
+              "This does not prove the remote node's active validated tip.\n"
+              "Use that node's authenticated blockchain RPC for validation.\n\n")
+          .arg(kind, value >= 0 ? QString::number(value) : QStringLiteral("N/A")));
+  return tooltip;
+}
+
+QString peerHeightBreakdownTooltip(int startHeight,
+                                   int syncedHeaders,
+                                   int syncedBlocks,
+                                   int bestKnown,
                                    int localTip) {
   auto fmt = [](int value) -> QString {
     return value >= 0 ? QString::number(value) : QStringLiteral("N/A");
@@ -1622,6 +1763,20 @@ void appendMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   appendMiningConsoleText(output, line);
 }
 
+void replaceMiningOutputFirstLine(QTextEdit* output, const QString& line) {
+  if (!output) {
+    return;
+  }
+  if (output->document()->isEmpty()) {
+    output->setPlainText(line);
+    return;
+  }
+  QTextCursor cursor(output->document());
+  cursor.movePosition(QTextCursor::Start);
+  cursor.select(QTextCursor::BlockUnderCursor);
+  cursor.insertText(line);
+}
+
 void removeMiningOutputLine(QTextEdit* output, const QString& rawLine) {
   if (!output) {
     return;
@@ -2010,8 +2165,8 @@ MainWindow::MainWindow(dinero::qt::DaemonBootstrapOwner daemonBootstrapOwner,
     }
   });
 
-  // Live Hash Engine refresh. Ten real samples per second keeps the display
-  // visibly alive without competing with the mining hot path or the UI loop.
+  // Live Hash Engine refresh. Five real samples per second stays visibly live
+  // while keeping long header-row painting from starving the GUI event loop.
   connect(miningCinematicTimer_, &QTimer::timeout,
           this, &MainWindow::updateMiningOutputCinematicFrame);
   miningCinematicTimer_->setInterval(dinero::qt::kHashEngineIntervalMs);
@@ -2209,9 +2364,11 @@ void MainWindow::setupUI() {
   central->setStyleSheet(
     "QWidget { background: #181b20; color: #d6dde6; } "
     "QTabWidget::pane { border: 1px solid #2f343c; background: #1a1d22; border-radius: 8px; margin-top: 6px; } "
-    "QTabBar::tab { background: #242932; color: #c8d0d9; border: 1px solid #353b45; border-bottom: none; "
-    "padding: 6px 10px; border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 3px; } "
-    "QTabBar::tab:selected { background: #2d323b; color: #eef2f6; } "
+    "QTabBar::tab { background: #242932; color: #d5dce5; border: 1px solid #353b45; border-bottom: 3px solid transparent; "
+    "padding: 9px 12px; min-height: 22px; font-size: 13px; font-weight: 500; "
+    "border-top-left-radius: 6px; border-top-right-radius: 6px; margin-right: 3px; } "
+    "QTabBar::tab:hover { background: #2a3039; color: #e7ecf2; border-color: #46505d; border-bottom-color: #46505d; } "
+    "QTabBar::tab:selected { background: #303844; color: #f2f5f8; border-color: #46505d; border-bottom: 3px solid #d58a32; } "
     "QGroupBox { border: 1px solid #30353d; border-radius: 10px; margin-top: 10px; padding-top: 8px; background: #20242a; font-weight: 600; } "
     "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 6px; color: #cad2db; } "
     "QLineEdit, QComboBox, QSpinBox, QTextEdit, QPlainTextEdit { background: #1f2328; color: #d7dde5; "
@@ -2275,6 +2432,7 @@ void MainWindow::setupUI() {
 
   // Tab widget
   auto *tabs = new QTabWidget;
+  tabs->setIconSize(QSize(18, 18));
   mainTabs_ = tabs;
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();
@@ -2367,24 +2525,28 @@ void MainWindow::setupUI() {
       v7Column->setContentsMargins(10, 12, 10, 10);
       v7Column->setSpacing(8);
       v7Group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-      v7Group->setMaximumHeight(245);
+      v7Group->setMaximumHeight(275);
 
-      // Utreexo box
-      auto *utreexoBox = new QGroupBox("Utreexo");
+      // Utreexo validation mode. Values come from one guarded accumulator
+      // snapshot via blockchain.getutreexocommitment.
+      auto *utreexoBox = new QGroupBox("Utreexo Validation");
       auto *utreexoLay = new QVBoxLayout(utreexoBox);
       utreexoLay->setContentsMargins(10, 12, 10, 10);
       utreexoLay->setSpacing(4);
       utreexoBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-      utreexoBox->setMaximumHeight(105);
+      utreexoBox->setMaximumHeight(132);
       lblUtreexoHealth_ = new QLabel("Health: --");
       lblUtreexoHealth_->setStyleSheet("QLabel { font-size: 12px; font-weight: bold; color: #2d8a4e; }");
-      lblUtreexoLeaves_ = new QLabel("Leaves: --");
-      lblUtreexoLeaves_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
-      lblUtreexoRoot_ = new QLabel("Root: --");
-      lblUtreexoRoot_->setStyleSheet("QLabel { font-size: 10px; color: #868e96; font-family: monospace; }");
+      lblUtreexoRole_ = new QLabel("Role: --");
+      lblUtreexoRole_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
+      lblUtreexoState_ = new QLabel("State: --");
+      lblUtreexoState_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
+      lblUtreexoStorage_ = new QLabel("Storage: --");
+      lblUtreexoStorage_->setStyleSheet("QLabel { font-size: 10px; color: #868e96; }");
       utreexoLay->addWidget(lblUtreexoHealth_);
-      utreexoLay->addWidget(lblUtreexoLeaves_);
-      utreexoLay->addWidget(lblUtreexoRoot_);
+      utreexoLay->addWidget(lblUtreexoRole_);
+      utreexoLay->addWidget(lblUtreexoState_);
+      utreexoLay->addWidget(lblUtreexoStorage_);
       v7Column->addWidget(utreexoBox);
 
       // PQ Status box
@@ -2417,6 +2579,8 @@ void MainWindow::setupUI() {
     // layout, so there is exactly ONE recent-blocks table and one code path
     // filling it.
     // ═══════════════════════════════════════════════════════════════════
+    auto* chainActivityRow = new QHBoxLayout;
+    chainActivityRow->setSpacing(12);
     {
       auto* blocksCard = new QGroupBox("Latest Blocks");
       // Hug the content. Without this the card absorbs the slack created by
@@ -2441,41 +2605,81 @@ void MainWindow::setupUI() {
       cardLayout->addLayout(header);
 
       overviewBlocksLayout_ = cardLayout;
-      layout->addWidget(blocksCard);
+      chainActivityRow->addWidget(blocksCard, 7);
     }
+    layout->addLayout(chainActivityRow);
 
 
     // ═══════════════════════════════════════════════════════════════════
     // 📊 MONITORING DASHBOARD (bottom half of Overview)
     // ═══════════════════════════════════════════════════════════════════
     
-    auto *monitoringGroup = new QGroupBox("Node operation");
-    auto *monitoringLayout = new QVBoxLayout(monitoringGroup);
-    monitoringLayout->setContentsMargins(10, 12, 10, 10);
-    monitoringLayout->setSpacing(10);
-    monitoringGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    monitoringGroup->setMaximumHeight(650);
-    
-    // Row 1: resilient network controls + compact resource telemetry.
-    auto *row1 = new QHBoxLayout;
-    row1->setSpacing(12);
+    // Keep node participation and local resources as fully independent cards.
+    // The exposed page background between them provides the same section
+    // separation used by the rows above, without drawing divider rules.
+    auto *monitoringColumns = new QHBoxLayout;
+    monitoringColumns->setContentsMargins(0, 0, 0, 0);
+    monitoringColumns->setSpacing(0);
+    auto *nodeOperationBox = new QGroupBox("Node operation");
+    auto *networkColumn = new QVBoxLayout(nodeOperationBox);
+    networkColumn->setContentsMargins(10, 12, 10, 10);
+    networkColumn->setSpacing(10);
+    nodeOperationBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 
-    auto* connectivityBox = new QGroupBox("Connectivity & contribution");
+    auto* connectivityBox = new QWidget;
     auto* connectivityLayout = new QVBoxLayout(connectivityBox);
-    connectivityLayout->setContentsMargins(4, 6, 4, 4);
-    overviewConnectivityCard_ = new dinero::qt::OverviewConnectivityCard(connectivityBox);
-    connectivityLayout->addWidget(overviewConnectivityCard_);
+    connectivityLayout->setContentsMargins(0, 0, 0, 0);
+    connectivityLayout->setSpacing(8);
+    auto* contributionHeader = new QHBoxLayout;
+    auto* contributionSummary = new QLabel(
+        "Live node participation status. Manage Tor and relay controls in "
+        "Settings → Network & Privacy.",
+        connectivityBox);
+    contributionSummary->setWordWrap(true);
+    contributionSummary->setStyleSheet("QLabel { color: #9fb3c8; background: transparent; }");
+    auto* btnNetworkSettings = new QPushButton("Network settings", connectivityBox);
+    btnNetworkSettings->setStyleSheet(chromeButtonStyle());
+    connect(btnNetworkSettings, &QPushButton::clicked, this, [tabs]() {
+      for (int i = 0; i < tabs->count(); ++i) {
+        if (tabs->tabText(i).contains("Settings", Qt::CaseInsensitive)) {
+          tabs->setCurrentIndex(i);
+          return;
+        }
+      }
+    });
+    contributionHeader->addWidget(contributionSummary, 1);
+    contributionHeader->addWidget(btnNetworkSettings);
+    connectivityLayout->addLayout(contributionHeader);
+
+    auto* contributionTiles = new QHBoxLayout;
+    contributionTiles->setSpacing(8);
+    auto addContributionTile = [contributionTiles, connectivityBox](const QString& title,
+                                                                    QLabel*& valueLabel) {
+      auto* tile = new QWidget(connectivityBox);
+      tile->setStyleSheet(
+          "QWidget { background: #171b20; border: 1px solid #2f363f; border-radius: 6px; }");
+      auto* tileLayout = new QHBoxLayout(tile);
+      tileLayout->setContentsMargins(10, 6, 10, 6);
+      tileLayout->setSpacing(7);
+      auto* titleLabel = new QLabel(title + QStringLiteral(" —"), tile);
+      titleLabel->setStyleSheet(
+          "QLabel { color: #8f9ba8; font-size: 10px; border: none; background: transparent; }");
+      valueLabel = new QLabel("Checking…", tile);
+      valueLabel->setStyleSheet(
+          "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+      tileLayout->addWidget(titleLabel);
+      tileLayout->addWidget(valueLabel);
+      tileLayout->addStretch();
+      contributionTiles->addWidget(tile, 1);
+    };
+    addContributionTile("REACHABILITY", lblOverviewReachability_);
+    addContributionTile("CONTRIBUTION", lblOverviewContribution_);
+    addContributionTile("CONNECTIVITY", lblOverviewConnectivity_);
+    connectivityLayout->addLayout(contributionTiles);
+
     connectivityBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Maximum);
     connectivityBox->setMaximumHeight(235);
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::torModeRequested,
-            this, [this](const QString& mode) {
-      rpc_->callNamed("network.setonionservice", QJsonObject{{"mode", mode}});
-    });
-    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
-            this, [this](const QString& mode) {
-      rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
-    });
-    row1->addWidget(connectivityBox, 2);
+    networkColumn->addWidget(connectivityBox);
 
     auto *cpuBox = new QGroupBox("Resources & mining");
     auto *cpuLayout = new QVBoxLayout(cpuBox);
@@ -2528,19 +2732,15 @@ void MainWindow::setupUI() {
     cpuLayout->addWidget(lblGpuLoadOverview_);
     cpuLayout->addWidget(lblGpuMemoryOverview_);
     cpuLayout->addWidget(lblGpuThermalsOverview_);
-    row1->addWidget(cpuBox, 1);
-    
-    monitoringLayout->addLayout(row1);
-    
-    // Row 2: Mempool + Peers Summary
-    auto *row2 = new QHBoxLayout;
     
     // Live mempool summary. The transaction rows make short-lived pending
     // activity observable instead of reducing it to a periodically sampled
     // counter that can remain visually indistinguishable from "unavailable".
     auto *mempoolBox = new QGroupBox("📦 Mempool");
     auto *mempoolLayout = new QVBoxLayout(mempoolBox);
+    mempoolBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     mempoolBox->setMinimumHeight(210);
+    mempoolBox->setMaximumHeight(235);
     lblMempoolSize_ = new QLabel("Loading…");
     lblMempoolSize_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblMempoolBytes_ = new QLabel("Waiting for local node");
@@ -2560,7 +2760,7 @@ void MainWindow::setupUI() {
     tblMempoolOverview_->setMinimumHeight(120);
     tblMempoolOverview_->setToolTip("Transactions currently held by this local node");
     mempoolLayout->addWidget(tblMempoolOverview_);
-    row2->addWidget(mempoolBox, 1, Qt::AlignTop);
+    chainActivityRow->addWidget(mempoolBox, 3);
     
     // Peers Summary + compact connected peers table
     auto *peersBox = new QGroupBox("🌐 Peers");
@@ -2569,15 +2769,23 @@ void MainWindow::setupUI() {
     lblPeersCount_->setStyleSheet("QLabel { font-size: 18px; font-weight: bold; color: #d6dde6; }");
     lblPeersStatus_ = new QLabel("Disconnected");
     lblPeersStatus_->setStyleSheet("QLabel { font-size: 11px; color: #868e96; }");
-    peersLayout->addWidget(lblPeersCount_);
-    peersLayout->addWidget(lblPeersStatus_);
+    auto* peersSummary = new QHBoxLayout;
+    peersSummary->setSpacing(10);
+    peersSummary->addWidget(lblPeersCount_);
+    peersSummary->addWidget(lblPeersStatus_);
+    peersSummary->addStretch();
+    peersLayout->addLayout(peersSummary);
 
-    tblPeersOverview_ = new QTableWidget(0, 5);  // 5 columns
-    tblPeersOverview_->setHorizontalHeaderLabels({"Location", "Activity", "Last Seen", "Seen Height", "Client"});
-    if (auto* advertisedHeader = tblPeersOverview_->horizontalHeaderItem(3)) {
-      advertisedHeader->setToolTip(
-          "Last height this local node observed for the peer.\n"
-          "This is P2P telemetry, not a live RPC query to that server.");
+    tblPeersOverview_ = new QTableWidget(0, 6);
+    tblPeersOverview_->setHorizontalHeaderLabels(
+        {"Location", "Activity", "Last Seen", "Blocks Seen", "Headers Seen", "Client"});
+    for (int column : {3, 4}) {
+      if (auto* seenHeader = tblPeersOverview_->horizontalHeaderItem(column)) {
+        seenHeader->setToolTip(
+            "Observed through this local node's P2P connection.\n"
+            "This is not the remote node's active validated tip.\n"
+            "Validation requires that node's authenticated blockchain RPC.");
+      }
     }
     tblPeersOverview_->horizontalHeader()->setStretchLastSection(true);
     tblPeersOverview_->verticalHeader()->setVisible(false);
@@ -2591,10 +2799,15 @@ void MainWindow::setupUI() {
       "QHeaderView::section { background: #272c33; color: #d5dde6; padding: 4px; font-weight: bold; border: 1px solid #373d46; }"
     );
     peersLayout->addWidget(tblPeersOverview_);
-    row2->addWidget(peersBox, 2);
+    networkColumn->addWidget(peersBox);
+    monitoringColumns->addWidget(nodeOperationBox, 2, Qt::AlignTop);
+    auto* columnGutter = new QWidget;
+    columnGutter->setStyleSheet("QWidget { background: #14191f; }");
+    columnGutter->setFixedWidth(12);
+    monitoringColumns->addWidget(columnGutter);
+    monitoringColumns->addWidget(cpuBox, 1, Qt::AlignTop);
+    layout->addLayout(monitoringColumns);
 
-    monitoringLayout->addLayout(row2);
-    
     // Row 3: Alerts (last 5 events)
     auto *alertsBox = new QGroupBox("⚠️ Recent Alerts");
     auto *alertsLayout = new QVBoxLayout(alertsBox);
@@ -2606,7 +2819,7 @@ void MainWindow::setupUI() {
     );
     txtAlerts_->setPlaceholderText("No recent alerts");
     alertsLayout->addWidget(txtAlerts_);
-    monitoringLayout->addWidget(alertsBox);
+    layout->addWidget(alertsBox);
     
     // Row 5: Export Button
     auto *exportLayout = new QHBoxLayout;
@@ -2615,9 +2828,7 @@ void MainWindow::setupUI() {
     btnExportMetrics->setStyleSheet(chromeButtonStyle());
     connect(btnExportMetrics, &QPushButton::clicked, this, &MainWindow::onExportMetrics);
     exportLayout->addWidget(btnExportMetrics);
-    monitoringLayout->addLayout(exportLayout);
-    
-    layout->addWidget(monitoringGroup);
+    layout->addLayout(exportLayout);
     
     // ═══════════════════════════════════════════════════════════════════
     // END MONITORING DASHBOARD
@@ -2625,7 +2836,7 @@ void MainWindow::setupUI() {
     
     overview->setMinimumHeight(1120); // Scroll area still handles smaller screens.
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
-    tabs->addTab(makeScrollableTab(overview), "Overview");
+    tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
   }
 
   // === Wallet Tab ===
@@ -2884,7 +3095,7 @@ void MainWindow::setupUI() {
     
     wallet->setMinimumHeight(1800); // v7: must be tall enough for all sections to scroll
     wallet->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
-    tabs->addTab(makeScrollableTab(wallet), "\xF0\x9F\x92\xB0 Wallet");
+    tabs->addTab(makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), "Wallet");
   }
 
   // === Contracts Tab (Phase 4) ===
@@ -2958,7 +3169,7 @@ void MainWindow::setupUI() {
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
 
-    tabs->addTab(makeScrollableTab(contracts), "\xF0\x9F\x93\x9C Contracts");
+    tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Covenants");
   }
 
   // === Send Tab ===
@@ -3278,7 +3489,7 @@ void MainWindow::setupUI() {
     
     layout->addStretch();
     
-    tabs->addTab(makeScrollableTab(send), "\xF0\x9F\x93\xA4 Send");
+    tabs->addTab(makeScrollableTab(send), navigationIcon(NavigationGlyph::Send), "Send");
   }
   
   // === Receive Tab (HD Address List) ===
@@ -3340,7 +3551,7 @@ void MainWindow::setupUI() {
     });
     layout->addWidget(btnLoadAllAddresses_);
 
-    tabs->addTab(makeScrollableTab(receive), "📥 Receive");
+    tabs->addTab(makeScrollableTab(receive), navigationIcon(NavigationGlyph::Receive), "Receive");
   }
   
   // === Transactions Tab (History) ===
@@ -3390,7 +3601,7 @@ void MainWindow::setupUI() {
     // Auto-load transaction history after 5 seconds
     QTimer::singleShot(5000, this, &MainWindow::loadTransactionHistory);
     
-    tabs->addTab(transactions, "📜 Transactions");
+    tabs->addTab(transactions, navigationIcon(NavigationGlyph::Transactions), "Transactions");
   }
   
   // === UTXOs Tab (Advanced) ===
@@ -3445,7 +3656,7 @@ void MainWindow::setupUI() {
     pageLayout->addWidget(btnNextUtxoPage_);
     layout->addLayout(pageLayout);
     
-    tabs->addTab(utxos, "🔗 UTXOs");
+    tabs->addTab(utxos, navigationIcon(NavigationGlyph::Link), "UTXOs");
   }
 
   // === Hardware Wallet Tab (Production-Ready) ===
@@ -3454,13 +3665,13 @@ void MainWindow::setupUI() {
     hardwareWalletWidget_ = new HardwareWalletWidget(rpc_);
     connect(hardwareWalletWidget_, &HardwareWalletWidget::transactionBroadcasted,
             this, &MainWindow::handleHardwareWalletBroadcast);
-    tabs->addTab(hardwareWalletWidget_, "🔐 Hardware Wallet");
+    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware Wallet");
   }
 
   // === DPI Pay/Collect Tab ===
   {
     dpiWidget_ = new DpiWidget(rpc_, this);
-    tabs->addTab(dpiWidget_, "💳 Pay/Collect");
+    tabs->addTab(dpiWidget_, navigationIcon(NavigationGlyph::Card), "Pay/Collect");
   }
 
 #ifdef DIN_EXPERIMENTAL_FEATURES
@@ -3474,19 +3685,19 @@ void MainWindow::setupUI() {
   // === Payments Tab ===
   {
     paymentsWidget_ = new PaymentsWidget(rpc_, ws_, this);
-    tabs->addTab(paymentsWidget_, "💳 Payments");
+    tabs->addTab(paymentsWidget_, navigationIcon(NavigationGlyph::Card), "Payments");
   }
 
   // === Escrow Tab ===
   {
     escrowWidget_ = new EscrowWidget(rpc_, ws_, this);
-    tabs->addTab(escrowWidget_, "⚖️ Escrow");
+    tabs->addTab(escrowWidget_, navigationIcon(NavigationGlyph::Document), "Escrow");
   }
 
   // === Marketplace Tab ===
   {
     marketplaceWidget_ = new MarketplaceWidget(rpc_, ws_, this);
-    tabs->addTab(marketplaceWidget_, "🛒 Marketplace");
+    tabs->addTab(marketplaceWidget_, navigationIcon(NavigationGlyph::Transactions), "Marketplace");
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -3500,7 +3711,7 @@ void MainWindow::setupUI() {
   // Explicit operator/developer builds may opt in at configure time.
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
-    tabs->addTab(vaultPanel_, "🏦 Liquidity Vault");
+    tabs->addTab(vaultPanel_, navigationIcon(NavigationGlyph::Shield), "Liquidity Vault");
   }
 #endif
 
@@ -3509,7 +3720,7 @@ void MainWindow::setupUI() {
   // and contributor table together exceed a laptop viewport.
   {
     poolPanel_ = new PoolPanel(rpc_, this);
-    tabs->addTab(makeScrollableTab(poolPanel_), "👥 Pool");
+    tabs->addTab(makeScrollableTab(poolPanel_), navigationIcon(NavigationGlyph::Pool), "Pool");
   }
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
@@ -3518,7 +3729,7 @@ void MainWindow::setupUI() {
   // banner; on regtest it is fully functional.
   {
     shieldedWidget_ = new ShieldedWidget(rpc_, this);
-    tabs->addTab(shieldedWidget_, "🛡 Shielded");
+    tabs->addTab(shieldedWidget_, navigationIcon(NavigationGlyph::Shield), "Shielded");
   }
 
   // === ⚡ Lightning Network Tab (Phase 7) ===
@@ -3620,12 +3831,23 @@ void MainWindow::setupUI() {
     tblRecentBlocks_->setColumnWidth(2, 125);
     tblRecentBlocks_->setColumnWidth(3, 60);
     tblRecentBlocks_->setColumnWidth(4, 120);
-    // Shorter than the old Explorer-tab sizing: on Overview this is a card
-    // among many, not the focus of a dedicated page.
-    // Sized to show all six rows without a scrollbar: header + 6 * row.
+    // Keep the Overview compact while retaining enough recent history to be
+    // useful: five rows are visible and the remaining five are scrollable.
     tblRecentBlocks_->verticalHeader()->setDefaultSectionSize(26);
-    tblRecentBlocks_->setFixedHeight(26 * 6 + 30);
-    tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    tblRecentBlocks_->setFixedHeight(26 * 5 + 30);
+    tblRecentBlocks_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // The generic Explorer table uses alternating rows. Inside Overview those
+    // lighter stripes look detached from the surrounding dark card, so use a
+    // uniform card-compatible viewport and retain a distinct selected state.
+    tblRecentBlocks_->setAlternatingRowColors(false);
+    tblRecentBlocks_->setStyleSheet(
+        "QTableWidget { gridline-color: #343a43; background-color: #1d2126; "
+        "color: #d8dee7; selection-background-color: #3e4550; "
+        "selection-color: #f1f4f7; } "
+        "QTableWidget::item { background-color: #1d2126; padding: 4px; } "
+        "QTableWidget::item:selected { background-color: #3e4550; color: #f1f4f7; } "
+        "QHeaderView::section { background-color: #272c33; color: #d8dee7; "
+        "padding: 5px; font-weight: bold; border: 1px solid #373d46; }");
     // Let Hash absorb the width instead of Nonce, which otherwise stretches
     // into a column of mostly empty space.
     tblRecentBlocks_->horizontalHeader()->setStretchLastSection(false);
@@ -3815,7 +4037,7 @@ void MainWindow::setupUI() {
             throw std::runtime_error("QML failed to load");
         }
         
-        tabs->addTab(miningWidget_, "⛏️ Mining");
+        tabs->addTab(miningWidget_, navigationIcon(NavigationGlyph::Mining), "Mining");
         miningTabWidget_ = miningWidget_;
     } catch (...) {
         // Fallback to simple message if QML fails
@@ -3835,7 +4057,7 @@ void MainWindow::setupUI() {
         layout->addWidget(label);
         layout->addStretch();
         auto* miningPage = makeScrollableTab(mining);
-        tabs->addTab(miningPage, "⛏️ Mining");
+        tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
         miningTabWidget_ = miningPage;
     }
 #else
@@ -4272,7 +4494,7 @@ void MainWindow::setupUI() {
     setMiningOutputCinematicEnabled(false);
     
     auto* miningPage = makeScrollableTab(mining);
-    tabs->addTab(miningPage, "⛏️ Mining");
+    tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
     miningTabWidget_ = miningPage;
 
     // Create embedded miner controller (in-process via dinero-solo-miner library)
@@ -4309,6 +4531,12 @@ void MainWindow::setupUI() {
     });
 
     connect(minerCtrl_, &MinerController::logLine, this, [this](const QString& line) {
+        // The embedded GPU startup state is already part of the persistent
+        // one-line session header. Do not spend a second console row saying
+        // the same thing again.
+        if (line.startsWith(QStringLiteral("GPU miner started successfully"))) {
+            return;
+        }
         const bool transientError = dinero::qt::isTransientMiningError(line);
         const QString displayLine = dinero::qt::miningOutputDisplayText(line);
         if (txtMiningOutput_) {
@@ -4349,6 +4577,9 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::templateChanged, this,
             [this](int height, quint32 difficultyBits) {
+      if (!miningSessionHeader_.isEmpty()) {
+        replaceMiningOutputFirstLine(txtMiningOutput_, miningSessionHeader_);
+      }
       // A fresh template is authoritative evidence that the miner recovered.
       // Remove prior recoverable rejection/template errors from the live view;
       // their full diagnostics remain available in the daemon log.
@@ -4365,24 +4596,42 @@ void MainWindow::setupUI() {
 
     connect(minerCtrl_, &MinerController::blockFoundDetailed, this,
             [this](const QString& hash, int height, quint32 nonce,
+                   const QString& prevHash,
                    const QString& merkleRoot, const QString& utreexoRoot,
+                   quint32 version, quint64 timestamp,
                    quint32 difficultyBits) {
       miningSessionFinds_.append(
         {height, hash, merkleRoot, utreexoRoot, nonce, difficultyBits});
+      if (!miningSessionHeader_.isEmpty()) {
+        replaceMiningOutputFirstLine(
+          txtMiningOutput_,
+          miningSessionHeader_ +
+            QStringLiteral(" · Block found — confirming and loading next template…"));
+      }
       if (btnMiningSessionFinds_) {
         btnMiningSessionFinds_->setEnabled(true);
         btnMiningSessionFinds_->setText(
           QString("Session finds (%1)").arg(miningSessionFinds_.size()));
       }
       const QString liveRecord = QString(
-        "BLOCK_FOUND height=%1 hash=%2 merkle=%3 utreexo=%4 "
-        "bits=0x%5 nonce=0x%6")
-          .arg(height).arg(hash, merkleRoot, utreexoRoot)
+        "nonce=0x%1 hash=%2 prev=%3 merkle=%4 utreexo=%5 version=0x%6 "
+        "time=%7 bits=0x%8 reserved=000000000000000000000000 height=%9")
+          .arg(nonce, 8, 16, QChar('0'))
+          .arg(hash, prevHash, merkleRoot, utreexoRoot)
+          .arg(version, 8, 16, QChar('0'))
+          .arg(timestamp)
           .arg(difficultyBits, 8, 16, QChar('0'))
-          .arg(nonce, 8, 16, QChar('0'));
-      miningHashSamples_.append({nonce, hash, liveRecord, true,
-        QDateTime::currentMSecsSinceEpoch() +
-          dinero::qt::kBlockFoundHighlightMs});
+          .arg(height);
+      MiningHashSample foundSample;
+      foundSample.nonce = nonce;
+      foundSample.hash = hash;
+      foundSample.headerFields = liveRecord;
+      foundSample.renderedLine.setText(liveRecord);
+      foundSample.renderedLine.setPerformanceHint(QStaticText::AggressiveCaching);
+      foundSample.blockFound = true;
+      foundSample.highlightUntilMs = QDateTime::currentMSecsSinceEpoch() +
+                                     dinero::qt::kBlockFoundHighlightMs;
+      miningHashSamples_.append(std::move(foundSample));
     });
 
     // Forward embedded miner state into the daemon's relay auto-mode so
@@ -4542,7 +4791,7 @@ void MainWindow::setupUI() {
     layout->addLayout(grid);
     layout->addStretch();
 
-    const int bridgeTabIndex = tabs->addTab(makeScrollableTab(bridge), "Utreexo Proofs");
+    const int bridgeTabIndex = tabs->addTab(makeScrollableTab(bridge), navigationIcon(NavigationGlyph::Proof), "Utreexo Proofs");
     tabs->setTabVisible(bridgeTabIndex, false);  // Advanced diagnostics; surfaced on Overview.
   }
 
@@ -4593,12 +4842,16 @@ void MainWindow::setupUI() {
     layout->addWidget(statusGroup);
 
     // Peer table
-    tblPeers_ = new QTableWidget(0, 6);
-    tblPeers_->setHorizontalHeaderLabels({"ID", "Location", "Type", "Client", "Seen Height", "Direction"});
-    if (auto* advertisedHeader = tblPeers_->horizontalHeaderItem(4)) {
-      advertisedHeader->setToolTip(
-          "Last height this local node observed for the peer.\n"
-          "This is P2P telemetry, not a live RPC query to that server.");
+    tblPeers_ = new QTableWidget(0, 7);
+    tblPeers_->setHorizontalHeaderLabels(
+        {"ID", "Location", "Type", "Client", "Blocks Seen", "Headers Seen", "Direction"});
+    for (int column : {4, 5}) {
+      if (auto* seenHeader = tblPeers_->horizontalHeaderItem(column)) {
+        seenHeader->setToolTip(
+            "Observed through this local node's P2P connection.\n"
+            "This is not the remote node's active validated tip.\n"
+            "Validation requires that node's authenticated blockchain RPC.");
+      }
     }
     tblPeers_->horizontalHeader()->setStretchLastSection(true);
     tblPeers_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -4634,7 +4887,7 @@ void MainWindow::setupUI() {
     btnLayout->addStretch();
     layout->addLayout(btnLayout);
 
-    const int peersTabIndex = tabs->addTab(makeScrollableTab(peers), "🌐 Peers");
+    const int peersTabIndex = tabs->addTab(makeScrollableTab(peers), navigationIcon(NavigationGlyph::Peers), "Peers");
     tabs->setTabVisible(peersTabIndex, false);  // Advanced diagnostics; surfaced on Overview.
   }
 
@@ -4694,7 +4947,7 @@ void MainWindow::setupUI() {
     jsonLayout->addWidget(txtBlockTemplate_);
     layout->addWidget(jsonGroup);
 
-    const int templateTabIndex = tabs->addTab(makeScrollableTab(templateWidget), "📋 Template");
+    const int templateTabIndex = tabs->addTab(makeScrollableTab(templateWidget), navigationIcon(NavigationGlyph::Template), "Template");
     tabs->setTabVisible(templateTabIndex, false);  // Advanced mining diagnostics; Mining tab covers normal use.
   }
 
@@ -4903,6 +5156,27 @@ void MainWindow::setupUI() {
     runtimeButtons->addStretch();
     runtimeLayout->addLayout(runtimeButtons, 3, 0, 1, 2);
     layout->addWidget(runtimeGroup);
+
+    auto* networkPrivacyGroup = new QGroupBox("Network & Privacy");
+    auto* networkPrivacyLayout = new QVBoxLayout(networkPrivacyGroup);
+    networkPrivacyLayout->setSpacing(8);
+    auto* networkPrivacySummary = new QLabel(
+        "Choose how this node connects privately and whether it contributes relay capacity. "
+        "These settings affect Dinero P2P traffic only.", networkPrivacyGroup);
+    networkPrivacySummary->setWordWrap(true);
+    networkPrivacySummary->setStyleSheet(backupPanelStyle());
+    networkPrivacyLayout->addWidget(networkPrivacySummary);
+    overviewConnectivityCard_ = new dinero::qt::OverviewConnectivityCard(networkPrivacyGroup);
+    networkPrivacyLayout->addWidget(overviewConnectivityCard_);
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::torModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setonionservice", QJsonObject{{"mode", mode}});
+    });
+    connect(overviewConnectivityCard_, &dinero::qt::OverviewConnectivityCard::relayModeRequested,
+            this, [this](const QString& mode) {
+      rpc_->callNamed("network.setrelayservice", QJsonObject{{"mode", mode}});
+    });
+    layout->addWidget(networkPrivacyGroup);
 
     auto *developerGroup = new QGroupBox("🧪 Developer Menu");
     auto *developerLayout = new QVBoxLayout(developerGroup);
@@ -5136,7 +5410,7 @@ void MainWindow::setupUI() {
     layout->addWidget(note);
 
     layout->addStretch();
-    tabs->addTab(makeScrollableTab(settings), "\xE2\x9A\x99\xEF\xB8\x8F Settings");
+    tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), "Settings");
   }
 
   // === Error Message Bar (at very bottom) ===
@@ -5185,6 +5459,7 @@ void MainWindow::refresh() {
   rpc_->call("mempool.getinfo", QJsonArray());     // Get mempool stats
   rpc_->call("mempool.getrawmempool", QJsonArray{true}); // Visible pending rows + change detection
   rpc_->call("blockchain.getinfo", QJsonArray());  // Get headers vs blocks (headers-first sync)
+  rpc_->call("blockchain.getutreexocommitment", QJsonArray()); // Validation role + accumulator telemetry
   rpc_->call("blockchain.getmininginfo", QJsonArray());  // Get current difficulty & network mining stats
 
   // Status bar info: daemon version and DB health
@@ -5766,16 +6041,57 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
             ? "QLabel { font-size: 12px; font-weight: bold; color: #2d8a4e; }"
             : "QLabel { font-size: 12px; font-weight: bold; color: #d4a017; }");
       }
-      if (lblUtreexoLeaves_) {
-        lblUtreexoLeaves_->setText(QString("Height: %1").arg(obj["blocks"].toInt()));
+      updateExplorerRecentBlocks(cachedHeight_);
+    }
+  } else if (method == "blockchain.getutreexocommitment") {
+    if (result.isObject()) {
+      const auto obj = result.toObject();
+      const QString role = obj.value("validation_role").toString();
+      const bool bridgeActive = obj.value("bridge_active").toBool(false);
+      const bool bridgeEnabled = obj.value("bridge_enabled").toBool(false);
+      const qint64 bridgePeers = static_cast<qint64>(obj.value("bridge_peer_count").toDouble());
+      const qint64 verifiedHeight = static_cast<qint64>(obj.value("verified_height").toDouble());
+      const qint64 leaves = static_cast<qint64>(obj.value("num_leaves").toDouble());
+      const qint64 compactBytes = static_cast<qint64>(obj.value("compact_state_bytes").toDouble());
+      const qint64 forestBytes = static_cast<qint64>(obj.value("forest_memory_bytes_estimate").toDouble());
+      const bool fullState = obj.value("retains_full_state").toBool(true);
+
+      if (lblUtreexoRole_) {
+        QString roleText = "Full validator";
+        if (role == "compact_validator") roleText = "Compact validator";
+        else if (role == "proof_bridge") roleText = "Full validator";
+        QString bridgeText;
+        if (role == "compact_validator") {
+          bridgeText = bridgePeers == 1
+              ? "1 bridge connected"
+              : QString("%1 bridges connected").arg(bridgePeers);
+        } else {
+          bridgeText = bridgeActive
+              ? "Proof serving active"
+              : (bridgeEnabled ? "Proof serving starting" : "Proof serving off");
+        }
+        lblUtreexoRole_->setText(QString("Role: %1 · %2").arg(roleText, bridgeText));
       }
-      if (lblUtreexoRoot_) {
-        QString hash = obj["bestblockhash"].toString();
-        if (hash.length() > 16) hash = hash.left(16) + "...";
-        lblUtreexoRoot_->setText(QString("Tip: %1").arg(hash));
+      if (lblUtreexoState_) {
+        lblUtreexoState_->setText(QString("Verified: %1 · UTXOs: %2")
+            .arg(QLocale().toString(verifiedHeight))
+            .arg(QLocale().toString(leaves)));
+      }
+      if (lblUtreexoStorage_) {
+        const QString storageText = fullState
+            ? QString("Forest: ~%1 · compact verifier: %2")
+                  .arg(formatBytesText(forestBytes), formatBytesText(compactBytes))
+            : QString("Compact verifier: %1 · disk savings: measuring")
+                  .arg(formatBytesText(compactBytes));
+        lblUtreexoStorage_->setText(storageText);
       }
 
-      updateExplorerRecentBlocks(cachedHeight_);
+      QString root = obj.value("commitment").toString();
+      if (!root.isEmpty()) {
+        const QString tooltip = QString("Current Utreexo commitment\n%1").arg(root);
+        if (lblUtreexoHealth_) lblUtreexoHealth_->setToolTip(tooltip);
+        if (lblUtreexoState_) lblUtreexoState_->setToolTip(tooltip);
+      }
     }
   } else if (method == "economics.getinfo") {
     if (result.isObject()) {
@@ -6788,11 +7104,17 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   } else if (method == "network.getrelayservice" || method == "network.setrelayservice") {
     if (overviewConnectivityCard_ && result.isObject()) {
-      overviewConnectivityCard_->setRelayServiceStatus(result.toObject());
+      const QJsonObject status = result.toObject();
+      overviewConnectivityCard_->setRelayServiceStatus(status);
+      overviewRelayActive_ = status["enabled"].toBool(false);
+      updateOverviewContribution();
     }
   } else if (method == "network.setonionservice") {
     if (overviewConnectivityCard_ && result.isObject()) {
-      overviewConnectivityCard_->setOnionServiceStatus(result.toObject());
+      const QJsonObject status = result.toObject();
+      overviewConnectivityCard_->setOnionServiceStatus(status);
+      overviewTorActive_ = status["active"].toBool(false);
+      updateOverviewContribution();
     }
   } else if (method == "getpeerinfo" || method == "getpeerinfo") {
     // Week 7: Backend returns { "peers": [...], "connected_peers": N }
@@ -6816,6 +7138,15 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     
     // Feed real peer count to AI tools + status strip
     cachedPeerCount_ = peerCount;
+    overviewInboundPeers_ = 0;
+    for (const QJsonValue& value : peers) {
+      const QJsonObject peer = value.toObject();
+      if (peer["inbound"].toBool(false) ||
+          peer["direction"].toString().compare("inbound", Qt::CaseInsensitive) == 0) {
+        ++overviewInboundPeers_;
+      }
+    }
+    updateOverviewContribution();
     refreshAiStatusStrip();
 
     // Update monitoring dashboard
@@ -6897,32 +7228,38 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         }
         tblPeersOverview_->setItem(row, 2, lastSeenItem);
         
-        // Peer height (best available from daemon fields)
+        // Keep observed block and header progress separate. Taking the maximum
+        // of these fields previously made a header-only peer look fully
+        // validated in the dashboard.
         const int syncedBlocks = peer["synced_blocks"].toInt(-1);
         const int syncedHeaders = peer["synced_headers"].toInt(-1);
         const int startHeight = peer["startingheight"].toInt(-1);
         const int bestKnown = peer["best_known_height"].toInt(-1);
-        int peerHeight = syncedBlocks;
-        if (syncedHeaders > peerHeight) peerHeight = syncedHeaders;
-        if (startHeight > peerHeight) peerHeight = startHeight;
-        if (bestKnown > peerHeight) peerHeight = bestKnown;
-        const QString peerHeightText = peerHeightDisplayText(peerHeight, cachedHeight_);
-        auto* heightItem = new QTableWidgetItem(peerHeightText);
-        heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight,
-                                                          syncedHeaders,
-                                                          syncedBlocks,
-                                                          bestKnown,
-                                                          cachedHeight_));
-        if (cachedHeight_ > 0 && peerHeight >= 0 && peerHeight + 2 < cachedHeight_) {
-          heightItem->setForeground(QColor("#d9b36a"));
+        const int blocksSeen = dinero::qt::peerBlocksSeen(startHeight, syncedBlocks);
+        const int headersSeen = dinero::qt::peerHeadersSeen(startHeight, syncedHeaders, bestKnown);
+        auto* blocksItem = new QTableWidgetItem(peerHeightDisplayText(blocksSeen, cachedHeight_));
+        blocksItem->setToolTip(peerSeenHeightTooltip("Blocks", blocksSeen, startHeight,
+                                                     syncedHeaders, syncedBlocks, bestKnown,
+                                                     cachedHeight_));
+        if (cachedHeight_ > 0 && blocksSeen >= 0 && blocksSeen + 2 < cachedHeight_) {
+          blocksItem->setForeground(QColor("#d9b36a"));
         }
-        tblPeersOverview_->setItem(row, 3, heightItem);
+        tblPeersOverview_->setItem(row, 3, blocksItem);
+
+        auto* headersItem = new QTableWidgetItem(peerHeightDisplayText(headersSeen, cachedHeaders_));
+        headersItem->setToolTip(peerSeenHeightTooltip("Headers", headersSeen, startHeight,
+                                                      syncedHeaders, syncedBlocks, bestKnown,
+                                                      cachedHeight_));
+        if (cachedHeaders_ > 0 && headersSeen >= 0 && headersSeen + 2 < cachedHeaders_) {
+          headersItem->setForeground(QColor("#d9b36a"));
+        }
+        tblPeersOverview_->setItem(row, 4, headersItem);
 
         // Client
         const QString rawClient = peer["subver"].toString();
         auto* clientItem = new QTableWidgetItem(peerClientLabel(rawClient));
         clientItem->setToolTip(peerClientTooltip(rawClient));
-        tblPeersOverview_->setItem(row, 4, clientItem);
+        tblPeersOverview_->setItem(row, 5, clientItem);
       }
       
       tblPeersOverview_->setSortingEnabled(true);
@@ -6984,20 +7321,16 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       QString pa = obj.value("primary_address").toString();
       if (!pa.isEmpty()) cachedPrimaryAddress_ = pa;
 
-      // Apply to receive tab
-      applyPrimaryAddressesToReceiveTab();
-    }
-  } else if (method == "wallet.getviewkeyinfo") {
-    // Phase 6: wallet identity = fingerprint:accountIndex (matches DineroDPI model)
-    if (result.isObject()) {
-      const auto obj = result.toObject();
-      const QString fp = obj.value("fingerprint").toString();
+      const QString fingerprint = obj.value("fingerprint").toString();
       const int accountIndex = obj.value("account_index").toInt(0);
-      if (!fp.isEmpty() && changeAddrMgr_) {
+      if (!fingerprint.isEmpty() && changeAddrMgr_) {
         changeAddrMgr_->setWalletIdentityKey(
-            QString("%1:%2").arg(fp).arg(accountIndex));
+            QString("%1:%2").arg(fingerprint).arg(accountIndex));
         changeAddrMgr_->reconcileStaleReservations();
       }
+
+      // Apply to receive tab
+      applyPrimaryAddressesToReceiveTab();
     }
   } else if (method == "wallet.listwallets") {
     if (cmbWalletSelector_) {
@@ -7096,7 +7429,6 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
         rpc_->call("wallet.listunspent", QJsonArray());
         loadTransactionHistory();
         rpc_->call("wallet.getsyncstatus", QJsonArray());
-        rpc_->call("wallet.getviewkeyinfo", QJsonArray()); // Phase 6: get fingerprint for change reservation
         return;
       }
 
@@ -7114,7 +7446,6 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
       rpc_->call("wallet.listunspent", QJsonArray());
       loadTransactionHistory();
-      rpc_->call("wallet.getviewkeyinfo", QJsonArray());
     }
     QMessageBox::warning(this, "Wallet Load Failed",
       QString("Could not load selected wallet.\n\n%1").arg(errorText));
@@ -7699,7 +8030,6 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
       rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
       rpc_->call("wallet.listunspent", QJsonArray());
       loadTransactionHistory();
-      rpc_->call("wallet.getviewkeyinfo", QJsonArray());
     }
     QMessageBox::warning(this, "Wallet Load Failed",
       QString("Could not load selected wallet.\n\n%1").arg(message));
@@ -8294,8 +8624,9 @@ void MainWindow::updateExplorerRecentBlocks(int height) {
   explorerRecentBlockRows_.clear();
   pendingExplorerRecentHeight_ = -1;
 
-  // Six, not ten: this renders in Overview's compact "Latest Blocks" card.
-  const int rowCount = std::min(6, height + 1);
+  // Retain ten recent blocks; the compact Overview card shows five at once
+  // and exposes the rest through its vertical scrollbar.
+  const int rowCount = std::min(10, height + 1);
   tblRecentBlocks_->setRowCount(rowCount);
   for (int row = 0; row < rowCount; ++row) {
     const int blockHeight = height - row;
@@ -9783,9 +10114,6 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
   if (shouldRun && miningCinematicTimer_) {
     if (!miningCinematicTimer_->isActive()) {
       miningCinematicFrame_ = 0;
-      miningCinematicLastLongCometFrame_ = -100000;
-      miningCinematicLastUltraCometFrame_ = 0;
-      miningCinematicSparks_.clear();
       miningCinematicTimer_->start();
     }
     updateMiningOutputCinematicFrame();
@@ -9809,9 +10137,6 @@ void MainWindow::setMiningOutputCinematicEnabled(bool enabled) {
     miningHashOverlay_->clear();
   }
   miningCinematicFrame_ = 0;
-  miningCinematicLastLongCometFrame_ = -100000;
-  miningCinematicLastUltraCometFrame_ = 0;
-  miningCinematicSparks_.clear();
 
   QPalette palette = viewport->palette();
   palette.setColor(QPalette::Base, QColor(kMiningOutputIdleBackground));
@@ -9855,7 +10180,13 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       if (miningHashSamples_.isEmpty() ||
           miningHashSamples_.constLast().nonce != nonce ||
           miningHashSamples_.constLast().hash != hash) {
-        miningHashSamples_.append({nonce, hash, headerFields, false, 0});
+        MiningHashSample liveSample;
+        liveSample.nonce = nonce;
+        liveSample.hash = hash;
+        liveSample.headerFields = headerFields;
+        liveSample.renderedLine.setText(headerFields);
+        liveSample.renderedLine.setPerformanceHint(QStaticText::AggressiveCaching);
+        miningHashSamples_.append(std::move(liveSample));
       }
       if (lblMiningHeight_) lblMiningHeight_->setText(QString::number(height));
       if (lblMiningDifficulty_) {
@@ -9886,16 +10217,16 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       const int sampleIndex = count - 1 - visual;
       const MiningHashSample& sample = miningHashSamples_.at(sampleIndex);
       if (sample.blockFound && sample.highlightUntilMs > nowMs) {
-        painter.setPen(QColor(255, 212, 59, 255));
+        painter.setPen(QColor(213, 138, 50, 255));
       } else if (sample.blockFound) {
-        painter.setPen(QColor(105, 219, 124, 185));
+        painter.setPen(QColor(213, 138, 50, 205));
       } else {
         painter.setPen(QColor(151, 163, 174, 150));
       }
-      const QString line = sample.headerFields;
-      painter.drawText(8,
-                       frameSize.height() - 6 - visual * rowHeight - metrics.descent(),
-                       line);
+      painter.drawStaticText(
+        QPointF(8,
+                frameSize.height() - 6 - visual * rowHeight - metrics.ascent()),
+        sample.renderedLine);
     }
     if (miningHashOverlay_) {
       miningHashOverlay_->setGeometry(viewport->rect());
@@ -9975,6 +10306,9 @@ void MainWindow::updateMiningOutputCinematicFrame() {
     painter.drawText(0, y, line);
   }
 
+  // Comet/spark effects are intentionally disabled. They were barely visible
+  // but multiplied per-frame text draws enough to make the hash field stutter.
+#if 0
   // Sparse highlight layer: random bright glyph sparks + comet streaks.
   auto spawnSpark = [&](int lifetimeMin, int lifetimeMax, int streakMin, int streakMax) {
     if (charsPerLine <= 0 || visibleRows <= 0) {
@@ -10098,6 +10432,8 @@ void MainWindow::updateMiningOutputCinematicFrame() {
       }
     }
   }
+
+#endif
 
   // ── Motto ticker as floating overlay (not in background pixmap) ──
   {
@@ -11138,8 +11474,11 @@ void MainWindow::startInternalMiner(bool useGpu) {
                                   : QString("Embedded CPU solo miner · %1 threads").arg(threads);
     const QString auth = cookiePath.isEmpty() ? QStringLiteral("cookie auth unavailable")
                                               : QStringLiteral("cookie auth active");
-    txtMiningOutput_->setPlainText(
-      QString("%1 · payout %2 · %3").arg(engine, addr, auth));
+    const QString backend = useGpu ? QStringLiteral("Metal active")
+                                   : QStringLiteral("CPU active");
+    miningSessionHeader_ = QString("%1 · payout %2 · %3 · %4")
+                             .arg(engine, addr, auth, backend);
+    txtMiningOutput_->setPlainText(miningSessionHeader_);
   }
 
   mining_stats_.blocks_found = 0;
@@ -12400,7 +12739,6 @@ void MainWindow::onWalletCreated(const QString& walletName, const QString& finge
   rpc_->call("wallet.listwallets", QJsonArray());
   rpc_->callNamed("wallet.listaddresses", QJsonObject{{"count", 200}});
   rpc_->call("wallet.listunspent", QJsonArray());
-  rpc_->call("wallet.getviewkeyinfo", QJsonArray());
   loadTransactionHistory();
 
   // Primary addresses are now computed by the daemon on open/unlock
@@ -13607,7 +13945,6 @@ bool MainWindow::shouldIgnoreWalletScopedResult(const QString& method) const {
     // Loaded on-demand when user opens receive tab instead
     QStringLiteral("wallet.listunspent"),
     QStringLiteral("wallet.listtransactions"),
-    QStringLiteral("wallet.getviewkeyinfo"),
     QStringLiteral("wallet.getsyncstatus"),
     QStringLiteral("wallet.getreorginfo"),
     QStringLiteral("wallet.rescanblockchain"),
@@ -13830,9 +14167,7 @@ void MainWindow::checkRescanStatus() {
         // Clear stale data from previous wallet
         clearWalletScopedUiState();
         refreshWalletMiningAddress();
-        if (!currentWalletName_.isEmpty()) {
-          rpc_->call("wallet.getviewkeyinfo", QJsonArray());
-        } else if (changeAddrMgr_) {
+        if (currentWalletName_.isEmpty() && changeAddrMgr_) {
           changeAddrMgr_->setWalletIdentityKey(QString());
         }
 
@@ -15579,6 +15914,12 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   const bool localRelay = relay["local"].toBool(networkInfo["localrelay"].toBool(false));
   const bool miningRelayActive =
       relay["mining_active"].toBool(networkInfo["mining_relay_active"].toBool(false));
+  const QJsonObject onionService = networkInfo["onion_service"].toObject();
+  overviewNetworkActive_ = networkActive;
+  overviewDirectReachable_ = directReachable;
+  overviewTorActive_ = onionService["active"].toBool(false);
+  overviewRelayActive_ = relay["enabled"].toBool(localRelay || miningRelayActive);
+  overviewInboundPeers_ = inbound;
 
   cachedPeerCount_ = connections;
   if (lblConnections_) {
@@ -15716,6 +16057,42 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   }
 
   refreshAiStatusStrip();
+  updateOverviewContribution();
+}
+
+void MainWindow::updateOverviewContribution() {
+  if (lblOverviewReachability_) {
+    if (!overviewNetworkActive_) {
+      lblOverviewReachability_->setText("P2P disabled");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #a9b2bc; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else if (overviewDirectReachable_) {
+      lblOverviewReachability_->setText("Direct inbound");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #80d39b; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else if (overviewTorActive_) {
+      lblOverviewReachability_->setText("Tor available");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #a9c5ff; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    } else {
+      lblOverviewReachability_->setText("Outbound only");
+      lblOverviewReachability_->setStyleSheet(
+          "QLabel { color: #d8c08a; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+    }
+  }
+  if (lblOverviewContribution_) {
+    lblOverviewContribution_->setText(overviewRelayActive_ ? "Relay active" : "Ordinary peer");
+    lblOverviewContribution_->setStyleSheet(QString(
+        "QLabel { color: %1; font-size: 13px; font-weight: 600; border: none; background: transparent; }")
+        .arg(overviewRelayActive_ ? "#80d39b" : "#d6dde6"));
+  }
+  if (lblOverviewConnectivity_) {
+    const int peers = std::max(0, cachedPeerCount_);
+    lblOverviewConnectivity_->setText(QString("%1 peers · %2 inbound")
+        .arg(peers).arg(std::max(0, overviewInboundPeers_)));
+    lblOverviewConnectivity_->setStyleSheet(
+        "QLabel { color: #d6dde6; font-size: 13px; font-weight: 600; border: none; background: transparent; }");
+  }
 }
 
 QString MainWindow::networkDiagnosticsText() const {
@@ -15733,8 +16110,9 @@ QString MainWindow::networkDiagnosticsText() const {
       peer["endpoint"] = locationItem ? locationItem->data(Qt::UserRole).toString() : "";
       peer["type"] = tblPeers_->item(row, 2) ? tblPeers_->item(row, 2)->text() : "";
       peer["client"] = tblPeers_->item(row, 3) ? tblPeers_->item(row, 3)->text() : "";
-      peer["height"] = tblPeers_->item(row, 4) ? tblPeers_->item(row, 4)->text() : "";
-      peer["direction"] = tblPeers_->item(row, 5) ? tblPeers_->item(row, 5)->text() : "";
+      peer["blocks_seen"] = tblPeers_->item(row, 4) ? tblPeers_->item(row, 4)->text() : "";
+      peer["headers_seen"] = tblPeers_->item(row, 5) ? tblPeers_->item(row, 5)->text() : "";
+      peer["direction"] = tblPeers_->item(row, 6) ? tblPeers_->item(row, 6)->text() : "";
       peers.append(peer);
     }
   }
@@ -15766,11 +16144,8 @@ void MainWindow::updatePeerTable(const QJsonArray& peers) {
     int bestKnown = peer["best_known_height"].toInt(-1);
     bool inbound = peer["inbound"].toBool();
 
-    // Best available height: prefer best_known > synced_blocks > synced_headers > startingheight
-    int bestHeight = startHeight;
-    if (syncedHeaders > bestHeight) bestHeight = syncedHeaders;
-    if (syncedBlocks > bestHeight) bestHeight = syncedBlocks;
-    if (bestKnown > bestHeight) bestHeight = bestKnown;
+    const int blocksSeen = dinero::qt::peerBlocksSeen(startHeight, syncedBlocks);
+    const int headersSeen = dinero::qt::peerHeadersSeen(startHeight, syncedHeaders, bestKnown);
 
     tblPeers_->setItem(row, 0, new QTableWidgetItem(QString::number(id)));
     const QString location = peerLocationLabel(addr, row);
@@ -15782,17 +16157,23 @@ void MainWindow::updatePeerTable(const QJsonArray& peers) {
     auto* clientItem = new QTableWidgetItem(peerClientLabel(rawClient));
     clientItem->setToolTip(peerClientTooltip(rawClient));
     tblPeers_->setItem(row, 3, clientItem);
-    auto* heightItem = new QTableWidgetItem(peerHeightDisplayText(bestHeight, cachedHeight_));
-    heightItem->setToolTip(peerHeightBreakdownTooltip(startHeight,
-                                                      syncedHeaders,
-                                                      syncedBlocks,
-                                                      bestKnown,
-                                                      cachedHeight_));
-    if (cachedHeight_ > 0 && bestHeight >= 0 && bestHeight + 2 < cachedHeight_) {
-      heightItem->setForeground(QColor("#d9b36a"));
+    auto* blocksItem = new QTableWidgetItem(peerHeightDisplayText(blocksSeen, cachedHeight_));
+    blocksItem->setToolTip(peerSeenHeightTooltip("Blocks", blocksSeen, startHeight,
+                                                 syncedHeaders, syncedBlocks, bestKnown,
+                                                 cachedHeight_));
+    if (cachedHeight_ > 0 && blocksSeen >= 0 && blocksSeen + 2 < cachedHeight_) {
+      blocksItem->setForeground(QColor("#d9b36a"));
     }
-    tblPeers_->setItem(row, 4, heightItem);
-    tblPeers_->setItem(row, 5, new QTableWidgetItem(inbound ? "Inbound" : "Outbound"));
+    tblPeers_->setItem(row, 4, blocksItem);
+    auto* headersItem = new QTableWidgetItem(peerHeightDisplayText(headersSeen, cachedHeaders_));
+    headersItem->setToolTip(peerSeenHeightTooltip("Headers", headersSeen, startHeight,
+                                                  syncedHeaders, syncedBlocks, bestKnown,
+                                                  cachedHeight_));
+    if (cachedHeaders_ > 0 && headersSeen >= 0 && headersSeen + 2 < cachedHeaders_) {
+      headersItem->setForeground(QColor("#d9b36a"));
+    }
+    tblPeers_->setItem(row, 5, headersItem);
+    tblPeers_->setItem(row, 6, new QTableWidgetItem(inbound ? "Inbound" : "Outbound"));
   }
 }
 
@@ -15897,8 +16278,9 @@ void MainWindow::onExportMetrics() {
       peer["endpoint"] = locationItem ? locationItem->data(Qt::UserRole).toString() : "";
       peer["activity"] = tblPeersOverview_->item(i, 1) ? tblPeersOverview_->item(i, 1)->text() : "";
       peer["uptime"] = tblPeersOverview_->item(i, 2) ? tblPeersOverview_->item(i, 2)->text() : "";
-      peer["height"] = tblPeersOverview_->item(i, 3) ? tblPeersOverview_->item(i, 3)->text() : "";
-      peer["client"] = tblPeersOverview_->item(i, 4) ? tblPeersOverview_->item(i, 4)->text() : "";
+      peer["blocks_seen"] = tblPeersOverview_->item(i, 3) ? tblPeersOverview_->item(i, 3)->text() : "";
+      peer["headers_seen"] = tblPeersOverview_->item(i, 4) ? tblPeersOverview_->item(i, 4)->text() : "";
+      peer["client"] = tblPeersOverview_->item(i, 5) ? tblPeersOverview_->item(i, 5)->text() : "";
       peers.append(peer);
     }
   }
@@ -15965,14 +16347,15 @@ void MainWindow::onExportMetrics() {
     
     // Add peers
     out << "\nPeers\n";
-    out << "Location,Endpoint,Activity,Uptime,Seen Height,Client\n";
+    out << "Location,Endpoint,Activity,Uptime,Blocks Seen,Headers Seen,Client\n";
     for (const QJsonValue& peerVal : peers) {
       QJsonObject peer = peerVal.toObject();
       out << peer["location"].toString() << ","
           << peer["endpoint"].toString() << ","
           << peer["activity"].toString() << ","
           << peer["uptime"].toString() << ","
-          << peer["height"].toString() << ","
+          << peer["blocks_seen"].toString() << ","
+          << peer["headers_seen"].toString() << ","
           << peer["client"].toString() << "\n";
     }
     

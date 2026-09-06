@@ -30,6 +30,16 @@ struct ChainSafetyCheck {
     std::string error;
 };
 
+enum class BlockChainStatus {
+    Active,
+    ConflictingActiveBlock,
+    Unknown,
+};
+
+BlockChainStatus classifyBlockChainStatus(
+    const std::string& candidate_hash,
+    const std::optional<std::string>& active_hash);
+
 /**
  * JSON-RPC client for DineroCoin daemon
  *
@@ -80,6 +90,14 @@ public:
      * @return true if accepted, false otherwise
      */
     bool submitBlock(const std::string& block_hex);
+
+    /**
+     * Reconcile an ambiguous submission against the active chain.
+     * A different hash at the candidate height means the candidate is stale;
+     * an unavailable/not-yet-reached height remains unknown.
+     */
+    BlockChainStatus getBlockChainStatus(const std::string& candidate_hash,
+                                         uint32_t height);
 
     /**
      * Get mining info (difficulty, network hashrate, etc.)

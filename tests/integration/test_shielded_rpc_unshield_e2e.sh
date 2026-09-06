@@ -111,7 +111,7 @@ echo "$EMPTY_RES" | jq -e '.result.error == "insufficient_single_note" or .error
 pass "no-notes unshield rejected"
 
 # ── Negative test: unshield zero amount ────────────────────────────────
-ZERO_RES="$(rpc_call "wallet.unshield" '[0.0]')"
+ZERO_RES="$(rpc_call "wallet.unshield" '{"amount_una":0}')"
 echo "$ZERO_RES" | jq -e '.result.error == "invalid_params" or .error != null' >/dev/null 2>&1 \
     || fail "zero-amount unshield should be rejected: ${ZERO_RES}"
 pass "zero-amount unshield rejected"
@@ -120,7 +120,7 @@ pass "zero-amount unshield rejected"
 # No explicit fee: exercises issue #273 size-aware fee auto-sizing on the
 # shield side (the fixed 1000-una default underpaid the mempool floor).
 info "Shielding 1 DIN (auto-sized fee)"
-SHIELD_RES="$(rpc_result "wallet.shield" '[1.0]')"
+SHIELD_RES="$(rpc_result "wallet.shield" '{"amount_una":100000000}')"
 SHIELD_TXID="$(jq -r '.result.txid' <<<"${SHIELD_RES}")"
 SHIELD_AUTOSIZED="$(jq -r '.result.fee_autosized' <<<"${SHIELD_RES}")"
 [[ "${SHIELD_AUTOSIZED}" == "true" ]] || fail "shield fee not auto-sized: ${SHIELD_RES}"
@@ -135,7 +135,7 @@ pass "shield confirmed, tree_size=${TREE_SIZE}"
 
 # ── Happy path: unshield 1 DIN with auto-sized fee (issue #273) ────────
 info "Calling wallet.unshield(1.0 DIN, fee auto-sized)"
-UNSHIELD_RES="$(rpc_result "wallet.unshield" '[1.0]')"
+UNSHIELD_RES="$(rpc_result "wallet.unshield" '{"amount_una":100000000}')"
 echo "${UNSHIELD_RES}" | jq -e '.result.status == "unshielded"' >/dev/null \
     || fail "wallet.unshield did not return status=unshielded: ${UNSHIELD_RES}"
 

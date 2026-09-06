@@ -10,6 +10,8 @@
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
 #include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
+#include "consensus/block_status_generation.h"
+#include "common/crash_injection.h"
 #include "daemon/assumeutxo_precheck.h"  // side-chain precheck exemptions
 #include "daemon/block_write_metrics.h"  // duplicate-write counters + log rate limit
 // Phase 39: chain_manager.h deleted (ChainManager removed)
@@ -124,7 +126,7 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         auto* activation_ctx = DaemonContext::instance();
         auto activation_chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
             activation_ctx ? activation_ctx->chainstate : nullptr);
-        std::unique_lock<std::recursive_mutex> activation_guard;
+        std::unique_lock<dinero::AnnotatedRecursiveMutex> activation_guard;
         if (activation_chainstate) {
             activation_guard = activation_chainstate->AcquireBlockIngressActivationLock();
         }
@@ -1806,6 +1808,21 @@ dinero::Block BlockAcceptor::ConvertParsedBlockToBlock(const ParsedBlock& parsed
 }
 
 bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, const std::string& parentChainwork, std::string& error, bool updateTip) {
+    // Capture the operator-decision generation BEFORE any of this function's
+    // work. Storing, indexing and metadata writes all take time; if an
+    // invalidate or reconsider lands meanwhile, this result is stale and must
+    // not write or preserve failure flags — otherwise a continuously
+    // re-announced block undoes the operator's decision on the next relay.
+    // See consensus/block_status_generation.h.
+    dinero::consensus::GenerationRead accept_status_generation{};
+    {
+        auto* gen_ctx = DaemonContext::instance();
+        auto gen_cs = std::dynamic_pointer_cast<dinero::ChainstateService>(
+            gen_ctx ? gen_ctx->chainstate : nullptr);
+        if (gen_cs) accept_status_generation = gen_cs->ReadBlockStatusGeneration();
+        // No chainstate leaves it Error-by-default, which preserves flags
+        // rather than clearing them.
+    }
     try {
         // Authorization token for ChainDB writes (compile-time enforced)
         ChainWriteToken token;
@@ -2393,8 +2410,76 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                     // silently overwrites the failure flag here and the block
                     // re-enters the candidate set on the next AddCandidate
                     // call, defeating the entire persistent invalidate fix.
-                    const uint32_t preserved_failure_flags = block_index->status &
-                        (dinero::BLOCK_FAILED_VALID | dinero::BLOCK_FAILED_CHILD);
+                    // Generation check (consensus/block_status_generation.h).
+                    // Preserving a failure flag is correct ONLY if no operator
+                    // decision landed while this block was being processed. A
+                    // continuously re-announced block always has a relay in
+                    // flight, so without this a reconsiderblock is undone by
+                    // the very next relay — measured at 650 re-assertions after
+                    // a reconsider, with the tip never recovering.
+                    //
+                    // Fails CLOSED on an unreadable counter: a 0 read never
+                    // equals a bumped generation, so the flags are dropped
+                    // rather than wrongly preserved.
+                    // The compare below and the write that follows must be
+                    // atomic w.r.t. an operator decision. Enforced here so
+                    // dropping the serialization is caught by every test that
+                    // re-accepts a block, not only by a race that reproduces.
+                    chainstate->AssertActivationLockHeld("ConnectBlock compare+write");
+                    const auto gen_now = chainstate->ReadBlockStatusGeneration();
+                    // Unreadable on EITHER side means the operator decision is
+                    // unknown, not unchanged. Treating it as unchanged would
+                    // re-assert flags over a reconsider; treating it as changed
+                    // would CLEAR persisted invalidity. Neither is safe, so the
+                    // rule below declines to act: it carries forward exactly
+                    // what is already on disk.
+                    const bool reads_usable =
+                        accept_status_generation.usable() && gen_now.usable();
+                    const bool decision_unchanged =
+                        reads_usable &&
+                        dinero::consensus::GenerationStillCurrent(
+                            accept_status_generation.value, gen_now.value);
+                    // DETERMINISTIC RACE BARRIER (regtest only, inert
+                    // otherwise). Sits exactly between the generation
+                    // COMPARISON above and the flag WRITE below — the TOCTOU
+                    // window. A test parks the daemon here, invokes
+                    // reconsiderblock concurrently, and releases:
+                    //   with activation_mutex_ on ReconsiderBlock, the
+                    //     reconsider must WAIT, so this write lands first and
+                    //     the reconsider then clears it;
+                    //   without it, the reconsider runs ahead and this write
+                    //     re-asserts flags it just cleared — which the test
+                    //     detects.
+                    // Deterministic in both directions; no sleep decides
+                    // correctness.
+                    dinero::testing::MaybeBarrierAt(
+                        "connectblock_after_generation_compare",
+                        dinero::testing::CrashHooksEnabled().load());
+
+                    // Same decision as consensus/block_status_generation.h's
+                    // PreservedFailureFlags, which exists so this rule is
+                    // unit-testable without a daemon.
+                    const uint32_t preserved_failure_flags =
+                        dinero::consensus::PreservedFailureFlagsFromReads(
+                            accept_status_generation, gen_now,
+                            block_index->status &
+                                (dinero::BLOCK_FAILED_VALID | dinero::BLOCK_FAILED_CHILD));
+                    if (!reads_usable) {
+                        LOG_ERROR("⚠️  Block-status generation unreadable while "
+                                  "accepting " + block.blockHash.substr(0, 16) +
+                                  "... — PRESERVING existing failure flags "
+                                  "rather than clearing persisted invalidity. "
+                                  "An operator decision made in this window may "
+                                  "need to be re-issued.");
+                    }
+                    if (!decision_unchanged) {
+                        LOG_INFO("♻️  Stale acceptance (generation " +
+                                 std::to_string(accept_status_generation.value) + " -> " +
+                                 std::to_string(gen_now.value) +
+                                 "): NOT re-asserting failure flags for " +
+                                 block.blockHash.substr(0, 16) +
+                                 "... — a newer operator decision wins");
+                    }
 
                     // Mark as fully validated (all consensus checks passed)
                     // BLOCK_HAVE_DATA: block body stored in flatfiles.

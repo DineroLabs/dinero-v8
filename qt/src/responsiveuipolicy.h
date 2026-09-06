@@ -8,7 +8,10 @@
 namespace dinero::qt {
 
 inline constexpr int kUtxoPageSize = 200;
-inline constexpr int kHashEngineIntervalMs = 100;
+// Five frames per second is visually continuous for the mining console while
+// leaving enough GUI-thread time for long header rows to paint without timer
+// callbacks piling up behind one another.
+inline constexpr int kHashEngineIntervalMs = 200;
 inline constexpr int kBlockFoundHighlightMs = 1000;
 inline constexpr int kTransientMiningErrorMs = 15000;
 

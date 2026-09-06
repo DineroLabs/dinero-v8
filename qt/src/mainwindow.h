@@ -9,6 +9,7 @@
 #include <QJsonValue>
 #include <QVector>
 #include <QSet>
+#include <QStaticText>
 #include <cstdint>
 #include "debugconsole.h"
 #include "connection_manager.h"
@@ -206,6 +207,7 @@ private:
   void resetMiningReadinessDisplay(const QString& summary, const QString& detail = QString());
   void updateNodeStatus(const QJsonObject& blockchainInfo, const QJsonObject& networkInfo, const QJsonObject& mempoolInfo);
   void updateNetworkInfo(const QJsonObject& networkInfo);
+  void updateOverviewContribution();
   QString networkDiagnosticsText() const;
   void updatePeerTable(const QJsonArray& peers);
   void updateBlockTemplate(const QJsonObject& blockTemplate);
@@ -283,6 +285,14 @@ private:
   // Monitoring Dashboard widgets (Overview bottom half)
   dinero::qt::OverviewConnectivityCard* overviewConnectivityCard_ = nullptr;
   bool overviewRelayRpcSupported_ = true;
+  QLabel* lblOverviewReachability_ = nullptr;
+  QLabel* lblOverviewContribution_ = nullptr;
+  QLabel* lblOverviewConnectivity_ = nullptr;
+  bool overviewDirectReachable_ = false;
+  bool overviewTorActive_ = false;
+  bool overviewRelayActive_ = false;
+  bool overviewNetworkActive_ = false;
+  int overviewInboundPeers_ = 0;
   QProgressBar* cpuProgressBar_;
   QLabel* lblCpuUsage_;
   QLabel* lblCpuTemp_;
@@ -308,8 +318,9 @@ private:
 
   // v7 Consensus Health (Overview tab)
   QLabel* lblUtreexoHealth_ = nullptr;
-  QLabel* lblUtreexoLeaves_ = nullptr;
-  QLabel* lblUtreexoRoot_ = nullptr;
+  QLabel* lblUtreexoRole_ = nullptr;
+  QLabel* lblUtreexoState_ = nullptr;
+  QLabel* lblUtreexoStorage_ = nullptr;
   QLabel* lblPqOverviewRatio_ = nullptr;
   QLabel* lblPqOverviewUtxos_ = nullptr;
   QLabel* lblPqOverviewScheme_ = nullptr;
@@ -583,24 +594,16 @@ private:
   QTimer* miningFocusDimTimer_; // Delayed dimming when mining tab is active
   QTimer* miningCinematicTimer_; // Cinematic matrix background while mining
   int miningCinematicFrame_ = 0;
-  int miningCinematicLastLongCometFrame_ = -100000;
-  int miningCinematicLastUltraCometFrame_ = 0;
-  struct MiningCinematicSpark {
-    qint64 worldRow = 0;
-    int col = 0;
-    int bornFrame = 0;
-    int lifetimeFrames = 0;
-    int streakLength = 1; // 1 = single spark glyph; >1 = short comet streak.
-  };
-  QVector<MiningCinematicSpark> miningCinematicSparks_;
   struct MiningHashSample {
     quint32 nonce = 0;
     QString hash;
     QString headerFields;
+    QStaticText renderedLine;
     bool blockFound = false;
     qint64 highlightUntilMs = 0;
   };
   QVector<MiningHashSample> miningHashSamples_;
+  QString miningSessionHeader_;
   QLabel* miningHashOverlay_ = nullptr;
   QHash<QString, quint64> transientMiningErrorGenerations_;
   struct MiningSessionFind {

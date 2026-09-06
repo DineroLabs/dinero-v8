@@ -75,8 +75,10 @@ Q_SIGNALS:
     void logLine(const QString& line);
     void blockFound(const QString& hash, int height);
     void blockFoundDetailed(const QString& hash, int height, quint32 nonce,
+                            const QString& prevHash,
                             const QString& merkleRoot,
-                            const QString& utreexoRoot, quint32 difficultyBits);
+                            const QString& utreexoRoot, quint32 version,
+                            quint64 timestamp, quint32 difficultyBits);
     void templateChanged(int height, quint32 difficultyBits);
 
     // Fired when the embedded miner starts (true) or stops (false). Lets the

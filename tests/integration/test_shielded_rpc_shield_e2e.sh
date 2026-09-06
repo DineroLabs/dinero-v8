@@ -138,7 +138,7 @@ rpc_result "generatetoaddress" "[101,\"${MINER_ADDR}\"]" >/dev/null
 
 # ── Negative test: zero amount ─────────────────────────────────────────
 info "Negative case: zero amount"
-ZERO_RES="$(rpc_call "wallet.shield" '[0.0]')"
+ZERO_RES="$(rpc_call "wallet.shield" '{"amount_una":0}')"
 echo "$ZERO_RES" | jq -e '.result.error == "invalid_params" or .error != null' >/dev/null 2>&1 \
     || fail "zero-amount shield should be rejected: ${ZERO_RES}"
 pass "zero-amount rejected"
@@ -152,7 +152,7 @@ pass "insufficient-funds rejected"
 
 # ── Happy path: shield 1 DIN ───────────────────────────────────────────
 info "Calling wallet.shield(${SHIELD_VALUE_DIN} DIN, fee=${SHIELD_FEE_UNA} una)"
-SHIELD_RES="$(rpc_result "wallet.shield" "[${SHIELD_VALUE_DIN}, ${SHIELD_FEE_UNA}]")"
+SHIELD_RES="$(rpc_result "wallet.shield" "{\"amount_una\":${SHIELD_VALUE_UNA},\"fee_una\":${SHIELD_FEE_UNA}}")"
 echo "${SHIELD_RES}" | jq -e '.result.status == "shielded"' >/dev/null \
     || fail "wallet.shield did not return status=shielded: ${SHIELD_RES}"
 

@@ -44,7 +44,7 @@ private Q_SLOTS:
   }
 
   void hashEngineUsesBoundedTenHertzPolicy() {
-    QCOMPARE(dinero::qt::kHashEngineIntervalMs, 100);
+    QCOMPARE(dinero::qt::kHashEngineIntervalMs, 200);
     QCOMPARE(dinero::qt::kBlockFoundHighlightMs, 1000);
     QCOMPARE(dinero::qt::hashSampleCapacity(250, 20), 11);
     QCOMPARE(dinero::qt::hashSampleCapacity(0, 0), 1);

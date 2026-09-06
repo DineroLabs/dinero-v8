@@ -207,7 +207,8 @@ jobs:
           # below still fails the step, so this does not weaken the gate.
           set +e
           failed=""
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
+          ran=0
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -217,6 +218,7 @@ jobs:
             if [ $? -ne 0 ]; then
               failed="${failed} ${t}"
             fi
+            ran=$((ran + 1))
           done
           set -e
           if [ -n "${failed}" ]; then
@@ -224,7 +226,7 @@ jobs:
             echo "serial e2e lane failures:${failed}" >&2
             exit 1
           fi
-          echo "serial e2e lane: all 15 tests passed"
+          echo "serial e2e lane: all ${ran} tests passed"
 
       # Fuzz-labelled consensus invariant tests (issue #486).
       #

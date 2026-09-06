@@ -37,7 +37,7 @@ bool MinerController::sampleCandidate(quint32& nonce, QString& hash,
     height = static_cast<int>(sample.height);
     difficultyBits = sample.difficulty_bits;
     headerFields = QString(
-        "nonce=0x%1 hash=%2  prev=%3 merkle=%4 utreexo=%5 version=0x%6 "
+        "nonce=0x%1 hash=%2 prev=%3 merkle=%4 utreexo=%5 version=0x%6 "
         "time=%7 bits=0x%8 reserved=000000000000000000000000")
       .arg(sample.nonce, 8, 16, QChar('0'))
       .arg(hash)
@@ -87,6 +87,12 @@ void MinerController::start(const QString& rpcUrl,
     miner_->setErrorCallback([this](const std::string& error) {
         QMetaObject::invokeMethod(this, [this, error]() {
             onError(error);
+        }, Qt::QueuedConnection);
+    });
+
+    miner_->setStatusCallback([this](const std::string& status) {
+        QMetaObject::invokeMethod(this, [this, status]() {
+            Q_EMIT logLine(QString::fromStdString(status));
         }, Qt::QueuedConnection);
     });
 
@@ -198,6 +204,7 @@ void MinerController::shutdownSilently() {
         miner_->setHashrateCallback({});
         miner_->setBlockFoundCallback({});
         miner_->setErrorCallback({});
+        miner_->setStatusCallback({});
         miner_->setTemplateCallback({});
         miner_->stop();
         miner_.reset();
@@ -254,8 +261,10 @@ void MinerController::onBlockFound(const BlockFoundInfo& info) {
 
     Q_EMIT blockFound(hashStr, static_cast<int>(info.height));
     Q_EMIT blockFoundDetailed(hashStr, static_cast<int>(info.height), info.nonce,
+                              QString::fromStdString(info.prev_hash),
                               QString::fromStdString(info.merkle_root),
-                              QString::fromStdString(info.utreexo_root), info.nbits);
+                              QString::fromStdString(info.utreexo_root),
+                              info.version, info.timestamp, info.nbits);
     // The Widgets UI consumes blockFoundDetailed() as the canonical find
     // presentation: it adds the highlighted live-header row and the complete
     // session-history record.  Emitting a second legacy multiline log card

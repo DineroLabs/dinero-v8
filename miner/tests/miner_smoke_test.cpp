@@ -169,6 +169,20 @@ void testBackendParsing() {
     std::cout << "PASS\n";
 }
 
+void testSubmissionReconciliationClassification() {
+    std::cout << "Testing submission reconciliation classification... ";
+
+    const std::string candidate(64, 'a');
+    assert(classifyBlockChainStatus(candidate, std::nullopt) ==
+           BlockChainStatus::Unknown);
+    assert(classifyBlockChainStatus(candidate, std::string(64, 'A')) ==
+           BlockChainStatus::Active);
+    assert(classifyBlockChainStatus(candidate, std::string(64, 'b')) ==
+           BlockChainStatus::ConflictingActiveBlock);
+
+    std::cout << "PASS\n";
+}
+
 int main() {
     std::cout << "\n"
               << "═══════════════════════════════════════════════════════════\n"
@@ -184,6 +198,7 @@ int main() {
     testCandidateHeaderCommitsEveryDisplayedField();
     testChainIdentity();
     testBackendParsing();
+    testSubmissionReconciliationClassification();
 
     std::cout << "\n✅ All tests passed!\n" << std::endl;
     return 0;

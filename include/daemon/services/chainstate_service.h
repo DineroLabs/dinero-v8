@@ -1,6 +1,8 @@
 #pragma once
 #include "daemon/iservice.h"
 #include "storage/chain_db.h"
+#include "consensus/block_status_generation.h"
+#include "common/annotated_mutex.h"
 #include "wallet/utxo_index.h"
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Wallet event notifications
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
@@ -192,6 +194,38 @@ public:
     // restarts and across nodes at the same tip — any drift in any
     // tracked container changes the hash.
     uint256 ComputeShieldedReorgStateHash() const;
+
+    /// Shielded-state root: the fingerprint a future block-header commitment
+    /// would carry (`consensus::shielded::ComputeShieldedRoot`). Distinct from
+    /// ComputeShieldedReorgStateHash — it excludes the utreexo forest, which
+    /// `header.utreexo_root` already commits, and length-prefixes each
+    /// variable-length section. Committed nowhere yet; read-only.
+    /**
+     * Why a shielded root could not be produced. "Unreadable" and "busy" are
+     * different facts and an operator needs to be able to tell them apart.
+     */
+    enum class ShieldedRootStatus : uint8_t {
+        Ok                     = 0,
+        NullifierSetUnreadable = 1,  ///< enumeration failed; see NullifierSet
+        StateBusy              = 2,  ///< shielded state is being mutated
+    };
+
+    /**
+     * Serialized against shielded-state mutation.
+     *
+     * The three containers this reads -- tree, nullifier set, anchor history --
+     * are mutated together while a block connects. Reading them without the
+     * lock let an RPC poll observe the tree already appended and the nullifier
+     * batch not yet inserted: a root corresponding to no state the chain ever
+     * had. Advisory or not, a torn value is worse than no value.
+     *
+     * TRY-lock, not lock: an operator RPC must never queue behind block
+     * connection, and the deterministic barrier hooks can park a connect
+     * thread inside this critical section, which would turn a blocking
+     * acquire into a hang. Busy is reported, never waited out.
+     */
+    std::optional<uint256> ComputeShieldedRoot(
+        ShieldedRootStatus* status = nullptr) const;
 
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row §1.4 names. After ActivateBestChain settles on the
@@ -385,6 +419,33 @@ public:
     // Phase 42: AssumeUTXO State Management
     bool IsAssumeUTXOActive() const { return assumeutxo_active_; }
     uint256 GetAssumeUTXOBaseBlock() const { return assumeutxo_base_block_; }
+
+    /// Current operator-decision generation (consensus/block_status_generation.h).
+    /// Acceptance captures this BEFORE processing and must not preserve or
+    /// write failure flags if it has advanced by commit time.
+    /// Throws unless the caller holds the activation lock. Lets external
+    /// consensus paths (BlockAcceptor) assert the same invariant.
+    void AssertActivationLockHeld(const char* where) const {
+        activation_mutex_.AssertHeld(where);
+    }
+
+    /**
+     * Read the persisted counter, keeping "absent" and "unreadable" apart.
+     *
+     * Replaces a bare-number accessor that returned 0 for a missing chain_db,
+     * a failed read, an absent key AND a genuine generation 0. Callers deciding
+     * whether an operator status decision landed cannot use that: on a chain
+     * where no invalidate/reconsider has run, a failed read compared EQUAL to
+     * the true value and the decision proceeded on unknown state.
+     */
+    consensus::GenerationRead ReadBlockStatusGeneration() const;
+
+    /// Bump and persist. Called by InvalidateBlock and ReconsiderBlock so a
+    /// relay in flight across either decision is detectably stale. `wb` folds
+    /// the write into a caller-owned batch so the bump and the flag change
+    /// commit atomically.
+    consensus::BlockStatusGeneration BumpBlockStatusGeneration(
+        const ChainWriteToken& token, rocksdb::WriteBatch* wb = nullptr);
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
     // Mirrors GetConfig().assumeutxo_forward_connect -- the same source the
     // deferral gate reads. Defined out-of-line so this header need not pull
@@ -960,8 +1021,8 @@ public:
      * the newly promoted forest in one acceptance attempt.  The mutex is
      * recursive because acceptance calls ActivateBestChain before returning.
      */
-    std::unique_lock<std::recursive_mutex> AcquireBlockIngressActivationLock() {
-        return std::unique_lock<std::recursive_mutex>(activation_mutex_);
+    std::unique_lock<AnnotatedRecursiveMutex> AcquireBlockIngressActivationLock() {
+        return std::unique_lock<AnnotatedRecursiveMutex>(activation_mutex_);
     }
 
 private:
@@ -1241,7 +1302,11 @@ private:
     bool     published_tip_valid_ = false;
     uint256  published_tip_hash_;
     uint32_t published_tip_height_ = 0;
-    mutable std::recursive_mutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
+    // AnnotatedRecursiveMutex, not std::recursive_mutex: the paths that compare
+    // and then write block failure flags MUST hold this, and AssertHeld turns
+    // that from a comment into an enforced invariant. Satisfies Lockable, so
+    // every existing lock_guard/unique_lock site is unchanged.
+    mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
 
     // Phase 43: Safe mode state (deep reorg protection)
     bool safe_mode_active_ = false;

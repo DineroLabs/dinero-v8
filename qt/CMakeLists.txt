@@ -1344,6 +1344,23 @@ else()
 endif()
 
 if(BUILD_TESTING)
+  add_executable(test_peer_height_semantics
+    tests/test_peer_height_semantics.cpp
+    src/peerheightsemantics.h
+  )
+
+  target_link_libraries(test_peer_height_semantics PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+
+  target_include_directories(test_peer_height_semantics PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+
+  target_compile_definitions(test_peer_height_semantics PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PeerHeightSemantics COMMAND test_peer_height_semantics)
+
   add_executable(test_responsive_ui_policy
     tests/test_responsive_ui_policy.cpp
     src/responsiveuipolicy.h

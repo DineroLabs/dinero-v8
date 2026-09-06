@@ -221,6 +221,9 @@ bool AssumeUtxoLifecycle::OperatorReset(const std::string& confirm_token) {
         utxo_index_->DeleteMetadata(kLcProgressHeightKey);
         utxo_index_->DeleteMetadata(kExpectedCommitmentKey);
         utxo_index_->DeleteMetadata(kExpectedUtreexoRootKey);
+        // Must be cleared with its siblings. Left behind, snapshot A's root
+        // outlives the reset and snapshot B's replay is compared against it.
+        utxo_index_->DeleteMetadata(kExpectedShieldedRootKey);
     }
     return true;
 }
@@ -301,6 +304,9 @@ void AssumeUtxoLifecycle::Disable() {
         utxo_index_->DeleteMetadata(kLcProgressHeightKey);
         utxo_index_->DeleteMetadata(kExpectedCommitmentKey);
         utxo_index_->DeleteMetadata(kExpectedUtreexoRootKey);
+        // Must be cleared with its siblings. Left behind, snapshot A's root
+        // outlives the reset and snapshot B's replay is compared against it.
+        utxo_index_->DeleteMetadata(kExpectedShieldedRootKey);
     }
 }
 

@@ -7,6 +7,7 @@ foreach(REQUIRED_TEXT
     "scheme != QStringLiteral(\"https\")"
     "scheme == QStringLiteral(\"http\") && loopback"
     "req.setTransferTimeout(8000)"
+    "QNetworkRequest::ManualRedirectPolicy"
     "req.setAttribute(kKindAttr, kKindStatus)"
     "if (status_in_flight_)"
     "if (payout_in_flight_)"
@@ -16,6 +17,31 @@ foreach(REQUIRED_TEXT
     message(FATAL_ERROR "Pool panel safety regression: missing '${REQUIRED_TEXT}'")
   endif()
 endforeach()
+
+foreach(REQUIRED_TEXT
+    "schema_version"
+    "Malformed pool status"
+    "STALE"
+    "Connected sessions:"
+    "PPLNS contributors (not connected sessions)"
+    "Share activity history (stored locally)"
+    "pool/payoutJournal/"
+    "pool/feeJournal/"
+    "Outcome uncertain"
+    "Change operator fee"
+    "Bring the cockpit online."
+    "Current unspent fee balance (verified on-chain)"
+    "spent outputs are intentionally excluded")
+  string(FIND "${POOL_SOURCE}" "${REQUIRED_TEXT}" FOUND_AT)
+  if(FOUND_AT EQUAL -1)
+    message(FATAL_ERROR "Pool cockpit regression: missing '${REQUIRED_TEXT}'")
+  endif()
+endforeach()
+
+string(FIND "${POOL_SOURCE}" "Total received by this address" FALSE_EARNINGS_AT)
+if(NOT FALSE_EARNINGS_AT EQUAL -1)
+  message(FATAL_ERROR "Pool cockpit regression: unspent balance is mislabeled as lifetime earnings")
+endif()
 
 string(FIND "${MAINWINDOW_SOURCE}" "poolPanel_ = new PoolPanel(rpc_, this);" POOL_TAB_AT)
 if(POOL_TAB_AT EQUAL -1)
