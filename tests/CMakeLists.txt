@@ -106,6 +106,18 @@ set_tests_properties(QtShieldedRpcStatus PROPERTIES
   TIMEOUT 5
 )
 add_test(
+  NAME QtUtreexoValidationPanel
+  COMMAND ${CMAKE_COMMAND}
+    -DMAINWINDOW_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp
+    -DMAINWINDOW_HEADER=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.h
+    -DUTREEXO_RPC_SOURCE=${CMAKE_SOURCE_DIR}/src/rpc/methods_utreexo.cpp
+    -P ${CMAKE_SOURCE_DIR}/qt/tests/test_utreexo_validation_panel.cmake
+)
+set_tests_properties(QtUtreexoValidationPanel PROPERTIES
+  LABELS "qt;utreexo;rpc;regression;mandatory"
+  TIMEOUT 5
+)
+add_test(
   NAME QtContractProductionWiring
   COMMAND ${CMAKE_COMMAND}
     -DMAINWINDOW_SOURCE=${CMAKE_SOURCE_DIR}/qt/src/mainwindow.cpp

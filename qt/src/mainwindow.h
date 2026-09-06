@@ -318,8 +318,9 @@ private:
 
   // v7 Consensus Health (Overview tab)
   QLabel* lblUtreexoHealth_ = nullptr;
-  QLabel* lblUtreexoLeaves_ = nullptr;
-  QLabel* lblUtreexoRoot_ = nullptr;
+  QLabel* lblUtreexoRole_ = nullptr;
+  QLabel* lblUtreexoState_ = nullptr;
+  QLabel* lblUtreexoStorage_ = nullptr;
   QLabel* lblPqOverviewRatio_ = nullptr;
   QLabel* lblPqOverviewUtxos_ = nullptr;
   QLabel* lblPqOverviewScheme_ = nullptr;
