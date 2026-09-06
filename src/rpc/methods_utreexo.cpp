@@ -13,14 +13,19 @@
 
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "daemon/config.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/services/p2p_service.h"
 #include "network/bridge_node.h"
+#include "network/types.h"
 #include "consensus/proof_gossip.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_stump.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "storage/chain_db.h"  // Phase 11a.2: UTXO lookup for leaf_hash
 #include "common/logger.h"
+#include <algorithm>
 #include <sstream>
 #include <iomanip>
 
@@ -147,9 +152,14 @@ Json rpc_getutreexoroots(const ExecutionContext& ctx, const Json& params) {
  *
  * Returns:
  *   {
- *     "commitment": "<hash>",  // 32-byte commitment hash (hex)
- *     "num_leaves": <n>,       // Total UTXOs committed
- *     "num_roots": <n>         // Number of forest roots
+ *     "commitment": "<hash>",            // 32-byte commitment hash (hex)
+ *     "num_leaves": <n>,                 // Total UTXOs committed
+ *     "num_roots": <n>,                  // Number of forest roots
+ *     "verified_height": <n>,            // Active-chain height
+ *     "validation_role": "<role>",       // compact/full/proof bridge
+ *     "bridge_peer_count": <n>,          // Connected proof-capable peers
+ *     "compact_state_bytes": <n>,        // Exact stump serialization size
+ *     "forest_memory_bytes_estimate": <n>// Approximate full-forest memory
  *   }
  */
 Json rpc_getutreexocommitment(const ExecutionContext& ctx, const Json& params) {
@@ -176,16 +186,55 @@ Json rpc_getutreexocommitment(const ExecutionContext& ctx, const Json& params) {
             return result;
         }
 
-        // Guarded reads: shared lock + copy out (audit: forest read-during-free UAF)
-        dinero::consensus::UtreexoHash commitment = uset->SnapshotForestCommitment();
-        uint64_t num_leaves = uset->SnapshotForestLeafCount();
-        std::vector<dinero::consensus::UtreexoHash> roots = uset->SnapshotForestRoots();
+        // Read every accumulator metric from one forest generation.  The Qt
+        // validation panel consumes these fields as a coherent snapshot, so
+        // separate lock/copy calls could otherwise mix adjacent block states.
+        dinero::consensus::UtreexoHash commitment{};
+        uint64_t num_leaves = 0;
+        std::size_t num_roots = 0;
+        std::size_t compact_state_bytes = 0;
+        {
+            const auto forest_lock = uset->LockForestShared();
+            const auto& forest = uset->GetForest();
+            commitment = forest.getCommitment();
+            num_leaves = forest.getNumLeaves();
+            num_roots = forest.getNumRoots();
+            compact_state_bytes =
+                dinero::consensus::UtreexoStump::fromForest(forest).serializedSize();
+        }
+        const auto& config = GetConfig();
+        const bool compact_profile = config.utreexo_stateless;
+        const bool bridge_active = chainstate->GetBridgeNode() != nullptr;
+        std::size_t bridge_peer_count = 0;
+        if (ctx.daemon->p2p) {
+            const auto peers = ctx.daemon->p2p->GetConnectedPeers();
+            bridge_peer_count = static_cast<std::size_t>(std::count_if(
+                peers.begin(), peers.end(), [](const auto& peer) {
+                    return (peer.service_flags & dinero::ServiceFlags::NODE_UTREEXO_BRIDGE) != 0;
+                }));
+        }
 
         result["commitment"] = hashToHex(commitment);
         result["num_leaves"] = static_cast<Json::Int64>(num_leaves);
-        result["num_roots"] = static_cast<Json::Int64>(roots.size());
-
-        dinero::g_logger.info("[getutreexocommitment] Commitment: " + hashToHex(commitment));
+        result["num_roots"] = static_cast<Json::Int64>(num_roots);
+        result["verified_height"] = static_cast<Json::Int64>(chainstate->getBlockHeight());
+        result["sync_profile"] = config.sync_profile;
+        result["validation_role"] = compact_profile
+            ? "compact_validator"
+            : (bridge_active ? "proof_bridge" : "full_validator");
+        result["bridge_enabled"] = config.utreexo_bridge;
+        result["bridge_active"] = bridge_active;
+        result["bridge_peer_count"] = static_cast<Json::Int64>(bridge_peer_count);
+        result["compact_state_bytes"] = static_cast<Json::Int64>(compact_state_bytes);
+        // This is the same documented approximation used by
+        // ConsensusUTXOSet::GetMemoryUsage for the forest component alone.
+        result["forest_memory_bytes_estimate"] =
+            static_cast<Json::Int64>(num_leaves * 40ULL);
+        result["retains_full_state"] = !compact_profile;
+        // A defensible disk-savings number requires measuring a comparable
+        // conventional chainstate on this host. Do not manufacture one from a
+        // per-leaf constant and present it as telemetry.
+        result["disk_savings_available"] = false;
 
     } catch (const std::exception& e) {
         result["error"]["code"] = -1;
