@@ -204,7 +204,7 @@ jobs:
           # below still fails the step, so this does not weaken the gate.
           set +e
           failed=""
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ReconsiderRestartBoundary GenerationToctouBarrier CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
