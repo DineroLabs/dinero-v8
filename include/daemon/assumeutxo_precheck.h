@@ -45,6 +45,25 @@ bool IsDeferredSnapshotBaseChild(const AssumeUTXOPrecheckContext& ctx,
                                  const dinero::uint256& parent_hash);
 
 // The guard itself.
+/**
+ * Does a deferred-mode drain ceiling apply right now?
+ *
+ * The scheduler must stop draining above the snapshot base in classic
+ * deferred mode, and must NOT once the mode ends. Both halves matter: a
+ * ceiling that is never lowered stops every drain above the base for the life
+ * of the process, including after promotion, when the tip legitimately has to
+ * pass it.
+ *
+ * A pure function of the same two facts IsDeferredSnapshotBaseChild reads, so
+ * the scheduler's ceiling and the BlockAcceptor's exemption cannot drift into
+ * disagreeing about what "deferred mode" means -- and so the lifecycle is
+ * testable without a daemon, which is how the never-disarmed bug escaped.
+ */
+inline bool ShouldApplyDeferredDrainCeiling(bool assumeutxo_active,
+                                            bool forward_connect_enabled) {
+    return assumeutxo_active && !forward_connect_enabled;
+}
+
 bool ShouldSkipSideChainPrecheck(const AssumeUTXOPrecheckContext& ctx,
                                  uint32_t parent_height,
                                  const dinero::uint256& parent_hash);

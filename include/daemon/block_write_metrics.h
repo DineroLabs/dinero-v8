@@ -19,9 +19,19 @@ namespace daemon {
 // Bodies actually written to flatfile storage (each one an fsync).
 extern std::atomic<uint64_t> g_durable_body_writes;
 // Writes skipped because the body was already durable.
-extern std::atomic<uint64_t> g_duplicate_body_writes_avoided;
+extern std::atomic<uint64_t> g_concurrent_acceptances_suppressed;
 // Duplicate/side-chain log lines suppressed by the rate limiter.
-extern std::atomic<uint64_t> g_duplicate_logs_suppressed;
+/**
+ * Per-SITE suppression counters.
+ *
+ * These were one shared global, incremented by two independently rate-limited
+ * log sites and never reset on emit, so each line's "suppressed since last
+ * line" was actually a cumulative all-time total across both sites -- a number
+ * that only ever grew and described neither site. One counter per site, reset
+ * when its own line prints.
+ */
+extern std::atomic<uint64_t> g_duplicate_logs_suppressed;      ///< single-flight site
+extern std::atomic<uint64_t> g_sidechain_logs_suppressed;      ///< side-chain skip site
 
 /**
  * True at most once per `interval_seconds` per call site.
@@ -30,6 +40,19 @@ extern std::atomic<uint64_t> g_duplicate_logs_suppressed;
  * steady_clock tick. Callers that are refused should still bump a counter so
  * the aggregate is reported when a line is finally emitted.
  */
+/**
+ * Overload taking the current time, so the boot-second case is reachable.
+ *
+ * The epoch-0 collision this guards against occurs only when now_s == 0, which
+ * on Linux means the first second of UPTIME. A test cannot reach that through
+ * the clock -- any machine running the suite is seconds-to-days past it -- so
+ * without this seam the fix is unfalsifiable and the regression test would
+ * pass equally against the bug.
+ */
+bool ShouldEmitRateLimitedAt(std::atomic<uint64_t>& state,
+                             uint32_t interval_seconds,
+                             uint64_t now_s);
+
 bool ShouldEmitRateLimited(std::atomic<uint64_t>& state,
                            uint32_t interval_seconds);
 

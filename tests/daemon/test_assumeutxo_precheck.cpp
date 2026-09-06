@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include "daemon/assumeutxo_precheck.h"
+#include "daemon/services/assumeutxo_state.h"
 
 using dinero::uint256;
 using dinero::daemon::AssumeUTXOPrecheckContext;
@@ -114,4 +115,47 @@ TEST(AssumeUTXOPrecheck, NullBaseBlockNeverExempts) {
     AssumeUTXOPrecheckContext ctx = DeferredCtx();
     ctx.base_block = uint256();
     EXPECT_FALSE(IsDeferredSnapshotBaseChild(ctx, kBaseHeight, uint256()));
+}
+
+// ── the drain-ceiling lifecycle ───────────────────────────────────────────
+//
+// The ceiling was armed only at the tail of a missing-bodies pass, deep inside
+// BackgroundValidationWorker, AFTER the `if (blocks_skipped == 0) break;` that
+// a completing pass takes. So the normal path -- replay finishes -- returned
+// without ever clearing it, and the scheduler refused to drain above the
+// snapshot base for the life of the process. Post-promotion that permanently
+// disables catch-up while the ceiling's own 60s log claims replay is still
+// running; only a restart recovers.
+//
+// Deriving it from state, as a pure function, is what makes the DISARM half
+// checkable at all. These cases pin both halves.
+TEST(DeferredDrainCeiling, AppliesOnlyInClassicDeferredMode) {
+    using dinero::daemon::ShouldApplyDeferredDrainCeiling;
+    EXPECT_TRUE(ShouldApplyDeferredDrainCeiling(/*active=*/true,
+                                                /*forward_connect=*/false))
+        << "classic deferred mode is exactly where the ceiling belongs";
+    EXPECT_FALSE(ShouldApplyDeferredDrainCeiling(true, true))
+        << "forward-connect: the tip legitimately passes the base";
+}
+
+// THE case. Snapshot state gone -> ceiling gone. Every mode exit runs through
+// assumeutxo::ClearState, which sets active=false, so a ceiling derived from
+// that flag cannot outlive the mode. The bug was that nothing re-derived it.
+TEST(DeferredDrainCeiling, IsLoweredOnceSnapshotStateIsCleared) {
+    using dinero::daemon::ShouldApplyDeferredDrainCeiling;
+
+    bool active = true;
+    dinero::uint256 base_block = BaseBlock();
+    uint32_t base_height = kBaseHeight;
+    ASSERT_TRUE(ShouldApplyDeferredDrainCeiling(active, false))
+        << "precondition: armed while the snapshot is live";
+
+    dinero::assumeutxo::ClearState(
+        {active, base_block, base_height, /*utxo_index=*/nullptr},
+        /*clear_persisted_metadata=*/false);
+
+    EXPECT_FALSE(active) << "ClearState must retire the mode flag";
+    EXPECT_FALSE(ShouldApplyDeferredDrainCeiling(active, false))
+        << "a ceiling that outlives the snapshot stops every drain above a "
+           "base that no longer exists";
 }

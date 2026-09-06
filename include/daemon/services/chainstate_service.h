@@ -1025,6 +1025,20 @@ private:
     // `clear_persisted_metadata=true` fully exits AssumeUTXO mode by clearing
     // both in-memory state and persisted metadata.
     // `clear_persisted_metadata=false` clears only the in-memory flags.
+    /**
+     * Push the deferred-drain ceiling to the scheduler from CURRENT state.
+     *
+     * One function for arm AND disarm, called from every place the mode can
+     * change, because the two drifting apart is exactly how this broke: the
+     * ceiling was armed only at the tail of a missing-bodies pass, and the
+     * completing pass returned before reaching it, so it was never cleared.
+     * A stuck ceiling stops every drain above the base for the life of the
+     * process -- after promotion, when the tip legitimately must pass it.
+     *
+     * Safe to call when no scheduler is wired; it is then a no-op.
+     */
+    void PublishDeferredDrainCeiling();
+
     void ClearAssumeUTXOState(bool clear_persisted_metadata);
     bool VerifyStrictArchivalStartup(uint32_t tip_height) const;
 

@@ -7,6 +7,7 @@
 #include "daemon/services/chainstate_restart_import.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
+#include "daemon/assumeutxo_precheck.h"  // ShouldApplyDeferredDrainCeiling
 #include "daemon/services/assumeutxo_replay.h"  // genesis->base replay engine (background validation)
 #include "nodecore/sync_profile_policy.h"
 #include "daemon/snapshot_bootstrap_policy.h"
@@ -2070,10 +2071,27 @@ void ChainstateService::SetAssumeUTXOState(const uint256& base_block,
     }
 }
 
+void ChainstateService::PublishDeferredDrainCeiling() {
+    auto* ctx = DaemonContext::instance();
+    auto* sched = (ctx && ctx->block_download) ? ctx->block_download.get() : nullptr;
+    if (!sched) return;  // not wired yet, or already torn down
+
+    // Derived from exactly the same facts as the BlockAcceptor side-chain
+    // exemption (daemon/assumeutxo_precheck.h) so the two cannot drift into
+    // disagreeing about what "deferred mode" means.
+    const bool deferred_mode = daemon::ShouldApplyDeferredDrainCeiling(
+        IsAssumeUTXOActive(), IsAssumeUTXOForwardConnectEnabled());
+    sched->SetDeferredDrainCeiling(deferred_mode, GetAssumeUTXOBaseHeight());
+}
+
 void ChainstateService::ClearAssumeUTXOState(bool clear_persisted_metadata) {
     assumeutxo::ClearState(
         {assumeutxo_active_, assumeutxo_base_block_, assumeutxo_base_height_, utxo_index_.get()},
         clear_persisted_metadata);
+
+    // Snapshot state is gone, so the ceiling must go with it. Without this the
+    // scheduler keeps refusing to drain above a base that no longer exists.
+    PublishDeferredDrainCeiling();
 
     if (clear_persisted_metadata) {
         if (logger_) {
@@ -15667,6 +15685,15 @@ void ChainstateService::BackgroundValidationWorker() {
         bool sched_unwired_logged = false;
 
         while (true) {
+            // Refresh the ceiling from current state at the START of every
+            // pass. It used to be set only deep inside the missing-bodies
+            // branch below, which had two consequences: the base+1 livelock
+            // this fix exists for ran unmitigated from process start until a
+            // full pass completed (minutes), and a pass that found nothing
+            // missing returned at `if (blocks_skipped == 0) break;` without
+            // ever clearing it.
+            PublishDeferredDrainCeiling();
+
             blocks_skipped = 0;
             std::vector<MissingEntry> missing;  // #298: per-pass missing heights
             // The engine requires strictly ascending heights. Retain it across
@@ -16010,14 +16037,9 @@ void ChainstateService::BackgroundValidationWorker() {
                 } else {
                     sched->SetBackfillValidationFrontier(uint256(), 0);
                 }
-                // Deferred-mode drain ceiling. Derived from exactly the same
-                // facts as the BlockAcceptor side-chain exemption
-                // (daemon/assumeutxo_precheck.h) so the two cannot drift into
-                // disagreeing about what "deferred mode" means.
-                const bool deferred_mode =
-                    IsAssumeUTXOActive() && !IsAssumeUTXOForwardConnectEnabled();
-                sched->SetDeferredDrainCeiling(deferred_mode,
-                                               GetAssumeUTXOBaseHeight());
+                // The ceiling is published at the top of every pass and on
+                // teardown (PublishDeferredDrainCeiling). Setting it again
+                // here would be a second source of truth for the same fact.
             }
             // #298 refinement: only re-request once backfill has reported its
             // window COMPLETE (completed >= total) yet validation still finds

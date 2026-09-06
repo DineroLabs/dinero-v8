@@ -3616,6 +3616,29 @@ endif()
 # base-child fix: without it, the canonical child of the snapshot base is
 # misclassified as a side chain and re-runs RestoreHistoricalForest on every
 # duplicate delivery, starving the block-download scheduler.
+# Rate limiter + counters behind the duplicate-delivery logging. Labelled so
+# the MAIN ctest lane selects it: a gate nothing runs is not a gate.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_write_metrics.cpp)
+  add_executable(test_block_write_metrics
+    tests/daemon/test_block_write_metrics.cpp
+    src/daemon/block_write_metrics.cpp
+  )
+  add_dependencies(test_block_write_metrics gtest)
+  target_link_libraries(test_block_write_metrics PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> Threads::Threads
+  )
+  target_include_directories(test_block_write_metrics BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME BlockWriteMetrics COMMAND test_block_write_metrics)
+  set_tests_properties(BlockWriteMetrics PROPERTIES
+    LABELS "daemon;metrics;assumeutxo"
+    TIMEOUT 30
+  )
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_precheck.cpp)
   add_executable(test_assumeutxo_precheck
     tests/daemon/test_assumeutxo_precheck.cpp

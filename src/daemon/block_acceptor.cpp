@@ -87,14 +87,19 @@ namespace {
 void LogDuplicateBodySuppressed(const dinero::uint256& hash, uint64_t height) {
     static std::atomic<uint64_t> s_last_emit{0};
     if (dinero::daemon::ShouldEmitRateLimited(s_last_emit, 60)) {
-        LOG_INFO("♻️  Duplicate body: reusing stored flatfile position at height " +
+        // Says only what is known at this point. The old line claimed
+        // "reusing stored flatfile position ... (no write, no fsync)", which
+        // asserted a durability outcome this path never observed: the winning
+        // thread may be doing the first write, or may fail without writing.
+        LOG_INFO("♻️  Concurrent duplicate acceptance suppressed at height " +
                  std::to_string(height) + " hash=" + hash.GetHex().substr(0, 16) +
-                 "... (no write, no fsync). Writes avoided so far: " +
+                 "... (another thread is already processing this hash). "
+                 "Suppressed so far: " +
                  std::to_string(
-                     dinero::daemon::g_duplicate_body_writes_avoided.load()) +
-                 "; log lines suppressed: " +
+                     dinero::daemon::g_concurrent_acceptances_suppressed.load()) +
+                 "; log lines suppressed since this line last printed: " +
                  std::to_string(
-                     dinero::daemon::g_duplicate_logs_suppressed.load()));
+                     dinero::daemon::g_duplicate_logs_suppressed.exchange(0)));
     } else {
         ++dinero::daemon::g_duplicate_logs_suppressed;
     }
@@ -334,12 +339,49 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                     //    DispatchDeferredSends() until peer deadlines expired
                     //    and the download collapsed to ~6 KB/s.
                     //
-                    // Skipping is safe because acceptance is storage, not
-                    // connection: this whole precheck is best-effort (every
-                    // failure path below merely logs and stores the block
-                    // anyway), and ConnectBlock hard-rejects a bad Utreexo
-                    // root when the block is actually connected after
-                    // promotion.
+                    // WHAT IS GIVEN UP, stated accurately.
+                    //
+                    // An earlier version of this comment claimed the precheck
+                    // is best-effort and that "every failure path below merely
+                    // logs and stores the block anyway". That was FALSE. The
+                    // success path of the branch being skipped ends in a hard
+                    // reject:
+                    //
+                    //     return BlockAcceptResult::Rejected(
+                    //         BlockRejectCode::INVALID_UTREEXO_ROOT, ...)
+                    //
+                    // So in deferred mode a PoW-valid base+1 carrying a wrong
+                    // header Utreexo root WAS rejected at accept time and now
+                    // is not: it is accepted, stored, indexed, and triggers
+                    // ActivateBestChain and wallet notifications, with the
+                    // invalidity surfacing later at promotion.
+                    //
+                    // Why that is still the right trade here:
+                    //
+                    //  - The check cannot be kept without the cost. The header
+                    //    root is compared against one computed from a RESTORED
+                    //    HISTORICAL FOREST; computed_root_opt is populated only
+                    //    by that restore. The expensive work and the check are
+                    //    the same operation, so "validate but skip the restore"
+                    //    does not exist on this path.
+                    //  - The restore is pointless here by construction: it asks
+                    //    "is the parent on the main chain?" when the parent IS
+                    //    the compiled-in trust anchor.
+                    //  - Nothing is CONNECTED on the strength of acceptance.
+                    //    ConnectBlock hard-rejects a bad root when the block is
+                    //    actually connected (block_acceptor.cpp:2007), and the
+                    //    below-base fork guard blocks activation before then.
+                    //  - The cost of keeping it was measured: this ran 250,135
+                    //    times for one height on a scheduler thread, starving
+                    //    DispatchDeferredSends() until peer deadlines expired
+                    //    and the download collapsed to ~6 KB/s.
+                    //
+                    // The residual is real and is NOT nothing: a bad base+1
+                    // occupies storage and fires notifications until promotion
+                    // rejects it. Removing that residual means fixing the
+                    // classification (isMainChainExtension compares against
+                    // ChainDB::getTip(), which trails the base during replay)
+                    // rather than widening this exemption.
                     const dinero::uint256 parent_hash =
                         dinero::uint256::FromHexUnsafe(block.prevBlockHash);
                     dinero::uint256 canonical_parent;
@@ -629,16 +671,31 @@ AcceptResult BlockAcceptor::AcceptBlockFromPeer(const Block& block, const std::s
     // here is strictly better than suppressing deeper: it skips the
     // serialize/hex/parse round trip too.
     //
-    // Scope note: this dedups CONCURRENT deliveries. Sequential re-delivery of
-    // an already-stored body is handled by the known-body guard in
-    // ConnectBlock, which is what prevents the repeat fsync.
+    // SCOPE, and what is NOT covered.
+    //
+    // This dedups CONCURRENT deliveries only. An earlier version of this note
+    // said sequential re-delivery was "handled by the known-body guard in
+    // ConnectBlock" -- that guard was REMOVED by this branch's own final
+    // commit (it broke CsnEpochResetCrashAtomicity), so nothing downstream
+    // suppresses a sequential repeat any more.
+    //
+    // Consequence, stated plainly: N peers delivering the same new block
+    // SEQUENTIALLY still cost N full validate cycles and N writeBlock+fsync.
+    // The drain is a single sequential thread, so it never contends with
+    // itself and never takes this path at all. Sequential duplicate
+    // suppression does not exist at this head; re-adding it needs a durable
+    // known-body check that does not reintroduce the crash-atomicity bug.
     const dinero::uint256 in_flight_hash = block.GetHash();
     static std::mutex s_in_flight_mutex;
     static std::unordered_set<dinero::uint256> s_in_flight;
     {
         std::lock_guard<std::mutex> lock(s_in_flight_mutex);
         if (!s_in_flight.insert(in_flight_hash).second) {
-            ++dinero::daemon::g_duplicate_body_writes_avoided;
+            // NOT "a write avoided": nothing here checked durability, and
+            // the winner may be performing the FIRST write of this body --
+            // or may fail and never write it at all. What is true is that a
+            // concurrent acceptance was suppressed.
+            ++dinero::daemon::g_concurrent_acceptances_suppressed;
             LogDuplicateBodySuppressed(in_flight_hash, 0);
             return BlockAcceptResult::Rejected(
                 BlockRejectCode::DUPLICATE,
@@ -2019,11 +2076,11 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 if (dinero::daemon::ShouldEmitRateLimited(s_last_sidechain_log, 60)) {
                     LOG_INFO("🔀 SIDE-CHAIN BLOCK: Skipping Utreexo validation "
                              "(will validate after reorg disconnect). Suppressed "
-                             "since last line: " +
+                             "since this line last printed: " +
                              std::to_string(
-                                 dinero::daemon::g_duplicate_logs_suppressed.load()));
+                                 dinero::daemon::g_sidechain_logs_suppressed.exchange(0)));
                 } else {
-                    ++dinero::daemon::g_duplicate_logs_suppressed;
+                    ++dinero::daemon::g_sidechain_logs_suppressed;
                 }
             }
         }
