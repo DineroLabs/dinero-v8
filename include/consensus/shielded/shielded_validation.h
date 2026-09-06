@@ -236,8 +236,32 @@ ValidationContext BuildShieldedValidationContext(
  * Does NOT touch Utreexo. The transparent side of the same tx is
  * handled by the existing block-connect path (Utreexo add/remove).
  */
-// Returns false if a nullifier insert failed — the caller MUST abort the
-// block rather than connect it with shielded state that is missing a spend.
+// ─── CONTRACT ──────────────────────────────────────────────────────────────
+//
+// Returns false if the bundle is refused. The caller MUST abort the block
+// rather than connect it with shielded state that is missing a spend.
+//
+// "false" means NO MUTATION. Both stores are unchanged on every refusal path:
+//
+//   validation refusal (already-spent, or a nullifier repeated inside the
+//   bundle) — detected before anything is written.
+//
+//   durable-write failure — nullifiers are written by NullifierSet::InsertBatch
+//   inside ONE sqlite transaction, so a failure at any position rolls the whole
+//   batch back. The commitment tree is appended only AFTER that write commits,
+//   so a failed write leaves the tree untouched as well.
+//
+// The ordering is deliberate and load-bearing: the fallible, atomic store is
+// written first; the infallible in-memory one second. Reversing it would
+// reintroduce a partial state on the rejecting path.
+//
+// This previously held only for the tree. Sequential inserts could leave the
+// first N-1 nullifier rows written after the Nth failed — fail-safe against
+// inflation, since a surplus nullifier can only refuse a spend, but capable of
+// rejecting a VALID spend until startup rebuilt the set from ChainDB. That is
+// a denial of service, so it is fixed rather than documented.
+// Covered by fault injection at the first, intermediate and final insert,
+// including a restart check that the rollback is durable.
 bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,

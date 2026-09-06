@@ -1865,6 +1865,282 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_epoch_reset.cpp)
   message(STATUS "Shielded epoch-reset tests enabled")
 endif()
 
+# Shielded-state root — the fingerprint a future block-header commitment would
+# carry. Consensus-shaped: asserts the exact preimage layout, because after
+# activation a layout change is a chain split.
+# Deterministic vector dumper: prints the shielded-commitment preimages and
+# digests as text so two builds can be compared with cmp. Not a ctest by
+# itself -- the assertion is a byte-for-byte diff between toolchains and
+# configurations, driven by scripts/check_shielded_vectors.sh.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/dump_shielded_vectors.cpp)
+  add_executable(dump_shielded_vectors
+    tests/consensus/dump_shielded_vectors.cpp
+    src/consensus/state_commitment.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(dump_shielded_vectors dinero_shielded)
+  target_link_libraries(dump_shielded_vectors PRIVATE dinero_shielded)
+  target_include_directories(dump_shielded_vectors BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  # Ordinary-CI half of the determinism gate: whatever compiler and build type
+  # this configuration uses must reproduce the committed golden vectors. The
+  # full 4-way GCC/Clang x Debug/Release comparison lives in
+  # scripts/check_shielded_vectors.sh; this catches drift on every run.
+  add_test(
+    NAME ShieldedVectorsMatchGolden
+    COMMAND ${CMAKE_COMMAND}
+            -E compare_files
+            ${CMAKE_SOURCE_DIR}/tests/vectors/shielded_state_commitment_v1.txt
+            ${CMAKE_CURRENT_BINARY_DIR}/shielded_vectors_actual.txt
+  )
+  add_test(
+    NAME ShieldedVectorsGenerate
+    COMMAND ${CMAKE_COMMAND}
+            -DEXE=$<TARGET_FILE:dump_shielded_vectors>
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/shielded_vectors_actual.txt
+            -P ${CMAKE_SOURCE_DIR}/cmake/RunShieldedVectors.cmake
+  )
+  # Generation must precede comparison, or the compare reads a stale file.
+  set_tests_properties(ShieldedVectorsGenerate PROPERTIES
+    FIXTURES_SETUP shielded_vectors
+    LABELS "shielded;consensus;determinism"
+    TIMEOUT 60
+  )
+  set_tests_properties(ShieldedVectorsMatchGolden PROPERTIES
+    FIXTURES_REQUIRED shielded_vectors
+    LABELS "shielded;consensus;determinism;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "Shielded deterministic vector dumper enabled")
+endif()
+
+# state_commitment_v1 coinbase encoding lock. Freezes the byte layout BEFORE
+# any activation height exists -- after activation a layout change is a split.
+# Item 9: one canonical byte representation across script, wire, hashing, and
+# the display/snapshot string form. Must pass BEFORE enforcement is written --
+# otherwise enforcement could validate one representation while production
+# uses another and both look green.
+# GUARDRAIL: golden constants computed by an INDEPENDENT implementation from
+# the spec text, pasted as literals. Every other vector here is produced by the
+# production serializer, so a coordinated writer+parser+regenerate change would
+# stay green. These cannot update themselves.
+# Connect/disconnect/reorg state transitions at the state-model level.
+# Complements the daemon-level integration suites, which cannot isolate a
+# single transition deterministically.
+# Snapshot/promotion boundary: which reorgs are fatal. Boundary cases are all
+# off-by-one or mode transitions, which integration tests cannot enumerate.
+# Generation-checked block status transitions: a stale acceptance result may
+# never overwrite a newer operator decision.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_block_status_generation.cpp)
+  add_executable(test_block_status_generation
+    tests/consensus/test_block_status_generation.cpp
+    src/consensus/block_status_generation.cpp
+  )
+  add_dependencies(test_block_status_generation gtest gtest_main)
+  target_link_libraries(test_block_status_generation PRIVATE GTest::gtest_main)
+  target_include_directories(test_block_status_generation BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME BlockStatusGeneration COMMAND test_block_status_generation)
+  set_tests_properties(BlockStatusGeneration PROPERTIES
+    LABELS "consensus;reorg;invalidate;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "Block status generation tests enabled")
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_assumeutxo_fork_guard.cpp)
+  add_executable(test_assumeutxo_fork_guard
+    tests/consensus/test_assumeutxo_fork_guard.cpp
+    src/consensus/assumeutxo_fork_guard.cpp
+  )
+  add_dependencies(test_assumeutxo_fork_guard gtest gtest_main)
+  target_link_libraries(test_assumeutxo_fork_guard PRIVATE GTest::gtest_main)
+  target_include_directories(test_assumeutxo_fork_guard BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME AssumeUTXOForkGuard COMMAND test_assumeutxo_fork_guard)
+  set_tests_properties(AssumeUTXOForkGuard PROPERTIES
+    LABELS "consensus;assumeutxo;reorg;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "AssumeUTXO fork-guard boundary tests enabled")
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_transitions.cpp)
+  add_executable(test_state_commitment_transitions
+    tests/consensus/test_state_commitment_transitions.cpp
+    src/consensus/state_commitment.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_state_commitment_transitions gtest gtest_main dinero_shielded)
+  target_link_libraries(test_state_commitment_transitions PRIVATE
+    GTest::gtest_main
+    dinero_shielded
+  )
+  target_include_directories(test_state_commitment_transitions BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentTransitions COMMAND test_state_commitment_transitions)
+  set_tests_properties(StateCommitmentTransitions PROPERTIES
+    LABELS "shielded;consensus;reorg;mandatory"
+    TIMEOUT 120
+  )
+  message(STATUS "state_commitment_v1 transition tests enabled")
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_external_vectors.cpp)
+  add_executable(test_state_commitment_external_vectors
+    tests/consensus/test_state_commitment_external_vectors.cpp
+    src/consensus/state_commitment.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_state_commitment_external_vectors gtest gtest_main dinero_shielded)
+  target_link_libraries(test_state_commitment_external_vectors PRIVATE
+    GTest::gtest_main
+    dinero_shielded
+  )
+  target_include_directories(test_state_commitment_external_vectors BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentExternalVectors COMMAND test_state_commitment_external_vectors)
+  set_tests_properties(StateCommitmentExternalVectors PROPERTIES
+    LABELS "shielded;consensus;encoding;guardrail;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "state_commitment_v1 EXTERNAL golden vectors enabled")
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_canonical.cpp)
+  add_executable(test_state_commitment_canonical
+    tests/consensus/test_state_commitment_canonical.cpp
+    src/consensus/state_commitment.cpp
+  )
+  add_dependencies(test_state_commitment_canonical gtest gtest_main dinero_core)
+  target_link_libraries(test_state_commitment_canonical PRIVATE
+    GTest::gtest_main
+    dinero_core
+  )
+  target_include_directories(test_state_commitment_canonical BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentCanonical COMMAND test_state_commitment_canonical)
+  set_tests_properties(StateCommitmentCanonical PROPERTIES
+    LABELS "shielded;consensus;encoding;canonical;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "state_commitment_v1 canonical-representation tests enabled")
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_state_commitment_encoding.cpp)
+  add_executable(test_state_commitment_encoding
+    tests/consensus/test_state_commitment_encoding.cpp
+    src/consensus/state_commitment.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_state_commitment_encoding gtest gtest_main dinero_shielded)
+  target_link_libraries(test_state_commitment_encoding PRIVATE
+    GTest::gtest_main
+    dinero_shielded
+  )
+  target_include_directories(test_state_commitment_encoding BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME StateCommitmentEncoding COMMAND test_state_commitment_encoding)
+  set_tests_properties(StateCommitmentEncoding PROPERTIES
+    LABELS "shielded;consensus;encoding;mandatory"
+    TIMEOUT 60
+  )
+  message(STATUS "state_commitment_v1 encoding tests enabled")
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_root.cpp)
+  add_executable(test_shielded_root
+    tests/consensus/test_shielded_root.cpp
+    src/primitives/uint256.cpp   # uint256::operator== / ToString are out-of-line
+  )
+  add_dependencies(test_shielded_root gtest dinero_shielded)
+  target_link_libraries(test_shielded_root PRIVATE
+    $<TARGET_FILE:gtest>
+    $<TARGET_FILE:gtest_main>
+    dinero_shielded
+  )
+  target_include_directories(test_shielded_root BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ShieldedRoot COMMAND test_shielded_root)
+  set_tests_properties(ShieldedRoot PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory"
+    TIMEOUT 30
+  )
+  message(STATUS "Shielded-state root tests enabled")
+endif()
+
+# Canonical nullifier accumulator — ordering rule + fail-closed contract.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_nullifier_accumulator.cpp)
+  add_executable(test_nullifier_accumulator
+    tests/consensus/test_nullifier_accumulator.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_nullifier_accumulator gtest dinero_shielded)
+  target_link_libraries(test_nullifier_accumulator PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> dinero_shielded
+  )
+  target_include_directories(test_nullifier_accumulator BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME NullifierAccumulator COMMAND test_nullifier_accumulator)
+  set_tests_properties(NullifierAccumulator PROPERTIES
+    LABELS "shielded;consensus;cv-binding;mandatory;state-commitment"
+    TIMEOUT 30
+  )
+  message(STATUS "Canonical nullifier accumulator tests enabled")
+endif()
+
+# Provenance: whether a sqlite nullifier database's rows may ever be treated as
+# authoritative. Deliberately labelled so the MAIN ctest lane selects it — a
+# consensus gate that no lane runs is not a gate (see
+# scripts/ci/check_mandatory_tests_execute.py).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_nullifier_set_provenance.cpp)
+  add_executable(test_nullifier_set_provenance
+    tests/consensus/test_nullifier_set_provenance.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_nullifier_set_provenance gtest dinero_shielded)
+  target_link_libraries(test_nullifier_set_provenance PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> dinero_shielded sqlite3
+  )
+  target_include_directories(test_nullifier_set_provenance BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME NullifierSetProvenance COMMAND test_nullifier_set_provenance)
+  set_tests_properties(NullifierSetProvenance PROPERTIES
+    LABELS "shielded;consensus;state-commitment"
+    TIMEOUT 30
+  )
+endif()
+
+
 # #356: pure marker-guard decision for ApplyStatelessReplayShielded. Header-only
 # free function — no dinero library link needed, just gtest. Named so the
 # ShieldedBlockSection ctest gate regex also runs it.

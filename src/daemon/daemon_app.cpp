@@ -7596,6 +7596,9 @@ bool DaemonApp::Start() {
 }
 
 void DaemonApp::Stop() {
+    // Free any thread parked on a test barrier so shutdown cannot block on
+    // one waiting out its timeout.
+    dinero::testing::BarriersAborted().store(true);
     if (!started_) {
         return;
     }
