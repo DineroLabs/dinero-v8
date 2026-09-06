@@ -5374,6 +5374,31 @@ const char* ChainstateService::TipPublishReasonName(TipPublishReason r) {
 }
 
 void ChainstateService::PublishActiveTip(CBlockIndex* tip, TipPublishReason reason) {
+    // Take the activation lock HERE, at the single setter.
+    //
+    // Found while tracing for review finding 13: ExtendsActiveTipLocked reads
+    // active_tip_ under this lock (block acceptance asks "does this parent
+    // extend the active tip?"), but several writers did NOT hold it --
+    // ForceSetActiveTip, reached from BlockAcceptor::ApplyTipInvalidation on
+    // the acceptance path itself; LoadSnapshot, reachable by RPC while
+    // acceptance is live; and four Start() paths. Locked readers against
+    // lockless writers is a race, and finding 13 is what introduced the
+    // locked reader -- so this is a defect in that change, not a pre-existing
+    // one to leave alone.
+    //
+    // Fixed at the setter rather than at each caller because this function
+    // already exists to be the ONE place active_tip_ is written (its comment
+    // below records that it replaced 13 scattered assignments). Locking here
+    // makes the invariant true for every present and future call site instead
+    // of relying on 15 of them to remember.
+    //
+    // Recursive by design (AnnotatedRecursiveMutex), so the callers that
+    // already hold it -- ActivateBestChain, InvalidateBlock, ConnectTip and
+    // DisconnectTip via their caller -- re-enter harmlessly. Lock ORDER is
+    // unchanged: activation_mutex_ is taken before published_tip_mutex_ below,
+    // which is the order ActivateBestChain already establishes.
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+
     // Single setter for the in-memory active_tip_ pointer. Pre-fix
     // there were 13 direct assignments scattered across this file,
     // each with implicit semantics. Funneling them through this
