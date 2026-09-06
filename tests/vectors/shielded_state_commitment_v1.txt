@@ -1,0 +1,79 @@
+# shielded state commitment — deterministic vectors
+# tag=SHR1 version=2
+root empty_all                    REJECTED (tree_root is 0 bytes, must be 32)
+root empty_tree_nonzero_size      REJECTED (tree_root is 0 bytes, must be 32)
+root empty_tree32                 preimage_len=85
+root empty_tree32                 preimage=53485231020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+root empty_tree32                 digest=8f8ccb8e613d66639aae4647df953d93f3d67ebc03fbf00b5b66319b4d922512
+root empty_tree32_nonzero_size    preimage_len=85
+root empty_tree32_nonzero_size    preimage=53485231020000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+root empty_tree32_nonzero_size    digest=29b315b15e37e737aa7dbb62eb6e089601fea8290b8c6688d74f2353dee88e6c
+root tree32_size0                 preimage_len=85
+root tree32_size0                 preimage=534852310211304f6e8daccbea0a29486786a5c4e3032241607f9ebddcfc1b3a597897b6d500000000000000002241607f9ebddcfb1b3a597897b6d5f41433527190afceed0d2c4b6a89a8c7e60000000000000000
+root tree32_size0                 digest=e1cf07e2c115a4b1fa2c0d66904a1d88fb1fb70e4aa08ccdb897e4f22a56bb38
+root tree32_size1                 preimage_len=85
+root tree32_size1                 preimage=534852310211304f6e8daccbea0a29486786a5c4e3032241607f9ebddcfc1b3a597897b6d501000000000000002241607f9ebddcfb1b3a597897b6d5f41433527190afceed0d2c4b6a89a8c7e60000000000000000
+root tree32_size1                 digest=4259550dfdfeb92ce1fe6886c85464a9a37634242d0c02a80efe1ce1aa68e559
+root typical                      preimage_len=149
+root typical                      preimage=5348523102a0bfdefd1c3b5a7999b8d7f61534537292b1d0ef0e2d4c6b8baac9e80726456448ee000000000000b0cfee0d2c4b6a89a9c8e70625446382a2c1e0ff1e3d5c7b9bbad9f8173655744000000000000000c0dffe1d3c5b7a99b9d8f71635547392b2d1f00f2e4d6c8babcae90827466584a4c3e201203f5e7d9dbcdbfa1938577696b5d4f31231506f8faecdec0b2a4968
+root typical                      digest=9e04d1178a4ab75a8020c16aac945025ebfedb85a36d37533317f948a29bf786
+root size_0x7f                    preimage_len=93
+root size_0x7f                    preimage=534852310201203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c57f000000000000000221405f7e9dbcdbfb1a39587796b5d4f4133251708faecded0c2b4a6988a7c60800000000000000032241607f9ebddc
+root size_0x7f                    digest=51716df41156d2e8fb7c986588205f8d08e75fd6c672cb668d084a4d6441b99e
+root size_0xff                    preimage_len=93
+root size_0xff                    preimage=534852310201203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c5ff000000000000000221405f7e9dbcdbfb1a39587796b5d4f4133251708faecded0c2b4a6988a7c60800000000000000032241607f9ebddc
+root size_0xff                    digest=950b6a5aac2b487983bdb70012d5f8b7b1114b4ef0ac6320e1d8ce690cc9d9c7
+root size_0x100                   preimage_len=93
+root size_0x100                   preimage=534852310201203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c500010000000000000221405f7e9dbcdbfb1a39587796b5d4f4133251708faecded0c2b4a6988a7c60800000000000000032241607f9ebddc
+root size_0x100                   digest=4b9140547ce91b373dfc1dcf3a3390514ab8eaa76597cd87415ffcabe57dad5a
+root size_0xffffffff              preimage_len=93
+root size_0xffffffff              preimage=534852310201203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c5ffffffff000000000221405f7e9dbcdbfb1a39587796b5d4f4133251708faecded0c2b4a6988a7c60800000000000000032241607f9ebddc
+root size_0xffffffff              digest=92f54d8a302e2336bde3afc84f9e37b7a649ca15742d244b35a0ef5146579f4c
+root size_2pow32                  preimage_len=93
+root size_2pow32                  preimage=534852310201203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c500000000010000000221405f7e9dbcdbfb1a39587796b5d4f4133251708faecded0c2b4a6988a7c60800000000000000032241607f9ebddc
+root size_2pow32                  digest=93844f8e1f94b149d1b6a1cf38b990577b777a7679d1c9059b6a37bd1cef4e6f
+root size_max                     preimage_len=93
+root size_max                     preimage=534852310201203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c5ffffffffffffffff0221405f7e9dbcdbfb1a39587796b5d4f4133251708faecded0c2b4a6988a7c60800000000000000032241607f9ebddc
+root size_max                     digest=d13d6abe2f0a66a10641a4bb3f9abdc8b325aad2680d7f1cf745e45a509fd93d
+root anchor_len_0                 preimage_len=85
+root anchor_len_0                 preimage=5348523102405f7e9dbcdbfa1939587796b5d4f3123251708faecdec0b2b4a6988a7c6e5040700000000000000506f8eadcceb0a29496887a6c5e403224261809fbeddfc1b3b5a7998b7d6f5140000000000000000
+root anchor_len_0                 digest=d1bc1284223170aae31eed837a1346b1e30120be2b82478d76eb80e3c224a9a7
+root anchor_len_1                 preimage_len=86
+root anchor_len_1                 preimage=5348523102405f7e9dbcdbfa1939587796b5d4f3123251708faecdec0b2b4a6988a7c6e5040700000000000000506f8eadcceb0a29496887a6c5e403224261809fbeddfc1b3b5a7998b7d6f514010000000000000060
+root anchor_len_1                 digest=7217e5048ab90e678a5497b91c95d858ec4f1ada95ce7f837fc598fd642eb5b6
+root anchor_len_31                preimage_len=116
+root anchor_len_31                preimage=5348523102405f7e9dbcdbfa1939587796b5d4f3123251708faecdec0b2b4a6988a7c6e5040700000000000000506f8eadcceb0a29496887a6c5e403224261809fbeddfc1b3b5a7998b7d6f5141f00000000000000607f9ebddcfb1a39597897b6d5f41332527190afceed0c2b4b6a89a8c7e605
+root anchor_len_31                digest=24801c5c0336a4edff79f3ef82d43f16537637940119ae66ed2207557d8e498b
+root anchor_len_32                preimage_len=117
+root anchor_len_32                preimage=5348523102405f7e9dbcdbfa1939587796b5d4f3123251708faecdec0b2b4a6988a7c6e5040700000000000000506f8eadcceb0a29496887a6c5e403224261809fbeddfc1b3b5a7998b7d6f5142000000000000000607f9ebddcfb1a39597897b6d5f41332527190afceed0c2b4b6a89a8c7e60524
+root anchor_len_32                digest=6722eab4f6eb02aed0971acc9d04d89f3736c0f4b41baaa03a8c723fcb28d47a
+root anchor_len_33                preimage_len=118
+root anchor_len_33                preimage=5348523102405f7e9dbcdbfa1939587796b5d4f3123251708faecdec0b2b4a6988a7c6e5040700000000000000506f8eadcceb0a29496887a6c5e403224261809fbeddfc1b3b5a7998b7d6f5142100000000000000607f9ebddcfb1a39597897b6d5f41332527190afceed0c2b4b6a89a8c7e6052444
+root anchor_len_33                digest=aea4e8b7d9b579466bd6754af527e90851b7fbd6b760857fe9936bb834cde9b7
+root anchor_len_255               preimage_len=340
+root anchor_len_255               preimage=5348523102405f7e9dbcdbfa1939587796b5d4f3123251708faecdec0b2b4a6988a7c6e5040700000000000000506f8eadcceb0a29496887a6c5e403224261809fbeddfc1b3b5a7998b7d6f514ff00000000000000607f9ebddcfb1a39597897b6d5f41332527190afceed0c2b4b6a89a8c7e60524446382a1c0dffe1d3d5c7b9ab9d8f71636557493b2d1f00f2f4e6d8cabcae90828476685a4c3e20121405f7e9dbcdbfa1a39587796b5d4f3133251708faecdec0c2b4a6988a7c6e50524436281a0bfdefe1d3c5b7a99b8d7f71635547392b1d0f00f2e4d6c8baac9e90827466584a3c2e201203f5e7d9cbbdbfa1938577695b4d4f31231506f8eadcdec0b2a496887a6c6e504234261809fbfdefd1c3b5a7998b8d7f61534537291b1d0ef0e2d4c6b8aaac9e80726456483a3c2e1001f3e5d7c9cbbdaf91837567595b4d3f211304f6e8eadcceb0a29486787a6c5e4032241
+root anchor_len_255               digest=76d99633497217de17f1fe029b1a57319dbe6fc0df65a6eb15c2596e6b0f05e7
+root anchor_len_256               preimage_len=341
+root anchor_len_256               preimage=5348523102405f7e9dbcdbfa1939587796b5d4f3123251708faecdec0b2b4a6988a7c6e5040700000000000000506f8eadcceb0a29496887a6c5e403224261809fbeddfc1b3b5a7998b7d6f5140001000000000000607f9ebddcfb1a39597897b6d5f41332527190afceed0c2b4b6a89a8c7e60524446382a1c0dffe1d3d5c7b9ab9d8f71636557493b2d1f00f2f4e6d8cabcae90828476685a4c3e20121405f7e9dbcdbfa1a39587796b5d4f3133251708faecdec0c2b4a6988a7c6e50524436281a0bfdefe1d3c5b7a99b8d7f71635547392b1d0f00f2e4d6c8baac9e90827466584a3c2e201203f5e7d9cbbdbfa1938577695b4d4f31231506f8eadcdec0b2a496887a6c6e504234261809fbfdefd1c3b5a7998b8d7f61534537291b1d0ef0e2d4c6b8aaac9e80726456483a3c2e1001f3e5d7c9cbbdaf91837567595b4d3f211304f6e8eadcceb0a29486787a6c5e403224160
+root anchor_len_256               digest=c489cc24ace3e37134e67ab4cb34042629f92f89267e58f0452dbea0d05184ad
+root tree_len_1                   REJECTED (tree_root is 1 bytes, must be 32)
+root tree_len_31                  REJECTED (tree_root is 31 bytes, must be 32)
+root tree_len_33                  REJECTED (tree_root is 33 bytes, must be 32)
+root tree_len_64                  REJECTED (tree_root is 64 bytes, must be 32)
+acc  empty                        n=0 digest=4f760a0ef5ff321a3eaa0feca778ff19c9126aefd506b91732d747495df62696
+acc  single                       n=1 digest=49a119d8ebea8a43d05c45afaa98d2b0efa4cf731d6051672cabfcadfd99c387
+acc  two_sorted                   n=2 digest=c02436f5dd2afb6c307da9a6b65b06626b28dd6e9a10e79b5adaf5f62b94d571
+acc  two_reversed                 n=2 digest=c02436f5dd2afb6c307da9a6b65b06626b28dd6e9a10e79b5adaf5f62b94d571
+acc  dup_same                     n=2 digest=49a119d8ebea8a43d05c45afaa98d2b0efa4cf731d6051672cabfcadfd99c387
+acc  same_nf_diff_height          n=2 digest=a04eee3ceb18d274353988b1ee4ed191b999b9296cd7911c6b4c5cba459d1615
+acc  height_zero                  n=1 digest=df565afb074cc358a56b3b5fc510a1522310e336babbf27f4f158d0820982d54
+acc  height_max                   n=1 digest=b5553a681f6219a6a545a9ecc174d4eb9fe760782873bee40bc21e219fd53e77
+acc  height_boundary_61000        n=3 digest=9a17f36a27f8c49146a11e627ca1382e7238e79a356718dfbb26af96495b22dc
+acc  many_256_ascending           n=256 digest=e4de3fcba05271edc061a1934b5e6767e185e1349c2147cf16d362aa1c13dce5
+acc  many_256_descending          n=256 digest=e4de3fcba05271edc061a1934b5e6767e185e1349c2147cf16d362aa1c13dce5
+cbsc seed_00                     len=39 script=6a25444e525301001f3e5d7c9bbad9f91837567594b3d2f211304f6e8daccbeb0a29486786a5c4
+cbsc seed_01                     len=39 script=6a25444e52530101203f5e7d9cbbdafa1938577695b4d3f31231506f8eadccec0b2a496887a6c5
+cbsc seed_7f                     len=39 script=6a25444e5253017f9ebddcfb1a39587897b6d5f41332517190afceed0c2b4a6a89a8c7e6052443
+cbsc seed_80                     len=39 script=6a25444e525301809fbeddfc1b3a597998b7d6f51433527291b0cfee0d2c4b6b8aa9c8e7062544
+cbsc seed_ff                     len=39 script=6a25444e525301ff1e3d5c7b9ab9d8f81736557493b2d1f1102f4e6d8cabcaea0928476685a4c3
+# end

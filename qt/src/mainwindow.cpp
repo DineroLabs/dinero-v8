@@ -2525,24 +2525,28 @@ void MainWindow::setupUI() {
       v7Column->setContentsMargins(10, 12, 10, 10);
       v7Column->setSpacing(8);
       v7Group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-      v7Group->setMaximumHeight(245);
+      v7Group->setMaximumHeight(275);
 
-      // Utreexo box
-      auto *utreexoBox = new QGroupBox("Utreexo");
+      // Utreexo validation mode. Values come from one guarded accumulator
+      // snapshot via blockchain.getutreexocommitment.
+      auto *utreexoBox = new QGroupBox("Utreexo Validation");
       auto *utreexoLay = new QVBoxLayout(utreexoBox);
       utreexoLay->setContentsMargins(10, 12, 10, 10);
       utreexoLay->setSpacing(4);
       utreexoBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-      utreexoBox->setMaximumHeight(105);
+      utreexoBox->setMaximumHeight(132);
       lblUtreexoHealth_ = new QLabel("Health: --");
       lblUtreexoHealth_->setStyleSheet("QLabel { font-size: 12px; font-weight: bold; color: #2d8a4e; }");
-      lblUtreexoLeaves_ = new QLabel("Leaves: --");
-      lblUtreexoLeaves_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
-      lblUtreexoRoot_ = new QLabel("Root: --");
-      lblUtreexoRoot_->setStyleSheet("QLabel { font-size: 10px; color: #868e96; font-family: monospace; }");
+      lblUtreexoRole_ = new QLabel("Role: --");
+      lblUtreexoRole_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
+      lblUtreexoState_ = new QLabel("State: --");
+      lblUtreexoState_->setStyleSheet("QLabel { font-size: 11px; color: #c5ced8; }");
+      lblUtreexoStorage_ = new QLabel("Storage: --");
+      lblUtreexoStorage_->setStyleSheet("QLabel { font-size: 10px; color: #868e96; }");
       utreexoLay->addWidget(lblUtreexoHealth_);
-      utreexoLay->addWidget(lblUtreexoLeaves_);
-      utreexoLay->addWidget(lblUtreexoRoot_);
+      utreexoLay->addWidget(lblUtreexoRole_);
+      utreexoLay->addWidget(lblUtreexoState_);
+      utreexoLay->addWidget(lblUtreexoStorage_);
       v7Column->addWidget(utreexoBox);
 
       // PQ Status box
@@ -5455,6 +5459,7 @@ void MainWindow::refresh() {
   rpc_->call("mempool.getinfo", QJsonArray());     // Get mempool stats
   rpc_->call("mempool.getrawmempool", QJsonArray{true}); // Visible pending rows + change detection
   rpc_->call("blockchain.getinfo", QJsonArray());  // Get headers vs blocks (headers-first sync)
+  rpc_->call("blockchain.getutreexocommitment", QJsonArray()); // Validation role + accumulator telemetry
   rpc_->call("blockchain.getmininginfo", QJsonArray());  // Get current difficulty & network mining stats
 
   // Status bar info: daemon version and DB health
@@ -6036,16 +6041,57 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
             ? "QLabel { font-size: 12px; font-weight: bold; color: #2d8a4e; }"
             : "QLabel { font-size: 12px; font-weight: bold; color: #d4a017; }");
       }
-      if (lblUtreexoLeaves_) {
-        lblUtreexoLeaves_->setText(QString("Height: %1").arg(obj["blocks"].toInt()));
+      updateExplorerRecentBlocks(cachedHeight_);
+    }
+  } else if (method == "blockchain.getutreexocommitment") {
+    if (result.isObject()) {
+      const auto obj = result.toObject();
+      const QString role = obj.value("validation_role").toString();
+      const bool bridgeActive = obj.value("bridge_active").toBool(false);
+      const bool bridgeEnabled = obj.value("bridge_enabled").toBool(false);
+      const qint64 bridgePeers = static_cast<qint64>(obj.value("bridge_peer_count").toDouble());
+      const qint64 verifiedHeight = static_cast<qint64>(obj.value("verified_height").toDouble());
+      const qint64 leaves = static_cast<qint64>(obj.value("num_leaves").toDouble());
+      const qint64 compactBytes = static_cast<qint64>(obj.value("compact_state_bytes").toDouble());
+      const qint64 forestBytes = static_cast<qint64>(obj.value("forest_memory_bytes_estimate").toDouble());
+      const bool fullState = obj.value("retains_full_state").toBool(true);
+
+      if (lblUtreexoRole_) {
+        QString roleText = "Full validator";
+        if (role == "compact_validator") roleText = "Compact validator";
+        else if (role == "proof_bridge") roleText = "Full validator";
+        QString bridgeText;
+        if (role == "compact_validator") {
+          bridgeText = bridgePeers == 1
+              ? "1 bridge connected"
+              : QString("%1 bridges connected").arg(bridgePeers);
+        } else {
+          bridgeText = bridgeActive
+              ? "Proof serving active"
+              : (bridgeEnabled ? "Proof serving starting" : "Proof serving off");
+        }
+        lblUtreexoRole_->setText(QString("Role: %1 · %2").arg(roleText, bridgeText));
       }
-      if (lblUtreexoRoot_) {
-        QString hash = obj["bestblockhash"].toString();
-        if (hash.length() > 16) hash = hash.left(16) + "...";
-        lblUtreexoRoot_->setText(QString("Tip: %1").arg(hash));
+      if (lblUtreexoState_) {
+        lblUtreexoState_->setText(QString("Verified: %1 · UTXOs: %2")
+            .arg(QLocale().toString(verifiedHeight))
+            .arg(QLocale().toString(leaves)));
+      }
+      if (lblUtreexoStorage_) {
+        const QString storageText = fullState
+            ? QString("Forest: ~%1 · compact verifier: %2")
+                  .arg(formatBytesText(forestBytes), formatBytesText(compactBytes))
+            : QString("Compact verifier: %1 · disk savings: measuring")
+                  .arg(formatBytesText(compactBytes));
+        lblUtreexoStorage_->setText(storageText);
       }
 
-      updateExplorerRecentBlocks(cachedHeight_);
+      QString root = obj.value("commitment").toString();
+      if (!root.isEmpty()) {
+        const QString tooltip = QString("Current Utreexo commitment\n%1").arg(root);
+        if (lblUtreexoHealth_) lblUtreexoHealth_->setToolTip(tooltip);
+        if (lblUtreexoState_) lblUtreexoState_->setToolTip(tooltip);
+      }
     }
   } else if (method == "economics.getinfo") {
     if (result.isObject()) {

@@ -4,6 +4,11 @@
  */
 
 #include "consensus/shielded/shielded_validation.h"
+
+#include "common/crash_injection.h"
+
+#include <set>
+#include <utility>
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/pedersen_generators.h"
 #include "consensus/shielded/range_proof.h"
@@ -259,7 +264,98 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
                          CommitmentTree*       tree,
                          NullifierSet*         nullifiers,
                          uint32_t              block_height) {
-    // Append new commitments to the tree.
+    // ── PHASE 1: validate. Nothing below this line mutates anything. ───────
+    //
+    // Two distinct duplicate classes, and checking only the first is a trap:
+    //
+    //   against PERSISTENT state   Contains() -- the nullifier was spent in an
+    //                              earlier block, or this block is being
+    //                              applied twice.
+    //   WITHIN this bundle         Contains() cannot see it. On an empty set a
+    //                              bundle spending [N, N] passes both preflight
+    //                              lookups, and the failure only surfaces on the
+    //                              second Insert -- after outputs are appended
+    //                              and the first nullifier is already persisted.
+    //
+    // Measured before this change: such a bundle left the commitment tree
+    // mutated AND a nullifier row written, on a path that returns false.
+    if (nullifiers) {
+        std::set<Hash> seen_in_bundle;
+        for (const auto& spend : bundle.spends) {
+            if (nullifiers->Contains(spend.nullifier)) {
+                return false;  // already spent in persistent state
+            }
+            if (!seen_in_bundle.insert(spend.nullifier).second) {
+                return false;  // repeated inside this bundle
+            }
+        }
+    } else {
+        // Even with no nullifier set to consult, a self-conflicting bundle is
+        // malformed and must not be applied.
+        std::set<Hash> seen_in_bundle;
+        for (const auto& spend : bundle.spends) {
+            if (!seen_in_bundle.insert(spend.nullifier).second) {
+                return false;
+            }
+        }
+    }
+
+    // NOT checked: repeated output commitments. No consensus rule prohibits
+    // them -- ValidateShieldedBundle has no such check and the error enum has
+    // no code for it -- so rejecting here would invent a rule this function
+    // does not own and could refuse a block that other nodes accept. Appending
+    // the same leaf twice is well defined and deterministic. If the protocol
+    // ever forbids it, that belongs in ValidateShieldedBundle with its own
+    // error code, not here.
+
+    // ── PHASE 2: mutate. Validation above means neither step should now fail
+    // for a reason this function can foresee. ──────────────────────────────
+    //
+    // Nullifiers go FIRST and transactionally. InsertBatch is the only
+    // fallible step (it touches sqlite); CommitmentTree::Append() is in-memory
+    // and cannot report failure. Doing the fallible, atomic work first means a
+    // failure returns with BOTH stores unchanged -- the batch rolled back and
+    // the tree never appended. That is the strict "false means no mutation"
+    // contract, now actually held rather than documented as an exception.
+    //
+    // The asymmetry matters: a stray nullifier row is fail-SAFE (it can only
+    // refuse a spend) and is rebuilt from ChainDB at startup, whereas a stray
+    // tree leaf changes the shielded root and every anchor derived from it.
+    // If one of the two has to be left dirty by an I/O fault, it must be the
+    // recoverable one.
+    if (nullifiers && !bundle.spends.empty()) {
+        // ONE transaction: every row commits or none does. Sequential inserts
+        // could leave the first N-1 rows written after the Nth failed, which
+        // is fail-safe against inflation but can reject a VALID spend until
+        // startup rebuilds from ChainDB -- a denial of service, not a
+        // harmless artefact.
+        std::vector<std::pair<Hash, uint32_t>> batch;
+        batch.reserve(bundle.spends.size());
+        for (const auto& spend : bundle.spends) {
+            batch.emplace_back(spend.nullifier, block_height);
+        }
+        if (!nullifiers->InsertBatch(batch)) {
+            // Rolled back. Tree still untouched -- it is appended only below,
+            // after the durable write has committed.
+            return false;
+        }
+    }
+
+    // Crash boundary, regtest only: the nullifier batch has COMMITTED durably
+    // but the commitment tree has not been appended. A process death here
+    // leaves the two stores momentarily inconsistent. It does not violate the
+    // "false means no mutation" contract -- the function never returns -- so
+    // recovery is what has to hold: ChainDB is the authoritative nullifier
+    // store and startup wipes the sqlite cache and rehydrates from it
+    // (ChainstateService::.. "Always wipe sqlite and rehydrate from ChainDB"),
+    // which erases rows this block committed but never finished connecting.
+    // Hook exists so that recovery can be proven rather than argued.
+    // Gated on the process-wide flag, NOT on dinero::Params(): referencing
+    // Params() here pulled ParamsImpl() into every target linking this TU and
+    // broke four of them at link time. The daemon sets the flag for regtest.
+    dinero::testing::MaybeAbortAt("after_nullifier_batch_before_tree_append",
+                                  dinero::testing::CrashHooksEnabled().load());
+
     // This is the ONLY place shielded outputs enter consensus state.
     // They NEVER enter Utreexo.
     if (tree) {
@@ -268,21 +364,6 @@ bool ApplyShieldedBundle(const ShieldedBundle& bundle,
         }
     }
 
-    // Insert nullifiers. Already validated unique by ValidateShieldedBundle.
-    //
-    // Insert()'s return value is load-bearing and used to be discarded while
-    // this function returned void — there was no channel to report a failure
-    // even if it had been read. A failed insert means the spend is committed
-    // on-chain but ABSENT from the in-memory set every Contains() consults,
-    // so the same note could be spent again until a restart rehydrates the
-    // set from ChainDB. Propagate instead: the caller aborts the block.
-    if (nullifiers) {
-        for (const auto& spend : bundle.spends) {
-            if (!nullifiers->Insert(spend.nullifier, block_height)) {
-                return false;
-            }
-        }
-    }
     return true;
 }
 
