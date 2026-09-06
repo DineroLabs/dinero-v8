@@ -9,9 +9,9 @@
 #include "consensus/pow_context.h"
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For dinero::Params()
-#include "consensus/utreexo_activation.h"
+#include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
 #include "consensus/block_status_generation.h"
-#include "common/crash_injection.h"  // Phase 11a: IsUtreexoActive check
+#include "common/crash_injection.h"
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "consensus/tx_parser.h"    // Phase 3D: Transaction parsing for wallet notifications
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
