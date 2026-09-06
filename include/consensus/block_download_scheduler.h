@@ -32,6 +32,7 @@
 #include "p2p/block_download_scheduler.h"  // For SyncPhase enum (Phase W.2.6 Enhancement #3)
 #include <atomic>
 #include <chrono>
+#include <random>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -91,7 +92,12 @@ enum class ConnectBlockResult {
     WAITING_PARENT,      // Parent is known/queued but not connected yet
     DUPLICATE,           // Already connected/known
     UNREADABLE_BODY,     // Stored body became unreadable; discard position and download again
-    TEMPORARY_FAIL       // Retry same child later
+    TEMPORARY_FAIL,      // Retry same child later
+
+    // NON-TERMINAL: another thread is mid-acceptance of this hash. Not
+    // success, not failure, not the peer's fault. See BlockRejectCode::
+    // CONCURRENT_IN_FLIGHT for why no terminal code can express it.
+    CONCURRENT_IN_FLIGHT
 };
 
 // ============================================================================
@@ -742,6 +748,20 @@ private:
     // expected_blocks_, etc.) against concurrent access from P2P handler
     // threads calling OnHeadersProcessed/OnBlockReceived/Tick simultaneously.
     // Deferred-AssumeUTXO drain ceiling; see SetDeferredDrainCeiling.
+    // Bounded, jittered backoff for concurrent-in-flight collisions.
+    //
+    // A losing racer must retry -- the winner's outcome is unknown, so the
+    // height still needs a terminal answer -- but retrying every tick against
+    // a slow winner is a hot loop. Backoff is per height, doubles, and is
+    // capped; jitter keeps several racers from re-colliding in lockstep.
+    struct ConcurrentBackoff {
+        uint32_t attempts = 0;
+        std::chrono::steady_clock::time_point retry_after{};
+    };
+    std::unordered_map<uint32_t, ConcurrentBackoff> concurrent_backoff_;
+    static constexpr uint32_t kConcurrentBackoffBaseMs = 50;
+    static constexpr uint32_t kConcurrentBackoffCapMs  = 2000;
+
     bool deferred_drain_ceiling_active_{false};
     uint32_t deferred_drain_ceiling_height_{0};
     uint64_t deferred_ceiling_stops_{0};

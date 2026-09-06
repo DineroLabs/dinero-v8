@@ -183,21 +183,40 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 
         // Determine if this extends the main chain or is a side-chain block
         // Side-chain blocks are stored but don't immediately update the tip
+        // Classify against the ACTIVE CONSENSUS TIP, not ChainDB's durable tip.
+        //
+        // This was the root cause behind the deferred base-child exemption.
+        // During background replay active_tip_ is deliberately restored to the
+        // snapshot base while the DURABLE ChainDB tip still trails behind it,
+        // so comparing against the database tip misclassified the base's own
+        // child as a side chain. The stale database tip was the defect; the
+        // base child was always a genuine main-chain extension.
+        //
+        // Fixing it here rather than exempting the symptom restores accept-time
+        // INVALID_UTREEXO_ROOT rejection for that block -- which the exemption
+        // had disabled, so a PoW-valid base+1 with a forged header root was
+        // being accepted, stored and announced, with the invalidity surfacing
+        // only at promotion.
+        //
+        // Read under the activation lock: promotion moves active_tip_, and an
+        // unsynchronized read can observe it mid-transition and produce a torn
+        // classification.
         bool isMainChainExtension = false;
+        const dinero::uint256 prevHashRaw =
+            dinero::uint256::FromHexUnsafe(block.prevBlockHash);
         {
             auto* daemon_ctx = DaemonContext::instance();
-            auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(daemon_ctx ? daemon_ctx->chainstate : nullptr);
-            auto* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
-            if (chain_db) {
-                auto tip_result = chain_db->getTip();
-                if (tip_result.status() == dinero::Status::Ok) {
-                    // Compare raw uint256 — never compare display-order hex strings
-                    dinero::uint256 prevHashRaw = dinero::uint256::FromHexUnsafe(block.prevBlockHash);
-                    isMainChainExtension = (prevHashRaw == tip_result.value().hash);
-                    if (!isMainChainExtension) {
-                        LOG_INFO("🔍 Chain link check: prevHash=" + prevHashRaw.GetHex().substr(0, 16) +
-                                 "... tipHash=" + tip_result.value().hash.GetHex().substr(0, 16) + "...");
-                    }
+            auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                daemon_ctx ? daemon_ctx->chainstate : nullptr);
+            if (chainstate) {
+                auto activation_lock = chainstate->AcquireBlockIngressActivationLock();
+                isMainChainExtension = chainstate->ExtendsActiveTipLocked(prevHashRaw);
+                if (!isMainChainExtension) {
+                    const auto* tip = chainstate->GetActiveTip();
+                    LOG_INFO("🔍 Chain link check: prevHash=" + prevHashRaw.GetHex().substr(0, 16) +
+                             "... activeTip=" +
+                             (tip ? tip->GetBlockHash().GetHex().substr(0, 16) : std::string("<none>")) +
+                             "...");
                 }
             }
         }
@@ -315,8 +334,8 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                dinero::uint256::FromHexUnsafe(block.prevBlockHash))) {
                     // Side-chain. Confirm parent is on main chain.
                     //
-                    // Two AssumeUTXO cases skip this precheck entirely; see
-                    // daemon/assumeutxo_precheck.h for why each is safe.
+                    // ONE AssumeUTXO case skips this precheck; see
+                    // daemon/assumeutxo_precheck.h.
                     //
                     //  - Pre-base historical bodies. While background
                     //    validation replays genesis..base, those bodies also
@@ -328,62 +347,44 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                     //    root, and the below-base fork guard blocks
                     //    activation.
                     //
-                    //  - Classic deferred mode, parent == snapshot base.
-                    //    isMainChainExtension compares against
-                    //    ChainDB::getTip(), which still trails the base
-                    //    during replay, so the base's own child is
-                    //    misclassified as a side chain. Restoring a
-                    //    historical forest to ask "is the parent on the main
-                    //    chain?" is pointless when the parent IS the
-                    //    compiled-in trust anchor -- and it ran on every
-                    //    duplicate delivery (measured: 250,135 times for one
-                    //    height) on a scheduler thread, starving
-                    //    DispatchDeferredSends() until peer deadlines expired
-                    //    and the download collapsed to ~6 KB/s.
+                    // The performance problem that motivated the second case
+                    // is solved too, and better. Restoring a historical forest
+                    // to ask "is the parent on the main chain?" ran on every
+                    // duplicate delivery of base+1 -- measured 250,135 times
+                    // for one height -- on a scheduler thread, starving
+                    // DispatchDeferredSends() until peer deadlines expired and
+                    // the download collapsed to ~6 KB/s. Correct classification
+                    // means base+1 never enters this branch at all, so the cost
+                    // is gone WITHOUT giving up the root check.
                     //
-                    // WHAT IS GIVEN UP, stated accurately.
+                    // Exactly ONE case reaches here now: historical pre-base
+                    // bodies during background replay. They traverse
+                    // BlockAcceptor as non-tip blocks, are deliberately not
+                    // promoted into ChainDB until the replay proves the
+                    // snapshot, and AssumeUtxoReplayEngine verifies every
+                    // historical root independently. The below-base fork guard
+                    // blocks activation.
                     //
-                    // An earlier version of this comment claimed the precheck
-                    // is best-effort and that "every failure path below merely
-                    // logs and stores the block anyway". That was FALSE. The
-                    // success path of the branch being skipped ends in a hard
-                    // reject:
+                    // The deferred base-child exemption that used to also land
+                    // here is GONE, and with it the thing it cost:
                     //
-                    //     return BlockAcceptResult::Rejected(
-                    //         BlockRejectCode::INVALID_UTREEXO_ROOT, ...)
+                    //   An earlier version of this comment claimed the precheck
+                    //   was best-effort and that "every failure path below
+                    //   merely logs and stores the block anyway". That was
+                    //   FALSE -- the success path ends in a hard reject
+                    //   (INVALID_UTREEXO_ROOT, below). Exempting the base child
+                    //   therefore disabled accept-time root rejection for it,
+                    //   so a PoW-valid base+1 carrying a forged header root was
+                    //   accepted, stored, indexed and announced, with the
+                    //   invalidity surfacing only at promotion.
                     //
-                    // So in deferred mode a PoW-valid base+1 carrying a wrong
-                    // header Utreexo root WAS rejected at accept time and now
-                    // is not: it is accepted, stored, indexed, and triggers
-                    // ActivateBestChain and wallet notifications, with the
-                    // invalidity surfacing later at promotion.
-                    //
-                    // Why that is still the right trade here:
-                    //
-                    //  - The check cannot be kept without the cost. The header
-                    //    root is compared against one computed from a RESTORED
-                    //    HISTORICAL FOREST; computed_root_opt is populated only
-                    //    by that restore. The expensive work and the check are
-                    //    the same operation, so "validate but skip the restore"
-                    //    does not exist on this path.
-                    //  - The restore is pointless here by construction: it asks
-                    //    "is the parent on the main chain?" when the parent IS
-                    //    the compiled-in trust anchor.
-                    //  - Nothing is CONNECTED on the strength of acceptance.
-                    //    ConnectBlock hard-rejects a bad root when the block is
-                    //    actually connected (block_acceptor.cpp:2007), and the
-                    //    below-base fork guard blocks activation before then.
-                    //  - The cost of keeping it was measured: this ran 250,135
-                    //    times for one height on a scheduler thread, starving
-                    //    DispatchDeferredSends() until peer deadlines expired
-                    //    and the download collapsed to ~6 KB/s.
-                    //
-                    // The residual is real and is NOT nothing: a bad base+1
-                    // occupies storage and fires notifications until promotion
-                    // rejects it. Removing that residual means fixing the
-                    // classification (isMainChainExtension compares against
-                    // ChainDB::getTip(), which trails the base during replay)
-                    // rather than widening this exemption.
+                    // That is fixed at the source rather than exempted: the
+                    // classification above now compares against the ACTIVE
+                    // consensus tip instead of ChainDB's durable tip, so the
+                    // base child is a main-chain extension, never reaches this
+                    // branch, and is root-checked at accept time like any other
+                    // tip extension. Promotion-time verification in ConnectBlock
+                    // stays as defence in depth.
                     const dinero::uint256 parent_hash =
                         dinero::uint256::FromHexUnsafe(block.prevBlockHash);
                     dinero::uint256 canonical_parent;
@@ -699,8 +700,13 @@ AcceptResult BlockAcceptor::AcceptBlockFromPeer(const Block& block, const std::s
             // concurrent acceptance was suppressed.
             ++dinero::daemon::g_concurrent_acceptances_suppressed;
             LogDuplicateBodySuppressed(in_flight_hash, 0);
+            // NOT DUPLICATE: that would assert the body is already known, and
+            // nothing here has established that. The winner may be doing the
+            // first write, or may fail and never write. Report the fact that
+            // is actually true -- another thread holds this hash -- and let the
+            // caller retry for a terminal answer.
             return BlockAcceptResult::Rejected(
-                BlockRejectCode::DUPLICATE,
+                BlockRejectCode::CONCURRENT_IN_FLIGHT,
                 "block already being processed (single-flight)",
                 in_flight_hash, 0);
         }

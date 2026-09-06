@@ -497,6 +497,26 @@ void BlockDownloadScheduler::MaybeRunStallWatchdogLocked(
         watchdog_last_progress_time_ = now;
         return;
     }
+    // A DELIBERATELY held tip is not a stall.
+    //
+    // In deferred AssumeUTXO mode the drain stops at the snapshot base on
+    // purpose: the active chain cannot advance past it until background replay
+    // completes, which takes hours. The watchdog is designed to fire on a tip
+    // frozen with work queued -- exactly that shape -- so it fired every
+    // stall_watchdog_seconds_ for the whole replay and "recovered" a condition
+    // that was correct: clearing the body-incapable skip-set re-enabled peers
+    // for the very backfill the ceiling protects, and resetting REQUESTED to
+    // MISSING produced duplicate getdata rounds as steady state.
+    //
+    // Only the tip work ABOVE the ceiling is being deliberately withheld;
+    // backfill below it must still be watched, or a genuine backfill stall
+    // during replay would go undetected.
+    if (deferred_drain_ceiling_active_) {
+        watchdog_last_progress_time_ = now;
+        watchdog_last_progress_height_ = local_tip_height_;
+        return;
+    }
+
     // Only a stall if there is still tip work queued (MISSING or REQUESTED).
     bool pending = false;
     for (const auto& fs : missing_blocks_) {
@@ -2103,6 +2123,17 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
 
         auto& fetch_state = *want_it;
 
+        // Concurrent-in-flight backoff: this height lost a race recently and
+        // the winner has not resolved yet. Stop the drain pass rather than
+        // spin; the next Tick retries once the backoff expires.
+        {
+            const auto bo = concurrent_backoff_.find(want);
+            if (bo != concurrent_backoff_.end() &&
+                std::chrono::steady_clock::now() < bo->second.retry_after) {
+                break;
+            }
+        }
+
         // Deferred-AssumeUTXO ceiling. MUST precede the CONNECTED branch
         // below: that branch downgrades CONNECTED -> RECEIVED whenever the
         // active chain does not carry this hash, and in deferred mode the
@@ -2216,6 +2247,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                     local_tip_height_ = want;
                 }
                 connected++;
+                concurrent_backoff_.erase(want);  // resolved; forget the race
                 drain_failure_streak_.RecordProgress();  // #371
 
                 g_logger.info("[BlockDownloadScheduler] Connected block at height " +
@@ -2311,6 +2343,44 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                                     std::to_string(want) + ", will retry next tick");
                 }
                 return connected;
+            case ConnectBlockResult::CONCURRENT_IN_FLIGHT: {
+                // Another thread is mid-acceptance of this hash. The outcome is
+                // UNKNOWN, so this must be neither of the two things the old
+                // code did: it must not mark CONNECTED and advance
+                // local_tip_height_ (that published a tip for a block that may
+                // never connect), and it must not be recorded as a failure
+                // (nothing failed, and the losing side is not at fault).
+                //
+                // Leave it RECEIVED so the next pass asks again, by which time
+                // the winner has produced a real terminal answer.
+                //
+                // Deliberately NOT calling drain_failure_streak_.RecordProgress()
+                // either: no progress occurred. The old DUPLICATE-as-success
+                // path did call it, which is part of why the generic breaker
+                // could not see a drain that was looping without advancing.
+                fetch_state.status = FetchStatus::RECEIVED;
+
+                auto& bo = concurrent_backoff_[want];
+                bo.attempts = std::min<uint32_t>(bo.attempts + 1, 24);
+                uint64_t delay_ms = kConcurrentBackoffBaseMs;
+                for (uint32_t i = 1; i < bo.attempts && delay_ms < kConcurrentBackoffCapMs; ++i) {
+                    delay_ms *= 2;
+                }
+                delay_ms = std::min<uint64_t>(delay_ms, kConcurrentBackoffCapMs);
+                // Jitter: several racers backing off in lockstep would just
+                // re-collide. Full jitter over [delay/2, delay].
+                static thread_local std::mt19937 jitter_rng{std::random_device{}()};
+                std::uniform_int_distribution<uint64_t> jitter(delay_ms / 2, delay_ms);
+                const uint64_t sleep_ms = jitter(jitter_rng);
+                bo.retry_after = std::chrono::steady_clock::now() +
+                                 std::chrono::milliseconds(sleep_ms);
+
+                g_logger.info("[BlockDownloadScheduler] Concurrent acceptance in flight at height " +
+                              std::to_string(want) + " — not counted as connected or failed; "
+                              "retrying in " + std::to_string(sleep_ms) + "ms (attempt " +
+                              std::to_string(bo.attempts) + ")");
+                return connected;
+            }
             case ConnectBlockResult::INVALID:
                 fetch_state.status = FetchStatus::INVALID;
                 in_flight_blocks_.erase(fetch_state.block_hash);

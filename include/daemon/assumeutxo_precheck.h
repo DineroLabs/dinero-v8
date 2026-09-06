@@ -44,26 +44,42 @@ bool IsDeferredSnapshotBaseChild(const AssumeUTXOPrecheckContext& ctx,
                                  uint32_t parent_height,
                                  const dinero::uint256& parent_hash);
 
-// The guard itself.
 /**
  * Does a deferred-mode drain ceiling apply right now?
  *
- * The scheduler must stop draining above the snapshot base in classic
- * deferred mode, and must NOT once the mode ends. Both halves matter: a
- * ceiling that is never lowered stops every drain above the base for the life
- * of the process, including after promotion, when the tip legitimately has to
- * pass it.
+ * The scheduler must stop draining above the snapshot base in classic deferred
+ * mode, and must NOT once the mode ends. Both halves matter: a ceiling that is
+ * never lowered stops every drain above the base for the life of the process,
+ * including after promotion, when the tip legitimately has to pass it.
  *
  * A pure function of the same two facts IsDeferredSnapshotBaseChild reads, so
- * the scheduler's ceiling and the BlockAcceptor's exemption cannot drift into
- * disagreeing about what "deferred mode" means -- and so the lifecycle is
- * testable without a daemon, which is how the never-disarmed bug escaped.
+ * the scheduler's ceiling and any mode-dependent acceptance behaviour cannot
+ * drift into disagreeing about what "deferred mode" means -- and so the DISARM
+ * half is testable without a daemon, which is how the never-disarmed bug
+ * escaped in the first place.
  */
 inline bool ShouldApplyDeferredDrainCeiling(bool assumeutxo_active,
                                             bool forward_connect_enabled) {
     return assumeutxo_active && !forward_connect_enabled;
 }
 
+// The guard itself.
+/**
+ * Should this side-chain precheck be skipped entirely?
+ *
+ * Exactly ONE case now: historical pre-base bodies during background replay.
+ * Those traverse BlockAcceptor as non-tip blocks, are deliberately not promoted
+ * into ChainDB until the replay proves the snapshot, and AssumeUtxoReplayEngine
+ * verifies every historical root independently.
+ *
+ * The deferred base-child exemption that used to be the second case is GONE.
+ * It compensated for a misclassification (ChainDB's durable tip trails the
+ * snapshot base during replay, so the base's own child read as a side chain),
+ * and the cost of that compensation was disabling accept-time
+ * INVALID_UTREEXO_ROOT rejection for precisely that block. The classification
+ * is fixed at its source now -- ChainstateService::ExtendsActiveTipLocked --
+ * so the base child is a main-chain extension and the rejection is back.
+ */
 bool ShouldSkipSideChainPrecheck(const AssumeUTXOPrecheckContext& ctx,
                                  uint32_t parent_height,
                                  const dinero::uint256& parent_hash);

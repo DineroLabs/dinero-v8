@@ -3955,6 +3955,52 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_write_metrics.cpp)
   )
 endif()
 
+# Active-tip classification: the rule block acceptance uses to tell a
+# main-chain extension from a side chain. Labelled for the MAIN ctest lane.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_active_tip_classification.cpp)
+  add_executable(test_active_tip_classification
+    tests/daemon/test_active_tip_classification.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_active_tip_classification gtest)
+  target_link_libraries(test_active_tip_classification PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
+  )
+  target_include_directories(test_active_tip_classification BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ActiveTipClassification COMMAND test_active_tip_classification)
+  set_tests_properties(ActiveTipClassification PROPERTIES
+    LABELS "daemon;consensus;assumeutxo;classification"
+    TIMEOUT 30
+  )
+endif()
+
+# Non-terminal concurrent-in-flight outcome (findings 3+9).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_concurrent_in_flight.cpp)
+  add_executable(test_concurrent_in_flight
+    tests/daemon/test_concurrent_in_flight.cpp
+    src/daemon/interfaces/ingress_types.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_concurrent_in_flight gtest)
+  target_link_libraries(test_concurrent_in_flight PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
+  )
+  target_include_directories(test_concurrent_in_flight BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ConcurrentInFlight COMMAND test_concurrent_in_flight)
+  set_tests_properties(ConcurrentInFlight PROPERTIES
+    LABELS "daemon;p2p;relay;assumeutxo"
+    TIMEOUT 30
+  )
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_precheck.cpp)
   add_executable(test_assumeutxo_precheck
     tests/daemon/test_assumeutxo_precheck.cpp

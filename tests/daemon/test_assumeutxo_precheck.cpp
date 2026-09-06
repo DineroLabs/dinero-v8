@@ -54,11 +54,42 @@ AssumeUTXOPrecheckContext ForwardConnectCtx() {
 
 }  // namespace
 
-// Case 1: the bug. Deferred mode, block at base+1 whose parent is exactly the
-// snapshot base => exempt, so RestoreHistoricalForest is never reached.
-TEST(AssumeUTXOPrecheck, DeferredBaseChildIsExempt) {
-    EXPECT_TRUE(IsDeferredSnapshotBaseChild(DeferredCtx(), kBaseHeight, BaseBlock()));
-    EXPECT_TRUE(ShouldSkipSideChainPrecheck(DeferredCtx(), kBaseHeight, BaseBlock()));
+// Case 1, INVERTED by review finding 13. The deferred base child is NO LONGER
+// exempt from the side-chain precheck.
+//
+// The exemption existed to compensate for a misclassification: block acceptance
+// compared against ChainDB's DURABLE tip, which trails the snapshot base during
+// replay, so the base's own child read as a side chain. The cost of that
+// compensation was disabling accept-time INVALID_UTREEXO_ROOT rejection for
+// precisely that block -- a PoW-valid base+1 with a forged header root was
+// accepted, stored, indexed and announced, with the invalidity surfacing only
+// at promotion.
+//
+// The classification is fixed at its source now (ClassifyExtension against the
+// ACTIVE consensus tip; see test_active_tip_classification.cpp), so the base
+// child is a main-chain extension, never reaches the side-chain precheck at
+// all, and is root-checked at accept time like any other tip extension.
+//
+// The PREDICATE is deliberately kept: it still names the exact deferred-mode
+// condition, and ShouldApplyDeferredDrainCeiling is derived from the same two
+// facts. Only its use as an exemption is gone.
+TEST(AssumeUTXOPrecheck, DeferredBaseChildIsNoLongerExempt) {
+    EXPECT_TRUE(IsDeferredSnapshotBaseChild(DeferredCtx(), kBaseHeight, BaseBlock()))
+        << "the predicate still identifies the condition";
+    EXPECT_FALSE(ShouldSkipSideChainPrecheck(DeferredCtx(), kBaseHeight, BaseBlock()))
+        << "but it must NO LONGER buy an exemption: exempting this block is "
+           "what disabled its accept-time Utreexo root check";
+}
+
+// The one exemption that remains: historical pre-base bodies during replay.
+// Removing the base-child case must not have removed this one.
+TEST(AssumeUTXOPrecheck, HistoricalPreBaseReplayStillFlows) {
+    AssumeUTXOPrecheckContext ctx = DeferredCtx();
+    // A body well below the snapshot base, as background replay delivers.
+    EXPECT_TRUE(IsHistoricalPreBaseBody(ctx, kBaseHeight - 100));
+    EXPECT_TRUE(ShouldSkipSideChainPrecheck(ctx, kBaseHeight - 100, BaseBlock()))
+        << "pre-base replay bodies must still skip the live precheck; "
+           "AssumeUtxoReplayEngine verifies their roots independently";
 }
 
 // Case 2: the exemption keys on the PARENT, not on the block. A block at

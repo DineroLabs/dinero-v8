@@ -6679,6 +6679,14 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
         logger_->warning(reject_log);
     }
 
+    if (result.code == BlockRejectCode::CONCURRENT_IN_FLIGHT) {
+        // Losing a benign race is NOT a rejection. Map it to its own
+        // non-terminal result so the drain neither advances its tip nor
+        // records a failure, and so nothing downstream treats this caller's
+        // peer as having sent a bad block.
+        return consensus::ConnectBlockResult::CONCURRENT_IN_FLIGHT;
+    }
+
     if (result.code == BlockRejectCode::DUPLICATE) {
         return consensus::ConnectBlockResult::DUPLICATE;
     }

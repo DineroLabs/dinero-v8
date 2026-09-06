@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/iservice.h"
+#include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
 #include "common/annotated_mutex.h"
@@ -317,6 +318,38 @@ public:
 
     // Phase 41: Active chain tip (replaces ChainDB getTip for consensus)
     class CBlockIndex* GetActiveTip() const { return active_tip_; }
+
+    /**
+     * Does `parent_hash` name the ACTIVE consensus tip?
+     *
+     * This is the classification block acceptance must use. The alternative --
+     * comparing against ChainDB::getTip() -- is wrong during background
+     * replay, and wrong in a way that matters: active_tip_ is deliberately
+     * restored to the snapshot base while the DURABLE ChainDB tip trails
+     * behind it. A child of the base is a genuine main-chain extension, and
+     * the stale database tip is what misclassified it as a side chain.
+     *
+     * That misclassification is what forced the deferred base-child precheck
+     * exemption, which in turn disabled accept-time INVALID_UTREEXO_ROOT
+     * rejection for exactly that block. Classifying correctly removes the need
+     * for the exemption and restores the rejection.
+     *
+     * CALLER MUST HOLD activation_mutex_. Not a formality: promotion moves
+     * active_tip_, so an unsynchronized read can observe a tip mid-transition
+     * and produce a torn classification. Asserted, not documented -- the
+     * assert throws, so a caller that drops the lock fails loudly rather than
+     * racing silently.
+     */
+    bool ExtendsActiveTipLocked(const uint256& parent_hash) const {
+        AssertActivationLockHeld("ExtendsActiveTipLocked");
+        const CBlockIndex* tip = active_tip_;
+        // One rule, shared with the unit tests, so the daemon path and the
+        // tested path cannot diverge.
+        const std::optional<uint256> tip_hash =
+            tip ? std::optional<uint256>(tip->GetBlockHash()) : std::nullopt;
+        return daemon::ClassifyExtension(tip_hash, parent_hash) ==
+               daemon::ExtensionClass::ExtendsActiveTip;
+    }
 
     // Block invalidation (production-safe, all networks)
     // Mark a block and all descendants as invalid; disconnect from active chain if needed.

@@ -87,9 +87,46 @@ public:
      * Callback type for block validation request
      * @param block Block to validate
      * @param peer_address Peer that sent the block
-     * @return true if block was accepted
+     * @return the validation outcome (see BlockValidationOutcome)
      */
-    using ValidateBlockCallback = std::function<bool(
+    /**
+     * Outcome of handing a block to validation.
+     *
+     * THREE values, not a bool. A bool forced every non-acceptance into
+     * "rejected", which then recorded RecordBlockFailure against the peer and
+     * bumped blocks_rejected -- including when this thread simply lost a benign
+     * race to another thread already accepting the same hash. That smeared an
+     * honest peer's reputation for a condition it had no part in.
+     */
+    class BlockValidationOutcome {
+    public:
+        enum Value {
+            Accepted,           ///< block accepted
+            Rejected,           ///< genuinely bad block; the sending peer is at fault
+            ConcurrentInFlight  ///< another thread holds this hash; outcome
+                                ///< UNKNOWN, nobody is at fault, do not notify
+                                ///< or penalise
+        };
+
+        constexpr BlockValidationOutcome(Value v) : value_(v) {}
+
+        // IMPLICIT from bool, deliberately. A bool genuinely does mean
+        // accepted-or-rejected, and every existing validator says exactly that;
+        // only the third state needs new words. Without this, adding the third
+        // state would have forced a mechanical edit through ~18 unrelated test
+        // validators, which is churn that hides the one real change.
+        constexpr BlockValidationOutcome(bool accepted)
+            : value_(accepted ? Accepted : Rejected) {}
+
+        constexpr bool operator==(Value v) const { return value_ == v; }
+        constexpr bool operator!=(Value v) const { return value_ != v; }
+        constexpr Value value() const { return value_; }
+
+    private:
+        Value value_;
+    };
+
+    using ValidateBlockCallback = std::function<BlockValidationOutcome(
         const Block& block,
         const std::string& peer_address
     )>;

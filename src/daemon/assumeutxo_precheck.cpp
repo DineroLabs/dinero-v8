@@ -37,8 +37,25 @@ bool IsDeferredSnapshotBaseChild(const AssumeUTXOPrecheckContext& ctx,
 bool ShouldSkipSideChainPrecheck(const AssumeUTXOPrecheckContext& ctx,
                                  uint32_t parent_height,
                                  const dinero::uint256& parent_hash) {
-    return IsHistoricalPreBaseBody(ctx, parent_height) ||
-           IsDeferredSnapshotBaseChild(ctx, parent_height, parent_hash);
+    // ONLY the historical pre-base case now skips the precheck.
+    //
+    // IsDeferredSnapshotBaseChild is deliberately NOT consulted here any more.
+    // That exemption existed to work around a misclassification -- the base's
+    // own child read as a side chain because the check compared against
+    // ChainDB's durable tip, which trails the snapshot base during replay.
+    // block_acceptor now classifies against the ACTIVE consensus tip, so the
+    // base child is correctly a main-chain extension and needs no exemption.
+    //
+    // Removing it restores accept-time INVALID_UTREEXO_ROOT rejection for that
+    // block, which the exemption had disabled: a PoW-valid base+1 with a forged
+    // header root was being accepted, stored and announced, with the invalidity
+    // surfacing only at promotion.
+    //
+    // The predicate itself is KEPT (not deleted) because it still states the
+    // exact deferred-mode condition, and ShouldApplyDeferredDrainCeiling is
+    // derived from the same facts -- see assumeutxo_precheck.h.
+    (void)parent_hash;
+    return IsHistoricalPreBaseBody(ctx, parent_height);
 }
 
 }  // namespace daemon
