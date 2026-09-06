@@ -204,7 +204,8 @@ Json rpc_getutreexocommitment(const ExecutionContext& ctx, const Json& params) {
         }
         const auto& config = GetConfig();
         const bool compact_profile = config.utreexo_stateless;
-        const bool bridge_active = chainstate->GetBridgeNode() != nullptr;
+        const bool bridge_active =
+            config.utreexo_bridge && chainstate->GetBridgeNode() != nullptr;
         std::size_t bridge_peer_count = 0;
         if (ctx.daemon->p2p) {
             const auto peers = ctx.daemon->p2p->GetConnectedPeers();

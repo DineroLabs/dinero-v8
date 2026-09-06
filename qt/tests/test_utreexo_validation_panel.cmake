@@ -57,3 +57,13 @@ string(FIND "${utreexo_rpc_source}" "result[\"disk_savings_available\"] = false"
 if(savings_guard EQUAL -1)
   message(FATAL_ERROR "Utreexo telemetry must mark disk savings unavailable until measured")
 endif()
+
+# A BridgeNode object is wired during normal daemon setup even when capability
+# advertisement is disabled. The UI must report proof serving active only when
+# both the configuration and runtime object agree.
+string(FIND "${utreexo_rpc_source}"
+  "config.utreexo_bridge && chainstate->GetBridgeNode() != nullptr"
+  bridge_config_guard)
+if(bridge_config_guard EQUAL -1)
+  message(FATAL_ERROR "Bridge-active telemetry must honor utreexo-bridge configuration")
+endif()
