@@ -5374,7 +5374,33 @@ const char* ChainstateService::TipPublishReasonName(TipPublishReason r) {
 }
 
 void ChainstateService::PublishActiveTip(CBlockIndex* tip, TipPublishReason reason) {
-    // Take the activation lock HERE, at the single setter.
+    // Wrapper for callers that genuinely do not hold the lock: startup,
+    // snapshot import, and the operator tip-rebind path. Everything on the
+    // per-block connect path calls PublishActiveTipLocked directly, so the
+    // hot path does not re-enter the recursive mutex on every publish.
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    PublishActiveTipLocked(tip, reason);
+}
+
+void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReason reason) {
+    // ASSERT the lock; never acquire it.
+    //
+    // Found while tracing for review finding 13: ExtendsActiveTipLocked reads
+    // active_tip_ under activation_mutex_ (block acceptance asks "does this
+    // parent extend the active tip?"), but several writers did not hold it --
+    // ForceSetActiveTip via BlockAcceptor::ApplyTipInvalidation on the
+    // acceptance path itself, LoadSnapshot reachable by RPC while acceptance
+    // is live, and four Start() paths. Locked readers against lockless writers
+    // is a race, and finding 13 introduced the locked reader.
+    //
+    // The first fix took the lock inside this function. That was correct but
+    // wrong-shaped: a leaf function acquiring a lock hides the ordering from
+    // its callers, and re-acquired on every publish including the per-block
+    // connect path where the caller already held it. Asserting instead puts
+    // acquisition at the OUTER operation boundary where the order is visible
+    // and paid once -- and makes a future lockless writer fail loudly rather
+    // than silently serialize.
+    AssertActivationLockHeld("PublishActiveTipLocked");
     //
     // Found while tracing for review finding 13: ExtendsActiveTipLocked reads
     // active_tip_ under this lock (block acceptance asks "does this parent
@@ -5386,18 +5412,6 @@ void ChainstateService::PublishActiveTip(CBlockIndex* tip, TipPublishReason reas
     // locked reader -- so this is a defect in that change, not a pre-existing
     // one to leave alone.
     //
-    // Fixed at the setter rather than at each caller because this function
-    // already exists to be the ONE place active_tip_ is written (its comment
-    // below records that it replaced 13 scattered assignments). Locking here
-    // makes the invariant true for every present and future call site instead
-    // of relying on 15 of them to remember.
-    //
-    // Recursive by design (AnnotatedRecursiveMutex), so the callers that
-    // already hold it -- ActivateBestChain, InvalidateBlock, ConnectTip and
-    // DisconnectTip via their caller -- re-enter harmlessly. Lock ORDER is
-    // unchanged: activation_mutex_ is taken before published_tip_mutex_ below,
-    // which is the order ActivateBestChain already establishes.
-    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
 
     // Single setter for the in-memory active_tip_ pointer. Pre-fix
     // there were 13 direct assignments scattered across this file,
@@ -7983,7 +7997,7 @@ void ChainstateService::ActivateBestChain() {
                 if (logger_) logger_->warning("[ActivateBestChain] Misaligned: " + alignment_reason +
                                              " — realigning active_tip_ to consensus UTXO tip (height=" +
                                              std::to_string(utxo_height) + ")");
-                PublishActiveTip(utxo_tip_idx, TipPublishReason::kSelfHealRealign);
+                PublishActiveTipLocked(utxo_tip_idx, TipPublishReason::kSelfHealRealign);
                 // #585: bring the shielded state + marker down to the realigned tip.
                 RealignShieldedStateToActiveTipAfterHeal();
 
@@ -8016,7 +8030,7 @@ void ChainstateService::ActivateBestChain() {
                                                  " — materialized snapshot base into block index; realigning "
                                                  "active_tip_ to consensus UTXO tip (height=" +
                                                  std::to_string(utxo_height) + ")");
-                    PublishActiveTip(materialized, TipPublishReason::kSelfHealRealign);
+                    PublishActiveTipLocked(materialized, TipPublishReason::kSelfHealRealign);
                     // #585: bring the shielded state + marker down to the realigned tip.
                     RealignShieldedStateToActiveTipAfterHeal();
                     std::string recheck_reason;
@@ -9519,7 +9533,7 @@ void ChainstateService::ActivateBestChain() {
     }
 
     // Update active tip (already done by ConnectTip, but ensure consistency)
-    PublishActiveTip(best_candidate, TipPublishReason::kSelfHealRealign);
+    PublishActiveTipLocked(best_candidate, TipPublishReason::kSelfHealRealign);
     activation_retries_.Clear(best_candidate->hash);
 
     // Read-only observability, recorded only once the reorg has actually
@@ -11928,7 +11942,7 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                     return false;
                 }
                 // DisconnectTip sets active_tip_ to pprev
-                PublishActiveTip(to_disconnect->pprev, TipPublishReason::kRollback);
+                PublishActiveTipLocked(to_disconnect->pprev, TipPublishReason::kRollback);
             }
 
             post_disconnect_tip = active_tip_ ? active_tip_ : target->pprev;
@@ -12988,7 +13002,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         if (consensus_utxo_set_) {
             consensus_utxo_set_->SetBestBlock(new_tip->hash, static_cast<uint32_t>(new_tip->height));
         }
-        PublishActiveTip(new_tip, TipPublishReason::kCSNDisconnect);
+        PublishActiveTipLocked(new_tip, TipPublishReason::kCSNDisconnect);
         notifyBlockDisconnected(block, tip_to_disconnect->height);
 
         if (logger_) logger_->info("[DisconnectTip-CSN] Lightweight disconnect complete: height=" +
@@ -13488,7 +13502,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     }
 
     // Update in-memory state AFTER consensus mutation succeeds
-    PublishActiveTip(new_tip, TipPublishReason::kRollback);
+    PublishActiveTipLocked(new_tip, TipPublishReason::kRollback);
 
     // Notify wallets AFTER state is consistent
     notifyBlockDisconnected(block, tip_to_disconnect->height);
@@ -13611,7 +13625,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         if (consensus_utxo_set_) {
             consensus_utxo_set_->SetBestBlock(tip_to_connect->hash, tip_to_connect->height);
         }
-        PublishActiveTip(tip_to_connect, TipPublishReason::kEarlyInitGenesis);
+        PublishActiveTipLocked(tip_to_connect, TipPublishReason::kEarlyInitGenesis);
         return true;
     }
 
@@ -15262,7 +15276,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // codebase that should pass `kAdvancement`. All other
     // PublishActiveTip call sites move the tip backward, restore it
     // from durable state, or run before the validator is ready.
-    PublishActiveTip(tip_to_connect, TipPublishReason::kAdvancement);
+    PublishActiveTipLocked(tip_to_connect, TipPublishReason::kAdvancement);
 
     // Notify wallets AFTER state is consistent
     notifyBlockConnected(block, tip_to_connect->height);
@@ -15815,7 +15829,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     }
 
     // 5. Update in-memory state + notify
-    PublishActiveTip(block_index, TipPublishReason::kEarlyInitGenesis);
+    PublishActiveTipLocked(block_index, TipPublishReason::kEarlyInitGenesis);
     notifyBlockConnected(block, block_index->height);
 
     if (header_chain_selector_) {

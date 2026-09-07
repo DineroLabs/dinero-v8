@@ -1255,6 +1255,30 @@ private:
     // one setter makes the code structurally enforce "ConnectTip is
     // the only writer of active chain advancement" — every other site
     // documents its non-advancement reason at the call.
+    /**
+     * Publish the active tip. CALLER MUST HOLD activation_mutex_.
+     *
+     * This is the real setter. It ASSERTS the lock rather than taking it:
+     * ExtendsActiveTipLocked reads active_tip_ under this mutex, so every
+     * writer must hold it too, and an assertion at the single write point
+     * makes a lockless writer fail loudly instead of racing.
+     *
+     * Asserting rather than acquiring is deliberate. A leaf function that
+     * grabs a lock hides the ordering from its callers and re-acquires on
+     * every publish -- including the per-block connect path, where the caller
+     * already holds it. Lock acquisition belongs at the OUTER operation
+     * boundary, where the order is visible and taken once.
+     */
+    void PublishActiveTipLocked(CBlockIndex* tip, TipPublishReason reason);
+
+    /**
+     * Convenience wrapper for callers that genuinely do not hold the lock --
+     * startup, snapshot import, and the operator tip-rebind path.
+     *
+     * Acquires activation_mutex_ and delegates. Use PublishActiveTipLocked
+     * directly from any path that already holds it; going through here would
+     * re-enter the recursive mutex for nothing.
+     */
     void PublishActiveTip(CBlockIndex* tip, TipPublishReason reason);
 
     // D.3 (Apr 30 2026): regenerate an UndoRecord from the block body
