@@ -9,24 +9,29 @@
 #   PoW-valid block whose header carries a forged Utreexo root is refused at
 #   accept time. That property had no end-to-end coverage before.
 #
-#   It DOES NOT discriminate the finding-13 classification fix. Mutation-tested
-#   both ways: reverting block acceptance to classify against
-#   ChainDB::getTip(), AND restoring the deferred base-child precheck
-#   exemption, each left this test passing. The reason is that submitblock
-#   reaches the root check by a path that does not depend on the side-chain
-#   classification, so the exemption is simply not on the route this test
-#   takes.
+#   It DOES gate the finding-13 work -- but only against the COMBINED mutation,
+#   and that subtlety is the point:
 #
-#   Exercising the path that IS affected needs the forged block to arrive over
-#   P2P from a peer, not via submitblock. That is not built here.
+#     revert classification to ChainDB::getTip() alone   still passes
+#     restore the base-child exemption alone             still passes
+#     revert BOTH                                        FAILS
 #
-#   The finding-13 RULE is gated instead by test_active_tip_classification.cpp,
-#   which is mutation-proven (durable-tip classification and
-#   everything-extends both fail it).
+#   Because either fix alone is sufficient to catch the forgery. With
+#   classification fixed, base+1 is a main-chain extension and never reaches
+#   the exemption at all. With the exemption removed, even a block misclassified
+#   as a side chain goes through the side-chain branch, which computes a root
+#   from a restored forest and checks it. Only reverting both reopens the hole,
+#   and then the forged block is ACCEPTED with no accept-time check -- measured:
+#   "submitblock -> {}" and "the check did not run at accept time".
 #
-# Recording this rather than letting the file imply coverage it does not have:
-# a test that passes on both sides of the change it names is exactly the
-# "registered but proves nothing" failure this repo has been fighting.
+#   An earlier version of this header claimed the test did not discriminate at
+#   all. That was wrong: it was concluded from single mutations, each of which
+#   the other fix independently covered. Recorded because "the test does not
+#   gate X" is exactly as much a claim needing evidence as "it does", and a
+#   single-mutation negative is not that evidence when two defences overlap.
+#
+#   The finding-13 RULE is additionally gated at unit level by
+#   test_active_tip_classification.cpp, which is mutation-proven on its own.
 #
 # The setup below is taken verbatim from test_assumeutxo_promotion_race.sh --
 # the proven sequence for getting a consumer into deferred mode with a slowed
