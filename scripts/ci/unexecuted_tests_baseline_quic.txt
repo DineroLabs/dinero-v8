@@ -1,0 +1,17 @@
+# Tests unique to the QUIC build configuration that are executed by NO CI lane.
+#
+# INTENTIONALLY EMPTY. All six QUIC-only tests are currently selected by the
+# QUIC job's `-L 'quic|p2p'` lane, so there is no debt to record here. The file
+# exists so that a newly-dead QUIC test fails the gate rather than being
+# silently added to a list nobody reads.
+#
+# Scope: this gate runs with --only-absent-from build-tests, so it checks ONLY
+# the tests that exist when DINERO_ENABLE_QUIC=ON and do not exist otherwise
+# (QuicCryptoCapability, QuicDependency, QuicSession, QuicSessionStress,
+# QuicTransport, RelayTlsKeypair). Everything the two configurations share is
+# gated by the default invocation; listing those here would bury this config's
+# six unique tests under 540 irrelevant entries.
+#
+# RelayTlsKeypair is in that set, and it is the test the CTest INTEGRITY gate
+# was written for after it rotted to non-compiling (PR #416). Being registered
+# only in a second cmake configuration is exactly how it stayed invisible.
