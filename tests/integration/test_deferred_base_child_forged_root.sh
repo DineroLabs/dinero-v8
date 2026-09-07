@@ -33,6 +33,30 @@
 #   The finding-13 RULE is additionally gated at unit level by
 #   test_active_tip_classification.cpp, which is mutation-proven on its own.
 #
+# WHY THERE IS NO SEPARATE P2P-DELIVERED VARIANT OF THIS TEST.
+#
+# It was planned, on the belief that a peer-delivered block exercises a
+# different route to the root check than submitblock does. It does not. Traced:
+#
+#   * AcceptBlockFromPeer has exactly TWO exits: the single-flight rejection,
+#     which returns before any classification happens, and
+#     `return AcceptBlockFromRPC(blockHex, source)` (block_acceptor.cpp:793).
+#     There is no peer-only branch that reaches the root check.
+#   * `source` is carried only into log lines. It influences no decision, and
+#     AssumeUTXOPrecheckContext has no origin field, so neither the
+#     classification nor the deferred-mode base-child handling can differ by
+#     entry point.
+#
+# So a P2P-delivered forged block runs the IDENTICAL decision path this test
+# already drives, from classification through the root check. It would add
+# wire-framing and relay-plumbing coverage, not decision coverage.
+#
+# Note the reason carefully, because an earlier version of this argument had it
+# backwards: the P2P variant is dropped because it would be REDUNDANT, not
+# because this path fails to discriminate. This path does discriminate -- see
+# the combined-mutation result above. Those are different claims and only one
+# of them is true.
+#
 # The setup below is taken verbatim from test_assumeutxo_promotion_race.sh --
 # the proven sequence for getting a consumer into deferred mode with a slowed
 # replay. Re-deriving it is how a test ends up asserting nothing.
