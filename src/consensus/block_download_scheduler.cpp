@@ -2348,6 +2348,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                                     std::to_string(want) + ", will retry next tick");
                 }
                 return connected;
+            case ConnectBlockResult::STALE_TIP_CLASSIFICATION:
             case ConnectBlockResult::CONCURRENT_IN_FLIGHT: {
                 // Another thread is mid-acceptance of this hash. The outcome is
                 // UNKNOWN, so this must be neither of the two things the old
@@ -2380,9 +2381,13 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 bo.retry_after = std::chrono::steady_clock::now() +
                                  std::chrono::milliseconds(sleep_ms);
 
-                g_logger.info("[BlockDownloadScheduler] Concurrent acceptance in flight at height " +
-                              std::to_string(want) + " — not counted as connected or failed; "
-                              "retrying in " + std::to_string(sleep_ms) + "ms (attempt " +
+                g_logger.info(std::string("[BlockDownloadScheduler] ") +
+                              (connect_result == ConnectBlockResult::STALE_TIP_CLASSIFICATION
+                                   ? "Tip moved during acceptance"
+                                   : "Concurrent acceptance in flight") +
+                              " at height " + std::to_string(want) +
+                              " — not counted as connected or failed; retrying in " +
+                              std::to_string(sleep_ms) + "ms (attempt " +
                               std::to_string(bo.attempts) + ")");
                 return connected;
             }

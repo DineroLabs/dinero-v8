@@ -5401,6 +5401,13 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
     // and paid once -- and makes a future lockless writer fail loudly rather
     // than silently serialize.
     AssertActivationLockHeld("PublishActiveTipLocked");
+
+    // Bump BEFORE the pointer changes, so any classification captured with the
+    // old generation is already detectable as stale by the time a reader could
+    // observe the new tip. Monotonic and never reset: an ABA transition (tip
+    // moves away and returns) still advances it, which a hash comparison would
+    // miss.
+    ++active_tip_generation_;
     //
     // Found while tracing for review finding 13: ExtendsActiveTipLocked reads
     // active_tip_ under this lock (block acceptance asks "does this parent
@@ -6716,6 +6723,12 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
         logger_->debug(reject_log);
     } else {
         logger_->warning(reject_log);
+    }
+
+    if (result.code == BlockRejectCode::STALE_TIP_CLASSIFICATION) {
+        // The tip moved underneath this acceptance. Non-terminal: retry and
+        // reclassify, never reject an honest block for it.
+        return consensus::ConnectBlockResult::STALE_TIP_CLASSIFICATION;
     }
 
     if (result.code == BlockRejectCode::CONCURRENT_IN_FLIGHT) {

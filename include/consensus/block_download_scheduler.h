@@ -97,7 +97,11 @@ enum class ConnectBlockResult {
     // NON-TERMINAL: another thread is mid-acceptance of this hash. Not
     // success, not failure, not the peer's fault. See BlockRejectCode::
     // CONCURRENT_IN_FLIGHT for why no terminal code can express it.
-    CONCURRENT_IN_FLIGHT
+    CONCURRENT_IN_FLIGHT,
+
+    // NON-TERMINAL: the active tip moved between classification and use, so
+    // the block must be reclassified rather than judged on stale state.
+    STALE_TIP_CLASSIFICATION
 };
 
 // ============================================================================

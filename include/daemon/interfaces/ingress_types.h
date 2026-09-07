@@ -95,6 +95,20 @@ enum class BlockRejectCode {
     // notification. Leave the entry retryable and let the winner's resolution
     // supply the real terminal answer on a later pass.
     CONCURRENT_IN_FLIGHT,
+
+    // NON-TERMINAL. The active tip moved between classifying this block and
+    // acting on that classification, so the classification -- and anything
+    // derived from it -- describes a chain state that has been left behind.
+    //
+    // Distinct from CONCURRENT_IN_FLIGHT: nothing else is processing this
+    // hash, the world simply changed underneath. Same contract though: not
+    // success, not the peer's fault, no acceptance notification. Retry and the
+    // block is reclassified against the tip that is current then.
+    //
+    // Emitting a terminal rejection here would FALSELY reject an honest block:
+    // the Utreexo root is computed against the live consensus_utxo_set_, so a
+    // moved tip yields a mismatch that says nothing about the block.
+    STALE_TIP_CLASSIFICATION,
     CHECKPOINT_VIOLATION,        // Violates checkpoint (checkpoint-mismatch)
     INVALID_UTREEXO_ROOT,        // Utreexo root verification failed (bad-utreexo-root)
     SIGOPS_LIMIT_EXCEEDED,       // Sigops limit exceeded (bad-blk-sigops)

@@ -36,6 +36,7 @@ const char* BlockRejectCodeToString(BlockRejectCode code) {
         case BlockRejectCode::INVALID_PARENT_LINK: return "bad-chain";
         case BlockRejectCode::DUPLICATE: return "duplicate";
         case BlockRejectCode::CONCURRENT_IN_FLIGHT: return "concurrent-in-flight";
+        case BlockRejectCode::STALE_TIP_CLASSIFICATION: return "stale-tip-classification";
         case BlockRejectCode::CHECKPOINT_VIOLATION: return "checkpoint-mismatch";
         case BlockRejectCode::INVALID_UTREEXO_ROOT: return "bad-utreexo-root";
         case BlockRejectCode::SIGOPS_LIMIT_EXCEEDED: return "bad-blk-sigops";

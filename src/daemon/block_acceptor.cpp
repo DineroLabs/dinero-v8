@@ -202,6 +202,8 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         // unsynchronized read can observe it mid-transition and produce a torn
         // classification.
         bool isMainChainExtension = false;
+        uint64_t tip_generation_at_classification = 0;
+        bool have_tip_generation = false;
         const dinero::uint256 prevHashRaw =
             dinero::uint256::FromHexUnsafe(block.prevBlockHash);
         {
@@ -210,7 +212,14 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                 daemon_ctx ? daemon_ctx->chainstate : nullptr);
             if (chainstate) {
                 auto activation_lock = chainstate->AcquireBlockIngressActivationLock();
-                isMainChainExtension = chainstate->ExtendsActiveTipLocked(prevHashRaw);
+                // Classification AND the generation it was computed against,
+                // captured under ONE acquisition. Two reads under two
+                // acquisitions would be the bug this is guarding.
+                const auto classification =
+                    chainstate->ClassifyAgainstActiveTipLocked(prevHashRaw);
+                isMainChainExtension = classification.extends_active_tip;
+                tip_generation_at_classification = classification.generation;
+                have_tip_generation = true;
                 if (!isMainChainExtension) {
                     const auto* tip = chainstate->GetActiveTip();
                     LOG_INFO("🔍 Chain link check: prevHash=" + prevHashRaw.GetHex().substr(0, 16) +
@@ -223,6 +232,24 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
         if (!isMainChainExtension) {
             LOG_INFO("📌 Side-chain block detected: parent " + block.prevBlockHash.substr(0, 16) +
                     "... is not current tip (height " + std::to_string(newHeight) + ")");
+        }
+
+        // DETERMINISTIC STALENESS BARRIER (regtest only, inert otherwise).
+        //
+        // Sits exactly where the window opens: the activation lock has just
+        // been released, and everything below -- including the Utreexo root
+        // computation, which reads the LIVE consensus_utxo_set_ -- runs on a
+        // classification that is now only a snapshot.
+        //
+        // Payload-keyed on the DAMAGING case. A stale "side chain" is benign
+        // (it routes to the more conservative path); a stale "extends the tip"
+        // is what computes a root against a forest the block no longer
+        // extends, producing a false INVALID_UTREEXO_ROOT for an honest block.
+        // Parking on the benign case would gate nothing.
+        if (isMainChainExtension) {
+            dinero::testing::MaybeBarrierAt(
+                "acceptor_after_tip_classification",
+                dinero::testing::CrashHooksEnabled().load());
         }
 
         // 4. Validate merkle root
@@ -306,6 +333,35 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
             std::string utreexo_error;
 
             if (bv && !skip_utreexo_rpc) {
+                // RE-CHECK before acting on the classification.
+                //
+                // The activation lock was released back at the classification
+                // site; everything since has run on a snapshot. The root
+                // computation below reads the LIVE consensus_utxo_set_, so if
+                // the tip has moved, it computes a root against a forest this
+                // block no longer extends and the comparison would reject an
+                // HONEST block with bad-utreexo-root.
+                //
+                // Generation, not tip hash: a hash comparison cannot see an
+                // ABA transition (tip moves away and returns, e.g. a
+                // disconnect/reconnect of the same block) across which the
+                // live forest was rebuilt.
+                if (have_tip_generation && cs) {
+                    auto recheck_lock = cs->AcquireBlockIngressActivationLock();
+                    if (!cs->TipClassificationStillCurrentLocked(
+                            tip_generation_at_classification)) {
+                        LOG_INFO("♻️  Active tip moved during acceptance of " +
+                                 block_hash.GetHex().substr(0, 16) +
+                                 "... — classification is stale; returning for "
+                                 "reclassification rather than judging the block "
+                                 "on state the chain has left");
+                        return BlockAcceptResult::Rejected(
+                            BlockRejectCode::STALE_TIP_CLASSIFICATION,
+                            "active tip moved during acceptance; reclassify",
+                            block_hash, newHeight);
+                    }
+                }
+
                 dinero::Block consensus_block = ConvertParsedBlockToBlock(block);
 
                 if (isMainChainExtension) {

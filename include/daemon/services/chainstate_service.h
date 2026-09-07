@@ -340,6 +340,53 @@ public:
      * assert throws, so a caller that drops the lock fails loudly rather than
      * racing silently.
      */
+    /**
+     * A classification and the tip generation it was computed against.
+     *
+     * The generation is what makes a later recheck sound. Comparing the tip
+     * HASH alone cannot see an ABA transition -- the tip moves away and comes
+     * back, e.g. a reorg that disconnects and reconnects the same block -- and
+     * a hash recheck would report "unchanged" across a window in which the
+     * live UTXO/forest state was rebuilt. Same reason #691's block-status
+     * decisions carry a generation rather than a value.
+     */
+    struct TipClassification {
+        bool extends_active_tip = false;
+        uint64_t generation = 0;
+    };
+
+    /** Monotonic counter, bumped on every active-tip publication. */
+    uint64_t ActiveTipGenerationLocked() const {
+        AssertActivationLockHeld("ActiveTipGenerationLocked");
+        return active_tip_generation_;
+    }
+
+    /**
+     * Classify AND capture the generation atomically under the lock.
+     *
+     * Callers must use this rather than calling ExtendsActiveTipLocked and
+     * reading the generation separately: two reads under one lock is fine, two
+     * reads under two acquisitions is the bug this exists to prevent.
+     */
+    TipClassification ClassifyAgainstActiveTipLocked(const uint256& parent_hash) const {
+        AssertActivationLockHeld("ClassifyAgainstActiveTipLocked");
+        return TipClassification{ExtendsActiveTipLocked(parent_hash),
+                                 active_tip_generation_};
+    }
+
+    /**
+     * Is a classification captured at `generation` still current?
+     *
+     * False means the active tip moved while the block was being processed, so
+     * the classification -- and anything derived from it, including a Utreexo
+     * root computed against the live forest -- describes a state the chain has
+     * left.
+     */
+    bool TipClassificationStillCurrentLocked(uint64_t generation) const {
+        AssertActivationLockHeld("TipClassificationStillCurrentLocked");
+        return generation == active_tip_generation_;
+    }
+
     bool ExtendsActiveTipLocked(const uint256& parent_hash) const {
         AssertActivationLockHeld("ExtendsActiveTipLocked");
         const CBlockIndex* tip = active_tip_;
@@ -1363,6 +1410,11 @@ private:
     // and then write block failure flags MUST hold this, and AssertHeld turns
     // that from a comment into an enforced invariant. Satisfies Lockable, so
     // every existing lock_guard/unique_lock site is unchanged.
+    // Bumped by PublishActiveTipLocked on every tip publication. Guarded by
+    // activation_mutex_ like active_tip_ itself; see TipClassification for why
+    // a generation rather than a hash comparison.
+    uint64_t active_tip_generation_{0};
+
     mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
 
     // Phase 43: Safe mode state (deep reorg protection)

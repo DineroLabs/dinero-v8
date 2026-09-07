@@ -6407,7 +6407,14 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 // the outcome is unknown. Reporting it as
                                 // Rejected penalised an honest peer.
                                 if (accept_result.code ==
-                                        BlockRejectCode::CONCURRENT_IN_FLIGHT) {
+                                        BlockRejectCode::CONCURRENT_IN_FLIGHT ||
+                                    accept_result.code ==
+                                        BlockRejectCode::STALE_TIP_CLASSIFICATION) {
+                                    // Neither is the peer's fault: one is a
+                                    // race with another accepting thread, the
+                                    // other is the tip moving underneath us.
+                                    // Penalising an honest peer for either is
+                                    // exactly the smear finding 9 removed.
                                     return Outcome::ConcurrentInFlight;
                                 }
                                 return Outcome::Rejected;
