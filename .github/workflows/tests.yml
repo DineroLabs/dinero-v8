@@ -120,6 +120,41 @@ jobs:
       - name: CTest integrity gate (registered => built)
         run: python3 scripts/ci/check_ctest_integrity.py build-tests
 
+      # The execution gate's own parser self-test. It runs FIRST and needs no
+      # build directory. The gate's answer is only as good as its model of how
+      # this file selects tests, and that model has been wrong once already:
+      # an earlier version understood only the main ctest step and the serial
+      # e2e loop — 2 of the ~18 selection mechanisms below — and therefore
+      # reported tests as dead coverage that have their own dedicated steps.
+      #
+      # Running it as a plain step rather than registering it with CTest is
+      # deliberate: a self-test for the unexecuted-test gate must not be able
+      # to become an unexecuted test.
+      - name: Execution-gate parser self-test
+        run: python3 scripts/ci/test_check_mandatory_tests_execute.py
+
+      # Execution gate. check_ctest_integrity proves a registered test is
+      # RUNNABLE; this proves it is RUN. Three high-value tests were
+      # registered-but-never-executed on one branch — the last carried the
+      # mutation proof for the activation-lock invariant — and each was caught
+      # only by a human grepping the green log for the test's name.
+      #
+      # Tests executed by no lane are recorded in the baseline file, so this
+      # fails on NEW dead coverage, on a baseline entry that has started
+      # running, and on one naming a test that no longer exists.
+      #
+      # core-heavy.yml is passed so its lane is accounted for. It builds a
+      # DIFFERENT cmake configuration, so it never grants execution credit
+      # here; naming it makes that visible in the baseline's reasons instead
+      # of leaving it an unexamined gap.
+      - name: Check every test is executed by some lane
+        run: |
+          python3 scripts/ci/check_mandatory_tests_execute.py \
+            build-tests \
+            .github/workflows/tests.yml \
+            .github/workflows/core-heavy.yml \
+            --baseline scripts/ci/unexecuted_tests_baseline.txt
+
       # Assertion-integrity ratchet (issue #497). tests/CMakeLists.txt appends
       # -UNDEBUG (/UNDEBUG on MSVC) to the Release test graph, and the
       # AssertionsEnabled test fails at compile time and runtime if assertions
@@ -208,7 +243,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -534,6 +569,42 @@ jobs:
 
       - name: Report QUIC test inventory
         run: ctest --test-dir build-tests-quic -N -L 'quic|p2p'
+
+      # CONFIGURE ONLY -- no build. The gate below needs the DEFAULT config's
+      # test registry to work out which tests are unique to QUIC, and test
+      # registration is a configure-time artifact: ctest --show-only reads
+      # CTestTestfile.cmake, which cmake writes at configure time. Measured on
+      # dinero-main @e96f53b93: configure-only and post-build discovery both
+      # report exactly 540 tests. So this costs a few seconds of cmake, not a
+      # second full build.
+      - name: CMake configure default config (registry only, for the gate below)
+        run: |
+          cmake -S . -B build-tests \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_USE_VENDORED_DEPS=ON \
+            -DENABLE_GRPC=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # Execution gate for THIS configuration.
+      #
+      # The default gate runs against build-tests and therefore cannot see a
+      # test that only exists when DINERO_ENABLE_QUIC=ON. Six do, and one of
+      # them is RelayTlsKeypair -- the test the integrity gate was written for
+      # after it rotted to non-compiling in #416. The failure class this whole
+      # gate exists to catch was recurring in configuration #2, unwatched.
+      #
+      # --only-absent-from scopes this to the QUIC-only tests. The 540 shared
+      # with the default config are gated by the default invocation, and
+      # listing them here would bury the six that matter.
+      - name: Check every QUIC-only test is executed by some lane
+        run: |
+          python3 scripts/ci/check_mandatory_tests_execute.py \
+            build-tests-quic \
+            .github/workflows/tests.yml \
+            --only-absent-from build-tests \
+            --baseline scripts/ci/unexecuted_tests_baseline_quic.txt
 
       - name: Run QUIC/P2P ctest
         run: |
