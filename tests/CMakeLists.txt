@@ -3928,6 +3928,101 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_daemon_invariants.cpp)
   message(STATUS "✅ Daemon Invariants test enabled")
 endif()
 
+# AssumeUTXO side-chain precheck exemptions. Guards the deferred-mode
+# base-child fix: without it, the canonical child of the snapshot base is
+# misclassified as a side chain and re-runs RestoreHistoricalForest on every
+# duplicate delivery, starving the block-download scheduler.
+# Rate limiter + counters behind the duplicate-delivery logging. Labelled so
+# the MAIN ctest lane selects it: a gate nothing runs is not a gate.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_write_metrics.cpp)
+  add_executable(test_block_write_metrics
+    tests/daemon/test_block_write_metrics.cpp
+    src/daemon/block_write_metrics.cpp
+  )
+  add_dependencies(test_block_write_metrics gtest)
+  target_link_libraries(test_block_write_metrics PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> Threads::Threads
+  )
+  target_include_directories(test_block_write_metrics BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME BlockWriteMetrics COMMAND test_block_write_metrics)
+  set_tests_properties(BlockWriteMetrics PROPERTIES
+    LABELS "daemon;metrics;assumeutxo"
+    TIMEOUT 30
+  )
+endif()
+
+# Active-tip classification: the rule block acceptance uses to tell a
+# main-chain extension from a side chain. Labelled for the MAIN ctest lane.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_active_tip_classification.cpp)
+  add_executable(test_active_tip_classification
+    tests/daemon/test_active_tip_classification.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_active_tip_classification gtest)
+  target_link_libraries(test_active_tip_classification PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
+  )
+  target_include_directories(test_active_tip_classification BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ActiveTipClassification COMMAND test_active_tip_classification)
+  set_tests_properties(ActiveTipClassification PROPERTIES
+    LABELS "daemon;consensus;assumeutxo;classification"
+    TIMEOUT 30
+  )
+endif()
+
+# Non-terminal concurrent-in-flight outcome (findings 3+9).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_concurrent_in_flight.cpp)
+  add_executable(test_concurrent_in_flight
+    tests/daemon/test_concurrent_in_flight.cpp
+    src/daemon/interfaces/ingress_types.cpp
+    src/primitives/uint256.cpp
+  )
+  add_dependencies(test_concurrent_in_flight gtest)
+  target_link_libraries(test_concurrent_in_flight PRIVATE
+    $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
+  )
+  target_include_directories(test_concurrent_in_flight BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME ConcurrentInFlight COMMAND test_concurrent_in_flight)
+  set_tests_properties(ConcurrentInFlight PROPERTIES
+    LABELS "daemon;p2p;relay;assumeutxo"
+    TIMEOUT 30
+  )
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_precheck.cpp)
+  add_executable(test_assumeutxo_precheck
+    tests/daemon/test_assumeutxo_precheck.cpp
+    src/daemon/assumeutxo_precheck.cpp
+    src/primitives/uint256.cpp   # uint256::operator== is out-of-line
+  )
+  add_dependencies(test_assumeutxo_precheck gtest gtest_main)
+  target_link_libraries(test_assumeutxo_precheck PRIVATE
+    GTest::gtest_main
+  )
+  target_include_directories(test_assumeutxo_precheck PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  add_test(NAME AssumeUTXOPrecheck COMMAND test_assumeutxo_precheck)
+  set_tests_properties(AssumeUTXOPrecheck PROPERTIES
+    LABELS "daemon;assumeutxo"
+    TIMEOUT 30
+  )
+  message(STATUS "✅ AssumeUTXO precheck exemption test enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_archival_config_defaults.cpp)
   add_executable(test_archival_config_defaults
     tests/daemon/test_archival_config_defaults.cpp

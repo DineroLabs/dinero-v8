@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/iservice.h"
+#include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
 #include "common/annotated_mutex.h"
@@ -318,6 +319,85 @@ public:
     // Phase 41: Active chain tip (replaces ChainDB getTip for consensus)
     class CBlockIndex* GetActiveTip() const { return active_tip_; }
 
+    /**
+     * Does `parent_hash` name the ACTIVE consensus tip?
+     *
+     * This is the classification block acceptance must use. The alternative --
+     * comparing against ChainDB::getTip() -- is wrong during background
+     * replay, and wrong in a way that matters: active_tip_ is deliberately
+     * restored to the snapshot base while the DURABLE ChainDB tip trails
+     * behind it. A child of the base is a genuine main-chain extension, and
+     * the stale database tip is what misclassified it as a side chain.
+     *
+     * That misclassification is what forced the deferred base-child precheck
+     * exemption, which in turn disabled accept-time INVALID_UTREEXO_ROOT
+     * rejection for exactly that block. Classifying correctly removes the need
+     * for the exemption and restores the rejection.
+     *
+     * CALLER MUST HOLD activation_mutex_. Not a formality: promotion moves
+     * active_tip_, so an unsynchronized read can observe a tip mid-transition
+     * and produce a torn classification. Asserted, not documented -- the
+     * assert throws, so a caller that drops the lock fails loudly rather than
+     * racing silently.
+     */
+    /**
+     * A classification and the tip generation it was computed against.
+     *
+     * The generation is what makes a later recheck sound. Comparing the tip
+     * HASH alone cannot see an ABA transition -- the tip moves away and comes
+     * back, e.g. a reorg that disconnects and reconnects the same block -- and
+     * a hash recheck would report "unchanged" across a window in which the
+     * live UTXO/forest state was rebuilt. Same reason #691's block-status
+     * decisions carry a generation rather than a value.
+     */
+    struct TipClassification {
+        bool extends_active_tip = false;
+        uint64_t generation = 0;
+    };
+
+    /** Monotonic counter, bumped on every active-tip publication. */
+    uint64_t ActiveTipGenerationLocked() const {
+        AssertActivationLockHeld("ActiveTipGenerationLocked");
+        return active_tip_generation_;
+    }
+
+    /**
+     * Classify AND capture the generation atomically under the lock.
+     *
+     * Callers must use this rather than calling ExtendsActiveTipLocked and
+     * reading the generation separately: two reads under one lock is fine, two
+     * reads under two acquisitions is the bug this exists to prevent.
+     */
+    TipClassification ClassifyAgainstActiveTipLocked(const uint256& parent_hash) const {
+        AssertActivationLockHeld("ClassifyAgainstActiveTipLocked");
+        return TipClassification{ExtendsActiveTipLocked(parent_hash),
+                                 active_tip_generation_};
+    }
+
+    /**
+     * Is a classification captured at `generation` still current?
+     *
+     * False means the active tip moved while the block was being processed, so
+     * the classification -- and anything derived from it, including a Utreexo
+     * root computed against the live forest -- describes a state the chain has
+     * left.
+     */
+    bool TipClassificationStillCurrentLocked(uint64_t generation) const {
+        AssertActivationLockHeld("TipClassificationStillCurrentLocked");
+        return generation == active_tip_generation_;
+    }
+
+    bool ExtendsActiveTipLocked(const uint256& parent_hash) const {
+        AssertActivationLockHeld("ExtendsActiveTipLocked");
+        const CBlockIndex* tip = active_tip_;
+        // One rule, shared with the unit tests, so the daemon path and the
+        // tested path cannot diverge.
+        const std::optional<uint256> tip_hash =
+            tip ? std::optional<uint256>(tip->GetBlockHash()) : std::nullopt;
+        return daemon::ClassifyExtension(tip_hash, parent_hash) ==
+               daemon::ExtensionClass::ExtendsActiveTip;
+    }
+
     // Block invalidation (production-safe, all networks)
     // Mark a block and all descendants as invalid; disconnect from active chain if needed.
     bool InvalidateBlock(const uint256& hash, std::string& error);
@@ -447,6 +527,12 @@ public:
     consensus::BlockStatusGeneration BumpBlockStatusGeneration(
         const ChainWriteToken& token, rocksdb::WriteBatch* wb = nullptr);
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
+    // Mirrors GetConfig().assumeutxo_forward_connect -- the same source the
+    // deferral gate reads. Defined out-of-line so this header need not pull
+    // in the config. Used by BlockAcceptor to tell classic deferred mode
+    // (where ChainDB's tip trails the snapshot base) from forward-connect
+    // mode (where the tip legitimately advances past it).
+    bool IsAssumeUTXOForwardConnectEnabled() const;
     // Resolve canonical identity without assuming the durable height index is
     // complete. During AssumeUTXO, pre-base height entries are deliberately
     // withheld until background validation promotes the history; active-tip
@@ -1080,6 +1166,20 @@ private:
     // `clear_persisted_metadata=true` fully exits AssumeUTXO mode by clearing
     // both in-memory state and persisted metadata.
     // `clear_persisted_metadata=false` clears only the in-memory flags.
+    /**
+     * Push the deferred-drain ceiling to the scheduler from CURRENT state.
+     *
+     * One function for arm AND disarm, called from every place the mode can
+     * change, because the two drifting apart is exactly how this broke: the
+     * ceiling was armed only at the tail of a missing-bodies pass, and the
+     * completing pass returned before reaching it, so it was never cleared.
+     * A stuck ceiling stops every drain above the base for the life of the
+     * process -- after promotion, when the tip legitimately must pass it.
+     *
+     * Safe to call when no scheduler is wired; it is then a no-op.
+     */
+    void PublishDeferredDrainCeiling();
+
     void ClearAssumeUTXOState(bool clear_persisted_metadata);
     bool VerifyStrictArchivalStartup(uint32_t tip_height) const;
 
@@ -1202,6 +1302,30 @@ private:
     // one setter makes the code structurally enforce "ConnectTip is
     // the only writer of active chain advancement" — every other site
     // documents its non-advancement reason at the call.
+    /**
+     * Publish the active tip. CALLER MUST HOLD activation_mutex_.
+     *
+     * This is the real setter. It ASSERTS the lock rather than taking it:
+     * ExtendsActiveTipLocked reads active_tip_ under this mutex, so every
+     * writer must hold it too, and an assertion at the single write point
+     * makes a lockless writer fail loudly instead of racing.
+     *
+     * Asserting rather than acquiring is deliberate. A leaf function that
+     * grabs a lock hides the ordering from its callers and re-acquires on
+     * every publish -- including the per-block connect path, where the caller
+     * already holds it. Lock acquisition belongs at the OUTER operation
+     * boundary, where the order is visible and taken once.
+     */
+    void PublishActiveTipLocked(CBlockIndex* tip, TipPublishReason reason);
+
+    /**
+     * Convenience wrapper for callers that genuinely do not hold the lock --
+     * startup, snapshot import, and the operator tip-rebind path.
+     *
+     * Acquires activation_mutex_ and delegates. Use PublishActiveTipLocked
+     * directly from any path that already holds it; going through here would
+     * re-enter the recursive mutex for nothing.
+     */
     void PublishActiveTip(CBlockIndex* tip, TipPublishReason reason);
 
     // D.3 (Apr 30 2026): regenerate an UndoRecord from the block body
@@ -1286,6 +1410,11 @@ private:
     // and then write block failure flags MUST hold this, and AssertHeld turns
     // that from a comment into an enforced invariant. Satisfies Lockable, so
     // every existing lock_guard/unique_lock site is unchanged.
+    // Bumped by PublishActiveTipLocked on every tip publication. Guarded by
+    // activation_mutex_ like active_tip_ itself; see TipClassification for why
+    // a generation rather than a hash comparison.
+    uint64_t active_tip_generation_{0};
+
     mutable AnnotatedRecursiveMutex activation_mutex_;  // Protects ActivateBestChain from concurrent entry
 
     // Phase 43: Safe mode state (deep reorg protection)

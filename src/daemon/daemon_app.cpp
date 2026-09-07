@@ -6390,16 +6390,34 @@ bool DaemonApp::Init(int argc, char** argv) {
                     block_relay->SetValidateBlockCallback([block_ingress, chainstate, p2p_service, block_download](
                         const Block& block,
                         const std::string& peer_address
-                    ) -> bool {
+                    ) -> dinero::BlockRelayManager::BlockValidationOutcome {
+                        using Outcome = dinero::BlockRelayManager::BlockValidationOutcome;
+                        // (implicitly constructible from bool; the
+                        //  explicit names are used for clarity)
                         try {
                             if (!block_ingress) {
                                 g_logger.error("[BlockRelay] Block ingress not available");
-                                return false;
+                                return Outcome::Rejected;
                             }
 
                             const auto accept_result = block_ingress->Submit(block, BlockOrigin::P2P);
                             if (!accept_result.accepted()) {
-                                return false;
+                                // Losing the single-flight race is not a
+                                // rejection: another thread holds this hash and
+                                // the outcome is unknown. Reporting it as
+                                // Rejected penalised an honest peer.
+                                if (accept_result.code ==
+                                        BlockRejectCode::CONCURRENT_IN_FLIGHT ||
+                                    accept_result.code ==
+                                        BlockRejectCode::STALE_TIP_CLASSIFICATION) {
+                                    // Neither is the peer's fault: one is a
+                                    // race with another accepting thread, the
+                                    // other is the tip moving underneath us.
+                                    // Penalising an honest peer for either is
+                                    // exactly the smear finding 9 removed.
+                                    return Outcome::ConcurrentInFlight;
+                                }
+                                return Outcome::Rejected;
                             }
 
                             if (block_download) {
@@ -6415,10 +6433,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 }
                             }
 
-                            return true;
+                            return Outcome::Accepted;
                         } catch (const std::exception& e) {
                             g_logger.error("[BlockRelay] Block validation failed: " + std::string(e.what()));
-                            return false;
+                            return Outcome::Rejected;
                         }
                     });
 

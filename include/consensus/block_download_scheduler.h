@@ -32,6 +32,7 @@
 #include "p2p/block_download_scheduler.h"  // For SyncPhase enum (Phase W.2.6 Enhancement #3)
 #include <atomic>
 #include <chrono>
+#include <random>
 #include <condition_variable>
 #include <functional>
 #include <mutex>
@@ -91,7 +92,16 @@ enum class ConnectBlockResult {
     WAITING_PARENT,      // Parent is known/queued but not connected yet
     DUPLICATE,           // Already connected/known
     UNREADABLE_BODY,     // Stored body became unreadable; discard position and download again
-    TEMPORARY_FAIL       // Retry same child later
+    TEMPORARY_FAIL,      // Retry same child later
+
+    // NON-TERMINAL: another thread is mid-acceptance of this hash. Not
+    // success, not failure, not the peer's fault. See BlockRejectCode::
+    // CONCURRENT_IN_FLIGHT for why no terminal code can express it.
+    CONCURRENT_IN_FLIGHT,
+
+    // NON-TERMINAL: the active tip moved between classification and use, so
+    // the block must be reclassified rather than judged on stale state.
+    STALE_TIP_CLASSIFICATION
 };
 
 // ============================================================================
@@ -487,6 +497,36 @@ public:
         driver_cv_.notify_all();
     }
 
+    /**
+     * Deferred-AssumeUTXO drain ceiling.
+     *
+     * In classic deferred mode the active chain deliberately does NOT advance
+     * past the snapshot base until background replay finishes. The drain's
+     * "is this block on the active chain?" check therefore can never succeed
+     * for base+1, and its CONNECTED -> RECEIVED downgrade re-reads and
+     * re-connects the same body forever. Measured on a live node: 83,738
+     * re-connections of one height, each paying an fsync, with zero pre-base
+     * bodies fetched -- the replay it was waiting for starved.
+     *
+     * Draining above the ceiling is futile work by construction, so stop
+     * there and let backfill use the pipeline. Set active=false in
+     * forward-connect mode, where the tip legitimately passes the base.
+     *
+     * @param active  whether a deferred ceiling applies at all
+     * @param ceiling_height  the snapshot base height
+     */
+    void SetDeferredDrainCeiling(bool active, uint32_t ceiling_height) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        deferred_drain_ceiling_active_ = active;
+        deferred_drain_ceiling_height_ = ceiling_height;
+    }
+
+    /** Test seam: how many drains stopped at the ceiling. */
+    uint64_t GetDeferredCeilingStopsForTest() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return deferred_ceiling_stops_;
+    }
+
     // issue #216: override the stale-request timeout. Primarily a test seam (the
     // default 30s can't be exercised deterministically otherwise); also usable
     // to tune re-request aggressiveness.
@@ -711,6 +751,28 @@ private:
     // Guards all mutable scheduler state (missing_blocks_, in_flight_blocks_,
     // expected_blocks_, etc.) against concurrent access from P2P handler
     // threads calling OnHeadersProcessed/OnBlockReceived/Tick simultaneously.
+    // Deferred-AssumeUTXO drain ceiling; see SetDeferredDrainCeiling.
+    // Bounded, jittered backoff for concurrent-in-flight collisions.
+    //
+    // A losing racer must retry -- the winner's outcome is unknown, so the
+    // height still needs a terminal answer -- but retrying every tick against
+    // a slow winner is a hot loop. Backoff is per height, doubles, and is
+    // capped; jitter keeps several racers from re-colliding in lockstep.
+    struct ConcurrentBackoff {
+        uint32_t attempts = 0;
+        std::chrono::steady_clock::time_point retry_after{};
+    };
+    std::unordered_map<uint32_t, ConcurrentBackoff> concurrent_backoff_;
+    static constexpr uint32_t kConcurrentBackoffBaseMs = 50;
+    static constexpr uint32_t kConcurrentBackoffCapMs  = 2000;
+
+    bool deferred_drain_ceiling_active_{false};
+    uint32_t deferred_drain_ceiling_height_{0};
+    uint64_t deferred_ceiling_stops_{0};
+    // Aggregate counter + rate limiter for the ceiling log (it would otherwise
+    // be one line per drain pass, which is how we got 9.3 MB/min of logging).
+    std::chrono::steady_clock::time_point last_ceiling_log_{};
+
     mutable std::mutex mutex_;
 
     // Blocks that have been received and stored (for parent-known checks).

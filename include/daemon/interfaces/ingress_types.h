@@ -77,6 +77,38 @@ enum class BlockRejectCode {
     MISSING_PARENT,              // Parent block not found (bad-prevblk)
     INVALID_PARENT_LINK,         // Parent link validation failed (bad-chain)
     DUPLICATE,                   // Block already known (duplicate)
+
+    // NON-TERMINAL. Another thread is mid-acceptance of this same hash; this
+    // caller lost a benign race and the outcome is genuinely UNKNOWN.
+    //
+    // Deliberately NOT DUPLICATE, which asserts the body is already known --
+    // here the winner may be performing the very first write, or may fail and
+    // never write it at all.
+    //
+    // No terminal code can serve this. The two consumers wanted OPPOSITE wrong
+    // things: the drain read DUPLICATE as success and advanced local_tip_height_
+    // on a block that might never connect, while the validation queue read it
+    // as failure and recorded RecordBlockFailure against an honest peer. That
+    // they disagreed is the proof the outcome is neither.
+    //
+    // Contract for consumers: not success, not peer misconduct, no acceptance
+    // notification. Leave the entry retryable and let the winner's resolution
+    // supply the real terminal answer on a later pass.
+    CONCURRENT_IN_FLIGHT,
+
+    // NON-TERMINAL. The active tip moved between classifying this block and
+    // acting on that classification, so the classification -- and anything
+    // derived from it -- describes a chain state that has been left behind.
+    //
+    // Distinct from CONCURRENT_IN_FLIGHT: nothing else is processing this
+    // hash, the world simply changed underneath. Same contract though: not
+    // success, not the peer's fault, no acceptance notification. Retry and the
+    // block is reclassified against the tip that is current then.
+    //
+    // Emitting a terminal rejection here would FALSELY reject an honest block:
+    // the Utreexo root is computed against the live consensus_utxo_set_, so a
+    // moved tip yields a mismatch that says nothing about the block.
+    STALE_TIP_CLASSIFICATION,
     CHECKPOINT_VIOLATION,        // Violates checkpoint (checkpoint-mismatch)
     INVALID_UTREEXO_ROOT,        // Utreexo root verification failed (bad-utreexo-root)
     SIGOPS_LIMIT_EXCEEDED,       // Sigops limit exceeded (bad-blk-sigops)

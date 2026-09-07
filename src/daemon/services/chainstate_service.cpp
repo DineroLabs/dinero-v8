@@ -8,6 +8,7 @@
 #include "daemon/services/chainstate_restart_import.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/assumeutxo_state.h"
+#include "daemon/assumeutxo_precheck.h"  // ShouldApplyDeferredDrainCeiling
 #include "daemon/services/assumeutxo_replay.h"  // genesis->base replay engine (background validation)
 #include "nodecore/sync_profile_policy.h"
 #include "daemon/snapshot_bootstrap_policy.h"
@@ -2304,10 +2305,27 @@ void ChainstateService::SetAssumeUTXOState(const uint256& base_block,
     }
 }
 
+void ChainstateService::PublishDeferredDrainCeiling() {
+    auto* ctx = DaemonContext::instance();
+    auto* sched = (ctx && ctx->block_download) ? ctx->block_download.get() : nullptr;
+    if (!sched) return;  // not wired yet, or already torn down
+
+    // Derived from exactly the same facts as the BlockAcceptor side-chain
+    // exemption (daemon/assumeutxo_precheck.h) so the two cannot drift into
+    // disagreeing about what "deferred mode" means.
+    const bool deferred_mode = daemon::ShouldApplyDeferredDrainCeiling(
+        IsAssumeUTXOActive(), IsAssumeUTXOForwardConnectEnabled());
+    sched->SetDeferredDrainCeiling(deferred_mode, GetAssumeUTXOBaseHeight());
+}
+
 void ChainstateService::ClearAssumeUTXOState(bool clear_persisted_metadata) {
     assumeutxo::ClearState(
         {assumeutxo_active_, assumeutxo_base_block_, assumeutxo_base_height_, utxo_index_.get()},
         clear_persisted_metadata);
+
+    // Snapshot state is gone, so the ceiling must go with it. Without this the
+    // scheduler keeps refusing to drain above a base that no longer exists.
+    PublishDeferredDrainCeiling();
 
     if (clear_persisted_metadata) {
         if (logger_) {
@@ -5356,6 +5374,52 @@ const char* ChainstateService::TipPublishReasonName(TipPublishReason r) {
 }
 
 void ChainstateService::PublishActiveTip(CBlockIndex* tip, TipPublishReason reason) {
+    // Wrapper for callers that genuinely do not hold the lock: startup,
+    // snapshot import, and the operator tip-rebind path. Everything on the
+    // per-block connect path calls PublishActiveTipLocked directly, so the
+    // hot path does not re-enter the recursive mutex on every publish.
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    PublishActiveTipLocked(tip, reason);
+}
+
+void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReason reason) {
+    // ASSERT the lock; never acquire it.
+    //
+    // Found while tracing for review finding 13: ExtendsActiveTipLocked reads
+    // active_tip_ under activation_mutex_ (block acceptance asks "does this
+    // parent extend the active tip?"), but several writers did not hold it --
+    // ForceSetActiveTip via BlockAcceptor::ApplyTipInvalidation on the
+    // acceptance path itself, LoadSnapshot reachable by RPC while acceptance
+    // is live, and four Start() paths. Locked readers against lockless writers
+    // is a race, and finding 13 introduced the locked reader.
+    //
+    // The first fix took the lock inside this function. That was correct but
+    // wrong-shaped: a leaf function acquiring a lock hides the ordering from
+    // its callers, and re-acquired on every publish including the per-block
+    // connect path where the caller already held it. Asserting instead puts
+    // acquisition at the OUTER operation boundary where the order is visible
+    // and paid once -- and makes a future lockless writer fail loudly rather
+    // than silently serialize.
+    AssertActivationLockHeld("PublishActiveTipLocked");
+
+    // Bump BEFORE the pointer changes, so any classification captured with the
+    // old generation is already detectable as stale by the time a reader could
+    // observe the new tip. Monotonic and never reset: an ABA transition (tip
+    // moves away and returns) still advances it, which a hash comparison would
+    // miss.
+    ++active_tip_generation_;
+    //
+    // Found while tracing for review finding 13: ExtendsActiveTipLocked reads
+    // active_tip_ under this lock (block acceptance asks "does this parent
+    // extend the active tip?"), but several writers did NOT hold it --
+    // ForceSetActiveTip, reached from BlockAcceptor::ApplyTipInvalidation on
+    // the acceptance path itself; LoadSnapshot, reachable by RPC while
+    // acceptance is live; and four Start() paths. Locked readers against
+    // lockless writers is a race, and finding 13 is what introduced the
+    // locked reader -- so this is a defect in that change, not a pre-existing
+    // one to leave alone.
+    //
+
     // Single setter for the in-memory active_tip_ pointer. Pre-fix
     // there were 13 direct assignments scattered across this file,
     // each with implicit semantics. Funneling them through this
@@ -6661,6 +6725,20 @@ consensus::ConnectBlockResult ChainstateService::ProcessIncomingStoredBlock(cons
         logger_->warning(reject_log);
     }
 
+    if (result.code == BlockRejectCode::STALE_TIP_CLASSIFICATION) {
+        // The tip moved underneath this acceptance. Non-terminal: retry and
+        // reclassify, never reject an honest block for it.
+        return consensus::ConnectBlockResult::STALE_TIP_CLASSIFICATION;
+    }
+
+    if (result.code == BlockRejectCode::CONCURRENT_IN_FLIGHT) {
+        // Losing a benign race is NOT a rejection. Map it to its own
+        // non-terminal result so the drain neither advances its tip nor
+        // records a failure, and so nothing downstream treats this caller's
+        // peer as having sent a bad block.
+        return consensus::ConnectBlockResult::CONCURRENT_IN_FLIGHT;
+    }
+
     if (result.code == BlockRejectCode::DUPLICATE) {
         return consensus::ConnectBlockResult::DUPLICATE;
     }
@@ -7932,7 +8010,7 @@ void ChainstateService::ActivateBestChain() {
                 if (logger_) logger_->warning("[ActivateBestChain] Misaligned: " + alignment_reason +
                                              " — realigning active_tip_ to consensus UTXO tip (height=" +
                                              std::to_string(utxo_height) + ")");
-                PublishActiveTip(utxo_tip_idx, TipPublishReason::kSelfHealRealign);
+                PublishActiveTipLocked(utxo_tip_idx, TipPublishReason::kSelfHealRealign);
                 // #585: bring the shielded state + marker down to the realigned tip.
                 RealignShieldedStateToActiveTipAfterHeal();
 
@@ -7965,7 +8043,7 @@ void ChainstateService::ActivateBestChain() {
                                                  " — materialized snapshot base into block index; realigning "
                                                  "active_tip_ to consensus UTXO tip (height=" +
                                                  std::to_string(utxo_height) + ")");
-                    PublishActiveTip(materialized, TipPublishReason::kSelfHealRealign);
+                    PublishActiveTipLocked(materialized, TipPublishReason::kSelfHealRealign);
                     // #585: bring the shielded state + marker down to the realigned tip.
                     RealignShieldedStateToActiveTipAfterHeal();
                     std::string recheck_reason;
@@ -9468,7 +9546,7 @@ void ChainstateService::ActivateBestChain() {
     }
 
     // Update active tip (already done by ConnectTip, but ensure consistency)
-    PublishActiveTip(best_candidate, TipPublishReason::kSelfHealRealign);
+    PublishActiveTipLocked(best_candidate, TipPublishReason::kSelfHealRealign);
     activation_retries_.Clear(best_candidate->hash);
 
     // Read-only observability, recorded only once the reorg has actually
@@ -11877,7 +11955,7 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                     return false;
                 }
                 // DisconnectTip sets active_tip_ to pprev
-                PublishActiveTip(to_disconnect->pprev, TipPublishReason::kRollback);
+                PublishActiveTipLocked(to_disconnect->pprev, TipPublishReason::kRollback);
             }
 
             post_disconnect_tip = active_tip_ ? active_tip_ : target->pprev;
@@ -12937,7 +13015,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         if (consensus_utxo_set_) {
             consensus_utxo_set_->SetBestBlock(new_tip->hash, static_cast<uint32_t>(new_tip->height));
         }
-        PublishActiveTip(new_tip, TipPublishReason::kCSNDisconnect);
+        PublishActiveTipLocked(new_tip, TipPublishReason::kCSNDisconnect);
         notifyBlockDisconnected(block, tip_to_disconnect->height);
 
         if (logger_) logger_->info("[DisconnectTip-CSN] Lightweight disconnect complete: height=" +
@@ -13437,7 +13515,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     }
 
     // Update in-memory state AFTER consensus mutation succeeds
-    PublishActiveTip(new_tip, TipPublishReason::kRollback);
+    PublishActiveTipLocked(new_tip, TipPublishReason::kRollback);
 
     // Notify wallets AFTER state is consistent
     notifyBlockDisconnected(block, tip_to_disconnect->height);
@@ -13560,7 +13638,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         if (consensus_utxo_set_) {
             consensus_utxo_set_->SetBestBlock(tip_to_connect->hash, tip_to_connect->height);
         }
-        PublishActiveTip(tip_to_connect, TipPublishReason::kEarlyInitGenesis);
+        PublishActiveTipLocked(tip_to_connect, TipPublishReason::kEarlyInitGenesis);
         return true;
     }
 
@@ -15211,7 +15289,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // codebase that should pass `kAdvancement`. All other
     // PublishActiveTip call sites move the tip backward, restore it
     // from durable state, or run before the validator is ready.
-    PublishActiveTip(tip_to_connect, TipPublishReason::kAdvancement);
+    PublishActiveTipLocked(tip_to_connect, TipPublishReason::kAdvancement);
 
     // Notify wallets AFTER state is consistent
     notifyBlockConnected(block, tip_to_connect->height);
@@ -15764,7 +15842,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     }
 
     // 5. Update in-memory state + notify
-    PublishActiveTip(block_index, TipPublishReason::kEarlyInitGenesis);
+    PublishActiveTipLocked(block_index, TipPublishReason::kEarlyInitGenesis);
     notifyBlockConnected(block, block_index->height);
 
     if (header_chain_selector_) {
@@ -16033,6 +16111,15 @@ void ChainstateService::BackgroundValidationWorker() {
         bool sched_unwired_logged = false;
 
         while (true) {
+            // Refresh the ceiling from current state at the START of every
+            // pass. It used to be set only deep inside the missing-bodies
+            // branch below, which had two consequences: the base+1 livelock
+            // this fix exists for ran unmitigated from process start until a
+            // full pass completed (minutes), and a pass that found nothing
+            // missing returned at `if (blocks_skipped == 0) break;` without
+            // ever clearing it.
+            PublishDeferredDrainCeiling();
+
             blocks_skipped = 0;
             std::vector<MissingEntry> missing;  // #298: per-pass missing heights
             // The engine requires strictly ascending heights. Retain it across
@@ -16376,6 +16463,9 @@ void ChainstateService::BackgroundValidationWorker() {
                 } else {
                     sched->SetBackfillValidationFrontier(uint256(), 0);
                 }
+                // The ceiling is published at the top of every pass and on
+                // teardown (PublishDeferredDrainCeiling). Setting it again
+                // here would be a second source of truth for the same fact.
             }
             // #298 refinement: only re-request once backfill has reported its
             // window COMPLETE (completed >= total) yet validation still finds
@@ -18436,6 +18526,14 @@ void ChainstateService::RequestParentBlock(const uint256& parent_hash, const std
     } else {
         logger_->debug("[ChainstateService] No relay or P2P path available to request parent block");
     }
+}
+
+
+// Single source of truth for "is forward-connect on?", read from the same
+// config the deferral gate consults, so a precheck exemption gated on classic
+// deferred mode cannot fire in a mode where deferral is not actually active.
+bool ChainstateService::IsAssumeUTXOForwardConnectEnabled() const {
+    return GetConfig().assumeutxo_forward_connect;
 }
 
 } // namespace dinero

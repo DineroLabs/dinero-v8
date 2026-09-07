@@ -12,6 +12,8 @@
 #include "consensus/utreexo_activation.h"  // Phase 11a: IsUtreexoActive check
 #include "consensus/block_status_generation.h"
 #include "common/crash_injection.h"
+#include "daemon/assumeutxo_precheck.h"  // side-chain precheck exemptions
+#include "daemon/block_write_metrics.h"  // duplicate-write counters + log rate limit
 // Phase 39: chain_manager.h deleted (ChainManager removed)
 #include "consensus/tx_parser.h"    // Phase 3D: Transaction parsing for wallet notifications
 #include "consensus/parallel_block_validator.h"  // Phase 6B: Parallel script validation
@@ -55,6 +57,7 @@ extern void notifyWalletNewBlock(int height, const std::string& blockHash, const
 #include <deque>
 #include <limits>
 #include <mutex>
+#include <unordered_set>
 #include <optional>
 #include <cstdlib>  // getenv, strtol — regtest fault-injection hook (#356 Task 3)
 #include <cerrno>   // errno for strtol error checking
@@ -67,6 +70,8 @@ extern void notifyWalletNewBlock(int height, const std::string& blockHash, const
 
 using namespace dinero;
 
+
+
 // BlockRejectCodeToString moved to daemon/interfaces/ingress_types.cpp (Step 5)
 
 // Week 3: Static context pointer (initialized by ChainstateService)
@@ -75,6 +80,34 @@ DaemonContext* BlockAcceptor::ctx_ = nullptr;
 // Simple logging macros for now
 #define LOG_INFO(msg) std::cout << "[BlockAcceptor INFO] " << msg << std::endl
 #define LOG_ERROR(msg) std::cerr << "[BlockAcceptor ERROR] " << msg << std::endl
+
+namespace {
+
+// Rate-limited notice that a duplicate body write was skipped. Unlimited, this
+// is one line per delivery -- the pattern that produced 9.3 MB/min of logging.
+// Emits at most once a minute and reports the aggregate when it does.
+void LogDuplicateBodySuppressed(const dinero::uint256& hash, uint64_t height) {
+    static std::atomic<uint64_t> s_last_emit{0};
+    if (dinero::daemon::ShouldEmitRateLimited(s_last_emit, 60)) {
+        // Says only what is known at this point. The old line claimed
+        // "reusing stored flatfile position ... (no write, no fsync)", which
+        // asserted a durability outcome this path never observed: the winning
+        // thread may be doing the first write, or may fail without writing.
+        LOG_INFO("♻️  Concurrent duplicate acceptance suppressed at height " +
+                 std::to_string(height) + " hash=" + hash.GetHex().substr(0, 16) +
+                 "... (another thread is already processing this hash). "
+                 "Suppressed so far: " +
+                 std::to_string(
+                     dinero::daemon::g_concurrent_acceptances_suppressed.load()) +
+                 "; log lines suppressed since this line last printed: " +
+                 std::to_string(
+                     dinero::daemon::g_duplicate_logs_suppressed.exchange(0)));
+    } else {
+        ++dinero::daemon::g_duplicate_logs_suppressed;
+    }
+}
+
+}  // namespace
 
 // Phase 3F: WebSocket notifications disabled (global g_subscriptions removed)
 // Previously: Per-topic sequence managed by Subscriptions class
@@ -150,27 +183,73 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 
         // Determine if this extends the main chain or is a side-chain block
         // Side-chain blocks are stored but don't immediately update the tip
+        // Classify against the ACTIVE CONSENSUS TIP, not ChainDB's durable tip.
+        //
+        // This was the root cause behind the deferred base-child exemption.
+        // During background replay active_tip_ is deliberately restored to the
+        // snapshot base while the DURABLE ChainDB tip still trails behind it,
+        // so comparing against the database tip misclassified the base's own
+        // child as a side chain. The stale database tip was the defect; the
+        // base child was always a genuine main-chain extension.
+        //
+        // Fixing it here rather than exempting the symptom restores accept-time
+        // INVALID_UTREEXO_ROOT rejection for that block -- which the exemption
+        // had disabled, so a PoW-valid base+1 with a forged header root was
+        // being accepted, stored and announced, with the invalidity surfacing
+        // only at promotion.
+        //
+        // Read under the activation lock: promotion moves active_tip_, and an
+        // unsynchronized read can observe it mid-transition and produce a torn
+        // classification.
         bool isMainChainExtension = false;
+        uint64_t tip_generation_at_classification = 0;
+        bool have_tip_generation = false;
+        const dinero::uint256 prevHashRaw =
+            dinero::uint256::FromHexUnsafe(block.prevBlockHash);
         {
             auto* daemon_ctx = DaemonContext::instance();
-            auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(daemon_ctx ? daemon_ctx->chainstate : nullptr);
-            auto* chain_db = chainstate ? chainstate->GetChainDB() : nullptr;
-            if (chain_db) {
-                auto tip_result = chain_db->getTip();
-                if (tip_result.status() == dinero::Status::Ok) {
-                    // Compare raw uint256 — never compare display-order hex strings
-                    dinero::uint256 prevHashRaw = dinero::uint256::FromHexUnsafe(block.prevBlockHash);
-                    isMainChainExtension = (prevHashRaw == tip_result.value().hash);
-                    if (!isMainChainExtension) {
-                        LOG_INFO("🔍 Chain link check: prevHash=" + prevHashRaw.GetHex().substr(0, 16) +
-                                 "... tipHash=" + tip_result.value().hash.GetHex().substr(0, 16) + "...");
-                    }
+            auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                daemon_ctx ? daemon_ctx->chainstate : nullptr);
+            if (chainstate) {
+                auto activation_lock = chainstate->AcquireBlockIngressActivationLock();
+                // Classification AND the generation it was computed against,
+                // captured under ONE acquisition. Two reads under two
+                // acquisitions would be the bug this is guarding.
+                const auto classification =
+                    chainstate->ClassifyAgainstActiveTipLocked(prevHashRaw);
+                isMainChainExtension = classification.extends_active_tip;
+                tip_generation_at_classification = classification.generation;
+                have_tip_generation = true;
+                if (!isMainChainExtension) {
+                    const auto* tip = chainstate->GetActiveTip();
+                    LOG_INFO("🔍 Chain link check: prevHash=" + prevHashRaw.GetHex().substr(0, 16) +
+                             "... activeTip=" +
+                             (tip ? tip->GetBlockHash().GetHex().substr(0, 16) : std::string("<none>")) +
+                             "...");
                 }
             }
         }
         if (!isMainChainExtension) {
             LOG_INFO("📌 Side-chain block detected: parent " + block.prevBlockHash.substr(0, 16) +
                     "... is not current tip (height " + std::to_string(newHeight) + ")");
+        }
+
+        // DETERMINISTIC STALENESS BARRIER (regtest only, inert otherwise).
+        //
+        // Sits exactly where the window opens: the activation lock has just
+        // been released, and everything below -- including the Utreexo root
+        // computation, which reads the LIVE consensus_utxo_set_ -- runs on a
+        // classification that is now only a snapshot.
+        //
+        // Payload-keyed on the DAMAGING case. A stale "side chain" is benign
+        // (it routes to the more conservative path); a stale "extends the tip"
+        // is what computes a root against a forest the block no longer
+        // extends, producing a false INVALID_UTREEXO_ROOT for an honest block.
+        // Parking on the benign case would gate nothing.
+        if (isMainChainExtension) {
+            dinero::testing::MaybeBarrierAt(
+                "acceptor_after_tip_classification",
+                dinero::testing::CrashHooksEnabled().load());
         }
 
         // 4. Validate merkle root
@@ -254,6 +333,35 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
             std::string utreexo_error;
 
             if (bv && !skip_utreexo_rpc) {
+                // RE-CHECK before acting on the classification.
+                //
+                // The activation lock was released back at the classification
+                // site; everything since has run on a snapshot. The root
+                // computation below reads the LIVE consensus_utxo_set_, so if
+                // the tip has moved, it computes a root against a forest this
+                // block no longer extends and the comparison would reject an
+                // HONEST block with bad-utreexo-root.
+                //
+                // Generation, not tip hash: a hash comparison cannot see an
+                // ABA transition (tip moves away and returns, e.g. a
+                // disconnect/reconnect of the same block) across which the
+                // live forest was rebuilt.
+                if (have_tip_generation && cs) {
+                    auto recheck_lock = cs->AcquireBlockIngressActivationLock();
+                    if (!cs->TipClassificationStillCurrentLocked(
+                            tip_generation_at_classification)) {
+                        LOG_INFO("♻️  Active tip moved during acceptance of " +
+                                 block_hash.GetHex().substr(0, 16) +
+                                 "... — classification is stale; returning for "
+                                 "reclassification rather than judging the block "
+                                 "on state the chain has left");
+                        return BlockAcceptResult::Rejected(
+                            BlockRejectCode::STALE_TIP_CLASSIFICATION,
+                            "active tip moved during acceptance; reclassify",
+                            block_hash, newHeight);
+                    }
+                }
+
                 dinero::Block consensus_block = ConvertParsedBlockToBlock(block);
 
                 if (isMainChainExtension) {
@@ -268,18 +376,71 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                   utreexo_error);
                     }
                 } else if (chain_db_for_utreexo &&
-                           !(cs->IsAssumeUTXOActive() &&
-                             parentHeight < cs->GetAssumeUTXOBaseHeight())) {
+                           !dinero::daemon::ShouldSkipSideChainPrecheck(
+                               dinero::daemon::AssumeUTXOPrecheckContext{
+                                   // Designated: the first two members are
+                                   // both bool, and a positional swap would
+                                   // silently invert the mode gating.
+                                   .assumeutxo_active = cs->IsAssumeUTXOActive(),
+                                   .forward_connect_enabled =
+                                       cs->IsAssumeUTXOForwardConnectEnabled(),
+                                   .base_height = cs->GetAssumeUTXOBaseHeight(),
+                                   .base_block = cs->GetAssumeUTXOBaseBlock()},
+                               static_cast<uint32_t>(parentHeight),
+                               dinero::uint256::FromHexUnsafe(block.prevBlockHash))) {
                     // Side-chain. Confirm parent is on main chain.
                     //
-                    // While AssumeUTXO background validation is replaying
-                    // genesis..base, those historical bodies also traverse
-                    // BlockAcceptor as non-tip blocks. Pre-base checkpoints
-                    // and delta sidecars are deliberately not promoted into
-                    // ChainDB until that replay proves the snapshot. Do not
-                    // misroute them through this live side-chain precheck:
-                    // AssumeUtxoReplayEngine verifies every historical root,
-                    // and the below-base fork guard prevents activation.
+                    // ONE AssumeUTXO case skips this precheck; see
+                    // daemon/assumeutxo_precheck.h.
+                    //
+                    //  - Pre-base historical bodies. While background
+                    //    validation replays genesis..base, those bodies also
+                    //    traverse BlockAcceptor as non-tip blocks. They are
+                    //    deliberately not promoted into ChainDB until the
+                    //    replay proves the snapshot, so routing them through
+                    //    this live precheck misroutes them.
+                    //    AssumeUtxoReplayEngine verifies every historical
+                    //    root, and the below-base fork guard blocks
+                    //    activation.
+                    //
+                    // The performance problem that motivated the second case
+                    // is solved too, and better. Restoring a historical forest
+                    // to ask "is the parent on the main chain?" ran on every
+                    // duplicate delivery of base+1 -- measured 250,135 times
+                    // for one height -- on a scheduler thread, starving
+                    // DispatchDeferredSends() until peer deadlines expired and
+                    // the download collapsed to ~6 KB/s. Correct classification
+                    // means base+1 never enters this branch at all, so the cost
+                    // is gone WITHOUT giving up the root check.
+                    //
+                    // Exactly ONE case reaches here now: historical pre-base
+                    // bodies during background replay. They traverse
+                    // BlockAcceptor as non-tip blocks, are deliberately not
+                    // promoted into ChainDB until the replay proves the
+                    // snapshot, and AssumeUtxoReplayEngine verifies every
+                    // historical root independently. The below-base fork guard
+                    // blocks activation.
+                    //
+                    // The deferred base-child exemption that used to also land
+                    // here is GONE, and with it the thing it cost:
+                    //
+                    //   An earlier version of this comment claimed the precheck
+                    //   was best-effort and that "every failure path below
+                    //   merely logs and stores the block anyway". That was
+                    //   FALSE -- the success path ends in a hard reject
+                    //   (INVALID_UTREEXO_ROOT, below). Exempting the base child
+                    //   therefore disabled accept-time root rejection for it,
+                    //   so a PoW-valid base+1 carrying a forged header root was
+                    //   accepted, stored, indexed and announced, with the
+                    //   invalidity surfacing only at promotion.
+                    //
+                    // That is fixed at the source rather than exempted: the
+                    // classification above now compares against the ACTIVE
+                    // consensus tip instead of ChainDB's durable tip, so the
+                    // base child is a main-chain extension, never reaches this
+                    // branch, and is root-checked at accept time like any other
+                    // tip extension. Promotion-time verification in ConnectBlock
+                    // stays as defence in depth.
                     const dinero::uint256 parent_hash =
                         dinero::uint256::FromHexUnsafe(block.prevBlockHash);
                     dinero::uint256 canonical_parent;
@@ -560,6 +721,63 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 }
 
 AcceptResult BlockAcceptor::AcceptBlockFromPeer(const Block& block, const std::string& peer_id) {
+    // Single-flight: one in-flight acceptance per block hash.
+    //
+    // The same block arrives from several peers at once, and in deferred
+    // AssumeUTXO mode base+1 is announced continuously because it never
+    // connects. Everything below this point -- serialize, hex-encode, re-parse,
+    // validate -- is pure waste for a hash already being processed. Suppressing
+    // here is strictly better than suppressing deeper: it skips the
+    // serialize/hex/parse round trip too.
+    //
+    // SCOPE, and what is NOT covered.
+    //
+    // This dedups CONCURRENT deliveries only. An earlier version of this note
+    // said sequential re-delivery was "handled by the known-body guard in
+    // ConnectBlock" -- that guard was REMOVED by this branch's own final
+    // commit (it broke CsnEpochResetCrashAtomicity), so nothing downstream
+    // suppresses a sequential repeat any more.
+    //
+    // Consequence, stated plainly: N peers delivering the same new block
+    // SEQUENTIALLY still cost N full validate cycles and N writeBlock+fsync.
+    // The drain is a single sequential thread, so it never contends with
+    // itself and never takes this path at all. Sequential duplicate
+    // suppression does not exist at this head; re-adding it needs a durable
+    // known-body check that does not reintroduce the crash-atomicity bug.
+    const dinero::uint256 in_flight_hash = block.GetHash();
+    static std::mutex s_in_flight_mutex;
+    static std::unordered_set<dinero::uint256> s_in_flight;
+    {
+        std::lock_guard<std::mutex> lock(s_in_flight_mutex);
+        if (!s_in_flight.insert(in_flight_hash).second) {
+            // NOT "a write avoided": nothing here checked durability, and
+            // the winner may be performing the FIRST write of this body --
+            // or may fail and never write it at all. What is true is that a
+            // concurrent acceptance was suppressed.
+            ++dinero::daemon::g_concurrent_acceptances_suppressed;
+            LogDuplicateBodySuppressed(in_flight_hash, 0);
+            // NOT DUPLICATE: that would assert the body is already known, and
+            // nothing here has established that. The winner may be doing the
+            // first write, or may fail and never write. Report the fact that
+            // is actually true -- another thread holds this hash -- and let the
+            // caller retry for a terminal answer.
+            return BlockAcceptResult::Rejected(
+                BlockRejectCode::CONCURRENT_IN_FLIGHT,
+                "block already being processed (single-flight)",
+                in_flight_hash, 0);
+        }
+    }
+    // Released on every exit path, including exceptions thrown deeper in.
+    struct InFlightGuard {
+        std::mutex& m;
+        std::unordered_set<dinero::uint256>& set;
+        dinero::uint256 h;
+        ~InFlightGuard() {
+            std::lock_guard<std::mutex> lock(m);
+            set.erase(h);
+        }
+    } in_flight_guard{s_in_flight_mutex, s_in_flight, in_flight_hash};
+
     // Serialize the Block object to binary format
     std::string blockBinary = block.Serialize();
 
@@ -1930,7 +2148,20 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 // Continue for now - ActivateBestChain will catch it
             }
         } else if (!updateTip) {
-            LOG_INFO("🔀 SIDE-CHAIN BLOCK: Skipping Utreexo validation (will validate after reorg disconnect)");
+            {
+                // Rate limited: one line per delivery is what produced
+                // 9.3 MB/min (~13 GB/day) on a node seeing repeated base+1.
+                static std::atomic<uint64_t> s_last_sidechain_log{0};
+                if (dinero::daemon::ShouldEmitRateLimited(s_last_sidechain_log, 60)) {
+                    LOG_INFO("🔀 SIDE-CHAIN BLOCK: Skipping Utreexo validation "
+                             "(will validate after reorg disconnect). Suppressed "
+                             "since this line last printed: " +
+                             std::to_string(
+                                 dinero::daemon::g_sidechain_logs_suppressed.exchange(0)));
+                } else {
+                    ++dinero::daemon::g_sidechain_logs_suppressed;
+                }
+            }
         }
 
         // 🔍 DIAGNOSTIC: Log what we're storing
@@ -2062,6 +2293,7 @@ bool BlockAcceptor::ConnectBlock(const ParsedBlock& block, uint64_t height, cons
                 return false;
             }
             flatfile_pos = pos_result.value();
+            ++dinero::daemon::g_durable_body_writes;
             LOG_INFO("📦 BlockStorage write complete: file=" + std::to_string(flatfile_pos->file_number) +
                      " offset=" + std::to_string(flatfile_pos->offset) +
                      " size=" + std::to_string(flatfile_pos->size));
