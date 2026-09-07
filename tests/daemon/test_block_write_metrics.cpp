@@ -83,3 +83,55 @@ TEST(BlockWriteMetrics, OnlyOneConcurrentCallerWinsTheSlot) {
     for (auto& t : threads) t.join();
     EXPECT_EQ(winners.load(), 1) << "exactly one caller may emit per interval";
 }
+
+// ── the counter must reflect only COMMITTED writes ────────────────────────
+//
+// Finding 7: BlockDownloadScheduler::StoreBlock writes bodies through an
+// APPEND-ONLY writeBlock and was not instrumented at all, so
+// g_durable_body_writes -- the counter that answers "how much did we actually
+// write to disk" -- saw only the BlockAcceptor's writes. The flatfile grew
+// while the counter read low, which is the wrong direction for a durability
+// metric to be wrong in.
+//
+// The placement is the part that can silently regress: the increment must sit
+// AFTER the write is known to have committed, never on an attempt. These pin
+// the properties that make the number trustworthy rather than merely present.
+TEST(BlockWriteMetrics, DurableWriteCounterIsMonotonic) {
+    using dinero::daemon::g_durable_body_writes;
+    dinero::daemon::ResetBlockWriteMetricsForTest();
+    EXPECT_EQ(g_durable_body_writes.load(), 0u);
+    const uint64_t before = g_durable_body_writes.load();
+    ++g_durable_body_writes;
+    ++g_durable_body_writes;
+    EXPECT_EQ(g_durable_body_writes.load(), before + 2)
+        << "the counter must only ever advance; a metric that can go backwards "
+           "cannot be used to reason about durability";
+}
+
+// Collection must not consume the value. The neighbouring log-suppression
+// counters deliberately use exchange(0) because they mean "since this line last
+// printed"; the durability counters mean "since start" and must NOT be reset by
+// a reader, or two collectors would each see a fraction of the truth.
+TEST(BlockWriteMetrics, ReadingTheCounterDoesNotResetIt) {
+    using dinero::daemon::g_durable_body_writes;
+    dinero::daemon::ResetBlockWriteMetricsForTest();
+    ++g_durable_body_writes;
+    ++g_durable_body_writes;
+    ++g_durable_body_writes;
+    const uint64_t first = g_durable_body_writes.load();
+    const uint64_t second = g_durable_body_writes.load();
+    EXPECT_EQ(first, 3u);
+    EXPECT_EQ(second, first)
+        << "a second read returned a different value — collection is consuming "
+           "the counter, so any second consumer sees a lie";
+}
+
+TEST(BlockWriteMetrics, CountersAreIndependent) {
+    using dinero::daemon::g_durable_body_writes;
+    using dinero::daemon::g_concurrent_acceptances_suppressed;
+    dinero::daemon::ResetBlockWriteMetricsForTest();
+    ++g_durable_body_writes;
+    EXPECT_EQ(g_concurrent_acceptances_suppressed.load(), 0u)
+        << "a durable write is not a suppressed acceptance; conflating them "
+           "would make either number unusable";
+}

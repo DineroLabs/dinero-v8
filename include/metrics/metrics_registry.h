@@ -58,6 +58,16 @@ public:
     static void ObserveWebSocketLatency(double latency_ms);
 
     // Export metrics in Prometheus format
+    // Block-write durability counters (daemon/block_write_metrics.h).
+    //
+    // These lived as bare globals, so they were invisible to ExportMetrics and
+    // ExportMetricsJSON -- readable only by attaching a debugger or reading a
+    // rate-limited log line. The acceptance path that maintains them already
+    // calls into this registry, so surfacing them costs the same few lines it
+    // took to keep them hidden.
+    static uint64_t GetDurableBodyWrites();
+    static uint64_t GetConcurrentAcceptancesSuppressed();
+
     static std::string ExportMetrics();
     
     // Week 5: Export metrics in JSON format

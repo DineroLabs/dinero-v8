@@ -6,6 +6,7 @@
 #include "consensus/header_chain.h"
 #include "storage/block_storage.h"
 #include "common/logger.h"
+#include "daemon/block_write_metrics.h"  // g_durable_body_writes
 #include <algorithm>
 
 namespace dinero {
@@ -2007,6 +2008,23 @@ bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_po
     }
 
     out_pos = result.value();
+
+    // Count it. writeBlock is APPEND-ONLY: a duplicate delivery of a body
+    // already on disk appends a fresh copy rather than reusing the stored
+    // position. This site was not instrumented, so g_durable_body_writes --
+    // the counter that is supposed to answer "how much did we actually write
+    // to disk" -- reported only the BlockAcceptor's writes. The flatfile grew
+    // while the proof counter read low, which is the wrong direction for a
+    // durability metric to be wrong in.
+    //
+    // Deliberately NOT adding a known-body dedup here. A guard of exactly that
+    // shape was added and then REMOVED on this branch (see the final commit of
+    // da8428d29) because it broke CsnEpochResetCrashAtomicity: skipping the
+    // write left a crash window in which the body was believed durable and was
+    // not. Re-adding it needs a durable known-body check, not a cheaper one,
+    // and that is not this commit. Measuring the cost honestly comes first.
+    ++dinero::daemon::g_durable_body_writes;
+
     g_logger.info("[BlockDownloadScheduler] StoreBlock success: " +
                  block_hash.GetHex() +
                  " (file=" + std::to_string(out_pos.file_number) +

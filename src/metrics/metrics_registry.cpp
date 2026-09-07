@@ -1,4 +1,5 @@
 #include "metrics/metrics_registry.h"
+#include "daemon/block_write_metrics.h"
 #include <sstream>
 #include <atomic>
 #include <map>
@@ -307,6 +308,14 @@ void MetricsRegistry::ObserveWebSocketLatency(double latency_ms) {
     g_websocketLatencySum.store(new_sum);
 }
 
+uint64_t MetricsRegistry::GetDurableBodyWrites() {
+    return dinero::daemon::g_durable_body_writes.load();
+}
+
+uint64_t MetricsRegistry::GetConcurrentAcceptancesSuppressed() {
+    return dinero::daemon::g_concurrent_acceptances_suppressed.load();
+}
+
 std::string MetricsRegistry::ExportMetrics() {
     std::ostringstream metrics;
     
@@ -321,6 +330,16 @@ std::string MetricsRegistry::ExportMetrics() {
     metrics << "din_blocks_accepted_total " << g_blocksAccepted.load() << "\n";
     
     // Blocks rejected (with reasons)
+    metrics << "# HELP din_durable_body_writes_total Block bodies written to flatfile storage\n";
+    metrics << "# TYPE din_durable_body_writes_total counter\n";
+    metrics << "din_durable_body_writes_total "
+            << dinero::daemon::g_durable_body_writes.load() << "\n";
+
+    metrics << "# HELP din_concurrent_acceptances_suppressed_total Duplicate concurrent acceptances suppressed by single-flight\n";
+    metrics << "# TYPE din_concurrent_acceptances_suppressed_total counter\n";
+    metrics << "din_concurrent_acceptances_suppressed_total "
+            << dinero::daemon::g_concurrent_acceptances_suppressed.load() << "\n";
+
     metrics << "# HELP din_blocks_rejected_total Number of blocks rejected by the network\n";
     metrics << "# TYPE din_blocks_rejected_total counter\n";
     {
