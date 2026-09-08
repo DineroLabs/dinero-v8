@@ -230,6 +230,13 @@ public:
     std::vector<::PeerInfo> GetConnectedPeers() const {
         return p2p_mgr_ ? p2p_mgr_->get_connected_peers() : std::vector<::PeerInfo>{};
     }
+
+    // Canonical getheaders ingress. Every trigger (connect, announcement,
+    // continuation, recovery) reserves HeaderSyncManager's single flight and
+    // therefore starts from the best-header chain rather than the active tip.
+    bool RequestHeaders(const std::string& peer_addr,
+                        bool probe,
+                        const char* reason);
     bool ConnectToPeer(const std::string& address, uint16_t port) {
         return p2p_mgr_ ? p2p_mgr_->connect_to_peer(address, port) : false;
     }
@@ -402,6 +409,7 @@ private:
     std::unordered_map<std::string, daemon::HeaderRefreshState> header_refresh_states_;
     std::chrono::milliseconds header_refresh_minimum_interval_{std::chrono::seconds(1)};
     bool SendHeadersRefreshNow(const std::string& peer_addr);
+
     void FlushTrailingHeaderRefreshes(std::chrono::steady_clock::time_point now);
 
     // ── In-daemon staleness recovery (issue #214) ────────────────────────────

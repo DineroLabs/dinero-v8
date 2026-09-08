@@ -165,6 +165,12 @@ struct SideBranchTipLess {
  */
 class HeaderChainSelector {
 public:
+    enum class AddResult {
+        INSERTED,
+        ALREADY_KNOWN,
+        REJECTED,
+    };
+
     /**
      * @brief Construct without persistence
      */
@@ -199,9 +205,20 @@ public:
      * ❌ Transaction rules
      *
      * @param header Block header to add
-     * @return true if header was valid and added, false otherwise
+     * @return true if the header is valid (newly inserted or already known),
+     *         false if it was rejected
      */
     bool AddHeader(const BlockHeader& header);
+
+    /**
+     * Add a header while preserving whether it actually advanced stored state.
+     *
+     * Callers that drive progress, persistence metrics, or downstream work must
+     * use this result instead of treating an already-known header as newly
+     * inserted. AddHeader() remains the compatibility predicate for callers
+     * that only need valid/rejected.
+     */
+    AddResult AddHeaderWithResult(const BlockHeader& header);
 
     /**
      * @brief Copy the best header out under the lock (issue #439).

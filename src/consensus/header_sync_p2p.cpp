@@ -41,23 +41,21 @@ bool HeaderSyncP2P::OnHeadersMessage(uint64_t peer_id, const HeadersMessage& hea
     // Parse headers from message
     std::vector<BlockHeader> headers = ParseHeadersMessage(headers_msg);
 
-    // Process through sync manager
-    bool accepted = sync_manager_->ProcessHeaders(peer_id, headers);
+    return ProcessHeaders(peer_id, headers).accepted;
+}
 
-    if (!accepted) {
-        // Headers were invalid - peer will be marked as misbehaving
-        // P2P layer should handle punishment (disconnect/ban)
+HeaderSyncManager::ProcessResult HeaderSyncP2P::ProcessHeaders(
+    uint64_t peer_id, const std::vector<BlockHeader>& headers) {
+    auto result = sync_manager_->ProcessHeadersWithResult(peer_id, headers);
+    if (!result.accepted) {
         std::cerr << "[HeaderSyncP2P] Invalid headers from peer " << peer_id << std::endl;
-        return false;
+        return result;
     }
 
-    // Check if we need to request more headers
-    if (headers.size() >= 2000) {
-        // Full batch received - request more from same peer
+    if (result.request_more) {
         RequestHeadersFromPeer(peer_id);
     }
-
-    return true;
+    return result;
 }
 
 void HeaderSyncP2P::OnGetheadersMessage(uint64_t peer_id, const GetheadersMessage& getheaders_msg) {
@@ -68,9 +66,16 @@ void HeaderSyncP2P::OnGetheadersMessage(uint64_t peer_id, const GetheadersMessag
         2000  // Max headers per message
     );
 
-    // Send headers response
-    if (send_headers_callback_) {
-        send_headers_callback_(peer_id, headers_to_send);
+    // Send headers response. Callback installation can race the P2P scheduler
+    // during daemon startup; copy under the callback lock and invoke outside
+    // it so transports may safely re-enter header-sync code.
+    SendHeadersCallback send_headers;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        send_headers = send_headers_callback_;
+    }
+    if (send_headers) {
+        send_headers(peer_id, headers_to_send);
     }
 }
 
@@ -120,7 +125,7 @@ void HeaderSyncP2P::Tick(uint64_t now_ms) {
     auto stats = sync_manager_->GetStats();
 
     // Request headers if we're IDLE and behind peers
-    // MarkHeadersRequested() will transition to REQUESTING_HEADERS
+    // BeginHeadersRequest() will transition to REQUESTING_HEADERS
     if (stats.state == HeaderSyncState::IDLE && stats.headers_behind > 0) {
         uint64_t peer_id = sync_manager_->SelectBestPeer();
         if (peer_id != 0 && sync_manager_->ShouldRequestHeaders(peer_id)) {
@@ -141,22 +146,35 @@ HeaderSyncManager::SyncStats HeaderSyncP2P::GetStats() const {
 // Private Helpers
 // ============================================================================
 
-void HeaderSyncP2P::RequestHeadersFromPeer(uint64_t peer_id) {
-    // Generate block locator
-    std::vector<uint256> locator = sync_manager_->GetHeaderLocator();
+bool HeaderSyncP2P::RequestHeadersFromPeer(uint64_t peer_id, bool probe) {
+    auto locator = sync_manager_->BeginHeadersRequest(peer_id, probe);
+    if (!locator.has_value()) {
+        return false;
+    }
 
-    // Mark that we've requested headers (for timeout tracking)
-    sync_manager_->MarkHeadersRequested(peer_id);
+    SendGetheadersCallback send_getheaders;
+    {
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        send_getheaders = send_getheaders_callback_;
+    }
 
     // Send getheaders message
-    if (send_getheaders_callback_) {
+    if (send_getheaders) {
         uint256 hash_stop;  // Null hash = get as many as possible
         hash_stop.SetNull();
-        send_getheaders_callback_(peer_id, locator, hash_stop);
+        const bool sent = send_getheaders(peer_id, *locator, hash_stop);
+        if (!sent) {
+            sync_manager_->MarkHeadersRequestFailed(peer_id);
+            return false;
+        }
 
         std::cout << "[HeaderSyncP2P] Requested headers from peer " << peer_id
-                  << " (locator size=" << locator.size() << ")" << std::endl;
+                  << " (locator size=" << locator->size() << ")" << std::endl;
+        return true;
     }
+
+    sync_manager_->MarkHeadersRequestFailed(peer_id);
+    return false;
 }
 
 void HeaderSyncP2P::OnPeerSwitchRequested(uint64_t old_peer_id, PeerSwitchReason reason) {
@@ -184,8 +202,13 @@ void HeaderSyncP2P::OnPeerSwitchRequested(uint64_t old_peer_id, PeerSwitchReason
 
     // Handle disconnect if needed (not for SYNC_COMPLETE)
     if (reason != PeerSwitchReason::SYNC_COMPLETE && old_peer_id != 0) {
-        if (disconnect_peer_callback_) {
-            disconnect_peer_callback_(old_peer_id, reason);
+        DisconnectPeerCallback disconnect_peer;
+        {
+            std::lock_guard<std::mutex> lock(callbacks_mutex_);
+            disconnect_peer = disconnect_peer_callback_;
+        }
+        if (disconnect_peer) {
+            disconnect_peer(old_peer_id, reason);
         }
     }
 

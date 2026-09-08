@@ -4,6 +4,7 @@
 #endif
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/header_seed_resolver.h"
+#include "daemon/header_peer_id.h"
 #include "daemon/header_metadata_recovery.h"
 #include "daemon/block_request_peer_order.h"
 #include "daemon/undo_rebuild_orchestrator.h"  // Commit #5: --rebuild-undo-range
@@ -658,20 +659,23 @@ Transaction DeserializeTransactionFromP2PMessage(const ::P2PMessage& msg) {
 // TODO: Replace with proper bidirectional mapping maintained by P2PService
 std::unordered_map<std::string, uint64_t> g_peer_addr_to_id;
 std::unordered_map<uint64_t, std::string> g_peer_id_to_addr;
+std::mutex g_peer_id_mutex;
 
 uint64_t GetPeerID(const std::string& peer_addr) {
+    std::lock_guard<std::mutex> lock(g_peer_id_mutex);
     auto it = g_peer_addr_to_id.find(peer_addr);
     if (it != g_peer_addr_to_id.end()) {
         return it->second;
     }
     // Create new ID
-    uint64_t peer_id = std::hash<std::string>{}(peer_addr);
+    uint64_t peer_id = daemon::HeaderPeerId(peer_addr);
     g_peer_addr_to_id[peer_addr] = peer_id;
     g_peer_id_to_addr[peer_id] = peer_addr;
     return peer_id;
 }
 
 std::string GetPeerAddress(uint64_t peer_id) {
+    std::lock_guard<std::mutex> lock(g_peer_id_mutex);
     auto it = g_peer_id_to_addr.find(peer_id);
     return (it != g_peer_id_to_addr.end()) ? it->second : "";
 }
@@ -4410,11 +4414,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                     };
                     auto csn_request_frontier_headers = [header_chain_for_csn,
                                                          p2p_service_for_csn,
-                                                         chainstate_service,
                                                          frontier_refresh_height,
                                                          buffer_mutex](
                         const std::string& source_peer, uint32_t validated_height) {
-                        if (!header_chain_for_csn || !p2p_service_for_csn || !chainstate_service) {
+                        if (!header_chain_for_csn || !p2p_service_for_csn) {
                             return;
                         }
                         // #441: copy under the selector's lock.
@@ -4430,20 +4433,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                             *frontier_refresh_height = validated_height;
                         }
-                        auto locator = chainstate_service->GenerateBlockLocator();
-                        if (locator.empty()) {
-                            return;
+                        if (p2p_service_for_csn->RequestHeaders(
+                                source_peer, true, "csn-frontier")) {
+                            g_logger.info("[CSN] Reached known header frontier at height " +
+                                          std::to_string(validated_height) + " via " + source_peer +
+                                          " — requested headers refresh");
                         }
-                        std::vector<std::string> locator_hex;
-                        locator_hex.reserve(locator.size());
-                        for (const auto& hash : locator) {
-                            locator_hex.push_back(hash.GetHex());
-                        }
-                        auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-                        p2p_service_for_csn->get().send_to_peer(source_peer, getheaders_msg);
-                        g_logger.info("[CSN] Reached known header frontier at height " +
-                                      std::to_string(validated_height) + " via " + source_peer +
-                                      " — requested headers refresh");
                     };
 
                     // Global scheduler Tick() runs in multiple places; account for
@@ -5702,10 +5697,14 @@ bool DaemonApp::Init(int argc, char** argv) {
             auto stateless_cmpct_refresh_retry_armed =
                 std::make_shared<std::unordered_set<std::string>>();
             auto stateless_cmpct_refresh_mutex = std::make_shared<std::mutex>();
+            auto header_recovery_attempts =
+                std::make_shared<std::unordered_map<std::string, int>>();
+            auto header_recovery_mutex = std::make_shared<std::mutex>();
 
             p2p_service->OnHeaders = [header_sync = ctx_.header_sync, block_download_ptr, header_chain_ptr,
                                       chainstate_ptr, p2p_weak, stateless_cmpct_refresh_times,
-                                      stateless_cmpct_refresh_retry_armed, stateless_cmpct_refresh_mutex](
+                                      stateless_cmpct_refresh_retry_armed, stateless_cmpct_refresh_mutex,
+                                      header_recovery_attempts, header_recovery_mutex](
                 const std::string& peer_addr,
                 const ::P2PMessage& msg
             ) {
@@ -5714,6 +5713,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                     std::vector<BlockHeader> headers = ParseHeadersFromP2PMessage(msg);
 
                     if (headers.empty()) {
+                        header_sync->ProcessHeaders(GetPeerID(peer_addr), headers);
                         g_logger.info("[Phase N] Empty headers from " + peer_addr + " — peer at same tip, headers sync complete");
                         // Empty headers means peer has nothing new — we ARE synchronized.
                         // Signal OnHeadersProcessed so the IBD guard in OnInv unblocks
@@ -5736,32 +5736,26 @@ bool DaemonApp::Init(int argc, char** argv) {
                     // Convert peer address to ID
                     uint64_t peer_id = GetPeerID(peer_addr);
 
-                    // Route to HeaderSyncP2P
-                    bool success = header_sync->GetSyncManager()->ProcessHeaders(peer_id, headers);
-
-                    // Phase N.5: Per-peer recovery attempt counter (shared across success/failure)
-                    static std::map<std::string, int> header_recovery_attempts;
+                    // Route through the canonical header-sync owner. It inserts
+                    // into HeaderChainSelector exactly once and owns any next
+                    // getheaders continuation.
+                    const auto process_result = header_sync->ProcessHeaders(peer_id, headers);
+                    const bool success = process_result.accepted;
 
                     if (success) {
                         // Clear recovery counter on success — peer is healthy
-                        header_recovery_attempts.erase(peer_addr);
-
-                        g_logger.info("[Phase N] HeaderSyncP2P processed " +
-                                     std::to_string(headers.size()) + " headers from " + peer_addr);
-
-                        // Sync headers to HeaderChainSelector for BlockDownloadScheduler
-                        int added = 0;
-                        if (header_chain_ptr) {
-                            for (const auto& header : headers) {
-                                if (header_chain_ptr->AddHeader(header)) {
-                                    added++;
-                                }
-                            }
-                            if (added > 0) {
-                                g_logger.info("[Phase N] Added " + std::to_string(added) +
-                                             " headers to HeaderChainSelector");
-                            }
+                        {
+                            std::lock_guard<std::mutex> lock(*header_recovery_mutex);
+                            header_recovery_attempts->erase(peer_addr);
                         }
+
+                        const int added = static_cast<int>(process_result.inserted);
+                        g_logger.info("[Phase N] Header batch peer=" + peer_addr +
+                                      " received=" + std::to_string(headers.size()) +
+                                      " inserted=" + std::to_string(process_result.inserted) +
+                                      " duplicates=" + std::to_string(process_result.duplicates) +
+                                      " continuation=" +
+                                      std::string(process_result.request_more ? "yes" : "no"));
 
                         if (chainstate_ptr && added > 0) {
                             chainstate_ptr->RecordHeaderAnnouncements(peer_addr, headers);
@@ -5855,42 +5849,22 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
-                        // Phase N.3 Fix: Truncation handling - request next batch if full.
-                        // Use >= not == because a partial last batch (< 2000) means peer
-                        // reached its tip, but we always re-request if we got a full batch
-                        // so we don't stop mid-chain on batch boundaries.
-                        if (headers.size() >= MAX_HEADERS_PER_MSG) {
-                            auto p2p_locked = p2p_weak.lock();
-                            if (p2p_locked) {
-                                // Use last header hash as locator for next batch
-                                const auto& last_header = headers.back();
-                                std::string last_hash = last_header.GetHash().GetHex();
-
-                                g_logger.info("[Phase N.3] Headers batch full (" +
-                                             std::to_string(headers.size()) +
-                                             "), requesting next batch from " + peer_addr +
-                                             " starting after " + last_hash.substr(0, 16) + "...");
-
-                                // Send getheaders with last hash as locator
-                                std::vector<std::string> locator_hex = { last_hash };
-                                auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-                                p2p_locked->get().send_to_peer(peer_addr, getheaders_msg);
-                            }
-                        } else {
+                        if (headers.size() < MAX_HEADERS_PER_MSG) {
                             // Partial batch — peer may be at its tip.
                             g_logger.info("[Phase N.3] Headers partial batch from " + peer_addr +
                                          " (received " + std::to_string(headers.size()) + ")");
                         }
                     } else {
-                        // Phase N.5: Recovery — re-request with ChainDB locator
-                        // The initial getheaders used ChainDB's locator, but validation
-                        // runs against HeaderChainSelector which may have a different view.
-                        // On missing parent, immediately retry using ChainDB's locator so
-                        // the peer finds the correct common ancestor.
+                        // Phase N.5: recovery retries through the same serialized
+                        // best-header request path. It must not fall back to the
+                        // lower active-chain locator that caused the DineroUS loop.
 
                         // Fix 3: Rate-limit recovery attempts per peer (max 5)
-                        int& attempts = header_recovery_attempts[peer_addr];
-                        attempts++;
+                        int attempts = 0;
+                        {
+                            std::lock_guard<std::mutex> lock(*header_recovery_mutex);
+                            attempts = ++(*header_recovery_attempts)[peer_addr];
+                        }
 
                         // Diagnostic logging (peer, missing prev, locator info, attempt count)
                         std::string first_prev_hex = !headers.empty()
@@ -5927,49 +5901,21 @@ bool DaemonApp::Init(int argc, char** argv) {
                             if (header_sync && header_sync->GetSyncManager()) {
                                 header_sync->GetSyncManager()->MarkPeerMisbehaving(peer_id);
                             }
-                            header_recovery_attempts.erase(peer_addr);
+                            {
+                                std::lock_guard<std::mutex> lock(*header_recovery_mutex);
+                                header_recovery_attempts->erase(peer_addr);
+                            }
                             return;
                         }
 
-                        // Recovery locator priority:
-                        // 1) HeaderSyncManager locator (exact same view used for AddHeader validation)
-                        // 2) ChainDB locator fallback
-                        std::vector<std::string> locator_hex;
-                        std::string locator_source = "HeaderSyncManager";
-
-                        if (header_sync && header_sync->GetSyncManager()) {
-                            auto sync_locator = header_sync->GetSyncManager()->GetHeaderLocator();
-                            locator_hex.reserve(sync_locator.size());
-                            for (const auto& hash : sync_locator) {
-                                locator_hex.push_back(hash.GetHex());
-                            }
-                        }
-
-                        if (locator_hex.empty()) {
-                            locator_source = "ChainDB";
-                            if (chainstate_service) {
-                                auto locator = chainstate_service->GenerateBlockLocator();
-                                locator_hex.reserve(locator.size());
-                                for (const auto& hash : locator) {
-                                    locator_hex.push_back(hash.GetHex());
-                                }
-                            }
-                        }
-
-                        if (!locator_hex.empty()) {
-                            auto p2p_locked = p2p_weak.lock();
-                            if (p2p_locked) {
-                                auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-                                p2p_locked->get().send_to_peer(peer_addr, getheaders_msg);
-                                g_logger.info("[Phase N.5] Recovery: sent getheaders to " + peer_addr +
-                                              " with " + locator_source + " locator (size=" +
-                                              std::to_string(locator_hex.size()) +
-                                              ", head=" + locator_hex.front().substr(0, 16) +
-                                              "..., attempt=" + std::to_string(attempts) + ")");
-                            }
-                        } else {
-                            g_logger.error("[Phase N.5] Recovery locator is empty (" + locator_source +
-                                           ") — cannot recover");
+                        auto p2p_locked = p2p_weak.lock();
+                        if (!p2p_locked ||
+                            !p2p_locked->RequestHeaders(
+                                peer_addr, true, "header-rejection-recovery")) {
+                            g_logger.warning("[Phase N.5] Recovery getheaders not sent for " +
+                                             peer_addr +
+                                             " (peer ineligible, another request owns the flight,"
+                                             " or transport failure)");
                         }
                     }
                 } catch (const std::exception& e) {
@@ -6196,16 +6142,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 }
                             }
 
-                            if (should_request_headers && chainstate && p2p_service) {
-                                auto locator = chainstate->GenerateBlockLocator();
-                                std::vector<std::string> locator_hex;
-                                locator_hex.reserve(locator.size());
-                                for (const auto& hash : locator) {
-                                    locator_hex.push_back(hash.GetHex());
-                                }
-
-                                auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-                                p2p_service->get().send_to_peer(peer_addr, getheaders_msg);
+                            if (should_request_headers && p2p_service &&
+                                p2p_service->RequestHeaders(
+                                    peer_addr, true, "stateless-compact-block")) {
                                 g_logger.info("[BlockRelay] Stateless cmpctblock hint from " + peer_addr +
                                               " — requested headers refresh");
                             } else {
@@ -6605,8 +6544,17 @@ bool DaemonApp::Init(int argc, char** argv) {
             ) {
                 std::string peer_addr = GetPeerAddress(peer_id);
                 if (peer_addr.empty()) {
+                    for (const auto& peer : p2p_service->get().get_connected_peers()) {
+                        if (daemon::HeaderPeerId(peer.to_string()) == peer_id) {
+                            peer_addr = peer.to_string();
+                            GetPeerID(peer_addr);  // populate the shared reverse map
+                            break;
+                        }
+                    }
+                }
+                if (peer_addr.empty()) {
                     g_logger.warning("[Phase N] Cannot send getheaders: Unknown peer ID " + std::to_string(peer_id));
-                    return;
+                    return false;
                 }
 
                 // Convert uint256 locator to hex strings
@@ -6624,7 +6572,24 @@ bool DaemonApp::Init(int argc, char** argv) {
                 } else {
                     g_logger.warning("[Phase N] Failed to send getheaders to " + peer_addr);
                 }
+                return sent;
             });
+
+            // P2P can establish peers before Phase N callbacks are installed.
+            // Register that existing set now so the first managed request is
+            // not rejected as an unknown peer.
+            for (const auto& peer : p2p_service->get().get_connected_peers()) {
+                const uint32_t advertised_height =
+                    std::max(peer.best_known_height, peer.start_height);
+                uint256 peer_best_hash;
+                peer_best_hash.SetNull();
+                header_sync->OnPeerConnected(
+                    GetPeerID(peer.to_string()), advertised_height,
+                    peer_best_hash, peer.is_outbound);
+                p2p_service->RequestHeaders(
+                    peer.to_string(), true, "phase-n-wiring");
+            }
+            header_sync->StartSync();
 
             // HeaderSyncP2P → SendHeaders (for responding to getheaders requests)
             header_sync->SetSendHeadersCallback([p2p_service](

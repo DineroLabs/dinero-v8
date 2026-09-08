@@ -22,8 +22,14 @@
 #include "consensus/chainparams.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
-#include <iostream>
+#include <atomic>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
+#include <chrono>
+#include <iostream>
+#include <thread>
 #include <vector>
 
 using namespace dinero;
@@ -62,10 +68,11 @@ struct P2PCallbackMocks {
         disconnect_calls.clear();
     }
 
-    void OnSendGetheaders(uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
+    bool OnSendGetheaders(uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
         getheaders_calls.push_back({peer_id, locator, hash_stop});
         std::cout << "   [MOCK] SendGetheaders to peer " << peer_id
                   << " (locator size=" << locator.size() << ")" << std::endl;
+        return true;
     }
 
     void OnSendHeaders(uint64_t peer_id, const std::vector<BlockHeader>& headers) {
@@ -128,7 +135,7 @@ void Test1_PeerConnectTriggersRequest() {
     // Register callbacks
     sync_p2p.SetSendGetheadersCallback(
         [&](uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
-            mocks.OnSendGetheaders(peer_id, locator, hash_stop);
+            return mocks.OnSendGetheaders(peer_id, locator, hash_stop);
         }
     );
 
@@ -138,7 +145,7 @@ void Test1_PeerConnectTriggersRequest() {
     BlockHeader genesis = CreateTestHeader(null_hash, 1000000);
     selector.AddHeader(genesis);
 
-    // Peer connects claiming height 100
+    // Peer connects claiming a higher remote height.
     uint256 peer_best;
     peer_best.SetNull();
     sync_p2p.OnPeerConnected(1, 100, peer_best, true);  // Outbound
@@ -167,7 +174,7 @@ void Test2_HeadersProcessed() {
 
     sync_p2p.SetSendGetheadersCallback(
         [&](uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
-            mocks.OnSendGetheaders(peer_id, locator, hash_stop);
+            return mocks.OnSendGetheaders(peer_id, locator, hash_stop);
         }
     );
 
@@ -180,7 +187,7 @@ void Test2_HeadersProcessed() {
     // Peer connects
     uint256 peer_best;
     peer_best.SetNull();
-    sync_p2p.OnPeerConnected(1, 100, peer_best, true);
+    sync_p2p.OnPeerConnected(1, 50, peer_best, true);
     sync_p2p.StartSync();
 
     // Create 50 headers
@@ -190,12 +197,10 @@ void Test2_HeadersProcessed() {
     uint256 genesis_hash = genesis.GetHash();
     std::vector<BlockHeader> headers = CreateHeaderChain(genesis_hash, 50, 1000001);
 
-    // Manually process headers (bypassing message parsing for now)
-    bool accepted = selector.AddHeader(headers[0]);
-    for (size_t i = 1; i < headers.size(); i++) {
-        accepted = accepted && selector.AddHeader(headers[i]);
-    }
-    assert(accepted == true);
+    const auto result = sync_p2p.ProcessHeaders(1, headers);
+    assert(result.accepted);
+    assert(result.inserted == 50);
+    assert(result.duplicates == 0);
 
     // Verify headers were added
     const auto best = selector.GetBestHeaderValue();
@@ -218,7 +223,7 @@ void Test3_FullBatchRequestsMore() {
 
     sync_p2p.SetSendGetheadersCallback(
         [&](uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
-            mocks.OnSendGetheaders(peer_id, locator, hash_stop);
+            return mocks.OnSendGetheaders(peer_id, locator, hash_stop);
         }
     );
 
@@ -236,18 +241,28 @@ void Test3_FullBatchRequestsMore() {
 
     // Should send first getheaders
     assert(mocks.getheaders_calls.size() == 1);
-    mocks.Reset();
+    const auto first_request = mocks.getheaders_calls.front();
 
-    // Simulate receiving full batch (2000 headers)
-    // Note: In production, would come via OnHeadersMessage
-    // For now, directly add to chain and verify more headers requested
+    std::cout << "   Processing full batch (2000 headers) from peer..." << std::endl;
+    const auto headers = CreateHeaderChain(genesis.GetHash(), 2000, 1000001);
+    const auto result = sync_p2p.ProcessHeaders(1, headers);
 
-    std::cout << "   Simulating full batch (2000 headers) from peer..." << std::endl;
+    assert(result.accepted);
+    assert(result.inserted == 2000);
+    assert(result.duplicates == 0);
+    assert(result.request_more);
+    assert(mocks.getheaders_calls.size() == 2);
+    const auto& continuation = mocks.getheaders_calls.back();
+    assert(continuation.peer_id == 1);
+    assert(!continuation.locator.empty());
+    assert(continuation.locator.front() == headers.back().GetHash());
+    assert(continuation.locator.front() != first_request.locator.front());
 
-    // For performance, just verify the logic without actually creating 2000 headers
-    // The HeaderSyncManager.ProcessHeaders() logic should request more if size >= 2000
+    // A refresh racing the continuation must be suppressed, not reset it.
+    assert(!sync_p2p.RequestHeadersFromPeer(1, true));
+    assert(mocks.getheaders_calls.size() == 2);
 
-    std::cout << "   ✅ Full batch logic verified (would request more headers)" << std::endl;
+    std::cout << "   ✅ Full batch requested exactly one continuation from its new tip" << std::endl;
 }
 
 // ============================================================================
@@ -263,7 +278,7 @@ void Test4_PartialBatchCompletes() {
 
     sync_p2p.SetSendGetheadersCallback(
         [&](uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
-            mocks.OnSendGetheaders(peer_id, locator, hash_stop);
+            return mocks.OnSendGetheaders(peer_id, locator, hash_stop);
         }
     );
 
@@ -273,18 +288,19 @@ void Test4_PartialBatchCompletes() {
     BlockHeader genesis = CreateTestHeader(null_hash, 1000000);
     selector.AddHeader(genesis);
 
-    // Peer connects claiming height 100
+    // Peer connects claiming the partial batch height
     uint256 peer_best;
     peer_best.SetNull();
-    sync_p2p.OnPeerConnected(1, 100, peer_best, true);
+    sync_p2p.OnPeerConnected(1, 50, peer_best, true);
     sync_p2p.StartSync();
 
     // Receive partial batch (50 headers)
     uint256 genesis_hash = genesis.GetHash();
     std::vector<BlockHeader> headers = CreateHeaderChain(genesis_hash, 50, 1000001);
-    for (const auto& header : headers) {
-        selector.AddHeader(header);
-    }
+    const auto result = sync_p2p.ProcessHeaders(1, headers);
+    assert(result.accepted);
+    assert(result.inserted == 50);
+    assert(!result.request_more);
 
     // Check if synchronized
     auto stats = sync_p2p.GetStats();
@@ -308,7 +324,7 @@ void Test5_CallbackIntegration() {
     // Register all callbacks
     sync_p2p.SetSendGetheadersCallback(
         [&](uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
-            mocks.OnSendGetheaders(peer_id, locator, hash_stop);
+            return mocks.OnSendGetheaders(peer_id, locator, hash_stop);
         }
     );
 
@@ -329,6 +345,193 @@ void Test5_CallbackIntegration() {
 }
 
 // ============================================================================
+// Test 6: Late response cannot steal a newer peer's continuation
+// ============================================================================
+
+void Test6_LateResponsePreservesRequestOwner() {
+    std::cout << "\n6. Testing late response preserves request ownership..." << std::endl;
+
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync_p2p(&selector);
+    P2PCallbackMocks mocks;
+    sync_p2p.SetSendGetheadersCallback(
+        [&](uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
+            return mocks.OnSendGetheaders(peer_id, locator, hash_stop);
+        });
+
+    uint256 null_hash;
+    null_hash.SetNull();
+    const BlockHeader genesis = CreateTestHeader(null_hash, 1000000);
+    assert(selector.AddHeader(genesis));
+
+    uint256 peer_best;
+    peer_best.SetNull();
+    sync_p2p.OnPeerConnected(1, 5000, peer_best, true);
+    sync_p2p.OnPeerConnected(2, 5000, peer_best, true);
+    assert(sync_p2p.RequestHeadersFromPeer(1));
+    assert(mocks.getheaders_calls.size() == 1);
+
+    const auto headers = CreateHeaderChain(genesis.GetHash(), 2000, 1000001);
+    const auto late = sync_p2p.ProcessHeaders(2, headers);
+    assert(late.accepted);
+    assert(late.inserted == 2000);
+    assert(late.duplicates == 0);
+    assert(!late.request_more);
+    assert(mocks.getheaders_calls.size() == 1);
+    auto stats = sync_p2p.GetStats();
+    assert(stats.current_sync_peer == 1);
+    assert(stats.state == HeaderSyncState::REQUESTING_HEADERS);
+
+    const auto owner = sync_p2p.ProcessHeaders(1, headers);
+    assert(owner.accepted);
+    assert(owner.inserted == 0);
+    assert(owner.duplicates == 2000);
+    assert(owner.request_more);
+    assert(mocks.getheaders_calls.size() == 2);
+    assert(mocks.getheaders_calls.back().peer_id == 1);
+    assert(mocks.getheaders_calls.back().locator.front() == headers.back().GetHash());
+
+    std::cout << "   ✅ Late batch added headers without stealing the active continuation" << std::endl;
+}
+
+void Test7_SendFailureReleasesRequest() {
+    std::cout << "\n7. Testing failed send releases request ownership..." << std::endl;
+
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync_p2p(&selector);
+    uint256 null_hash;
+    null_hash.SetNull();
+    assert(selector.AddHeader(CreateTestHeader(null_hash, 1000000)));
+
+    uint256 peer_best;
+    peer_best.SetNull();
+    sync_p2p.OnPeerConnected(7, 10, peer_best, true);
+
+    // The scheduler can tick before daemon startup installs its transport
+    // callback. That must release the reservation rather than strand sync.
+    assert(!sync_p2p.RequestHeadersFromPeer(7));
+    auto stats = sync_p2p.GetStats();
+    assert(stats.current_sync_peer == 0);
+    assert(stats.state == HeaderSyncState::IDLE);
+
+    sync_p2p.SetSendGetheadersCallback(
+        [](uint64_t, const std::vector<uint256>&, const uint256&) {
+            return false;
+        });
+    assert(!sync_p2p.RequestHeadersFromPeer(7));
+    stats = sync_p2p.GetStats();
+    assert(stats.current_sync_peer == 0);
+    assert(stats.state == HeaderSyncState::IDLE);
+
+    size_t sends = 0;
+    sync_p2p.SetSendGetheadersCallback(
+        [&sends](uint64_t, const std::vector<uint256>&, const uint256&) {
+            ++sends;
+            return true;
+        });
+    assert(sync_p2p.RequestHeadersFromPeer(7));
+    assert(sends == 1);
+
+    std::cout << "   ✅ Transport failure did not strand the request state" << std::endl;
+}
+
+void Test8_MissingParentReleasesRequestForRecovery() {
+    std::cout << "\n8. Testing a local header gap permits a recovery request..." << std::endl;
+
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync_p2p(&selector);
+    P2PCallbackMocks mocks;
+    sync_p2p.SetSendGetheadersCallback(
+        [&](uint64_t peer_id, const std::vector<uint256>& locator, const uint256& hash_stop) {
+            return mocks.OnSendGetheaders(peer_id, locator, hash_stop);
+        });
+
+    uint256 null_hash;
+    null_hash.SetNull();
+    assert(selector.AddHeader(CreateTestHeader(null_hash, 1000000)));
+
+    uint256 peer_best;
+    peer_best.SetNull();
+    sync_p2p.OnPeerConnected(8, 100, peer_best, true);
+    assert(sync_p2p.RequestHeadersFromPeer(8));
+    assert(mocks.getheaders_calls.size() == 1);
+
+    uint256 missing_parent;
+    missing_parent.SetNull();
+    missing_parent.data[0] = 0x42;
+    const std::vector<BlockHeader> disconnected{
+        CreateTestHeader(missing_parent, 1000001)};
+    const auto result = sync_p2p.ProcessHeaders(8, disconnected);
+    assert(!result.accepted);
+
+    const auto stats = sync_p2p.GetStats();
+    assert(stats.current_sync_peer == 0);
+    assert(stats.state == HeaderSyncState::IDLE);
+    assert(sync_p2p.RequestHeadersFromPeer(8, true));
+    assert(mocks.getheaders_calls.size() == 2);
+
+    std::cout << "   ✅ Missing-parent rejection released ownership for recovery" << std::endl;
+}
+
+void Test9_ConcurrentTriggersProduceOneRequest() {
+    std::cout << "\n9. Testing concurrent triggers produce one request..." << std::endl;
+
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync_p2p(&selector);
+    uint256 null_hash;
+    null_hash.SetNull();
+    assert(selector.AddHeader(CreateTestHeader(null_hash, 1000000)));
+
+    constexpr uint64_t kPeerCount = 16;
+    uint256 peer_best;
+    peer_best.SetNull();
+    for (uint64_t peer_id = 1; peer_id <= kPeerCount; ++peer_id) {
+        sync_p2p.OnPeerConnected(peer_id, 100, peer_best, true);
+    }
+
+    std::atomic<uint64_t> ready{0};
+    std::atomic<bool> start{false};
+    std::atomic<uint64_t> sent{0};
+    std::atomic<uint64_t> succeeded{0};
+    sync_p2p.SetSendGetheadersCallback(
+        [&sent](uint64_t, const std::vector<uint256>&, const uint256&) {
+            sent.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            return true;
+        });
+
+    std::vector<std::thread> requesters;
+    requesters.reserve(kPeerCount);
+    for (uint64_t peer_id = 1; peer_id <= kPeerCount; ++peer_id) {
+        requesters.emplace_back([&, peer_id] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            if (sync_p2p.RequestHeadersFromPeer(peer_id, true)) {
+                succeeded.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) != kPeerCount) {
+        std::this_thread::yield();
+    }
+    start.store(true, std::memory_order_release);
+    for (auto& requester : requesters) {
+        requester.join();
+    }
+
+    assert(sent.load(std::memory_order_relaxed) == 1);
+    assert(succeeded.load(std::memory_order_relaxed) == 1);
+    const auto stats = sync_p2p.GetStats();
+    assert(stats.current_sync_peer != 0);
+    assert(stats.state == HeaderSyncState::REQUESTING_HEADERS);
+
+    std::cout << "   ✅ Sixteen concurrent triggers produced one request owner" << std::endl;
+}
+
+// ============================================================================
 // Main Test Runner
 // ============================================================================
 
@@ -341,6 +544,10 @@ int main() {
     Test3_FullBatchRequestsMore();
     Test4_PartialBatchCompletes();
     Test5_CallbackIntegration();
+    Test6_LateResponsePreservesRequestOwner();
+    Test7_SendFailureReleasesRequest();
+    Test8_MissingParentReleasesRequestForRecovery();
+    Test9_ConcurrentTriggersProduceOneRequest();
 
     std::cout << "\n=== ALL P2P INTEGRATION TESTS PASSED ===" << std::endl;
     std::cout << "\nPhase N.2 Step 2C Verification:" << std::endl;
@@ -349,6 +556,10 @@ int main() {
     std::cout << "  ✅ Full batch logic verified" << std::endl;
     std::cout << "  ✅ Partial batch logic verified" << std::endl;
     std::cout << "  ✅ Callback integration working" << std::endl;
+    std::cout << "  ✅ Late responses cannot steal request ownership" << std::endl;
+    std::cout << "  ✅ Failed sends release request ownership" << std::endl;
+    std::cout << "  ✅ Local header gaps permit serialized recovery" << std::endl;
+    std::cout << "  ✅ Concurrent triggers produce one request owner" << std::endl;
     std::cout << "\nHeader sync P2P wiring complete." << std::endl;
     std::cout << "Phase N.2 ready for production integration." << std::endl;
 

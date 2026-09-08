@@ -33,11 +33,22 @@ HeaderSyncManager::~HeaderSyncManager() {
     // chain_selector_ and header_store_ are not owned
 }
 
+HeaderSyncState HeaderSyncManager::GetState() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return state_;
+}
+
+bool HeaderSyncManager::IsSynchronized() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return state_ == HeaderSyncState::CAUGHT_UP;
+}
+
 // ============================================================================
 // State Machine Control
 // ============================================================================
 
 void HeaderSyncManager::Tick(uint64_t now_ms) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     // Use provided time for testing, otherwise get system time
     uint64_t now = (now_ms > 0) ? now_ms : GetCurrentTimeMs();
 
@@ -62,8 +73,8 @@ void HeaderSyncManager::Tick(uint64_t now_ms) {
         case HeaderSyncState::IDLE:
             // Check if any peer has better headers
             // Note: Tick() identifies sync candidates but doesn't transition state.
-            // The P2P layer calls MarkHeadersRequested() when it actually sends
-            // getheaders, which triggers the state transition.
+            // The P2P layer calls BeginHeadersRequest() immediately before it
+            // sends getheaders, reserving ownership and transitioning state.
             // This separation ensures ShouldRequestHeaders() returns true until
             // the actual request is sent.
             break;
@@ -97,6 +108,7 @@ void HeaderSyncManager::Tick(uint64_t now_ms) {
 // ============================================================================
 
 void HeaderSyncManager::AddPeer(uint64_t peer_id, uint32_t claimed_height, const uint256& claimed_best_hash) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     PeerHeaderInfo info;
     info.best_height = claimed_height;
     info.best_hash = claimed_best_hash;
@@ -123,6 +135,7 @@ void HeaderSyncManager::AddPeer(uint64_t peer_id, uint32_t claimed_height, const
 }
 
 void HeaderSyncManager::RemovePeer(uint64_t peer_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     peers_.erase(peer_id);
 
     // If this was our active sync peer, go back to IDLE
@@ -133,6 +146,7 @@ void HeaderSyncManager::RemovePeer(uint64_t peer_id) {
 }
 
 void HeaderSyncManager::UpdatePeerBest(uint64_t peer_id, uint32_t height, const uint256& hash) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto it = peers_.find(peer_id);
     if (it == peers_.end()) {
         return;  // Unknown peer
@@ -156,6 +170,7 @@ void HeaderSyncManager::UpdatePeerBest(uint64_t peer_id, uint32_t height, const 
 }
 
 void HeaderSyncManager::MarkPeerStalled(uint64_t peer_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
         it->second.is_stalled = true;
@@ -163,6 +178,7 @@ void HeaderSyncManager::MarkPeerStalled(uint64_t peer_id) {
 }
 
 void HeaderSyncManager::MarkPeerMisbehaving(uint64_t peer_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
         it->second.is_misbehaving = true;
@@ -175,6 +191,7 @@ void HeaderSyncManager::MarkPeerMisbehaving(uint64_t peer_id) {
 }
 
 void HeaderSyncManager::MarkPeerOutbound(uint64_t peer_id, bool is_outbound) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
         it->second.is_outbound = is_outbound;
@@ -182,6 +199,7 @@ void HeaderSyncManager::MarkPeerOutbound(uint64_t peer_id, bool is_outbound) {
 }
 
 uint64_t HeaderSyncManager::SelectBestPeer() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     uint64_t best_peer = 0;
     uint32_t best_height = 0;
     bool best_is_outbound = false;
@@ -223,48 +241,59 @@ uint64_t HeaderSyncManager::SelectBestPeer() const {
 // ============================================================================
 
 bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<BlockHeader>& headers) {
+    return ProcessHeadersWithResult(peer_id, headers).accepted;
+}
+
+HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
+    uint64_t peer_id, const std::vector<BlockHeader>& headers) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    ProcessResult result;
+    const bool owns_request = active_sync_peer_ == peer_id;
+    const bool may_drive_state = owns_request || active_sync_peer_ == 0;
+
     if (headers.empty()) {
         // Empty headers message means peer has no more headers to send
         // for the supplied locator. Do not collapse the peer's advertised best
         // height to our local selector height; that turns a local header-state
         // bug into misleading peer telemetry.
-        if (active_sync_peer_ == peer_id) {
-            active_sync_peer_ = 0;
-        }
-
         auto peer_it = peers_.find(peer_id);
         if (peer_it != peers_.end()) {
             peer_it->second.last_response_time = GetCurrentTimeMs();
         }
 
         // Check if we're caught up with all peers
-        if (!IsBehindPeers()) {
-            TransitionTo(HeaderSyncState::CAUGHT_UP);
-        } else {
-            TransitionTo(HeaderSyncState::IDLE);
+        if (may_drive_state) {
+            if (owns_request) {
+                active_sync_peer_ = 0;
+            }
+            if (!IsBehindPeers()) {
+                TransitionTo(HeaderSyncState::CAUGHT_UP);
+            } else {
+                TransitionTo(HeaderSyncState::IDLE);
+            }
         }
 
-        return true;
+        result.accepted = true;
+        return result;
     }
 
     // Transition to processing state
-    TransitionTo(HeaderSyncState::PROCESSING_HEADERS);
+    if (may_drive_state) {
+        TransitionTo(HeaderSyncState::PROCESSING_HEADERS);
+    }
 
     // Update peer's last response time and timeout deadline
     auto peer_it = peers_.find(peer_id);
     if (peer_it != peers_.end()) {
         peer_it->second.last_response_time = GetCurrentTimeMs();
-        // Reset timeout - peer is still responding
-        if (peer_id == active_sync_peer_) {
-            UpdateSyncTimeout(peer_id);
-        }
     }
 
     // Validate and add headers one by one
     size_t accepted = 0;
     for (const BlockHeader& header : headers) {
         // Validate via HeaderChainSelector
-        if (!chain_selector_->AddHeader(header)) {
+        const auto add_result = chain_selector_->AddHeaderWithResult(header);
+        if (add_result == HeaderChainSelector::AddResult::REJECTED) {
             const bool missing_parent_locally =
                 (accepted == 0 && !chain_selector_->ContainsHeader(header.prev_block_hash));
 
@@ -274,29 +303,47 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
                           << "... for first incoming header "
                           << header.GetHash().GetHex().substr(0, 16)
                           << "... from peer " << peer_id << std::endl;
+                if (owns_request) {
+                    active_sync_peer_ = 0;
+                }
+                if (may_drive_state) {
+                    TransitionTo(HeaderSyncState::IDLE);
+                }
             } else {
                 // Invalid header payload/chain from peer - mark peer as misbehaving
                 MarkPeerMisbehaving(peer_id);
+                // A synchronous peer-switch callback may already have reserved
+                // another request. Do not overwrite that newer state.
+                if (may_drive_state && active_sync_peer_ == 0) {
+                    TransitionTo(HeaderSyncState::IDLE);
+                }
             }
-
-            // Roll back to IDLE (don't trust any headers from this batch)
-            TransitionTo(HeaderSyncState::IDLE);
-            return false;
+            return result;
         }
 
         accepted++;
+        if (add_result == HeaderChainSelector::AddResult::INSERTED) {
+            result.inserted++;
+        } else {
+            result.duplicates++;
+        }
     }
 
     // All headers accepted
     // Note: HeaderChainSelector auto-persists via HeaderStore if configured
 
+    // Validation is complete. Release only the request this response owns.
+    if (owns_request) {
+        active_sync_peer_ = 0;
+    }
+
     // Check if we got a full batch (2000 headers)
     // If so, there might be more headers available
     if (headers.size() >= MAX_HEADERS_PER_MSG) {
-        // Request more headers from same peer
-        active_sync_peer_ = peer_id;
-        UpdateSyncTimeout(peer_id);  // Recalculate timeout for remaining headers
-        TransitionTo(HeaderSyncState::REQUESTING_HEADERS);
+        result.request_more = may_drive_state;
+        if (may_drive_state) {
+            TransitionTo(HeaderSyncState::IDLE);
+        }
     } else {
         // Partial batch (< 2000 headers) - check if we're truly caught up with this peer
         // #441: copy under the selector's lock — GetBestHeader() returns a raw
@@ -309,31 +356,31 @@ bool HeaderSyncManager::ProcessHeaders(uint64_t peer_id, const std::vector<Block
         auto peer_it = peers_.find(peer_id);
         uint32_t peer_claimed_height = (peer_it != peers_.end()) ? peer_it->second.best_height : 0;
 
-        if (our_height >= peer_claimed_height) {
-            // Truly caught up with this peer - signal sync complete
-            if (active_sync_peer_ == peer_id) {
-                RequestPeerSwitch(PeerSwitchReason::SYNC_COMPLETE);
-            }
-
-            // Check if we're behind other peers
+        if (!may_drive_state) {
+            // Keep the newer request's state and ownership intact.
+        } else if (our_height >= peer_claimed_height) {
+            // Truly caught up with this peer. The next periodic Tick selects a
+            // different peer if another one advertises a higher frontier.
             if (IsBehindPeers()) {
                 TransitionTo(HeaderSyncState::IDLE);
             } else {
                 TransitionTo(HeaderSyncState::CAUGHT_UP);
             }
         } else {
-            // Peer claimed more headers but sent partial batch - wait for more
-            // Stall detection will trigger if peer doesn't respond
-            active_sync_peer_ = peer_id;
-            UpdateSyncTimeout(peer_id);
-            TransitionTo(HeaderSyncState::REQUESTING_HEADERS);
+            // The protocol does not send another batch unsolicited. Ask again
+            // from the new best-header frontier through the serialized request
+            // path instead of claiming a request is active before one is sent.
+            result.request_more = true;
+            TransitionTo(HeaderSyncState::IDLE);
         }
     }
 
-    return true;
+    result.accepted = true;
+    return result;
 }
 
 std::vector<uint256> HeaderSyncManager::GetHeaderLocator() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     // #441: built entirely under the selector's lock.
     //
     // The previous implementation took the tip via GetBestHeader() and then
@@ -346,6 +393,7 @@ std::vector<uint256> HeaderSyncManager::GetHeaderLocator() const {
 }
 
 bool HeaderSyncManager::ShouldRequestHeaders(uint64_t peer_id) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     // Don't request if we're already waiting for headers
     if (state_ == HeaderSyncState::REQUESTING_HEADERS && active_sync_peer_ != 0) {
         return false;
@@ -375,15 +423,45 @@ bool HeaderSyncManager::ShouldRequestHeaders(uint64_t peer_id) const {
     return info.best_height > our_height;
 }
 
-void HeaderSyncManager::MarkHeadersRequested(uint64_t peer_id) {
-    auto it = peers_.find(peer_id);
-    if (it != peers_.end()) {
-        it->second.last_request_time = GetCurrentTimeMs();
+std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
+    uint64_t peer_id, bool probe) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+
+    const auto peer_it = peers_.find(peer_id);
+    if (peer_it == peers_.end() || peer_it->second.is_stalled ||
+        peer_it->second.is_misbehaving) {
+        return std::nullopt;
     }
 
+    // Exactly one network request may own the continuation at a time. This is
+    // global, not merely per peer: a response from a second peer can otherwise
+    // reset a valid continuation from the first one.
+    if (active_sync_peer_ != 0) {
+        return std::nullopt;
+    }
+
+    if (!probe && !ShouldRequestHeaders(peer_id)) {
+        return std::nullopt;
+    }
+
+    auto locator = GetHeaderLocator();
+    if (locator.empty()) {
+        return std::nullopt;
+    }
+
+    peer_it->second.last_request_time = GetCurrentTimeMs();
     active_sync_peer_ = peer_id;
     UpdateSyncTimeout(peer_id);
     TransitionTo(HeaderSyncState::REQUESTING_HEADERS);
+    return locator;
+}
+
+void HeaderSyncManager::MarkHeadersRequestFailed(uint64_t peer_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (active_sync_peer_ == peer_id) {
+        active_sync_peer_ = 0;
+        TransitionTo(HeaderSyncState::IDLE);
+    }
 }
 
 // ============================================================================
@@ -391,6 +469,7 @@ void HeaderSyncManager::MarkHeadersRequested(uint64_t peer_id) {
 // ============================================================================
 
 HeaderSyncManager::SyncStats HeaderSyncManager::GetStats() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
     SyncStats stats;
 
     // #441: copy under the selector's lock (see note above).
