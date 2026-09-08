@@ -638,36 +638,97 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
     };
 
     std::vector<ChainCursor> cursors(records.size());
-    std::function<bool(size_t)> resolve = [&](size_t idx) -> bool {
-        auto& cursor = cursors[idx];
-        if (cursor.resolved) {
-            return cursor.connected;
-        }
-        if (cursor.visiting) {
-            return false;
-        }
 
-        cursor.visiting = true;
-        const std::string prev_hash = records[idx].prev_hash.GetHex();
-        const arith_uint256 block_work = GetBlockProof(records[idx].block.header.difficulty);
-
+    // Parent links resolved ONCE, not once per frame. GetHex() allocates a
+    // std::string, and the recursion this replaces called it inside every one
+    // of chain-height-many frames.
+    constexpr size_t kNoParent = std::numeric_limits<size_t>::max();
+    constexpr size_t kGenesisParent = kNoParent - 1;
+    std::vector<size_t> parent_of(records.size(), kNoParent);
+    for (size_t i = 0; i < records.size(); ++i) {
+        const std::string prev_hash = records[i].prev_hash.GetHex();
         if (prev_hash == genesis_hash) {
-            cursor.connected = true;
-            cursor.height = 1;
-            cursor.chainwork = genesis_work + block_work;
-        } else {
-            auto it = index_by_hash.find(prev_hash);
-            if (it != index_by_hash.end() && resolve(it->second)) {
-                const auto& parent = cursors[it->second];
-                cursor.connected = true;
-                cursor.height = parent.height + 1;
-                cursor.chainwork = parent.chainwork + block_work;
-            }
+            parent_of[i] = kGenesisParent;
+            continue;
         }
+        if (auto it = index_by_hash.find(prev_hash); it != index_by_hash.end()) {
+            parent_of[i] = it->second;
+        }
+    }
 
-        cursor.visiting = false;
-        cursor.resolved = true;
-        return cursor.connected;
+    // Iterative post-order walk over parent links.
+    //
+    // #708: this was a recursive lambda, so the descent from a tip to genesis
+    // was one unbroken recursion as deep as the chain. At mainnet size
+    // (~107,750 blocks) that overflowed the default 8 MB stack and SIGSEGV'd
+    // reindex step 3 before it did any work -- taking out a documented
+    // recovery path. Depth here is heap-allocated instead.
+    //
+    // Semantics are deliberately identical to the recursion, including the two
+    // cases that are easy to get wrong:
+    //   * a parent already on the current path (a cycle) resolves the child as
+    //     NOT connected, exactly as re-entering a `visiting` frame returned
+    //     false;
+    //   * an unknown parent leaves the child unconnected but RESOLVED, so it
+    //     is never re-walked.
+    // `resolved` is the same memoisation and `visiting` the same cycle mark;
+    // only the frames moved. Traversal order, heights, chainwork and the
+    // resulting canonical chain are unchanged.
+    //
+    // Do not reintroduce recursion here. tests/consensus/test_reindex_deep_chain.cpp
+    // walks a 20,000-block chain on a 256 KB stack and will SIGSEGV if you do.
+    std::vector<size_t> pending;
+    auto resolve = [&](size_t start) -> bool {
+        if (cursors[start].resolved) {
+            return cursors[start].connected;
+        }
+        pending.clear();
+        pending.push_back(start);
+        while (!pending.empty()) {
+            const size_t idx = pending.back();
+            ChainCursor& cursor = cursors[idx];
+            if (cursor.resolved) {
+                pending.pop_back();
+                continue;
+            }
+
+            const size_t parent = parent_of[idx];
+
+            if (!cursor.visiting) {
+                cursor.visiting = true;
+                if (parent == kGenesisParent) {
+                    cursor.connected = true;
+                    cursor.height = 1;
+                    cursor.chainwork =
+                        genesis_work + GetBlockProof(records[idx].block.header.difficulty);
+                    cursor.visiting = false;
+                    cursor.resolved = true;
+                    pending.pop_back();
+                    continue;
+                }
+                // Descend only into a parent that is neither finished nor
+                // already on this path; the recursion returned false for both
+                // of those without descending either.
+                if (parent != kNoParent && !cursors[parent].resolved &&
+                    !cursors[parent].visiting) {
+                    pending.push_back(parent);
+                    continue;
+                }
+            }
+
+            // The parent is final (or there is none): finish this cursor.
+            if (parent != kNoParent && parent != kGenesisParent &&
+                cursors[parent].resolved && cursors[parent].connected) {
+                cursor.connected = true;
+                cursor.height = cursors[parent].height + 1;
+                cursor.chainwork = cursors[parent].chainwork +
+                                   GetBlockProof(records[idx].block.header.difficulty);
+            }
+            cursor.visiting = false;
+            cursor.resolved = true;
+            pending.pop_back();
+        }
+        return cursors[start].connected;
     };
 
     size_t best_idx = std::numeric_limits<size_t>::max();
