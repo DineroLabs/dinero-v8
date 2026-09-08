@@ -82,6 +82,14 @@ when a v2 envelope appears earlier. The consensus parser continues treating
 `encrypted_note` as opaque until a separate activation proposal explicitly
 changes that policy.
 
+Construction keys activation to the current active-tip height, not a predicted
+next-block height: a wallet waits until both rules are already active before it
+creates v2. Confirmed recovery uses the output's actual block height. An
+unconfirmed output has no canonical height; it may be recovered provisionally
+only when both rules are active at the wallet's current active tip, and that
+result MUST be recomputed when the transaction confirms or a reorg changes its
+height. A provisional result must never be cached as a confirmed recovery.
+
 ## 4. Point and integer conventions
 
 - secp256k1 x-only points are 32-byte big-endian x coordinates lifted to the
@@ -206,14 +214,18 @@ That length prefix is `fd d5 02`.
 For every post-activation output, the sender:
 
 1. validates both recipient public keys from the 75-byte address;
-2. constructs the existing 563-byte recipient plaintext and 611-byte
+2. independently samples fresh `rcm`, `esk`, and value-commitment blinding
+   randomness for this output; intentional reuse is forbidden, and a detected
+   repeat of `(cm, cv, epk, recipient_hash)` under the same `ovk` must be
+   discarded and regenerated;
+3. constructs the existing 563-byte recipient plaintext and 611-byte
    recipient ciphertext;
-3. constructs the authenticated note commitment using `pk_d_spend`, not the
+4. constructs the authenticated note commitment using `pk_d_spend`, not the
    legacy `rcm`-derived note key;
-4. constructs a valid Pedersen value commitment `cv`;
-5. derives `ock` from `ovk` and the public context;
-6. encrypts the 97-byte outgoing plaintext with the exact AAD above; and
-7. emits the 725-byte v2 envelope.
+5. constructs a valid Pedersen value commitment `cv`;
+6. derives `ock` from `ovk` and the public context;
+7. encrypts the 97-byte outgoing plaintext with the exact AAD above; and
+8. emits the 725-byte v2 envelope.
 
 The wallet MUST erase `esk` and `ock` with its other transaction-construction
 secrets after use. It MUST NOT emit v2 when recipient-bound spend authority is
@@ -300,7 +312,10 @@ but must not cache `NotForViewerOrTampered` across an imported or changed `ovk`.
   `ovk` membership oracle.
 - Reusing the fixed nonce with a context-independent key is forbidden. Any
   future context change requires new vectors and a version change. The
-  recipient-ciphertext hash in `salt_preimage` is load-bearing for this rule.
+  commitment, value commitment, ephemeral key, and recipient-ciphertext hash
+  in `salt_preimage` are load-bearing for this rule. Sender-side freshness of
+  `rcm`, `esk`, and value-commitment blinding randomness is also mandatory;
+  the derivation is not permission to intentionally repeat an output context.
 - Wallet logs must not print plaintext, `ovk`, `ock`, `esk`, `rcm`, or memo on
   recovery failure.
 

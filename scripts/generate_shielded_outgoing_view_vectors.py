@@ -555,8 +555,18 @@ def self_test(vectors: dict[str, Any]) -> None:
                     key.endswith("failure") or key.endswith("envelope")]
     if any(value == envelope for value in byte_mutants):
         raise AssertionError("mutation fixture did not alter the canonical envelope")
-    if set(observed) != set(expected):
-        raise AssertionError("a declared failure class was not exercised")
+    declared_verdicts = {
+        value for name, value in vars(Verdict).items()
+        if name.isupper() and isinstance(value, str)
+    }
+    exercised_verdicts = set(observed.values())
+    exercised_verdicts.add(vectors["recovery"]["verdict"])
+    if exercised_verdicts != declared_verdicts:
+        missing = sorted(declared_verdicts - exercised_verdicts)
+        unexpected = sorted(exercised_verdicts - declared_verdicts)
+        raise AssertionError(
+            "declared verdict coverage mismatch: "
+            f"missing={missing}, unexpected={unexpected}")
 
     # Explicitly pin the security boundary: the outgoing plaintext does not
     # contain rcm, even though authorized recovery later obtains rcm by
@@ -594,9 +604,19 @@ def self_test(vectors: dict[str, Any]) -> None:
         bytes.fromhex(source["value_commitment"]))
     ovk = bytes.fromhex(source["ovk"])
     original_key, _, _, _ = recovery_key(ovk, public, recipient)
-    changed_key, _, _, _ = recovery_key(ovk, public, mutate_at(recipient, 100))
-    if original_key == changed_key:
-        raise AssertionError("recipient ciphertext is not load-bearing in key derivation")
+    changed_contexts = {
+        "commitment": (
+            PublicOutput(mutate_at(public.commitment, 0), public.cv), recipient),
+        "value commitment": (
+            PublicOutput(public.commitment, mutate_at(public.cv, 1)), recipient),
+        "ephemeral key": (public, mutate_at(recipient, 0)),
+        "recipient ciphertext": (public, mutate_at(recipient, 100)),
+    }
+    for name, (changed_public, changed_recipient) in changed_contexts.items():
+        changed_key, _, _, _ = recovery_key(
+            ovk, changed_public, changed_recipient)
+        if original_key == changed_key:
+            raise AssertionError(f"{name} is not load-bearing in key derivation")
 
 
 def canonical_json(vectors: dict[str, Any]) -> str:
