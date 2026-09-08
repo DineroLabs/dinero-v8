@@ -4025,6 +4025,34 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_concurrent_in_flight.cpp)
   )
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindex_deep_chain.cpp)
+  add_executable(test_reindex_deep_chain
+    tests/consensus/test_reindex_deep_chain.cpp
+  )
+  target_link_libraries(test_reindex_deep_chain PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_reindex_deep_chain)
+  target_link_directories(test_reindex_deep_chain PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_reindex_deep_chain PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_reindex_deep_chain PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ReindexDeepChain COMMAND test_reindex_deep_chain)
+  set_tests_properties(ReindexDeepChain PROPERTIES
+    LABELS "reindex;chainstate-recovery;regression"
+    TIMEOUT 120
+  )
+  message(STATUS "✅ Reindex deep-chain stack-overflow regression test enabled (#708)")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_precheck.cpp)
   add_executable(test_assumeutxo_precheck
     tests/daemon/test_assumeutxo_precheck.cpp

@@ -1,4 +1,5 @@
 #include "consensus/reindexer.h"
+#include "consensus/reindexer_detail.h"  // DiskBlockRecord, SelectCanonicalChain
 #include "common/crash_injection.h"  // testing::MaybeAbortAt — used by Step 5b crash oracles
 #include "dinero/compat/int128.hpp"
 #include "consensus/block_lifecycle.h"
@@ -44,12 +45,7 @@ namespace consensus {
 
 namespace {
 
-struct DiskBlockRecord {
-    Block block;
-    FilePosition pos;
-    uint256 hash;
-    uint256 prev_hash;
-};
+using reindex_detail::DiskBlockRecord;
 
 std::string BytesToHex(const uint8_t* data, size_t size) {
     std::ostringstream ss;
@@ -520,6 +516,11 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
     return records;
 }
 
+}  // namespace
+
+// Testable: declared in consensus/reindexer_detail.h. See #708.
+namespace reindex_detail {
+
 // Select the canonical chain from a parsed records vector.
 //
 // When `known_tip_hash_hex` is empty: legacy behavior. Resolve every record
@@ -539,7 +540,7 @@ StatusOr<std::vector<DiskBlockRecord>> ReadDiskBlocks(
 // regardless of orphan count.
 StatusOr<std::vector<size_t>> SelectCanonicalChain(
     const std::vector<DiskBlockRecord>& records,
-    const std::string& known_tip_hash_hex = std::string()) {
+    const std::string& known_tip_hash_hex) {
     if (records.empty()) {
         return Status::NotFound;
     }
@@ -716,7 +717,9 @@ StatusOr<std::vector<size_t>> SelectCanonicalChain(
     return canonical_chain;
 }
 
-} // namespace
+}  // namespace reindex_detail
+
+using reindex_detail::SelectCanonicalChain;
 
 BlockReindexer::BlockReindexer(
     const std::filesystem::path& datadir,
