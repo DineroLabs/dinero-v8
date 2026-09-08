@@ -306,6 +306,22 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_reindex_promotion_restart_equivalence
     message(STATUS "  ✓ ReindexPromotionRestartEquivalence registered")
 endif()
 
+# Finding 13 / finding 2 end-to-end: a forged base+1 Utreexo root must be
+# rejected AT ACCEPT TIME and never stored. SKIP_RETURN_CODE 77 so an inability
+# to construct the forged block reports as skipped, never as a silent pass.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_deferred_base_child_forged_root.sh)
+    add_test(
+        NAME DeferredBaseChildForgedRoot
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_deferred_base_child_forged_root.sh
+    )
+    set_tests_properties(DeferredBaseChildForgedRoot PROPERTIES
+        LABELS "integration;assumeutxo;utreexo;canonicality;e2e"
+        TIMEOUT 900
+        SKIP_RETURN_CODE 77
+    )
+    message(STATUS "  ✓ DeferredBaseChildForgedRoot registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_invalidity_restart_sticky.sh)
     add_test(
         NAME InvalidityRestartSticky

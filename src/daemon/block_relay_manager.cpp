@@ -463,7 +463,8 @@ void BlockRelayManager::HandleBlock(const std::string& peer_address, const Block
         return;
     }
 
-    bool accepted = validate_block_callback_(block, peer_address);
+    const auto outcome = validate_block_callback_(block, peer_address);
+    const bool accepted = (outcome == BlockValidationOutcome::Accepted);
 
     if (accepted) {
         // Phase G.9: Track validated blocks
@@ -493,6 +494,16 @@ void BlockRelayManager::HandleBlock(const std::string& peer_address, const Block
 
         // Phase G.7: Process orphans that were waiting for this block
         ProcessOrphans(block_hash);
+    } else if (outcome == BlockValidationOutcome::ConcurrentInFlight) {
+        // Lost a benign race: another thread is already accepting this exact
+        // hash. Nothing failed and this peer did nothing wrong, so record
+        // NEITHER a rejection nor a peer failure. The winner's completion
+        // handles stats and notification; the loser does nothing.
+        if (logger_) {
+            logger_->debug("[BlockRelayManager] Block already being accepted by "
+                           "another thread: " + block_hash.GetHex().substr(0, 16) +
+                           "... (no peer penalty)");
+        }
     } else {
         // Phase G.9: Track rejected blocks
         {
@@ -1125,7 +1136,8 @@ void BlockRelayManager::HandleCompactBlock(const std::string& peer_address, cons
 
         // Route to validation
         if (validate_block_callback_) {
-            bool accepted = validate_block_callback_(partial_block, peer_address);
+            const auto outcome = validate_block_callback_(partial_block, peer_address);
+            const bool accepted = (outcome == BlockValidationOutcome::Accepted);
             if (accepted) {
                 MarkBlockAsSeen(block_hash);
                 {
@@ -1139,7 +1151,9 @@ void BlockRelayManager::HandleCompactBlock(const std::string& peer_address, cons
                 }
 
                 ProcessOrphans(block_hash);
-            } else {
+            } else if (outcome != BlockValidationOutcome::ConcurrentInFlight) {
+                // ConcurrentInFlight excluded deliberately: losing a race to
+                // another accepting thread is not this peer's fault.
                 {
                     std::lock_guard<std::mutex> lock(stats_mutex_);
                     stats_.blocks_rejected++;
@@ -1296,7 +1310,8 @@ void BlockRelayManager::HandleBlockTxn(const std::string& peer_address, const Bl
 
     // Validate completed block
     if (validate_block_callback_) {
-        bool accepted = validate_block_callback_(reconstructed.value(), peer_address);
+        const auto outcome = validate_block_callback_(reconstructed.value(), peer_address);
+        const bool accepted = (outcome == BlockValidationOutcome::Accepted);
         if (accepted) {
             MarkBlockAsSeen(response.block_hash);
             {
@@ -1310,7 +1325,9 @@ void BlockRelayManager::HandleBlockTxn(const std::string& peer_address, const Bl
             }
 
             ProcessOrphans(response.block_hash);
-        } else {
+        } else if (outcome != BlockValidationOutcome::ConcurrentInFlight) {
+            // ConcurrentInFlight excluded deliberately: losing a race to
+            // another accepting thread is not this peer's fault.
             {
                 std::lock_guard<std::mutex> lock(stats_mutex_);
                 stats_.blocks_rejected++;

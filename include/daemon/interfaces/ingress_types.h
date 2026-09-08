@@ -77,6 +77,24 @@ enum class BlockRejectCode {
     MISSING_PARENT,              // Parent block not found (bad-prevblk)
     INVALID_PARENT_LINK,         // Parent link validation failed (bad-chain)
     DUPLICATE,                   // Block already known (duplicate)
+
+    // NON-TERMINAL. Another thread is mid-acceptance of this same hash; this
+    // caller lost a benign race and the outcome is genuinely UNKNOWN.
+    //
+    // Deliberately NOT DUPLICATE, which asserts the body is already known --
+    // here the winner may be performing the very first write, or may fail and
+    // never write it at all.
+    //
+    // No terminal code can serve this. The two consumers wanted OPPOSITE wrong
+    // things: the drain read DUPLICATE as success and advanced local_tip_height_
+    // on a block that might never connect, while the validation queue read it
+    // as failure and recorded RecordBlockFailure against an honest peer. That
+    // they disagreed is the proof the outcome is neither.
+    //
+    // Contract for consumers: not success, not peer misconduct, no acceptance
+    // notification. Leave the entry retryable and let the winner's resolution
+    // supply the real terminal answer on a later pass.
+    CONCURRENT_IN_FLIGHT,
     CHECKPOINT_VIOLATION,        // Violates checkpoint (checkpoint-mismatch)
     INVALID_UTREEXO_ROOT,        // Utreexo root verification failed (bad-utreexo-root)
     SIGOPS_LIMIT_EXCEEDED,       // Sigops limit exceeded (bad-blk-sigops)
