@@ -116,6 +116,52 @@ dinero-cli --profile prod --nodeinfo --format json | jq '{
 }'
 ```
 
+#### When status commands hang: busy vs wedged
+
+**Do not kill the node on a status timeout alone.** During a deep rollback or
+reorg the node rebuilds the Utreexo forest, and while that runs the chainstate
+status RPCs — `getsynchealth` and `getsnapshotbootstrapstatus` — become slow or
+stop answering. The node is working correctly the whole time. The readiness
+check above (`--wait-ready --timeout 30`) can fail against a perfectly healthy
+node for this reason, and so can any monitoring keyed on those endpoints.
+
+Killing it is the costly mistake: the work in progress is discarded and the
+node re-enters the same phase on restart, so the "fix" reproduces the symptom
+and adds to the delay.
+
+**Tell the two apart with one command.** `getconnectioncount` does not touch the
+component that stalls, so it stays fast throughout:
+
+```bash
+# A healthy-but-busy node: this answers in milliseconds even when
+# getsynchealth does not.
+time dinero-cli --profile prod getconnectioncount
+```
+
+| `getconnectioncount` | `getsynchealth` | reading |
+|---|---|---|
+| fast (ms) | slow or timing out | **busy, not wedged** — leave it alone |
+| slow or timing out | slow or timing out | node-wide problem — investigate |
+
+**Confirm progress from the log**, which does not depend on RPC at all:
+
+```bash
+# Either of these advancing means the node is making progress.
+journalctl -u dinero -f | grep -E "DisconnectTip. Disconnecting block|ConnectTip. Connecting block"
+```
+
+A height that keeps changing is a working node. A frozen height *and* an
+unresponsive `getconnectioncount` is the case worth escalating.
+
+**How long to expect.** Measured on real hardware, the stall lasts as long as
+the rollback: a 2,000-block disconnect took ~13 minutes, during which
+`getsynchealth` peaked at ~3 s on an 8-core host and exceeded 24 s on another.
+It scales with the size of the operation, so a deep reorg or a post-snapshot
+promotion catch-up can be minutes to hours.
+
+Tracked as issue #707. The underlying cause is lock contention, not a hang; a
+lock-independent liveness signal is the planned remedy.
+
 #### Peer Management
 ```bash
 # Active peer analysis
