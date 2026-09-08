@@ -9,7 +9,9 @@
 #include "consensus/outpoint.h"             // OutPoint (for intra-block spend tracking)
 #include "consensus/shielded/shielded_block_section.h"
 #include "consensus/shielded/shielded_block_validation.h"
+#include "consensus/shielded/shielded_root.h"   // post-block SHR1 root (state-commitment mirror)
 #include "consensus/shielded/shielded_serialization.h"
+#include "consensus/state_commitment.h"  // DNRS lookup + IsStateCommitmentActive (mirrored enforcement)
 #include "consensus/shielded/shielded_validation.h"
 #include "consensus/shielded/shielded_epoch.h"
 #include "consensus/utreexo_accumulator.h"  // HashUTXO, UtreexoForest
@@ -2275,6 +2277,22 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         return Status::Invalid;
     }
 
+    // CONSENSUS: mirrors ConnectBlockInternal's state-commitment presence
+    // rule (state_commitment_v1) for the same reason as the rule above — a
+    // reindexed node must judge history exactly as the live chain did. The
+    // VALUE half (post-block root equality) is mirrored after the shielded
+    // apply below, where post-block state exists.
+    if (!block.vtx.empty() &&
+        IsStateCommitmentActive(static_cast<uint32_t>(height),
+                                Params().state_commitment_activation_height)) {
+        const auto sc_lookup = FindStateCommitment(block.vtx[0]);
+        if (sc_lookup.status != StateCommitmentStatus::Ok) {
+            g_logger.error("[reindex] coinbase state commitment not exactly-one/well-formed at height " +
+                           std::to_string(height));
+            return Status::Invalid;
+        }
+    }
+
     for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
         const auto& tx = block.vtx[tx_idx];
         TxId txid = tx.GetTxid();
@@ -2445,6 +2463,29 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
             undo.pre_reset_shielded_epoch, shielded_section_err)) {
         g_logger.error("[reindex] " + shielded_section_err);
         return Status::Invalid;
+    }
+
+    // state_commitment_v1, value half — mirror of the live path's post-apply
+    // equality check in ApplyBlockShieldedSection, so a reindexed node
+    // enforces the SAME rule at the SAME point. Unverifiable fails closed
+    // under enforcement, exactly as live.
+    if (!block.vtx.empty() &&
+        IsStateCommitmentActive(static_cast<uint32_t>(height),
+                                Params().state_commitment_activation_height)) {
+        const auto post_root = shielded::ComputeShieldedRoot(
+            shielded_tree_, shielded_nullifiers_, shielded_anchor_history_);
+        if (!post_root) {
+            g_logger.error("[reindex] state commitment unverifiable at height " +
+                           std::to_string(height) + " (nullifier set unreadable)");
+            return Status::Invalid;
+        }
+        const auto sc_lookup = FindStateCommitment(block.vtx[0]);
+        if (sc_lookup.status != StateCommitmentStatus::Ok ||
+            sc_lookup.root != *post_root) {
+            g_logger.error("[reindex] coinbase state commitment mismatch at height " +
+                           std::to_string(height));
+            return Status::Invalid;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
