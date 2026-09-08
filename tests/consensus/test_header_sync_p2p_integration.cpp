@@ -23,6 +23,9 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <atomic>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <chrono>
 #include <iostream>

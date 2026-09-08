@@ -18,6 +18,9 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <iostream>
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 
 using namespace dinero;
