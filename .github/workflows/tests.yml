@@ -459,6 +459,42 @@ jobs:
       # not tail the end of daemon.log. A plain tail shows the poll loop's own
       # output and evicts the evidence — which is precisely when the log is
       # needed, and the CI artifact is the only copy that survives teardown.
+      # #709: the churn gate preserves each node's daemon.log to
+      # /tmp/dinero_restart_churn_gate_*/mining/stress-failure-logs-*, which
+      # dies with the runner. Two convergence failures on main were therefore
+      # undiagnosable: the dump showed both nodes frozen on different tips, but
+      # not WHY the lagging one stopped -- and that answer was in the very logs
+      # this harness had already gone to the trouble of saving.
+      #
+      # Fold them under the path that IS uploaded. Size-capped because a mining
+      # soak's daemon.log is unbounded and the artifact is not the place to
+      # discover that.
+      - name: Collect churn-gate failure logs
+        if: always()
+        run: |
+          dest=build-tests/Testing/churn-gate-logs
+          mkdir -p "$dest"
+          found=0
+          for root in /tmp/dinero_restart_churn_gate_*; do
+            [ -d "$root" ] || continue
+            found=1
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            # Harness-level logs, then every preserved node daemon.log.
+            for f in "$root"/run.log "$root"/*_soak.log \
+                     "$root"/*/stress-failure-logs-*/*.log; do
+              [ -f "$f" ] || continue
+              rel=$(echo "${f#$root/}" | tr '/' '_')
+              # last 20 MB only: enough for the failure tail, bounded artifact
+              tail -c 20971520 "$f" > "$dest/$name/$rel" 2>/dev/null || true
+            done
+          done
+          if [ "$found" = "0" ]; then
+            echo "no churn-gate artifact roots present (gate did not run, or left none)"
+          else
+            echo "collected:"; find "$dest" -type f -printf '  %s\t%p\n' | sort -rn | head -20
+          fi
+
       - name: Upload ctest logs
         if: always()
         uses: actions/upload-artifact@v4
