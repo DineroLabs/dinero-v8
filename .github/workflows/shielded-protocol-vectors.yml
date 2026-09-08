@@ -1,0 +1,93 @@
+name: Shielded protocol vectors
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'include/consensus/shielded/**'
+      - 'include/primitives/transaction.h'
+      - 'include/wallet/bip32_deriver.h'
+      - 'include/wallet/shielded_derivation.h'
+      - 'external/bech32/**'
+      - 'src/consensus/shielded/**'
+      - 'src/crypto/evp_secp256k1.h'
+      - 'src/crypto/evp_secp256k1.cpp'
+      - 'src/primitives/transaction.cpp'
+      - 'src/wallet/bip32_deriver.cpp'
+      - 'src/wallet/shielded_*'
+      - 'src/zk/zkvm/**'
+      - 'third_party/secp256k1-zkp'
+      - 'third_party/secp256k1-zkp/**'
+      - 'tests/consensus/test_shielded_protocol_external_vectors.cpp'
+      - 'tests/CMakeLists.txt'
+      - 'tests/vectors/shielded_protocol_v1_external.json'
+      - 'scripts/generate_shielded_protocol_vectors.py'
+      - 'docs/specs/shielded_protocol_v1_vectors.md'
+      - '.github/workflows/shielded-protocol-vectors.yml'
+  push:
+    branches: [dinero-main]
+    paths:
+      - 'include/consensus/shielded/**'
+      - 'include/primitives/transaction.h'
+      - 'include/wallet/bip32_deriver.h'
+      - 'include/wallet/shielded_derivation.h'
+      - 'external/bech32/**'
+      - 'src/consensus/shielded/**'
+      - 'src/crypto/evp_secp256k1.h'
+      - 'src/crypto/evp_secp256k1.cpp'
+      - 'src/primitives/transaction.cpp'
+      - 'src/wallet/bip32_deriver.cpp'
+      - 'src/wallet/shielded_*'
+      - 'src/zk/zkvm/**'
+      - 'third_party/secp256k1-zkp'
+      - 'third_party/secp256k1-zkp/**'
+      - 'tests/consensus/test_shielded_protocol_external_vectors.cpp'
+      - 'tests/CMakeLists.txt'
+      - 'tests/vectors/shielded_protocol_v1_external.json'
+      - 'scripts/generate_shielded_protocol_vectors.py'
+      - 'docs/specs/shielded_protocol_v1_vectors.md'
+      - '.github/workflows/shielded-protocol-vectors.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  vectors:
+    name: independent vectors (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build cmake curl perl pkg-config
+          libudev-dev libusb-1.0-0-dev
+      - name: Build pinned vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Report architecture
+        run: |
+          uname -m
+          python3 --version
+      - name: Verify the independent oracle
+        run: python3 scripts/generate_shielded_protocol_vectors.py --check --self-test
+      - name: Configure
+        run: >-
+          cmake -S . -B build-shielded-protocol-vectors -G Ninja
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF
+      - name: Build the production consumer
+        run: >-
+          cmake --build build-shielded-protocol-vectors --parallel "$(nproc)"
+          --target test_shielded_protocol_external_vectors
+      - name: Compare production with the external literals
+        run: >-
+          ctest --test-dir build-shielded-protocol-vectors
+          --no-tests=error --output-on-failure
+          -R '^ShieldedProtocol(ExternalVectors|Oracle)$'
