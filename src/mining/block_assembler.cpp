@@ -6,6 +6,9 @@
 #include "consensus/consensus.hpp"
 #include "consensus/pow.hpp"
 #include "consensus/chainparams.h"  // For Params()
+#include "consensus/state_commitment.h"  // DNRS coinbase commitment (state_commitment_v1)
+#include "daemon/daemon_context.h"       // DaemonContext → chainstate for the prediction oracle
+#include "daemon/services/chainstate_service.h"  // PredictPostBlockShieldedRootForTemplate
 #include "consensus/merkle_root.h"  // Phase 11a.2: Canonical merkle computation
 #include "consensus/witness_commitment.h"  // Phase 11c.1: Witness commitment structure
 #include "consensus/pq/scheme_registry.h"  // Phase 8.5 Commit 2: per-scheme composition caps
@@ -596,6 +599,48 @@ std::shared_ptr<MiningJob> BlockAssembler::CreateJob(const uint256* explicit_tip
                     std::to_string(filter.element_count) + " scripts)");
             }
         }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STATE COMMITMENT (state_commitment_v1, DNRS magic): at/after the
+    // activation height the coinbase must commit to the POST-BLOCK shielded
+    // root, or validation rejects the block. The value comes from the
+    // prediction oracle (the connect tail's mining-side twin); connect-time
+    // validation recomputes it from the REAL apply and enforces equality.
+    // Built BEFORE the merkle root like the DNRF commitment above. Dormant
+    // networks never enter this branch — IsStateCommitmentActive is the
+    // single authority.
+    // ═════════════════════════════════════════════════════════════════════════
+    if (dinero::consensus::IsStateCommitmentActive(
+            job->height, dinero::Params().state_commitment_activation_height)) {
+        auto* daemon_ctx = DaemonContext::instance();
+        auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
+            daemon_ctx ? daemon_ctx->chainstate : nullptr);
+        std::optional<uint256> post_root;
+        if (chainstate) {
+            post_root = chainstate->PredictPostBlockShieldedRootForTemplate(
+                job->transactions, job->height);
+        }
+        if (!post_root.has_value()) {
+            // A template without a valid commitment is an invalid block under
+            // enforcement. Refusing the job is the fail-closed choice; the
+            // caller retries the next tick (same shape as an oracle failure
+            // on the utreexo root above).
+            dinero::g_logger.error(
+                "[BlockAssembler] state-commitment oracle failed at height " +
+                std::to_string(job->height) +
+                " (chainstate unavailable, undecodable bundle, or unreadable "
+                "nullifier set) — refusing to assemble an invalid template");
+            return nullptr;
+        }
+        auto sc_script = dinero::consensus::BuildStateCommitmentScript(*post_root);
+        TxOutput sc_output;
+        sc_output.value = AmountUna::Zero();
+        sc_output.scriptPubKey = std::move(sc_script);
+        job->transactions[0].vout.push_back(sc_output);
+        dinero::g_logger.debug("Added state commitment to coinbase (height " +
+            std::to_string(job->height) + ", DNRS magic, root " +
+            post_root->GetHex().substr(0, 16) + "…)");
     }
 
     // Calculate merkle root (AFTER witness + filter commitments are added)

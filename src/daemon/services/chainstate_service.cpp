@@ -1817,6 +1817,49 @@ std::optional<uint256> ChainstateService::ComputeShieldedRoot(
     return root;
 }
 
+std::optional<uint256> ChainstateService::PredictPostBlockShieldedRootForTemplate(
+    const std::vector<Transaction>& txs, uint32_t height) {
+    // Decode bundles OUTSIDE the lock — deserialization needs no state.
+    std::vector<consensus::shielded::ShieldedBundle> bundles;
+    for (size_t i = 1; i < txs.size(); ++i) {
+        if (!txs[i].IsShielded()) continue;
+        consensus::shielded::ShieldedBundle bundle;
+        if (consensus::shielded::DeserializeShieldedBundle(
+                txs[i].shielded_bundle_bytes, &bundle) !=
+            consensus::shielded::BundleDecodeError::Ok) {
+            return std::nullopt;  // an undecodable bundle has no post-state
+        }
+        bundles.push_back(std::move(bundle));
+    }
+
+    // Snapshot the three containers consistently under the same lock that
+    // makes them move together (see ComputeShieldedRoot above). Blocking
+    // acquire, not try_lock: the assembler builds a template and can wait a
+    // connect out; returning "busy" would leave the template without a
+    // commitment, which under enforcement is an invalid block.
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    std::vector<consensus::shielded::NullifierEntry> entries;
+    const bool enumerated = shielded_nullifiers_.ForEach(
+        [&entries](uint32_t h, const uint8_t* nf) {
+            consensus::shielded::NullifierEntry e;
+            e.height = h;
+            std::copy(nf, nf + 32, e.nullifier.begin());
+            entries.push_back(e);
+            return true;
+        });
+    if (!enumerated) {
+        // Unreadable is not empty — refuse to predict rather than commit to
+        // the empty-set digest (the accumulator's core rule).
+        return std::nullopt;
+    }
+    return consensus::shielded::PredictPostBlockShieldedRoot(
+        bundles, height,
+        dinero::Params().shielded_epoch_reset_height,
+        dinero::Params().shielded_spend_auth_epoch_reset_height,
+        dinero::Params().shielded_activation_height,
+        shielded_tree_, std::move(entries), shielded_anchor_history_);
+}
+
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row written by ConsensusWriteBatch::Commit() (commit 85eacb55d).
