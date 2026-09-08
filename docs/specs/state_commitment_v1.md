@@ -401,6 +401,59 @@ empty live state `a950379977bd7cf7…`, mainnet @ 99,677
 | forged shielded section is accepted at a non-anchored height | live 100,793 artifact, one bit + recomputed checksum | **ACCEPTED — the gap** |
 | same forgery at an anchored height | 99,677 artifact | rejected, by the anchor's file hash only |
 | does background validation catch a forged shielded base? | code review of `BackgroundValidationWorker` | **NO — compares transparent set only** |
+| replay reconstruction agrees with a real snapshot's shielded section | mainnet, full 99,677-block genesis→base replay (see below) | **PASS — one sample** |
+
+### Replay-path agreement at mainnet scale (2026-09-07/08)
+
+The first recorded comparison of the **replay** construction against a real
+snapshot's shielded section. It is logged here because it existed only in a log
+file on one build host, and because the replay path is precisely the one the
+worker's own comment flags as never having been compared:
+
+> The replay is a third construction path — not live ConnectTip, not
+> `--reindex` — and nothing has ever compared its shielded output.
+
+**What was run.** A fresh-datadir, full-history deferred AssumeUTXO replay,
+executed as the merge gate for PR #693 (run id `g5-20260907T124529Z-1233083`).
+
+| | |
+|---|---|
+| source commit | `fb43e7deca849afa95345fd10e768a6c1801acd0` |
+| source tree | `b05b30b7b7055db2d50d09e4528f9e00e24d3fd6` (verified clean before build) |
+| binary sha256 | `d74db3bf83e5da09dc89f8ca6db3a8f87fff12172cb3ef166b7e0bb39723bc11` |
+| snapshot | `dinero-assumeutxo-99677-v4.dat`, sha256 `d4b8d88c2fe765aa627ed0bc12205b2cfba6e4fa50aeb72fd9924990e83c29fd` |
+| snapshot base height | 99,677 |
+| mode | classic deferred (`assumeutxo_forward_connect=0`), fresh datadir |
+| blocks replayed | **99,677 / 99,677**, genesis → base |
+| replay duration | 8h36m47s (header sync timed separately, 211s) |
+
+**Result.**
+
+```
+[LoadSnapshot]         shielded root recorded for replay comparison: cf81a97336578f01a41aca5c092bb69f345a2513d5eaf345899b8229ab56e7db
+[BackgroundValidation] shielded root MATCHES the snapshot:           cf81a97336578f01a41aca5c092bb69f345a2513d5eaf345899b8229ab56e7db
+```
+
+The replay reconstructed the commitment tree, nullifier set and anchor history
+from genesis and produced the same `ComputeShieldedRoot` value as the shielded
+section carried in the snapshot. The lifecycle then retired the trust
+assumption (`replay_performed=1 commitment_match=1 missing_bodies=0`) and
+promotion completed.
+
+**Limitations — this is one entry in the evidence column, not the bar being met.**
+
+* **One sample**: a single run, a single snapshot, a single node.
+* **Covers replay vs snapshot only.** The snapshot's shielded section was
+  produced by a live-path node, so this is live-derived vs replay-derived
+  agreement. It says **nothing about `--reindex`**, which is where *both*
+  historical divergences documented below actually lived.
+* **Honest-path evidence.** It shows the two constructions agree on a
+  legitimate snapshot. It is not a forgery test and does not close the
+  "forged shielded section is accepted at a non-anchored height" gap above.
+* **The comparison was advisory.** A mismatch would have logged
+  `SHIELDED ROOT MISMATCH (advisory, not fatal)` and promotion would have
+  continued regardless. This run is evidence *for* enabling enforcement; it is
+  not enforcement.
 
 ## Still owed before any activation
 
