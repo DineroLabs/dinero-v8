@@ -1342,6 +1342,25 @@ TEST(BlockValidationInvariants, ConsensusChecksumCommitsToWitnessActivation) {
     EXPECT_NE(ConsensusChecksum(baseline), ConsensusChecksum(changed_switch));
 }
 
+TEST(BlockValidationInvariants, ConsensusChecksumCommitsToStateCommitmentActivation) {
+    // The checksum is the fleet's drift detector: the moment any node runs a
+    // binary that selects a state-commitment activation height, its checksum
+    // must diverge loudly from the dormant fleet's.
+    SelectParams(Chain::REGTEST);
+    const ChainParams baseline = Params();
+
+    ChainParams changed_height = baseline;
+    changed_height.state_commitment_activation_height++;
+    EXPECT_NE(ConsensusChecksum(baseline), ConsensusChecksum(changed_height));
+
+    // Burial depth is node-local acceptance POLICY, not block validity — it is
+    // deliberately absent from the consensus checksum, and this pins that
+    // boundary from both sides.
+    ChainParams changed_burial = baseline;
+    changed_burial.state_commitment_burial_depth++;
+    EXPECT_EQ(ConsensusChecksum(baseline), ConsensusChecksum(changed_burial));
+}
+
 TEST(BlockValidationInvariants, WitnessCommitmentBoundaryUsesSerializedMarker) {
     constexpr uint32_t kBoundary = 10670;
     for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {

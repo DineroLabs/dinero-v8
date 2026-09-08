@@ -249,9 +249,15 @@ TEST(Transitions, DeepReorgEqualsDirectValidation) {
 // --- item 8: activation stays disabled -------------------------------------
 
 TEST(Transitions, ActivationRemainsDisabledThroughout) {
-    for (uint64_t h : {uint64_t{0}, uint64_t{1}, uint64_t{61000}, uint64_t{99677},
-                       uint64_t{1000000}}) {
-        EXPECT_FALSE(dinero::consensus::RequiresStateCommitment(h));
+    // Same sweep as before the RequiresStateCommitment stub was retired, now
+    // phrased through the single authority with the dormant sentinel — the
+    // property pinned is unchanged: nothing in the transitions corpus runs
+    // with enforcement on. UINT32_MAX is included deliberately (heights can
+    // come from attacker-controlled snapshot metadata).
+    for (uint32_t h : {uint32_t{0}, uint32_t{1}, uint32_t{61000},
+                       uint32_t{99677}, uint32_t{1000000}, UINT32_MAX}) {
+        EXPECT_FALSE(dinero::consensus::IsStateCommitmentActive(
+            h, dinero::consensus::StateCommitment::kActivationHeightUnset));
     }
 }
 

@@ -644,7 +644,11 @@ else
 fi
 
 # ── Activation must remain disabled throughout ──────────────────────────
-if grep -qiE "state_commitment.*(activated|enforced)|RequiresStateCommitment.*true" "$CON_DIR"/daemon*.log 2>/dev/null; then
+# (Pattern tracks the current helper name: RequiresStateCommitment was retired
+# for IsStateCommitmentActive — a retired name here would match nothing forever
+# while the guard still looked alive. Grep-based guards are weak evidence in
+# general; if this ever needs strengthening, assert an RPC status field.)
+if grep -qiE "state_commitment.*(activated|enforced)|IsStateCommitmentActive.*true" "$CON_DIR"/daemon*.log 2>/dev/null; then
     fail "state_commitment_v1 must remain advisory — activation signal found in the log"
 fi
 pass "activation remained disabled throughout"

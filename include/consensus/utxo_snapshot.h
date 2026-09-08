@@ -1,6 +1,7 @@
 #pragma once
 
 #include "primitives/uint256.h"
+#include "consensus/state_commitment.h"  // IsStateCommitmentActive — the single dormancy authority
 #include <string>
 #include <cstdint>
 #include <filesystem>
@@ -99,18 +100,40 @@ enum class SnapshotFormatVerdict {
     Accept,
     RejectV2Deprecated,
     RejectV3PostShieldedActivation,
+    RejectV4PostStateCommitmentActivation,
     RejectUnknownVersion,
 };
 
 // Pure, side-effect-free policy so the boundary can be tested exhaustively
-// without standing up a chainstate. `shielded_activation_height` is passed in
-// rather than read from Params() so tests can sweep it, including the dormant
-// UINT32_MAX case (no height satisfies `>=`, so V3 stays allowed naturally --
-// no special-casing needed).
+// without standing up a chainstate. Both activation heights are passed in
+// rather than read from Params() so tests can sweep them INDEPENDENTLY —
+// including the mixed quadrants (shielded active + commitment dormant, and
+// the reverse), which is where a bug coupling the two activations would hide.
+//
+// TWO INDEPENDENT POLICIES, ONE DECISION POINT:
+//   - the v3 rule keys on shielded-TRANSACTION activation
+//     (`shielded_activation_height`);
+//   - the v4 rule keys on snapshot-TRUST activation
+//     (`state_commitment_activation_height`), decided at the SNAPSHOT BASE:
+//     below activation v4 stays acceptable; at or above it, only v5 (which
+//     carries the coinbase + merkle-branch binding proof) may be accepted.
+//   Keying either rule on the other's height would silently couple two
+//   policies that must be able to move independently.
+//
+// `block_height` here is the snapshot file's own claimed base height —
+// ATTACKER-CONTROLLED input, not chain-derived. The degenerate claimed height
+// UINT32_MAX therefore matters: with a real activation set, `>=` holds and
+// the policy REJECTS — it fails closed by DIRECTION. That, not
+// "unreachability", is the safety argument (an earlier version of this
+// comment claimed no height satisfies `>=` in the dormant case; the policy
+// test pins the opposite). With activation dormant, the v4 rule uses the
+// IsStateCommitmentActive sentinel guard, so dormant means dormant at every
+// claimed height with no special-casing.
 inline SnapshotFormatVerdict EvaluateSnapshotFormat(
         uint32_t version,
         uint32_t block_height,
-        uint32_t shielded_activation_height) {
+        uint32_t shielded_activation_height,
+        uint32_t state_commitment_activation_height) {
     if (version == SNAPSHOT_VERSION_V2) {
         return SnapshotFormatVerdict::RejectV2Deprecated;
     }
@@ -120,7 +143,10 @@ inline SnapshotFormatVerdict EvaluateSnapshotFormat(
                    : SnapshotFormatVerdict::Accept;
     }
     if (version == SNAPSHOT_VERSION_V4) {
-        return SnapshotFormatVerdict::Accept;
+        return IsStateCommitmentActive(
+                   block_height, state_commitment_activation_height)
+                   ? SnapshotFormatVerdict::RejectV4PostStateCommitmentActivation
+                   : SnapshotFormatVerdict::Accept;
     }
     return SnapshotFormatVerdict::RejectUnknownVersion;
 }

@@ -10575,7 +10575,8 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // ═════════════════════════════════════════════════════════════════════
         switch (consensus::EvaluateSnapshotFormat(
                     header.version, header.block_height,
-                    Params().shielded_activation_height)) {
+                    Params().shielded_activation_height,
+                    Params().state_commitment_activation_height)) {
             case consensus::SnapshotFormatVerdict::RejectV2Deprecated:
                 result.error_message =
                     "Snapshot container v2 is no longer supported (deprecated). "
@@ -10596,6 +10597,19 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                     "shielded commitment tree and wedges on the first "
                     "post-snapshot shielded spend. Remedy: regenerate or obtain "
                     "a trusted v4 snapshot.";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            case consensus::SnapshotFormatVerdict::RejectV4PostStateCommitmentActivation:
+                result.error_message =
+                    "Snapshot container v4 is not usable at height " +
+                    std::to_string(header.block_height) +
+                    ": the state commitment is enforced from height " +
+                    std::to_string(Params().state_commitment_activation_height) +
+                    ", and a v4 snapshot carries no coinbase/merkle-branch "
+                    "binding proof, so its shielded section cannot be "
+                    "authenticated against the chain at load time. Remedy: "
+                    "regenerate or obtain a v5 snapshot, which carries the "
+                    "proof.";
                 logger_->error("[LoadSnapshot] " + result.error_message);
                 return result;
             case consensus::SnapshotFormatVerdict::RejectUnknownVersion:

@@ -130,6 +130,16 @@ static ChainParams g_mainnet = {
     // there is no urgency in activating.
     .shielded_coinbase_reject_activation_height = UINT32_MAX,
 
+    // state_commitment_v1, MAINNET: DORMANT. No height may be selected until
+    // every "Still owed before any activation" gate in
+    // docs/specs/state_commitment_v1.md is closed, including the independent
+    // HUMAN consensus review (governance order, 2026-09-08).
+    .state_commitment_activation_height = UINT32_MAX,
+    // PROVISIONAL test value (~2 days at 10-min cadence) — NOT ratified
+    // policy; final depth awaits the human review + network/reorg analysis.
+    // Gates nothing while the activation height above is dormant.
+    .state_commitment_burial_depth = 288,
+
     .genesis = {
         .nVersion = 1,
         .nTime = 1776384000,  // 2026-04-17 00:00:00 UTC — v7 Genesis Restart
@@ -327,6 +337,15 @@ static ChainParams g_testnet = {
     // leaving it at UINT32_MAX would mean testnet never exercises it at all.
     .shielded_coinbase_reject_activation_height = 0,
 
+    // state_commitment_v1, TESTNET: DORMANT — snapshot-trust activation is a
+    // separate policy from shielded-transaction activation, and neither
+    // testnet height may be selected before the mainnet governance gates
+    // close (a testnet dry-run would come first, but picking its height is
+    // part of that same reviewed change, not this dormant wiring).
+    .state_commitment_activation_height = UINT32_MAX,
+    // PROVISIONAL test value — see the mainnet comment.
+    .state_commitment_burial_depth = 48,
+
     .genesis = {
         .nVersion = 1,
         .nTime = 1296688602,
@@ -429,6 +448,14 @@ static ChainParams g_regtest = {
     // genesis so the rule is exercised end-to-end by tests.
     .shielded_coinbase_reject_activation_height = 0,
 
+    // state_commitment_v1, REGTEST: active from height 1 — NOT 0, because the
+    // genesis coinbase carries no DNRS commitment; activating at 0 would make
+    // genesis invalid (or demand an exemption nobody has tested). Height 1
+    // lets tests exercise enforcement end-to-end from the first mined block.
+    .state_commitment_activation_height = 1,
+    // PROVISIONAL test value — small enough for integration tests to mine past.
+    .state_commitment_burial_depth = 8,
+
     .genesis = CreateRegtestGenesis()
 };
 
@@ -465,6 +492,12 @@ std::string ConsensusChecksum(const ChainParams& params) {
        << "csfs_height=" << params.csfs_activation_height << '\n'
        << "txhash_height=" << params.txhash_activation_height << '\n'
        << "ccv_height=" << params.ccv_activation_height << '\n'
+       // Consensus-authoritative once set; represented while dormant so the
+       // checksum changes LOUDLY the moment any fleet member runs a binary
+       // that selects a height. Burial depth is deliberately absent: it is
+       // node-local acceptance policy, not block validity.
+       << "state_commitment_height="
+       << params.state_commitment_activation_height << '\n'
        << "enforce_witness_commitment="
        << params.enforce_witness_commitment << '\n'
        << "witness_commitment_height="

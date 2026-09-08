@@ -331,10 +331,14 @@ property.
 
 ### Status
 
-The **format is frozen**; activation is not. No activation height is selected
-and no consensus enforcement is wired: `RequiresStateCommitment()` returns false
-at every height and a test pins that. Enforcement belongs in a separate reviewed
-change after this format has been reviewed.
+The **format is frozen**; activation is not. No mainnet or testnet activation
+height is selected: `state_commitment_activation_height` is the dormant
+`UINT32_MAX` sentinel on both networks, `IsStateCommitmentActive()` — the
+single authority every enforcement site must call — answers false there at
+every height, and tests pin both the dormant sweep and the sentinel value.
+Regtest activates at height 1 so the enforcement machinery is exercised by
+tests. Selecting a real height remains a separate reviewed change gated on the
+"Still owed before any activation" list below.
 
 ## Adoption rule (post-activation)
 
