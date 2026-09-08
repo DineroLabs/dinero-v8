@@ -34,6 +34,7 @@
 #include "network/stateless_node.h"  // CSN reorg: For RewindToCheckpoint/ReplayBlock
 #include "storage/chain_write_token.h"  // For genesis bootstrap token
 #include "consensus/chainparams.h"   // For Params()
+#include "consensus/state_commitment.h"  // IsStateCommitmentActive — the single dormancy authority
 #include "consensus/utreexo_delta_codec.h"  // UD sidecar codec + forward replay (campaign phase 2)
 #include "storage/forest_restore.h"  // shared checkpoint+sidecar replay walk (campaign phase 3)
 #include "consensus/chainwork.h"     // For canonical genesis proof
@@ -16666,12 +16667,24 @@ void ChainstateService::BackgroundValidationWorker() {
         // or a stateful BlockValidator would reject every shielded tx in honest
         // history), so the comparison costs one hash of state we already hold.
         //
-        // DELIBERATELY NOT FATAL YET. The replay is a third construction path —
-        // not live ConnectTip, not --reindex — and nothing has ever compared its
-        // shielded output. Divergences were found in both other paths, so
+        // ADVISORY while state_commitment_v1 is dormant; FATAL once it is
+        // enforced at the base height. The dormant rationale stands: the
+        // replay is a third construction path — not live ConnectTip, not
+        // --reindex — and divergences were found in both other paths, so
         // enforcing before real snapshots have proven agreement risks failing
-        // HONEST nodes into a full resync. Log first; enforce once the evidence
-        // is in.
+        // HONEST nodes into a full resync. Under enforcement that trade
+        // inverts: every non-verifying outcome must fail the validation —
+        // skipping on unreadable state would make unreadability the way to
+        // dodge the check, and continuing past a mismatch would promote a
+        // node to FullyValidated on shielded state that genesis history
+        // contradicts. IsStateCommitmentActive is the single dormancy
+        // authority; target_height is the snapshot base this replay rebuilt.
+        const bool shielded_enforced = consensus::IsStateCommitmentActive(
+            static_cast<uint32_t>(target_height),
+            Params().state_commitment_activation_height);
+        // Set only under enforcement; each branch carries a DISTINGUISHABLE
+        // reason so a failure names its class, never a collapsed "rejected".
+        std::optional<std::string> shielded_fatal;
         if (auto expected_shielded =
                 utxo_index_->GetMetadata(assumeutxo::kExpectedShieldedRootKey)) {
             const auto* tree = replay->ShieldedTree();
@@ -16681,11 +16694,29 @@ void ChainstateService::BackgroundValidationWorker() {
                 const auto replayed =
                     consensus::shielded::ComputeShieldedRoot(*tree, *nulls, *anchors);
                 if (!replayed) {
-                    logger_->warning("[BackgroundValidation] shielded root: replay nullifier "
-                                     "set unreadable — comparison skipped");
+                    if (shielded_enforced) {
+                        shielded_fatal =
+                            "shielded root unverifiable: replay nullifier set "
+                            "unreadable at enforced base height " +
+                            std::to_string(target_height) +
+                            " — unreadable state fails closed under enforcement";
+                        logger_->error("[BackgroundValidation] " + *shielded_fatal);
+                    } else {
+                        logger_->warning("[BackgroundValidation] shielded root: replay nullifier "
+                                         "set unreadable — comparison skipped");
+                    }
                 } else if (replayed->GetHex() == expected_shielded.value()) {
                     logger_->info("[BackgroundValidation] shielded root MATCHES the snapshot: " +
                                   replayed->GetHex());
+                } else if (shielded_enforced) {
+                    shielded_fatal =
+                        "SHIELDED ROOT MISMATCH at enforced base height " +
+                        std::to_string(target_height) +
+                        " — snapshot=" + expected_shielded.value() +
+                        " replayed=" + replayed->GetHex() +
+                        ": the snapshot's shielded section does not match "
+                        "genesis history";
+                    logger_->error("[BackgroundValidation] " + *shielded_fatal);
                 } else {
                     logger_->error(
                         "[BackgroundValidation] SHIELDED ROOT MISMATCH (advisory, not fatal) "
@@ -16697,16 +16728,37 @@ void ChainstateService::BackgroundValidationWorker() {
                         "the live path. Both need explaining before state_commitment_v1 "
                         "activates.");
                 }
+            } else if (shielded_enforced) {
+                shielded_fatal =
+                    "shielded root unverifiable: replay produced no shielded "
+                    "containers at enforced base height " +
+                    std::to_string(target_height);
+                logger_->error("[BackgroundValidation] " + *shielded_fatal);
             }
+        } else if (shielded_enforced) {
+            // No expected root recorded at load: an unverifiable snapshot
+            // inside enforcement fails closed rather than silently skipping
+            // the one check that authenticates its shielded section.
+            shielded_fatal =
+                "shielded root unverifiable: no expected root was recorded at "
+                "snapshot load (base height " + std::to_string(target_height) +
+                " is inside state-commitment enforcement)";
+            logger_->error("[BackgroundValidation] " + *shielded_fatal);
         }
 
         const bool lifecycle_promoted_to_fully_validated =
             assumeutxo_lifecycle_->OnReplayComplete(
                 /*replay_performed=*/true,
-                commitment_match && root_match,
+                commitment_match && root_match && !shielded_fatal.has_value(),
                 expected_commitment.value(),
-                recomputed + (root_match ? "" : " (utreexo root mismatch)"),
+                recomputed + (root_match ? "" : " (utreexo root mismatch)") +
+                    (shielded_fatal.has_value() ? " (shielded root failure)" : ""),
                 /*missing_body_count=*/0, std::chrono::steady_clock::now());
+
+        if (shielded_fatal.has_value()) {
+            OnBackgroundValidationComplete(false, *shielded_fatal);
+            return;
+        }
 
         if (!(commitment_match && root_match)) {
             OnBackgroundValidationComplete(false,
