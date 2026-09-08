@@ -1,0 +1,48 @@
+name: Shielded outgoing-view vectors
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/shielded-outgoing-view-vectors.yml'
+      - 'docs/specs/shielded_outgoing_view_recovery_v1.md'
+      - 'scripts/generate_shielded_protocol_vectors.py'
+      - 'scripts/generate_shielded_outgoing_view_vectors.py'
+      - 'tests/vectors/shielded_protocol_v1_external.json'
+      - 'tests/vectors/shielded_outgoing_view_v2_external.json'
+  push:
+    branches:
+      - dinero-main
+    paths:
+      - '.github/workflows/shielded-outgoing-view-vectors.yml'
+      - 'docs/specs/shielded_outgoing_view_recovery_v1.md'
+      - 'scripts/generate_shielded_protocol_vectors.py'
+      - 'scripts/generate_shielded_outgoing_view_vectors.py'
+      - 'tests/vectors/shielded_protocol_v1_external.json'
+      - 'tests/vectors/shielded_outgoing_view_v2_external.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shielded-outgoing-view-vectors-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  independent-vectors:
+    name: Independent vectors (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin Python version
+        run: python3 --version
+      - name: Check primitive oracle prerequisite
+        run: python3 scripts/generate_shielded_protocol_vectors.py --self-test --check
+      - name: Check outgoing-view oracle and failure mutations
+        run: python3 scripts/generate_shielded_outgoing_view_vectors.py --self-test --check
+      - name: Report artifact digest
+        run: sha256sum tests/vectors/shielded_outgoing_view_v2_external.json
