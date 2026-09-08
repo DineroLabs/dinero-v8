@@ -605,11 +605,57 @@ stop_and_converge() {
         log_pass "Tie-break block generated; waiting for the higher-work chain to propagate"
     fi
 
+    # Capture the mechanism's state at the moment convergence fails.
+    #
+    # #709: two CI failures timed out here and neither could be diagnosed. The
+    # heights and tips below already showed the answer -- both nodes FROZEN on
+    # different tips, one 26 blocks behind, for the whole window -- so this is
+    # not slowness and widening CONVERGENCE_TIMEOUT would fix nothing. What was
+    # missing is WHY the lagging node stopped: peer state and its own log.
+    #
+    # Deliberately a dump, not a longer timeout. Widening the window until the
+    # failure disappears destroys the signal the gate exists to produce.
+    dump_convergence_failure_state() {
+        local ha="$1" ta="$2" hb="$3" tb="$4" first_a="$5" first_b="$6"
+
+        log_warn "── convergence failure state ─────────────────────────────"
+        if [ "$ha" = "$first_a" ] && [ "$hb" = "$first_b" ]; then
+            log_warn "  BOTH NODES STUCK: neither height moved during the wait"
+            log_warn "  (A ${first_a}->${ha}, B ${first_b}->${hb}) — not CI slowness"
+        elif [ "$ha" = "$hb" ]; then
+            log_warn "  EQUAL HEIGHT, DIFFERENT TIPS: unresolved fork at ${ha}"
+        else
+            log_warn "  heights moved during the wait (A ${first_a}->${ha}, B ${first_b}->${hb})"
+            log_warn "  — consistent with slow propagation rather than a stall"
+        fi
+        log_warn "  A: height=${ha} tip=${ta}"
+        log_warn "  B: height=${hb} tip=${tb}"
+
+        local pc_a pc_b
+        pc_a=$(rpc_a "getconnectioncount" 2>/dev/null) || pc_a="?"
+        pc_b=$(rpc_b "getconnectioncount" 2>/dev/null) || pc_b="?"
+        log_warn "  peer count: A=${pc_a} B=${pc_b}   (0 on either side explains everything)"
+        log_warn "  A peers: $(rpc_a "getpeerinfo" 2>/dev/null | tr -d '\n' | cut -c1-400)"
+        log_warn "  B peers: $(rpc_b "getpeerinfo" 2>/dev/null | tr -d '\n' | cut -c1-400)"
+        log_warn "  A mining: $(rpc_a "mining.getstatus" 2>/dev/null | tr -d '\n' | cut -c1-200)"
+        log_warn "  B mining: $(rpc_b "mining.getstatus" 2>/dev/null | tr -d '\n' | cut -c1-200)"
+
+        local tag node dir
+        for tag in a:"${DATA_A:-}" b:"${DATA_B:-}"; do
+            node="${tag%%:*}"; dir="${tag#*:}"
+            [ -n "$dir" ] && [ -f "$dir/daemon.log" ] || continue
+            log_warn "  ── node ${node} daemon.log (last 40 lines) ──"
+            tail -40 "$dir/daemon.log" 2>/dev/null | sed 's/^/    /' || true
+        done
+        log_warn "──────────────────────────────────────────────────────────"
+    }
+
     # Wait for convergence (hash comparison is the key invariant)
     log_info "Waiting for tips to match (timeout: ${CONVERGENCE_TIMEOUT}s)..."
     log_info "Key invariant: same tip hash = same chain (height is secondary)"
 
     local start_time tip_a tip_b height_a height_b
+    local first_height_a="" first_height_b=""
     start_time=$(date +%s)
 
     while true; do
@@ -619,6 +665,9 @@ stop_and_converge() {
         tip_b=$(rpc_b "blockchain.getbestblockhash" 2>/dev/null) || tip_b=""
         height_a=$(rpc_a "blockchain.getblockcount" 2>/dev/null) || height_a=0
         height_b=$(rpc_b "blockchain.getblockcount" 2>/dev/null) || height_b=0
+
+        [ -n "$first_height_a" ] || first_height_a="$height_a"
+        [ -n "$first_height_b" ] || first_height_b="$height_b"
 
         log_info "A: height=$height_a tip=${tip_a:0:16}..."
         log_info "B: height=$height_b tip=${tip_b:0:16}..."
@@ -661,6 +710,8 @@ stop_and_converge() {
             log_fail "Convergence timeout after ${elapsed}s!"
             log_info "Node A: height=$height_a tip=$tip_a"
             log_info "Node B: height=$height_b tip=$tip_b"
+            dump_convergence_failure_state "$height_a" "$tip_a" "$height_b" "$tip_b" \
+                                           "$first_height_a" "$first_height_b"
             return 1
         fi
 
