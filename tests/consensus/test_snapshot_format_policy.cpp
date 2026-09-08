@@ -219,6 +219,22 @@ TEST(SnapshotFormatPolicy, PoliciesAreNotCoupled) {
               SnapshotFormatVerdict::RejectV4PostStateCommitmentActivation);
 }
 
+TEST(SnapshotFormatPolicy, V5IsAcceptedInBothDormantAndEnforcedRegimes) {
+    // v5 carries the binding proof, so the FORMAT is acceptable everywhere —
+    // below activation the proof is opportunistic, at/above it the proof's own
+    // verification chain (snapshot_binding.h) decides, not the format policy.
+    using dinero::consensus::SNAPSHOT_VERSION_V5;
+    for (const uint32_t height : {0U, 1U, 100000U, kU32Max}) {
+        for (const uint32_t commitment : {0U, 1U, 100000U, kU32Max}) {
+            EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V5, height,
+                                             kU32Max, commitment),
+                      SnapshotFormatVerdict::Accept)
+                << "V5 rejected at height " << height
+                << " with commitment activation " << commitment;
+        }
+    }
+}
+
 TEST(SnapshotFormatPolicy, UnknownVersionsAreRejected) {
     for (const uint32_t version : {0U, 1U, 6U, 7U, 99U, kU32Max}) {
         EXPECT_EQ(EvaluateSnapshotFormat(version, 1000, 8650, kCommitmentDormant),

@@ -73,6 +73,10 @@ constexpr uint32_t SNAPSHOT_VERSION_V3 = 3;
 // shielded commitment tree, so the first post-snapshot shielded spend fails
 // ShieldedValidationError::AnchorInvalid and the chain wedges.
 constexpr uint32_t SNAPSHOT_VERSION_V4 = 4;
+// v5 = v4 + the state-commitment binding proof section (base coinbase +
+// merkle branch). Mandatory for any base at or above
+// state_commitment_activation_height; see snapshot_binding.h.
+constexpr uint32_t SNAPSHOT_VERSION_V5 = 5;
 
 // ===========================================================================
 // Snapshot container format policy (fail closed)
@@ -148,6 +152,14 @@ inline SnapshotFormatVerdict EvaluateSnapshotFormat(
                    ? SnapshotFormatVerdict::RejectV4PostStateCommitmentActivation
                    : SnapshotFormatVerdict::Accept;
     }
+    if (version == SNAPSHOT_VERSION_V5) {
+        // Acceptable at every height: v5 is v4 plus the binding proof, and
+        // carrying a proof below activation is harmless (the proof is then
+        // verified opportunistically, enforced once active). The format
+        // policy only answers "may this container be parsed here" — the
+        // proof's own verification chain lives in snapshot_binding.h.
+        return SnapshotFormatVerdict::Accept;
+    }
     return SnapshotFormatVerdict::RejectUnknownVersion;
 }
 constexpr uint32_t SNAPSHOT_VERSION = SNAPSHOT_VERSION_V4;
@@ -162,6 +174,19 @@ constexpr uint64_t SNAPSHOT_V3_MAX_FOREST_BYTES = (1ULL << 30);  // 1 GiB hard c
 constexpr uint32_t SNAPSHOT_V4_SHIELDED_MAGIC = 0x444C4853;  // "SHLD" in little-endian
 constexpr uint32_t SNAPSHOT_V4_SHIELDED_SECTION_VERSION = 1;
 constexpr uint64_t SNAPSHOT_V4_MAX_SHIELDED_BYTES = (1ULL << 30);  // 1 GiB hard cap
+
+// v5 section carrying the state-commitment binding proof: the base block's
+// coinbase transaction plus its merkle branch to the base header's tx merkle
+// root. Appended after the v4 shielded section, covered by the same trailing
+// checksum. Layout on disk:
+//   [magic u32] [section_version u32] [coinbase_bytes u64] [branch_count u32]
+//   [coinbase serialized WithWitness] [branch_count × 32-byte hashes]
+constexpr uint32_t SNAPSHOT_V5_BINDING_MAGIC = 0x444E4942;  // "BIND" in little-endian
+constexpr uint32_t SNAPSHOT_V5_BINDING_SECTION_VERSION = 1;
+// A coinbase is small; 4 MiB is generous headroom and refuses attacker-sized
+// payloads before allocation. Branch depth is capped at 32 (2^32 leaves).
+constexpr uint64_t SNAPSHOT_V5_MAX_COINBASE_BYTES = (4ULL << 20);
+constexpr uint32_t SNAPSHOT_V5_MAX_BRANCH_HASHES = 32;
 
 // Snapshot header size (fixed)
 constexpr size_t SNAPSHOT_HEADER_SIZE = 68;
