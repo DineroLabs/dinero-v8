@@ -344,8 +344,10 @@ failing at the outer tag. It also mutation-pins:
 - absence of `rcm`, the legacy `rcm`-derived spend key, and the recipient spend
   scalar from the direct outgoing plaintext;
 - inequality of the legacy and recipient-bound commitments for the same note;
-  and
-- key changes when only the embedded recipient ciphertext changes.
+- independent key changes when only the note commitment, value commitment,
+  ephemeral key, or embedded recipient ciphertext changes; and
+- exact coverage of every declared recovery verdict, including canonical
+  `Ok`, so adding an untested verdict makes the oracle fail.
 
 The vectors are version 1 of the oracle artifact and describe envelope version
 2. Changing any domain, byte order, component, failure meaning, or activation
