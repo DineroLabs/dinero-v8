@@ -141,14 +141,16 @@ void Test1_MidSyncStall() {
     sync_manager.MarkPeerOutbound(1, true);
 
     // Simulate sync start
-    sync_manager.MarkHeadersRequested(1);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
     assert(sync_manager.GetState() == HeaderSyncState::REQUESTING_HEADERS);
 
     // Peer sends first 200 headers
     uint256 genesis_hash = genesis.GetHash();
     std::vector<BlockHeader> batch1 = CreateHeaderChain(genesis_hash, 200, 1000001);
-    bool accepted = sync_manager.ProcessHeaders(1, batch1);
-    assert(accepted == true);
+    const auto batch1_result = sync_manager.ProcessHeadersWithResult(1, batch1);
+    assert(batch1_result.accepted);
+    assert(batch1_result.request_more);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     // Should request more headers (200 < 2000)
     assert(sync_manager.GetState() == HeaderSyncState::REQUESTING_HEADERS ||
@@ -219,7 +221,7 @@ void Test2_SlowDrip() {
     sync_manager.AddPeer(1, 100, peer_best);
     sync_manager.MarkPeerOutbound(1, true);
 
-    sync_manager.MarkHeadersRequested(1);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     std::cout << "   Peer sends 1 header every 10 seconds..." << std::endl;
 
@@ -234,8 +236,10 @@ void Test2_SlowDrip() {
         single_header.push_back(header);
         prev = header.GetHash();
 
-        bool accepted = sync_manager.ProcessHeaders(1, single_header);
-        assert(accepted == true);
+        const auto result = sync_manager.ProcessHeadersWithResult(1, single_header);
+        assert(result.accepted);
+        assert(result.request_more);
+        assert(sync_manager.BeginHeadersRequest(1).has_value());
 
         // Tick to check for stall
         sync_manager.Tick(clock.GetTimeMs());
@@ -293,13 +297,15 @@ void Test3_HeightLie() {
     sync_manager.AddPeer(2, 500, peer_best);
     sync_manager.MarkPeerOutbound(2, true);
 
-    sync_manager.MarkHeadersRequested(1);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     // Peer sends only 10 headers (way less than claimed 1000)
     uint256 genesis_hash = genesis.GetHash();
     std::vector<BlockHeader> small_batch = CreateHeaderChain(genesis_hash, 10, 1000001);
-    bool accepted = sync_manager.ProcessHeaders(1, small_batch);
-    assert(accepted == true);
+    const auto small_result = sync_manager.ProcessHeadersWithResult(1, small_batch);
+    assert(small_result.accepted);
+    assert(small_result.request_more);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     std::cout << "   Peer claimed height 1000, sent only 10 headers..." << std::endl;
 
@@ -349,13 +355,15 @@ void Test4_LastPeerProtection() {
     sync_manager.AddPeer(1, 1000, peer_best);
     sync_manager.MarkPeerOutbound(1, true);
 
-    sync_manager.MarkHeadersRequested(1);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     // Peer sends 10 headers then stalls
     uint256 genesis_hash = genesis.GetHash();
     std::vector<BlockHeader> batch = CreateHeaderChain(genesis_hash, 10, 1000001);
-    bool accepted = sync_manager.ProcessHeaders(1, batch);
-    assert(accepted == true);
+    const auto batch_result = sync_manager.ProcessHeadersWithResult(1, batch);
+    assert(batch_result.accepted);
+    assert(batch_result.request_more);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     std::cout << "   Only 1 peer, peer sends 10 headers then stalls..." << std::endl;
 
@@ -410,15 +418,17 @@ void Test5_TimeoutRecalculation() {
     sync_manager.AddPeer(1, 1000, peer_best);
     sync_manager.MarkPeerOutbound(1, true);
 
-    sync_manager.MarkHeadersRequested(1);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     std::cout << "   Peer sends large batch (500 headers)..." << std::endl;
 
     // Peer sends large batch (500 headers)
     uint256 genesis_hash = genesis.GetHash();
     std::vector<BlockHeader> large_batch = CreateHeaderChain(genesis_hash, 500, 1000001);
-    bool accepted = sync_manager.ProcessHeaders(1, large_batch);
-    assert(accepted == true);
+    const auto large_result = sync_manager.ProcessHeadersWithResult(1, large_batch);
+    assert(large_result.accepted);
+    assert(large_result.request_more);
+    assert(sync_manager.BeginHeadersRequest(1).has_value());
 
     // expected_headers_remaining should drop from 1000 to 500
     // Timeout should recalculate: 15min + 500ms (not original 1000ms)

@@ -281,8 +281,8 @@ int main() {
         // Should still be IDLE (waiting for Tick or explicit request)
         assert(sync_manager.GetState() == HeaderSyncState::IDLE);
 
-        // Mark headers requested
-        sync_manager.MarkHeadersRequested(1);
+        // Reserve a headers request
+        assert(sync_manager.BeginHeadersRequest(1).has_value());
 
         // Should transition to REQUESTING_HEADERS
         assert(sync_manager.GetState() == HeaderSyncState::REQUESTING_HEADERS);
@@ -323,8 +323,8 @@ int main() {
         // Should want to request headers (peer is ahead)
         assert(sync_manager.ShouldRequestHeaders(1) == true);
 
-        // Mark headers requested
-        sync_manager.MarkHeadersRequested(1);
+        // Reserve a headers request
+        assert(sync_manager.BeginHeadersRequest(1).has_value());
 
         // Should NOT want to request again (already requesting)
         assert(sync_manager.ShouldRequestHeaders(1) == false);

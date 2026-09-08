@@ -27,6 +27,8 @@
 #include <vector>
 #include <chrono>
 #include <functional>
+#include <mutex>
+#include <optional>
 
 namespace dinero {
 namespace consensus {
@@ -96,6 +98,13 @@ struct PeerHeaderInfo {
 
 class HeaderSyncManager {
 public:
+    struct ProcessResult {
+        bool accepted{false};
+        size_t inserted{0};
+        size_t duplicates{0};
+        bool request_more{false};
+    };
+
     explicit HeaderSyncManager(
         HeaderChainSelector* chain_selector,
         HeaderStore* header_store = nullptr
@@ -118,12 +127,12 @@ public:
     /**
      * Get current sync state.
      */
-    HeaderSyncState GetState() const { return state_; }
+    HeaderSyncState GetState() const;
 
     /**
      * Check if we're synchronized (caught up with all known headers).
      */
-    bool IsSynchronized() const { return state_ == HeaderSyncState::CAUGHT_UP; }
+    bool IsSynchronized() const;
 
     // ========================================================================
     // Peer Management
@@ -176,6 +185,10 @@ public:
      */
     bool ProcessHeaders(uint64_t peer_id, const std::vector<BlockHeader>& headers);
 
+    /** Process headers and report actual insertions separately from duplicates. */
+    ProcessResult ProcessHeadersWithResult(
+        uint64_t peer_id, const std::vector<BlockHeader>& headers);
+
     /**
      * Generate block locator for getheaders request.
      * Returns list of hashes starting from our best header, walking back exponentially.
@@ -189,9 +202,16 @@ public:
     bool ShouldRequestHeaders(uint64_t peer_id) const;
 
     /**
-     * Record that we sent getheaders to a peer (for timeout tracking).
+     * Atomically reserve the single header-request flight and capture a locator
+     * from the current best-header chain. A normal request requires the peer to
+     * be ahead; a probe may query an equal-height peer but still cannot overlap
+     * another request.
      */
-    void MarkHeadersRequested(uint64_t peer_id);
+    std::optional<std::vector<uint256>> BeginHeadersRequest(
+        uint64_t peer_id, bool probe = false);
+
+    /** Release a reserved request when transport send fails. */
+    void MarkHeadersRequestFailed(uint64_t peer_id);
 
     // ========================================================================
     // Statistics and Diagnostics
@@ -228,6 +248,7 @@ public:
      * P2P layer registers this to handle actual peer switching.
      */
     void SetPeerSwitchCallback(PeerSwitchCallback callback) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         peer_switch_callback_ = std::move(callback);
     }
 
@@ -240,10 +261,16 @@ public:
      * If set, GetCurrentTimeMs() will use this instead of system clock.
      */
     void SetTimeSource(std::function<uint64_t()> time_source) {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
         time_source_ = std::move(time_source);
     }
 
 private:
+    // P2P callbacks run on peer threads. Keep peer state, request ownership,
+    // and transitions serialized. Recursive use is intentional: callbacks may
+    // synchronously re-enter request planning during a state transition.
+    mutable std::recursive_mutex mutex_;
+
     // State machine state
     HeaderSyncState state_;
 

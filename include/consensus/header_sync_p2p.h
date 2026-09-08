@@ -22,6 +22,7 @@
 #include "primitives/block.h"
 #include <functional>
 #include <memory>
+#include <mutex>
 
 namespace dinero {
 namespace consensus {
@@ -61,6 +62,14 @@ public:
      * @return true if headers were valid and accepted
      */
     bool OnHeadersMessage(uint64_t peer_id, const HeadersMessage& headers_msg);
+
+    /**
+     * Process headers that the daemon already parsed. This is the canonical
+     * production entry point: it accounts for new versus duplicate headers and
+     * owns any continuation request.
+     */
+    HeaderSyncManager::ProcessResult ProcessHeaders(
+        uint64_t peer_id, const std::vector<BlockHeader>& headers);
 
     /**
      * Handle incoming getheaders message from peer.
@@ -143,7 +152,7 @@ public:
      *   - locator: Block locator hashes
      *   - hash_stop: Stop hash (usually null)
      */
-    using SendGetheadersCallback = std::function<void(
+    using SendGetheadersCallback = std::function<bool(
         uint64_t peer_id,
         const std::vector<uint256>& locator,
         const uint256& hash_stop
@@ -177,21 +186,24 @@ public:
      * Set callback for sending getheaders.
      */
     void SetSendGetheadersCallback(SendGetheadersCallback callback) {
-        send_getheaders_callback_ = callback;
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        send_getheaders_callback_ = std::move(callback);
     }
 
     /**
      * Set callback for sending headers.
      */
     void SetSendHeadersCallback(SendHeadersCallback callback) {
-        send_headers_callback_ = callback;
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        send_headers_callback_ = std::move(callback);
     }
 
     /**
      * Set callback for disconnecting peer.
      */
     void SetDisconnectPeerCallback(DisconnectPeerCallback callback) {
-        disconnect_peer_callback_ = callback;
+        std::lock_guard<std::mutex> lock(callbacks_mutex_);
+        disconnect_peer_callback_ = std::move(callback);
     }
 
     /**
@@ -199,7 +211,7 @@ public:
      * Generates locator and sends getheaders message.
      * Public so handleHeadersMessage() can send continuation after full batches.
      */
-    void RequestHeadersFromPeer(uint64_t peer_id);
+    bool RequestHeadersFromPeer(uint64_t peer_id, bool probe = false);
 
 private:
     // Core header sync manager
@@ -209,6 +221,7 @@ private:
     HeaderChainSelector* chain_selector_;
 
     // P2P callbacks
+    mutable std::mutex callbacks_mutex_;
     SendGetheadersCallback send_getheaders_callback_;
     SendHeadersCallback send_headers_callback_;
     DisconnectPeerCallback disconnect_peer_callback_;

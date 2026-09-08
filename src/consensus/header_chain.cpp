@@ -131,6 +131,10 @@ HeaderChainSelector::~HeaderChainSelector() {
 }
 
 bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
+    return AddHeaderWithResult(header) != AddResult::REJECTED;
+}
+
+HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const BlockHeader& header) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Compute hash for lookup (Phase M.0: uint256 identity)
@@ -142,7 +146,7 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
         // After LoadFromStorage() with a stale persisted best marker,
         // existing fork headers may have more chainwork than best_header_.
         UpdateBestHeader(header_index_[hash].get());
-        return true;
+        return AddResult::ALREADY_KNOWN;
     }
 
     // Find parent (Phase M.0: prevBlockHash is already uint256)
@@ -157,7 +161,7 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
             std::cerr << "[HeaderChainSelector] ❌ PARENT NOT FOUND for header "
                       << hash.GetHex().substr(0, 16) << "... prev="
                       << prev_hash.GetHex().substr(0, 16) << "..." << std::endl;
-            return false;
+            return AddResult::REJECTED;
         }
         parent_mut = parent_it->second.get();
         parent = parent_mut;
@@ -165,7 +169,7 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
 
     // Validate header (stateless checks)
     if (!ValidateHeader(header, parent)) {
-        return false;
+        return AddResult::REJECTED;
     }
 
     // Create new header entry (computes height + chainwork)
@@ -222,7 +226,7 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
                                   << hash.GetHex().substr(0, 16) << "...)" << std::endl;
                         side_branch_cap_warned_ = true;
                     }
-                    return false;  // new_entry discarded; best chain untouched
+                    return AddResult::REJECTED;  // new_entry discarded; best chain untouched
                 }
                 // Newcomer outranks the lowest-work tip: evict that losing branch
                 // to make room, then admit the newcomer below. The parent
@@ -259,7 +263,7 @@ bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
         header_store_->StoreBestHeader(best_header_->hash);
     }
 
-    return true;
+    return AddResult::INSERTED;
 }
 
 void HeaderChainSelector::RefreshTipStatus(const HeaderIndexEntry* entry) {

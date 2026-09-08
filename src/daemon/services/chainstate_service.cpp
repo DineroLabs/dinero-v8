@@ -7022,6 +7022,18 @@ void ChainstateService::OnGetData(const std::string& peer_addr, const ::P2PMessa
 // Phase M.0: Returns uint256 vector (consensus-adjacent, identity-sensitive)
 // Conversion to hex happens at P2P/RPC boundary (network serialization layer)
 std::vector<uint256> ChainstateService::GenerateBlockLocator() {
+    // Header-first synchronization has two frontiers: the active block tip and
+    // the best validated header. A locator must start from the latter. Starting
+    // from ChainDB here resets an in-flight continuation whenever bodies lag
+    // headers (the DineroUS 88k/2k restart failure).
+    if (header_chain_selector_) {
+        auto header_locator = header_chain_selector_->BuildLocatorCopy(10);
+        if (!header_locator.empty()) {
+            return header_locator;
+        }
+    }
+
+    // Startup fallback before the header selector has loaded a tip.
     std::vector<uint256> locator;  // Phase M.0: Store uint256, not hex strings
 
     if (!chain_db_) {

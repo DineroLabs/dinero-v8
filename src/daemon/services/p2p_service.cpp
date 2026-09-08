@@ -6,6 +6,8 @@
 #include "daemon/services/address_manager_service.h"
 #include "daemon/services/peer_scoring_service.h"
 #include "daemon/daemon_context.h"
+#include "daemon/header_peer_id.h"
+#include "consensus/header_sync_p2p.h"
 #include "util/thread_util.h"  // #298: SetThreadName for gdb backtraces
 #include "config/seed_nodes.h"
 #include "consensus/chainparams.h"
@@ -925,6 +927,9 @@ void P2PService::StartSchedulerTickLoop() {
 
         while (scheduler_tick_running_.load(std::memory_order_relaxed)) {
             if (auto* ctx = DaemonContext::instance()) {
+                if (ctx->header_sync) {
+                    ctx->header_sync->Tick();
+                }
                 // AssumeUTXO body backfill: while the lifecycle is validating
                 // history, keep the backfill queue armed for heights 1..base,
                 // anchored on the snapshot base HASH (the trust root — the
@@ -1089,23 +1094,42 @@ void P2PService::StartSchedulerTickLoop() {
 }
 
 bool P2PService::SendHeadersRefreshNow(const std::string& peer_addr) {
-    if (!p2p_mgr_ || !chainstate_) {
+    return RequestHeaders(peer_addr, true, "announcement-refresh");
+}
+
+bool P2PService::RequestHeaders(const std::string& peer_addr,
+                                bool probe,
+                                const char* reason) {
+    if (!p2p_mgr_) {
         return false;
     }
 
-    const auto locator = chainstate_->GenerateBlockLocator();
-    if (locator.empty()) {
+    auto* ctx = DaemonContext::instance();
+    if (!ctx || !ctx->header_sync) {
         return false;
     }
 
-    std::vector<std::string> locator_hex;
-    locator_hex.reserve(locator.size());
-    for (const auto& hash : locator) {
-        locator_hex.push_back(hash.GetHex());
+    const uint64_t peer_id = daemon::HeaderPeerId(peer_addr);
+    const bool sent = ctx->header_sync->RequestHeadersFromPeer(peer_id, probe);
+    if (logger_interface_) {
+        const auto stats = ctx->header_sync->GetStats();
+        const std::string why = reason ? reason : "unspecified";
+        if (sent) {
+            logger_interface_->info(
+                "[HeaderSync] getheaders sent peer=" + peer_addr +
+                " reason=" + why +
+                " best_header=" + std::to_string(stats.local_best_height) +
+                " peer_best=" + std::to_string(stats.peer_best_height));
+        } else {
+            logger_interface_->debug(
+                "[HeaderSync] getheaders not sent peer=" + peer_addr +
+                " reason=" + why + " state=" +
+                std::to_string(static_cast<int>(stats.state)) +
+                " owner=" + std::to_string(stats.current_sync_peer) +
+                " (ineligible, already in flight, or transport failure)");
+        }
     }
-
-    return p2p_mgr_->send_to_peer(
-        peer_addr, ::P2PMessage::create_getheaders(locator_hex));
+    return sent;
 }
 
 void P2PService::RequestHeadersRefreshForBlockAnnouncement(
@@ -1192,7 +1216,9 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
     const auto stale_secs = std::chrono::duration_cast<std::chrono::seconds>(
         now - stale_tip_state_.last_header_advance_time).count();
 
-    // Recovery: re-issue getheaders to every peer. getheaders is a PULL, so
+    // Recovery: probe connected peers. The manager permits only one request
+    // flight, so the first eligible peer wins and late responses cannot reset
+    // its continuation.
     // peers answer it even when their announcement (push) path to us has gone
     // quiet — this recovers the common "lost announcements" stall without
     // dropping any connection.
@@ -1201,19 +1227,10 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
     // the async broadcast outbox can silently drop messages under congestion,
     // and a recovery probe must actually reach peers precisely when the node is
     // wedged. Mirrors the block-getdata callback in daemon_app.cpp.
-    auto locator = ctx->chainstate->GenerateBlockLocator();
     int sent = 0;
-    if (!locator.empty()) {
-        std::vector<std::string> locator_hex;
-        locator_hex.reserve(locator.size());
-        for (const auto& hash_item : locator) {
-            locator_hex.push_back(hash_item.GetHex());
-        }
-        ::P2PMessage getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-        for (const auto& peer : p2p_mgr_->get_connected_peers()) {
-            if (p2p_mgr_->send_to_peer(peer.to_string(), getheaders_msg)) {
-                ++sent;
-            }
+    for (const auto& peer : p2p_mgr_->get_connected_peers()) {
+        if (RequestHeaders(peer.to_string(), true, "stale-tip-recovery")) {
+            ++sent;
         }
     }
     if (logger_interface_) {
@@ -1273,19 +1290,14 @@ void P2PService::MaybeRequestHeadersForPeerTip(const std::string& peer_addr,
         }
     }
 
-    auto locator = chainstate_->GenerateBlockLocator();
-    if (locator.empty()) {
-        return;
+    if (ctx->header_sync) {
+        uint256 peer_best_hash;
+        peer_best_hash.SetNull();
+        ctx->header_sync->GetSyncManager()->UpdatePeerBest(
+            daemon::HeaderPeerId(peer_addr), peer_height, peer_best_hash);
     }
 
-    std::vector<std::string> locator_hex;
-    locator_hex.reserve(locator.size());
-    for (const auto& hash_item : locator) {
-        locator_hex.push_back(hash_item.GetHex());
-    }
-
-    auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-    const bool sent = p2p_mgr_->send_to_peer(peer_addr, getheaders_msg);
+    const bool sent = RequestHeaders(peer_addr, false, reason);
     if (sent) {
         {
             std::lock_guard<std::mutex> lock(peer_tip_getheaders_mutex_);
@@ -1298,9 +1310,10 @@ void P2PService::MaybeRequestHeadersForPeerTip(const std::string& peer_addr,
                 ", known=" + std::to_string(known_height) + ") — requested headers");
         }
     } else if (logger_interface_) {
-        logger_interface_->warning(
+        logger_interface_->debug(
             "[P2PService] Peer " + peer_addr + " reports higher tip " +
-            std::to_string(peer_height) + " but getheaders send failed");
+            std::to_string(peer_height) +
+            " but no getheaders was sent (another request may own the flight)");
     }
 }
 
@@ -2062,7 +2075,16 @@ bool P2PService::Start() {
                 auto* peer_info = p2p_mgr_->get_peer_info(peer_addr);
                 if (peer_info) {
                     uint32_t our_height = chainstate_->getBlockHeight();
-                    uint32_t peer_height = peer_info->best_known_height;
+                    uint32_t peer_height = std::max(peer_info->best_known_height,
+                                                    peer_info->start_height);
+
+                    if (auto* ctx = DaemonContext::instance(); ctx && ctx->header_sync) {
+                        uint256 peer_best_hash;
+                        peer_best_hash.SetNull();
+                        ctx->header_sync->OnPeerConnected(
+                            daemon::HeaderPeerId(peer_addr), peer_height,
+                            peer_best_hash, peer_info->is_outbound);
+                    }
 
                     // Update network height estimate for IBD detection
                     chainstate_->UpdateNetworkHeight(peer_height);
@@ -2077,16 +2099,7 @@ bool P2PService::Start() {
                     // cases where peer has lower height but more cumulative work
                     logger_interface_->info("[P2PService] Requesting headers from peer " + peer_addr);
 
-                    // Generate block locator and send getheaders
-                    auto locator = chainstate_->GenerateBlockLocator();
-                    std::vector<std::string> locator_hex;
-                    for (const auto& hash : locator) {
-                        locator_hex.push_back(hash.GetHex());
-                    }
-
-                    auto getheaders_msg = ::P2PMessage::create_getheaders(locator_hex);
-                    p2p_mgr_->send_to_peer(peer_addr, getheaders_msg);
-                    logger_interface_->info("[P2PService] Sent getheaders to " + peer_addr);
+                    RequestHeaders(peer_addr, true, "peer-connect");
 
                     if (auto* ctx = DaemonContext::instance();
                         ctx && ctx->block_download && ctx->header_chain && ctx->chainstate &&
@@ -2137,6 +2150,9 @@ bool P2PService::Start() {
             if (auto* ctx = DaemonContext::instance(); ctx && ctx->parallel_block_download) {
                 ctx->parallel_block_download->notifyPeerDisconnected(peer_addr);
                 ctx->parallel_block_download->unregisterPeer(peer_addr);
+            }
+            if (auto* ctx = DaemonContext::instance(); ctx && ctx->header_sync) {
+                ctx->header_sync->OnPeerDisconnected(daemon::HeaderPeerId(peer_addr));
             }
         });
 
