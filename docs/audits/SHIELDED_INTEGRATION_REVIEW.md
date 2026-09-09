@@ -165,7 +165,7 @@ PR #720; the e792 artifact hashes remain evidence of that predecessor only.
 The strengthened e792 strict IBD run adopted the competing branch on all three
 consumers. A returned to the source branch, but B/C stopped with one missing
 body; no DNRS root mismatch appeared. This is not a passing run. Its previous
-45-iteration cutoff was shorter than the scheduler's 90-second recovery
+45-iteration cutoff did not guarantee the scheduler's 90-second recovery
 interval and mislabeled iterations as seconds. The harness now uses elapsed
 seconds, allows a 150-second quiet interval and 180-second progress extension,
 and retains its overall deadline. Final diagnostics include download state.

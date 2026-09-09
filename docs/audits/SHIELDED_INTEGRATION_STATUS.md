@@ -84,3 +84,37 @@ Utreexo checkpoint recovery. Commit `937819df7` restores anchors alongside the
 existing frontier/nullifier rewind. The DNRS-active regression now compares the
 full shielded root and passes offline recovery plus a second offline restart.
 This is a separate concrete recovery defect, not attributed to #709/#717.
+
+## Verification update after the e792 sweep
+
+Runtime `e79295a8b` passed Linux, Windows and both macOS artifact builds,
+including Windows mining/restart and installer/uninstaller checks; the
+reproducible Linux build also passed. These are predecessor development
+artifacts. Its Linux proof measurements were valid but failed the provisional
+20-second maximum-block budget at 20.433–20.495 seconds. The original report
+is retained. The hardware review adopts the documented 30-second desktop-v2
+proof-component budget; a fresh 18-process Mac run passes. See the hardware
+profile for the rationale and the remaining whole-node qualification limits.
+
+The selected-build audit found two top-level gates, AcceptanceParity and
+IBDTorture, falling back to an older `build/dinerod` when CTest used `build-final`.
+Both now receive the CMake target path explicitly, record executable hashes and
+reject binary changes during a run. The initial two executions are excluded
+from candidate evidence. Corrected e792 parity passes all 500 corpus blocks and
+four compatibility fixtures against separately built main plus the epoch fix.
+The stronger IBD replacement did not pass: all consumers adopted the fork,
+but only A returned to the source chain before the harness cutoff; B/C had one
+missing body. No DNRS root mismatch was observed. The harness now measures
+elapsed seconds and permits the scheduler's recovery window, with download
+diagnostics; actual full convergence remains required.
+
+The sweep also found a locally rate-dropped headers reply retaining global
+request ownership and blocking a CSN refresh. The [review](SHIELDED_INTEGRATION_REVIEW.md)
+records the identical main/candidate source path, five ordinary passing
+controls on each binary, and the deterministic drop regression. Commits
+`f2920e5fe`/`cbc1ea3e3` release only the matching nonzero owner and schedule a
+bounded retry without weakening the receive limit. All targets build, all
+five header-sync/coalescer suites pass, and the bridge-assisted spend lifecycle
+passes on the repaired binary. New combined and release verification is
+required for this additional runtime repair; predecessor results are not
+being relabeled as an all-green final sweep. PR #720 carries the latest checks.
