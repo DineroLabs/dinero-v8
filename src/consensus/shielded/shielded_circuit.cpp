@@ -61,7 +61,10 @@ constexpr uint8_t kOutputProofVersionCv = 0x04;
 //
 // DORMANT: no chainparams set `shielded_spend_auth_activation_height` below
 // UINT32_MAX, so nothing on any network produces or accepts this version yet.
-constexpr uint8_t kSpendProofVersionAuth = 0x05;
+// v0x06 replaces the unpublished/dormant v0x05 circuit whose spend scalar
+// was derivable from incoming viewing material. Never reinterpret a v0x05
+// proof under the corrected ask/nvk-separated circuit.
+constexpr uint8_t kSpendProofVersionAuth = 0x06;
 
 // ── cv-binding helpers (Audit Critical #1) ──────────────────────────────
 //
@@ -263,6 +266,7 @@ bool DeserializeShieldedProof(const std::vector<uint8_t>& proof_bytes,
 SpendWitness DummySpendWitness() {
     SpendWitness witness{};
     witness.secret_key.fill(0);
+    witness.nullifier_key.fill(0);
     witness.value.fill(0);
     witness.randomness.fill(0);
     for (auto& sibling : witness.merkle_path) {
@@ -353,6 +357,12 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
 
     // Private witness
     Variable sk   = cs.alloc(HashToScalar(witness.secret_key));
+    // Alias in legacy mode so the historical allocation order/R1CS remains
+    // byte-identical. Auth mode replaces it with an independent witness.
+    Variable nfk = sk;
+    if (spend_auth) {
+        nfk = cs.alloc(HashToScalar(witness.nullifier_key));
+    }
     Variable val  = cs.alloc(HashToScalar(witness.value));
     Variable rand = cs.alloc(HashToScalar(witness.randomness));
     Variable d    = cs.alloc(HashToScalar(witness.d));
@@ -374,14 +384,15 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
         // invents `sk` when building the recipient's note. The sender therefore
         // retains the ability to spend the note they sent, forever.
         //
-        // AUTH: pk_d = s·G, where s = Poseidon(ivk, d) is derived from the
-        // RECIPIENT's incoming viewing key (see DeriveDiversifiedSpendKey).
-        // The sender never learns s, so only the recipient can satisfy this.
+        // AUTH: pk_d = s·G, where s is derived from the recipient's secret
+        // ask plus a public diversifier tweak. A separate nvk-derived key
+        // controls nullifier viewing. Neither ivk nor a full viewing key can
+        // derive s.
         //
-        // The circuit proves knowledge of dlog(pk_d) — it does NOT prove
-        // s == Poseidon(ivk, d). `ivk` never enters the circuit; that hash
-        // relation is wallet-side derivation, not a consensus statement. This
-        // is what keeps the cost to one fixed-base mult.
+        // The circuit proves knowledge of dlog(pk_d). The public relation
+        // pk_d = ak + Poseidon(ak,d)·G is checked by address derivation; `ask`
+        // never enters the circuit. The independently supplied nfk is bound
+        // below through its public commitment and controls the nullifier.
         //
         // SOUNDNESS: `s` is PROVER-CHOSEN, so this must use the identity-safe
         // ec_scalar_mul_fixed, NOT ec_scalar_mul_gen — see the same reasoning
@@ -416,7 +427,20 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
         // Bridge the base-field x-coordinate into the scalar field for
         // Poseidon. fe_pack reduces mod n, matching the wallet's own
         // HashToScalar(pk_d_xonly) reduction, so both sides agree.
-        pk = zk::zkvm::fe_pack(cs, pk_d.x, "auth_pkd");
+        Variable spend_pk = zk::zkvm::fe_pack(cs, pk_d.x, "auth_pkd");
+
+        // Bind the independently-derived nullifier key into the note without
+        // publishing it. The recipient address carries only its commitment.
+        Variable nf_tag = cs.alloc(HashToScalar(NullifierKeyTag()));
+        // alloc() only assigns a private witness value. Bind the domain to a
+        // circuit constant so a custom prover cannot choose a different tag.
+        cs.enforce_equal(LinearCombination(nf_tag),
+                         LinearCombination::constant(HashToScalar(NullifierKeyTag())),
+                         "auth_nfkey_domain");
+        Variable nfk_commit =
+            poseidon2_gadget(cs, nfk, nf_tag, "auth_nfk_commit");
+        pk = poseidon2_gadget(cs, spend_pk, nfk_commit,
+                              "auth_ownership_key");
     } else {
         Variable zero_var = cs.alloc(Scalar::zero());
         pk = poseidon2_gadget(cs, sk, zero_var, "derive_pk");
@@ -441,8 +465,11 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
     cs.enforce_equal(LinearCombination(computed_root),
                      LinearCombination(anchor_pub));
 
-    // 4. Compute nullifier: nf = Poseidon(sk, leaf_index)
-    Variable nf = poseidon2_gadget(cs, sk, idx, "nullifier");
+    // 4. Legacy nullifiers use the spend secret. Auth-profile nullifiers use
+    // the distinct nvk-derived key so watch-only wallets can track spends
+    // without learning the spend scalar.
+    Variable nf = poseidon2_gadget(cs, spend_auth ? nfk : sk, idx,
+                                   "nullifier");
 
     // Assert nf == nullifier (public input)
     cs.enforce_equal(LinearCombination(nf),

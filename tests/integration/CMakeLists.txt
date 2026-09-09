@@ -1482,6 +1482,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_addressed_detec
     message(STATUS "  ✓ ShieldedRpcTransferAddressedDetectEndToEnd registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outgoing_recovery_lifecycle.sh)
+    add_test(
+        NAME ShieldedOutgoingRecoveryLifecycle
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outgoing_recovery_lifecycle.sh
+    )
+    set_tests_properties(ShieldedOutgoingRecoveryLifecycle PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        LABELS "integration;shielded;wallet;outgoing-view;restart;reorg;mandatory"
+        TIMEOUT 1200
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ ShieldedOutgoingRecoveryLifecycle registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outputs_rpc_feed.sh)
     add_test(
         NAME ShieldedOutputsRpcFeed
@@ -2176,6 +2190,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ShieldedRpcTransferEndToEnd ShieldedRpcTransferMultiEndToEnd
         ShieldedRpcGetAddress ShieldedRpcTransferAddressedEndToEnd
         ShieldedRpcTransferAddressedDetectEndToEnd
+        ShieldedOutgoingRecoveryLifecycle
         WalletAuthoritativeMnemonic
         ShieldedTipMarkerRestartEquivalence
         ShieldedDaemonRestartEquivalence
@@ -2270,4 +2285,14 @@ if(_dinero_integration_tests)
         endif()
     endforeach()
     message(STATUS "  ✓ Integration tests receive binary paths via ENVIRONMENT")
+endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+    add_test(NAME ShieldedAuthRelayLifecycle
+      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+    set_tests_properties(ShieldedAuthRelayLifecycle PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+      LABELS "integration;shielded;p2p;wallet;restart;reorg;mandatory"
+      TIMEOUT 2400 RUN_SERIAL TRUE)
+    message(STATUS "  ✓ ShieldedAuthRelayLifecycle registered")
 endif()

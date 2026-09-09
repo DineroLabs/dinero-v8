@@ -12,6 +12,7 @@
 #include "primitives/block.h"
 #include "wallet/transaction.h"
 #include "wallet/shielded_note_store.h"
+#include "wallet/shielded_outgoing_view.h"
 
 #include <cstdint>
 #include <optional>
@@ -148,6 +149,8 @@ bool ProcessDisconnectedBlock(dinero::WalletManager& wallet,
                               std::string* error = nullptr);
 
 std::vector<ShieldedNote> ListShieldedNotes(dinero::WalletManager& wallet, bool include_pending);
+std::vector<OutgoingShieldedNote> ListOutgoingShieldedNotes(
+    dinero::WalletManager& wallet);
 uint64_t GetShieldedBalance(dinero::WalletManager& wallet);
 uint64_t GetShieldedTreeSize(dinero::WalletManager& wallet);
 
@@ -182,7 +185,8 @@ uint64_t RequiredFeeForTx(const dinero::Transaction& tx, double min_fee_rate);
 struct AttachShieldResult {
     OpStatus status = OpStatus::InternalError;
     consensus::shielded::Hash commitment{};
-    consensus::shielded::Hash nullifier_key{};   ///< secret_key for the new note
+    consensus::shielded::Hash spend_secret_key{};
+    consensus::shielded::Hash nullifier_key{};
     consensus::shielded::Hash public_key{};
     consensus::shielded::Hash randomness{};
     uint64_t bundle_bytes = 0;
@@ -234,6 +238,7 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
 /// One shielded note being spent. Pure-data: no tree handle.
 struct UnshieldNoteInput {
     consensus::shielded::Hash secret_key{};
+    consensus::shielded::Hash nullifier_key{};
     consensus::shielded::Hash randomness{};
     consensus::shielded::Hash d{};            ///< 32-byte packed diversifier bound into the note commitment
     consensus::shielded::Hash anchor{};       ///< wallet-tree root at spend time
@@ -320,6 +325,7 @@ struct AttachTransferResult {
     consensus::shielded::Hash spend_anchor{};
     consensus::shielded::Hash out_commitment{};
     consensus::shielded::Hash out_secret_key{};   ///< caller persists for later spend
+    consensus::shielded::Hash out_nullifier_key{};
     consensus::shielded::Hash out_public_key{};
     consensus::shielded::Hash out_randomness{};
     uint64_t                  out_value_una = 0;
@@ -435,8 +441,9 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
     bool persist = true);
 
 /**
- * Greedy multi-note coin selector. Picks the smallest unspent confirmed
- * notes (ascending value) until cumulative value >= target_value_una.
+ * Multi-note coin selector. Legacy selection fills smallest notes first.
+ * The Auth profile fills largest notes first within its four-input bound,
+ * finding a funding subset whenever any permitted subset exists.
  * Returns std::nullopt if total available is insufficient.
  */
 std::optional<std::vector<ShieldedNote>> SelectTransferNotesForValue(
@@ -445,11 +452,11 @@ std::optional<std::vector<ShieldedNote>> SelectTransferNotesForValue(
 
 // ── Phase 5 Wave 3d: any-recipient transfer ──────────────────────────
 
-/// Recipient parameters for an addressed shielded output. `d` (11 bytes)
-/// and `pk_d` (32-byte x-only) come from `DecodeShieldedAddress`; the
-/// commitment uses `Poseidon(d, pk_note)` for `addr_bind`, where
-/// `pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0)` so the receiver can
-/// re-derive the spend secret from the encrypted-note plaintext.
+/// Recipient parameters for an addressed shielded output. All public fields
+/// come from `DecodeShieldedAddress`. Before spend-authority activation the
+/// commitment retains the legacy sender-derived key. After activation it is
+/// bound to both `pk_d_spend` and `nfk_commitment`, separating spend authority
+/// from incoming and nullifier viewing authority.
 struct AddressedRecipient {
     std::array<uint8_t, 11>     d{};
     /// ivk·P_d — used to ENCRYPT the note so the recipient can find it.
@@ -457,6 +464,9 @@ struct AddressedRecipient {
     /// s·G — what the note COMMITS to under spend_auth, i.e. who can spend it.
     /// Required when spend_auth is set; the legacy path ignores it.
     consensus::shielded::Hash   pk_d_spend{};
+    /// Poseidon(nvk-derived per-note nullifier key, NFKEY_TAG). The sender
+    /// can bind it into the note but cannot predict the eventual nullifier.
+    consensus::shielded::Hash   nfk_commitment{};
     uint64_t                    value_una = 0;
 };
 
@@ -467,6 +477,7 @@ struct AttachAddressedTransferResult {
     bool                      had_change = false;
     consensus::shielded::Hash change_commitment{};
     consensus::shielded::Hash change_secret_key{};
+    consensus::shielded::Hash change_nullifier_key{};
     consensus::shielded::Hash change_public_key{};
     consensus::shielded::Hash change_randomness{};
     consensus::shielded::Hash change_d{};
@@ -475,6 +486,8 @@ struct AttachAddressedTransferResult {
     uint64_t                  bundle_bytes = 0;
     std::string error;
 };
+
+struct OutgoingViewEmissionContext;
 
 /**
  * Pure helper. Spends N input notes and creates one addressed output
@@ -485,7 +498,7 @@ struct AttachAddressedTransferResult {
  *
  * The recipient output uses the addressed-transfer convention:
  *   - commitment = NoteCommitment(d_packed, pk_note, value, rcm)
- *     where pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0)
+ *     where `pk_note` is selected by the spend-authority activation rule
  *   - encrypted_note = EncryptNoteForRecipient(d, pk_d, plaintext)
  * Before spend-authority activation, change uses the legacy self-recipient
  * convention. In the auth era `change_recipient` is required and change uses
@@ -504,7 +517,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     const std::array<uint8_t, 512>* recipient_memo = nullptr,
     bool cv_bound = false,
     bool spend_auth = false,
-    const AddressedRecipient* change_recipient = nullptr);
+    const AddressedRecipient* change_recipient = nullptr,
+    const OutgoingViewEmissionContext* outgoing = nullptr);
 
 /**
  * Wallet-bound wrapper. Looks up `note_leaf_indices`, decodes
@@ -540,7 +554,20 @@ struct AddressedRecipientOutput {
     std::string error;
     consensus::shielded::PlannedOutput planned;
     consensus::shielded::Hash          commitment{};
+    consensus::shielded::ValueCommitment value_commitment{};
     consensus::shielded::Hash          randomness{};
+};
+
+/// Wallet/account material and the exact active-tip policy snapshot used to
+/// decide whether an addressed output carries envelope v3. The builder keys
+/// construction to `current_tip_height`, never a predicted mining height.
+struct OutgoingViewEmissionContext {
+    consensus::shielded::Hash ovk{};
+    uint32_t current_tip_height = 0;
+    uint32_t spend_auth_activation_height = UINT32_MAX;
+    uint32_t outgoing_activation_height = UINT32_MAX;
+
+    ~OutgoingViewEmissionContext();
 };
 
 /**
@@ -557,8 +584,11 @@ struct AddressedRecipientOutput {
  *   - false (legacy): pk_note = Poseidon(DeriveNoteSpendKey(rcm), 0). `rcm` is
  *     chosen here by the SENDER, so the sender also knows the note's spend key
  *     and can spend the note they sent, at any time, forever.
- *   - true (auth): pk_note = recipient.pk_d, taken from their address. Spending
- *     requires `s` with s·G = pk_d, derivable only from the recipient's ivk.
+ *   - true (auth): pk_note =
+ *     AuthRecipientCommitmentKey(recipient.pk_d_spend,
+ *                                recipient.nfk_commitment).
+ *     Spending requires both the recipient-bound scalar `s` (derived from
+ *     `ask`, never `ivk`) and the per-note nullifier key derived from `nvk`.
  *
  * Defaults to false — the legacy behaviour — because
  * `shielded_spend_auth_activation_height` is UINT32_MAX on every network. The
@@ -575,7 +605,8 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     bool cv_bound = false,
     bool spend_auth = false,
     const consensus::shielded::Hash* rcm_override = nullptr,
-    const consensus::shielded::Hash* esk_override = nullptr);
+    const consensus::shielded::Hash* esk_override = nullptr,
+    const OutgoingViewEmissionContext* outgoing = nullptr);
 
 /**
  * Pure helper — given an unsigned transparent envelope (shielded version;
@@ -595,7 +626,8 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     const AddressedRecipient& recipient,
     const std::array<uint8_t, 512>* recipient_memo = nullptr,
     bool cv_bound = false,
-    bool spend_auth = false);
+    bool spend_auth = false,
+    const OutgoingViewEmissionContext* outgoing = nullptr);
 
 /**
  * Wallet-bound wrapper. Decodes `recipient_address` (rejecting a non-dins /

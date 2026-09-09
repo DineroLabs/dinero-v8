@@ -145,6 +145,7 @@ ShieldedAccountKeys DeriveShieldedAccount(const uint8_t* seed,
     // ── Sapling sub-derivation (§4.3 – §4.6).
     Hash ask_raw = ShieldedPRF(sk, kDstAsk);
     Hash nsk_raw = ShieldedPRF(sk, kDstNsk);
+    Hash nvk     = ShieldedPRF(sk, kDstNvk);
     Hash ovk     = ShieldedPRF(sk, kDstOvk);
     Hash dk      = ShieldedPRF(sk, kDstDk);
 
@@ -161,6 +162,7 @@ ShieldedAccountKeys DeriveShieldedAccount(const uint8_t* seed,
     out.sk  = sk;
     out.ask = ak_norm.scalar;
     out.nsk = nk_norm.scalar;
+    out.nvk = nvk;
     out.ovk = ovk;
     out.dk  = dk;
     out.ak  = ak_norm.x_only;
@@ -304,11 +306,13 @@ Hash DerivePkD(const Hash& ivk, const Hash& p_d_xonly) {
 
 AddressPayload BuildAddressPayload(const Diversifier& d,
                                    const Hash& pk_d_enc,
-                                   const Hash& pk_d_spend) {
+                                   const Hash& pk_d_spend,
+                                   const Hash& nfk_commitment) {
     AddressPayload payload{};
     std::memcpy(payload.data(), d.data(), 11);
     std::memcpy(payload.data() + 11, pk_d_enc.data(), 32);
     std::memcpy(payload.data() + 43, pk_d_spend.data(), 32);
+    std::memcpy(payload.data() + 75, nfk_commitment.data(), 32);
     return payload;
 }
 
@@ -332,10 +336,15 @@ DiversifiedAddress DeriveDiversifiedAddress(const ShieldedAccountKeys& keys,
     // and a note to a never-generated diversifier is still detectable.
     Hash p_d = HashToPoint(out.d, kDstDiv);
     out.pk_d = DerivePkD(keys.ivk, p_d);
-    // Spend-authority key: s·G with s = Poseidon(ivk, d). This is what the
-    // note commits to, and `s` never leaves the receiver's wallet.
-    out.pk_d_spend = DeriveDiversifiedSpendKey(keys.ivk, out.d).pk_d;
-    out.payload = BuildAddressPayload(out.d, out.pk_d, out.pk_d_spend);
+    // Spend authority requires ask; the public key remains derivable from ak
+    // for full-viewing verification. Nullifier viewing is independently
+    // derived from nvk and only its commitment is published.
+    out.pk_d_spend =
+        DeriveDiversifiedSpendKey(keys.ask, keys.ak, out.d).pk_d;
+    out.nfk_commitment = NullifierKeyCommitment(
+        DeriveDiversifiedNullifierKey(keys.nvk, out.d));
+    out.payload = BuildAddressPayload(out.d, out.pk_d, out.pk_d_spend,
+                                      out.nfk_commitment);
     out.address = EncodeShieldedAddress(out.payload, hrp);
     return out;
 }
@@ -420,14 +429,13 @@ DecodedShieldedAddress DecodeShieldedAddress(const std::string& addr) {
     if (!bech32::convertbits(bytes, raw->data, 5, 8, /*pad=*/false)) {
         throw std::runtime_error("shielded address: 5→8 convertbits failed");
     }
-    // A legacy 43-byte payload is REJECTED, not half-parsed: it carries no
-    // pk_d_spend, so a note built for it would be committed to a key nobody can
-    // spend. Failing loudly is the only safe reading.
-    if (bytes.size() != 75) {
-        throw std::runtime_error("shielded address: payload must be 75 bytes, got " +
+    // Older 43/75-byte payloads lack one or both authority components and are
+    // rejected rather than producing an unspendable or untrackable note.
+    if (bytes.size() != AddressPayload{}.size()) {
+        throw std::runtime_error("shielded address: payload must be 107 bytes, got " +
                                  std::to_string(bytes.size()) +
-                                 (bytes.size() == 43
-                                      ? " (legacy pre-spend-authority address)"
+                                 (bytes.size() == 43 || bytes.size() == 75
+                                      ? " (legacy authority-incomplete address)"
                                       : ""));
     }
     DecodedShieldedAddress out;
@@ -435,7 +443,8 @@ DecodedShieldedAddress DecodeShieldedAddress(const std::string& addr) {
     std::memcpy(out.d.data(), bytes.data(), 11);
     std::memcpy(out.pk_d.data(), bytes.data() + 11, 32);
     std::memcpy(out.pk_d_spend.data(), bytes.data() + 43, 32);
-    std::memcpy(out.payload.data(), bytes.data(), 75);
+    std::memcpy(out.nfk_commitment.data(), bytes.data() + 75, 32);
+    std::memcpy(out.payload.data(), bytes.data(), out.payload.size());
 
     // BOTH keys must be on the curve (force even-y parse). pk_d_spend is what
     // the note commits to, so an off-curve value there is unspendable value.
@@ -451,6 +460,13 @@ DecodedShieldedAddress DecodeShieldedAddress(const std::string& addr) {
                     ? "shielded address: pk_d x-coord not on curve"
                     : "shielded address: pk_d_spend x-coord not on curve");
         }
+    }
+    // This value is consumed as a Poseidon field element by both native and
+    // circuit code. Reject alternate/out-of-range byte encodings here rather
+    // than allowing two address strings to represent one field element.
+    if (secp256k1_ec_seckey_verify(ctx, out.nfk_commitment.data()) != 1) {
+        throw std::runtime_error(
+            "shielded address: nfk commitment must be a canonical non-zero scalar");
     }
     return out;
 }
@@ -549,7 +565,8 @@ bool AeadDecrypt(const std::array<uint8_t, 32>& key,
 EncryptedNote EncryptNoteForRecipient(const Diversifier& recipient_d,
                                       const Hash& pk_d_xonly,
                                       const NotePlaintext& note,
-                                      const Hash* esk_override) {
+                                      const Hash* esk_override,
+                                      Hash* esk_normalized_out) {
     secp256k1_context* ctx = GetCtx();
 
     // Derive esk: random or test-supplied.
@@ -612,6 +629,9 @@ EncryptedNote EncryptNoteForRecipient(const Diversifier& recipient_d,
     OPENSSL_cleanse(esk.data(), esk.size());
 
     Hash shared = EcdhShared(esk_norm, pk_d_xonly);
+    if (esk_normalized_out != nullptr) {
+        *esk_normalized_out = esk_norm;
+    }
     OPENSSL_cleanse(esk_norm.data(), esk_norm.size());
 
     auto key = HkdfExtractAndExpand(epk.data(), 32, shared.data(), 32, kAeadInfo);
@@ -631,27 +651,79 @@ Hash DeriveNoteSpendKey(const Hash& rcm) {
     return PoseidonHash2(rcm, DstToHash(kDstNoteSpendKey));
 }
 
-DiversifiedSpendKey DeriveDiversifiedSpendKey(const Hash& ivk,
-                                              const Diversifier& d) {
-    // Pack the 11-byte diversifier into a 32-byte field element the same way
-    // the note commitment already does (`d_packed`), so `d` means the same
-    // thing in both places.
+namespace {
+
+Hash SpendTweak(const Hash& ak, const Diversifier& d) {
     Hash d_packed{};
     std::memcpy(d_packed.data(), d.data(), d.size());
+    return PoseidonHash2(ak, d_packed);
+}
 
-    // Hash to a SCALAR (not to a point): this is what makes ownership a
-    // fixed-base multiplication instead of a variable-base one.
-    const Hash s_raw = PoseidonHash2(ivk, d_packed);
+}  // namespace
 
-    // Reuse the account-key normalisation so `pk_d` is the BIP340 even-y
-    // representative and `s` is the matching (possibly negated) scalar —
-    // identical treatment to ak = ask·G and nk = nsk·G.
-    const auto norm = NormalizeScalarToEvenY(s_raw);
+Hash DeriveDiversifiedSpendPublicKey(const Hash& ak, const Diversifier& d) {
+    secp256k1_context* ctx = GetCtx();
+    secp256k1_xonly_pubkey ak_xonly{};
+    if (secp256k1_xonly_pubkey_parse(ctx, &ak_xonly, ak.data()) != 1) {
+        throw std::runtime_error("diversified spend: invalid ak");
+    }
+    const Hash tweak = SpendTweak(ak, d);
+    if (secp256k1_ec_seckey_verify(ctx, tweak.data()) != 1) {
+        throw std::runtime_error("diversified spend: invalid public tweak");
+    }
+    secp256k1_pubkey tweaked{};
+    if (secp256k1_xonly_pubkey_tweak_add(ctx, &tweaked, &ak_xonly,
+                                        tweak.data()) != 1) {
+        throw std::runtime_error("diversified spend: ak + tweak*G is identity");
+    }
+    secp256k1_xonly_pubkey result{};
+    if (secp256k1_xonly_pubkey_from_pubkey(ctx, &result, nullptr, &tweaked) != 1) {
+        throw std::runtime_error("diversified spend: x-only conversion failed");
+    }
+    Hash out{};
+    if (secp256k1_xonly_pubkey_serialize(ctx, out.data(), &result) != 1) {
+        throw std::runtime_error("diversified spend: serialization failed");
+    }
+    return out;
+}
+
+DiversifiedSpendKey DeriveDiversifiedSpendKey(const Hash& ask,
+                                              const Hash& ak,
+                                              const Diversifier& d) {
+    secp256k1_context* ctx = GetCtx();
+    Hash scalar = ask;
+    const Hash tweak = SpendTweak(ak, d);
+    if (secp256k1_ec_seckey_verify(ctx, scalar.data()) != 1 ||
+        secp256k1_ec_seckey_verify(ctx, tweak.data()) != 1) {
+        throw std::runtime_error("diversified spend: invalid ask or tweak");
+    }
+    if (secp256k1_ec_seckey_tweak_add(ctx, scalar.data(), tweak.data()) != 1) {
+        OPENSSL_cleanse(scalar.data(), scalar.size());
+        throw std::runtime_error("diversified spend: ask + tweak is zero");
+    }
+
+    const auto norm = NormalizeScalarToEvenY(scalar);
+    OPENSSL_cleanse(scalar.data(), scalar.size());
+    const Hash public_only = DeriveDiversifiedSpendPublicKey(ak, d);
+    if (norm.x_only != public_only) {
+        throw std::runtime_error("diversified spend: private/public derivation mismatch");
+    }
 
     DiversifiedSpendKey out;
     out.s    = norm.scalar;
     out.pk_d = norm.x_only;
     return out;
+}
+
+Hash DeriveDiversifiedNullifierKey(const Hash& nvk, const Diversifier& d) {
+    Hash d_packed{};
+    std::memcpy(d_packed.data(), d.data(), d.size());
+    return PoseidonHash2(nvk, d_packed);
+}
+
+Hash NullifierKeyCommitment(const Hash& nullifier_key) {
+    return PoseidonHash2(nullifier_key,
+                         consensus::shielded::NullifierKeyTag());
 }
 
 std::optional<NotePlaintext> TryDecryptNoteForViewer(
@@ -670,6 +742,33 @@ std::optional<NotePlaintext> TryDecryptNoteForViewer(
 
     std::array<uint8_t, 563> plaintext{};
     bool ok = AeadDecrypt(key, epk, encrypted.data() + 32, plaintext);
+    OPENSSL_cleanse(key.data(), key.size());
+    if (!ok) {
+        OPENSSL_cleanse(plaintext.data(), plaintext.size());
+        return std::nullopt;
+    }
+    NotePlaintext note = NotePlaintext::Deserialize(plaintext);
+    OPENSSL_cleanse(plaintext.data(), plaintext.size());
+    return note;
+}
+
+std::optional<NotePlaintext> TryDecryptNoteWithEphemeralSecret(
+    const Hash& esk_normalized,
+    const Hash& pk_d_xonly,
+    const EncryptedNote& encrypted) {
+    Hash epk{};
+    std::memcpy(epk.data(), encrypted.data(), epk.size());
+    Hash shared{};
+    try {
+        shared = EcdhShared(esk_normalized, pk_d_xonly);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+    auto key = HkdfExtractAndExpand(epk.data(), epk.size(), shared.data(),
+                                    shared.size(), kAeadInfo);
+    OPENSSL_cleanse(shared.data(), shared.size());
+    std::array<uint8_t, 563> plaintext{};
+    const bool ok = AeadDecrypt(key, epk, encrypted.data() + epk.size(), plaintext);
     OPENSSL_cleanse(key.data(), key.size());
     if (!ok) {
         OPENSSL_cleanse(plaintext.data(), plaintext.size());

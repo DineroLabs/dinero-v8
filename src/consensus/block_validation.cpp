@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 #include "consensus/block_validation.h"
 #include "consensus/covenants.h"
 #include "consensus/consensus_write_batch.h"
@@ -307,6 +308,9 @@ bool BlockValidator::ValidateAndApplyBlock(const Block& block, uint32_t height, 
 bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
                                             uint256& computed_utreexo_root,
                                             std::string& error) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     std::cout << "\n🔍 [ComputeUtreexoRootPure] ENTRY" << std::endl;
     std::cout << "   height=" << height << std::endl;
     std::cout << "   block.vtx.size()=" << block.vtx.size() << std::endl;
@@ -545,6 +549,9 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
     const std::function<const UTXOEntry*(const OutPoint&)>& utxo_lookup,
     uint256& computed_utreexo_root,
     std::string& error) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     if (!IsUtreexoActive(height)) {
         computed_utreexo_root.SetNull();
         return true;
@@ -672,6 +679,9 @@ bool BlockValidator::ApplyBlockShieldedSection(
     const Block& block, uint32_t height,
     const std::vector<int64_t>& pending_shielded_deltas,
     BlockUndo& undo, std::string& error) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     if (!(shielded_tree_ && shielded_nullifiers_)) {
         return true;  // shielded state not wired — nothing to apply
     }
@@ -739,6 +749,9 @@ bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
     const Block& block, uint32_t height,
     std::vector<int64_t>& deltas_out, std::string& error,
     const std::vector<SpentOutputData>* fallback_spent_outputs) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     deltas_out.clear();
 
     // A block with no shielded-semantics txs produces no deltas, so it needs
@@ -878,6 +891,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // Initialize undo data before any validation exits so callers always get
     // a height/hash-consistent container and rollback can capture genesis-state snapshots.
     undo = BlockUndo(height, block_hash);
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
 
     // ═════════════════════════════════════════════════════════════════════════
     // Apr 13 2026 Stage 3 — Utreexo canonical-roots fork activation.
@@ -2868,6 +2884,9 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
                                         bool is_coinbase, uint64_t& total_input_value, 
                                         std::string& error) {
     total_input_value = 0;
+    size_t resource_proofs = 0;
+    if (!shielded::CheckAuthTransactionResources(tx, height,
+            Params().shielded_spend_auth_activation_height, resource_proofs, error)) return false;
     const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
     
     // NOTE: this branch is currently UNREACHABLE — both call sites (the per-tx

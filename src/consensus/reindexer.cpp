@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 #include "consensus/reindexer.h"
 #include "consensus/reindexer_detail.h"  // DiskBlockRecord, SelectCanonicalChain
 #include "common/crash_injection.h"  // testing::MaybeAbortAt — used by Step 5b crash oracles
@@ -2182,6 +2183,13 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     // Cleared per block: only applyBlockToForest's root-mismatch path may set
     // it, and the Step 5 recovery branch reads it for THIS block only.
     last_failure_was_forest_root_mismatch_ = false;
+    std::string resource_error;
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, resource_error)) {
+        g_logger.error("[reindex] " + resource_error);
+        return Status::Invalid;
+    }
+
     // Create write token for ChainDB mutations
     ChainWriteToken token;
 

@@ -31,6 +31,11 @@ This specification covers:
 It does not define transparent script validation, Utreexo, block difficulty,
 wallet policy, RPC schemas, or peer-to-peer relay policy.
 
+The dormant recipient-authority cutover additionally requires the version-6
+transaction envelope and the consensus resource bounds in
+[Auth resource profile](shielded_auth_resource_profile.md). That document also
+specifies matching relay policies, without reinterpreting historical v5 blocks.
+
 `MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. Byte strings are written
 in wire order. `LE32`, `LE64`, `BE32`, and `BE64` denote fixed-width integer
 encodings. `CompactSize` is Bitcoin's minimally encoded variable-length
@@ -214,6 +219,7 @@ Derive:
 ```text
 ask_raw = PRF(sk, "DIN/v7/shielded/ask")
 nsk_raw = PRF(sk, "DIN/v7/shielded/nsk")
+nvk     = PRF(sk, "DIN/v7/shielded/nvk")
 ovk     = PRF(sk, "DIN/v7/shielded/ovk")
 dk      = PRF(sk, "DIN/v7/shielded/dk")
 ```
@@ -228,11 +234,15 @@ ivk = Poseidon(ak, nk)
 ```
 
 `ivk` MUST be a valid non-zero secp256k1 scalar when used for address derivation
-or ECDH.
+or ECDH. `nvk` is symmetric nullifier-view material: it derives diversified
+nullifier keys but cannot derive a spend scalar. A full viewing package is
+`(ak, nk, nvk, ovk)`; `ask` is never part of viewing authority.
 
-The current note-encryption path does not use `ovk` for outgoing recovery.
-Implementations MUST NOT promise outgoing-view recovery from `ovk` without a
-new, specified ciphertext construction.
+The legacy 611-byte envelope does not use `ovk` for outgoing recovery. The
+separately specified envelope-v3 construction in
+`shielded_outgoing_view_recovery_v1.md` is implemented behind independent,
+dormant activation parameters. Implementations MUST NOT promise outgoing-view
+recovery until recipient-bound spend authority and envelope v3 are both active.
 
 ### 7.2 Diversifiers
 
@@ -267,13 +277,20 @@ secp256k1 point.
 Then derive independent discovery and spend-authority keys:
 
 ```text
-pk_d_enc   = xonly_even_y(ivk * P_d)
-s_raw      = Poseidon(ivk, zero_pad_32(d))
-(s, pk_d_spend) = even_y_normalize(s_raw, s_raw * G)
-payload = d[11] || pk_d_enc[32] || pk_d_spend[32]
+pk_d_enc       = xonly_even_y(ivk * P_d)
+tweak          = Poseidon(ak, zero_pad_32(d))
+s_raw          = ask + tweak mod q
+(s, pk_d_spend)= even_y_normalize(s_raw, s_raw * G)
+nfk            = Poseidon(nvk, zero_pad_32(d))
+nfk_commitment = Poseidon(nfk, DST32("DIN/v7/shielded/nfkey/v1"))
+payload = d[11] || pk_d_enc[32] || pk_d_spend[32] || nfk_commitment[32]
 ```
 
-The 75-byte payload is converted from 8-bit to 5-bit groups with padding and
+Public viewers independently derive `pk_d_spend` as the even-y x-coordinate of
+`ak + tweak*G`; equality with the private construction is pinned by the
+independent vectors. They can authenticate the address but cannot recover `s`.
+
+The 107-byte payload is converted from 8-bit to 5-bit groups with padding and
 encoded using raw Bech32m:
 
 | Network | HRP |
@@ -282,13 +299,16 @@ encoded using raw Bech32m:
 | Testnet | `tdins` |
 | Regtest | `rdins` |
 
-Decoders MUST require Bech32m, one of these HRPs, exactly 75 decoded bytes, and
-on-curve x-only encodings for both keys. Legacy 43-byte addresses MUST be
-rejected: they do not identify a recipient-controlled spend key.
+Decoders MUST require Bech32m, one of these HRPs, exactly 107 decoded bytes,
+on-curve x-only encodings for both point keys, and a non-zero
+`nfk_commitment`. Legacy 43- and 75-byte addresses MUST be rejected: they do
+not carry the complete recipient-controlled authority profile.
 
-`pk_d_enc` is used only for ECDH note discovery. `pk_d_spend` is committed by
-post-spend-authority notes and spending proves knowledge of its unique even-y
-scalar `s`. A sender knows both public keys but does not learn `s`.
+`pk_d_enc` is used only for ECDH note discovery. Post-spend-authority notes
+commit to `Poseidon(pk_d_spend, nfk_commitment)`. Spending proves knowledge of
+the unique even-y scalar `s` and privately opens `nfk`; nullifiers derive from
+`nfk`, not from `s`. A sender knows the public address fields but learns
+neither secret.
 
 ## 8. Note encryption and ownership
 
@@ -342,9 +362,12 @@ nonce and `epk` as 32-byte associated data:
 encrypted_note = epk[32] || ciphertext[563] || tag[16]
 ```
 
-The canonical wallet construction therefore emits exactly 611 bytes. Consensus
-bundle parsing treats this field as variable length; circuit proof and wallet
-decryption supply the semantic checks.
+The legacy wallet construction emits exactly 611 bytes. Once both
+recipient-bound spend authority and outgoing-view recovery are active, the
+wallet preserves those 611 bytes inside the version-3 757-byte envelope
+specified by `shielded_outgoing_view_recovery_v1.md`. Consensus bundle parsing
+treats this field as variable length; circuit proof and wallet decryption
+supply the semantic checks.
 
 ## 9. Note commitments, nullifiers, and tree
 
@@ -562,8 +585,10 @@ commitments, all CVs, proof lengths and bytes, encrypted-note lengths and bytes,
 timing, bundle shape, shield/unshield amount, or transparent endpoints.
 
 The recipient address is not placed directly on chain, but the encrypted note
-is trial-decryptable by the incoming viewing key. The current construction has
-no implemented outgoing-view recovery using `ovk`.
+is trial-decryptable by the incoming viewing key. The legacy envelope has no
+outgoing-view recovery. Dormant envelope v3 adds authenticated `ovk` recovery
+as specified in `shielded_outgoing_view_recovery_v1.md`; it is not active on
+mainnet or testnet.
 
 Version 5 does not bind the shielded bundle into its legacy txid. Its block
 identity relies on the coinbase `DINW` witness commitment to bind wtxid.

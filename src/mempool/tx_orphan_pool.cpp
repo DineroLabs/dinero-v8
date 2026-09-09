@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 #include "mempool/tx_orphan_pool.h"
 #include "common/logger.h"
 #include <algorithm>
@@ -16,8 +17,11 @@ bool TxOrphanPool::addOrphan(const Transaction& tx, const std::string& peer_id) 
     }
 
     // Check TX size limit
-    size_t tx_size = tx.Serialize().size() / 2;  // Hex string / 2 = bytes
-    if (tx_size > MAX_ORPHAN_TX_SIZE) {
+    size_t tx_size = tx.GetSize();  // Actual serialized bytes
+    std::string resource_error;
+    // Height-free holding area, like the wire prefilter. Actual acceptance is
+    // still contextual. Keep the old 10 MB total budget with larger objects.
+    if (!consensus::shielded::CheckTxResourceEnvelope(tx, true, resource_error)) {
         g_logger.debug("[OrphanPool] Rejected oversized orphan " + txid.GetHex().substr(0, 16) +
                       "... (" + std::to_string(tx_size) + " bytes)");
         return false;
@@ -30,8 +34,9 @@ bool TxOrphanPool::addOrphan(const Transaction& tx, const std::string& peer_id) 
     }
 
     // Pool full — evict a random orphan
-    if (m_orphans.size() >= MAX_ORPHAN_TRANSACTIONS) {
-        evictRandom();
+    while (m_orphans.size() >= MAX_ORPHAN_TRANSACTIONS ||
+           tx_size > MAX_ORPHAN_BYTES - m_total_bytes) {
+        if (!evictRandom()) return false;
     }
 
     // Build orphan entry
@@ -48,6 +53,7 @@ bool TxOrphanPool::addOrphan(const Transaction& tx, const std::string& peer_id) 
         m_outpoint_to_orphans[prevout_txid].insert(txid);
     }
 
+    m_total_bytes += tx_size;
     m_orphans[txid] = std::move(entry);
     m_peer_orphan_count[peer_id]++;
 
@@ -81,6 +87,7 @@ void TxOrphanPool::eraseOrphanLocked(const uint256& txid) {
         if (peer_it->second == 0) m_peer_orphan_count.erase(peer_it);
     }
 
+    m_total_bytes -= entry.tx_size;
     m_orphans.erase(it);
 }
 
@@ -188,3 +195,8 @@ bool TxOrphanPool::evictRandom() {
 }
 
 } // namespace dinero
+
+size_t dinero::TxOrphanPool::totalBytes() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_total_bytes;
+}

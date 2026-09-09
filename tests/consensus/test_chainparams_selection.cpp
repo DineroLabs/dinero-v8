@@ -61,6 +61,7 @@ public:
           cv_(params->shielded_cv_binding_activation_height),
           input_(params->shielded_input_binding_activation_height),
           auth_(params->shielded_spend_auth_activation_height),
+          outgoing_(params->shielded_outgoing_recovery_activation_height),
           auth_reset_(params->shielded_spend_auth_epoch_reset_height) {}
 
     ~ScopedShieldedHeights() {
@@ -68,6 +69,7 @@ public:
         params_->shielded_cv_binding_activation_height = cv_;
         params_->shielded_input_binding_activation_height = input_;
         params_->shielded_spend_auth_activation_height = auth_;
+        params_->shielded_outgoing_recovery_activation_height = outgoing_;
         params_->shielded_spend_auth_epoch_reset_height = auth_reset_;
     }
 
@@ -80,6 +82,7 @@ private:
     uint32_t cv_;
     uint32_t input_;
     uint32_t auth_;
+    uint32_t outgoing_;
     uint32_t auth_reset_;
 };
 
@@ -156,15 +159,42 @@ TEST(ChainParamsSelection, SpendAuthResetMustMatchActivationAndBeDistinct) {
     EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
 }
 
-// Spend authority ships DORMANT on every network. regtest is deliberately NOT
-// set to 0 the way the coinbase rule is. Wallet/circuit groundwork exists, but
-// activation still lacks a distinct, paired spend-auth epoch reset.
+TEST(ChainParamsSelection, OutgoingRecoveryCannotPrecedeSpendAuthority) {
+    SelectParams(Chain::REGTEST);
+    ChainParams* regtest = &dinero::MutableParams();
+    const ScopedShieldedHeights restore(regtest);
+
+    regtest->shielded_input_binding_activation_height = 300;
+    regtest->shielded_cv_binding_activation_height = 400;
+    regtest->shielded_epoch_reset_height = 400;
+    regtest->shielded_spend_auth_activation_height = 500;
+    regtest->shielded_spend_auth_epoch_reset_height = 500;
+
+    regtest->shielded_outgoing_recovery_activation_height = 499;
+    EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+    regtest->shielded_outgoing_recovery_activation_height = 500;
+    EXPECT_NO_THROW(SelectParams(Chain::REGTEST));
+    regtest->shielded_outgoing_recovery_activation_height = UINT32_MAX;
+    EXPECT_NO_THROW(SelectParams(Chain::REGTEST));
+
+    regtest->shielded_spend_auth_activation_height = UINT32_MAX;
+    regtest->shielded_spend_auth_epoch_reset_height = UINT32_MAX;
+    regtest->shielded_outgoing_recovery_activation_height = 500;
+    EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+}
+
+// Spend authority and outgoing recovery ship DORMANT on every network.
+// Regtest is deliberately not active by default: explicit command-line
+// heights make lifecycle rehearsals opt-in without weakening the production
+// sentinel or making unrelated hand-built block fixtures cross the fork.
 TEST(ChainParamsSelection, SpendAuthDormantOnAllNetworks) {
     for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
         SelectParams(chain);
         EXPECT_EQ(Params().shielded_spend_auth_activation_height, UINT32_MAX)
-            << "spend authority must stay dormant until the wallet side lands";
+            << "spend authority must stay dormant until activation review";
         EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, UINT32_MAX);
+        EXPECT_EQ(Params().shielded_outgoing_recovery_activation_height,
+                  UINT32_MAX);
     }
 }
 

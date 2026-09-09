@@ -138,10 +138,11 @@ in SwiftUI. No daemon-side changes; same RPCs.
   the divergent block on the minority fork(s), redeploy the fix,
   manually pick the winner. Solo operator can resolve this within
   hours; no external coordination needed.
-- **Wallet bug** could leave a shielded note unspendable. Forensic
-  recovery via `DeriveNoteSpendKey(rcm)` from the on-chain
-  encrypted_note. Probably recoverable in all cases short of a
-  non-deterministic prover bug.
+- **Wallet bug** could leave a shielded note unspendable. The legacy profile
+  can recover its sender-derived key from `rcm`; the recipient-authority
+  profile cannot. It requires the recipient's encrypted seed/`ask`, and its
+  diversified spend scalar is deliberately never persisted. Recovery must be
+  proven by seed-only rescan and restart tests before activation.
 - **DoS bug** from a malformed bundle — daemon crash. Fix is small,
   redeploy fast.
 - **No external testers** — the four-server fleet is the entire

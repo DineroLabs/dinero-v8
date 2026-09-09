@@ -129,7 +129,7 @@ struct ValidationContext {
     /// BuildShieldedValidationContext from chainparams.
     uint32_t                shielded_cv_binding_activation_height = UINT32_MAX;
 
-    /// Recipient-only spend-authority proof rule (version 0x05). At/above this
+    /// Recipient-only spend-authority proof rule (version 0x06). At/above this
     /// height spends must prove knowledge of the diversified recipient scalar.
     uint32_t                shielded_spend_auth_activation_height = UINT32_MAX;
 

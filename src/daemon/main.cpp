@@ -790,8 +790,13 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         }
         mp.shielded_spend_auth_activation_height = h;
         mp.shielded_spend_auth_epoch_reset_height = h;
+        // Regtest rehearses the wallet-format cutover at the same boundary.
+        // The parameters remain separately named so a production rollout can
+        // stage wallet readiness after the consensus spend-authority fork.
+        mp.shielded_outgoing_recovery_activation_height = h;
         std::cout << "[Network] REGTEST: spend authority + distinct epoch reset "
-                     "forced at height " << h << " (test-only)\n";
+                     "+ outgoing recovery forced at height " << h
+                  << " (test-only)\n";
     }
 
     // Consensus crypto precondition. Shielded validation fails closed when the

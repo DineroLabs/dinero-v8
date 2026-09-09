@@ -17,6 +17,7 @@
 #include "consensus/shielded/pedersen_commit.h"
 #include "consensus/shielded/pedersen_generators.h"
 #include "shielded_audit_desync.h"  // test-only transcript-desync provers
+#include "zk/zkvm/r1cs.h"
 
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
@@ -412,6 +413,7 @@ static bool MakeAuthKey(const Hash& candidate, AuthKey& out) {
 // A note committed to pk_d = s·G, spendable only by the holder of s.
 struct AuthFixture {
     AuthKey key{};
+    Hash nullifier_key = MakeHash(0x4E, 0x46);
     Hash value      = ValueAsHash(123'456'789);
     Hash randomness = MakeHash(0xC7, 0x31);
     Hash d          = MakeHash(0xB0, 0x0B);
@@ -425,14 +427,16 @@ struct AuthFixture {
 
         tree.Append(MakeHash(0x10));
         tree.Append(MakeHash(0x11));
-        // Commit to pk_d — NOT to a sender-invented Poseidon(sk, 0).
-        const Hash cm = NoteCommitment(d, key.pk_d, value, randomness);
+        const Hash ownership = AuthRecipientCommitmentKey(
+            key.pk_d, PoseidonHash2(nullifier_key, NullifierKeyTag()));
+        const Hash cm = NoteCommitment(d, ownership, value, randomness);
         const uint64_t idx = tree.Append(cm);
         ASSERT_GT(idx, 0u);
         const auto path = tree.GetAuthPath(idx);
         ASSERT_TRUE(path.has_value());
 
         witness.secret_key  = key.s;   // `s` occupies the secret_key slot
+        witness.nullifier_key = nullifier_key;
         witness.leaf_index  = idx;
         witness.value       = value;
         witness.randomness  = randomness;
@@ -440,7 +444,7 @@ struct AuthFixture {
         witness.rcv         = MakeHash(0x09, 0x11);
         witness.merkle_path = path->siblings;
 
-        pub.nullifier = ComputeNullifier(key.s, idx);  // nf from s
+        pub.nullifier = ComputeNullifier(nullifier_key, idx);
         pub.anchor    = tree.Root();
         ASSERT_EQ(PedersenCommit(witness.rcv, 123'456'789ULL, pub.cv), PedersenResult::Ok);
     }
@@ -455,17 +459,39 @@ TEST(ShieldedSpendAuthTest, ValidAuthProofVerifies) {
     EXPECT_TRUE(VerifySpend(proof, fx.pub, nullptr, true, true, /*spend_auth=*/true));
 }
 
+TEST(ShieldedSpendAuthTest, NullifierDomainIsConstrainedConstant) {
+    AuthFixture fx;
+    fx.Build();
+    auto circuit = BuildSpendCircuit(fx.witness, fx.pub, true, true);
+    ASSERT_TRUE(circuit.is_satisfied());
+    // Mutate the domain witness itself. Merely passing honest witnesses
+    // through ProveSpend would never exercise a prover-chosen domain tag.
+    bool checked = false;
+    for (const auto& constraint : circuit.constraints()) {
+        if (constraint.label != "auth_nfkey_domain") continue;
+        for (const auto& term : constraint.a.terms()) {
+            if (term.var.index == 0) continue;
+            const auto original = circuit.get_value(term.var);
+            circuit.set_value(term.var, original + zk::zkvm::Scalar::one());
+            EXPECT_NE(constraint.a.evaluate(circuit.witness()) *
+                          constraint.b.evaluate(circuit.witness()),
+                      constraint.c.evaluate(circuit.witness()));
+            std::string failure;
+            EXPECT_FALSE(circuit.is_satisfied(failure));
+            EXPECT_EQ(failure, "auth_nfkey_domain");
+            circuit.set_value(term.var, original);
+            checked = true;
+        }
+    }
+    EXPECT_TRUE(checked) << "nullifier domain must have an explicit constant constraint";
+}
+
 // ★ THE DOUBLE-SPEND HOLE THIS GUARDS.
 //
-// pk_d is committed X-ONLY, so a circuit constraining only x(s·G) == pk_d_x
-// admits BOTH s and (q - s): (q-s)·G = -(s·G) shares the same x, hence the
-// same commitment, the same Merkle path and the same anchor. But
-// nf = Poseidon(s, idx) != Poseidon(q-s, idx), so ONE note would yield TWO
-// valid nullifiers — the owner spends it twice.
-//
-// The circuit's even-y constraint makes the representative unique, matching
-// what NormalizeScalarToEvenY guarantees wallet-side. Neuter that constraint
-// and this test fails: the negated proof is produced and accepted.
+// The circuit keeps one canonical even-y representative for the x-only spend
+// key. Nullifiers no longer depend on this scalar (they use the separate nfk),
+// so scalar negation cannot create a second nullifier; rejecting it instead
+// prevents proof-witness malleability and matches wallet derivation.
 TEST(ShieldedSpendAuthTest, NegatedScalarCannotProduceSecondNullifier) {
     AuthFixture fx;
     fx.Build();
@@ -481,11 +507,8 @@ TEST(ShieldedSpendAuthTest, NegatedScalarCannotProduceSecondNullifier) {
     }
     ASSERT_NE(neg_s, fx.key.s);
 
-    // The negated scalar yields a DIFFERENT nullifier for the SAME note —
-    // that is exactly what makes it a double-spend if the proof succeeds.
     SpendPublicInputs second = fx.pub;
-    second.nullifier = ComputeNullifier(neg_s, fx.witness.leaf_index);
-    ASSERT_NE(second.nullifier, fx.pub.nullifier);
+    ASSERT_EQ(second.nullifier, fx.pub.nullifier);
 
     SpendWitness w = fx.witness;
     w.secret_key = neg_s;
@@ -515,7 +538,7 @@ TEST(ShieldedSpendAuthTest, WrongScalarCannotSpend) {
     w.secret_key = other.s;
 
     SpendPublicInputs pub = fx.pub;
-    pub.nullifier = ComputeNullifier(other.s, fx.witness.leaf_index);
+    pub.nullifier = fx.pub.nullifier;
 
     auto proof = ProveSpend(w, pub, nullptr, true, true, /*spend_auth=*/true);
     EXPECT_TRUE(proof.empty());
@@ -538,9 +561,26 @@ TEST(ShieldedSpendAuthTest, LegacySenderKeyCannotSpendAuthNote) {
     SpendWitness w = fx.witness;
     w.secret_key = sender_sk;
     SpendPublicInputs pub = fx.pub;
-    pub.nullifier = ComputeNullifier(sender_sk, fx.witness.leaf_index);
 
     auto proof = ProveSpend(w, pub, nullptr, true, true, /*spend_auth=*/true);
+    EXPECT_TRUE(proof.empty());
+}
+
+TEST(ShieldedSpendAuthTest, WrongNullifierViewKeyCannotOpenOwnership) {
+    AuthFixture fx;
+    fx.Build();
+
+    // Keep the spend scalar correct and make the public nullifier agree with
+    // the substituted nfk. If the nfk commitment were not part of the note's
+    // ownership key, this would create a second valid nullifier for one note.
+    SpendWitness w = fx.witness;
+    w.nullifier_key = MakeHash(0xA4, 0x5C);
+    SpendPublicInputs pub = fx.pub;
+    pub.nullifier = ComputeNullifier(w.nullifier_key, w.leaf_index);
+    ASSERT_NE(pub.nullifier, fx.pub.nullifier);
+
+    auto proof = ProveSpend(w, pub, nullptr, true, true,
+                            /*spend_auth=*/true);
     EXPECT_TRUE(proof.empty());
 }
 
@@ -558,14 +598,17 @@ TEST(ShieldedSpendAuthTest, ZeroScalarCannotSpendZeroKeyNote) {
     CommitmentTree tree;
     tree.Append(MakeHash(0x10));
     tree.Append(MakeHash(0x11));
-    // A note whose committed key is literally zero — what s = 0 would derive.
-    const Hash cm = NoteCommitment(d, zero, value, randomness);
+    const Hash nullifier_key = MakeHash(0x4E, 0x46);
+    const Hash ownership = AuthRecipientCommitmentKey(
+        zero, PoseidonHash2(nullifier_key, NullifierKeyTag()));
+    const Hash cm = NoteCommitment(d, ownership, value, randomness);
     const uint64_t idx = tree.Append(cm);
     const auto path = tree.GetAuthPath(idx);
     ASSERT_TRUE(path.has_value());
 
     SpendWitness w{};
     w.secret_key  = zero;
+    w.nullifier_key = nullifier_key;
     w.leaf_index  = idx;
     w.value       = value;
     w.randomness  = randomness;
@@ -574,7 +617,7 @@ TEST(ShieldedSpendAuthTest, ZeroScalarCannotSpendZeroKeyNote) {
     w.merkle_path = path->siblings;
 
     SpendPublicInputs pub{};
-    pub.nullifier = ComputeNullifier(zero, idx);
+    pub.nullifier = ComputeNullifier(nullifier_key, idx);
     pub.anchor    = tree.Root();
     ASSERT_EQ(PedersenCommit(w.rcv, 123'456'789ULL, pub.cv), PedersenResult::Ok);
 

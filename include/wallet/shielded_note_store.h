@@ -4,7 +4,8 @@
  * commitment tree so the wallet can spend them later.
  *
  * Each row represents a note the wallet can spend:
- *   - secret_key: spending authority (encrypted at rest)
+ *   - secret_key: legacy spend material; Auth rows persist a zero placeholder
+ *     and derive spending authority from the unlocked wallet seed when needed
  *   - value: note amount in una
  *   - randomness: per-note randomness used in commitment
  *   - leaf_index: position in the commitment tree
@@ -19,6 +20,7 @@
 #include "consensus/shielded/commitment_tree.h"
 
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,8 +42,8 @@ enum class NoteKeyScheme : uint8_t {
     /// pk = Poseidon(sk, 0), where the SENDER invented `sk`. The sender retains
     /// the ability to spend the note they sent.
     LegacySenderKey = 0,
-    /// pk_d = s·G, where `s` derives from the RECIPIENT's ivk. Only the
-    /// recipient can spend.
+    /// pk_d = s·G, where `s` derives from the RECIPIENT's ask plus a public
+    /// (ak,d) tweak. A full viewer can authenticate ownership but cannot spend.
     Auth = 1,
 };
 
@@ -49,6 +51,9 @@ struct ShieldedNote {
     int64_t  id = 0;
     uint64_t value_una = 0;
     consensus::shielded::Hash secret_key;
+    /// Auth profile: independently derived nullifier-view key. Legacy rows
+    /// mirror secret_key here during migration.
+    consensus::shielded::Hash nullifier_key;
     consensus::shielded::Hash public_key;
     consensus::shielded::Hash randomness;
     /// Packed 11-byte diversifier, zero-padded to 32 bytes. Required by the
@@ -67,6 +72,17 @@ struct ShieldedNote {
     NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey;
 };
 
+struct OutgoingShieldedNote {
+    consensus::shielded::Hash commitment{};
+    std::array<uint8_t, 107> recipient_address_payload{};
+    uint64_t value_una = 0;
+    std::array<uint8_t, 512> memo{};
+    std::string txid;
+    bool confirmed = false;
+    uint32_t created_height = 0;
+    uint32_t confirmed_height = 0;
+};
+
 class ShieldedNoteStore {
 public:
     enum class OpenResult : uint8_t { Ok = 0, IoError = 1, SchemaError = 2 };
@@ -82,13 +98,39 @@ public:
     /** Store a newly created shielded note (from shield operation). */
     bool AddNote(uint64_t value_una,
                  const consensus::shielded::Hash& secret_key,
+                 const consensus::shielded::Hash& nullifier_key,
                  const consensus::shielded::Hash& public_key,
                  const consensus::shielded::Hash& randomness,
                  const consensus::shielded::Hash& commitment,
                  uint64_t leaf_index,
-                 uint32_t created_height);
+                 uint32_t created_height,
+                 NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey,
+                 const consensus::shielded::Hash& diversifier = {});
+
+    /// Legacy compatibility overload: legacy notes use their spend secret as
+    /// the nullifier key. Auth-profile callers must use the explicit overload.
+    bool AddNote(uint64_t value_una,
+                 const consensus::shielded::Hash& secret_key,
+                 const consensus::shielded::Hash& public_key,
+                 const consensus::shielded::Hash& randomness,
+                 const consensus::shielded::Hash& commitment,
+                 uint64_t leaf_index,
+                 uint32_t created_height,
+                 NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey,
+                 const consensus::shielded::Hash& diversifier = {});
 
     /** Store a locally-created note that is not yet confirmed on-chain. */
+    bool AddPendingNote(uint64_t value_una,
+                        const consensus::shielded::Hash& secret_key,
+                        const consensus::shielded::Hash& nullifier_key,
+                        const consensus::shielded::Hash& public_key,
+                        const consensus::shielded::Hash& randomness,
+                        const consensus::shielded::Hash& commitment,
+                        uint32_t created_height,
+                        NoteKeyScheme key_scheme =
+                            NoteKeyScheme::LegacySenderKey,
+                        const consensus::shielded::Hash& diversifier = {});
+
     bool AddPendingNote(uint64_t value_una,
                         const consensus::shielded::Hash& secret_key,
                         const consensus::shielded::Hash& public_key,
@@ -139,6 +181,14 @@ public:
 
     /** Total unspent shielded balance. */
     uint64_t GetBalance() const;
+
+    /** Persist sender-recovered metadata. Upsert is idempotent across live
+     *  notification, rescan and restart; a confirmed observation replaces a
+     *  provisional mempool observation of the same commitment. */
+    bool UpsertOutgoingNote(const OutgoingShieldedNote& note);
+    bool RemoveOutgoingNote(const consensus::shielded::Hash& commitment,
+                            bool only_if_unconfirmed = false);
+    std::vector<OutgoingShieldedNote> ListOutgoingNotes() const;
 
     /** Wallet-side copy of all shielded chain leaves, in leaf-index order. */
     bool AppendChainLeaf(const consensus::shielded::Hash& commitment,

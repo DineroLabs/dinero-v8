@@ -86,18 +86,14 @@ DINERO_SHIELDED_PROVERKIT_API void
 dinero_shielded_free_result(dinero_shielded_unshield_result* out);
 
 /*
- * Derive the diversified shielded receive address for (dk, ivk, j).
+ * Legacy address derivation ABI. It cannot construct the recipient-authority
+ * format because it lacks ak and nvk. It now fails closed with
+ * DINERO_SHIELDED_ERR_INVALID_ARGUMENT; retained only for binary compatibility.
  *
  * dk32/ivk32: raw 32-byte keys (derived client-side; the wallet seed
  * never crosses this ABI). hrp: NUL-terminated "dins" | "tdins" | "rdins".
  * On success writes the bech32m address (NUL-terminated) into out_addr and
  * sets *out_addr_len to the length written, excluding the NUL terminator.
- *
- * SIZE NOTE: the spend-authority address payload is 75 bytes (d || pk_d_enc ||
- * pk_d_spend), up from 43, so encoded addresses are ~132 chars rather than ~85.
- * A 128-byte buffer that sufficed before now returns BUFFER_TOO_SMALL. Callers
- * that honour the two-call capacity protocol below need no change; callers with
- * a fixed buffer must grow it (192 is comfortable).
  *
  * *out_addr_len must be set by the caller on entry to the capacity of
  * out_addr (including room for the NUL terminator). If the buffer is too
@@ -114,6 +110,18 @@ dinero_shielded_free_result(dinero_shielded_unshield_result* out);
 DINERO_SHIELDED_PROVERKIT_API int32_t dinero_shielded_derive_address(
     const uint8_t* dk32, const uint8_t* ivk32, uint64_t j,
     const char* hrp, char* out_addr, size_t* out_addr_len);
+
+/*
+ * Derive the recipient-authority address for public viewing material
+ * (dk, ivk, ak, nvk, j). The 107-byte payload is
+ * d || pk_d_enc || pk_d_spend || nfk_commitment. No spend secret crosses the
+ * ABI; ak derives the public spend key and nvk derives only nullifier viewing.
+ * The output buffer uses the same capacity protocol documented above.
+ */
+DINERO_SHIELDED_PROVERKIT_API int32_t dinero_shielded_derive_address_v2(
+    const uint8_t* dk32, const uint8_t* ivk32, const uint8_t* ak32,
+    const uint8_t* nvk32, uint64_t j, const char* hrp,
+    char* out_addr, size_t* out_addr_len);
 
 #ifdef __cplusplus
 } // extern "C"

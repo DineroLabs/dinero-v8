@@ -224,6 +224,7 @@ def derive_account(seed: bytes, account: int) -> dict[str, bytes]:
         "ask": b32(ask),
         "nsk": b32(nsk),
         "ovk": poseidon(sk, dst("DIN/v7/shielded/ovk")),
+        "nvk": poseidon(sk, dst("DIN/v7/shielded/nvk")),
         "dk": poseidon(sk, dst("DIN/v7/shielded/dk")),
         "ak": ak_x,
         "nk": nk_x,
@@ -360,16 +361,36 @@ def derive_address(keys: dict[str, bytes], j: int) -> dict[str, object]:
     pd = hash_to_point(d)
     pk_enc = even(point_mul(int.from_bytes(keys["ivk"], "big"), pd))
     d_padded = d.ljust(32, b"\0")
-    spend_raw = int.from_bytes(poseidon(keys["ivk"], d_padded), "big")
-    spend_scalar, spend_point = normalize_scalar(spend_raw)
-    payload = d + b32(pk_enc[0]) + b32(spend_point[0])
+    spend_tweak = int.from_bytes(poseidon(keys["ak"], d_padded), "big")
+    spend_candidate = (int.from_bytes(keys["ask"], "big") + spend_tweak) % N
+    if spend_candidate == 0:
+        raise ValueError("diversified spend scalar is zero")
+    spend_scalar, spend_point = normalize_scalar(spend_candidate)
+
+    # Public derivation is intentionally independent of ask. A full-viewing
+    # wallet can authenticate note ownership from (ak, d), but cannot recover
+    # the private scalar ask+tweak. Both derivations must agree byte-for-byte.
+    spend_public = even(point_add(lift_even_x(keys["ak"]), point_mul(spend_tweak)))
+    if spend_public != spend_point:
+        raise AssertionError("private/public diversified spend derivations disagree")
+
+    nullifier_key = poseidon(keys["nvk"], d_padded)
+    nullifier_key_commitment = poseidon(
+        nullifier_key, dst("DIN/v7/shielded/nfkey/v1"))
+    ownership_key = poseidon(b32(spend_point[0]), nullifier_key_commitment)
+    payload = (d + b32(pk_enc[0]) + b32(spend_point[0]) +
+               nullifier_key_commitment)
     return {
         "j": j,
         "d": d,
         "p_d": b32(pd[0]),
         "pk_d_enc": b32(pk_enc[0]),
+        "spend_tweak": b32(spend_tweak),
         "spend_scalar": b32(spend_scalar),
         "pk_d_spend": b32(spend_point[0]),
+        "nullifier_key": nullifier_key,
+        "nullifier_key_commitment": nullifier_key_commitment,
+        "ownership_key": ownership_key,
         "payload": payload,
         "mainnet": bech32m("dins", payload),
         "testnet": bech32m("tdins", payload),
@@ -676,6 +697,23 @@ def build_vectors() -> dict[str, object]:
     nullifier_0 = poseidon(sk_note, b32(0))
     nullifier_max = poseidon(sk_note, b32(0xFFFFFFFFFFFFFFFF))
 
+    # Recipient-bound authority vector. The existing commitment/nullifier
+    # fields above remain the legacy oracle so changing the dormant design
+    # cannot silently rewrite historical consensus vectors.
+    auth_ownership_key = address["ownership_key"]
+    assert isinstance(auth_ownership_key, bytes)
+    # NoteCommitment always performs the diversifier binding itself:
+    #   addr_bind = Poseidon(ADDR_TAG, Poseidon(d, recipient_key))
+    # The authenticated profile changes recipient_key to the composite
+    # spend/nullifier-view ownership key; it does not remove d from the
+    # commitment preimage.
+    auth_addr_key = poseidon(d_packed, auth_ownership_key)
+    auth_addr_bind = poseidon(dst("DIN/v7/shielded/addr/v1"), auth_addr_key)
+    auth_commitment = poseidon(poseidon(auth_addr_bind, value_field), note["rcm"])
+    auth_nfk = address["nullifier_key"]
+    assert isinstance(auth_nfk, bytes)
+    auth_nullifier_0 = poseidon(auth_nfk, b32(0))
+
     zero_out, zero_trace = poseidon_trace(0, 0)
     seq_out, seq_trace = poseidon_trace(1, 2)
 
@@ -691,7 +729,7 @@ def build_vectors() -> dict[str, object]:
         "output_v04_cv": transcript_vector(
             "dinero.shielded.output.v1",
             output_base + [("u64", "cv0", cv[0]), ("scalar", "cvx", cv[1:])]),
-        "spend_v05_auth_dormant": transcript_vector(
+        "spend_v06_auth_dormant": transcript_vector(
             "dinero.shielded.spend.v1",
             spend_base + [("u64", "cv0", cv[0]), ("scalar", "cvx", cv[1:]),
                           ("u64", "auth", 1)]),
@@ -790,6 +828,10 @@ def build_vectors() -> dict[str, object]:
             "addr_key": addr_key, "addr_bind": addr_bind, "value_be32": value_field,
             "note_commitment": commitment, "nullifier_leaf_0": nullifier_0,
             "nullifier_leaf_u64max": nullifier_max,
+            "auth_ownership_key": auth_ownership_key,
+            "auth_addr_bind": auth_addr_bind,
+            "auth_note_commitment": auth_commitment,
+            "auth_nullifier_leaf_0": auth_nullifier_0,
         },
         "transcripts": transcripts,
         "binding": binding,

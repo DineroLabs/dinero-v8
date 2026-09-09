@@ -126,7 +126,7 @@ struct MempoolEntry {
           effective_vsize(0), ancestor_effective_vsize(0), ancestor_adjusted_feerate(0.0),
           is_confidential(false), total_proof_bytes(0), adjusted_fee_rate(0.0) {
         time = std::chrono::steady_clock::now();
-        tx_size = tx.Serialize().size() / 2; // Hex string size / 2 = bytes
+        tx_size = tx.GetSize(); // Actual serialized bytes, including witness
         fee_rate = tx_size > 0 ? static_cast<double>(fee) / tx_size : 0.0;
         effective_vsize = std::max<size_t>(tx.GetVirtualSize(), 1);
         ancestor_effective_vsize = effective_vsize;

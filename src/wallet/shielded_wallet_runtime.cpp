@@ -6,6 +6,7 @@
  * WalletManager.
  */
 
+#include "consensus/shielded/resource_limits.h"
 #include "wallet/shielded_wallet_ops.h"
 #include "wallet/shielded_derivation.h"
 
@@ -30,8 +31,21 @@
 namespace dinero::wallet::shielded_ops {
 
 namespace sh = consensus::shielded;
+namespace shdrv = ::dinero::wallet::shielded;
 
 namespace {
+
+struct ScopedAccountKeys {
+    shdrv::ShieldedAccountKeys* keys = nullptr;
+
+    explicit ScopedAccountKeys(shdrv::ShieldedAccountKeys& input)
+        : keys(&input) {}
+    ScopedAccountKeys(const ScopedAccountKeys&) = delete;
+    ScopedAccountKeys& operator=(const ScopedAccountKeys&) = delete;
+    ~ScopedAccountKeys() {
+        if (keys != nullptr) OPENSSL_cleanse(keys, sizeof(*keys));
+    }
+};
 
 // Audit Critical #1: decide whether wallet-built shielded proofs must be
 // cv-bound (0x03/0x04). A tx attached now is expected to be mined in the NEXT
@@ -60,6 +74,49 @@ bool SpendAuthForMiningAtTip(uint32_t tip_height) {
     return activation != UINT32_MAX && target_height >= activation;
 }
 
+std::optional<OutgoingViewEmissionContext> OutgoingContextForCurrentTip(
+    dinero::WalletManager& wallet, std::string& error) {
+    const auto& params = dinero::Params();
+    const uint32_t tip = wallet.getBlockchainHeight();
+    if (!shdrv::IsOutgoingActivationPolicyValid(
+            params.shielded_spend_auth_activation_height,
+            params.shielded_outgoing_recovery_activation_height)) {
+        error = "invalid_outgoing_recovery_activation_policy";
+        return std::nullopt;
+    }
+    const bool active = shdrv::IsOutgoingRuleActive(
+                            tip, params.shielded_spend_auth_activation_height) &&
+                        shdrv::IsOutgoingRuleActive(
+                            tip, params.shielded_outgoing_recovery_activation_height);
+    if (!active) return std::nullopt;
+
+    auto seed = wallet.GetMasterSeed();
+    if (!seed || seed->size() != 64) {
+        error = "unlocked 64-byte master seed required for outgoing recovery";
+        return std::nullopt;
+    }
+    try {
+        // Current shielded construction is account-0 scoped. When account
+        // selection becomes user-facing, the originating account id must be
+        // persisted per note and supplied here rather than guessed.
+        auto keys = shdrv::DeriveShieldedAccount(seed->data(), seed->size(), 0);
+        ScopedAccountKeys keys_guard(keys);
+        OutgoingViewEmissionContext context;
+        context.ovk = keys.ovk;
+        context.current_tip_height = tip;
+        context.spend_auth_activation_height =
+            params.shielded_spend_auth_activation_height;
+        context.outgoing_activation_height =
+            params.shielded_outgoing_recovery_activation_height;
+        OPENSSL_cleanse(seed->data(), seed->size());
+        return context;
+    } catch (const std::exception& e) {
+        OPENSSL_cleanse(seed->data(), seed->size());
+        error = std::string("failed to derive outgoing viewing key: ") + e.what();
+        return std::nullopt;
+    }
+}
+
 // Expected shielded-address HRP for the active chain (spec §7.1 network
 // match). A recipient address whose HRP differs must be rejected before
 // any tx work.
@@ -76,8 +133,72 @@ const char* ExpectedShieldedHrp() {
 struct OwnedAddressedRecipient {
     AddressedRecipient recipient;
     sh::Hash spend_secret{};
+    sh::Hash nullifier_key{};
     sh::Hash d_packed{};
+
+    ~OwnedAddressedRecipient() {
+        OPENSSL_cleanse(spend_secret.data(), spend_secret.size());
+        OPENSSL_cleanse(nullifier_key.data(), nullifier_key.size());
+    }
 };
+
+struct RecipientScanAuthority {
+    sh::Hash ivk{};
+    sh::Hash ak{};
+    sh::Hash nvk{};
+    sh::Hash ask{};
+    bool has_spend_authority = false;
+
+    ~RecipientScanAuthority() {
+        OPENSSL_cleanse(this, sizeof(*this));
+    }
+};
+
+struct ScopedViewingHashes {
+    std::vector<sh::Hash> values;
+
+    ScopedViewingHashes() = default;
+    explicit ScopedViewingHashes(std::vector<sh::Hash> input)
+        : values(std::move(input)) {}
+    ScopedViewingHashes(const ScopedViewingHashes&) = delete;
+    ScopedViewingHashes& operator=(const ScopedViewingHashes&) = delete;
+    ~ScopedViewingHashes() {
+        for (auto& value : values) {
+            OPENSSL_cleanse(value.data(), value.size());
+        }
+    }
+};
+
+std::vector<RecipientScanAuthority> GetRecipientScanAuthorities(
+    dinero::WalletManager& wallet) {
+    auto viewers = wallet.GetShieldedRecipientViewingAuthorities();
+    std::vector<RecipientScanAuthority> out;
+    out.reserve(viewers.size());
+    for (const auto& viewer : viewers) {
+        out.push_back({viewer.ivk, viewer.ak, viewer.nvk, {}, false});
+    }
+    for (auto& viewer : viewers) {
+        OPENSSL_cleanse(&viewer, sizeof(viewer));
+    }
+    auto seed = wallet.GetMasterSeed();
+    if (!seed || seed->size() != 64) return out;
+    try {
+        for (std::size_t account = 0; account < out.size(); ++account) {
+            auto keys = shdrv::DeriveShieldedAccount(
+                seed->data(), seed->size(), static_cast<uint32_t>(account));
+            ScopedAccountKeys keys_guard(keys);
+            out[account].ask = keys.ask;
+            out[account].has_spend_authority = true;
+        }
+    } catch (...) {
+        for (auto& authority : out) {
+            OPENSSL_cleanse(authority.ask.data(), authority.ask.size());
+            authority.has_spend_authority = false;
+        }
+    }
+    OPENSSL_cleanse(seed->data(), seed->size());
+    return out;
+}
 
 std::optional<OwnedAddressedRecipient> DeriveFreshOwnedRecipient(
     dinero::WalletManager& wallet, uint64_t value_una, std::string& error) {
@@ -95,18 +216,22 @@ std::optional<OwnedAddressedRecipient> DeriveFreshOwnedRecipient(
     try {
         namespace shdrv = ::dinero::wallet::shielded;
         auto keys = shdrv::DeriveShieldedAccount(seed->data(), seed->size(), 0);
+        ScopedAccountKeys keys_guard(keys);
         OPENSSL_cleanse(seed->data(), seed->size());
         auto address = shdrv::DeriveDiversifiedAddress(
             keys, j, ExpectedShieldedHrp());
-        auto spend = shdrv::DeriveDiversifiedSpendKey(keys.ivk, address.d);
+        auto spend = shdrv::DeriveDiversifiedSpendKey(
+            keys.ask, keys.ak, address.d);
         OwnedAddressedRecipient out;
         out.recipient.d = address.d;
         out.recipient.pk_d = address.pk_d;
         out.recipient.pk_d_spend = address.pk_d_spend;
+        out.recipient.nfk_commitment = address.nfk_commitment;
         out.recipient.value_una = value_una;
         out.spend_secret = spend.s;
+        out.nullifier_key = shdrv::DeriveDiversifiedNullifierKey(
+            keys.nvk, address.d);
         std::memcpy(out.d_packed.data(), address.d.data(), address.d.size());
-        OPENSSL_cleanse(&keys, sizeof(keys));
         OPENSSL_cleanse(spend.s.data(), spend.s.size());
         return out;
     } catch (const std::exception& e) {
@@ -160,6 +285,221 @@ std::optional<uint64_t> FindLeafIndex(const std::vector<sh::Hash>& leaves,
         if (leaves[i] == commitment) return i;
     }
     return std::nullopt;
+}
+
+struct RecognizedOwnedNote {
+    shdrv::NotePlaintext plaintext{};
+    sh::Hash secret_key{};
+    sh::Hash nullifier_key{};
+    sh::Hash public_key{};
+    sh::Hash d_packed{};
+    NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey;
+
+    ~RecognizedOwnedNote() {
+        OPENSSL_cleanse(&plaintext, sizeof(plaintext));
+        OPENSSL_cleanse(secret_key.data(), secret_key.size());
+        OPENSSL_cleanse(nullifier_key.data(), nullifier_key.size());
+    }
+};
+
+// A confirmed-block notification and a historical rescan must recognize the
+// same note under the same key convention.  Keeping this in one function is
+// load-bearing: the spend-authority rollout originally taught only the live
+// scan about recipient-derived keys, which made those notes disappear after a
+// restore/rescan even though ordinary block processing had found them.
+std::optional<RecognizedOwnedNote> RecognizeOwnedNote(
+    const sh::ShieldedOutput& output,
+    const std::vector<RecipientScanAuthority>& authorities,
+    uint32_t output_height) {
+
+    shdrv::EncryptedNote enc{};
+    if (output.encrypted_note.size() == shdrv::kEncryptedNoteBytes) {
+        std::memcpy(enc.data(), output.encrypted_note.data(), enc.size());
+    } else if (output.encrypted_note.size() == shdrv::kOutgoingEnvelopeBytes &&
+               output.encrypted_note[0] == shdrv::kOutgoingEnvelopeVersion) {
+        const auto& params = dinero::Params();
+        if (!shdrv::IsOutgoingRuleActive(
+                output_height,
+                params.shielded_spend_auth_activation_height) ||
+            !shdrv::IsOutgoingRuleActive(
+                output_height,
+                params.shielded_outgoing_recovery_activation_height)) {
+            return std::nullopt;
+        }
+        std::memcpy(enc.data(), output.encrypted_note.data() + 1, enc.size());
+    } else {
+        return std::nullopt;
+    }
+    const bool auth_active = sh::AuthResourcesActive(
+        output_height, dinero::Params().shielded_spend_auth_activation_height);
+    for (const auto& authority : authorities) {
+        auto plaintext = shdrv::TryDecryptNoteForViewer(authority.ivk, enc);
+        if (!plaintext) continue;
+
+        RecognizedOwnedNote recognized;
+        recognized.plaintext = *plaintext;
+        std::memcpy(recognized.d_packed.data(), plaintext->d.data(),
+                    plaintext->d.size());
+        const sh::Hash value_h = ValueToHash(plaintext->value_una);
+
+        if (!auth_active) {
+            // Legacy sender-chosen authority is recognized only before the
+            // cutover. Accepting this convention afterward would credit a
+            // note that the required Auth spend circuit can never open.
+            recognized.secret_key = shdrv::DeriveNoteSpendKey(plaintext->rcm);
+            recognized.nullifier_key = recognized.secret_key;
+            recognized.public_key = sh::PoseidonHash2(recognized.secret_key,
+                                                       sh::Hash{});
+            if (sh::NoteCommitment(recognized.d_packed, recognized.public_key,
+                                   value_h, plaintext->rcm) == output.commitment) {
+                recognized.key_scheme = NoteKeyScheme::LegacySenderKey;
+                return recognized;
+            }
+            // AEAD success identifies the viewing key. A commitment mismatch
+            // is malformed data, not a reason to try an Auth interpretation
+            // before its consensus boundary.
+            return std::nullopt;
+        }
+
+        // Recipient-bound authority. Full-viewing material derives the public
+        // spend key and private nullifier-view key, but not the spend scalar.
+        const sh::Hash spend_public =
+            shdrv::DeriveDiversifiedSpendPublicKey(authority.ak, plaintext->d);
+        recognized.nullifier_key = shdrv::DeriveDiversifiedNullifierKey(
+            authority.nvk, plaintext->d);
+        const sh::Hash nfk_commitment =
+            shdrv::NullifierKeyCommitment(recognized.nullifier_key);
+        recognized.public_key = sh::AuthRecipientCommitmentKey(
+            spend_public, nfk_commitment);
+        if (authority.has_spend_authority) {
+            auto diversified = shdrv::DeriveDiversifiedSpendKey(
+                authority.ask, authority.ak, plaintext->d);
+            recognized.secret_key = diversified.s;
+            OPENSSL_cleanse(diversified.s.data(), diversified.s.size());
+        }
+        if (sh::NoteCommitment(recognized.d_packed, recognized.public_key,
+                               value_h, plaintext->rcm) == output.commitment) {
+            recognized.key_scheme = NoteKeyScheme::Auth;
+            return recognized;
+        }
+        OPENSSL_cleanse(recognized.secret_key.data(),
+                        recognized.secret_key.size());
+        OPENSSL_cleanse(recognized.nullifier_key.data(),
+                        recognized.nullifier_key.size());
+
+        // AEAD success identifies the viewing key.  A commitment mismatch is
+        // malformed/tampered output data, not a reason to try another account.
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+bool HydrateSpendAuthority(dinero::WalletManager& wallet,
+                           ShieldedNote& note,
+                           std::string& error) {
+    if (note.key_scheme != NoteKeyScheme::Auth) return true;
+    // Never trust persisted/cached spend authority, including rows from an
+    // earlier development build. Every auth spend requires the unlocked seed.
+    OPENSSL_cleanse(note.secret_key.data(), note.secret_key.size());
+
+    shdrv::Diversifier d{};
+    std::copy_n(note.d.begin(), d.size(), d.begin());
+    auto authorities = GetRecipientScanAuthorities(wallet);
+    bool had_unlocked_authority = false;
+    for (const auto& authority : authorities) {
+        if (!authority.has_spend_authority) continue;
+        had_unlocked_authority = true;
+        try {
+            const auto nfk = shdrv::DeriveDiversifiedNullifierKey(
+                authority.nvk, d);
+            if (nfk != note.nullifier_key) continue;
+            auto diversified = shdrv::DeriveDiversifiedSpendKey(
+                authority.ask, authority.ak, d);
+            const auto ownership = sh::AuthRecipientCommitmentKey(
+                diversified.pk_d, shdrv::NullifierKeyCommitment(nfk));
+            if (ownership != note.public_key) {
+                OPENSSL_cleanse(diversified.s.data(), diversified.s.size());
+                continue;
+            }
+            note.secret_key = diversified.s;
+            OPENSSL_cleanse(diversified.s.data(), diversified.s.size());
+            return true;
+        } catch (...) {
+            continue;
+        }
+    }
+    error = had_unlocked_authority
+        ? "recipient_bound_spend_authority_not_found"
+        : "wallet_unlock_required_for_recipient_bound_spend";
+    return false;
+}
+
+std::optional<OutgoingShieldedNote> RecognizeOutgoingNote(
+    const sh::ShieldedOutput& output,
+    const std::vector<sh::Hash>& wallet_ovks,
+    uint32_t observation_height,
+    const std::string& txid,
+    bool confirmed) {
+    if (output.encrypted_note.size() != shdrv::kOutgoingEnvelopeBytes) {
+        return std::nullopt;
+    }
+    shdrv::OutgoingPublicOutput public_output;
+    public_output.commitment = output.commitment;
+    public_output.value_commitment = output.cv;
+    const auto& params = dinero::Params();
+    for (const auto& ovk : wallet_ovks) {
+        auto recovered = shdrv::RecoverOutgoingNote(
+            ovk, public_output, output.encrypted_note, observation_height,
+            params.shielded_spend_auth_activation_height,
+            params.shielded_outgoing_recovery_activation_height);
+        if (recovered.verdict != shdrv::OutgoingRecoveryVerdict::Ok) continue;
+
+        OutgoingShieldedNote note;
+        note.commitment = output.commitment;
+        note.recipient_address_payload = recovered.note.recipient_address_payload;
+        note.value_una = recovered.note.value_una;
+        note.memo = recovered.note.memo;
+        note.txid = txid;
+        note.confirmed = confirmed;
+        note.created_height = observation_height;
+        note.confirmed_height = confirmed ? observation_height : 0;
+        return note;
+    }
+    return std::nullopt;
+}
+
+bool PersistOutgoingNotes(ShieldedNoteStore& store,
+                          const sh::ShieldedBundle& bundle,
+                          const std::vector<sh::Hash>& wallet_ovks,
+                          uint32_t observation_height,
+                          const std::string& txid,
+                          bool confirmed) {
+    for (const auto& output : bundle.outputs) {
+        auto outgoing = RecognizeOutgoingNote(output, wallet_ovks,
+                                               observation_height, txid,
+                                               confirmed);
+        if (outgoing && !store.UpsertOutgoingNote(*outgoing)) return false;
+    }
+    return true;
+}
+
+bool PersistProvisionalOutgoingFromTx(ShieldedNoteStore& store,
+                                      dinero::WalletManager& wallet,
+                                      const dinero::Transaction& tx,
+                                      std::string* error) {
+    if (!tx.IsShielded()) return true;
+    sh::ShieldedBundle bundle;
+    const auto decode = sh::DeserializeShieldedBundle(tx.shielded_bundle_bytes,
+                                                       &bundle);
+    if (decode != sh::BundleDecodeError::Ok) {
+        if (error) *error = "outgoing_bundle_decode_failed";
+        return false;
+    }
+    ScopedViewingHashes ovks(wallet.GetShieldedOutgoingViewingKeys());
+    return PersistOutgoingNotes(store, bundle, ovks.values,
+                                wallet.getBlockchainHeight(),
+                                tx.GetTxid().AsUint256().GetHex(),
+                                /*confirmed=*/false);
 }
 
 std::string DeriveShieldedStorePath(const dinero::WalletManager& wallet) {
@@ -326,7 +666,8 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
     // does not require spend unlock; wallet.lock and spend-time timeout
     // only drop spend secrets.
     namespace shdrv = ::dinero::wallet::shielded;
-    std::vector<sh::Hash> wallet_ivks = wallet.GetShieldedIncomingViewingKeys();
+    auto recipient_authorities = GetRecipientScanAuthorities(wallet);
+    ScopedViewingHashes wallet_ovks(wallet.GetShieldedOutgoingViewingKeys());
 
     for (const auto& tx : transactions) {
         if (!tx.IsShielded()) {
@@ -353,53 +694,15 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
             // commitment and register the note as pending so the
             // ConfirmNote step below promotes it. Stops at the first
             // matching ivk (a note can only belong to one account).
-            if (!wallet_ivks.empty() &&
-                output.encrypted_note.size() == shdrv::kEncryptedNoteBytes) {
-                shdrv::EncryptedNote enc{};
-                std::memcpy(enc.data(), output.encrypted_note.data(), enc.size());
-                for (const auto& ivk : wallet_ivks) {
-                    auto plaintext = shdrv::TryDecryptNoteForViewer(ivk, enc);
-                    if (!plaintext) continue;
-                    sh::Hash sk_note = shdrv::DeriveNoteSpendKey(plaintext->rcm);
-                    sh::Hash pk_note = sh::PoseidonHash2(sk_note, sh::Hash{});
-                    sh::Hash d_packed{};
-                    std::memcpy(d_packed.data(), plaintext->d.data(),
-                                plaintext->d.size());
-                    sh::Hash value_h = ValueToHash(plaintext->value_una);
-                    sh::Hash expected = sh::NoteCommitment(d_packed, pk_note,
-                                                           value_h, plaintext->rcm);
-                    if (expected == output.commitment) {
-                        (void)g_runtime->store.AddPendingNote(
-                            plaintext->value_una, sk_note, pk_note,
-                            plaintext->rcm, output.commitment, height,
-                            NoteKeyScheme::LegacySenderKey, d_packed);
-                    } else {
-                        // Spend-authority note: committed to pk_d = s·G rather
-                        // than to the sender-derived Poseidon(rcm-key, 0), so
-                        // the legacy recomputation above cannot match. `s` is
-                        // NOT in the plaintext — the recipient derives it from
-                        // their OWN ivk plus the note's diversifier, which is
-                        // exactly why the sender cannot spend it.
-                        //
-                        // Distinguished by which commitment formula reproduces
-                        // the on-chain value, not by height: the note carries
-                        // its own convention, and a note is only detectable at
-                        // all if one of the two formulas matches.
-                        auto dk = shdrv::DeriveDiversifiedSpendKey(ivk,
-                                                                   plaintext->d);
-                        sh::Hash expected_auth = sh::NoteCommitment(
-                            d_packed, dk.pk_d, value_h, plaintext->rcm);
-                        if (expected_auth == output.commitment) {
-                            (void)g_runtime->store.AddPendingNote(
-                                plaintext->value_una, dk.s, dk.pk_d,
-                                plaintext->rcm, output.commitment, height,
-                                NoteKeyScheme::Auth, d_packed);
-                        }
-                        OPENSSL_cleanse(dk.s.data(), dk.s.size());
-                    }
-                    OPENSSL_cleanse(sk_note.data(), sk_note.size());
-                    break;
-                }
+            if (auto owned = RecognizeOwnedNote(output, recipient_authorities, height)) {
+                (void)g_runtime->store.AddPendingNote(
+                    owned->plaintext.value_una, owned->secret_key,
+                    owned->nullifier_key,
+                    owned->public_key, owned->plaintext.rcm,
+                    output.commitment, height, owned->key_scheme,
+                    owned->d_packed);
+                OPENSSL_cleanse(owned->secret_key.data(),
+                                owned->secret_key.size());
             }
 
             const uint64_t leaf_index = g_runtime->store.GetChainLeafCount();
@@ -416,6 +719,12 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
                 if (error) *error = "shielded_leaf_count_drift";
                 return false;
             }
+        }
+        if (!PersistOutgoingNotes(g_runtime->store, bundle, wallet_ovks.values, height,
+                                  tx.GetTxid().AsUint256().GetHex(),
+                                  /*confirmed=*/true)) {
+            if (error) *error = "shielded_outgoing_note_persist_failed";
+            return false;
         }
     }
 
@@ -456,12 +765,14 @@ bool RescanConfirmedBlock(dinero::WalletManager& wallet,
     }
 
     namespace shdrv = ::dinero::wallet::shielded;
-    std::vector<sh::Hash> wallet_ivks;
+    std::vector<RecipientScanAuthority> recipient_authorities;
+    ScopedViewingHashes wallet_ovks;
     if (has_shielded_outputs) {
-        wallet_ivks = wallet.GetShieldedIncomingViewingKeys();
+        recipient_authorities = GetRecipientScanAuthorities(wallet);
+        wallet_ovks.values = wallet.GetShieldedOutgoingViewingKeys();
     }
 
-    if (has_shielded_outputs && wallet_ivks.empty()) {
+    if (has_shielded_outputs && recipient_authorities.empty()) {
         if (error) *error = "shielded_rescan_no_viewing_keys_unlock_once";
         return false;
     }
@@ -505,39 +816,29 @@ bool RescanConfirmedBlock(dinero::WalletManager& wallet,
                 leaves.push_back(output.commitment);
             }
 
-            if (output.encrypted_note.size() != shdrv::kEncryptedNoteBytes) {
-                continue;
-            }
-
-            shdrv::EncryptedNote enc{};
-            std::memcpy(enc.data(), output.encrypted_note.data(), enc.size());
-            for (const auto& ivk : wallet_ivks) {
-                auto plaintext = shdrv::TryDecryptNoteForViewer(ivk, enc);
-                if (!plaintext) continue;
-
-                sh::Hash sk_note = shdrv::DeriveNoteSpendKey(plaintext->rcm);
-                sh::Hash pk_note = sh::PoseidonHash2(sk_note, sh::Hash{});
-                sh::Hash d_packed{};
-                std::memcpy(d_packed.data(), plaintext->d.data(), plaintext->d.size());
-                sh::Hash value_h = ValueToHash(plaintext->value_una);
-                sh::Hash expected = sh::NoteCommitment(d_packed, pk_note,
-                                                       value_h, plaintext->rcm);
-                if (expected == output.commitment &&
-                    !HasOwnedNoteCommitment(g_runtime->store, output.commitment)) {
-                    if (!g_runtime->store.AddNote(plaintext->value_una,
-                                                  sk_note, pk_note,
-                                                  plaintext->rcm,
-                                                  output.commitment,
-                                                  leaf_index,
-                                                  height)) {
-                        OPENSSL_cleanse(sk_note.data(), sk_note.size());
-                        if (error) *error = "shielded_rescan_note_insert_failed";
-                        return false;
-                    }
+            if (auto owned = RecognizeOwnedNote(output, recipient_authorities, height)) {
+                if (!HasOwnedNoteCommitment(g_runtime->store,
+                                            output.commitment) &&
+                    !g_runtime->store.AddNote(
+                        owned->plaintext.value_una, owned->secret_key,
+                        owned->nullifier_key,
+                        owned->public_key, owned->plaintext.rcm,
+                        output.commitment, leaf_index, height,
+                        owned->key_scheme, owned->d_packed)) {
+                    OPENSSL_cleanse(owned->secret_key.data(),
+                                    owned->secret_key.size());
+                    if (error) *error = "shielded_rescan_note_insert_failed";
+                    return false;
                 }
-                OPENSSL_cleanse(sk_note.data(), sk_note.size());
-                break;
+                OPENSSL_cleanse(owned->secret_key.data(),
+                                owned->secret_key.size());
             }
+        }
+        if (!PersistOutgoingNotes(g_runtime->store, bundle, wallet_ovks.values, height,
+                                  tx.GetTxid().AsUint256().GetHex(),
+                                  /*confirmed=*/true)) {
+            if (error) *error = "shielded_rescan_outgoing_note_insert_failed";
+            return false;
         }
     }
 
@@ -574,6 +875,10 @@ bool ProcessDisconnectedBlock(dinero::WalletManager& wallet,
         }
         for (const auto& output : bundle.outputs) {
             g_runtime->store.UnconfirmNote(output.commitment);
+            if (!g_runtime->store.RemoveOutgoingNote(output.commitment)) {
+                if (error) *error = "shielded_outgoing_reorg_remove_failed";
+                return false;
+            }
             ++removed_outputs;
         }
     }
@@ -603,6 +908,13 @@ std::vector<ShieldedNote> ListShieldedNotes(dinero::WalletManager& wallet, bool 
         return {};
     }
     return include_pending ? g_runtime->store.ListAll() : g_runtime->store.ListUnspent();
+}
+
+std::vector<OutgoingShieldedNote> ListOutgoingShieldedNotes(
+    dinero::WalletManager& wallet) {
+    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    if (!EnsureRuntimeLocked(wallet, nullptr)) return {};
+    return g_runtime->store.ListOutgoingNotes();
 }
 
 uint64_t GetShieldedBalance(dinero::WalletManager& wallet) {
@@ -680,7 +992,7 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
         err.error  = "no note at leaf_index " + std::to_string(note_leaf_index);
         return err;
     }
-    const auto& note = *note_opt;
+    auto note = *note_opt;
     if (!note.confirmed) {
         AttachUnshieldResult err{};
         err.status = OpStatus::InvalidParams;
@@ -699,6 +1011,13 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
         err.error  = "fee must be strictly less than note value";
         return err;
     }
+    std::string authority_error;
+    if (!HydrateSpendAuthority(wallet, note, authority_error)) {
+        AttachUnshieldResult err{};
+        err.status = OpStatus::InvalidParams;
+        err.error = authority_error;
+        return err;
+    }
 
     auto auth_path = g_runtime->tree.GetAuthPath(note.leaf_index);
     if (!auth_path) {
@@ -710,6 +1029,7 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
 
     UnshieldNoteInput input;
     input.secret_key  = note.secret_key;
+    input.nullifier_key = note.nullifier_key;
     input.randomness  = note.randomness;
     input.d           = note.d;
     input.anchor      = g_runtime->tree.Root();
@@ -762,6 +1082,13 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
     const bool spend_auth = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
     std::optional<OwnedAddressedRecipient> owned;
     AttachShieldResult built;
+    std::string outgoing_error;
+    auto outgoing = OutgoingContextForCurrentTip(wallet, outgoing_error);
+    if (!outgoing_error.empty()) {
+        built.status = OpStatus::InvalidParams;
+        built.error = outgoing_error;
+        return built;
+    }
     if (spend_auth) {
         std::string derive_error;
         owned = DeriveFreshOwnedRecipient(wallet, value_una, derive_error);
@@ -771,10 +1098,14 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
             return built;
         }
         built = BuildAddressedShieldBundleForTx(
-            tx, owned->recipient, nullptr, cv_bound, true);
+            tx, owned->recipient, nullptr, cv_bound, true,
+            outgoing ? &*outgoing : nullptr);
         if (built.status == OpStatus::Ok) {
-            built.nullifier_key = owned->spend_secret;
-            built.public_key = owned->recipient.pk_d_spend;
+            built.spend_secret_key = owned->spend_secret;
+            built.nullifier_key = owned->nullifier_key;
+            built.public_key = sh::AuthRecipientCommitmentKey(
+                owned->recipient.pk_d_spend,
+                owned->recipient.nfk_commitment);
         }
     } else {
         built = BuildShieldBundleForTx(tx, value_una, cv_bound);
@@ -786,6 +1117,7 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
     // Dry-run mode (issue #273 fee measurement): build/attach only, the
     // tx is discarded — do not persist the pending note.
     if (!persist) {
+        OPENSSL_cleanse(built.spend_secret_key.data(), built.spend_secret_key.size());
         OPENSSL_cleanse(built.nullifier_key.data(), built.nullifier_key.size());
         return built;
     }
@@ -793,6 +1125,7 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
     // Persist the pending note. ProcessConfirmedBlock promotes it to
     // confirmed (and assigns its real leaf_index) once the block lands.
     if (!g_runtime->store.AddPendingNote(value_una,
+                                         built.spend_secret_key,
                                          built.nullifier_key,
                                          built.public_key,
                                          built.randomness,
@@ -804,10 +1137,27 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
         AttachShieldResult err{};
         err.status = OpStatus::StoreError;
         err.error  = "failed to persist pending shielded note";
+        OPENSSL_cleanse(built.spend_secret_key.data(), built.spend_secret_key.size());
         OPENSSL_cleanse(built.nullifier_key.data(), built.nullifier_key.size());
         return err;
     }
 
+    std::string provisional_error;
+    if (!PersistProvisionalOutgoingFromTx(g_runtime->store, wallet, tx,
+                                           &provisional_error)) {
+        (void)g_runtime->store.RollbackPendingTransaction({},
+                                                          {built.commitment});
+        AttachShieldResult err{};
+        err.status = OpStatus::StoreError;
+        err.error = provisional_error.empty()
+            ? "failed_to_persist_provisional_outgoing_note"
+            : provisional_error;
+        OPENSSL_cleanse(built.spend_secret_key.data(), built.spend_secret_key.size());
+        OPENSSL_cleanse(built.nullifier_key.data(), built.nullifier_key.size());
+        return err;
+    }
+
+    OPENSSL_cleanse(built.spend_secret_key.data(), built.spend_secret_key.size());
     OPENSSL_cleanse(built.nullifier_key.data(), built.nullifier_key.size());
     return built;
 }
@@ -861,16 +1211,39 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     recipient.d         = decoded.d;
     recipient.pk_d      = decoded.pk_d;
     recipient.pk_d_spend = decoded.pk_d_spend;
+    recipient.nfk_commitment = decoded.nfk_commitment;
     recipient.value_una = value_una;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
     const bool spend_auth = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
+    std::string outgoing_error;
+    auto outgoing = OutgoingContextForCurrentTip(wallet, outgoing_error);
+    if (!outgoing_error.empty()) {
+        AttachShieldResult err{};
+        err.status = OpStatus::InvalidParams;
+        err.error = outgoing_error;
+        return err;
+    }
     auto built = BuildAddressedShieldBundleForTx(tx, recipient, recipient_memo,
-                                                 cv_bound, spend_auth);
+                                                 cv_bound, spend_auth,
+                                                 outgoing ? &*outgoing : nullptr);
     // No self note to persist — the note belongs to the recipient. `persist`
     // exists only for API symmetry with AttachShieldOutputBundle (dry-run
     // fee measurement); there is no wallet state to mutate here.
-    (void)persist;
+    if (built.status == OpStatus::Ok && persist) {
+        std::string provisional_error;
+        if (!PersistProvisionalOutgoingFromTx(g_runtime->store, wallet, tx,
+                                               &provisional_error)) {
+            (void)g_runtime->store.RollbackPendingTransaction({},
+                                                              {built.commitment});
+            AttachShieldResult err{};
+            err.status = OpStatus::StoreError;
+            err.error = provisional_error.empty()
+                ? "failed_to_persist_provisional_outgoing_note"
+                : provisional_error;
+            return err;
+        }
+    }
     return built;
 }
 
@@ -902,7 +1275,7 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
         err.error  = "no note at leaf_index " + std::to_string(note_leaf_index);
         return err;
     }
-    const auto& note = *note_opt;
+    auto note = *note_opt;
     if (!note.confirmed) {
         AttachTransferResult err{};
         err.status = OpStatus::InvalidParams;
@@ -921,6 +1294,13 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
         err.error  = "fee must be strictly less than note value";
         return err;
     }
+    std::string authority_error;
+    if (!HydrateSpendAuthority(wallet, note, authority_error)) {
+        AttachTransferResult err{};
+        err.status = OpStatus::InvalidParams;
+        err.error = authority_error;
+        return err;
+    }
 
     auto auth_path = g_runtime->tree.GetAuthPath(note.leaf_index);
     if (!auth_path) {
@@ -932,6 +1312,7 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
 
     UnshieldNoteInput input;
     input.secret_key  = note.secret_key;
+    input.nullifier_key = note.nullifier_key;
     input.randomness  = note.randomness;
     input.d           = note.d;
     input.anchor      = g_runtime->tree.Root();
@@ -1004,13 +1385,18 @@ std::optional<std::vector<ShieldedNote>> SelectTransferNotesForValue(
         if (!n.confirmed || n.spent) continue;
         candidates.push_back(n);
     }
+    const bool auth_resources = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
     std::sort(candidates.begin(), candidates.end(),
-              [](const ShieldedNote& a, const ShieldedNote& b) {
-                  return a.value_una < b.value_una;
+              [auth_resources](const ShieldedNote& a, const ShieldedNote& b) {
+                  // Auth has a four-input bound. Largest first finds a valid
+                  // subset whenever any subset within that bound can fund it.
+                  if (a.value_una == b.value_una) return a.leaf_index < b.leaf_index;
+                  return auth_resources ? a.value_una > b.value_una : a.value_una < b.value_una;
               });
     std::vector<ShieldedNote> picked;
     uint64_t cum = 0;
     for (const auto& n : candidates) {
+        if (auth_resources && picked.size() == sh::kAuthMaxSpends) break;
         picked.push_back(n);
         cum += n.value_una;
         if (cum >= target_value_una) {
@@ -1057,7 +1443,7 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
             err.error  = "no note at leaf_index " + std::to_string(leaf_index);
             return err;
         }
-        const auto& note = *note_opt;
+        auto note = *note_opt;
         if (!note.confirmed) {
             AttachMultiTransferResult err{};
             err.status = OpStatus::InvalidParams;
@@ -1070,6 +1456,14 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
             err.error  = "note " + std::to_string(leaf_index) + " already spent (or pending-spent)";
             return err;
         }
+        std::string authority_error;
+        if (!HydrateSpendAuthority(wallet, note, authority_error)) {
+            AttachMultiTransferResult err{};
+            err.status = OpStatus::InvalidParams;
+            err.error = "note " + std::to_string(leaf_index) + ": " +
+                        authority_error;
+            return err;
+        }
         auto auth_path = g_runtime->tree.GetAuthPath(note.leaf_index);
         if (!auth_path) {
             AttachMultiTransferResult err{};
@@ -1080,6 +1474,7 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
         }
         UnshieldNoteInput input;
         input.secret_key  = note.secret_key;
+        input.nullifier_key = note.nullifier_key;
         input.randomness  = note.randomness;
         input.d           = note.d;
         input.anchor      = root;
@@ -1209,7 +1604,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
             err.error  = "no note at leaf_index " + std::to_string(leaf_index);
             return err;
         }
-        const auto& note = *note_opt;
+        auto note = *note_opt;
         if (!note.confirmed) {
             AttachAddressedTransferResult err{};
             err.status = OpStatus::InvalidParams;
@@ -1222,6 +1617,14 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
             err.error  = "note " + std::to_string(leaf_index) + " already spent";
             return err;
         }
+        std::string authority_error;
+        if (!HydrateSpendAuthority(wallet, note, authority_error)) {
+            AttachAddressedTransferResult err{};
+            err.status = OpStatus::InvalidParams;
+            err.error = "note " + std::to_string(leaf_index) + ": " +
+                        authority_error;
+            return err;
+        }
         auto auth_path = g_runtime->tree.GetAuthPath(note.leaf_index);
         if (!auth_path) {
             AttachAddressedTransferResult err{};
@@ -1231,6 +1634,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         }
         UnshieldNoteInput input;
         input.secret_key  = note.secret_key;
+        input.nullifier_key = note.nullifier_key;
         input.randomness  = note.randomness;
         input.d           = note.d;
         input.anchor      = root;
@@ -1253,6 +1657,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     recipient.d         = recipient_decoded.d;
     recipient.pk_d      = recipient_decoded.pk_d;
     recipient.pk_d_spend = recipient_decoded.pk_d_spend;
+    recipient.nfk_commitment = recipient_decoded.nfk_commitment;
     recipient.value_una = recipient_value_una;
 
     std::array<uint8_t, 512> memo_buf{};
@@ -1265,6 +1670,14 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     }
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
     const bool spend_auth = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
+    std::string outgoing_error;
+    auto outgoing = OutgoingContextForCurrentTip(wallet, outgoing_error);
+    if (!outgoing_error.empty()) {
+        AttachAddressedTransferResult err{};
+        err.status = OpStatus::InvalidParams;
+        err.error = outgoing_error;
+        return err;
+    }
     std::optional<OwnedAddressedRecipient> owned_change;
     if (spend_auth && change_value > 0) {
         std::string derive_error;
@@ -1279,12 +1692,14 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     auto built = BuildAddressedTransferBundleForTx(
         tx, spends, recipient, change_value, fee_una,
         have_memo ? &memo_buf : nullptr, cv_bound, spend_auth,
-        owned_change ? &owned_change->recipient : nullptr);
+        owned_change ? &owned_change->recipient : nullptr,
+        outgoing ? &*outgoing : nullptr);
     if (built.status != OpStatus::Ok) {
         return built;
     }
     if (owned_change) {
         built.change_secret_key = owned_change->spend_secret;
+        built.change_nullifier_key = owned_change->nullifier_key;
     }
 
     // Dry-run mode (issue #273 fee measurement): build/attach only, the
@@ -1292,6 +1707,8 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     if (!persist) {
         OPENSSL_cleanse(built.change_secret_key.data(),
                         built.change_secret_key.size());
+        OPENSSL_cleanse(built.change_nullifier_key.data(),
+                        built.change_nullifier_key.size());
         return built;
     }
 
@@ -1308,6 +1725,8 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
             err.error  = "failed to mark spend note pending-spent";
             OPENSSL_cleanse(built.change_secret_key.data(),
                             built.change_secret_key.size());
+            OPENSSL_cleanse(built.change_nullifier_key.data(),
+                            built.change_nullifier_key.size());
             return err;
         }
     }
@@ -1317,6 +1736,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         const uint32_t created_height = 0;  // pending; promoted at confirm
         if (!g_runtime->store.AddPendingNote(built.change_value_una,
                                              built.change_secret_key,
+                                             built.change_nullifier_key,
                                              built.change_public_key,
                                              built.change_randomness,
                                              built.change_commitment,
@@ -1330,11 +1750,34 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
             err.error  = "failed to persist pending change note";
             OPENSSL_cleanse(built.change_secret_key.data(),
                             built.change_secret_key.size());
+            OPENSSL_cleanse(built.change_nullifier_key.data(),
+                            built.change_nullifier_key.size());
             return err;
         }
     }
 
+    std::string provisional_error;
+    if (!PersistProvisionalOutgoingFromTx(g_runtime->store, wallet, tx,
+                                           &provisional_error)) {
+        std::vector<sh::Hash> commitments{built.recipient_commitment};
+        if (built.had_change) commitments.push_back(built.change_commitment);
+        (void)g_runtime->store.RollbackPendingTransaction(
+            built.spend_nullifiers, commitments);
+        AttachAddressedTransferResult err{};
+        err.status = OpStatus::StoreError;
+        err.error = provisional_error.empty()
+            ? "failed_to_persist_provisional_outgoing_note"
+            : provisional_error;
+        OPENSSL_cleanse(built.change_secret_key.data(),
+                        built.change_secret_key.size());
+        OPENSSL_cleanse(built.change_nullifier_key.data(),
+                        built.change_nullifier_key.size());
+        return err;
+    }
+
     OPENSSL_cleanse(built.change_secret_key.data(), built.change_secret_key.size());
+    OPENSSL_cleanse(built.change_nullifier_key.data(),
+                    built.change_nullifier_key.size());
     return built;
 }
 

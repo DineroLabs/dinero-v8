@@ -56,6 +56,14 @@ Hash PoseidonHash2(const Hash& left, const Hash& right);
  */
 const Hash& AddrBindTag();
 
+/** Domain separator for commitments to per-note nullifier viewing keys. */
+const Hash& NullifierKeyTag();
+
+/** Auth-profile ownership key bound into NoteCommitment.
+ *  Poseidon(pk_d_spend, nfk_commitment). */
+Hash AuthRecipientCommitmentKey(const Hash& spend_public_key,
+                                const Hash& nullifier_key_commitment);
+
 /**
  * Compute a note commitment with address binding (Phase 2 wave 5).
  *
