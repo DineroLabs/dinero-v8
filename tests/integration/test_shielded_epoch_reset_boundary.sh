@@ -279,6 +279,15 @@ S0="$(state_hash)"
 TIP_HASH="$(rpc_top_string "$(rpc getbestblockhash)")"
 info "S0 (post-cutover tip @ ${FINAL_HEIGHT}) = ${S0}"
 
+# Exercise the persisted epoch undo, not just objects retained by the mining
+# process. The anchor eviction journal must survive before crossing the reset.
+info "Restart before reorg: verify persisted epoch undo survives a new process"
+stop_daemon
+start_daemon ""
+[[ "$(rpc_top_number "$(rpc getblockcount)")" == "${FINAL_HEIGHT}" ]] \
+    || fail "tip changed on pre-reorg restart"
+[[ "$(state_hash)" == "${S0}" ]] || fail "state changed on pre-reorg restart"
+
 # ── Leg B: reorg ACROSS the cutover must be a perfect inverse ────────────────
 REORG_HASH="$(rpc_top_string "$(rpc getblockhash "${REORG_FROM}")")"
 [[ -n "${REORG_HASH}" ]] || fail "could not look up block at height ${REORG_FROM}"

@@ -25,7 +25,9 @@ ShieldedEpochSnapshot CaptureShieldedEpoch(const CommitmentTree& tree,
                                            const NullifierSet& nullifiers) {
     return ShieldedEpochSnapshot{
         tree.SerializeFrontier(),
-        anchors.SerializeBytes(),
+        // Undo must retain evicted roots for disconnects below the reset.
+        // The consensus fingerprint still uses the active-window v1 bytes.
+        anchors.SerializePersistenceBytes(),
         nullifiers.SerializeContent(),
     };
 }
@@ -38,7 +40,7 @@ bool RestoreShieldedEpoch(const ShieldedEpochSnapshot& snapshot,
                                   snapshot.tree_frontier.size())) {
         return false;
     }
-    if (anchors.DeserializeBytes(snapshot.anchor_history) !=
+    if (anchors.DeserializePersistenceBytes(snapshot.anchor_history) !=
         AnchorHistory::IoResult::Ok) {
         return false;
     }
