@@ -11,6 +11,7 @@
 #include "daemon/http_rpc_server.h"  // Week 2: Real HttpRpcServer
 #include "daemon/rpc_auth.h"         // Week 2: Cookie authentication
 #include "daemon/rpc_context_wiring.h"  // Week 2: Context wiring function
+#include "consensus/chainparams.h"
 #include "rpc/rpc_registry.h"        // Week 2: Global RPC registry
 #include <stdexcept>
 #include <fstream>
@@ -120,7 +121,10 @@ bool RPCService::Start() {
         // Week 2: Create HttpRpcServer
         http_server_ = std::make_unique<HttpRpcServer>(rpc_bind_, static_cast<uint16_t>(rpc_port_));
         http_server_->set_auth(rpc_auth_);
-        http_server_->set_dev_mode(false);  // Production mode
+        // Fault-injection RPCs require both regtest and an explicit opt-in.
+        // Production/testnet never enable them, even with a copied test config.
+        http_server_->set_dev_mode(GetActiveChain() == Chain::REGTEST &&
+                                   config_->GetBool("rpc.development", false));
         http_server_->set_readonly_mode(config_->GetBool("rpc.readonly", false));
         logger_->info("[RPCService] HttpRpcServer created");
         if (config_->GetBool("rpc.readonly", false)) {

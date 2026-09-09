@@ -143,6 +143,7 @@ start_node() {
     mkdir -p "${DATA_DIR}"
     "${DINEROD}" \
         --regtest \
+        --rpc.development=1 \
         --datadir="${DATA_DIR}" \
         --rpcport="${RPC_PORT}" \
         --port="${P2P_PORT}" \

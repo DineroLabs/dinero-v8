@@ -100,6 +100,8 @@ from dinero_cpu_miner import DineroCoinMiner
 
 try:
     node = Node("active")
+    denied = node.raw("blockchain.debugclearundoflag", ["00"*32])
+    require(denied.get("error", {}).get("code") == -32099, "development RPC must be disabled by default")
     node.call("generate", [3])
     # Generate establishes a wallet without assuming asynchronous startup timing.
     address = node.call("wallet.getnewaddress")["address"]
