@@ -8,52 +8,60 @@
 #   2. getpeerinfo[].ping_ms + .quality_score (always present)
 #   3. dynamic_p2p.observe (valid shape)
 #
-# Two-node topology:
-#   Node A (rpcport=19002, p2pport=19001, HOME=TMP/home_a)
-#   Node B (rpcport=19012, p2pport=19011, HOME=TMP/home_b, addnode=A)
-#
-# Each node gets an isolated HOME so default datadir/lock paths don't collide.
-# dinero-cli connects via -rpcport (cookie lives at HOME/.dinero/.cookie).
-
+# Explicit datadirs, dynamically allocated ports and owned child PIDs avoid
+# platform-dependent HOME discovery and interference with other daemon tests.
 set -euo pipefail
-
 DINEROD="${DINEROD:?DINEROD must point to dinerod binary}"
 DINERO_CLI="${DINERO_CLI:?DINERO_CLI must point to dinero-cli binary}"
 TMP="$(mktemp -d)"
-HA="$TMP/home_a"
-HB="$TMP/home_b"
+HA="$TMP/a"
+HB="$TMP/b"
 mkdir -p "$HA" "$HB"
-
+read -r RA PA WA RB PB WB < <(python3 - <<'PORTS'
+import socket
+sockets=[socket.socket() for _ in range(6)]
+for s in sockets: s.bind(('127.0.0.1',0))
+print(*(s.getsockname()[1] for s in sockets))
+for s in sockets: s.close()
+PORTS
+)
+PIDA=""; PIDB=""
 cleanup() {
-    HOME="$HA" "$DINERO_CLI" -rpcport=19002 stop 2>/dev/null || true
-    HOME="$HB" "$DINERO_CLI" -rpcport=19012 stop 2>/dev/null || true
-    sleep 2
-    rm -rf "$TMP"
+    code=$?
+    for pid in "$PIDA" "$PIDB"; do
+        if [[ -n "$pid" ]]; then
+            kill -TERM "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+        fi
+    done
+    if [[ "$code" == 0 ]]; then
+        rm -rf "$TMP"
+    else
+        echo "Dashboard evidence: $TMP" >&2
+        tail -n 60 "$HA/daemon.log" "$HB/daemon.log" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
-
 wait_rpc() {
-    local home_dir="$1" port="$2" deadline=$((SECONDS + 30))
-    until HOME="$home_dir" "$DINERO_CLI" -rpcport="$port" getnetworkinfo >/dev/null 2>&1; do
-        [ $SECONDS -lt $deadline ] || { echo "FAIL: daemon at port $port did not become ready within 30s"; exit 1; }
+    local dir="$1" port="$2" deadline=$((SECONDS + 30))
+    until "$DINERO_CLI" -datadir="$dir" -rpcport="$port" getnetworkinfo >/dev/null 2>&1; do
+        [ $SECONDS -lt $deadline ] || { echo "FAIL: daemon at port $port not ready"; exit 1; }
         sleep 1
     done
 }
-
-# Spin two regtest nodes so getpeerinfo has at least one entry.
-HOME="$HA" "$DINEROD" --regtest --rpcport=19002 --p2pport=19001 --listen -daemon
-wait_rpc "$HA" 19002
-echo "Node A ready"
-
-HOME="$HB" "$DINEROD" --regtest --rpcport=19012 --p2pport=19011 \
-    --addnode=127.0.0.1:19001 -daemon
-wait_rpc "$HB" 19012
-echo "Node B ready"
-
-# Allow time for peer handshake to complete.
-sleep 6
-
-cli_a() { HOME="$HA" "$DINERO_CLI" -rpcport=19002 "$@"; }
+"$DINEROD" --regtest --datadir="$HA" --rpcport="$RA" --port="$PA" \
+    --wallet-socket-port="$WA" --listen=1 >"$HA/daemon.log" 2>&1 &
+PIDA=$!
+wait_rpc "$HA" "$RA"
+"$DINEROD" --regtest --datadir="$HB" --rpcport="$RB" --port="$PB" \
+    --wallet-socket-port="$WB" --listen=1 --addnode="127.0.0.1:$PA" >"$HB/daemon.log" 2>&1 &
+PIDB=$!
+wait_rpc "$HB" "$RB"
+cli_a() { "$DINERO_CLI" -datadir="$HA" -rpcport="$RA" "$@"; }
+for _ in $(seq 1 20); do
+    if cli_a getpeerinfo | python3 -c 'import sys,json; sys.exit(0 if json.load(sys.stdin) else 1)'; then break; fi
+    sleep 1
+ done
 
 # ─── Assertion 1: getnetworkinfo.node_id_hex ────────────────────────────────
 NODE_ID=$(cli_a getnetworkinfo | python3 -c \

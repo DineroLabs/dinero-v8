@@ -30,6 +30,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <set>
 #include <iostream>
 #include <fstream>
 #include <thread>
@@ -65,10 +66,14 @@ static const char* EXPECTED_GENESIS = "0000001c36abf27e2c233ff40ed0c08888926c244
 // Helper: Clean up Orphaned Processes
 // ============================================================================
 
+static std::set<pid_t> owned_nodes;
+void stopNode(pid_t pid);
+
 void cleanupOrphanedProcesses() {
-    // Kill any lingering test daemons from previous failed runs
-    system("pkill -9 -f 'dinerod.*tmp/dinero-test' 2>/dev/null");
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    // The old broad pkill matched WalletRestoreRescan's live daemon during
+    // parallel CTest. Reap only children launched by this test process.
+    const auto children = owned_nodes;
+    for (pid_t pid : children) stopNode(pid);
 }
 
 // ============================================================================
@@ -239,6 +244,7 @@ pid_t launchNode(const char* datadir, int rpc_port, int p2p_port, const std::str
         exit(1);
     }
 
+    if (pid > 0) owned_nodes.insert(pid);
     return pid;
 }
 
@@ -247,7 +253,7 @@ pid_t launchNode(const char* datadir, int rpc_port, int p2p_port, const std::str
 // ============================================================================
 
 void stopNode(pid_t pid) {
-    if (pid > 0) {
+    if (pid > 0 && owned_nodes.erase(pid)) {
         // First try SIGTERM for graceful shutdown
         kill(pid, SIGTERM);
 
@@ -255,7 +261,7 @@ void stopNode(pid_t pid) {
         int status;
         for (int i = 0; i < 50; ++i) {
             pid_t result = waitpid(pid, &status, WNOHANG);
-            if (result > 0) {
+            if (result != 0) {
                 return;  // Process exited
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -484,5 +490,7 @@ int main(int argc, char** argv) {
     std::cout << "Tests: Genesis sync, block propagation, bidirectional relay\n" << std::endl;
 
     ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    const int result = RUN_ALL_TESTS();
+    cleanupOrphanedProcesses();
+    return result;
 }

@@ -478,9 +478,10 @@ stop_all_nodes() {
 }
 
 cleanup() {
+    local result=$?
     stop_all_nodes
-    if [[ "${KEEP_DATADIR}" == "1" ]]; then
-        warn "KEEP_DATADIR=1 set, preserving ${WORKDIR}"
+    if [[ "${KEEP_DATADIR}" == "1" || "$result" != 0 ]]; then
+        warn "Preserving IBD evidence (exit=$result): ${WORKDIR}"
     else
         rm -rf "${WORKDIR}"
     fi
