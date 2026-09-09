@@ -2919,11 +2919,11 @@ void MainWindow::setupUI() {
     auto *balanceGroup = new QGroupBox("💰 Balance");
     auto *balanceLayout = new QVBoxLayout(balanceGroup);
 
-    // Main balance: public transparent + private shielded spendable funds.
+    // Main balance includes public funds and shielded funds, including covenant-locked notes.
     lblBalance_ = new QLabel("0.00 DIN");
     lblBalance_->setStyleSheet("QLabel { font-size: 32px; font-weight: bold; color: #e6ecf2; }");
     lblBalance_->setAlignment(Qt::AlignCenter);
-    lblBalance_->setToolTip("Total spendable balance: transparent public funds plus shielded private funds");
+    lblBalance_->setToolTip("Total wallet balance: public and shielded funds, including covenant-locked value. See Shielded for funds available for ordinary private payments.");
     balanceLayout->addWidget(lblBalance_);
 
     // Total label (used for combined balance updates)
@@ -3367,7 +3367,7 @@ void MainWindow::setupUI() {
     auto *payrollInfo = new QLabel(
         "Payroll: batch payment locked to multiple recipients.\n"
         "The CTV template commits to the exact output set.\n"
-        "Amounts and recipients are public. Private batch covenants are not supported.");
+        "Amounts and recipients are public. Choose Private covenants for payments to one or two fixed shielded recipients.");
     payrollInfo->setWordWrap(true);
     payrollInfo->setStyleSheet("QLabel { color: #9fb3c8; padding: 4px; }");
     payrollPageLayout->addWidget(payrollInfo);
