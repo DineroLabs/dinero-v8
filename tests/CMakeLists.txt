@@ -636,6 +636,8 @@ target_include_directories(wallet_test_deps PUBLIC
 add_executable(test_reindex
   tests/test_reindex.cpp
   src/consensus/reindexer.cpp
+  # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+  src/consensus/state_commitment.cpp
   src/consensus/genesis_canonical.cpp
   src/common/logger.cpp
   src/consensus/undo.cpp
@@ -735,6 +737,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_undo_rebuild_orchestrator.cpp)
     tests/daemon/test_undo_rebuild_orchestrator.cpp
     src/daemon/undo_rebuild_orchestrator.cpp
     src/consensus/reindexer.cpp
+    # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+    src/consensus/state_commitment.cpp
     src/consensus/genesis_canonical.cpp
     src/consensus/undo.cpp
     src/primitives/transaction_serializer.cpp
@@ -916,6 +920,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindexer_anchor_seed.cpp)
   add_executable(test_reindexer_anchor_seed
     tests/consensus/test_reindexer_anchor_seed.cpp
     src/consensus/reindexer.cpp
+    # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+    src/consensus/state_commitment.cpp
     src/consensus/genesis_canonical.cpp
     src/consensus/undo.cpp
     src/common/logger.cpp
@@ -959,6 +965,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_reindex_equivalence.
     tests/consensus/test_shielded_reindex_equivalence.cpp
     src/consensus/genesis_canonical.cpp
     src/consensus/reindexer.cpp
+    # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+    src/consensus/state_commitment.cpp
     src/common/logger.cpp
     src/consensus/undo.cpp
     src/primitives/transaction_serializer.cpp

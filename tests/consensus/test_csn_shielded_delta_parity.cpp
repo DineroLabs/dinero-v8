@@ -307,6 +307,14 @@ struct ChainFixture {
 
     void Build() {
         SelectParams(Chain::REGTEST);
+        // state_commitment_v1: dormant for this suite. Its blocks are
+        // hand-built without coinbase DNRS commitments and its subject is
+        // forward/replay delta parity, not commitment enforcement (regtest's
+        // default activates at height 1, which would reject every fixture
+        // block as coinbase-state-commitment-missing). Enforcement itself is
+        // exercised by the state-commitment suites and the forged-snapshot
+        // e2e, which rely on the active default.
+        MutableParams().state_commitment_activation_height = UINT32_MAX;
         EXPECT_EQ(nullifiers_a.Open(":memory:"), sh::NullifierSet::OpenResult::Ok);
 
         validator_a = std::make_unique<BlockValidator>(&set_a);

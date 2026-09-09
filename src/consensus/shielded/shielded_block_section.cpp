@@ -14,8 +14,11 @@
 
 #include "consensus/shielded/shielded_block_section.h"
 
+#include <algorithm>
+
 #include "consensus/shielded/shielded_block_validation.h"
 #include "consensus/shielded/shielded_epoch.h"
+#include "consensus/shielded/shielded_root.h"  // ComputeShieldedRootFromParts (prediction oracle)
 
 namespace dinero::consensus::shielded {
 
@@ -114,6 +117,63 @@ bool ConnectBlockShieldedSection(
         anchors->RecordRoot(height, tree.Root());
     }
     return true;
+}
+
+std::optional<uint256> PredictPostBlockShieldedRoot(
+    const std::vector<ShieldedBundle>& bundles,
+    uint32_t height,
+    uint32_t cv_reset_height,
+    uint32_t spend_auth_reset_height,
+    uint32_t activation_height,
+    const CommitmentTree& tree_in,
+    std::vector<NullifierEntry> entries,
+    AnchorHistory anchors) {
+    CommitmentTree tree = tree_in;
+
+    // Mirror of the connect tail's epoch-reset gate. The real connect refuses
+    // a non-empty block at the reset height (wall rule); a candidate that
+    // would be refused has no post-block root to predict.
+    if (IsShieldedEpochResetHeight(height, cv_reset_height,
+                                   spend_auth_reset_height)) {
+        if (!bundles.empty()) {
+            return std::nullopt;
+        }
+        tree = CommitmentTree{};
+        anchors.Clear();
+        entries.clear();
+    }
+
+    // Mirror of ApplyBlockShielded's state effects, block tx order:
+    // commitments appended, nullifiers inserted at this height. Validation is
+    // NOT mirrored — the assembler validated these bundles selecting them, and
+    // the real connect re-validates; this function only answers what the
+    // post-block containers hash to.
+    for (const auto& bundle : bundles) {
+        for (const auto& spend : bundle.spends) {
+            NullifierEntry e;
+            e.height = height;
+            std::copy(spend.nullifier.begin(), spend.nullifier.end(),
+                      e.nullifier.begin());
+            entries.push_back(e);
+        }
+        for (const auto& output : bundle.outputs) {
+            tree.Append(output.commitment);
+        }
+    }
+
+    // Mirror of the once-per-block anchor recording, including its gating and
+    // its every-block-not-just-shielded-blocks semantics (see the connect
+    // tail's comment — recording only shielded-tx blocks would diverge the
+    // anchor history and thus the root).
+    if (height >= activation_height) {
+        anchors.RecordRoot(height, tree.Root());
+    }
+
+    const auto tree_root = tree.Root();
+    const uint256 acc = ComputeNullifierAccumulator(std::move(entries));
+    return ComputeShieldedRootFromParts(
+        std::vector<uint8_t>(tree_root.begin(), tree_root.end()),
+        tree.Size(), acc, anchors.SerializeBytes());
 }
 
 bool DisconnectBlockShieldedSection(

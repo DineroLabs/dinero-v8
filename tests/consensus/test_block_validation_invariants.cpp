@@ -33,6 +33,21 @@
 #include <memory>
 #include <unordered_map>
 
+namespace {
+// state_commitment_v1: dormant for this suite. Its blocks are hand-built
+// without coinbase DNRS commitments and its subjects are the OTHER validation
+// invariants (double-spend, maturity, scripts, witness) — under regtest's
+// active-at-1 default every fixture block would fail as
+// coinbase-state-commitment-missing before the invariant under test could
+// even fire, and several tests assert error ORDER. Enforcement itself is
+// exercised by the state-commitment suites and the forged-snapshot e2e.
+void SelectRegtestDormantCommitment() {
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
+}
+}  // namespace
+
+
 using namespace dinero;
 using namespace dinero::consensus;
 
@@ -1325,11 +1340,11 @@ TEST(BlockValidationInvariants, WitnessCommitmentParamsMatchDeployedBoundary) {
         EXPECT_EQ(Params().witness_commitment_enforcement_height, kDeployedBoundary)
             << "chain " << static_cast<int>(chain);
     }
-    SelectParams(Chain::REGTEST);
+    SelectRegtestDormantCommitment();
 }
 
 TEST(BlockValidationInvariants, ConsensusChecksumCommitsToWitnessActivation) {
-    SelectParams(Chain::REGTEST);
+    SelectRegtestDormantCommitment();
     const ChainParams baseline = Params();
 
     ChainParams changed_height = baseline;
@@ -1342,6 +1357,25 @@ TEST(BlockValidationInvariants, ConsensusChecksumCommitsToWitnessActivation) {
     EXPECT_NE(ConsensusChecksum(baseline), ConsensusChecksum(changed_switch));
 }
 
+TEST(BlockValidationInvariants, ConsensusChecksumCommitsToStateCommitmentActivation) {
+    // The checksum is the fleet's drift detector: the moment any node runs a
+    // binary that selects a state-commitment activation height, its checksum
+    // must diverge loudly from the dormant fleet's.
+    SelectRegtestDormantCommitment();
+    const ChainParams baseline = Params();
+
+    ChainParams changed_height = baseline;
+    changed_height.state_commitment_activation_height++;
+    EXPECT_NE(ConsensusChecksum(baseline), ConsensusChecksum(changed_height));
+
+    // Burial depth is node-local acceptance POLICY, not block validity — it is
+    // deliberately absent from the consensus checksum, and this pins that
+    // boundary from both sides.
+    ChainParams changed_burial = baseline;
+    changed_burial.state_commitment_burial_depth++;
+    EXPECT_EQ(ConsensusChecksum(baseline), ConsensusChecksum(changed_burial));
+}
+
 TEST(BlockValidationInvariants, WitnessCommitmentBoundaryUsesSerializedMarker) {
     constexpr uint32_t kBoundary = 10670;
     for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
@@ -1349,11 +1383,11 @@ TEST(BlockValidationInvariants, WitnessCommitmentBoundaryUsesSerializedMarker) {
         SCOPED_TRACE("chain=" + std::to_string(static_cast<int>(chain)));
         RunWitnessCommitmentBoundaryCases(kBoundary);
     }
-    SelectParams(Chain::REGTEST);
+    SelectRegtestDormantCommitment();
 }
 
 TEST(BlockValidationInvariants, WitnessCommitmentProductionPathUsesSelectedParams) {
-    SelectParams(Chain::REGTEST);
+    SelectRegtestDormantCommitment();
     ChainParams& params = MutableParams();
     const bool saved_enforce = params.enforce_witness_commitment;
     const uint32_t saved_height = params.witness_commitment_enforcement_height;
@@ -1471,19 +1505,19 @@ void RunCoinbaseShieldedBundleCase(int32_t version, const char* label) {
 }  // namespace
 
 TEST(BlockValidationInvariants, CoinbaseShieldedBundleRejectedAtActivation_V5) {
-    SelectParams(Chain::REGTEST);
+    SelectRegtestDormantCommitment();
     RunCoinbaseShieldedBundleCase(Transaction::TX_VERSION_SHIELDED, "v5 coinbase bundle");
 }
 
 TEST(BlockValidationInvariants, CoinbaseShieldedBundleRejectedAtActivation_V6) {
-    SelectParams(Chain::REGTEST);
+    SelectRegtestDormantCommitment();
     RunCoinbaseShieldedBundleCase(Transaction::TX_VERSION_SHIELDED_V2, "v6 coinbase bundle");
 }
 
 TEST(BlockValidationInvariants, PlainCoinbaseStillConnectsAtActivationHeight) {
     // Guards against the rule over-firing: an ordinary coinbase must still
     // connect at the activation height.
-    SelectParams(Chain::REGTEST);
+    SelectRegtestDormantCommitment();
     ScopedCoinbaseRejectHeight gate(&MutableParams(), kCoinbaseBundleHeight);
 
     ConsensusUTXOSet utxo_set;
@@ -1501,6 +1535,10 @@ TEST(BlockValidationInvariants, PlainCoinbaseStillConnectsAtActivationHeight) {
 
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);
+    // state_commitment_v1 dormant baseline — see SelectRegtestDormantCommitment's
+    // rationale at the top of this file; tests that re-select params go through
+    // that helper to restore the same posture.
+    dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
     testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }

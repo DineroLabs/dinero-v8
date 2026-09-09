@@ -317,6 +317,51 @@ struct ChainParams {
     // ===========================================================================
     uint32_t shielded_coinbase_reject_activation_height = UINT32_MAX;
 
+    // ===========================================================================
+    // CONSENSUS (dormant): state_commitment_v1 activation height.
+    //
+    // At or above this height: the base block's coinbase must carry exactly one
+    // well-formed DNRS state commitment; snapshots whose base is at or above it
+    // must be v5 (coinbase + merkle branch, verified at load); the replay
+    // shielded-root comparison and the unreadable-state branches become fatal.
+    // Below it, everything stays advisory — byte-for-byte today's behavior.
+    //
+    // SNAPSHOT-TRUST activation is a SEPARATE policy from shielded-TRANSACTION
+    // activation (shielded_activation_height above). They must be able to move
+    // independently; nothing may key one gate on the other's height.
+    //
+    // The single authority for reading this is
+    // consensus::IsStateCommitmentActive(height, activation_height) — never a
+    // hand-written comparison (two sites computing dormancy differently
+    // disagree at exactly one height and fail OPEN).
+    //
+    // The struct default is UINT32_MAX (never activate). MAINNET AND TESTNET
+    // STAY DORMANT: per the activation governance order recorded in
+    // docs/specs/state_commitment_v1.md, no height may be selected until
+    // forged-snapshot rejection, burial policy ratification, fail-closed
+    // wiring, and the independent HUMAN consensus review are all complete.
+    // Regtest activates at 1 (not 0: the genesis coinbase carries no
+    // commitment, and activating at 0 would invalidate genesis or demand an
+    // exemption nobody has tested).
+    // ===========================================================================
+    uint32_t state_commitment_activation_height = UINT32_MAX;
+
+    // ===========================================================================
+    // POLICY: state-commitment burial depth (blocks).
+    //
+    // A snapshot base's state commitment is relied upon only when the base
+    // header is an ANCESTOR of the selected best-work, PoW-validated header
+    // tip AND lies at least this many blocks below it. Ancestry is part of the
+    // definition: height difference alone would let a high-but-not-best side
+    // chain look buried.
+    //
+    // VALUES ARE PROVISIONAL TEST NUMBERS, not ratified policy: final
+    // per-network depths await the human consensus review and a network/reorg
+    // analysis (user ruling, 2026-09-08). They gate nothing while
+    // state_commitment_activation_height is dormant.
+    // ===========================================================================
+    uint32_t state_commitment_burial_depth = 288;
+
     // Genesis block parameters
     GenesisParams genesis;
 
