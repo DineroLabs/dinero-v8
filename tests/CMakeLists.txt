@@ -1657,7 +1657,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/daa_golden_vectors_test.cpp)
     src/test/daa_golden_vectors_test.cpp
   )
 
-  add_dependencies(test_daa_golden_vectors gtest)
+  add_dependencies(test_daa_golden_vectors gtest gtest_main)
 
   target_link_libraries(test_daa_golden_vectors PRIVATE
     dinero_core
@@ -2168,7 +2168,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_stateless_replay_shielded_dec
   add_executable(test_stateless_replay_shielded_decision
     tests/consensus/test_stateless_replay_shielded_decision.cpp
   )
-  add_dependencies(test_stateless_replay_shielded_decision gtest)
+  # TARGET_FILE links do not order archive builds: a clean parallel build
+  # exposed the missing gtest_main dependency during shielded integration.
+  add_dependencies(test_stateless_replay_shielded_decision gtest gtest_main)
   target_link_libraries(test_stateless_replay_shielded_decision PRIVATE
     $<TARGET_FILE:gtest>
     $<TARGET_FILE:gtest_main>
@@ -2226,7 +2228,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_shielded_delta_parity.cpp
     src/wallet/taproot_tx_signer.cpp    # BIP341 Taproot sighash (test signing util)
   )
 
-  add_dependencies(test_csn_shielded_delta_parity gtest)
+  add_dependencies(test_csn_shielded_delta_parity gtest gtest_main)
 
   target_link_libraries(test_csn_shielded_delta_parity PRIVATE
     dinero_core
@@ -4050,7 +4052,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_write_metrics_export.cpp)
     src/daemon/block_write_metrics.cpp
     src/metrics/metrics_registry.cpp
   )
-  add_dependencies(test_block_write_metrics_export gtest)
+  add_dependencies(test_block_write_metrics_export gtest gtest_main)
   target_link_libraries(test_block_write_metrics_export PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> Threads::Threads
   )
@@ -4071,7 +4073,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_write_metrics.cpp)
     tests/daemon/test_block_write_metrics.cpp
     src/daemon/block_write_metrics.cpp
   )
-  add_dependencies(test_block_write_metrics gtest)
+  add_dependencies(test_block_write_metrics gtest gtest_main)
   target_link_libraries(test_block_write_metrics PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> Threads::Threads
   )
@@ -4094,7 +4096,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_active_tip_classification.cpp)
     tests/daemon/test_active_tip_classification.cpp
     src/primitives/uint256.cpp
   )
-  add_dependencies(test_active_tip_classification gtest)
+  add_dependencies(test_active_tip_classification gtest gtest_main)
   target_link_libraries(test_active_tip_classification PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
   )
@@ -4117,7 +4119,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_concurrent_in_flight.cpp)
     src/daemon/interfaces/ingress_types.cpp
     src/primitives/uint256.cpp
   )
-  add_dependencies(test_concurrent_in_flight gtest)
+  add_dependencies(test_concurrent_in_flight gtest gtest_main)
   target_link_libraries(test_concurrent_in_flight PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
   )
