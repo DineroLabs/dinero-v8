@@ -486,6 +486,33 @@ TEST(ShieldedSpendAuthTest, NullifierDomainIsConstrainedConstant) {
     EXPECT_TRUE(checked) << "nullifier domain must have an explicit constant constraint";
 }
 
+TEST(ShieldedSpendAuthTest, AddressDomainIsConstrainedConstant) {
+    AuthFixture fx;
+    fx.Build();
+    auto circuit = BuildSpendCircuit(fx.witness, fx.pub, true, true);
+    ASSERT_TRUE(circuit.is_satisfied());
+    // Mutate the domain witness itself. Merely passing honest witnesses
+    // through ProveSpend would never exercise a prover-chosen domain tag.
+    bool checked = false;
+    for (const auto& constraint : circuit.constraints()) {
+        if (constraint.label != "auth_address_domain") continue;
+        for (const auto& term : constraint.a.terms()) {
+            if (term.var.index == 0) continue;
+            const auto original = circuit.get_value(term.var);
+            circuit.set_value(term.var, original + zk::zkvm::Scalar::one());
+            EXPECT_NE(constraint.a.evaluate(circuit.witness()) *
+                          constraint.b.evaluate(circuit.witness()),
+                      constraint.c.evaluate(circuit.witness()));
+            std::string failure;
+            EXPECT_FALSE(circuit.is_satisfied(failure));
+            EXPECT_EQ(failure, "auth_address_domain");
+            circuit.set_value(term.var, original);
+            checked = true;
+        }
+    }
+    EXPECT_TRUE(checked) << "address domain must have an explicit constant constraint";
+}
+
 // ★ THE DOUBLE-SPEND HOLE THIS GUARDS.
 //
 // The circuit keeps one canonical even-y representative for the x-only spend

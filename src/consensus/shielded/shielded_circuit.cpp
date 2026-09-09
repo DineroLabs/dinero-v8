@@ -449,6 +449,13 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
     // 2. Phase 2 wave 5: address-binding tag.
     //    addr_bind = Poseidon(ADDR_TAG, Poseidon(d, pk))
     Variable tag = cs.alloc(HashToScalar(AddrBindTag()));
+    if (spend_auth) {
+        // A witness assignment is not a constant constraint. Pin the address
+        // domain in the dormant Auth circuit; historical circuits stay intact.
+        cs.enforce_equal(LinearCombination(tag),
+                         LinearCombination::constant(HashToScalar(AddrBindTag())),
+                         "auth_address_domain");
+    }
     Variable d_pk = poseidon2_gadget(cs, d, pk, "addr_d_pk");
     Variable addr_bind = poseidon2_gadget(cs, tag, d_pk, "addr_bind");
 
