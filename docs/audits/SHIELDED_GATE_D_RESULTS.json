@@ -1,0 +1,177 @@
+{
+  "cases": [
+    {
+      "case": "payload",
+      "expected": "commitment-mismatch",
+      "result": "passed",
+      "snapshot_sha256": "23d2ee99b3a3475278e0ef0bf3e8a551bd593e70043edeafbb7d665cc458ad29",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: v5 binding verification: commitment-mismatch \u2014 proof does not bind the restored shielded state to the base header"
+      },
+      "header_context": "buried_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "claimed_root",
+      "expected": "does not match snapshot commitment_root",
+      "result": "passed",
+      "snapshot_sha256": "8a8edc812c9aea72ac019c6d6a125ef53ce8d3f638e538676299c16f59ffbf15",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: Restored shielded tree root does not match snapshot commitment_root"
+      },
+      "header_context": "buried_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "coinbase_commitment",
+      "expected": "invalid-merkle-proof",
+      "result": "passed",
+      "snapshot_sha256": "cd6df171dd4f633f32b0408f7bc418ed23150e17a117d0affc80b783fe771e6d",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: v5 binding verification: invalid-merkle-proof \u2014 proof does not bind the restored shielded state to the base header"
+      },
+      "header_context": "buried_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "merkle_branch",
+      "expected": "invalid-merkle-proof",
+      "result": "passed",
+      "snapshot_sha256": "227c3c34ef8a268954cff15c4b201cfcc717bd6d4cbbbc9ee2b33d6738eace88",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: v5 binding verification: invalid-merkle-proof \u2014 proof does not bind the restored shielded state to the base header"
+      },
+      "header_context": "buried_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "base_hash",
+      "expected": "not found in chain",
+      "result": "passed",
+      "snapshot_sha256": "b91c8b13f276229b99c071e5b39901ddda058f995cacbdec288e484cadc026fa",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: Snapshot base block 04e513149b595ee2a24d32603817cee369788cda160b54a65011ccbb5bce2954 not found in chain. Node must download headers first (headers-first sync required)."
+      },
+      "header_context": "buried_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "ancestry",
+      "expected": "insufficient-burial-or-non-ancestry",
+      "result": "passed",
+      "snapshot_sha256": "5aab6911df75888323eb23cc785fd2c91e9f9fb9d2e4507ead14c45968a94da6",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: v5 binding verification: insufficient-burial-or-non-ancestry \u2014 base 04e513149b595ee2\u2026@12 vs best-work height 31, required depth 8"
+      },
+      "header_context": "fork_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "unburied",
+      "expected": "insufficient-burial-or-non-ancestry",
+      "result": "passed",
+      "snapshot_sha256": "5aab6911df75888323eb23cc785fd2c91e9f9fb9d2e4507ead14c45968a94da6",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: v5 binding verification: insufficient-burial-or-non-ancestry \u2014 base 04e513149b595ee2\u2026@12 vs best-work height 12, required depth 8"
+      },
+      "header_context": "unburied_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "v4_enforced",
+      "expected": "Snapshot container v4 is not usable",
+      "result": "passed",
+      "snapshot_sha256": "02fb5133d027f8308e7d063fcebee01d0011ab50f25734a5461a7812ef36ffb5",
+      "observed_error": {
+        "code": -1,
+        "message": "Snapshot import failed: Snapshot container v4 is not usable at height 12: the state commitment is enforced from height 1, and a v4 snapshot carries no coinbase/merkle-branch binding proof, so its shielded section cannot be authenticated against the chain at load time. Remedy: regenerate or obtain a v5 snapshot, which carries the proof."
+      },
+      "header_context": "buried_headers",
+      "state_preservation_checked": true,
+      "pre_state_sha256": "00e11e20fe7602359737f5be54413249b069f141b02b59ac4d5789497e2fd3b0"
+    },
+    {
+      "case": "valid_v5",
+      "expected": "accepted",
+      "result": "passed",
+      "snapshot_sha256": "5aab6911df75888323eb23cc785fd2c91e9f9fb9d2e4507ead14c45968a94da6",
+      "observed_error": null,
+      "header_context": "buried_headers",
+      "state_preservation_checked": false,
+      "pre_state_sha256": null
+    },
+    {
+      "case": "v4_dormant",
+      "expected": "accepted",
+      "result": "passed",
+      "snapshot_sha256": "02fb5133d027f8308e7d063fcebee01d0011ab50f25734a5461a7812ef36ffb5",
+      "observed_error": null,
+      "header_context": "buried_headers",
+      "state_preservation_checked": false,
+      "pre_state_sha256": null
+    },
+    {
+      "case": "payload_dormant",
+      "expected": "accepted",
+      "result": "passed",
+      "snapshot_sha256": "23d2ee99b3a3475278e0ef0bf3e8a551bd593e70043edeafbb7d665cc458ad29",
+      "observed_error": null,
+      "header_context": "buried_headers",
+      "state_preservation_checked": false,
+      "pre_state_sha256": null
+    }
+  ],
+  "daemon_sha256": "06609debd6403eea982bd418f5a8cecff9523de53c5435514203d4511deddb4d",
+  "code_commit": "3e334969623f67479f048ea97c55e64034d61b80",
+  "build": "macOS arm64 Release development build, system OpenSSL",
+  "direct_helper_tests_passed": 6,
+  "ctest_suites_passed": [
+    "SnapshotBinding",
+    "SnapshotBindingMutations",
+    "SnapshotFormatPolicy",
+    "SnapshotFormatPolicyRuntime",
+    "AssumeUtxoReplay",
+    "ShieldedReindexEquivalence"
+  ],
+  "mutation_ctest_seconds": 135.22,
+  "ctest_total_seconds": 149.92,
+  "registered_tests": 574,
+  "regression_before_fix": "payload rejected with commitment-mismatch but changed forest from 0 to 36 leaves and changed shielded root",
+  "source_sha256": {
+    "src/daemon/services/chainstate_service.cpp": "a7cb0242adb92f1bb98e8fb63c987b0e6b693f39e8e906047876b58cd0d16cec",
+    "src/consensus/snapshot_binding.cpp": "7ace1acb03ee06d373ebf7e59bb13911e4c7d3c607c844fd2a1c45c26eb4aecd",
+    "tests/consensus/test_snapshot_binding.cpp": "a4134e0ca11cfdf8199e2510bd2856fa227cf5343c26214ed39f0ef21094189b",
+    "tests/integration/test_snapshot_binding_mutations.py": "09bfd5a097a1df3d535c2dda64cffa6d1d842a215bdb913e58b802c6e3834eb1"
+  },
+  "log_sha256": {
+    "gate-d-before.log": "2138a09ab9a4ac4a05c35dffe067cc932c822f4200e210c76dd4dfb65c18d052",
+    "gate-d-final-tests.log": "09be7c6d8cfa0c24db34cc01f05b45fbcf111fdf2e0a73f720999bc1c9598b52",
+    "gate-d-unit-final.log": "f2848e6582528aafbac46b691f715c52bcc8adbed805084c4524fc064e098441",
+    "gate-d-unit-ctest-final.log": "301dcaeec2bbb1770a0cea006064059a5858035bd1466f35d02be258e1320ca3",
+    "gate-d-final-build.log": "74bbd28eb143381129427f73d8d7549dfadd09f6ab94b6bcb0e4d41b9e4e7b5c"
+  },
+  "ci_execution_map": {
+    "SnapshotBinding": "tests.yml ordinary unit lane",
+    "SnapshotBindingMutations": "tests.yml mandatory serial integration lane"
+  },
+  "limitations": [
+    "Local verification, not a cross-platform CI run or independent review",
+    "Input-mutation coverage, not an exhaustive code-mutation campaign",
+    "No production activation changes",
+    "Does not claim transactional rollback of storage I/O faults after valid import begins"
+  ]
+}

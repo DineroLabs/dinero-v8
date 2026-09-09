@@ -459,10 +459,18 @@ promotion completed.
   continued regardless. This run is evidence *for* enabling enforcement; it is
   not enforcement.
 
+## Gate D loader evidence (2026-09-09)
+
+The integration branch now directly tests the binding helpers and exercises six
+independent checksum-valid snapshot mutations through the live loader, with
+valid/dormant controls and unchanged-state assertions across restart. This found
+and fixed rejection happening after state import: authentication now precedes
+live-state mutation. See [the Gate D report](../audits/SHIELDED_GATE_D_VERIFICATION.md)
+for exact cases, results and limits. This is local engineering evidence, not the
+independent consensus review or approval to activate.
+
 ## Still owed before any activation
 
-* end-to-end corrupt-snapshot rejection at the loader (requires the commitment
-  to exist; unit vectors prove detection, not enforcement)
 * scheduled activation height + compatibility period, clear of any future
   `shielded_epoch_reset_height`
 * independent review
