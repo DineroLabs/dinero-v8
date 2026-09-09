@@ -66,6 +66,8 @@ enum class PeerSwitchReason {
 // ============================================================================
 
 struct PeerHeaderInfo {
+    // Validated response frontier, which may still be on a lower-work fork.
+    std::optional<uint256> continuation_hash;
     uint256 best_hash;              // Hash peer claims as their best
     uint32_t best_height;           // Height peer claims as their best
     uint64_t last_request_time;     // Timestamp of last getheaders sent (ms)

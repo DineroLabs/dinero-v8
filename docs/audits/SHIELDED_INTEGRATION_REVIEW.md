@@ -31,6 +31,18 @@ does not establish their security from first principles.
 | Consensus checksum omitted shielded activation/reset settings | Added all eight shielded heights and mutation coverage to operator drift telemetry. The pinned mainnet checksum changes; block and peer protocols do not. |
 | GCC build relied on a transitive standard-library include | Explicit `<algorithm>` added; the missing `std::any_of` declaration was the common failure in the first Linux CI runs. |
 
+The strict IBD sweep also found a pre-existing header continuation defect.
+A separately built main control failed after repeated genesis..2000 batches.
+A minimal side-branch regression failed before the repair: a valid 2,000-header
+batch did not yet exceed the local best-work tip, so the next locator repeated
+the local tip instead of the received frontier. Per-peer validated continuation
+now advances that frontier while retaining serialized request ownership and
+normal header validation. All four rebuilt header-sync suites pass. The strict
+five-node scenario passes without manual withheld-block replay: S/A/B/C agree at
+height 3022 after the post-heal block; F remains the competing-fork source and
+is intentionally outside the harness's final convergence set. This finding does
+not establish the cause of the separate #709/#717 intermittent tests.
+
 Additional full-sweep findings: explicit fractional fee-rate conversion truncated
 positive rates to zero (reproduced on main and corrected with checked rounding);
 the TwoNodeSync harness killed another test's daemon through broad process-name

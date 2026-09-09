@@ -53,3 +53,15 @@ See the accompanying qualification JSON for exact values and sample provenance.
 Linux CI now runs the same capacity gate. Windows and both macOS architectures
 also run release artifact builds; build success alone is not a proof-capacity
 result. Keep the qualification ledger explicit about this distinction.
+
+## Linux CI proof qualification
+
+The four-logical-CPU Ubuntu x86-64 runner also passed all eighteen fresh-process
+measurements ([run 34316707990](https://github.com/DineroLabs/dinero-v8/actions/runs/34316707990)).
+Normal 1-in/2-out maximum build/verify times were 25.365/6.585 seconds; the
+eight-proof block maximum verification was 19.014 seconds. Peak proof-process
+RSS was 858,759,168 bytes (819 MiB). The block result has only about 5% margin
+against the 20-second target: it qualifies that measured proof run, not loaded
+production operation on every four-core host. Retain the concurrent-load and
+20-sample fleet requirements. Exact merge-ref/binary identity and all samples
+are in `SHIELDED_RESOURCE_QUALIFICATION_LINUX.json`.
