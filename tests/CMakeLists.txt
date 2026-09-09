@@ -12750,3 +12750,15 @@ target_include_directories(test_shielded_resource_limits PRIVATE
   ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME ShieldedResourceLimits COMMAND test_shielded_resource_limits)
 set_tests_properties(ShieldedResourceLimits PROPERTIES LABELS "shielded;consensus;p2p;mandatory" TIMEOUT 30)
+
+add_executable(test_snapshot_binding
+  tests/consensus/test_snapshot_binding.cpp
+  src/consensus/snapshot_binding.cpp
+  src/consensus/state_commitment.cpp
+  src/primitives/transaction.cpp
+  src/primitives/transaction_serializer.cpp
+  src/primitives/uint256.cpp)
+target_link_libraries(test_snapshot_binding PRIVATE GTest::gtest_main dinero_shielded dinero_crypto)
+target_include_directories(test_snapshot_binding PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME SnapshotBinding COMMAND test_snapshot_binding)
+set_tests_properties(SnapshotBinding PROPERTIES LABELS "shielded;consensus;snapshot;mandatory" TIMEOUT 30)

@@ -2296,3 +2296,12 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
       TIMEOUT 2400 RUN_SERIAL TRUE)
     message(STATUS "  ✓ ShieldedAuthRelayLifecycle registered")
 endif()
+
+# Gate D must run in the mandatory serial lane; missing Python is a failure,
+# never a reason to silently omit the security gate from registration.
+add_test(NAME SnapshotBindingMutations
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_binding_mutations.py)
+set_tests_properties(SnapshotBindingMutations PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;shielded;assumeutxo;snapshot;mandatory"
+  TIMEOUT 600 RUN_SERIAL TRUE)
