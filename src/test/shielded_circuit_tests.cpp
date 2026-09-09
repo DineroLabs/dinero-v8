@@ -453,8 +453,7 @@ struct AuthFixture {
     }
 };
 
-// This profile is not accepted by the transaction validator yet. These tests
-// establish the proof-level commitment before wiring wallet and consensus.
+// Policy commitments must remain binding independently of wallet construction.
 TEST(ShieldedPrivateCovenantTest, CommitsRulesAndRejectsOrdinarySpendBypass) {
     AuthFixture fx;
     fx.Build();
@@ -484,6 +483,13 @@ TEST(ShieldedPrivateCovenantTest, CommitsRulesAndRejectsOrdinarySpendBypass) {
     EXPECT_FALSE(VerifySpend(proof, changed, nullptr, true, true, true, true));
     changed = fx.pub;
     first.encrypted_note[0] ^= 1;
+    changed.covenant_outputs = PrivateCovenantOutputRoot({first, second});
+    EXPECT_FALSE(VerifySpend(proof, changed, nullptr, true, true, true, true));
+    changed = fx.pub;
+    changed.covenant_outputs = PrivateCovenantOutputRoot({second});
+    EXPECT_FALSE(VerifySpend(proof, changed, nullptr, true, true, true, true));
+    changed = fx.pub;
+    second.commitment[0] ^= 1;
     changed.covenant_outputs = PrivateCovenantOutputRoot({first, second});
     EXPECT_FALSE(VerifySpend(proof, changed, nullptr, true, true, true, true));
     changed = fx.pub;

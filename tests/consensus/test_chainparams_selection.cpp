@@ -216,6 +216,7 @@ TEST(ChainParamsSelection, MainnetAuthCutoverPreservesHistoricalRules) {
     EXPECT_EQ(Params().shielded_cv_binding_activation_height, 61000U);
     EXPECT_EQ(Params().shielded_epoch_reset_height, 61000U);
     EXPECT_EQ(Params().shielded_spend_auth_activation_height, 110000U);
+    EXPECT_EQ(Params().shielded_private_covenant_activation_height, 110000U);
     EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, 110000U);
     EXPECT_EQ(Params().shielded_outgoing_recovery_activation_height, 110000U);
     EXPECT_EQ(Params().shielded_coinbase_reject_activation_height, 110000U);

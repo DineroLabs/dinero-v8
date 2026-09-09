@@ -266,7 +266,8 @@ struct ChainParams {
     // ===========================================================================
     uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
     // Independent fork gate: policy-bound private-note spends (proof 0x07).
-    // Dormant until wallet recovery and transaction lifecycle qualification.
+    // Mainnet selects 110000; other networks remain dormant unless explicitly
+    // configured for rehearsal. Wallet support must accompany this fork.
     uint32_t shielded_private_covenant_activation_height = UINT32_MAX;
 
     // Wallet-format activation for outgoing-view recovery envelope v3. This

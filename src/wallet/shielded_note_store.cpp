@@ -1,3 +1,4 @@
+#include "wallet/private_covenant_descriptor.h"
 /**
  * Shielded note store — SQLite-backed, wallet-layer.
  * See include/wallet/shielded_note_store.h.
@@ -202,7 +203,7 @@ NoteKeyScheme ReadKeyScheme(sqlite3_stmt* s, int col) {
         return NoteKeyScheme::LegacySenderKey;
     }
     const int v = sqlite3_column_int(s, col);
-    return v == 1 ? NoteKeyScheme::Auth : NoteKeyScheme::LegacySenderKey;
+    return v == 2 ? NoteKeyScheme::PrivateCovenant : v == 1 ? NoteKeyScheme::Auth : NoteKeyScheme::LegacySenderKey;
 }
 
 bool MigrateLegacySchema(sqlite3* db) {
@@ -290,6 +291,11 @@ ShieldedNoteStore::OpenResult ShieldedNoteStore::Open(const std::string& path) {
             return OpenResult::SchemaError;
         }
     }
+    if (!ColumnExists(db_, "shielded_notes", "covenant_memo")) {
+        if (sqlite3_exec(db_, "ALTER TABLE shielded_notes ADD COLUMN covenant_memo BLOB", nullptr, nullptr, nullptr) != SQLITE_OK) {
+            Close(); return OpenResult::SchemaError;
+        }
+    }
     // Spend-authority: add key_scheme to wallets created before it existed.
     // CREATE TABLE IF NOT EXISTS above is a no-op on an existing table, so a
     // plain ADD COLUMN is required. Additive with a DEFAULT, so it neither
@@ -341,7 +347,7 @@ ShieldedNoteStore::OpenResult ShieldedNoteStore::Open(const std::string& path) {
                      // Earlier development builds persisted Auth spend keys.
                      // Retire that cache; runtime hydration now requires ask.
                      "UPDATE shielded_notes SET secret_key = zeroblob(32) "
-                     "WHERE key_scheme = 1 AND secret_key <> zeroblob(32);",
+                     "WHERE key_scheme IN (1, 2) AND secret_key <> zeroblob(32);",
                      nullptr, nullptr, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
         sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
@@ -352,15 +358,30 @@ ShieldedNoteStore::OpenResult ShieldedNoteStore::Open(const std::string& path) {
     const char* malformed_sql =
         "SELECT 1 FROM shielded_notes "
         "WHERE nullifier_key IS NULL OR typeof(nullifier_key) <> 'blob' "
-        "OR length(nullifier_key) <> 32 OR key_scheme NOT IN (0, 1) LIMIT 1";
+        "OR length(nullifier_key) <> 32 OR key_scheme NOT IN (0, 1, 2) OR (key_scheme = 2 AND (covenant_memo IS NULL OR length(covenant_memo) <> 512)) LIMIT 1";
     if (sqlite3_prepare_v2(db_, malformed_sql, -1, &malformed, nullptr) !=
         SQLITE_OK) {
         sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
         Close();
         return OpenResult::SchemaError;
     }
-    const bool has_malformed_key = sqlite3_step(malformed) == SQLITE_ROW;
+    bool has_malformed_key = sqlite3_step(malformed) == SQLITE_ROW;
     sqlite3_finalize(malformed);
+    sqlite3_stmt* descriptors = nullptr;
+    if (sqlite3_prepare_v2(db_, "SELECT covenant_memo, value_una FROM shielded_notes WHERE key_scheme=2", -1, &descriptors, nullptr) != SQLITE_OK) {
+        has_malformed_key = true;
+    } else {
+        int step;
+        while ((step = sqlite3_step(descriptors)) == SQLITE_ROW) {
+            std::array<uint8_t,512> memo{};
+            if (sqlite3_column_type(descriptors,0) != SQLITE_BLOB || sqlite3_column_bytes(descriptors,0) != 512) { has_malformed_key=true; break; }
+            std::memcpy(memo.data(),sqlite3_column_blob(descriptors,0),memo.size());
+            const auto descriptor=DecodePrivateCovenantDescriptor(memo);
+            if (!descriptor || PrivateCovenantFundingValue(*descriptor) != static_cast<uint64_t>(sqlite3_column_int64(descriptors,1))) { has_malformed_key=true; break; }
+        }
+        if (step != SQLITE_DONE && step != SQLITE_ROW) has_malformed_key=true;
+    }
+    sqlite3_finalize(descriptors);
     if (has_malformed_key ||
         sqlite3_exec(db_, "COMMIT", nullptr, nullptr, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
@@ -386,20 +407,25 @@ bool ShieldedNoteStore::AddNote(uint64_t value_una,
                                 uint64_t leaf_index,
                                 uint32_t created_height,
                                 NoteKeyScheme key_scheme,
-                                const sh::Hash& diversifier) {
+                                const sh::Hash& diversifier,
+                                const std::array<uint8_t,512>& covenant_memo) {
     if (!db_) return false;
+    if (key_scheme == NoteKeyScheme::PrivateCovenant) {
+        const auto descriptor = DecodePrivateCovenantDescriptor(covenant_memo);
+        if (!descriptor || PrivateCovenantFundingValue(*descriptor) != value_una) return false;
+    }
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "INSERT INTO shielded_notes "
         "(value_una, secret_key, nullifier_key, public_key, randomness, commitment, "
         " leaf_index, nullifier, confirmed, spent, created_height, confirmed_height, spent_height, "
-        " key_scheme, diversifier) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, 0, ?, ?)";
+        " key_scheme, diversifier, covenant_memo) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, 0, ?, ?, ?)";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
 
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(value_una));
     // Auth spend authority is derived only after unlock, never stored in SQLite.
-    BindHash(stmt, 2, key_scheme == NoteKeyScheme::Auth ? sh::Hash{} : secret_key);
+    BindHash(stmt, 2, key_scheme != NoteKeyScheme::LegacySenderKey ? sh::Hash{} : secret_key);
     BindHash(stmt, 3, nullifier_key);
     BindHash(stmt, 4, public_key);
     BindHash(stmt, 5, randomness);
@@ -411,6 +437,7 @@ bool ShieldedNoteStore::AddNote(uint64_t value_una,
     sqlite3_bind_int(stmt, 10, static_cast<int>(created_height));
     sqlite3_bind_int(stmt, 11, static_cast<int>(key_scheme));
     BindHash(stmt, 12, diversifier);
+    sqlite3_bind_blob(stmt, 13, covenant_memo.data(), covenant_memo.size(), SQLITE_TRANSIENT);
 
     const bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
@@ -425,20 +452,25 @@ bool ShieldedNoteStore::AddPendingNote(uint64_t value_una,
                                        const sh::Hash& commitment,
                                        uint32_t created_height,
                                        NoteKeyScheme key_scheme,
-                                       const sh::Hash& diversifier) {
+                                       const sh::Hash& diversifier,
+                                const std::array<uint8_t,512>& covenant_memo) {
     if (!db_) return false;
+    if (key_scheme == NoteKeyScheme::PrivateCovenant) {
+        const auto descriptor = DecodePrivateCovenantDescriptor(covenant_memo);
+        if (!descriptor || PrivateCovenantFundingValue(*descriptor) != value_una) return false;
+    }
     sqlite3_stmt* stmt = nullptr;
     const char* sql =
         "INSERT INTO shielded_notes "
         "(value_una, secret_key, nullifier_key, public_key, randomness, commitment, "
         " confirmed, spent, created_height, confirmed_height, spent_height, "
-        " key_scheme, diversifier) "
-        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?, ?)";
+        " key_scheme, diversifier, covenant_memo) "
+        "VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, ?, ?, ?)";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
 
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(value_una));
     // Auth spend authority is derived only after unlock, never stored in SQLite.
-    BindHash(stmt, 2, key_scheme == NoteKeyScheme::Auth ? sh::Hash{} : secret_key);
+    BindHash(stmt, 2, key_scheme != NoteKeyScheme::LegacySenderKey ? sh::Hash{} : secret_key);
     BindHash(stmt, 3, nullifier_key);
     BindHash(stmt, 4, public_key);
     BindHash(stmt, 5, randomness);
@@ -446,6 +478,7 @@ bool ShieldedNoteStore::AddPendingNote(uint64_t value_una,
     sqlite3_bind_int(stmt, 7, static_cast<int>(created_height));
     sqlite3_bind_int(stmt, 8, static_cast<int>(key_scheme));
     BindHash(stmt, 9, diversifier);
+    sqlite3_bind_blob(stmt, 10, covenant_memo.data(), covenant_memo.size(), SQLITE_TRANSIENT);
 
     const bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
     sqlite3_finalize(stmt);
@@ -678,7 +711,7 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListUnspent() const {
         "SELECT id, value_una, secret_key, nullifier_key, public_key, randomness, "
         "       commitment, leaf_index, nullifier, confirmed, spent, "
         "       created_height, confirmed_height, spent_height, "
-        "       key_scheme, diversifier "
+        "       key_scheme, diversifier, covenant_memo "
         "FROM shielded_notes WHERE spent = 0 AND confirmed = 1 ORDER BY value_una DESC";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
 
@@ -699,6 +732,8 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListUnspent() const {
         n.confirmed_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 12));
         n.spent_height   = static_cast<uint32_t>(sqlite3_column_int(stmt, 13));
         n.key_scheme     = ReadKeyScheme(stmt, 14);
+        if (sqlite3_column_bytes(stmt, 16) == 512)
+            std::memcpy(n.covenant_memo.data(), sqlite3_column_blob(stmt, 16), 512);
         ReadHash(stmt, 15, n.d);
         out.push_back(n);
     }
@@ -714,7 +749,7 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListAll() const {
         "SELECT id, value_una, secret_key, nullifier_key, public_key, randomness, "
         "       commitment, leaf_index, nullifier, confirmed, spent, "
         "       created_height, confirmed_height, spent_height, "
-        "       key_scheme, diversifier "
+        "       key_scheme, diversifier, covenant_memo "
         "FROM shielded_notes ORDER BY id ASC";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return out;
 
@@ -739,6 +774,8 @@ std::vector<ShieldedNote> ShieldedNoteStore::ListAll() const {
         n.confirmed_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 12));
         n.spent_height   = static_cast<uint32_t>(sqlite3_column_int(stmt, 13));
         n.key_scheme     = ReadKeyScheme(stmt, 14);
+        if (sqlite3_column_bytes(stmt, 16) == 512)
+            std::memcpy(n.covenant_memo.data(), sqlite3_column_blob(stmt, 16), 512);
         ReadHash(stmt, 15, n.d);
         out.push_back(n);
     }
@@ -753,7 +790,7 @@ std::optional<ShieldedNote> ShieldedNoteStore::GetByLeafIndex(uint64_t leaf_inde
         "SELECT id, value_una, secret_key, nullifier_key, public_key, randomness, "
         "       commitment, leaf_index, nullifier, confirmed, spent, "
         "       created_height, confirmed_height, spent_height, "
-        "       key_scheme, diversifier "
+        "       key_scheme, diversifier, covenant_memo "
         "FROM shielded_notes WHERE leaf_index = ? AND confirmed = 1";
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return std::nullopt;
     sqlite3_bind_int64(stmt, 1, static_cast<int64_t>(leaf_index));
@@ -778,6 +815,8 @@ std::optional<ShieldedNote> ShieldedNoteStore::GetByLeafIndex(uint64_t leaf_inde
     n.confirmed_height = static_cast<uint32_t>(sqlite3_column_int(stmt, 12));
     n.spent_height   = static_cast<uint32_t>(sqlite3_column_int(stmt, 13));
     n.key_scheme     = ReadKeyScheme(stmt, 14);
+        if (sqlite3_column_bytes(stmt, 16) == 512)
+            std::memcpy(n.covenant_memo.data(), sqlite3_column_blob(stmt, 16), 512);
     ReadHash(stmt, 15, n.d);
     sqlite3_finalize(stmt);
     return n;

@@ -61,6 +61,14 @@ private Q_SLOTS:
         tabs->setCurrentIndex(covenants);
         QCOMPARE(modes->currentData().toString(), QString("public_contract"));
         QCOMPARE(recipient->text(), QString("covenant draft"));
+        modes->setCurrentIndex(modes->findData("private_contract"));
+        QCOMPARE(tabs->currentIndex(), covenants);
+        QVERIFY(recipient->isHidden());
+        QVERIFY(window.findChild<QLineEdit*>("privateCovenantOwner"));
+        tabs->setCurrentIndex(send);
+        QCOMPARE(modes->currentData().toString(),QString("public_transfer"));
+        QVERIFY(!recipient->isHidden());
+        modes->setCurrentIndex(modes->findData("private_contract"));
         const QString screenshot = qEnvironmentVariable("DINERO_QT_NAV_SCREENSHOT");
         if (!screenshot.isEmpty()) {
             window.show();

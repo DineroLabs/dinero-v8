@@ -2313,3 +2313,12 @@ set_tests_properties(StateCommitmentMining PROPERTIES
   ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
   LABELS "integration;shielded;mining;mandatory"
   TIMEOUT 240 RUN_SERIAL TRUE)
+
+# Complete wallet lifecycle: both funding sources, locked restart/reorg recovery,
+# covenant enforcement and the recipient's subsequent ordinary spend.
+add_test(NAME PrivateCovenantLifecycle
+  COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_private_covenant_lifecycle.sh)
+set_tests_properties(PrivateCovenantLifecycle PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;shielded;covenant;wallet;restart;reorg;mandatory"
+  TIMEOUT 2400 RUN_SERIAL TRUE)

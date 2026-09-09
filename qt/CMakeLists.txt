@@ -516,6 +516,8 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(GUI_SOURCES
+  src/privatecovenantwidget.cpp
+  src/privatecovenantwidget.h
   src/main.cpp
   src/rpcclient.cpp
   src/rpcclient.h
@@ -1782,3 +1784,13 @@ message(STATUS "  Experimental:  ${DIN_EXPERIMENTAL_FEATURES}")
 message(STATUS "  Build Type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "════════════════════════════════════════════════════")
 message(STATUS "")
+
+if(BUILD_TESTING)
+  add_executable(test_private_covenant_widget tests/test_private_covenant_widget.cpp
+    src/privatecovenantwidget.cpp src/privatecovenantwidget.h src/rpcclient.cpp src/rpcclient.h)
+  target_include_directories(test_private_covenant_widget PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_private_covenant_widget PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+  target_compile_definitions(test_private_covenant_widget PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PrivateCovenantWidget COMMAND test_private_covenant_widget)
+  set_tests_properties(PrivateCovenantWidget PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+endif()

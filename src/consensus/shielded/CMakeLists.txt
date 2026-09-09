@@ -34,6 +34,7 @@ add_library(dinero_shielded STATIC
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_derivation.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_note_store.cpp
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_wallet_ops.cpp
+    ${CMAKE_SOURCE_DIR}/src/wallet/private_covenant_descriptor.cpp
     # Pure outgoing envelope helpers are called by wallet_ops. Keep them in
     # this library so standalone shielded consumers link without dinero_wallet.
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_outgoing_view.cpp

@@ -551,6 +551,7 @@ void ShieldedWidget::updateNotesTable(const QJsonValue& result) {
         notesTable_->setItem(row, 0,
             new QTableWidgetItem(confirmed ? QString::number(leaf) : QString("—")));
         notesTable_->setItem(row, 1, new QTableWidgetItem(MoneyDinFromUna(una)));
+        if (n.value("private_covenant").toBool()) state += " (covenant; manage in Covenants)";
         auto* stateItem = new QTableWidgetItem(state);
         if (state == "spent")     stateItem->setForeground(QColor("#888"));
         else if (state == "pending") stateItem->setForeground(QColor("#e0d2b8"));
@@ -752,6 +753,10 @@ void ShieldedWidget::updateBalanceLabels(const QJsonValue& result) {
     qint64 pending = obj.value("pending_note_count").toVariant().toLongLong();
     balanceUnaLabel_->setText(QString::number(una));
     balanceDinLabel_->setText(MoneyDinFromUna(una));
+    if (obj.contains("covenant_balance_una")) {
+        balanceDinLabel_->setText(MoneyDinFromUna(obj.value("ordinary_balance_una").toInteger()) + " available for ordinary payments\n" +
+            MoneyDinFromUna(obj.value("covenant_balance_una").toInteger()) + " in covenants");
+    }
     treeSizeLabel_->setText(QString::number(tree));
     noteCountLabel_->setText(QString::number(confirmed));
     if (pendingNoteCountLabel_) {

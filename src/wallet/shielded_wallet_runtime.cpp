@@ -1,3 +1,4 @@
+#include "wallet/private_covenant_descriptor.h"
 /**
  * Wallet-scoped runtime helpers for the v5 shielded pool.
  *
@@ -7,6 +8,8 @@
  */
 
 #include "consensus/shielded/resource_limits.h"
+#include "consensus/shielded/shielded_circuit.h"
+#include "consensus/shielded/pedersen_commit.h"
 #include "wallet/shielded_wallet_ops.h"
 #include "wallet/shielded_derivation.h"
 
@@ -382,6 +385,19 @@ std::optional<RecognizedOwnedNote> RecognizeOwnedNote(
             recognized.key_scheme = NoteKeyScheme::Auth;
             return recognized;
         }
+        const auto covenant_height = dinero::Params().shielded_private_covenant_activation_height;
+        if (covenant_height != UINT32_MAX && output_height >= covenant_height) {
+            const auto descriptor = DecodePrivateCovenantDescriptor(plaintext->memo);
+            if (descriptor && PrivateCovenantFundingValue(*descriptor) == plaintext->value_una) {
+                const auto locked_key = sh::PrivateCovenantOwnershipKey(recognized.public_key,
+                    PrivateCovenantDescriptorRoot(*descriptor), descriptor->minimum_height);
+                if (sh::NoteCommitment(recognized.d_packed, locked_key, value_h, plaintext->rcm) == output.commitment) {
+                    recognized.public_key = locked_key;
+                    recognized.key_scheme = NoteKeyScheme::PrivateCovenant;
+                    return recognized;
+                }
+            }
+        }
         OPENSSL_cleanse(recognized.secret_key.data(),
                         recognized.secret_key.size());
         OPENSSL_cleanse(recognized.nullifier_key.data(),
@@ -397,7 +413,7 @@ std::optional<RecognizedOwnedNote> RecognizeOwnedNote(
 bool HydrateSpendAuthority(dinero::WalletManager& wallet,
                            ShieldedNote& note,
                            std::string& error) {
-    if (note.key_scheme != NoteKeyScheme::Auth) return true;
+    if (note.key_scheme == NoteKeyScheme::LegacySenderKey) return true;
     // Never trust persisted/cached spend authority, including rows from an
     // earlier development build. Every auth spend requires the unlocked seed.
     OPENSSL_cleanse(note.secret_key.data(), note.secret_key.size());
@@ -415,8 +431,14 @@ bool HydrateSpendAuthority(dinero::WalletManager& wallet,
             if (nfk != note.nullifier_key) continue;
             auto diversified = shdrv::DeriveDiversifiedSpendKey(
                 authority.ask, authority.ak, d);
-            const auto ownership = sh::AuthRecipientCommitmentKey(
+            auto ownership = sh::AuthRecipientCommitmentKey(
                 diversified.pk_d, shdrv::NullifierKeyCommitment(nfk));
+            if (note.key_scheme == NoteKeyScheme::PrivateCovenant) {
+                const auto descriptor = DecodePrivateCovenantDescriptor(note.covenant_memo);
+                if (!descriptor) { error = "private_covenant_descriptor_missing"; return false; }
+                ownership = sh::PrivateCovenantOwnershipKey(ownership,
+                    PrivateCovenantDescriptorRoot(*descriptor), descriptor->minimum_height);
+            }
             if (ownership != note.public_key) {
                 OPENSSL_cleanse(diversified.s.data(), diversified.s.size());
                 continue;
@@ -700,7 +722,7 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
                     owned->nullifier_key,
                     owned->public_key, owned->plaintext.rcm,
                     output.commitment, height, owned->key_scheme,
-                    owned->d_packed);
+                    owned->d_packed, owned->plaintext.memo);
                 OPENSSL_cleanse(owned->secret_key.data(),
                                 owned->secret_key.size());
             }
@@ -824,7 +846,7 @@ bool RescanConfirmedBlock(dinero::WalletManager& wallet,
                         owned->nullifier_key,
                         owned->public_key, owned->plaintext.rcm,
                         output.commitment, leaf_index, height,
-                        owned->key_scheme, owned->d_packed)) {
+                        owned->key_scheme, owned->d_packed, owned->plaintext.memo)) {
                     OPENSSL_cleanse(owned->secret_key.data(),
                                     owned->secret_key.size());
                     if (error) *error = "shielded_rescan_note_insert_failed";
@@ -962,7 +984,7 @@ std::optional<ShieldedNote> SelectUnshieldNote(dinero::WalletManager& wallet,
     // fee out of the note, not change).
     std::optional<ShieldedNote> best;
     for (const auto& n : unspent) {
-        if (!n.confirmed || n.spent) continue;
+        if (!n.confirmed || n.spent || n.key_scheme == NoteKeyScheme::PrivateCovenant) continue;
         if (n.value_una < min_value_una) continue;
         if (!best || n.value_una < best->value_una) {
             best = n;
@@ -1170,7 +1192,7 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     uint64_t value_una,
     dinero::WalletManager& wallet,
     const std::array<uint8_t, 512>* recipient_memo,
-    bool persist) {
+    bool persist, const std::array<uint8_t,512>* covenant_memo) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -1213,6 +1235,14 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     recipient.pk_d_spend = decoded.pk_d_spend;
     recipient.nfk_commitment = decoded.nfk_commitment;
     recipient.value_una = value_una;
+    if (covenant_memo) {
+        const auto height = dinero::Params().shielded_private_covenant_activation_height;
+        if (height == UINT32_MAX || wallet.getBlockchainHeight() < height) {
+            AttachShieldResult err{}; err.status = OpStatus::InvalidParams;
+            err.error = "private_covenants_not_active"; return err;
+        }
+        recipient.covenant_memo = *covenant_memo;
+    }
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
     const bool spend_auth = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
@@ -1382,7 +1412,7 @@ std::optional<std::vector<ShieldedNote>> SelectTransferNotesForValue(
     // Sort confirmed unspent ascending by value, greedy-fill until target met.
     std::vector<ShieldedNote> candidates;
     for (const auto& n : unspent) {
-        if (!n.confirmed || n.spent) continue;
+        if (!n.confirmed || n.spent || n.key_scheme == NoteKeyScheme::PrivateCovenant) continue;
         candidates.push_back(n);
     }
     const bool auth_resources = SpendAuthForMiningAtTip(wallet.getBlockchainHeight());
@@ -1562,7 +1592,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     uint64_t fee_una,
     dinero::WalletManager& wallet,
     const std::string* recipient_memo_utf8,
-    bool persist) {
+    bool persist, const std::array<uint8_t,512>* covenant_memo) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -1659,6 +1689,13 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     recipient.pk_d_spend = recipient_decoded.pk_d_spend;
     recipient.nfk_commitment = recipient_decoded.nfk_commitment;
     recipient.value_una = recipient_value_una;
+    if (covenant_memo) {
+        const auto h = dinero::Params().shielded_private_covenant_activation_height;
+        if (h == UINT32_MAX || wallet.getBlockchainHeight() < h) {
+            AttachAddressedTransferResult err{}; err.error = "private_covenants_not_active"; return err;
+        }
+        recipient.covenant_memo = *covenant_memo;
+    }
 
     std::array<uint8_t, 512> memo_buf{};
     bool have_memo = false;
@@ -1779,6 +1816,78 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     OPENSSL_cleanse(built.change_nullifier_key.data(),
                     built.change_nullifier_key.size());
     return built;
+}
+
+AttachUnshieldResult AttachPrivateCovenantInputBundle(dinero::Transaction& tx,
+    uint64_t leaf_index, const sh::Hash& expected_commitment, dinero::WalletManager& wallet, bool persist) {
+    AttachUnshieldResult result{};
+    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    if (!EnsureRuntimeLocked(wallet, &result.error)) return result;
+    const auto activation = dinero::Params().shielded_private_covenant_activation_height;
+    const auto height = wallet.getBlockchainHeight();
+    if (activation == UINT32_MAX || height < activation) {
+        result.error = "private_covenants_not_active"; return result;
+    }
+    auto stored = g_runtime->store.GetByLeafIndex(leaf_index);
+    if (!stored || !stored->confirmed || stored->spent || stored->key_scheme != NoteKeyScheme::PrivateCovenant) {
+        result.error = "confirmed_private_covenant_required"; return result;
+    }
+    if (stored->commitment != expected_commitment) {
+        result.error = "private_covenant_commitment_changed"; return result;
+    }
+    auto& note = *stored;
+    const auto descriptor = DecodePrivateCovenantDescriptor(note.covenant_memo);
+    if (!descriptor || PrivateCovenantFundingValue(*descriptor) != note.value_una || height < descriptor->minimum_height) {
+        result.error = "private_covenant_locked_or_invalid"; return result;
+    }
+    if (!tx.vin.empty() || !tx.vout.empty() || tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+        result.error = "private_covenant_requires_private_v6_envelope"; return result;
+    }
+    if (!HydrateSpendAuthority(wallet, note, result.error)) return result;
+    struct EraseSecret { sh::Hash& value; ~EraseSecret(){ OPENSSL_cleanse(value.data(),value.size()); } } erase{note.secret_key};
+    const auto path = g_runtime->tree.GetAuthPath(leaf_index);
+    if (!path) { result.error = "private_covenant_path_unavailable"; return result; }
+    std::vector<sh::PlannedOutput> outputs;
+    for (const auto& material : DerivePrivateCovenantOutputs(*descriptor)) {
+        AddressedRecipient recipient;
+        recipient.d = material.recipient.d; recipient.pk_d = material.recipient.pk_d;
+        recipient.pk_d_spend = material.recipient.pk_d_spend; recipient.nfk_commitment = material.recipient.nfk_commitment;
+        recipient.value_una = material.value_una;
+        auto built = BuildAddressedRecipientOutput(recipient, nullptr, true, true, &material.rcm, &material.esk);
+        if (built.status != OpStatus::Ok || built.commitment != material.output.commitment ||
+            built.planned.encrypted_note != material.output.encrypted_note) {
+            result.error = "private_covenant_output_reconstruction_failed"; return result;
+        }
+        outputs.push_back(std::move(built.planned));
+    }
+    sh::SpendWitness witness{};
+    witness.secret_key = note.secret_key; witness.nullifier_key = note.nullifier_key;
+    witness.leaf_index = leaf_index; witness.value = ValueToHash(note.value_una);
+    witness.randomness = note.randomness; witness.d = note.d;
+    witness.rcv = RandomHash(); witness.merkle_path = path->siblings;
+    EraseSecret erase_witness{witness.secret_key};
+    sh::SpendPublicInputs inputs{};
+    inputs.anchor = g_runtime->tree.Root(); inputs.nullifier = sh::ComputeNullifier(note.nullifier_key, leaf_index);
+    inputs.covenant_outputs = PrivateCovenantDescriptorRoot(*descriptor);
+    inputs.covenant_minimum_height = descriptor->minimum_height;
+    if (sh::PedersenCommit(witness.rcv, note.value_una, inputs.cv) != sh::PedersenResult::Ok) {
+        result.error = "private_covenant_cv_failed"; return result;
+    }
+    auto proof = sh::ProveSpend(witness, inputs, nullptr, true, true, true, true);
+    if (proof.empty()) { result.error = "private_covenant_proof_failed"; return result; }
+    sh::PlannedSpend spend{inputs.nullifier,inputs.anchor,note.value_una,witness.rcv,std::move(proof),RandomHash()};
+    tx.SetExplicitFee(descriptor->fee_una);
+    sh::ShieldedBundle bundle;
+    if (sh::BuildShieldedBundle({spend}, outputs, sh::ComputeShieldedTxSighash(tx), bundle) != sh::BundleBuildResult::Ok) {
+        result.error = "private_covenant_bundle_failed"; return result;
+    }
+    tx.shielded_bundle_bytes = sh::SerializeShieldedBundle(bundle);
+    if (!sh::CheckTxResourceEnvelope(tx,true,result.error)) { tx.shielded_bundle_bytes.clear(); return result; }
+    if (persist && !g_runtime->store.MarkSpentByNullifier(inputs.nullifier,0)) {
+        result.error = "private_covenant_pending_spend_failed"; return result;
+    }
+    result.nullifier = inputs.nullifier; result.bundle_bytes = tx.shielded_bundle_bytes.size();
+    result.status = OpStatus::Ok; return result;
 }
 
 } // namespace dinero::wallet::shielded_ops

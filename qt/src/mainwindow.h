@@ -220,6 +220,7 @@ private:
   void updateMiningOutputCinematicFrame();
   void updateWalletSwitcherState();
   bool shouldIgnoreWalletScopedResult(const QString& method) const;
+  class PrivateCovenantWidget* privateCovenantWidget_ = nullptr;
   void bindWalletScopedState(const QString& walletName);
   void clearWalletScopedUiState();
   void refreshWalletMiningAddress();

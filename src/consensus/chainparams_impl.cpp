@@ -121,6 +121,7 @@ static ChainParams g_mainnet = {
     // Operator-selected mainnet Auth cutover, 2026-09-09. This is a hard fork:
     // upgrade all validating nodes before 110000. Historical rules stay intact.
     .shielded_spend_auth_activation_height = 110000,
+    .shielded_private_covenant_activation_height = 110000,
     .shielded_outgoing_recovery_activation_height = 110000,
     .shielded_spend_auth_epoch_reset_height = 110000,
     .shielded_epoch_reset_height = 61000,

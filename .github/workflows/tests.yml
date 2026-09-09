@@ -243,7 +243,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot; do
+          for t in ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \

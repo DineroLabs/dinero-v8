@@ -1,3 +1,4 @@
+#include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
 #include "mainwindow.h"
 #include "peerheightsemantics.h"
@@ -2443,7 +2444,7 @@ void MainWindow::setupUI() {
         destination->addWidget(sendComposer_);
         sendComposer_->show();
         const QString desired = covenants ? "public_contract" : "public_transfer";
-        if (cmbSendAction_ && (covenants || currentSendMode() == "public_contract"))
+        if (cmbSendAction_ && ((covenants && currentSendMode() != "private_contract") || (payments && (currentSendMode() == "public_contract" || currentSendMode() == "private_contract"))))
           cmbSendAction_->setCurrentIndex(cmbSendAction_->findData(desired));
       }
     }
@@ -3113,8 +3114,11 @@ void MainWindow::setupUI() {
     covenantComposerHome_->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(composerHost);
 
+    privateCovenantWidget_ = new PrivateCovenantWidget(rpc_, contracts);
+    privateCovenantWidget_->hide();
+    layout->addWidget(privateCovenantWidget_);
     // Header with summary
-    auto *headerGroup = new QGroupBox("Active Contracts");
+    auto *headerGroup = new QGroupBox("Public Contracts");
     auto *headerLayout = new QVBoxLayout(headerGroup);
 
     lblContractsSummary_ = new QLabel("Loading...");
@@ -3125,9 +3129,9 @@ void MainWindow::setupUI() {
 
     // Contract list table
     tblContracts_ = new QTableWidget;
-    tblContracts_->setColumnCount(5);
+    tblContracts_->setColumnCount(6);
     tblContracts_->setHorizontalHeaderLabels({
-        "Type", "Amount", "Created", "Status", "Actions"
+        "Type", "Visibility", "Amount", "Created", "Status", "Actions"
     });
     tblContracts_->horizontalHeader()->setStretchLastSection(true);
     tblContracts_->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -3161,7 +3165,7 @@ void MainWindow::setupUI() {
         "Contracts are programmable spending rules attached to your funds. "
         "Vaults lock funds to a specific template. Timelocks release after a duration. "
         "Create, fund, track and spend public covenants here. "
-        "Receiving requires the matching recovery descriptor. Shielded covenants are not supported."
+        "Public covenants require a matching recovery descriptor. Private covenants recover from encrypted funding notes and require separate network activation."
     );
     lblInfo->setWordWrap(true);
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
@@ -3192,10 +3196,11 @@ void MainWindow::setupUI() {
     // Use the journal-backed shielded composer for private operations.
     cmbSendAction_->addItem("Send privately / convert…", "private_composer");
     cmbSendAction_->addItem("Create public covenant", "public_contract");
+    cmbSendAction_->addItem("Private covenants", "private_contract");
     cmbSendAction_->setToolTip(
         "Public payments use transparent funds. Private payments and conversions open "
         "the Shielded composer, subject to network activation. Covenants currently use "
-        "public funds; private covenant rules are not supported by the protocol.");
+        "public or private funds through their respective covenant controls.");
     sendLayout->addWidget(cmbSendAction_, 0, 1);
 
     // Hidden cmbSendMode_ kept so legacy code paths that read it stay valid;
@@ -3208,7 +3213,7 @@ void MainWindow::setupUI() {
         cmbSendMode_->addItem(mode, mode);
         cmbSendMode_->setCurrentIndex(0);
         updateSendModeUi();
-        if (mode == "public_contract" && mainTabs_) {
+        if ((mode == "public_contract" || mode == "private_contract") && mainTabs_) {
           for (int i = 0; i < mainTabs_->count(); ++i)
             if (mainTabs_->tabText(i).contains("Covenants")) mainTabs_->setCurrentIndex(i);
         } else if (mode == "public_transfer" && mainTabs_ &&
@@ -5653,6 +5658,18 @@ void MainWindow::updateSendModeUi() {
     composerContractDraft_ = contractMode;
   }
   const bool privateComposer = mode == "private_composer";
+  if (privateCovenantWidget_) privateCovenantWidget_->setVisible(mode == "private_contract");
+  if (sendComposer_) sendComposer_->setSizePolicy(QSizePolicy::Preferred, contractMode ? QSizePolicy::Maximum : QSizePolicy::Preferred);
+  if (auto* grid = sendFormGroup_ ? qobject_cast<QGridLayout*>(sendFormGroup_->layout()) : nullptr) {
+    for (int i=0;i<grid->count();++i) {
+      int row,column,rowSpan,columnSpan; grid->getItemPosition(i,&row,&column,&rowSpan,&columnSpan);
+      if (row==0) continue;
+      auto* item=grid->itemAt(i);
+      if (item->widget()) item->widget()->setVisible(mode != "private_contract");
+      if (item->layout()) for(int j=0;j<item->layout()->count();++j)
+        if(auto* widget=item->layout()->itemAt(j)->widget()) widget->setVisible(mode != "private_contract");
+    }
+  }
   const bool batch = contractMode && cmbContractTemplate_ &&
       cmbContractTemplate_->currentData().toString() == "payroll";
   const bool inputsEnabled = (!btnSend_ || btnSend_->isEnabled()) && !privateComposer;
@@ -5664,7 +5681,7 @@ void MainWindow::updateSendModeUi() {
 
   // Show/hide the contract template section
   if (contractGroup_) {
-    contractGroup_->setVisible(contractMode);
+    contractGroup_->setVisible(contractMode && mode != "private_contract");
   }
 
   if (edtRecipient_) {
@@ -5724,7 +5741,7 @@ void MainWindow::updateSendModeUi() {
       status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options"));
     if (isModeHint) {
       if (privateComposer) {
-        lblSendStatus_->setText("Open Shielded to send privately or convert funds. The daemon reports activation availability. Private covenants are not supported.");
+        lblSendStatus_->setText("Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.");
       } else if (contractMode) {
         lblSendStatus_->setText("Create an on-chain contract with spending rules.");
       } else if (privateMode) {
@@ -11217,6 +11234,7 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
 // ═══════════════════════════════════════════════════════════════════
 
 void MainWindow::refreshContractsList() {
+  if (privateCovenantWidget_) privateCovenantWidget_->refresh();
   pendingContractsRefresh_ = true;
   rpc_->callNamed("wallet.covenant.list", QJsonObject{});
 }
@@ -12624,7 +12642,7 @@ void MainWindow::onCreateWallet() {
     return;
   }
 
-  if (!activeReservationId_.isEmpty()) {
+  if (!activeReservationId_.isEmpty() || sendSubmissionPending_ || (privateCovenantWidget_ && privateCovenantWidget_->submissionPending())) {
     QMessageBox::warning(this, "Send In Progress",
       "A send is in progress. Wait for it to finish before creating or restoring another wallet.");
     return;
@@ -13994,6 +14012,7 @@ bool MainWindow::shouldIgnoreWalletScopedResult(const QString& method) const {
 }
 
 void MainWindow::bindWalletScopedState(const QString& walletName) {
+  if (privateCovenantWidget_) privateCovenantWidget_->setWalletScope(walletName);
   if (txTracker_) {
     txTracker_->setWalletScope(walletName);
   }
@@ -14015,6 +14034,7 @@ void MainWindow::bindWalletScopedState(const QString& walletName) {
 }
 
 void MainWindow::clearWalletScopedUiState() {
+  if (privateCovenantWidget_) privateCovenantWidget_->setWalletScope({});
   paymentRecipientDraft_.clear(); paymentAmountDraft_.clear();
   covenantRecipientDraft_.clear(); covenantAmountDraft_.clear();
   if (edtRecipient_) edtRecipient_->clear();
@@ -14104,7 +14124,7 @@ void MainWindow::onLoadSelectedWallet() {
   }
 
   // Block wallet switch while a send is in-flight (change reservation active)
-  if (!activeReservationId_.isEmpty()) {
+  if (!activeReservationId_.isEmpty() || sendSubmissionPending_ || (privateCovenantWidget_ && privateCovenantWidget_->submissionPending())) {
     QMessageBox::warning(this, "Wallet Switch Blocked",
         "A send is in progress. Wait for it to complete before switching wallets.");
     return;
