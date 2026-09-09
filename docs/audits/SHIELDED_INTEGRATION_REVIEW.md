@@ -115,3 +115,28 @@ truncated-trailer rejection, malformed-anchor no-mutation, rejected ordinary/res
 apply restoration, and reindex snapshot checks pass in the three focused suites.
 The stronger daemon scenario and final combined verification are pending; this
 finding must not be treated as closed solely from the unit tests.
+
+
+## Checkpoint-recovery anchor rewind
+
+The frozen `a7c23d3e7` sweep also failed
+`CsnContaminatedCheckpointRecovery`: after detecting a checksummed but stale
+Utreexo checkpoint at height 260, recovery rewound the shielded tree and
+nullifiers to genesis but retained the high-tip anchor history. DNRS rejected
+block 1 with `anchors_bytes=3608`. This is a separate omission in the existing
+startup/self-heal rewind helper, not an intermittent convergence failure.
+
+The helper now restores the next block's pre-block anchor undo before replay;
+at genesis (or before pool activation) it uses an empty history. Missing or
+malformed historical anchor undo at an active non-genesis height fails with an
+explicit reindex requirement instead of guessing from an exhausted journal.
+The existing persistence and tip-marker workflow is retained; this change does
+not claim to redesign its multi-write crash protocol or the recovery of
+nullifier state across historical epoch resets.
+
+The recovery regression remains DNRS-active and now compares the full shielded
+root as well as tip, Utreexo commitment, roots and leaf counts. It passes both
+the offline contaminated-checkpoint repair and a second offline restart. The
+realign, block-validation, reindex-anchor and shared shielded-section suites
+also pass. Evidence: `/tmp/shielded-checkpoint-anchor-fixed.log` and
+`/tmp/shielded-checkpoint-focused.log` on the review host.

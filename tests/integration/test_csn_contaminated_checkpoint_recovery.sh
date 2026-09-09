@@ -186,14 +186,25 @@ wait_for_sync() {
 capture_state_json() {
     local port=$1
     local datadir=$2
-    local height tip commitment roots
+    local height tip commitment roots shielded_root attempt
 
     height=$(rpc_scalar "${port}" "${datadir}" "getblockcount" '.result')
     tip=$(rpc_scalar "${port}" "${datadir}" "getbestblockhash" '.result')
     commitment=$(rpc_call "${port}" "${datadir}" "blockchain.getutreexocommitment" "[]")
     roots=$(rpc_call "${port}" "${datadir}" "blockchain.getutreexoroots" "[]")
 
+    # DNRS must remain active: recovery must rewind anchors alongside the
+    # forest, rather than suppressing enforcement to make this fixture pass.
+    shielded_root=""
+    for attempt in $(seq 1 20); do
+        shielded_root=$(rpc_scalar "${port}" "${datadir}" "daemon.shieldedroot" '.result.shielded_root // empty' 2>/dev/null || true)
+        [[ "${shielded_root}" =~ ^[0-9a-fA-F]{64}$ ]] && break
+        sleep 1
+    done
+    [[ "${shielded_root}" =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+
     jq -n \
+        --arg shielded_root "${shielded_root}" \
         --argjson height "${height}" \
         --arg tip "${tip}" \
         --arg commitment "$(echo "${commitment}" | jq -r '.result.commitment // empty')" \
@@ -201,6 +212,7 @@ capture_state_json() {
         --argjson num_roots "$(echo "${commitment}" | jq -r '.result.num_roots // 0')" \
         --argjson roots "$(echo "${roots}" | jq -c '.result.roots // []')" \
         '{
+            shielded_root: $shielded_root,
             height: $height,
             tip: $tip,
             commitment: $commitment,
@@ -219,6 +231,7 @@ assert_same_state() {
         --argjson lhs "${lhs_json}" \
         --argjson rhs "${rhs_json}" \
         '{
+            shielded_root: ($lhs.shielded_root == $rhs.shielded_root),
             height: ($lhs.height == $rhs.height),
             tip: ($lhs.tip == $rhs.tip),
             commitment: ($lhs.commitment == $rhs.commitment),

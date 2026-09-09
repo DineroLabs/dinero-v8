@@ -2092,6 +2092,7 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
     }
 
     std::vector<uint8_t> frontier_at_active_tip;
+    std::optional<std::vector<uint8_t>> anchors_at_active_tip;
     if (active_height > 0 || stored_tip_height > 0) {
         const auto next_hash_result =
             chain_db_->getBlockHashByHeight(static_cast<int>(active_height + 1));
@@ -2128,6 +2129,22 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
             // Fall through with frontier_at_active_tip empty.
         } else {
             frontier_at_active_tip = *undo_result.value().pre_block_shielded_frontier;
+            anchors_at_active_tip = undo_result.value().pre_block_shielded_anchors;
+        }
+    }
+
+    // A forest recovery can rewind from a high checkpoint to genesis. The
+    // old helper rewound tree/nullifiers but left the high-tip anchors intact;
+    // CsnContaminatedCheckpointRecovery then failed DNRS at block 1.
+    // Decode before changing live state. New per-block undo provides the exact
+    // window even beyond the in-memory eviction journal's retention.
+    consensus::shielded::AnchorHistory restored_anchors;
+    if (active_height >= dinero::Params().shielded_activation_height && active_height > 0) {
+        if (!anchors_at_active_tip ||
+            restored_anchors.DeserializePersistenceBytes(*anchors_at_active_tip) !=
+                consensus::shielded::AnchorHistory::IoResult::Ok) {
+            if (logger_) logger_->error("[ChainstateService] Missing or invalid anchor undo for startup rewind; reindex required");
+            return false;
         }
     }
 
@@ -2142,6 +2159,7 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
     }
 
     shielded_nullifiers_.RollbackAbove(active_height);
+    shielded_anchor_history_ = std::move(restored_anchors);
 
     if (!PersistShieldedState()) {
         if (logger_) {
