@@ -125,3 +125,11 @@ review records the root cause and direct red/green persistence regression.
 Position publication now clears those markers only after strict hash-checked
 readback, serialized with activation. This additional repair is included in the
 next frozen candidate; merely increasing a timeout is not its disposition.
+
+All twelve runtime-ce100 CI workflows now pass, including the full/serial
+Tests lanes, durability, Windows mining/restart/installer checks, Linux and
+both macOS artifacts, reproducibility, vectors and proof qualification. Strict
+IBD passes at height 3022 with all five nodes matching hash/work. The first
+local ReleaseSuite failed the old ancestor fixture after its recovery stages
+passed. The review records baseline reproduction and the harness-only repair;
+the same frozen runtime is being rerun through the meta-suite.

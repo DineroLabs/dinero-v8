@@ -198,3 +198,22 @@ fails before the repair and passes after it. Existing-row repair, replacement
 repair, and a physically present wrong-hash negative control pass. The running
 rate-drop-only IBD attempt was intentionally retired after this finding, not
 counted as a pass. Final daemon verification must include this repair.
+
+## Release meta-suite ancestor fixture
+
+The first ce100 ReleaseSuite passed parity, P2P storm, release-profile IBD,
+Utreexo and canonical recovery, then failed the mempool ancestor test. The
+fixture reused a funding outpoint selected before the burst phase, directly
+cleared the pool without reconciling wallet spend state, and expected automatic
+wallet selection to construct an unconfirmed chain. Separately built main plus
+the epoch repair also fails the original fixture after one accepted spend; the
+candidate failed before the first. This is not an Auth runtime regression.
+
+The corrected fixture settles prior traffic through mined blocks, chooses a
+current confirmed input, constructs/signs explicit single-parent transactions,
+and verifies the dependency and rejection boundary. The existing policy admits
+26 transactions (the last has 25 predecessors), then rejects the 27th for
+26 ancestors; rejected admission leaves pool size unchanged. Both unchanged
+main-baseline and candidate binaries pass all six checks. Cleanup now targets
+only the owned daemon PID. The original failed meta log is retained and a full
+meta rerun is required; no daemon rebuild or runtime change is involved.
