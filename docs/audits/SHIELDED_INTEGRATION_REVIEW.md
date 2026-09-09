@@ -86,3 +86,32 @@ fleet or release evidence. Mainnet/testnet activation remains dormant.
 See [rollout plan](../specs/shielded_upgrade_rollout.md),
 [Gate D evidence](SHIELDED_GATE_D_VERIFICATION.md), and
 [integration status](SHIELDED_INTEGRATION_STATUS.md).
+
+
+## Additional deep-reorg finding (2026-09-09)
+
+The stronger IBD scenario requires all three consumers to adopt the competing
+fork before healing to the source chain. On candidate `a7c23d3e7`, it exposed a
+second anchor-undo defect: an ordinary disconnect beyond the 100-entry eviction
+journal exhausted the history. Reconnecting at height 601 computed a different
+DNRS root with only one anchor (`anchors_bytes=44`). The already-landed epoch
+reset repair does not solve ordinary deep rollback. The bounded ordinary undo
+mechanism also exists on main.
+
+New undo records capture the pre-block anchor persistence envelope alongside
+the frontier, including for empty blocks. Both undo codecs, live/stateless
+conversion and disconnect paths, replay, and reindex preserve it. The shared
+disconnect validates the envelope before mutation. Failed DNRS apply restores
+ordinary and reset state instead of leaving a rejected anchor published.
+The consensus anchor window and SHR1 root bytes are unchanged. Storage grows
+by at most 7,217 bytes per newly captured undo record (7,212-byte envelope plus
+its optional flag and length). Old records remain readable but cannot supply
+history they never stored; replay/reindex remains required for historical deep
+rollback. A regenerated record must be reconstructed at its actual active tip.
+
+The minimal 350-block regression failed without the snapshot and passes when
+disconnecting to height 120 after a persistence round trip. Codec compatibility,
+truncated-trailer rejection, malformed-anchor no-mutation, rejected ordinary/reset
+apply restoration, and reindex snapshot checks pass in the three focused suites.
+The stronger daemon scenario and final combined verification are pending; this
+finding must not be treated as closed solely from the unit tests.

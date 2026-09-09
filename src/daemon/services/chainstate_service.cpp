@@ -6089,7 +6089,13 @@ StatusOr<UndoRecord> ChainstateService::RegenerateUndoFromBlockTrivial(const Blo
             undo.created.push_back(out);
         }
     }
-    // No shielded state, no frontier snapshot needed.
+    if (!active_tip_ || active_tip_->hash != block.GetHash()) return Status::Internal;
+    if (active_tip_->height >= dinero::Params().shielded_activation_height && active_tip_->height > 0) {
+        undo.pre_block_shielded_frontier = shielded_tree_.SerializeFrontier();
+        auto pre_anchors = shielded_anchor_history_;
+        pre_anchors.RollbackAbove(active_tip_->height - 1);
+        undo.pre_block_shielded_anchors = pre_anchors.SerializePersistenceBytes();
+    }
     return undo;
 }
 
@@ -6228,9 +6234,10 @@ StatusOr<UndoRecord> ChainstateService::RegenerateUndoFromBlock(const Block& blo
     // DisconnectBlock will use this snapshot to restore the live tree
     // to its pre-block shape.
     //
-    // For blocks with no shielded outputs, leave the field unset:
-    // DisconnectBlock's transparent-only path doesn't need a snapshot.
-    if (shielded_outputs_in_block > 0) {
+    // Empty blocks also record an anchor at shielded-active heights. Capture
+    // their unchanged frontier and the pre-block anchor window as well.
+    if (!active_tip_ || active_tip_->hash != block.GetHash()) return Status::Internal;
+    if (shielded_outputs_in_block > 0 || active_tip_->height >= dinero::Params().shielded_activation_height) {
         const uint64_t live_size = shielded_tree_.Size();
         if (shielded_outputs_in_block > live_size) {
             if (logger_) {
@@ -6280,6 +6287,11 @@ StatusOr<UndoRecord> ChainstateService::RegenerateUndoFromBlock(const Block& blo
                                       dinero::Params().network_id == "regtest");
 
         undo.pre_block_shielded_frontier = truncated_clone.SerializeFrontier();
+        if (active_tip_->height > 0) {
+            auto pre_anchors = shielded_anchor_history_;
+            pre_anchors.RollbackAbove(active_tip_->height - 1);
+            undo.pre_block_shielded_anchors = pre_anchors.SerializePersistenceBytes();
+        }
     }
 
     return undo;
@@ -12843,6 +12855,7 @@ dinero::UndoRecord BlockUndoToUndoRecord(const consensus::BlockUndo& block_undo,
     // Note: Utreexo delta is persisted separately as a sidecar key (UD:<blockhash>)
     // so legacy UndoRecord format remains backward-compatible.
     undo.pre_block_shielded_frontier = block_undo.pre_block_shielded_frontier;
+    undo.pre_block_shielded_anchors = block_undo.pre_block_shielded_anchors;
     undo.pre_reset_shielded_epoch    = block_undo.pre_reset_shielded_epoch;
 
     return undo;
@@ -12867,6 +12880,7 @@ consensus::BlockUndo UndoRecordToBlockUndo(const dinero::UndoRecord& undo_record
 
     // Note: utreexo_delta is loaded from sidecar key (UD:<blockhash>) in DisconnectTip.
     block_undo.pre_block_shielded_frontier = undo_record.pre_block_shielded_frontier;
+    block_undo.pre_block_shielded_anchors = undo_record.pre_block_shielded_anchors;
     block_undo.pre_reset_shielded_epoch    = undo_record.pre_reset_shielded_epoch;
 
     return block_undo;
@@ -13204,7 +13218,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         if (!consensus::shielded::DisconnectBlockShieldedSection(
                 tip_to_disconnect->height, undo.pre_reset_shielded_epoch,
                 undo.pre_block_shielded_frontier, shielded_tree_,
-                shielded_nullifiers_, &shielded_anchor_history_, derr)) {
+                shielded_nullifiers_, &shielded_anchor_history_, derr, undo.pre_block_shielded_anchors)) {
             if (logger_) {
                 logger_->error("[DisconnectTip-CSN] " + derr);
             }
@@ -14324,6 +14338,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     }
 
     const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        (!block_undo.pre_block_shielded_anchors || existing_undo.value().pre_block_shielded_anchors.has_value()) &&
         existing_undo.value().spent.size() == expected_spent_count &&
         !existing_undo.value().created.empty() &&
         (!block_has_shielded ||
@@ -15855,6 +15870,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
         }
         if (shielded_undo) {
             undo_record.pre_block_shielded_frontier = shielded_undo->pre_block_shielded_frontier;
+            undo_record.pre_block_shielded_anchors = shielded_undo->pre_block_shielded_anchors;
             undo_record.pre_reset_shielded_epoch = shielded_undo->pre_reset_shielded_epoch;
         }
     }
@@ -15870,6 +15886,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // rewritten now that we have the real shielded undo in hand.
     auto existing_undo = ReadStoredUndo(block_index->hash);
     const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        (!shielded_undo || !shielded_undo->pre_block_shielded_anchors || existing_undo.value().pre_block_shielded_anchors.has_value()) &&
         existing_undo.value().spent.size() == expected_spent_count &&
         !existing_undo.value().created.empty() &&
         (!block_has_shielded ||

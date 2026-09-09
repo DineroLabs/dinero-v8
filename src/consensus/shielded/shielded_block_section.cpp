@@ -183,7 +183,21 @@ bool DisconnectBlockShieldedSection(
     CommitmentTree& tree,
     NullifierSet& nullifiers,
     AnchorHistory* anchors,
-    std::string& error) {
+    std::string& error,
+    const std::optional<std::vector<uint8_t>>& pre_block_anchors) {
+    // Validate the snapshot before mutating any live container.
+    std::optional<AnchorHistory> restored_anchors;
+    if (pre_block_anchors && !pre_reset_snapshot) {
+        if (!anchors || !pre_block_frontier) {
+            error = "shielded-anchor-undo-missing-state-or-frontier";
+            return false;
+        }
+        restored_anchors.emplace();
+        if (restored_anchors->DeserializePersistenceBytes(*pre_block_anchors) != AnchorHistory::IoResult::Ok) {
+            error = "invalid-shielded-anchor-undo";
+            return false;
+        }
+    }
     if (pre_reset_snapshot.has_value()) {
         // Reorg disconnecting across the shielded epoch cutover. The frontier
         // + RollbackAbove path below CANNOT undo a reset — RollbackAbove only
@@ -215,7 +229,11 @@ bool DisconnectBlockShieldedSection(
         // disconnect, letting a reorged-out anchor act as a valid spend
         // reference on the canonical chain. Roll it back symmetrically with
         // the nullifier set.
-        if (anchors && height > 0) {
+        if (restored_anchors) {
+            *anchors = std::move(*restored_anchors);
+        } else if (anchors && height > 0) {
+            // Legacy records retain their bounded-journal fallback. Historical
+            // records without snapshots need replay/reindex for deep rollback.
             anchors->RollbackAbove(height - 1);
         }
         return true;

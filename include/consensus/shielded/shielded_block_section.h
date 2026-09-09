@@ -118,6 +118,7 @@ bool DisconnectBlockShieldedSection(
     CommitmentTree& tree,
     NullifierSet& nullifiers,
     AnchorHistory* anchors,  // nullable; required when pre_reset_snapshot is set
-    std::string& error);
+    std::string& error,
+    const std::optional<std::vector<uint8_t>>& pre_block_anchors = std::nullopt);
 
 }  // namespace dinero::consensus::shielded

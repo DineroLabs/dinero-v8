@@ -1446,6 +1446,15 @@ Status BlockReindexer::verifyRebuiltUndoRoundTrip(
         }
     }
 
+    if (pre_state.shielded_active_at_height) {
+        if (!decoded.pre_block_shielded_anchors) {
+            return fail("missing-pre_block_shielded_anchors-at-shielded-active-height");
+        }
+        if (*decoded.pre_block_shielded_anchors != pre_state.shielded_anchors_serialized) {
+            return fail("pre_block_shielded_anchors-bytes-mismatch");
+        }
+    }
+
     // Property 7: forest reverse-apply on a clone reaches pre-apply
     // commitment. This is the single most likely place for silent
     // divergence (delta encoding, leaf position determinism, root
@@ -2255,6 +2264,8 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
         if (pre_state.shielded_active_at_height) {
             pre_state.shielded_frontier_serialized =
                 shielded_tree_.SerializeFrontier();
+            pre_state.shielded_anchors_serialized =
+                shielded_anchor_history_.SerializePersistenceBytes();
         }
     }
 
@@ -2270,6 +2281,7 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     // live ConnectTip writes today.
     UndoRecord undo;
     undo.pre_block_shielded_frontier = shielded_tree_.SerializeFrontier();
+    undo.pre_block_shielded_anchors = shielded_anchor_history_.SerializePersistenceBytes();
     std::vector<shielded::ShieldedBundle> shielded_bundles;
     std::vector<int64_t> shielded_deltas;
 

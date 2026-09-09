@@ -733,6 +733,26 @@ bool BlockValidator::ApplyBlockShieldedSection(
     // see the single canonical implementation and its rationale comments in
     // ConnectBlockShieldedSection (shielded_block_section.cpp).
     auto* anchors = static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
+    const auto pre_frontier = tree->SerializeFrontier();
+    undo.pre_block_shielded_frontier = pre_frontier;
+    const auto pre_anchors = anchors ? std::optional<shld::AnchorHistory>(*anchors) : std::nullopt;
+    undo.pre_block_shielded_anchors = anchors
+        ? std::optional<std::vector<uint8_t>>(anchors->SerializePersistenceBytes()) : std::nullopt;
+    undo.pre_reset_shielded_epoch.reset();
+    bool applied = false;
+    struct ShieldedApplyRollback {
+        std::function<void()> restore;
+        bool& committed;
+        ~ShieldedApplyRollback() { if (!committed) restore(); }
+    } rollback{[&] {
+        if (undo.pre_reset_shielded_epoch && anchors) {
+            shld::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch, *tree, *anchors, *nullifiers);
+        } else {
+            tree->DeserializeFrontier(pre_frontier.data(), pre_frontier.size());
+            if (height > 0) nullifiers->RollbackAbove(height - 1);
+            if (anchors && pre_anchors) *anchors = *pre_anchors;
+        }
+    }, applied};
     if (!shld::ConnectBlockShieldedSection(
             bundles, deltas, height,
             dinero::Params().shielded_epoch_reset_height,
@@ -792,6 +812,7 @@ bool BlockValidator::ApplyBlockShieldedSection(
             return false;
         }
     }
+    applied = true;
     return true;
 }
 
@@ -2153,12 +2174,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // #274: mirror the normal path's undo population (see Phase 2 success
         // block below). Without the frontier, a shielded block's undo cannot
         // restore the commitment tree on disconnect and the ConnectTip publish
-        // invariant refuses the tip. Moving is safe here: success is committed
-        // (block_connect_success below), so restore_on_failure never reads the
-        // moved-from local. Do NOT set undo.pre_block_snapshot — stateless
+        // invariant refuses the tip. Keep the local frontier intact until the
+        // shielded apply succeeds: the failure guard still needs it if DNRS
+        // or epoch validation rejects. Do NOT set undo.pre_block_snapshot — stateless
         // mode has no UTXO snapshot.
         if (!pre_block_shielded_frontier.empty()) {
-            undo.pre_block_shielded_frontier = std::move(pre_block_shielded_frontier);
+            undo.pre_block_shielded_frontier = pre_block_shielded_frontier;
         } else {
             undo.pre_block_shielded_frontier.reset();
         }
@@ -2714,7 +2735,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         undo.pre_block_snapshot.reset();
     }
     if (!pre_block_shielded_frontier.empty()) {
-        undo.pre_block_shielded_frontier = std::move(pre_block_shielded_frontier);
+        undo.pre_block_shielded_frontier = pre_block_shielded_frontier;
     } else {
         undo.pre_block_shielded_frontier.reset();
     }
@@ -2778,7 +2799,7 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             if (!shielded::DisconnectBlockShieldedSection(
                     height, undo.pre_reset_shielded_epoch,
                     undo.pre_block_shielded_frontier, *tree, *nullifiers,
-                    anchors, error)) {
+                    anchors, error, undo.pre_block_shielded_anchors)) {
                 return false;
             }
         } else if (undo.pre_reset_shielded_epoch.has_value() ||
@@ -2945,7 +2966,7 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
         if (!shielded::DisconnectBlockShieldedSection(
                 height, undo.pre_reset_shielded_epoch,
                 undo.pre_block_shielded_frontier, *tree, *nullifiers, anchors,
-                error)) {
+                error, undo.pre_block_shielded_anchors)) {
             restore_legacy_on_failure();
             return false;
         }

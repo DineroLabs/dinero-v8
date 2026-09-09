@@ -13,6 +13,9 @@
 
 #include <gtest/gtest.h>
 #include "consensus/block_validation.h"
+#include "consensus/undo.h"
+#include "consensus/shielded/anchor_history.h"
+#include "consensus/shielded/nullifier_set.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
@@ -1171,10 +1174,14 @@ TEST(BlockValidationInvariants, StatelessEarlyReturnStoresShieldedFrontierInUndo
     BlockValidator validator(&utxo_set);
     validator.setValidationMode(ValidationMode::STATELESS);
 
-    // Attach a shielded commitment tree (frontier source). NullifierSet is
-    // not needed for a coinbase-only block.
+    // Empty blocks still record an anchor; all three containers are needed
+    // to exercise the real shielded apply and both serialized undo fields.
     shielded::CommitmentTree tree;
-    validator.setShieldedState(&tree, nullptr);
+    shielded::NullifierSet nullifiers;
+    ASSERT_EQ(nullifiers.Open(":memory:"), shielded::NullifierSet::OpenResult::Ok);
+    shielded::AnchorHistory anchors;
+    const auto pre_anchors = anchors.SerializePersistenceBytes();
+    validator.setShieldedState(&tree, &nullifiers, &anchors);
 
     // Coinbase-only block: no spends => no proofs required => reaches the
     // STATELESS early return after coinbase reward validation.
@@ -1199,6 +1206,8 @@ TEST(BlockValidationInvariants, StatelessEarlyReturnStoresShieldedFrontierInUndo
             << "Stored frontier must equal the pre-block tree frontier";
     }
 
+    ASSERT_TRUE(undo.pre_block_shielded_anchors);
+    EXPECT_EQ(*undo.pre_block_shielded_anchors, pre_anchors);
     // Stateless mode has no UTXO snapshot — must NOT be set (memory landmine).
     EXPECT_FALSE(undo.pre_block_snapshot.has_value())
         << "STATELESS early return must not store a UTXO snapshot";
@@ -1207,6 +1216,65 @@ TEST(BlockValidationInvariants, StatelessEarlyReturnStoresShieldedFrontierInUndo
 // The shielded epoch reset snapshot must survive undo serialization (it is
 // persisted to the undo flatfile and reloaded on a reorg across the cutover).
 // Both the binary (Serialize/Deserialize) and JSON (ToJson/FromJson) forms.
+TEST(BlockValidationInvariants, RejectedDnrsApplyRestoresOrdinaryAndResetState) {
+    const auto saved = dinero::Params();
+    struct RestoreParams { dinero::ChainParams p; ~RestoreParams() { dinero::MutableParams() = p; } } restore{saved};
+    for (bool reset : {false, true}) {
+        auto& params = dinero::MutableParams();
+        params.state_commitment_activation_height = 1;
+        params.shielded_activation_height = 1;
+        params.shielded_epoch_reset_height = reset ? 251 : UINT32_MAX;
+        params.shielded_spend_auth_epoch_reset_height = UINT32_MAX;
+        ConsensusUTXOSet utxo;
+        BlockValidator validator(&utxo);
+        shielded::CommitmentTree tree;
+        shielded::Hash leaf{}; leaf[0] = 9;
+        tree.Append(leaf);
+        shielded::AnchorHistory anchors;
+        for (uint32_t h = 1; h <= 250; ++h) anchors.RecordRoot(h, tree.Root());
+        shielded::NullifierSet nullifiers;
+        ASSERT_EQ(nullifiers.Open(":memory:"), shielded::NullifierSet::OpenResult::Ok);
+        ASSERT_TRUE(nullifiers.Insert(leaf, 100));
+        validator.setShieldedState(&tree, &nullifiers, &anchors);
+        const auto frontier = tree.SerializeFrontier();
+        const auto history = anchors.SerializePersistenceBytes();
+        BlockUndo undo;
+        std::string error;
+        // The direct shared apply reaches the DNRS value/presence check after
+        // applying the empty block (and, in the second case, wiping the epoch).
+        EXPECT_FALSE(validator.ApplyBlockShieldedSection(MakeCoinbaseBlock(251, uint256()), 251, {}, undo, error));
+        EXPECT_EQ(error, "coinbase-state-commitment-missing");
+        EXPECT_EQ(tree.SerializeFrontier(), frontier);
+        EXPECT_EQ(anchors.SerializePersistenceBytes(), history);
+        EXPECT_EQ(nullifiers.Size(), 1u);
+        EXPECT_TRUE(nullifiers.Contains(leaf));
+    }
+}
+
+TEST(BlockValidationInvariants, PerBlockAnchorUndoRoundTripsAndOldRecordsRemainReadable) {
+    shielded::AnchorHistory anchors;
+    shielded::Hash root{};
+    for (uint32_t h = 1; h <= 250; ++h) anchors.RecordRoot(h, root);
+    const auto snapshot = anchors.SerializePersistenceBytes();
+    BlockUndo block(251);
+    block.pre_block_shielded_anchors = snapshot;
+    EXPECT_EQ(BlockUndo::Deserialize(block.Serialize()).pre_block_shielded_anchors, block.pre_block_shielded_anchors);
+    EXPECT_EQ(BlockUndo::FromJson(block.ToJson()).pre_block_shielded_anchors, block.pre_block_shielded_anchors);
+    dinero::UndoRecord disk;
+    disk.pre_block_shielded_anchors = snapshot;
+    EXPECT_EQ(dinero::UndoRecord::Deserialize(disk.Serialize()).pre_block_shielded_anchors, disk.pre_block_shielded_anchors);
+    auto truncated = block.Serialize(); truncated.pop_back();
+    EXPECT_THROW(BlockUndo::Deserialize(truncated), std::runtime_error);
+    auto truncated_disk = disk.Serialize(); truncated_disk.pop_back();
+    EXPECT_THROW(dinero::UndoRecord::Deserialize(truncated_disk), std::runtime_error);
+    block.pre_block_shielded_anchors.reset();
+    auto old_block = block.Serialize(); old_block.pop_back();
+    EXPECT_FALSE(BlockUndo::Deserialize(old_block).pre_block_shielded_anchors);
+    disk.pre_block_shielded_anchors.reset();
+    auto old_disk = disk.Serialize(); old_disk.pop_back();
+    EXPECT_FALSE(dinero::UndoRecord::Deserialize(old_disk).pre_block_shielded_anchors);
+}
+
 TEST(BlockValidationInvariants, BlockUndoEpochSnapshotRoundTrips) {
     BlockUndo undo(61000);
     shielded::ShieldedEpochSnapshot snap;
@@ -1247,8 +1315,9 @@ TEST(BlockValidationInvariants, BlockUndoWithoutEpochSnapshotIsBackwardCompatibl
     // Simulate an old record: drop the trailing epoch-absent flag byte so the
     // stream ends exactly where the pre-field format ended.
     ASSERT_FALSE(bytes.empty());
-    ASSERT_EQ(bytes.back(), 0x00) << "final byte is the epoch-absent flag";
-    const std::vector<uint8_t> old_format(bytes.begin(), bytes.end() - 1);
+    ASSERT_EQ(bytes.back(), 0x00) << "final byte is the anchor-absent flag";
+    ASSERT_EQ(bytes[bytes.size() - 2], 0x00) << "preceding byte is the epoch-absent flag";
+    const std::vector<uint8_t> old_format(bytes.begin(), bytes.end() - 2);
     const BlockUndo old_back = BlockUndo::Deserialize(old_format);
     EXPECT_FALSE(old_back.pre_reset_shielded_epoch.has_value());
     ASSERT_TRUE(old_back.pre_block_shielded_frontier.has_value())

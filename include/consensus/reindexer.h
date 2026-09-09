@@ -400,6 +400,7 @@ public:
         UtreexoHash forest_commitment;
         uint64_t forest_num_leaves = 0;
         std::vector<uint8_t> shielded_frontier_serialized;
+        std::vector<uint8_t> shielded_anchors_serialized;
         bool utreexo_active_at_height = false;
         bool shielded_active_at_height = false;
     };
