@@ -476,7 +476,7 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
 
 bool HeaderSyncManager::MarkHeadersRequestFailed(uint64_t peer_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (active_sync_peer_ == peer_id) {
+    if (active_sync_peer_ != 0 && active_sync_peer_ == peer_id) {
         active_sync_peer_ = 0;
         TransitionTo(HeaderSyncState::IDLE);
         return true;

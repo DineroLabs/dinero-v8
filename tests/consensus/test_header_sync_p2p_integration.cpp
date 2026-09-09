@@ -572,6 +572,7 @@ void Test11_LocalRateDropReleasesOnlyItsRequest() {
     assert(selector.AddHeader(CreateTestHeader(zero, 1000000)));
     sync.OnPeerConnected(11, 0, zero, true);
     sync.OnPeerConnected(12, 0, zero, true);
+    assert(!sync.OnHeadersRateLimited(0));
     assert(sync.RequestHeadersFromPeer(11, true));
     // An unrelated unsolicited flood cannot cancel another peer's flight.
     assert(!sync.OnHeadersRateLimited(12));
