@@ -444,8 +444,9 @@ TEST(ShieldedProverKit, DeriveAddressMatchesInternalPathAllHrpsAndIndices) {
 
             char buf[192]{};
             size_t buf_len = sizeof(buf);
-            const int32_t rc = dinero_shielded_derive_address(
-                keys.dk.data(), keys.ivk.data(), j, hrp.c_str(), buf, &buf_len);
+            const int32_t rc = dinero_shielded_derive_address_v2(
+                keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                keys.nvk.data(), j, hrp.c_str(), buf, &buf_len);
 
             ASSERT_EQ(rc, DINERO_SHIELDED_OK)
                 << "hrp=" << hrp << " j=" << j;
@@ -471,16 +472,16 @@ TEST(ShieldedProverKit, DeriveAddressIsDeterministic) {
 
     char buf1[192]{};
     size_t len1 = sizeof(buf1);
-    ASSERT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(),
-                                             /*j=*/0, deriv::kHrpMainnet, buf1,
-                                             &len1),
+    ASSERT_EQ(dinero_shielded_derive_address_v2(
+                  keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                  keys.nvk.data(), /*j=*/0, deriv::kHrpMainnet, buf1, &len1),
               DINERO_SHIELDED_OK);
 
     char buf2[192]{};
     size_t len2 = sizeof(buf2);
-    ASSERT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(),
-                                             /*j=*/0, deriv::kHrpMainnet, buf2,
-                                             &len2),
+    ASSERT_EQ(dinero_shielded_derive_address_v2(
+                  keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                  keys.nvk.data(), /*j=*/0, deriv::kHrpMainnet, buf2, &len2),
               DINERO_SHIELDED_OK);
 
     EXPECT_EQ(len1, len2);
@@ -496,18 +497,19 @@ TEST(ShieldedProverKit, DeriveAddressRejectsBufferTooSmall) {
 
     char tiny[4]{};
     size_t tiny_len = sizeof(tiny);
-    const int32_t rc = dinero_shielded_derive_address(
-        keys.dk.data(), keys.ivk.data(), /*j=*/0, deriv::kHrpMainnet, tiny,
-        &tiny_len);
+    const int32_t rc = dinero_shielded_derive_address_v2(
+        keys.dk.data(), keys.ivk.data(), keys.ak.data(), keys.nvk.data(),
+        /*j=*/0, deriv::kHrpMainnet, tiny, &tiny_len);
     EXPECT_EQ(rc, DINERO_SHIELDED_ERR_BUFFER_TOO_SMALL);
     EXPECT_EQ(tiny_len, expected.address.size() + 1);
 
     // Retry with the now-known-sufficient capacity succeeds.
     std::vector<char> buf(tiny_len, '\0');
     size_t retry_len = buf.size();
-    EXPECT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(),
-                                             /*j=*/0, deriv::kHrpMainnet,
-                                             buf.data(), &retry_len),
+    EXPECT_EQ(dinero_shielded_derive_address_v2(
+                  keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                  keys.nvk.data(), /*j=*/0, deriv::kHrpMainnet,
+                  buf.data(), &retry_len),
               DINERO_SHIELDED_OK);
     EXPECT_STREQ(buf.data(), expected.address.c_str());
 }
@@ -520,21 +522,25 @@ TEST(ShieldedProverKit, DeriveAddressRejectsNullArguments) {
     char buf[192]{};
     size_t buf_len = sizeof(buf);
 
-    EXPECT_EQ(dinero_shielded_derive_address(nullptr, keys.ivk.data(), 0,
-                                             deriv::kHrpMainnet, buf, &buf_len),
+    EXPECT_EQ(dinero_shielded_derive_address_v2(
+                  nullptr, keys.ivk.data(), keys.ak.data(), keys.nvk.data(), 0,
+                  deriv::kHrpMainnet, buf, &buf_len),
               DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
-    EXPECT_EQ(dinero_shielded_derive_address(keys.dk.data(), nullptr, 0,
-                                             deriv::kHrpMainnet, buf, &buf_len),
+    EXPECT_EQ(dinero_shielded_derive_address_v2(
+                  keys.dk.data(), nullptr, keys.ak.data(), keys.nvk.data(), 0,
+                  deriv::kHrpMainnet, buf, &buf_len),
               DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
-    EXPECT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(), 0,
-                                             nullptr, buf, &buf_len),
+    EXPECT_EQ(dinero_shielded_derive_address_v2(
+                  keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                  keys.nvk.data(), 0, nullptr, buf, &buf_len),
               DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
-    EXPECT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(), 0,
-                                             deriv::kHrpMainnet, nullptr,
-                                             &buf_len),
+    EXPECT_EQ(dinero_shielded_derive_address_v2(
+                  keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                  keys.nvk.data(), 0, deriv::kHrpMainnet, nullptr, &buf_len),
               DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
-    EXPECT_EQ(dinero_shielded_derive_address(keys.dk.data(), keys.ivk.data(), 0,
-                                             deriv::kHrpMainnet, buf, nullptr),
+    EXPECT_EQ(dinero_shielded_derive_address_v2(
+                  keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                  keys.nvk.data(), 0, deriv::kHrpMainnet, buf, nullptr),
               DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
 }
 
@@ -546,10 +552,21 @@ TEST(ShieldedProverKit, DeriveAddressRejectsBadHrp) {
     char buf[192]{};
     for (const char* bad_hrp : {"btc", "dins1", "tdinss", "", "DINS", "rdin"}) {
         size_t buf_len = sizeof(buf);
-        EXPECT_EQ(dinero_shielded_derive_address(keys.dk.data(),
-                                                 keys.ivk.data(), 0, bad_hrp,
-                                                 buf, &buf_len),
+        EXPECT_EQ(dinero_shielded_derive_address_v2(
+                      keys.dk.data(), keys.ivk.data(), keys.ak.data(),
+                      keys.nvk.data(), 0, bad_hrp, buf, &buf_len),
                   DINERO_SHIELDED_ERR_INVALID_ARGUMENT)
             << "hrp=" << bad_hrp;
     }
+}
+
+TEST(ShieldedProverKit, LegacyAddressAbiFailsClosedWithoutAuthorityMaterial) {
+    auto seed = ProverKitGoldenSeed();
+    const auto keys = deriv::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    char buf[256]{};
+    size_t len = sizeof(buf);
+    EXPECT_EQ(dinero_shielded_derive_address(
+                  keys.dk.data(), keys.ivk.data(), 0, deriv::kHrpMainnet,
+                  buf, &len),
+              DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
 }

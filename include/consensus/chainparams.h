@@ -244,12 +244,13 @@ struct ChainParams {
     // never control, so THE SENDER CAN SPEND THE NOTE THEY SENT, at any time,
     // forever — first-spender wins and the nullifier set rejects the loser.
     //
-    // At and above it, the note is committed to pk_d = s·G where `s` derives
-    // from the RECIPIENT's incoming viewing key, and the spend circuit proves
-    // knowledge of dlog(pk_d). The sender never learns `s`. Because nf is also
-    // derived from `s`, this closes the matching linkability leak (the sender
-    // could otherwise recognise when the note was spent) in the same change.
-    // Such proofs carry a distinct version byte (0x05 spend).
+    // At and above it, the note is committed to both pk_d = s·G, where `s`
+    // requires the RECIPIENT's secret ask, and a commitment to an independent
+    // nvk-derived nullifier key. The spend circuit proves knowledge of both.
+    // A full-viewing wallet can authenticate the note and track its nullifier
+    // without learning `s`; the sender learns neither private value.
+    // Such proofs carry a distinct version byte (0x06 spend). The earlier
+    // dormant 0x05 experiment is never reinterpreted as this authority model.
     //
     // MUST be >= shielded_cv_binding_activation_height: the auth circuit is a
     // strict superset of the cv-bound one, and an auth-without-cv variant would
@@ -267,6 +268,13 @@ struct ChainParams {
     // fleet-coordinated before it ships — a wrong boundary splits the chain.
     // ===========================================================================
     uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
+
+    // Wallet-format activation for outgoing-view recovery envelope v3. This
+    // is deliberately independent from consensus spend authority even though
+    // it may not precede it: coupling the names would let a wallet-format
+    // rollout accidentally activate with a consensus fork. UINT32_MAX is an
+    // explicit dormant sentinel (including at height UINT32_MAX).
+    uint32_t shielded_outgoing_recovery_activation_height = UINT32_MAX;
 
     // Distinct epoch reset paired with spend-authority activation. MUST equal
     // shielded_spend_auth_activation_height. This cannot reuse the historical

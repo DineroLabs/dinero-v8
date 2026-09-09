@@ -244,7 +244,21 @@ extern "C" void dinero_shielded_free_result(
 extern "C" int32_t dinero_shielded_derive_address(
     const uint8_t* dk32, const uint8_t* ivk32, uint64_t j,
     const char* hrp, char* out_addr, size_t* out_addr_len) {
-    if (!dk32 || !ivk32 || !hrp || !out_addr || !out_addr_len) {
+    (void)dk32;
+    (void)ivk32;
+    (void)j;
+    (void)hrp;
+    (void)out_addr;
+    (void)out_addr_len;
+    return DINERO_SHIELDED_ERR_INVALID_ARGUMENT;
+}
+
+extern "C" int32_t dinero_shielded_derive_address_v2(
+    const uint8_t* dk32, const uint8_t* ivk32, const uint8_t* ak32,
+    const uint8_t* nvk32, uint64_t j, const char* hrp,
+    char* out_addr, size_t* out_addr_len) {
+    if (!dk32 || !ivk32 || !ak32 || !nvk32 || !hrp || !out_addr ||
+        !out_addr_len) {
         return DINERO_SHIELDED_ERR_INVALID_ARGUMENT;
     }
 
@@ -256,18 +270,24 @@ extern "C" int32_t dinero_shielded_derive_address(
 
         sh::Hash dk = CopyHash(dk32);
         sh::Hash ivk = CopyHash(ivk32);
+        sh::Hash ak = CopyHash(ak32);
+        sh::Hash nvk = CopyHash(nvk32);
         HashCleanser dk_guard{&dk};
         HashCleanser ivk_guard{&ivk};
+        HashCleanser nvk_guard{&nvk};
 
         const deriv::Diversifier d = deriv::ChaCha20Diversifier(dk, j);
-        // Discovery key (ivk·P_d) plus the spend-authority key (s·G). The
-        // address carries both; see AddressPayload in shielded_derivation.h.
+        // Public viewing material can construct and authenticate the address,
+        // but cannot derive the spend scalar because ask never crosses ABI.
         const sh::Hash p_d = deriv::HashToPoint(d, deriv::kDstDiv);
         const sh::Hash pk_d = deriv::DerivePkD(ivk, p_d);
         const sh::Hash pk_d_spend =
-            deriv::DeriveDiversifiedSpendKey(ivk, d).pk_d;
+            deriv::DeriveDiversifiedSpendPublicKey(ak, d);
+        sh::Hash nfk = deriv::DeriveDiversifiedNullifierKey(nvk, d);
+        HashCleanser nfk_guard{&nfk};
+        const sh::Hash nfk_commitment = deriv::NullifierKeyCommitment(nfk);
         const deriv::AddressPayload payload =
-            deriv::BuildAddressPayload(d, pk_d, pk_d_spend);
+            deriv::BuildAddressPayload(d, pk_d, pk_d_spend, nfk_commitment);
         const std::string address =
             deriv::EncodeShieldedAddress(payload, hrp_str);
 

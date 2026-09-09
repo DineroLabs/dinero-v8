@@ -8,7 +8,7 @@ on:
       - 'scripts/generate_shielded_protocol_vectors.py'
       - 'scripts/generate_shielded_outgoing_view_vectors.py'
       - 'tests/vectors/shielded_protocol_v1_external.json'
-      - 'tests/vectors/shielded_outgoing_view_v2_external.json'
+      - 'tests/vectors/shielded_outgoing_view_v3_external.json'
   push:
     branches:
       - dinero-main
@@ -18,7 +18,7 @@ on:
       - 'scripts/generate_shielded_protocol_vectors.py'
       - 'scripts/generate_shielded_outgoing_view_vectors.py'
       - 'tests/vectors/shielded_protocol_v1_external.json'
-      - 'tests/vectors/shielded_outgoing_view_v2_external.json'
+      - 'tests/vectors/shielded_outgoing_view_v3_external.json'
   workflow_dispatch:
 
 permissions:
@@ -45,4 +45,4 @@ jobs:
       - name: Check outgoing-view oracle and failure mutations
         run: python3 scripts/generate_shielded_outgoing_view_vectors.py --self-test --check
       - name: Report artifact digest
-        run: sha256sum tests/vectors/shielded_outgoing_view_v2_external.json
+        run: sha256sum tests/vectors/shielded_outgoing_view_v3_external.json

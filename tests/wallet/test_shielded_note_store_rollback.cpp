@@ -15,11 +15,25 @@ namespace {
 namespace sh = dinero::consensus::shielded;
 using dinero::wallet::ShieldedNoteStore;
 using dinero::wallet::NoteKeyScheme;
+using dinero::wallet::OutgoingShieldedNote;
 
 sh::Hash HashWithByte(uint8_t value) {
     sh::Hash hash{};
     hash.fill(value);
     return hash;
+}
+
+OutgoingShieldedNote OutgoingNoteWithByte(uint8_t value, bool confirmed) {
+    OutgoingShieldedNote note;
+    note.commitment = HashWithByte(value);
+    note.recipient_address_payload.fill(static_cast<uint8_t>(value + 1));
+    note.value_una = 1000 + value;
+    note.memo.fill(static_cast<uint8_t>(value + 2));
+    note.txid = std::string(64, confirmed ? 'c' : 'p');
+    note.confirmed = confirmed;
+    note.created_height = 40;
+    note.confirmed_height = confirmed ? 50 : 0;
+    return note;
 }
 
 class ShieldedNoteStoreRollbackTest : public ::testing::Test {
@@ -121,7 +135,7 @@ TEST_F(ShieldedNoteStoreRollbackTest, KeySchemeDefaultsToLegacy) {
 
 TEST_F(ShieldedNoteStoreRollbackTest, KeySchemeRoundTripsAuth) {
     const auto auth_d = HashWithByte(0x2d);
-    ASSERT_TRUE(store_.AddPendingNote(2000, HashWithByte(0x21), HashWithByte(0x22),
+    ASSERT_TRUE(store_.AddPendingNote(2000, HashWithByte(0x21), HashWithByte(0x25), HashWithByte(0x22),
                                       HashWithByte(0x23), HashWithByte(0x24), 6,
                                       NoteKeyScheme::Auth, auth_d));
     ASSERT_TRUE(store_.AddPendingNote(3000, HashWithByte(0x31), HashWithByte(0x32),
@@ -134,6 +148,160 @@ TEST_F(ShieldedNoteStoreRollbackTest, KeySchemeRoundTripsAuth) {
     EXPECT_EQ(notes[0].d, auth_d);
     EXPECT_EQ(notes[1].key_scheme, NoteKeyScheme::LegacySenderKey);
     EXPECT_EQ(notes[1].d, sh::Hash{});
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, RescanStyleConfirmedAuthRoundTrips) {
+    const auto auth_d = HashWithByte(0x4d);
+    ASSERT_TRUE(store_.AddNote(4000, HashWithByte(0x41), HashWithByte(0x45), HashWithByte(0x42),
+                               HashWithByte(0x43), HashWithByte(0x44), 17, 90,
+                               NoteKeyScheme::Auth, auth_d));
+    store_.Close();
+    ASSERT_EQ(store_.Open(path_.string()), ShieldedNoteStore::OpenResult::Ok);
+
+    const auto note = store_.GetByLeafIndex(17);
+    ASSERT_TRUE(note.has_value());
+    EXPECT_TRUE(note->confirmed);
+    EXPECT_EQ(note->confirmed_height, 90u);
+    EXPECT_EQ(note->key_scheme, NoteKeyScheme::Auth)
+        << "a rescan-restored auth note must not become legacy after restart";
+    EXPECT_EQ(note->d, auth_d);
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, AuthSpendSecretNeverReachesDatabase) {
+    const auto spend = HashWithByte(0x61);
+    const auto nfk = HashWithByte(0x62);
+    const auto pending = HashWithByte(0x63);
+    ASSERT_TRUE(store_.AddPendingNote(1000, spend, nfk, HashWithByte(0x64),
+                                      HashWithByte(0x65), pending, 10,
+                                      NoteKeyScheme::Auth, HashWithByte(0x66)));
+    ASSERT_TRUE(store_.AddNote(2000, spend, nfk, HashWithByte(0x67),
+                               HashWithByte(0x68), HashWithByte(0x69), 1, 11,
+                               NoteKeyScheme::Auth, HashWithByte(0x6a)));
+    // Check raw SQLite, not just a reader that could hide persisted secrets.
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.string().c_str(), &raw), SQLITE_OK);
+    sqlite3_stmt* stmt = nullptr;
+    ASSERT_EQ(sqlite3_prepare_v2(raw,
+        "SELECT COUNT(*) FROM shielded_notes WHERE key_scheme = 1 "
+        "AND secret_key = zeroblob(32) AND nullifier_key = ?", -1,
+        &stmt, nullptr), SQLITE_OK);
+    sqlite3_bind_blob(stmt, 1, nfk.data(), nfk.size(), SQLITE_TRANSIENT);
+    ASSERT_EQ(sqlite3_step(stmt), SQLITE_ROW);
+    EXPECT_EQ(sqlite3_column_int(stmt, 0), 2);
+    sqlite3_finalize(stmt);
+    sqlite3_close(raw);
+
+    ASSERT_TRUE(store_.ConfirmNote(pending, 0, 12));
+    store_.Close();
+    ASSERT_EQ(store_.Open(path_.string()), ShieldedNoteStore::OpenResult::Ok);
+    for (const auto& note : store_.ListUnspent()) {
+        EXPECT_EQ(note.secret_key, sh::Hash{});
+        EXPECT_EQ(note.nullifier_key, nfk);
+        EXPECT_EQ(note.nullifier, sh::ComputeNullifier(nfk, note.leaf_index));
+    }
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, LegacyOverloadsRejectAuthScheme) {
+    // Otherwise the legacy overload would persist s as the nullifier key,
+    // bypassing the Auth secret_key suppression through a different column.
+    EXPECT_FALSE(store_.AddPendingNote(1000, HashWithByte(0x71),
+        HashWithByte(0x72), HashWithByte(0x73), HashWithByte(0x74), 10,
+        NoteKeyScheme::Auth));
+    EXPECT_FALSE(store_.AddNote(1000, HashWithByte(0x71),
+        HashWithByte(0x72), HashWithByte(0x73), HashWithByte(0x74), 0, 10,
+        NoteKeyScheme::Auth));
+    EXPECT_TRUE(store_.ListAll().empty());
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, ReopenRetiresDevelopmentAuthSpendCache) {
+    const auto nfk = HashWithByte(0x92);
+    ASSERT_TRUE(store_.AddNote(1000, HashWithByte(0x91), nfk,
+        HashWithByte(0x93), HashWithByte(0x94), HashWithByte(0x95), 0, 10,
+        NoteKeyScheme::Auth));
+    store_.Close();
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.string().c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,
+        "UPDATE shielded_notes SET secret_key = randomblob(32)",
+        nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close(raw);
+    ASSERT_EQ(store_.Open(path_.string()), ShieldedNoteStore::OpenResult::Ok);
+    const auto note = store_.GetByLeafIndex(0);
+    ASSERT_TRUE(note);
+    EXPECT_EQ(note->secret_key, sh::Hash{});
+    EXPECT_EQ(note->nullifier_key, nfk);
+    EXPECT_EQ(note->nullifier, sh::ComputeNullifier(nfk, 0));
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, MissingAuthNullifierKeyCannotUseSpendKey) {
+    ASSERT_TRUE(store_.AddPendingNote(1000, HashWithByte(0xa1),
+        HashWithByte(0xa2), HashWithByte(0xa3), HashWithByte(0xa4),
+        HashWithByte(0xa5), 10, NoteKeyScheme::Auth));
+    store_.Close();
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.string().c_str(), &raw), SQLITE_OK);
+    // Match the nullable column added by preexisting database migrations.
+    ASSERT_EQ(sqlite3_exec(raw,
+        "ALTER TABLE shielded_notes DROP COLUMN nullifier_key;"
+        "ALTER TABLE shielded_notes ADD COLUMN nullifier_key BLOB;",
+        nullptr, nullptr, nullptr), SQLITE_OK);
+    sqlite3_close(raw);
+    EXPECT_EQ(store_.Open(path_.string()), ShieldedNoteStore::OpenResult::SchemaError);
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, OutgoingRecoverySurvivesRestartAndConfirmation) {
+    auto provisional = OutgoingNoteWithByte(0x51, false);
+    ASSERT_TRUE(store_.UpsertOutgoingNote(provisional));
+    store_.Close();
+    ASSERT_EQ(store_.Open(path_.string()), ShieldedNoteStore::OpenResult::Ok);
+    auto notes = store_.ListOutgoingNotes();
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_FALSE(notes[0].confirmed);
+    EXPECT_EQ(notes[0].recipient_address_payload,
+              provisional.recipient_address_payload);
+
+    auto confirmed = provisional;
+    confirmed.confirmed = true;
+    confirmed.confirmed_height = 77;
+    confirmed.txid = std::string(64, 'a');
+    ASSERT_TRUE(store_.UpsertOutgoingNote(confirmed));
+    notes = store_.ListOutgoingNotes();
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_TRUE(notes[0].confirmed);
+    EXPECT_EQ(notes[0].confirmed_height, 77u);
+    EXPECT_EQ(notes[0].txid, confirmed.txid);
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, ProvisionalObservationCannotDowngradeConfirmed) {
+    auto confirmed = OutgoingNoteWithByte(0x61, true);
+    ASSERT_TRUE(store_.UpsertOutgoingNote(confirmed));
+    auto stale = confirmed;
+    stale.confirmed = false;
+    stale.confirmed_height = 0;
+    stale.txid = std::string(64, 'x');
+    stale.value_una++;
+    ASSERT_TRUE(store_.UpsertOutgoingNote(stale));
+
+    const auto notes = store_.ListOutgoingNotes();
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_TRUE(notes[0].confirmed);
+    EXPECT_EQ(notes[0].confirmed_height, confirmed.confirmed_height);
+    EXPECT_EQ(notes[0].txid, confirmed.txid);
+    EXPECT_EQ(notes[0].value_una, confirmed.value_una);
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, RejectionRollsBackOnlyProvisionalOutgoing) {
+    const auto provisional = OutgoingNoteWithByte(0x71, false);
+    const auto confirmed = OutgoingNoteWithByte(0x72, true);
+    ASSERT_TRUE(store_.UpsertOutgoingNote(provisional));
+    ASSERT_TRUE(store_.UpsertOutgoingNote(confirmed));
+
+    ASSERT_TRUE(store_.RollbackPendingTransaction(
+        {}, {provisional.commitment, confirmed.commitment}));
+    const auto notes = store_.ListOutgoingNotes();
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_EQ(notes[0].commitment, confirmed.commitment);
+    EXPECT_TRUE(notes[0].confirmed);
 }
 
 // A wallet written before key_scheme existed must open, gain the column, and
@@ -172,7 +340,8 @@ TEST_F(ShieldedNoteStoreRollbackTest, PreSpendAuthDatabaseGainsKeySchemeColumn) 
         "INSERT INTO shielded_notes "
         "  (value_una, secret_key, public_key, randomness, commitment,"
         "   leaf_index, confirmed, spent, created_height) "
-        "VALUES (4242, x'01', x'02', x'03', x'04', 0, 1, 0, 9);";
+        "VALUES (4242, zeroblob(32), zeroblob(32), zeroblob(32), "
+        "        zeroblob(32), 0, 1, 0, 9);";
     char* err = nullptr;
     ASSERT_EQ(sqlite3_exec(raw, legacy_ddl, nullptr, nullptr, &err), SQLITE_OK)
         << (err ? err : "");
@@ -188,10 +357,63 @@ TEST_F(ShieldedNoteStoreRollbackTest, PreSpendAuthDatabaseGainsKeySchemeColumn) 
     EXPECT_EQ(notes[0].key_scheme, NoteKeyScheme::LegacySenderKey);
     EXPECT_EQ(notes[0].d, sh::Hash{});
 
+    // The outgoing-history table is additive and must appear when an older
+    // wallet first opens; otherwise sender recovery would work only for newly
+    // created wallet files.
+    const auto outgoing = OutgoingNoteWithByte(0x7a, true);
+    ASSERT_TRUE(store_.UpsertOutgoingNote(outgoing));
+    ASSERT_EQ(store_.ListOutgoingNotes().size(), 1u);
+
     // Idempotent: re-opening must not attempt ADD COLUMN twice.
     store_.Close();
     EXPECT_EQ(store_.Open(path_.string()), ShieldedNoteStore::OpenResult::Ok)
         << "migration must be idempotent across restarts";
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, MalformedNullifierKeyFailsClosedOnOpen) {
+    ASSERT_TRUE(store_.AddPendingNote(9000, HashWithByte(0x81),
+                                      HashWithByte(0x82), HashWithByte(0x83),
+                                      HashWithByte(0x84), HashWithByte(0x85), 8,
+                                      NoteKeyScheme::Auth,
+                                      HashWithByte(0x86)));
+    store_.Close();
+
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.string().c_str(), &raw), SQLITE_OK);
+    char* err = nullptr;
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "UPDATE shielded_notes SET nullifier_key = x'01';",
+                           nullptr, nullptr, &err),
+              SQLITE_OK)
+        << (err ? err : "");
+    sqlite3_close(raw);
+
+    EXPECT_EQ(store_.Open(path_.string()),
+              ShieldedNoteStore::OpenResult::SchemaError)
+        << "a truncated nullifier key must never decode as the all-zero key";
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, UnknownAuthoritySchemeFailsClosedOnOpen) {
+    ASSERT_TRUE(store_.AddPendingNote(9000, HashWithByte(0x91),
+                                      HashWithByte(0x92), HashWithByte(0x93),
+                                      HashWithByte(0x94), HashWithByte(0x95), 8,
+                                      NoteKeyScheme::Auth,
+                                      HashWithByte(0x96)));
+    store_.Close();
+
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path_.string().c_str(), &raw), SQLITE_OK);
+    char* err = nullptr;
+    ASSERT_EQ(sqlite3_exec(raw,
+                           "UPDATE shielded_notes SET key_scheme = 2;",
+                           nullptr, nullptr, &err),
+              SQLITE_OK)
+        << (err ? err : "");
+    sqlite3_close(raw);
+
+    EXPECT_EQ(store_.Open(path_.string()),
+              ShieldedNoteStore::OpenResult::SchemaError)
+        << "unknown authority schemes must not be reinterpreted as legacy";
 }
 
 }  // namespace

@@ -43,6 +43,7 @@ public:
 
     // Pool size.
     size_t size() const;
+    size_t totalBytes() const;
 
     // Get all orphan txids (for RPC).
     std::vector<uint256> getOrphanTxIds() const;
@@ -52,7 +53,8 @@ public:
 
     // Limits
     static constexpr size_t MAX_ORPHAN_TRANSACTIONS = 100;
-    static constexpr size_t MAX_ORPHAN_TX_SIZE = 100000;  // 100 KB
+    static constexpr size_t MAX_ORPHAN_TX_SIZE = 100000;  // Legacy per-transaction bound
+    static constexpr size_t MAX_ORPHAN_BYTES = 100 * MAX_ORPHAN_TX_SIZE;
     static constexpr size_t MAX_ORPHANS_PER_PEER = 5;
     static constexpr auto ORPHAN_TX_EXPIRE_TIME = std::chrono::minutes(20);
 
@@ -63,6 +65,7 @@ private:
     // Remove orphan internal (caller holds lock).
     void eraseOrphanLocked(const uint256& txid);
 
+    size_t m_total_bytes = 0;
     mutable std::mutex m_mutex;
     std::unordered_map<uint256, OrphanEntry> m_orphans;
     // Maps a prevout txid to the set of orphan txids that spend it

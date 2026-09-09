@@ -70,7 +70,7 @@ bool OrphanBlockPool::addOrphan(const Block& block, const std::string& block_has
     // Dinero uses 128-byte headers (BlockHeader v1)
     size_t block_size = 128; // Dinero BlockHeader v1
     for (const auto& tx : block.vtx) {
-        block_size += tx.Serialize().size() / 2; // Hex string to bytes
+        block_size += tx.GetSize(); // Actual serialized bytes
     }
 
     // Check limits before adding

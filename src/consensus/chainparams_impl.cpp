@@ -609,6 +609,15 @@ static void ValidateChainParams(const ChainParams& params) {
             "equal shielded_spend_auth_activation_height");
     }
 
+    if (params.shielded_outgoing_recovery_activation_height != UINT32_MAX &&
+        (params.shielded_spend_auth_activation_height == UINT32_MAX ||
+         params.shielded_outgoing_recovery_activation_height <
+             params.shielded_spend_auth_activation_height)) {
+        throw std::runtime_error(
+            "invalid chainparams: shielded_outgoing_recovery_activation_height "
+            "must be dormant or >= shielded_spend_auth_activation_height");
+    }
+
     if (params.shielded_spend_auth_epoch_reset_height != UINT32_MAX &&
         params.shielded_spend_auth_epoch_reset_height ==
             params.shielded_epoch_reset_height) {

@@ -8,6 +8,7 @@
 #include "common/crash_injection.h"
 
 #include <set>
+#include "consensus/shielded/resource_limits.h"
 #include <utility>
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/pedersen_generators.h"
@@ -42,7 +43,12 @@ bool VerifySpendProof(const ShieldedSpend& spend, const ValidationContext& ctx) 
     // proofs (circuit enforces cv == val·V + rcv·G). The spend's published cv is
     // bound as a public input.
     const bool cv_bound = ctx.block_height >= ctx.shielded_cv_binding_activation_height;
+    // UINT32_MAX is an explicit dormant sentinel, including at the degenerate
+    // attacker-controlled/test height UINT32_MAX. Do not use bare >= here:
+    // other policy selectors treat the sentinel as dormant and the two notions
+    // must never disagree at one height.
     const bool spend_auth =
+        ctx.shielded_spend_auth_activation_height != UINT32_MAX &&
         ctx.block_height >= ctx.shielded_spend_auth_activation_height;
     const SpendPublicInputs pub{spend.nullifier, spend.anchor, spend.cv};
     return VerifySpend(
@@ -81,6 +87,11 @@ ShieldedValidationError ValidateShieldedBundle(
     // kMaxOutputsPerBundle outputs. Beyond that, reject outright.
     if (bundle.spends.size()  > kMaxSpendsPerBundle ||
         bundle.outputs.size() > kMaxOutputsPerBundle) {
+        return ShieldedValidationError::BundleTooLarge;
+    }
+
+    if (AuthResourcesActive(ctx.block_height, ctx.shielded_spend_auth_activation_height) &&
+        !CheckAuthBundleCounts(bundle.spends.size(), bundle.outputs.size())) {
         return ShieldedValidationError::BundleTooLarge;
     }
 

@@ -226,8 +226,10 @@ TEST_F(ShieldedDerivationVectorFixture, AddressHrpsMatch) {
     EXPECT_TRUE(a_reg.address.rfind("rdins1",  0) == 0);
 }
 
-// SPEND-AUTHORITY REVECTOR. The address payload grew 43 -> 75 bytes (it now
-// carries pk_d_spend = s·G alongside the discovery key), so every pinned
+// RECIPIENT-AUTHORITY REVECTOR. The address payload grew 43 -> 107 bytes. It
+// carries pk_d_spend plus a commitment to the nvk-derived nullifier key, so
+// a full-viewing wallet can track spends without learning spend authority.
+// Consequently every pinned
 // address string changed. The `d` and `pk_d` vectors below are UNCHANGED, and
 // each new address still begins with the exact prefix the old one had — the
 // discovery half is byte-identical and the spend key is appended. That shared
@@ -241,16 +243,45 @@ TEST_F(ShieldedDerivationVectorFixture, PinnedHexVector1Account0Wave2J0) {
               "981db4b85ce150d7e74768cd6d9147148cba846857289d5c585b0681f9a469f9");
     // Spend key s·G — new, and distinct from the discovery key above.
     EXPECT_NE(v.pk_d_spend, v.pk_d);
-    EXPECT_EQ(v.pk_d_spend, DeriveDiversifiedSpendKey(keys.ivk, v.d).pk_d);
-    EXPECT_EQ(v.payload.size(), 75u);
+    EXPECT_EQ(v.pk_d_spend,
+              DeriveDiversifiedSpendKey(keys.ask, keys.ak, v.d).pk_d);
+    EXPECT_EQ(Hex(v.pk_d_spend),
+              "c7741e66eac72cdae5b382192277cf710347c8aa18031a011f669d0383725e31");
+    EXPECT_EQ(Hex(DeriveDiversifiedNullifierKey(keys.nvk, v.d)),
+              "d9a824314f452dc568c73588781b1063d6d278b20acbdda88b355310d9480948");
+    EXPECT_EQ(Hex(v.nfk_commitment),
+              "c14581c526350dc80acc3c586d8facf6ea1c16619e6241b2cf2d35d73a5c1f09");
+    EXPECT_EQ(v.payload.size(), 107u);
     EXPECT_EQ(v.address,
-              "dins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lnf0vshleyf9x9s70zxffdq4d53d8msd2enwgjcy3tn2v50us4z87uz2l00");
+              "dins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535ln3m5renw43evmtjm8qseyfmu7ugrgly25xqrrgq37e5aqwphyh33c9zcr3fxx5xuszkv83vxmrav7m4pc9npne3yrvk0956awwjuruys52xvr8");
     auto t = DeriveDiversifiedAddress(keys, /*j=*/0, kHrpTestnet);
     EXPECT_EQ(t.address,
-              "tdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lnf0vshleyf9x9s70zxffdq4d53d8msd2enwgjcy3tn2v50us4z87dj5gy6");
+              "tdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535ln3m5renw43evmtjm8qseyfmu7ugrgly25xqrrgq37e5aqwphyh33c9zcr3fxx5xuszkv83vxmrav7m4pc9npne3yrvk0956awwjuruysg7dqpk");
     auto r = DeriveDiversifiedAddress(keys, /*j=*/0, kHrpRegtest);
     EXPECT_EQ(r.address,
-              "rdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lnf0vshleyf9x9s70zxffdq4d53d8msd2enwgjcy3tn2v50us4z872cpyl9");
+              "rdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535ln3m5renw43evmtjm8qseyfmu7ugrgly25xqrrgq37e5aqwphyh33c9zcr3fxx5xuszkv83vxmrav7m4pc9npne3yrvk0956awwjuruysh4a7ku");
+}
+
+TEST_F(ShieldedDerivationVectorFixture,
+       PublicViewingDerivationAuthenticatesButCannotRecreateSpendScalar) {
+    const auto address = DeriveDiversifiedAddress(keys, 0, kHrpRegtest);
+    const auto private_key =
+        DeriveDiversifiedSpendKey(keys.ask, keys.ak, address.d);
+    EXPECT_EQ(DeriveDiversifiedSpendPublicKey(keys.ak, address.d),
+              private_key.pk_d);
+
+    // This was the unsafe pre-review construction: ivk+d yielded the spend
+    // scalar. It must no longer reproduce either the secret or public key.
+    const auto padded = [&] {
+        Hash value{};
+        std::copy(address.d.begin(), address.d.end(), value.begin());
+        return value;
+    }();
+    const auto viewing_derived_candidate =
+        consensus::shielded::PoseidonHash2(keys.ivk, padded);
+    EXPECT_NE(viewing_derived_candidate, private_key.s);
+    EXPECT_NE(DeriveDiversifiedSpendKey(keys.ask, keys.ak, address.d).s,
+              viewing_derived_candidate);
 }
 
 // ── Phase 5 Wave 3: address decoding + ECDH/AEAD ─────────────────────
@@ -264,7 +295,29 @@ TEST_F(ShieldedDerivationVectorFixture, DecodeAddressRoundTripsForAllHrps) {
         EXPECT_EQ(dec.hrp,     hrp);
         EXPECT_EQ(dec.d,       enc.d);
         EXPECT_EQ(dec.pk_d,    enc.pk_d);
+        EXPECT_EQ(dec.pk_d_spend, enc.pk_d_spend);
+        EXPECT_EQ(dec.nfk_commitment, enc.nfk_commitment);
         EXPECT_EQ(dec.payload, enc.payload);
+    }
+}
+
+TEST_F(ShieldedDerivationVectorFixture,
+       DecodeRejectsNonCanonicalNullifierCommitment) {
+    const auto canonical = DeriveDiversifiedAddress(keys, 0, kHrpRegtest);
+    for (const Hash bad : {
+             Hash{},
+             [] {
+                 return Hash{
+                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe,
+                     0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b,
+                     0xbf, 0xd2, 0x5e, 0x8c, 0xd0, 0x36, 0x41, 0x41};
+             }()}) {
+        const auto payload = BuildAddressPayload(
+            canonical.d, canonical.pk_d, canonical.pk_d_spend, bad);
+        EXPECT_THROW(
+            DecodeShieldedAddress(EncodeShieldedAddress(payload, kHrpRegtest)),
+            std::runtime_error);
     }
 }
 
@@ -611,9 +664,9 @@ TEST(ShieldedScalarDiversified, DeterministicAndDiversifierDependent) {
     Diversifier d1{}; d1[0] = 0x01;
     Diversifier d2{}; d2[0] = 0x02;
 
-    const auto a = DeriveDiversifiedSpendKey(keys.ivk, d1);
-    const auto b = DeriveDiversifiedSpendKey(keys.ivk, d1);
-    const auto c = DeriveDiversifiedSpendKey(keys.ivk, d2);
+    const auto a = DeriveDiversifiedSpendKey(keys.ask, keys.ak, d1);
+    const auto b = DeriveDiversifiedSpendKey(keys.ask, keys.ak, d1);
+    const auto c = DeriveDiversifiedSpendKey(keys.ask, keys.ak, d2);
 
     EXPECT_EQ(a.s, b.s) << "same (ivk, d) must be deterministic";
     EXPECT_EQ(a.pk_d, b.pk_d);
@@ -630,8 +683,8 @@ TEST(ShieldedScalarDiversified, DistinctAccountsDoNotCollide) {
     ASSERT_NE(k0.ivk, k1.ivk);
 
     Diversifier d{}; d[0] = 0x07;
-    EXPECT_NE(DeriveDiversifiedSpendKey(k0.ivk, d).pk_d,
-              DeriveDiversifiedSpendKey(k1.ivk, d).pk_d)
+    EXPECT_NE(DeriveDiversifiedSpendKey(k0.ask, k0.ak, d).pk_d,
+              DeriveDiversifiedSpendKey(k1.ask, k1.ak, d).pk_d)
         << "the same diversifier under different accounts must not collide";
 }
 
@@ -640,7 +693,7 @@ TEST(ShieldedScalarDiversified, PkdIsSTimesG) {
     // relation, so if it does not hold out-of-circuit the whole design fails.
     const auto keys = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
     Diversifier d{}; d[0] = 0x42;
-    const auto k = DeriveDiversifiedSpendKey(keys.ivk, d);
+    const auto k = DeriveDiversifiedSpendKey(keys.ask, keys.ak, d);
 
     secp256k1_context* ctx = secp256k1_context_create(
         SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
@@ -661,58 +714,19 @@ TEST(ShieldedScalarDiversified, PkdIsSTimesG) {
     secp256k1_context_destroy(ctx);
 }
 
-TEST(ShieldedScalarDiversified, EcdhAgreesUnderStandardBaseG) {
-    // NOTE DISCOVERY must still work. With pk_d = s*G the ECDH is the
-    // standard one: sender computes esk*pk_d, receiver computes s*epk where
-    // epk = esk*G. Both must land on the same shared secret, otherwise the
-    // recipient cannot decrypt and find their notes.
-    const auto keys = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
-    Diversifier d{}; d[0] = 0x55;
-    const auto k = DeriveDiversifiedSpendKey(keys.ivk, d);
-
-    secp256k1_context* ctx = secp256k1_context_create(
-        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-    ASSERT_NE(ctx, nullptr);
-
-    // Ephemeral sender key, and epk = esk*G (x-only).
-    Hash esk{};
-    esk[31] = 0x9A;
-    esk[0]  = 0x01;
-    ASSERT_EQ(secp256k1_ec_seckey_verify(ctx, esk.data()), 1);
-    secp256k1_pubkey epk_pub{};
-    ASSERT_EQ(secp256k1_ec_pubkey_create(ctx, &epk_pub, esk.data()), 1);
-    secp256k1_xonly_pubkey epk_xonly{};
-    ASSERT_EQ(secp256k1_xonly_pubkey_from_pubkey(ctx, &epk_xonly, nullptr, &epk_pub), 1);
-    Hash epk{};
-    ASSERT_EQ(secp256k1_xonly_pubkey_serialize(ctx, epk.data(), &epk_xonly), 1);
-
-    // sender: esk * pk_d      receiver: s * epk
-    const Hash sender_side   = EcdhShared(esk, k.pk_d);
-    const Hash receiver_side = EcdhShared(k.s, epk);
-
-    EXPECT_EQ(sender_side, receiver_side)
-        << "ECDH must agree, or the recipient cannot discover their own notes";
-
-    secp256k1_context_destroy(ctx);
-}
-
-TEST(ShieldedScalarDiversified, SenderCannotDeriveSFromTheAddress) {
-    // THE WHOLE POINT. A sender holds (d, pk_d) from the address. `s` is a
-    // Poseidon image of ivk, which the sender does not have, so nothing the
-    // sender knows reproduces it.
-    //
-    // This cannot prove hardness — it pins the structural claim that `s` is
-    // NOT a function of public address material alone: the same `d` under a
-    // different `ivk` yields a different `s`.
+TEST(ShieldedScalarDiversified, SpendScalarDependsOnSecretAskNotOnlyDiversifier) {
+    // A sender has the address's public (d, ak-derived pk_d), but not ask.
+    // This cannot prove discrete-log hardness; it pins the structural boundary
+    // that changing the account secret changes `s` for the same diversifier.
     const auto k0 = DeriveShieldedAccount(CanonicalSeed().data(), 64, 0);
     const auto k1 = DeriveShieldedAccount(CanonicalSeed().data(), 64, 1);
     Diversifier d{}; d[0] = 0xC3;
 
-    const auto a = DeriveDiversifiedSpendKey(k0.ivk, d);
-    const auto b = DeriveDiversifiedSpendKey(k1.ivk, d);
+    const auto a = DeriveDiversifiedSpendKey(k0.ask, k0.ak, d);
+    const auto b = DeriveDiversifiedSpendKey(k1.ask, k1.ak, d);
 
     EXPECT_NE(a.s, b.s)
-        << "s must depend on ivk, not on the publicly-visible diversifier alone";
+        << "s must depend on secret ask, not on the public diversifier alone";
     EXPECT_NE(a.s, a.pk_d) << "the secret must not equal its own public key";
 }
 

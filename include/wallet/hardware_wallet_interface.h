@@ -22,6 +22,7 @@
 #include <memory>
 #include <functional>
 #include <optional>
+#include <array>
 #include "wallet/psbt.h"
 
 namespace dinero {
@@ -68,6 +69,10 @@ struct DeviceCapabilities {
     bool supports_display_address = false;
     bool supports_blind_signing = false;
     bool supports_message_signing = false;
+    // Optional Dinero shielded capability. Exporting an outgoing viewing key
+    // reveals sender history but never spend authority; devices must opt in
+    // explicitly and may require on-device approval.
+    bool supports_shielded_outgoing_view = false;
     std::vector<std::string> supported_coin_types; // BIP 44 coin types
 };
 
@@ -197,6 +202,19 @@ public:
      * Used for PSBT signing to identify which keys belong to this device
      */
     virtual HWResult<uint32_t> GetMasterFingerprint() = 0;
+
+    /**
+     * Export the account-scoped shielded outgoing viewing key after any
+     * device-side confirmation policy. This is deliberately optional: legacy
+     * firmware fails closed instead of making the host derive or guess a key.
+     * No shielded spend key is returned through this interface.
+     */
+    virtual HWResult<std::array<uint8_t, 32>> GetShieldedOutgoingViewingKey(
+        uint32_t account) {
+        (void)account;
+        return HWResult<std::array<uint8_t, 32>>::Err(
+            "device firmware does not support shielded outgoing viewing keys");
+    }
 
     // === Callbacks ===
 

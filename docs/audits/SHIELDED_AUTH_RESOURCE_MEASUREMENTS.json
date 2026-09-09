@@ -1,0 +1,123 @@
+{
+  "profile": "recipient-authority-v6-dormant",
+  "base_commit": "be80b4b7eb182e733ce334e02cda3159d764d771",
+  "working_tree": "uncommitted",
+  "machine": {
+    "cpu": "Apple M4 Max",
+    "ram_bytes": 137438953472,
+    "platform": "macOS arm64",
+    "compiler": "Apple clang 17.0.0",
+    "build_type": "Release"
+  },
+  "method": "One fresh test process per shape; real builders, outgoing v3 envelopes, complete bundle validation; peak RSS includes prover and verifier. Wall-clock values are observations, not consensus thresholds.",
+  "limits": {
+    "transaction_bytes": 512000,
+    "transaction_weight": 2048000,
+    "spends": 4,
+    "outputs": 2,
+    "block_proofs": 8,
+    "block_shielded_bytes": 1000000,
+    "package_bytes": 600000,
+    "package_transactions": 25,
+    "orphan_pool_bytes": 10000000
+  },
+  "measurements": [
+    {
+      "shape": "shield",
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3569,
+      "verify_ms": 1086,
+      "process_peak_rss_bytes": 570163200
+    },
+    {
+      "shape": "transfer_1in_2out",
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11881,
+      "verify_ms": 4012,
+      "process_peak_rss_bytes": 801882112
+    },
+    {
+      "shape": "transfer_2in_2out",
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 17128,
+      "verify_ms": 6014,
+      "process_peak_rss_bytes": 801996800
+    },
+    {
+      "shape": "transfer_4in_2out",
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 27138,
+      "verify_ms": 9858,
+      "process_peak_rss_bytes": 802193408
+    },
+    {
+      "shape": "unshield",
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 5245,
+      "verify_ms": 1888,
+      "process_peak_rss_bytes": 801898496
+    }
+  ],
+  "source_sha256": {
+    "include/consensus/shielded/resource_limits.h": "70c2dd33dfde5fc2c1da35e98641f57d6f2b5ddd8cc358e5b6ace2217399cb35",
+    "src/consensus/shielded/shielded_circuit.cpp": "fbbd76ca4912a4ae7db90585df956e86d0f4b0f838403fdfab9e48609967067e",
+    "src/wallet/shielded_wallet_ops.cpp": "5776d6411c675f9ffa683c148d5c9f7c81f55d7ee749a00ed8bc201a02c76d38",
+    "src/test/shielded_validation_tests.cpp": "2719951a68e1bf8eb8def1d92474954397f1846d0cce3d7d6d926ef937e71984"
+  },
+  "verification": {
+    "release_validation_tests_passed": 44,
+    "release_outgoing_tests_passed": 10,
+    "release_prover_kit_tests_passed": 15,
+    "resource_boundary_tests_passed": 10,
+    "mempool_block_lifecycle_tests_passed": 6,
+    "reindex_equivalence": "passed",
+    "block_invariants": "passed",
+    "historical_v5_block_structural_regression": "passed",
+    "two_node_lifecycle": {
+      "build_type": "Release",
+      "result": "passed",
+      "script_sha256": "25349454e9447d3a60e866c94ecb25c042e85507dfe27358cbaeab5021f57f46",
+      "daemon_sha256": "c8abf4efa7c1b5a929580b3e804fe064c4763810637ec37946b3886c9ce78d7f",
+      "checks": [
+        "source submission",
+        "independent peer admission",
+        "peer mining and source block acceptance",
+        "locked recipient recognition",
+        "locked spend refusal",
+        "two restarts",
+        "invalidate/reconsider recovery",
+        "unlocked recipient spend relayed and mined by peer"
+      ]
+    }
+  }
+}
