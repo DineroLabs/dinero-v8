@@ -140,3 +140,34 @@ the offline contaminated-checkpoint repair and a second offline restart. The
 realign, block-validation, reindex-anchor and shared shielded-section suites
 also pass. Evidence: `/tmp/shielded-checkpoint-anchor-fixed.log` and
 `/tmp/shielded-checkpoint-focused.log` on the review host.
+
+## Local header-rate-drop recovery
+
+The frozen e792 sweep failed `CsnBridgeAssistedSpendFlow` at its single
+refresh block. The CSN log shows its requested headers response discarded by
+the existing 32-message/second receive limiter. The global header request
+remained reserved for the 15-minute peer timeout, blocking subsequent refresh
+probes. The silent-drop block is byte-identical on main plus the epoch fix and
+e792. Five ordinary daemon reruns passed on each binary; no failing baseline
+daemon run or resolution of #709/#717 is claimed.
+
+The service now notifies header sync of the local discard. Atomic cancellation
+returns a retry hint only for the matching nonzero request owner. It does not
+insert headers, penalize the peer, weaken the rate limit, cancel another peer's
+flight or send immediately. The existing coalescer schedules one retry after
+the receive window, retaining subsequent INV hints. A deterministic no-op model
+of the original drop failed the release-ownership assertion; the implemented
+hook passes, including unrelated/duplicate drops, no-owner sentinel, unchanged
+peer health and subsequent requests. The retry-window coalescer test passes.
+Daemon and final matrix verification of this additional repair is tracked in
+PR #720; the e792 artifact hashes remain evidence of that predecessor only.
+
+The strengthened e792 strict IBD run adopted the competing branch on all three
+consumers. A returned to the source branch, but B/C stopped with one missing
+body; no DNRS root mismatch appeared. This is not a passing run. Its previous
+45-iteration cutoff was shorter than the scheduler's 90-second recovery
+interval and mislabeled iterations as seconds. The harness now uses elapsed
+seconds, allows a 150-second quiet interval and 180-second progress extension,
+and retains its overall deadline. Final diagnostics include download state.
+The next run must demonstrate actual convergence; the timing correction alone
+does not close the failure.
