@@ -21,16 +21,20 @@ Do not assume a global one-proof concurrency cap exists.
 
 ## Reproduce
 
-Build `test_shielded_validation` with the release toolchain, then run:
+Build `test_shielded_validation` from a clean, recorded revision with the release
+toolchain, then run (substitute that build revision for `VERIFIED_BUILD_SHA`):
 
 ```
 python3 tools/shielded_resource_qualification.py \
   --binary build/test_shielded_validation \
+  --binary-source-commit VERIFIED_BUILD_SHA \
   --output /absolute/path/to/evidence --repetitions 3
 ```
 
 Each shape gets a fresh process. The report contains all samples, p50/p95/max,
-binary identity, host architecture and explicit budget results. With three
+binary identity, explicitly supplied binary source revision, separate harness
+revision, host architecture and explicit budget results. An omitted binary
+source revision is reported as unknown; the checkout is not proof of its origin. With three
 samples, p95 is the largest sample, not a statistically precise tail estimate.
 Repeat with at least 20 samples and representative concurrent node load for
 fleet sign-off. A zero/unsupported RSS measurement does not pass. Windows

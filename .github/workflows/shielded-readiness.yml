@@ -43,6 +43,7 @@ jobs:
         run: >-
           python3 tools/shielded_resource_qualification.py
           --binary build-shielded-readiness/test_shielded_validation
+          --binary-source-commit "$GITHUB_SHA"
           --output "$RUNNER_TEMP/shielded-readiness/resources"
           --repetitions 3
       - name: Upload evidence
