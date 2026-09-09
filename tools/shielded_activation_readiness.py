@@ -28,8 +28,11 @@ def source_checks(repo: pathlib.Path):
             "shielded_cv_binding_activation_height" in chainparams,
         "anchor_rollback_persisted": "SerializePersistenceBytes" in
             (repo / "src/consensus/shielded/anchor_history.cpp").read_text(),
-        "legacy_address_rejected": "legacy 43-byte payload is REJECTED" in
-            (repo / "src/wallet/shielded_derivation.cpp").read_text(),
+        # Check the rejecting length guard, not prose from the retired 75-byte
+        # format. Behavioral address vectors are run by shielded-readiness.sh.
+        "legacy_address_rejected": bool(re.search(
+            r"if\s*\(bytes\.size\(\)\s*!=\s*AddressPayload\{\}\.size\(\)\)",
+            (repo / "src/wallet/shielded_derivation.cpp").read_text())),
         "spend_auth_epoch_reset_supported":
             "shielded_spend_auth_epoch_reset_height" in header and
             "shielded_spend_auth_epoch_reset_height" in chainparams and
@@ -46,7 +49,9 @@ def source_checks(repo: pathlib.Path):
             "spend-auth era requires addressed shielded change" not in wallet_runtime and
             "spend-auth era requires an addressed recipient output" not in wallet_runtime,
         "auth_diversifier_persisted":
-            "diversifier" in note_store and "ReadHash(stmt, 14, n.d)" in note_store,
+            "diversifier" in note_store and
+            bool(re.search(r"ReadHash\(stmt,\s*\d+,\s*n\.d\)", note_store)) and
+            bool(re.search(r"BindHash\(stmt,\s*\d+,\s*diversifier\)", note_store)),
     }
     return checks
 
@@ -93,7 +98,8 @@ def main():
     p.add_argument("--json", type=pathlib.Path)
     ns = p.parse_args()
     checks = source_checks(ns.repo.resolve())
-    report = {"source_checks": checks, "source_ready": all(checks.values())}
+    report = {"scope": "source-wiring-preflight, not activation sign-off",
+              "source_checks": checks, "source_ready": all(checks.values())}
     if not ns.source_only:
         if not ns.cli:
             p.error("--cli is required unless --source-only is used")

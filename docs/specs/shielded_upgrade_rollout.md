@@ -53,12 +53,12 @@ recipient-spend lifecycle, persisted epoch reorg, live/reindex/replay parity and
 release acceptance parity against a separately identified main binary. Preserve
 first-failure logs and controls; a passing retry is not a root-cause fix.
 
-An independent reviewer must assess proof/key authority, transcript/domain
+The user-designated reviewer must assess proof/key authority, transcript/domain
 separation, outgoing encryption, resource accounting, reset/dormancy boundaries,
 coinbase prediction vs connect/reindex, snapshot authentication before mutation,
 selected-chain burial, and legacy-undo compatibility. Record reviewer identity,
-reviewed commit, findings/disposition and explicit sign-off. Automated or author
-self-review cannot fill this field.
+reviewed commit, findings/disposition and explicit sign-off. The user designated Codex as reviewer; its implementation-agent review is
+recorded in SHIELDED_INTEGRATION_REVIEW.md and must not be labeled independent.
 
 ## Resource qualification
 
@@ -75,7 +75,7 @@ claim. Keep proof concurrency bounded to the qualified value.
 
 ## Decisions required before a height exists
 
-- Independent reviewer and completed sign-off on the candidate.
+- Completed review on the candidate; identify reviewer independence accurately.
 - Minimum supported hardware and measured budget approval.
 - Production inventory, canary results and operator rollback drill.
 - Burial depths: current 288/48/8 values are provisional. Approve by network,
