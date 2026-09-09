@@ -69,7 +69,17 @@ ensure_openssl_source() {
     mkdir -p "$PROJECT_ROOT/third_party"
     if [[ ! -f "$tarball" ]]; then
         echo -e "${BLUE}Downloading OpenSSL ${OPENSSL_VERSION} source...${NC}"
-        curl -L "$url" -o "$tarball"
+        # GitHub can return an error page instead of the release asset. Fail on
+        # HTTP errors, retry transient failures, and never cache a partial file.
+        local download
+        download="$(mktemp "${tarball}.download.XXXXXX")"
+        if ! curl --fail --location --retry 3 --connect-timeout 30 \
+            --max-time 600 "$url" --output "$download"; then
+            rm -f "$download"
+            echo -e "${RED}Error: OpenSSL source download failed${NC}" >&2
+            exit 1
+        fi
+        mv "$download" "$tarball"
     fi
 
     local actual_sha
