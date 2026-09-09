@@ -1282,12 +1282,25 @@ final_gate() {
     pass "IBD torture gate passed"
 }
 
+binary_sha256() {
+    python3 - "$1" <<'PYHASH'
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], 'rb') as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b''):
+        h.update(chunk)
+print(h.hexdigest())
+PYHASH
+}
+
 main() {
     log_header "IBD Torture Harness"
     info "Profile=${PROFILE}"
     info "Workdir: ${WORKDIR}"
     info "RPC base=${BASE_RPC_PORT}, P2P base=${BASE_P2P_PORT}"
-    info "dinerod=${DINEROD}"
+    local daemon_fingerprint
+    daemon_fingerprint="$(binary_sha256 "${DINEROD}")"
+    info "dinerod=${DINEROD} sha256=${daemon_fingerprint}"
     info "Knobs: shared=${SHARED_BASE_BLOCKS} src_pre=${SOURCE_PRE_BLOCKS} fork_pre=${FORK_PRE_BLOCKS} src_withheld=${SOURCE_WITHHELD_BLOCKS} fork_withheld=${FORK_WITHHELD_BLOCKS} src_post=${SOURCE_POST_BLOCKS} ibd_target=${IBD_PROGRESS_TARGET} churn_loops=${CHURN_LOOPS} phase1_start_timeout=${PHASE1_START_TIMEOUT} phase1_no_progress=${PHASE1_NO_PROGRESS_TIMEOUT} mine_batch=${MINE_BATCH_SIZE}"
 
     assert_distinct_datadirs
@@ -1296,6 +1309,7 @@ main() {
     phase1_ibd_with_adversity
     phase2_restart_mid_sync
     phase3_compete_and_heal
+    [[ "$(binary_sha256 "${DINEROD}")" == "${daemon_fingerprint}" ]] || fail "Daemon binary changed during IBD verification"
     final_gate
 }
 
