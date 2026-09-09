@@ -680,6 +680,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh)
 
   set_tests_properties(AcceptanceParity PROPERTIES
     LABELS "consensus;gate;parity;release"
+    # Alternate build directories must not compare a stale source-tree binary.
+    ENVIRONMENT "CURRENT_DINEROD=$<TARGET_FILE:dinerod>"
     TIMEOUT 1800
   )
 
@@ -704,6 +706,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_ibd_torture.sh)
 
   set_tests_properties(IBDTorture PROPERTIES
     LABELS "ibd;p2p;utreexo;gate;release"
+    # The build-final sweep exposed fallback to ${CMAKE_SOURCE_DIR}/build.
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     TIMEOUT 3600
   )
 
