@@ -284,6 +284,11 @@ TEST(AssumeUtxoReplay, ExposesProvenSetAndStateRefs) {
 
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);  // utreexo active from genesis on all nets
+    // state_commitment_v1: dormant for this suite — its blocks are hand-built
+    // without coinbase DNRS commitments and its subject is replay digest
+    // equivalence, not commitment enforcement (which the state-commitment
+    // suites and the forged-snapshot e2e exercise on the active default).
+    dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
