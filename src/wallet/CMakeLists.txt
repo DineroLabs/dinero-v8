@@ -58,7 +58,6 @@ add_library(dinero_wallet STATIC
   ${CMAKE_CURRENT_SOURCE_DIR}/recipient_descriptor.cpp  # DecodePaymentTarget — structured address resolution
   ${CMAKE_CURRENT_SOURCE_DIR}/wallet_sync_status.cpp  # Phase W.2.1: Truthful wallet sync UX
   ${CMAKE_CURRENT_SOURCE_DIR}/shielded_wallet_runtime.cpp  # v5 shielded note runtime + block sync (wallet-side only)
-  ${CMAKE_CURRENT_SOURCE_DIR}/shielded_outgoing_view.cpp   # v3 sender-side outgoing recovery envelope
   ${CMAKE_CURRENT_SOURCE_DIR}/shielded_hardware_wallet.cpp # hardware-wallet outgoing-view trust boundary
   ${CMAKE_CURRENT_SOURCE_DIR}/sync_eta_estimator.cpp  # Phase W.2.2: Honest ETA estimation
   ${CMAKE_CURRENT_SOURCE_DIR}/sync_progress_tracker.cpp  # Phase W.2.2: Phase-aware progress tracking
