@@ -16,6 +16,7 @@
 #include "common/ilogger.h"
 #include <iostream>
 #include <cassert>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -471,13 +472,13 @@ void test_auth_orphan_byte_budget() {
         tx.witness_version = 0;
         tx.lockTime = i;
         tx.shielded_bundle_bytes.resize(500'000, 0);
-        assert(pool.addOrphan(tx, "auth-peer-" + std::to_string(i)));
-        assert(pool.totalBytes() <= dinero::TxOrphanPool::MAX_ORPHAN_BYTES);
+        if (!(pool.addOrphan(tx, "auth-peer-" + std::to_string(i)))) throw std::runtime_error("resource boundary: pool.addOrphan(tx, \"auth-peer-\" + std::to_string(i))");
+        if (!(pool.totalBytes() <= dinero::TxOrphanPool::MAX_ORPHAN_BYTES)) throw std::runtime_error("resource boundary: pool.totalBytes() <= dinero::TxOrphanPool::MAX_ORPHAN_BYTES");
     }
-    assert(pool.size() == 19); // 20 * (500 KB + envelope) exceeds 10 MB.
+    if (!(pool.size() == 19)) throw std::runtime_error("resource boundary: pool.size() == 19"); // 20 * (500 KB + envelope) exceeds 10 MB.
     for (const auto& id : pool.getOrphanTxIds()) pool.eraseOrphan(id);
-    assert(pool.totalBytes() == 0);
-    assert(pool.size() == 0);
+    if (!(pool.totalBytes() == 0)) throw std::runtime_error("resource boundary: pool.totalBytes() == 0");
+    if (!(pool.size() == 0)) throw std::runtime_error("resource boundary: pool.size() == 0");
 }
 
 int main() {

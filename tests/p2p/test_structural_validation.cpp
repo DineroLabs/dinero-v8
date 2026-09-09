@@ -29,6 +29,7 @@
 #include "primitives/transaction.h"
 
 #include <cassert>
+#include <stdexcept>
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -307,11 +308,11 @@ void test_legacy_block_witness_keeps_historical_size_rule() {
     tx.version = Transaction::TX_VERSION_SHIELDED;
     tx.witness_version = 0;
     tx.shielded_bundle_bytes.resize(150'000, 0);
-    assert(tx.GetSize() > 100'000);
-    assert(tx.GetWeight() < 400'000);
+    if (!(tx.GetSize() > 100'000)) throw std::runtime_error("resource boundary: tx.GetSize() > 100'000");
+    if (!(tx.GetWeight() < 400'000)) throw std::runtime_error("resource boundary: tx.GetWeight() < 400'000");
     StructuralValidator validator;
-    assert(!validator.validateTx(SerializeTx(tx)).ok);
-    assert(validator.validateBlock(SerializeBlock({MakeCoinbaseTx(), tx})).ok);
+    if (!(!validator.validateTx(SerializeTx(tx)).ok)) throw std::runtime_error("resource boundary: !validator.validateTx(SerializeTx(tx)).ok");
+    if (!(validator.validateBlock(SerializeBlock({MakeCoinbaseTx(), tx})).ok)) throw std::runtime_error("resource boundary: validator.validateBlock(SerializeBlock({MakeCoinbaseTx(), tx})).ok");
 }
 
 int main() {

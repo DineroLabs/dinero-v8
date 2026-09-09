@@ -27,6 +27,7 @@
 #include "../../include/p2p/inflight_manager.h"
 #include <iostream>
 #include <cassert>
+#include <stdexcept>
 #include <vector>
 #include <set>
 #include <map>
@@ -323,8 +324,8 @@ void test_auth_transaction_download_bounds() {
         std::vector<uint8_t> bytes(size, 0);
         bytes[0] = 6;
         coordinator.handleTx("peer1", hash, bytes);
-        assert(sink.received_txs.size() == (size <= dinero::consensus::shielded::kAuthMaxTxBytes ? 1u : 0u));
-        assert(inflight.count() == 0);
+        if (!(sink.received_txs.size() == (size <= dinero::consensus::shielded::kAuthMaxTxBytes ? 1u : 0u))) throw std::runtime_error("resource boundary: sink.received_txs.size() == (size <= dinero::consensus::shielded::kAuthMaxTxBytes ? 1u : 0u)");
+        if (!(inflight.count() == 0)) throw std::runtime_error("resource boundary: inflight.count() == 0");
     }
 }
 
