@@ -1,3 +1,4 @@
+#include "covenantformpolicy.h"
 #include "mainwindow.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
@@ -2442,7 +2443,7 @@ void MainWindow::setupUI() {
       requestUtxoRefresh();
     }
     // Auto-refresh contracts when the Contracts tab is selected
-    if (mainTabs_ && mainTabs_->tabText(index).contains("Contracts")) {
+    if (mainTabs_ && mainTabs_->tabText(index).contains("Covenants")) {
         refreshContractsList();
     }
   });
@@ -3163,7 +3164,8 @@ void MainWindow::setupUI() {
     auto *lblInfo = new QLabel(
         "Contracts are programmable spending rules attached to your funds. "
         "Vaults lock funds to a specific template. Timelocks release after a duration. "
-        "Private contracts hide the rules \xe2\x80\x94 only the ZK proof of satisfaction is visible on-chain."
+        "Create and fund a public covenant in Send, then track and spend it here. "
+        "Receiving requires the matching recovery descriptor. Shielded covenants are not supported."
     );
     lblInfo->setWordWrap(true);
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
@@ -3185,33 +3187,13 @@ void MainWindow::setupUI() {
     sendLayout->addWidget(new QLabel("Mode:"), 0, 0);
     cmbSendAction_ = new QComboBox;
     cmbSendAction_->addItem("Send publicly", "public_transfer");
-    // Shielded send modes are withheld while kShieldedUiLockedOut is set (see
-    // shieldedwidget.h). The Send tab is a SECOND entry point into the shielded
-    // RPCs, independent of the shielded tab's own buttons: "Spend privately"
-    // (private_transfer) is the addressed transfer that carries the
-    // sender-retained spend-authority bug, and shield_to / unshield move value
-    // in and out of the pool. Locking only the shielded tab would leave all
-    // three reachable from here.
-    //
-    // Withheld rather than shown-disabled because a QComboBox entry cannot
-    // carry its own explanation; the shielded tab states the reason.
-    if (!kShieldedUiLockedOut) {
-        cmbSendAction_->addItem("Spend privately", "private_transfer");
-        cmbSendAction_->addItem("Send to shielded", "shield_to");
-        cmbSendAction_->addItem("Convert to public", "unshield");
-    }
-    cmbSendAction_->addItem("Contracts", "public_contract");
+    // Use the journal-backed shielded composer for private operations.
+    cmbSendAction_->addItem("Send privately / convert…", "private_composer");
+    cmbSendAction_->addItem("Create public covenant", "public_contract");
     cmbSendAction_->setToolTip(
-        kShieldedUiLockedOut
-        ? "Send publicly: transparent Taproot or P2MR transfer\n"
-          "Contracts: create an on-chain lock or batch spending rule\n"
-          "\n"
-          "Shielded modes are temporarily unavailable — see the Shielded tab."
-        : "Send publicly: transparent Taproot or P2MR transfer\n"
-          "Spend privately: shielded note transfer to a private address\n"
-          "Send to shielded: fund a shielded dins1 address from your transparent balance\n"
-          "Convert to public: unshield to a fresh wallet Taproot address\n"
-          "Contracts: create an on-chain lock or batch spending rule");
+        "Public payments use transparent funds. Private payments and conversions open "
+        "the Shielded composer, subject to network activation. Covenants currently use "
+        "public funds; private covenant rules are not supported by the protocol.");
     sendLayout->addWidget(cmbSendAction_, 0, 1);
 
     // Hidden cmbSendMode_ kept so legacy code paths that read it stay valid;
@@ -3303,7 +3285,7 @@ void MainWindow::setupUI() {
     cmbContractTemplate_->setToolTip("Simple Lock: funds locked to a spending template\n"
                                      "Timelock: funds locked for N blocks/hours/days\n"
                                      "Payroll: batch payment to multiple recipients (CTV)\n"
-                                     "Custom Script: enter raw Tapscript hex");
+                                     "Recovery and custom scripts are not available");
     templateRow->addWidget(cmbContractTemplate_);
     templateRow->addStretch();
     contractLayout->addLayout(templateRow);
@@ -3354,8 +3336,9 @@ void MainWindow::setupUI() {
     timelockPageLayout->addWidget(spnTimelockDuration_);
     cmbTimelockUnit_ = new QComboBox;
     cmbTimelockUnit_->addItem("blocks", "blocks");
-    cmbTimelockUnit_->addItem("hours", "hours");
-    cmbTimelockUnit_->addItem("days", "days");
+    cmbTimelockUnit_->addItem("hours (estimated)", "hours");
+    cmbTimelockUnit_->addItem("days (estimated)", "days");
+    cmbTimelockUnit_->setToolTip("Uses the 2-minute block target. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
     timelockPageLayout->addWidget(cmbTimelockUnit_);
     timelockPageLayout->addStretch();
     contractTemplateStack_->addWidget(contractTimelockPage_);
@@ -3367,7 +3350,7 @@ void MainWindow::setupUI() {
     auto *payrollInfo = new QLabel(
         "Payroll: batch payment locked to multiple recipients.\n"
         "The CTV template commits to the exact output set.\n"
-        "In Private mode: all amounts and recipients are hidden in ZK.");
+        "Amounts and recipients are public. Private batch covenants are not supported.");
     payrollInfo->setWordWrap(true);
     payrollInfo->setStyleSheet("QLabel { color: #9fb3c8; padding: 4px; }");
     payrollPageLayout->addWidget(payrollInfo);
@@ -3412,13 +3395,18 @@ void MainWindow::setupUI() {
     // Update total when cells change
     connect(tblPayrollRecipients_, &QTableWidget::cellChanged, this, [this](int, int col) {
         if (col != 1) return;
-        double total = 0;
+        qint64 total = 0, value = 0;
         for (int r = 0; r < tblPayrollRecipients_->rowCount(); ++r) {
             auto *item = tblPayrollRecipients_->item(r, 1);
-            if (item) total += item->text().toDouble();
+            if (!item || item->text().trimmed().isEmpty()) continue;
+            if (!CovenantFormPolicy::appendAmount(item->text(), total, value)) {
+                lblPayrollTotal_->setText("Invalid amount in row " + QString::number(r + 1));
+                return;
+            }
         }
         if (lblPayrollTotal_)
-            lblPayrollTotal_->setText("Total: " + QString::number(total, 'f', 8) + " DIN");
+            lblPayrollTotal_->setText("Outputs: " + CovenantFormPolicy::formatUna(total) +
+                " DIN + 0.00001000 DIN reserved spend fee; funding fee additional");
     });
 
     contractTemplateStack_->addWidget(contractPayrollPage_);
@@ -3444,6 +3432,7 @@ void MainWindow::setupUI() {
     connect(cmbContractTemplate_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
       if (contractTemplateStack_) contractTemplateStack_->setCurrentIndex(index);
+      updateSendModeUi();
     });
     cmbContractTemplate_->setCurrentIndex(0);  // Default: Vault
     contractTemplateStack_->setCurrentIndex(0);
@@ -5633,7 +5622,12 @@ void MainWindow::updateSendModeUi() {
   const bool unshieldMode = mode == "unshield";
   const bool shieldCovenantMode = mode == "shield_covenant";
   const bool contractMode = isSendModeContract(mode);
-  const bool inputsEnabled = !btnSend_ || btnSend_->isEnabled();
+  const bool privateComposer = mode == "private_composer";
+  const bool batch = contractMode && cmbContractTemplate_ &&
+      cmbContractTemplate_->currentData().toString() == "payroll";
+  const bool inputsEnabled = (!btnSend_ || btnSend_->isEnabled()) && !privateComposer;
+  edtAmount_->setEnabled(inputsEnabled && !batch);
+  if (btnUseMax_) btnUseMax_->setEnabled(inputsEnabled && !batch);
 
   // Show/hide the contract template section
   if (contractGroup_) {
@@ -5641,7 +5635,7 @@ void MainWindow::updateSendModeUi() {
   }
 
   if (edtRecipient_) {
-    edtRecipient_->setEnabled(inputsEnabled && !unshieldMode);
+    edtRecipient_->setEnabled(inputsEnabled && !unshieldMode && !batch);
     if (publicMode) {
       edtRecipient_->setPlaceholderText("din1p... (Taproot) or din1r... (P2MR public)");
     } else if (privateMode) {
@@ -5656,7 +5650,10 @@ void MainWindow::updateSendModeUi() {
   }
 
   if (btnSend_) {
-    if (contractMode) {
+    if (privateComposer) {
+      btnSend_->setText("Open private send / convert");
+      btnSend_->setToolTip("Continue in Shielded. Availability depends on network activation.");
+    } else if (contractMode) {
       btnSend_->setText("Create Contract");
       btnSend_->setToolTip("Create an on-chain contract lock with spending rules");
     } else if (privateMode) {
@@ -5685,14 +5682,16 @@ void MainWindow::updateSendModeUi() {
   if (lblSendStatus_) {
     const QString status = lblSendStatus_->text();
     const bool isModeHint =
-      status.isEmpty() ||
+      privateComposer || status.isEmpty() ||
       status.startsWith(QString::fromUtf8("\xE2\x9C\x85 Wallet unlocked. Ready to send transactions.")) ||
       status.startsWith(QString::fromUtf8("\xE2\x84\xB9\xEF\xB8\x8F Create or restore a wallet")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x84 Blockchain rescan in progress")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x94\x92 Wallet is locked")) ||
       status.startsWith(QString::fromUtf8("\xF0\x9F\x93\x9C Contract options"));
     if (isModeHint) {
-      if (contractMode) {
+      if (privateComposer) {
+        lblSendStatus_->setText("Open Shielded to send privately or convert funds. Production activation is pending. Private covenants are not supported.");
+      } else if (contractMode) {
         lblSendStatus_->setText("Create an on-chain contract with spending rules.");
       } else if (privateMode) {
         lblSendStatus_->setText(
@@ -14593,13 +14592,21 @@ bool MainWindow::collectSendForm(QString& recipient,
     return false;
   }
 
-  if (amountText.isEmpty() || amountText.toDouble() <= 0.0) {
+  const bool batch = mode == "public_contract" && cmbContractTemplate_ &&
+      cmbContractTemplate_->currentData().toString() == "payroll";
+  if (batch) { recipient.clear(); amountText.clear(); }
+  if (mode == "public_contract" && !batch && recipient.isEmpty()) {
+    lblSendStatus_->setText("A public withdrawal destination is required for this covenant.");
+    return false;
+  }
+  qint64 exactAmount = 0;
+  if (!batch && !ShieldedTransferPolicy::parseDinToUna(amountText, &exactAmount)) {
     lblSendStatus_->setText("❌ Error: Amount must be greater than 0");
     lblSendStatus_->setStyleSheet("QLabel { color: #d6dde6; padding: 10px; background: #2c3036; border: 1px solid #3d434d; border-radius: 6px; }");
     return false;
   }
 
-  amount = amountText.toDouble();
+  amount = batch ? 0.0 : amountText.toDouble();
 
   if (isSendModePublic(mode) || mode == "unshield") {
     if (!recipient.isEmpty() && !isTransparentDineroAddress(recipient)) {
@@ -14861,6 +14868,19 @@ void MainWindow::handleHardwareWalletBroadcast(const QString& txid, bool linkedS
 }
 
 void MainWindow::onSendTransaction() {
+  if (currentSendMode() == "private_composer") {
+    for (int i = 0; mainTabs_ && i < mainTabs_->count(); ++i) {
+      if (mainTabs_->tabText(i).contains("Shielded")) {
+        mainTabs_->setCurrentIndex(i);
+        return;
+      }
+    }
+    return;
+  }
+  if (currentSendMode() != "public_transfer" && currentSendMode() != "public_contract") {
+    lblSendStatus_->setText("Unsupported send mode. Select a public payment or open the Shielded composer.");
+    return;
+  }
   QString recipient;
   QString amountText;
   double amount = 0.0;
@@ -14948,7 +14968,8 @@ void MainWindow::onSendTransaction() {
     QString covenantDescription;
     QJsonArray covenantOutputs;
     constexpr qint64 kContractSpendFeeUna = 1000;
-    qint64 fundingValueUna = static_cast<qint64>(std::llround(amount * 100000000.0));
+    qint64 fundingValueUna = 0;
+    ShieldedTransferPolicy::parseDinToUna(amountText, &fundingValueUna);
     quint32 covenantSequence = 0xfffffffeU;
 
     if (templateKey == "vault") {
@@ -14969,8 +14990,7 @@ void MainWindow::onSendTransaction() {
       templateLabel = "Timelock";
       int delay = spnTimelockDuration_ ? spnTimelockDuration_->value() : 144;
       const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
-      if (unit == "hours") delay *= 6;
-      else if (unit == "days") delay *= 144;
+      delay = CovenantFormPolicy::delayBlocks(delay, unit);
       if (delay <= 0 || delay > 65535) {
         lblSendStatus_->setText("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks.");
         btnSend_->setEnabled(true); updateSendModeUi(); return;
@@ -14983,7 +15003,7 @@ void MainWindow::onSendTransaction() {
       covenantOutputs.append(QJsonObject{
         {"value_una", fundingValueUna - kContractSpendFeeUna},
         {"address", recipient}});
-      covenantDescription = QString("CTV payment spendable only after %1 blocks").arg(delay);
+      covenantDescription = QString("CTV payment spendable %1 blocks after funding confirmation").arg(delay);
     } else if (templateKey == "payroll") {
       templateLabel = "Payroll";
       int recipientCount = 0;
@@ -14992,15 +15012,17 @@ void MainWindow::onSendTransaction() {
         for (int r = 0; r < tblPayrollRecipients_->rowCount(); ++r) {
           auto *addrItem = tblPayrollRecipients_->item(r, 0);
           auto *amtItem = tblPayrollRecipients_->item(r, 1);
-          bool amountOk = false;
-          const double rowAmount = amtItem ? amtItem->text().toDouble(&amountOk) : 0.0;
-          const qint64 rowUna = static_cast<qint64>(std::llround(rowAmount * 100000000.0));
-          if (addrItem && amountOk && !addrItem->text().trimmed().isEmpty() && rowUna > 0) {
-            recipientCount++;
-            totalOutputUna += rowUna;
-            covenantOutputs.append(QJsonObject{
-              {"value_una", rowUna}, {"address", addrItem->text().trimmed()}});
+          const QString address = addrItem ? addrItem->text().trimmed() : QString();
+          const QString value = amtItem ? amtItem->text().trimmed() : QString();
+          if (address.isEmpty() && value.isEmpty()) continue;
+          qint64 rowUna = 0;
+          if (!isTransparentDineroAddress(address) ||
+              !CovenantFormPolicy::appendAmount(value, totalOutputUna, rowUna)) {
+            lblSendStatus_->setText(QString("Invalid batch row %1: enter a public address and a positive amount with at most 8 decimals.").arg(r + 1));
+            btnSend_->setEnabled(true); updateSendModeUi(); return;
           }
+          ++recipientCount;
+          covenantOutputs.append(QJsonObject{{"value_una", rowUna}, {"address", address}});
         }
       }
       if (recipientCount == 0) {
@@ -15055,14 +15077,22 @@ void MainWindow::onSendTransaction() {
         "The amount and destination are visible on-chain. The covenant "
         "rules are recorded for auditing and wallet tracking."
       ).arg(templateLabel,
-            QString::number(amount, 'f', 8),
-            recipient.isEmpty() ? "(self)" : recipient,
+            CovenantFormPolicy::formatUna(fundingValueUna),
+            templateKey == "payroll" ? "Batch recipients listed in the form" : recipient.toHtmlEscaped(),
             covenantDescription,
             covenantFeeText));
 
+    QStringList reviewedOutputs;
+    for (const QJsonValue& output : covenantOutputs) {
+      const auto obj = output.toObject();
+      reviewedOutputs.append(obj.value("address").toString() + "  " +
+          CovenantFormPolicy::formatUna(obj.value("value_una").toInteger()) + " DIN");
+    }
+    reviewBox.setDetailedText("Committed withdrawal outputs:\n" + reviewedOutputs.join("\n") +
+        "\nReserved withdrawal fee: 0.00001000 DIN. Funding transaction fee is additional.");
     QPushButton *broadcastBtn = reviewBox.addButton("Broadcast", QMessageBox::AcceptRole);
-    reviewBox.addButton("Cancel", QMessageBox::RejectRole);
-    reviewBox.setDefaultButton(broadcastBtn);
+    reviewBox.addButton(QMessageBox::Cancel);
+    reviewBox.setDefaultButton(QMessageBox::Cancel);
     reviewBox.exec();
 
     if (reviewBox.clickedButton() != broadcastBtn) {

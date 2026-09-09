@@ -49,6 +49,13 @@ def main() -> int:
         plugin_root / "platforminputcontexts",
     ]
 
+    # Qt 6.9.1 rejects -no-codesign; newer tools may support it. Probe before
+    # touching plugin paths so standalone developer builds also package cleanly.
+    help_result = subprocess.run([str(macdeployqt), "-help"], capture_output=True, text=True, check=False)
+    deploy_args = [str(macdeployqt), str(app_bundle), "-always-overwrite"]
+    if "-no-codesign" in help_result.stdout + help_result.stderr:
+        deploy_args.append("-no-codesign")
+
     hidden: list[tuple[Path, Path]] = []
     try:
         for candidate in candidates:
@@ -58,7 +65,7 @@ def main() -> int:
             # dependency rewriting/removal is complete. Letting macdeployqt
             # ad-hoc sign here produces a transient (and alarming) nested
             # Brotli verification failure before the final inside-out pass.
-            [str(macdeployqt), str(app_bundle), "-always-overwrite", "-no-codesign"],
+            deploy_args,
             check=False,
         )
         return completed.returncode

@@ -1344,6 +1344,12 @@ else()
 endif()
 
 if(BUILD_TESTING)
+  add_executable(test_covenant_form_policy tests/test_covenant_form_policy.cpp)
+  target_include_directories(test_covenant_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_covenant_form_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME CovenantFormPolicy COMMAND test_covenant_form_policy)
+
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp
     src/peerheightsemantics.h
