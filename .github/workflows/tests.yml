@@ -673,3 +673,27 @@ jobs:
             --no-tests=error \
             -L 'quic|p2p' \
             --label-exclude 'integration|gate|release|canonicality|fuzz'
+
+      - name: Check QUIC session lifetimes with ThreadSanitizer
+        run: |
+          cmake -S . -B build-quic-tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON \
+            -DDINERO_BUILD_QT=OFF -DDINERO_ENABLE_QUIC=ON -DENABLE_GRPC=OFF \
+            -DCMAKE_C_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+            -DCMAKE_CXX_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
+          cmake --build build-quic-tsan --target test_quic_session test_quic_session_stress -j2
+          # Limit the sanitizer address-layout workaround to these test processes.
+          # No host-wide ASLR setting is changed; startup failures remain failures.
+          TSAN_OPTIONS=halt_on_error=1 setarch x86_64 -R \
+            ctest --test-dir build-quic-tsan --output-on-failure --no-tests=error \
+            -R '^(QuicSession|QuicSessionStress)$'
+
+      - name: Preserve QUIC test and sanitizer logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quic-lifetime-${{ github.sha }}
+          path: |
+            build-tests-quic/Testing/Temporary/
+            build-quic-tsan/Testing/Temporary/

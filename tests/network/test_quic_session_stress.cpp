@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "network/quic_session.h"
+#include "quic_loopback_pair.h"
 #include "network/quic_transport.h"
 
 #include <gtest/gtest.h>
@@ -64,30 +65,9 @@ bool RunOneHandshake(std::chrono::milliseconds timeout) {
     const auto client_addr = Localhost(0);  // address identifiers only; no real socket is bound — delivery is via writer callbacks
     const auto server_addr = Localhost(0);
 
-    std::shared_ptr<QuicSession> client_session;
-    std::shared_ptr<QuicSession> server_session;
-
-    // NOTE: The writer lambdas capture session pointers by reference because the
-    // QuicSession constructor takes the writer eagerly. The lifetime invariant
-    // that keeps this safe: RunOneHandshake does not return until both wait_for()
-    // calls below resolve or time out. While wait_for is pending, both sessions
-    // exist as locals in this scope, so the references stay valid. The
-    // `if (server_session)` null check guards the brief window between RunOneHandshake
-    // entry and the make_shared assignments.
-    // OutboundWriter forwards wire bytes to the peer's incoming queue.
-    auto client_writer = [&server_session](std::vector<uint8_t> bytes) {
-        if (server_session) {
-            server_session->EnqueueIncomingPacket(std::move(bytes));
-        }
-    };
-    auto server_writer = [&client_session](std::vector<uint8_t> bytes) {
-        if (client_session) {
-            client_session->EnqueueIncomingPacket(std::move(bytes));
-        }
-    };
-
-    server_session = std::make_shared<QuicSession>(server_writer);
-    client_session = std::make_shared<QuicSession>(client_writer);
+    dinero::network::test::QuicLoopbackPair pair;
+    auto& client_session = pair.client;
+    auto& server_session = pair.server;
 
     if (!server_session->StartServer(server_addr, client_addr, StressOptions())) {
         return false;
@@ -104,12 +84,7 @@ bool RunOneHandshake(std::chrono::milliseconds timeout) {
 
     const bool result = client_ready.get() && server_ready.get();
 
-    // Explicit teardown so session destructors run while both sessions are still
-    // in scope, making the by-reference writer captures unambiguously safe.
-    client_session->Close();
-    server_session->Close();
-    client_session.reset();
-    server_session.reset();
+    // Pair teardown disconnects both writers before joining either session.
 
     return result;
 }
@@ -137,6 +112,15 @@ TEST(QuicSessionStress, OneThousandLoopbackHandshakesAllSucceed) {
 
     EXPECT_EQ(successes, kIterations) << "stress test failures: " << failures
                                       << " of " << kIterations;
+}
+
+TEST(QuicSessionStress, TeardownDuringHandshakeIsSafe) {
+    for (int i=0; i<100; ++i) {
+        dinero::network::test::QuicLoopbackPair pair;
+        ASSERT_TRUE(pair.server->StartServer(Localhost(0),Localhost(0),StressOptions()));
+        ASSERT_TRUE(pair.client->StartClient(Localhost(0),Localhost(0),StressOptions()));
+        // Exercise the timeout/assertion cleanup path without waiting for readiness.
+    }
 }
 
 int main(int argc, char** argv) {
