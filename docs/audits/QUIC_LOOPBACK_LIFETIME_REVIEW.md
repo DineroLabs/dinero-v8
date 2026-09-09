@@ -14,8 +14,9 @@ RAII applies the same cleanup on timeouts and assertion exits. An additional
 case closes 100 pairs during handshake without waiting for readiness.
 
 Linux TSan: original fixture reports the race; patched fixture passes three
-rounds of 1000 completed handshakes plus 100 early teardowns. ASan verification
-is also running. Production QUIC code was not modified. This establishes the
+rounds of 1000 completed handshakes plus 100 early teardowns. Linux ASan also
+passed ten rounds (10000 handshakes and 1000 early teardowns), followed by
+both stream-transfer session cases. Production QUIC code was not modified. This establishes the
 fixture defect, not a general claim that all QUIC code is race-free.
 
 The QUIC CI lane now requires TSan on both session executables and retains

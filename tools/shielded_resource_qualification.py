@@ -22,6 +22,7 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--binary-source-commit',default='unknown',
                         help='Verified source revision used to build the binary; never inferred from the harness checkout')
+    parser.add_argument('--harness-source-commit', help='Recorded harness revision for an exported qualification bundle without Git metadata')
     parser.add_argument('--repetitions',type=int,default=3)
     parser.add_argument('--max-rss-mib',type=int,default=2048)
     parser.add_argument('--max-prove-ms',type=int,default=120000)
@@ -37,8 +38,9 @@ def main():
     report={'scope':'proof-component-only','platform':platform.platform(),
         'machine':platform.machine(),'logical_cpus':os.cpu_count(),
         'source_commit':args.binary_source_commit,
-        'harness_commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
-        'harness_dirty':bool(subprocess.check_output(['git','status','--porcelain'],text=True).strip()),
+        'harness_commit':args.harness_source_commit or subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+        'harness_dirty':None if args.harness_source_commit else bool(subprocess.check_output(['git','status','--porcelain'],text=True).strip()),
+        'harness_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
         'budgets':{'rss_bytes':args.max_rss_mib*1024**2,'prove_ms':args.max_prove_ms,
                    'verify_ms':args.max_verify_ms,'block_verify_ms':args.max_block_verify_ms},
