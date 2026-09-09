@@ -1040,6 +1040,10 @@ public:
     // path is otherwise only assigned inside Init(DaemonContext&); the setter
     // lets PersistShieldedState() succeed so the rewind reaches its marker
     // persist (the assertion under test). Test-only — not called in production.
+    // Reproduce a failed ConnectTip read without activating a synthetic chain.
+    void MarkBlockBodyUnreadableForTesting(const uint256& hash) {
+        unreadable_blocks_.mark(hash);
+    }
     void RealignShieldedStateToActiveTipAfterHealForTesting() {
         RealignShieldedStateToActiveTipAfterHeal();
     }

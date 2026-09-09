@@ -118,3 +118,10 @@ five header-sync/coalescer suites pass, and the bridge-assisted spend lifecycle
 passes on the repaired binary. New combined and release verification is
 required for this additional runtime repair; predecessor results are not
 being relabeled as an all-green final sweep. PR #720 carries the latest checks.
+
+Further tracing showed that the two final missing bodies had actually been
+stored successfully but retained earlier unreadable-quarantine markers. The
+review records the root cause and direct red/green persistence regression.
+Position publication now clears those markers only after strict hash-checked
+readback, serialized with activation. This additional repair is included in the
+next frozen candidate; merely increasing a timeout is not its disposition.

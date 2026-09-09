@@ -6353,7 +6353,21 @@ bool ChainstateService::HasStoredBlockBody(const uint256& hash) const {
 // tip never becomes a reorg candidate. Mirror block_acceptor's metadata write
 // for the store-only case, preserving any existing undo reference.
 void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos) {
+    // The scheduler invokes this outside its mutex. Serialize publication with
+    // ConnectTip's failed-read quarantine so an older failed read cannot mark
+    // the newly repaired body unreadable after we clear it.
+    auto activation_lock = AcquireBlockIngressActivationLock();
     if (!chain_db_) return;
+    const auto release_readable_quarantine = [&]() {
+        // Deep fork-heal testing exposed bodies downloaded below the active tip
+        // that never reach the ordinary scheduler drain. Metadata publication
+        // must repair their readability marker too, but only after a strict
+        // read verifies the stored bytes/hash. This grants no consensus validity.
+        if (unreadable_blocks_.contains(hash) &&
+            ReadStoredBlock(hash).status() == Status::Ok) {
+            unreadable_blocks_.clear(hash);
+        }
+    };
     if (pos.offset > std::numeric_limits<uint32_t>::max()) {
         if (logger_) logger_->warning("[#309] PersistStoredBodyPosition: data offset exceeds uint32 for " +
                                       hash.GetHex().substr(0, 16));
@@ -6362,6 +6376,7 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
     const auto persist_result = storage::PersistVerifiedArchivalBodyPosition(
         *chain_db_, block_storage_.get(), hash, pos);
     if (persist_result.status() == Status::Ok) {
+        release_readable_quarantine();
         if (logger_) {
             if (persist_result.value() == storage::BodyPositionPersistResult::ReplacedStale) {
                 logger_->warning("[#309] PersistStoredBodyPosition: replaced stale body position " +
@@ -6436,6 +6451,7 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
     metadata.status_flags |= BLOCK_HAVE_DATA;
     ChainWriteToken token = ChainWriteToken::CreateForTesting();
     Status st = chain_db_->putHeaderMetadataPreservingExistingUndo(token, hash, metadata, nullptr);
+    if (st == Status::Ok) release_readable_quarantine();
     if (logger_) {
         if (st != Status::Ok) {
             logger_->warning("[#309] PersistStoredBodyPosition: putHeaderMetadata failed for " +

@@ -171,3 +171,30 @@ seconds, allows a 150-second quiet interval and 180-second progress extension,
 and retains its overall deadline. Final diagnostics include download state.
 The next run must demonstrate actual convergence; the timing correction alone
 does not close the failure.
+
+## Stored side-branch body retained in unreadable quarantine
+
+Tracing the final missing bodies from the e792 strict run identified a second
+concrete P2P recovery defect. B's source-branch body at height 1517 and C's at
+1737 had been read too early during activation and marked unreadable. Both were
+later received, checked against their headers, written to flatfiles and given
+persisted metadata, but their quarantine markers remained. They were below the
+active competing tip, so the ordinary scheduler drain that cleared the marker
+never ran. Header-branch import kept excluding the already stored bodies.
+The timeout adjustment alone cannot repair this state.
+
+`PersistStoredBodyPosition` now serializes publication with activation and
+clears a quarantined hash only after a successful strict archival read verifies
+the requested block hash. This covers both existing metadata and newly created
+header-selector metadata; failed storage reads and wrong-hash positions stay
+unusable. It changes readability, not consensus validity or active-chain state.
+The additional read is restricted to quarantined hashes. Both production callers
+invoke this outside the scheduler mutex; the recursive activation lock also
+prevents a stale failed read from marking a newly repaired body afterward.
+
+The original publication function is identical on main plus the epoch fix and
+e792. The existing pre-base persistence test, extended to stage quarantine,
+fails before the repair and passes after it. Existing-row repair, replacement
+repair, and a physically present wrong-hash negative control pass. The running
+rate-drop-only IBD attempt was intentionally retired after this finding, not
+counted as a pass. Final daemon verification must include this repair.
