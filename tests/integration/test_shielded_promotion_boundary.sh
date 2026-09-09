@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 #
+# This fixture intentionally keeps state commitments dormant: it loads an
+# unburied snapshot with headers only through the base, then tests promotion
+# concurrency and advisory root stability. Active v5 burial/binding rejection
+# is covered by SnapshotBindingMutations. CI caught the missing override when
+# the active regtest default correctly rejected this fixture at load time.
+#
 # AssumeUTXO promotion-race regtest (#353 bug 2).
 #
 # THE BUG (fixed by commit e5df3e9d1, under test here):
@@ -130,7 +136,7 @@ rpc() {  # <rpcport> <datadir> <method> [params-json]
 start_node() {  # <datadir> <rpcport> <p2pport> <wsport> <logfile> [extra args...]
     local datadir="$1" rpcport="$2" p2pport="$3" wsport="$4" logfile="$5"; shift 5
     mkdir -p "$datadir"
-    "$DINEROD" --regtest --datadir="$datadir" \
+    "$DINEROD" --regtest --consensus-state-commitment-height=4294967295 --datadir="$datadir" \
         --rpcport="$rpcport" --port="$p2pport" --wallet-socket-port="$wsport" \
         --listen=1 "$@" > "$logfile" 2>&1 &
     LAST_NODE_PID=$!
@@ -287,8 +293,9 @@ mkdir -p "$CON_DIR"; cp -R "$HEADERS_AT_BASE" "$CON_DIR/headers"
 export DINERO_DEBUG_BG_VALIDATION_DELAY_MS="$BG_DELAY_MS"
 start_node "$CON_DIR" "$CON_RPC" "$CON_P2P" "$CON_WS" "$CON_DIR/daemon.log" \
     --assumeutxo_bg_stall_timeout=3600
-rpc "$CON_RPC" "$CON_DIR" loadtxoutset "[\"$SNAP\"]" | jq -e '.result.coins_loaded >= 1' >/dev/null \
-    || fail "loadtxoutset failed"
+LOAD="$(rpc "$CON_RPC" "$CON_DIR" loadtxoutset "[\"$SNAP\"]")"
+jq -e '.result.coins_loaded >= 1' <<<"$LOAD" >/dev/null \
+    || fail "loadtxoutset failed: $LOAD"
 wait_status "$CON_RPC" "$CON_DIR" '.assumeutxo_active == true' 60 "snapshot active" \
     || fail "consumer never entered assumeutxo mode"
 
@@ -445,8 +452,8 @@ info "case 3: tip is $(tip_of "$CON_RPC" "$CON_DIR") before counting connections
 # "Connecting block at height N" line fires once per DELIVERY (acceptance =
 # storage), so counting it measures how often peers sent the block, not how
 # often it entered the chain. The state mutation is ConnectTip.
-CONNECTED="$(grep -ch "ConnectTip SUCCEEDED for height $((BASE + 1))\b" "$CON_DIR"/daemon*.log 2>/dev/null | paste -sd+ | bc)"
-DELIVERED="$(grep -ch "Connecting block at height $((BASE + 1))\b" "$CON_DIR"/daemon*.log 2>/dev/null | paste -sd+ | bc)"
+CONNECTED="$(grep -ch "ConnectTip SUCCEEDED for height $((BASE + 1))\b" "$CON_DIR"/daemon*.log 2>/dev/null | paste -sd+ - | bc)"
+DELIVERED="$(grep -ch "Connecting block at height $((BASE + 1))\b" "$CON_DIR"/daemon*.log 2>/dev/null | paste -sd+ - | bc)"
 info "case 3: base+1 (height $((BASE + 1))) — ConnectTip successes=$CONNECTED, deliveries=$DELIVERED"
 [[ "${CONNECTED:-0}" -eq 1 ]] \
     || fail "case 3: base+1 connected ${CONNECTED:-0} times, expected exactly 1"

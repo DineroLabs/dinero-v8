@@ -6,7 +6,8 @@ No production height or release approval is implied by this plan.
 
 ## Release units
 
-1. Land the existing-main epoch-undo repair independently (PR #719). It changes
+1. The existing-main epoch-undo repair landed independently in PR #719
+   (`adb9643477e6ba2190a56ccf141bd6cca2621101`). It changes
    storage capture/restore, not consensus root encoding or activation heights.
 2. Review and qualify the combined candidate (PR #720) on a pinned commit and
    pinned binary hashes. A green main run is not candidate evidence.
@@ -22,6 +23,7 @@ No production height or release approval is implied by this plan.
 
 | Boundary | Required action |
 |---|---|
+| Ordinary block undo | New records retain the pre-block anchor persistence envelope, including empty blocks. This makes rollback independent of the live 100-entry eviction journal. Records written by older binaries lack it; regenerate historical undo by replay/reindex before qualifying deep reorg recovery. Budget up to 7,217 additional bytes per retained undo record. Validate the rebuilt copy through a reorg exceeding 100 blocks and exact-root reconnect. |
 | Existing epoch undo | New records retain the eviction journal. Legacy records remain readable but are lossy. Rebuild affected historical undo from block history using the documented reindex path before promising cross-reset rollback. Preserve the original datadir and prove the rebuilt copy by restart, invalidation below the reset and reconnect. A snapshot of active anchors alone cannot reconstruct the journal. |
 | DNRS mining | Use daemon-owned `coinbasetxn` unchanged, or `mining.getjob`/`mining.submit`. Header layout remains 128 bytes. Transaction selection, coinbase outputs, parent and ASERT timestamp require a new template. Pools which rebuild coinbases must migrate before activation. |
 | Snapshots | Upgrade publishers and consumers to v5 before DNRS activation. A v4 snapshot at an enforced base must be rejected. Check selected-chain ancestry, burial, merkle proof and full SHR1 before state import. Retain full-history fallback. |
@@ -44,7 +46,7 @@ External miners must preserve DNRS, DNRF, witness commitments and Utreexo data.
 The response's statecommitment object describes the canonical output; it is not
 permission to rebuild the coinbase or reorder transactions.
 
-## Evidence and independent review
+## Evidence and designated review
 
 Record exact commit/tree, build configuration, toolchain, binary SHA-256 and CI
 run URL for Linux x86-64, Windows x86-64 and both supported macOS architectures.

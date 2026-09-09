@@ -828,7 +828,15 @@ snapshot_nodes() {
     local s=""
     local i
     for i in 0 1 2 3 4; do
-        s+="${i}:$(state_triplet_idx "${i}")|"
+        # A reorg deliberately holds the old active tip until every replacement
+        # body is available. Tip-only sampling mistook real body downloads for
+        # a stall and aborted after 45 seconds on the 2,221-block return fork.
+        # Include outstanding body work; the overall timeout remains bounded,
+        # and success still requires exact active hash/work convergence.
+        local outstanding
+        outstanding="$(rpc_result_idx "${i}" "blockchain.getsynchealth" '[]' 2>/dev/null |
+            jq -r '(.block_download.missing // 0) + (.block_download.in_flight // 0)' 2>/dev/null || echo NA)"
+        s+="${i}:$(state_triplet_idx "${i}"):${outstanding}|"
     done
     echo "${s}"
 }
@@ -1153,12 +1161,32 @@ phase2_restart_mid_sync() {
 phase3_compete_and_heal() {
     log_header "Phase 3 - Competing Fork Exposure + Heal"
 
-    info "Releasing withheld fork to all IBD nodes"
-    connect_bidirectional "${IDX_A}" "${IDX_F}"
-    connect_bidirectional "${IDX_B}" "${IDX_F}"
-    connect_bidirectional "${IDX_C}" "${IDX_S}"
-    connect_bidirectional "${IDX_S}" "${IDX_F}"
-    assert_nodes_alive
+    # Keep S's independent branch mineable while A/B/C adopt F. The full
+    # sweep exposed mining racing a higher-work, body-incomplete header chain:
+    # generatetoaddress correctly reported non-activation, aborting this fixture.
+    # Do not retry/hide that RPC failure; establish the intended topology first.
+    rpc_result_idx "${IDX_S}" "setnetworkactive" '[false]' | jq -e '.applied == true and .networkactive == false' >/dev/null
+    assert_no_peers_idx "${IDX_S}"
+    local source_height source_hash fork_height fork_hash idx
+    source_height="$(rpc_scalar_idx "${IDX_S}" "getblockcount" '[]' '.')"
+    source_hash="$(rpc_scalar_idx "${IDX_S}" "getbestblockhash" '[]' '.')"
+    fork_height="$(rpc_scalar_idx "${IDX_F}" "getblockcount" '[]' '.')"
+    fork_hash="$(rpc_scalar_idx "${IDX_F}" "getbestblockhash" '[]' '.')"
+
+    info "Releasing withheld fork to IBD nodes while source remains isolated"
+    for idx in "${IDX_A}" "${IDX_B}" "${IDX_C}"; do
+        connect_bidirectional "${idx}" "${IDX_F}"
+    done
+    for idx in "${IDX_A}" "${IDX_B}" "${IDX_C}"; do
+        if ! wait_height_at_least_idx "${idx}" "${fork_height}" "${PROGRESS_TIMEOUT}"; then
+            fail "Node $(name_of "${idx}") did not adopt the competing fork"
+        fi
+        if [[ "$(rpc_scalar_idx "${idx}" "getbestblockhash" '[]' '.')" != "${fork_hash}" ]]; then
+            fail "Node $(name_of "${idx}") did not select the expected fork tip"
+        fi
+    done
+    pass "IBD nodes adopted the competing fork before source catch-up"
+    assert_no_peers_idx "${IDX_S}"
 
     # Mine source catch-up blocks to force deterministic winner.
     info "Mining source catch-up blocks: ${SOURCE_POST_BLOCKS}"
@@ -1197,6 +1225,12 @@ phase3_compete_and_heal() {
         mine_blocks_idx "${IDX_S}" "${extra}"
     fi
 
+    if [[ "$(rpc_scalar_idx "${IDX_S}" "getblockhash" "[${source_height}]" '.')" != "${source_hash}" ]]; then
+        fail "Source catch-up did not extend its original isolated branch"
+    fi
+    assert_no_peers_idx "${IDX_S}"
+    rpc_result_idx "${IDX_S}" "setnetworkactive" '[true]' | jq -e '.applied == true and .networkactive == true' >/dev/null
+
     # Full-heal connectivity fanout.
     connect_bidirectional "${IDX_A}" "${IDX_S}"
     connect_bidirectional "${IDX_B}" "${IDX_S}"
@@ -1205,11 +1239,7 @@ phase3_compete_and_heal() {
     connect_bidirectional "${IDX_B}" "${IDX_F}"
 
     if ! wait_nodes_converged_with_progress "${CONVERGE_TIMEOUT}"; then
-        warn "Initial heal stalled; attempting explicit withheld-block release to lagging nodes"
-        recover_lagging_nodes_from_source
-        if ! wait_nodes_converged_with_progress "${CONVERGE_TIMEOUT}"; then
-            fail "Nodes failed to converge after fork heal"
-        fi
+        fail "Nodes failed to converge through P2P after fork heal"
     fi
 
     # Final nudge block to assert post-heal stability.
