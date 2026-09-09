@@ -89,7 +89,7 @@ case "${PROFILE}" in
         D_RPC_READY_TIMEOUT=60
         D_PROGRESS_TIMEOUT=480
         D_CONVERGE_TIMEOUT=900
-        D_NO_PROGRESS_TIMEOUT=45
+        D_NO_PROGRESS_TIMEOUT=150
         D_PROGRESS_EXTENSION=30
         D_MAX_PROGRESS_TIMEOUT=1800
         D_CHURN_LOOPS=8
@@ -109,7 +109,7 @@ case "${PROFILE}" in
         D_RPC_READY_TIMEOUT=60
         D_PROGRESS_TIMEOUT=900
         D_CONVERGE_TIMEOUT=1200
-        D_NO_PROGRESS_TIMEOUT=45
+        D_NO_PROGRESS_TIMEOUT=150
         D_PROGRESS_EXTENSION=30
         D_MAX_PROGRESS_TIMEOUT=1800
         D_CHURN_LOOPS=6
@@ -129,7 +129,7 @@ case "${PROFILE}" in
         D_RPC_READY_TIMEOUT=45
         D_PROGRESS_TIMEOUT=300
         D_CONVERGE_TIMEOUT=300
-        D_NO_PROGRESS_TIMEOUT=30
+        D_NO_PROGRESS_TIMEOUT=150
         D_PROGRESS_EXTENSION=20
         D_MAX_PROGRESS_TIMEOUT=900
         D_CHURN_LOOPS=1
@@ -143,6 +143,9 @@ case "${PROFILE}" in
         ;;
 esac
 
+# The scheduler retries stalled downloads after 90 seconds. A 30/45-second
+# harness stall cutoff preempted that recovery on the final missing return-fork
+# body. Allow one watchdog interval plus margin, retaining the overall bound.
 # Tunables
 SHARED_BASE_BLOCKS="${SHARED_BASE_BLOCKS:-${D_SHARED_BASE_BLOCKS}}"
 SOURCE_PRE_BLOCKS="${SOURCE_PRE_BLOCKS:-${D_SOURCE_PRE_BLOCKS}}"
@@ -768,7 +771,9 @@ print_state_idx() {
     t="$(state_triplet_idx "${idx}")"
     IFS='|' read -r h hash work <<< "${t}"
     peers="$(connection_count_idx "${idx}")"
-    echo "  $(name_of "${idx}"): height=${h} hash=${hash} work=${work} peers=${peers}"
+    local downloads
+    downloads="$(rpc_result_idx "${idx}" "blockchain.getsynchealth" '[]' 2>/dev/null | jq -c '.block_download // {}' || true)"
+    echo "  $(name_of "${idx}"): height=${h} hash=${hash} work=${work} peers=${peers} downloads=${downloads}"
 }
 
 print_network_state() {
@@ -869,6 +874,8 @@ wait_nodes_converged_with_progress() {
     local no_progress=0
     local deadline="${base_timeout}"
     local previous_snapshot=""
+    local started_seconds=${SECONDS}
+    local last_progress_seconds=${SECONDS}
 
     while [[ "${waited}" -lt "${MAX_PROGRESS_TIMEOUT}" && "${waited}" -lt "${deadline}" ]]; do
         if all_nodes_converged; then
@@ -880,6 +887,7 @@ wait_nodes_converged_with_progress() {
         if [[ "${snapshot}" != "${previous_snapshot}" ]]; then
             previous_snapshot="${snapshot}"
             no_progress=0
+            last_progress_seconds=${SECONDS}
 
             local extended_deadline=$((waited + PROGRESS_EXTENSION))
             if [[ "${extended_deadline}" -gt "${deadline}" ]]; then
@@ -889,7 +897,7 @@ wait_nodes_converged_with_progress() {
                 fi
             fi
         else
-            no_progress=$((no_progress + 1))
+            no_progress=$((SECONDS - last_progress_seconds))
             if [[ "${no_progress}" -ge "${NO_PROGRESS_TIMEOUT}" ]]; then
                 warn "Convergence stalled for ${no_progress}s without state change"
                 print_network_state
@@ -898,7 +906,7 @@ wait_nodes_converged_with_progress() {
         fi
 
         sleep 1
-        waited=$((waited + 1))
+        waited=$((SECONDS - started_seconds))
     done
 
     warn "Convergence timed out after ${waited}s (deadline=${deadline}s)"
@@ -1238,6 +1246,7 @@ phase3_compete_and_heal() {
     connect_bidirectional "${IDX_A}" "${IDX_F}"
     connect_bidirectional "${IDX_B}" "${IDX_F}"
 
+    info "Source catch-up mined; waiting for P2P return-fork recovery"
     if ! wait_nodes_converged_with_progress "${CONVERGE_TIMEOUT}"; then
         fail "Nodes failed to converge through P2P after fork heal"
     fi
