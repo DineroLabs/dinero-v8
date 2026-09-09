@@ -130,14 +130,13 @@ static ChainParams g_mainnet = {
     // continue to use transparent outputs and their existing maturity rules.
     .shielded_coinbase_reject_activation_height = 110000,
 
-    // state_commitment_v1, MAINNET: DORMANT. No height may be selected until
-    // every "Still owed before any activation" gate in
-    // docs/specs/state_commitment_v1.md is closed, including the independent
-    // HUMAN consensus review (governance order, 2026-09-08).
-    .state_commitment_activation_height = UINT32_MAX,
-    // PROVISIONAL test value (~2 days at 10-min cadence) — NOT ratified
-    // policy; final depth awaits the human review + network/reorg analysis.
-    // Gates nothing while the activation height above is dormant.
+    // Operator-selected DNRS cutover, 2026-09-09: mandatory coinbase
+    // commitment and v5 snapshot authentication from block 111000.
+    // Deliberately separate from the Auth epoch reset at 110000.
+    // Upgrade validators, miners and snapshot consumers before this height.
+    .state_commitment_activation_height = 111000,
+    // Local snapshot acceptance policy, not a consensus finality guarantee.
+    // A base needs 288 descendant headers on the selected best-work chain.
     .state_commitment_burial_depth = 288,
 
     .genesis = {

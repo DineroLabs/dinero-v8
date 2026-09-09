@@ -215,11 +215,11 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
 
 TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     SelectParams(Chain::MAINNET);
-    // Pin the 110000 Auth cutover, including the private covenant gate.
+    // Pin Auth/private covenants at 110000 and DNRS at 111000.
     // This is operator drift telemetry, not a block or peer protocol change.
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "98d11106645d91d23ab2d2d0559355dd20d2b91c11cd98f05b579a86e0dddfe2");
+        "4712e91b8906019cc21287c83739c973de0179f5a753b44735fb3675b314ba3a");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);

@@ -143,3 +143,11 @@ serialized parameter fields. The golden value now pins the 110000 schedule;
 the field-mutation test also covers the new private covenant activation height.
 CovenantActivation passes locally. No consensus or wallet behavior was changed
 by this follow-up. GitHub's initial private covenant lifecycle passed in 323 s.
+
+
+## Separate DNRS schedule
+
+The operator subsequently selected mainnet state-commitment activation at
+111000. Auth/private covenants remain at 110000. See [the DNRS record](dnrs-111000.md)
+for snapshot eligibility, burial policy and deployment requirements. Earlier
+statements that DNRS is dormant describe the preceding revision.

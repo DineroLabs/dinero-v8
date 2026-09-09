@@ -1,8 +1,10 @@
 # Shielded upgrade release and activation plan
 
-Status: implementation candidate on `codex/shielded-integration`. This document
-is the forward-looking plan; the old shielded_activation_plan.md is historical.
-No production height or release approval is implied by this plan.
+Status update (2026-09-09): mainnet Auth/private covenants are scheduled at
+110000 and DNRS at 111000 in the current source candidate. Testnet remains
+dormant. These schedules do not establish deployment or qualification. See
+[DNRS activation](../activation/dnrs-111000.md). Earlier steps below describe
+the rollout sequence; shielded_activation_plan.md is historical.
 
 ## Release units
 
@@ -89,5 +91,6 @@ claim. Keep proof concurrency bounded to the qualified value.
 - A future activation-height commit reviewed against the then-current tip, with
   sufficient deployment margin and all sentinel/order/boundary tests passing.
 
-Until all decisions and evidence exist, mainnet/testnet DNRS and the new Auth
-upgrade remain at UINT32_MAX. Existing shielded activation is unchanged.
+The operator has now selected mainnet Auth at 110000 and DNRS at 111000.
+Outstanding deployment evidence must be completed before those boundaries;
+source scheduling is not fleet sign-off. Testnet upgrades remain dormant.

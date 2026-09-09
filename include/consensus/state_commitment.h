@@ -53,10 +53,9 @@
  *
  * ACTIVATION. IsStateCommitmentActive() below is the single authority for
  * whether the commitment is enforced at a height; the per-network activation
- * height lives in chainparams (state_commitment_activation_height, dormant at
- * UINT32_MAX on mainnet and testnet). No mainnet/testnet height may be
- * selected until every gate in docs/specs/state_commitment_v1.md's
- * "Still owed before any activation" list is closed.
+ * height lives in chainparams: mainnet 111000, testnet dormant (UINT32_MAX),
+ * regtest 1. See docs/activation/dnrs-111000.md for the operator-selected
+ * cutover and deployment requirements. This gate is independent of Auth.
  */
 
 #include <cstddef>

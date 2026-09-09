@@ -220,7 +220,8 @@ TEST(ChainParamsSelection, MainnetAuthCutoverPreservesHistoricalRules) {
     EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, 110000U);
     EXPECT_EQ(Params().shielded_outgoing_recovery_activation_height, 110000U);
     EXPECT_EQ(Params().shielded_coinbase_reject_activation_height, 110000U);
-    EXPECT_EQ(Params().state_commitment_activation_height, UINT32_MAX);
+    EXPECT_EQ(Params().state_commitment_activation_height, 111000U);
+    EXPECT_GT(Params().state_commitment_activation_height, Params().shielded_spend_auth_epoch_reset_height);
 }
 
 // The assertion this file exists for. A plain EXPECT_THROW passes against the
