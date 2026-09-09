@@ -2305,3 +2305,11 @@ set_tests_properties(SnapshotBindingMutations PROPERTIES
   ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
   LABELS "integration;shielded;assumeutxo;snapshot;mandatory"
   TIMEOUT 600 RUN_SERIAL TRUE)
+
+# Exercise the supported external/coordinator interfaces with DNRS enforced.
+add_test(NAME StateCommitmentMining
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_state_commitment_mining.py)
+set_tests_properties(StateCommitmentMining PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;shielded;mining;mandatory"
+  TIMEOUT 240 RUN_SERIAL TRUE)

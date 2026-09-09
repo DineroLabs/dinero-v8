@@ -1,7 +1,9 @@
 # state_commitment_v1 — binding shielded state to the chain
 
-**Status:** design + evidence. No consensus code exists yet. Nothing in this
-document is active on any network.
+**Status:** implemented on `codex/shielded-integration`; regtest enforcement
+starts at height 1. Mainnet/testnet remain dormant. Historical gap demonstrations
+below describe their recorded source revisions, not the current integration.
+See [integration status](../audits/SHIELDED_INTEGRATION_STATUS.md).
 
 ## The gap
 
