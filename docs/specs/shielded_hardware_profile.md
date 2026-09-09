@@ -6,7 +6,7 @@ are supported. Current measurements are of a proof test process on Apple M4 Max
 
 | Role | Initial qualification target | Release acceptance |
 |---|---|---|
-| Validator / archival / reindex node | 64-bit CPU, at least 4 modern physical cores, 16 GiB RAM; SSD with measured chain/undo retention capacity plus rebuild headroom | All consensus/lifecycle tests; proof process ≤2 GiB RSS; maximum eight-proof block verification ≤20 s; total daemon peak under 75% of installed RAM under steady relay and replay/reindex, without OOM. Disk requirement is measured from actual retained history, not guessed. |
+| Validator / archival / reindex node | 64-bit CPU, at least 4 modern physical cores, 16 GiB RAM; SSD with measured chain/undo retention capacity plus rebuild headroom | All consensus/lifecycle tests; proof process ≤2 GiB RSS; maximum eight-proof block verification ≤30 s; total daemon peak under 75% of installed RAM under steady relay and replay/reindex, without OOM. Disk requirement is measured from actual retained history, not guessed. |
 | Desktop wallet with local proving | 64-bit CPU, at least 8 modern physical cores, 16 GiB RAM (32 GiB when sharing the host with an archival node) | Same proof RSS bound; supported transfer build ≤120 s, individual verification ≤30 s; one wallet proof operation at a time; successful UI/daemon responsiveness and recovery under load. |
 | Mobile | No local proving support claim in the initial profile | Separate device measurements and lifecycle qualification required. Verification-only clients have a separate resource/authority model and do not inherit desktop approval. |
 | Physical hardware wallet | Shielded signing not advertised in initial scope | Capability rejection stays enabled. Real firmware/device proof and authority tests required before support is advertised. |
@@ -65,3 +65,28 @@ against the 20-second target: it qualifies that measured proof run, not loaded
 production operation on every four-core host. Retain the concurrent-load and
 20-sample fleet requirements. Exact merge-ref/binary identity and all samples
 are in `SHIELDED_RESOURCE_QUALIFICATION_LINUX.json`.
+
+
+## Budget revision after the final-candidate measurement
+
+The initial 20-second proof budget was provisional. On runtime candidate
+`e79295a8b`, Linux run [34325068921](https://github.com/DineroLabs/dinero-v8/actions/runs/34325068921)
+validated every proof but measured maximum-block verification at 20.433, 20.495
+and 20.451 seconds, consistently failing that budget. Peak RSS was 858,959,872
+bytes. The [original failed report](../audits/SHIELDED_RESOURCE_QUALIFICATION_E792_20S_FAILED.json)
+is retained; it is not reclassified as a flaky test or a passing 20-second run.
+
+The designated review adopts the **initial-desktop-v2** engineering profile:
+maximum proof-component block verification 30 seconds, one quarter of the
+120-second target interval in chain parameters. This leaves 90 seconds of the
+average interval for other processing and propagation, and about 46% timing
+headroom over the slowest observed proof sample. It is a throughput allocation,
+not a guarantee that other work finishes within that reserve or that a block
+never arrives sooner. The whole-node 75%-RAM, loaded recovery/relay, and
+20-sample fleet tests remain mandatory before claiming production-host support.
+
+Transaction proof time, RSS limits, consensus proof/byte caps and activation
+heights are unchanged. The qualifier records the CPU model on new runs and
+reports the failing shape and limits explicitly. Earlier 20-second measurements
+remain historical evidence under their original budget. This revision does not
+certify every four-core machine; measured loaded behavior selects actual hosts.

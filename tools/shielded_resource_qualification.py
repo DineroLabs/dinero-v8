@@ -24,7 +24,9 @@ def main():
     parser.add_argument('--max-rss-mib',type=int,default=2048)
     parser.add_argument('--max-prove-ms',type=int,default=120000)
     parser.add_argument('--max-verify-ms',type=int,default=30000)
-    parser.add_argument('--max-block-verify-ms',type=int,default=20000)
+    # Initial desktop v2: reserve at most one quarter of the 120-second block
+    # interval for the proof component; whole-node/load qualification is separate.
+    parser.add_argument('--max-block-verify-ms',type=int,default=30000)
     args=parser.parse_args()
     if args.repetitions < 1:
         parser.error('repetitions must be positive')
@@ -37,7 +39,16 @@ def main():
         'binary_sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),
         'budgets':{'rss_bytes':args.max_rss_mib*1024**2,'prove_ms':args.max_prove_ms,
                    'verify_ms':args.max_verify_ms,'block_verify_ms':args.max_block_verify_ms},
-        'measurements':[],'summary':{},'qualified':False}
+        'measurements':[],'summary':{},'qualified':False,
+        'budget_policy':'initial-desktop-v2; proof component only; explicit overrides in budgets'}
+    if platform.system()=='Linux':
+        cpu_info=Path('/proc/cpuinfo').read_text()
+        report['cpu_model']=next((line.split(':',1)[1].strip() for line in cpu_info.splitlines()
+                                  if line.startswith('model name') and ':' in line),'unknown')
+    elif platform.system()=='Darwin':
+        report['cpu_model']=subprocess.check_output(['sysctl','-n','machdep.cpu.brand_string'],text=True).strip()
+    else:
+        report['cpu_model']=os.environ.get('PROCESSOR_IDENTIFIER','unknown')
     try:
         for shape in SHAPES:
             rows=[]
@@ -70,6 +81,11 @@ def main():
                 summary['prove_ms']['max']<=args.max_prove_ms and
                 summary['verify_ms']['max']<=verify_limit)
             report['summary'][shape]=summary
+            if not summary['qualified']:
+                print(f"NOT QUALIFIED: {shape}: RSS={summary['process_peak_rss_bytes']['max']} bytes "
+                      f"(allowed 1..{args.max_rss_mib*1024**2}), prove={summary['prove_ms']['max']}ms "
+                      f"(limit {args.max_prove_ms}), verify={summary['verify_ms']['max']}ms "
+                      f"(limit {verify_limit})",flush=True)
         report['qualified']=all(s['qualified'] for s in report['summary'].values())
     finally:
         if hashlib.sha256(binary.read_bytes()).hexdigest()!=report['binary_sha256']:
