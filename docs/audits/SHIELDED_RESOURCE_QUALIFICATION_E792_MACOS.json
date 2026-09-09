@@ -1,0 +1,386 @@
+{
+  "scope": "proof-component-only",
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "logical_cpus": 16,
+  "source_commit": "e79295a8b92ee60739cca23c80624523c3bbe29a",
+  "harness_commit": "5001f5e24e46d77d2b969279e86619a3f366dde3",
+  "harness_dirty": false,
+  "binary_sha256": "abfa3477c9760ac59321f99be606450ef11340350e025bf61a341d00d7238b3b",
+  "budgets": {
+    "rss_bytes": 2147483648,
+    "prove_ms": 120000,
+    "verify_ms": 30000,
+    "block_verify_ms": 30000
+  },
+  "measurements": [
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3555,
+      "verify_ms": 1137,
+      "process_peak_rss_bytes": 570114048,
+      "shape": "shield",
+      "iteration": 1,
+      "wall_seconds": 4.7140466663986444
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3546,
+      "verify_ms": 1044,
+      "process_peak_rss_bytes": 569999360,
+      "shape": "shield",
+      "iteration": 2,
+      "wall_seconds": 4.611243708990514
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3487,
+      "verify_ms": 1058,
+      "process_peak_rss_bytes": 570015744,
+      "shape": "shield",
+      "iteration": 3,
+      "wall_seconds": 4.566444541327655
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11834,
+      "verify_ms": 4035,
+      "process_peak_rss_bytes": 801816576,
+      "shape": "transfer_1in_2out",
+      "iteration": 1,
+      "wall_seconds": 15.892337291501462
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11793,
+      "verify_ms": 4031,
+      "process_peak_rss_bytes": 801882112,
+      "shape": "transfer_1in_2out",
+      "iteration": 2,
+      "wall_seconds": 15.847345958463848
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11830,
+      "verify_ms": 4077,
+      "process_peak_rss_bytes": 801849344,
+      "shape": "transfer_1in_2out",
+      "iteration": 3,
+      "wall_seconds": 15.930141584016383
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 17199,
+      "verify_ms": 5879,
+      "process_peak_rss_bytes": 802013184,
+      "shape": "transfer_2in_2out",
+      "iteration": 1,
+      "wall_seconds": 23.100300583988428
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 16714,
+      "verify_ms": 5896,
+      "process_peak_rss_bytes": 802127872,
+      "shape": "transfer_2in_2out",
+      "iteration": 2,
+      "wall_seconds": 22.63299437519163
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 16889,
+      "verify_ms": 6029,
+      "process_peak_rss_bytes": 802029568,
+      "shape": "transfer_2in_2out",
+      "iteration": 3,
+      "wall_seconds": 22.94060125015676
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 26355,
+      "verify_ms": 9350,
+      "process_peak_rss_bytes": 802127872,
+      "shape": "transfer_4in_2out",
+      "iteration": 1,
+      "wall_seconds": 35.72800708375871
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 26500,
+      "verify_ms": 9462,
+      "process_peak_rss_bytes": 802177024,
+      "shape": "transfer_4in_2out",
+      "iteration": 2,
+      "wall_seconds": 35.984647708944976
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 26935,
+      "verify_ms": 9378,
+      "process_peak_rss_bytes": 801914880,
+      "shape": "transfer_4in_2out",
+      "iteration": 3,
+      "wall_seconds": 36.33594112470746
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 4980,
+      "verify_ms": 1832,
+      "process_peak_rss_bytes": 801849344,
+      "shape": "unshield",
+      "iteration": 1,
+      "wall_seconds": 6.836518375203013
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 5034,
+      "verify_ms": 1777,
+      "process_peak_rss_bytes": 801783808,
+      "shape": "unshield",
+      "iteration": 2,
+      "wall_seconds": 6.833505291491747
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 5023,
+      "verify_ms": 1802,
+      "process_peak_rss_bytes": 801964032,
+      "shape": "unshield",
+      "iteration": 3,
+      "wall_seconds": 6.847387374378741
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 33013,
+      "verify_ms": 11527,
+      "process_peak_rss_bytes": 804061184,
+      "shape": "block_8proofs",
+      "iteration": 1,
+      "wall_seconds": 44.563022791408
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 33590,
+      "verify_ms": 11819,
+      "process_peak_rss_bytes": 804225024,
+      "shape": "block_8proofs",
+      "iteration": 2,
+      "wall_seconds": 45.43243870791048
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 33710,
+      "verify_ms": 11868,
+      "process_peak_rss_bytes": 804077568,
+      "shape": "block_8proofs",
+      "iteration": 3,
+      "wall_seconds": 45.60284962505102
+    }
+  ],
+  "summary": {
+    "shield": {
+      "prove_ms": {
+        "p50": 3546,
+        "p95": 3555,
+        "max": 3555
+      },
+      "verify_ms": {
+        "p50": 1058,
+        "p95": 1137,
+        "max": 1137
+      },
+      "process_peak_rss_bytes": {
+        "p50": 570015744,
+        "p95": 570114048,
+        "max": 570114048
+      },
+      "qualified": true
+    },
+    "transfer_1in_2out": {
+      "prove_ms": {
+        "p50": 11830,
+        "p95": 11834,
+        "max": 11834
+      },
+      "verify_ms": {
+        "p50": 4035,
+        "p95": 4077,
+        "max": 4077
+      },
+      "process_peak_rss_bytes": {
+        "p50": 801849344,
+        "p95": 801882112,
+        "max": 801882112
+      },
+      "qualified": true
+    },
+    "transfer_2in_2out": {
+      "prove_ms": {
+        "p50": 16889,
+        "p95": 17199,
+        "max": 17199
+      },
+      "verify_ms": {
+        "p50": 5896,
+        "p95": 6029,
+        "max": 6029
+      },
+      "process_peak_rss_bytes": {
+        "p50": 802029568,
+        "p95": 802127872,
+        "max": 802127872
+      },
+      "qualified": true
+    },
+    "transfer_4in_2out": {
+      "prove_ms": {
+        "p50": 26500,
+        "p95": 26935,
+        "max": 26935
+      },
+      "verify_ms": {
+        "p50": 9378,
+        "p95": 9462,
+        "max": 9462
+      },
+      "process_peak_rss_bytes": {
+        "p50": 802127872,
+        "p95": 802177024,
+        "max": 802177024
+      },
+      "qualified": true
+    },
+    "unshield": {
+      "prove_ms": {
+        "p50": 5023,
+        "p95": 5034,
+        "max": 5034
+      },
+      "verify_ms": {
+        "p50": 1802,
+        "p95": 1832,
+        "max": 1832
+      },
+      "process_peak_rss_bytes": {
+        "p50": 801849344,
+        "p95": 801964032,
+        "max": 801964032
+      },
+      "qualified": true
+    },
+    "block_8proofs": {
+      "prove_ms": {
+        "p50": 33590,
+        "p95": 33710,
+        "max": 33710
+      },
+      "verify_ms": {
+        "p50": 11819,
+        "p95": 11868,
+        "max": 11868
+      },
+      "process_peak_rss_bytes": {
+        "p50": 804077568,
+        "p95": 804225024,
+        "max": 804225024
+      },
+      "qualified": true
+    }
+  },
+  "qualified": true,
+  "budget_policy": "initial-desktop-v2; proof component only; explicit overrides in budgets",
+  "cpu_model": "Apple M4 Max"
+}

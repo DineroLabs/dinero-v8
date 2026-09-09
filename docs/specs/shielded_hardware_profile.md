@@ -94,3 +94,14 @@ heights are unchanged. The qualifier records the CPU model on new runs and
 reports the failing shape and limits explicitly. Earlier 20-second measurements
 remain historical evidence under their original budget. This revision does not
 certify every four-core machine; measured loaded behavior selects actual hosts.
+
+## Final runtime candidate on this Mac
+
+A fresh 18-process run of runtime `e79295a8b` under the v2 qualifier passes
+on Apple M4 Max. Maximum normal transfer construction/verification was
+11.834/4.077 seconds; maximum eight-proof block verification was 11.868 seconds;
+peak process RSS was 804,225,024 bytes (767 MiB). The
+[complete report](../audits/SHIELDED_RESOURCE_QUALIFICATION_E792_MACOS.json)
+records the test-binary hash and separates its source revision from the harness.
+Other development tests were running, but this is not a controlled representative
+production-load or minimum-machine qualification.
