@@ -1,0 +1,100 @@
+{
+  "integration_branch": "codex/shielded-integration",
+  "code_commit": "9b32673b3676cfe2b87bbba28b0f3b9813f32a41",
+  "base_commit": "8f2604c10764bb71b8e2d1424d48abe8f72deb70",
+  "authority_snapshot": "d1c4df999914e74f7dd40899ba88eca9cdceb400",
+  "gates_tip": "0e80be4af34f70e597b367ec85b2e0924ab737ac",
+  "platform": "macOS arm64, Apple clang 17, Release development build with system OpenSSL",
+  "daemon_sha256": "dd855f62c65c374e90449a8bb2dacbd304da4243c655c5874c69887e5028ec1c",
+  "all_target_build": "passed",
+  "registered_ctest_tests": 572,
+  "focused_ctest": {
+    "passed": 44,
+    "failed": 0,
+    "elapsed_seconds": 52.83,
+    "tests": [
+      "QtShieldedRpcStatus",
+      "RealignShieldedAfterHeal",
+      "ShieldedReindexEquivalence",
+      "ShieldedEmptyRangeProofInflation",
+      "ShieldedGeneratorFailClosed",
+      "ShieldedSerializationOOM",
+      "ShieldedPoolRoundTrip",
+      "ShieldedAdversarialHardening",
+      "BlockValidationInvariants",
+      "ShieldedSerialization",
+      "ShieldedEpochReset",
+      "ShieldedVectorsMatchGolden",
+      "ShieldedVectorsGenerate",
+      "StateCommitmentTransitions",
+      "StateCommitmentExternalVectors",
+      "StateCommitmentCanonical",
+      "StateCommitmentEncoding",
+      "ShieldedRoot",
+      "ShieldedBlockSectionStatelessReplayDecision",
+      "ShieldedBlockSection",
+      "ShieldedBlockSectionDeltaParity",
+      "ShieldedCircuit",
+      "ShieldedValidation",
+      "ShieldedCvBinding",
+      "ShieldedProverKit",
+      "ShieldedValidationContext",
+      "D3ShieldedReverseApply",
+      "ShieldedV030Vectors",
+      "ShieldedNoteStoreRollback",
+      "ShieldedDerivation",
+      "ShieldedOutgoingView",
+      "ShieldedProtocolExternalVectors",
+      "ShieldedProtocolOracle",
+      "ShieldedOutputFeed",
+      "ShieldedWitness",
+      "AssumeUtxoReplay",
+      "ChainParamsSelection",
+      "CovenantSystemLifecycle",
+      "DownloadCoordinationVerification",
+      "TxRelayG3Verification",
+      "StructuralValidationVerification",
+      "WalletMainnetReadiness_ShieldedViewingAuthorityClearedOnUnload",
+      "ShieldedResourceLimits",
+      "SnapshotFormatPolicy"
+    ]
+  },
+  "epoch_undo_regression": {
+    "before": "failed",
+    "after": "passed",
+    "unit_suite_tests_passed": 10,
+    "legacy_v1_undo_reader": "passed",
+    "daemon_boundary_before": "failed reconnect at height 113, anchors_bytes=3572",
+    "daemon_boundary_after": "passed including pre-reorg restart, cross-reset reconnect, restart and reindex",
+    "after_seconds": 56.02
+  },
+  "lifecycle_tests": {
+    "ShieldedOutgoingRecoveryLifecycle": {
+      "result": "passed",
+      "seconds": 42.65
+    },
+    "ShieldedEpochResetBoundary": {
+      "result": "passed",
+      "seconds": 56.02
+    },
+    "ShieldedAuthRelayLifecycle": {
+      "result": "passed",
+      "seconds": 123.96
+    }
+  },
+  "limitations": [
+    "Not a full 572-test execution",
+    "Not cross-platform or packaged release qualification",
+    "Legacy undo records cannot acquire previously omitted eviction history without reconstruction",
+    "Dedicated v5 binding oracle and forged-snapshot loader mutation coverage remains open",
+    "No production activation or deployment"
+  ],
+  "evidence_log_sha256": {
+    "build-reorg-fix.log": "0c5fc5eb3e6c08ee947b81bc1a765acc6d2705448b99931968350accd4333a42",
+    "focused-final.log": "294ad47d2422c8fbfc9a5cd93320d705c2783fb2af74dec35bc11048bfb2b207",
+    "lifecycles-final.log": "d6f675dbf683bc3c4821a04a5fb2e97f86da1516d8dc7b913028d602007c9bb3",
+    "reorg-regression-red.log": "77e131456b4dace997a09f6cee8232cb13ea61c226bb63d2e2a0b3c8b4fd3790",
+    "reorg-regression-green.log": "e4331da7df93df804a844ddefba002751a15d57a77b6c6157f377828af8b963e",
+    "epoch-boundary-before.log": "acdd7bfaee025f9b3beb73de4ae5d2a293af741ea20d8665b8314ba6aab4892a"
+  }
+}

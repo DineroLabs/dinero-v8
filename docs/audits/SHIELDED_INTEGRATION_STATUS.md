@@ -1,6 +1,6 @@
 # Shielded integration status — 2026-09-09
 
-This is the entry point for the combined shielded work. It distinguishes code that exists from verification and activation. The integration worktree is `dinero-v8-shielded-integration`, branch `codex/shielded-integration`. Original contributor worktrees are preserved.
+This is the entry point for the combined shielded work. It distinguishes code that exists from verification and activation. The integration worktree is `dinero-v8-shielded-integration`, branch `codex/shielded-integration`. Original contributor worktrees are preserved. The combined branch is now [published on GitHub](https://github.com/DineroLabs/dinero-v8/tree/codex/shielded-integration); it is not merged to main.
 
 ## What is already on GitHub
 
@@ -45,7 +45,7 @@ Before integration, the recipient-authority work passed its Release two-node rel
 
 Gate E's local CTest files show the AssumeUtxoReplay failure followed by a passing rerun. The supplied reports and rolling local log files do not establish one final all-green sweep for the exact combined tree.
 
-Integration verification is recorded below when complete.
+The complete Release all-target build passes. All 44 focused CTest suites pass on the fixed build (52.83 seconds). The outgoing-recovery lifecycle passes (42.65 seconds), and the previously failing epoch-reset boundary passes (56.02 seconds), including persisted undo after restart, cross-reset reconnect and reindex. The two-node Auth relay/mining/restart/reorg/final-recipient-spend lifecycle passes (123.96 seconds). All three daemon lifecycles pass. These are 44 focused tests plus three lifecycle tests, not a claim that all 572 registered tests were executed. This is a local macOS Release development build with system OpenSSL, not a packaged release qualification. Exact source and daemon identity and test names are recorded in [the verification manifest](SHIELDED_INTEGRATION_VERIFICATION.json). The clean Release configuration registers 572 tests. Source inspection confirms that both Auth resource checks and DNRS checks survived in live block validation and reindex. All six overlapping files were reviewed: chain parameters/header, block validation, reindex, daemon options and test CMake registration. The first clean all-target build exposed missing `gtest_main` dependencies in standalone test targets using archive-path links. The integration fixes all seven instances of that pattern, including the shielded replay and delta-parity targets. This is a pre-existing build-order defect exposed by the fresh build, not a consensus failure. The all-target build also exposed a new outgoing-recovery library-boundary defect: standalone shielded pool/adversarial binaries could not resolve the envelope helpers. Those pure helpers now live in `dinero_shielded` beside `shielded_wallet_ops`, rather than only in `dinero_wallet`, eliminating the missing dependency without duplicate implementations. An inventory of all registered worktrees found no other uncommitted files with shielded/snapshot/state-commitment names outside the captured recipient-authority worktree.
 
 The following are still open, regardless of successful integration tests:
 
@@ -53,6 +53,16 @@ The following are still open, regardless of successful integration tests:
 2. External-miner `getblocktemplate` DNRS support and coordinator TODO path completion before non-regtest state-commitment activation. The internal mining paths are implemented; fail-closed rejection alone does not make external mining ready.
 3. Independent cryptographic/protocol review; target-device memory/latency qualification (the measured proof process peaks around 802 MB); physical hardware-wallet firmware support and validation. A host mock is not a device implementation.
 4. Cross-platform/release CI, deployment compatibility plan, and separately reviewed activation decisions.
-5. Known convergence investigations [#709](https://github.com/DineroLabs/dinero-v8/issues/709) and [#717](https://github.com/DineroLabs/dinero-v8/issues/717) remain separate. Passing a rerun does not close them.
+5. Convergence investigations remain separate: [#717](https://github.com/DineroLabs/dinero-v8/issues/717) is open; [#709](https://github.com/DineroLabs/dinero-v8/issues/709) is marked closed on GitHub, but its latest comment explicitly rejects treating post-#712 green runs as proof of resolution. No root-cause resolution was found in those comments. Passing a rerun does not establish a fix.
 
 This is an integrated development candidate, not a production activation or release sign-off.
+
+## Reconnect/root mismatch investigation
+
+Claude's report is valid, not a resolved old finding. On the combined tree before the fix, `ShieldedEpochResetBoundary` reproduces a rejection at height 113 after invalidating below the reset at 115 and reconsidering. The committed root differs from the recomputed root; the diagnostic reports `anchors_bytes=3572` (99 entries rather than the 100-entry window).
+
+A minimal unit test reproduces this without mining, proof generation or peer timing: populate beyond the anchor-window depth, capture/reset/restore, roll back two more heights and reconnect one. The restored history differs from an independent never-reset history. `CaptureShieldedEpoch` stored only `SerializeBytes()` (active window); the eviction journal was dropped. Crossing the reset restored the visible window but could not refill it on further rollback. The same capture/restore code exists on `origin/dinero-main`: Gate E exposes an existing state-restoration defect through newly enforced DNRS equality.
+
+Fix commit `9b32673b3` captures the existing full persistence envelope and restores through its backward-compatible reader. Consensus root serialization remains the original active-window representation. A second test pins legacy-v1 undo readability. Both pass in the 10-test epoch-reset unit suite; the regression was demonstrated red before the fix. The boundary lifecycle now restarts before disconnect to exercise persisted undo. Old records that never stored the eviction journal cannot recover that absent information merely by upgrading; regenerating such historical undo through replay/reindex is a separate operational prerequisite if those deep cross-reset rollbacks must be supported. The fix protects newly captured undo; it does not claim retroactive repair of already lossy records.
+
+Current GitHub checks confirm all three main workflows green at `8f2604c10`; #707, #717 and #718 remain open. This evidence concerns main, not Gate E or this integration. The report that no gates branch was pushed is superseded by the published integration branch, which contains the eight Gate E commits.
