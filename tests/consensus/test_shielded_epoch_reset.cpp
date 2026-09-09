@@ -175,6 +175,45 @@ TEST(ShieldedEpochReset, CaptureRestoreRoundTripReconstructsOldEpoch) {
     EXPECT_EQ(nullifiers.SerializeContent(), nf_content_before);
 }
 
+// A reset undo must preserve the eviction journal, not just the currently
+// accepted roots: disconnecting further below the cutover needs those roots.
+TEST(ShieldedEpochReset, RestoreThenDeeperDisconnectMatchesNeverResetHistory) {
+    CommitmentTree tree;
+    AnchorHistory anchors;
+    AnchorHistory control;
+    NullifierSet nullifiers;
+    ASSERT_EQ(nullifiers.Open(":memory:"), NullifierSet::OpenResult::Ok);
+    const uint32_t tip = static_cast<uint32_t>(AnchorHistory::kDepth) + 20;
+    for (uint32_t height = 1; height <= tip; ++height) {
+        anchors.RecordRoot(height, MakeHash(static_cast<uint8_t>(height)));
+        if (height <= tip - 2) {
+            control.RecordRoot(height, MakeHash(static_cast<uint8_t>(height)));
+        }
+    }
+    const auto snapshot = CaptureShieldedEpoch(tree, anchors, nullifiers);
+    ResetShieldedEpoch(tree, anchors, nullifiers);
+    ASSERT_TRUE(RestoreShieldedEpoch(snapshot, tree, anchors, nullifiers));
+    anchors.RollbackAbove(tip - 2);
+    EXPECT_EQ(anchors.SerializeBytes(), control.SerializeBytes());
+    anchors.RecordRoot(tip - 1, MakeHash(static_cast<uint8_t>(tip - 1)));
+    control.RecordRoot(tip - 1, MakeHash(static_cast<uint8_t>(tip - 1)));
+    EXPECT_EQ(anchors.SerializeBytes(), control.SerializeBytes())
+        << "reconnecting the same block must reproduce the same committed anchors";
+}
+
+TEST(ShieldedEpochReset, RestoreAcceptsLegacyActiveWindowSnapshot) {
+    CommitmentTree tree;
+    AnchorHistory anchors;
+    NullifierSet nullifiers;
+    ASSERT_EQ(nullifiers.Open(":memory:"), NullifierSet::OpenResult::Ok);
+    anchors.RecordRoot(7, MakeHash(7));
+    ShieldedEpochSnapshot legacy{tree.SerializeFrontier(), anchors.SerializeBytes(),
+                                 nullifiers.SerializeContent()};
+    ResetShieldedEpoch(tree, anchors, nullifiers);
+    ASSERT_TRUE(RestoreShieldedEpoch(legacy, tree, anchors, nullifiers));
+    EXPECT_EQ(anchors.SerializeBytes(), legacy.anchor_history);
+}
+
 // DeserializeContent must reject a corrupt payload (wrong tag) and leave the set
 // empty rather than half-populated — a partial restore would silently diverge.
 TEST(ShieldedEpochReset, NullifierDeserializeRejectsCorruptPayload) {

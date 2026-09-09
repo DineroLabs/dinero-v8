@@ -135,7 +135,7 @@ public:
      * SerializeBytes(), this includes the bounded eviction journal required to
      * restore a full anchor window after restart + disconnect.  Keeping this
      * separate preserves the historical v1 bytes consumed by DSR2 consensus
-     * state fingerprints and epoch snapshots.
+     * state fingerprints. Epoch undo uses this full persistence envelope.
      *
      * DeserializePersistenceBytes accepts both legacy v1 SerializeBytes()
      * payloads and the v2 envelope, providing an in-place migration on the

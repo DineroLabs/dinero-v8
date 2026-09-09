@@ -19,7 +19,7 @@ namespace shielded {
 // carrying the whole nullifier list here is cheap.
 struct ShieldedEpochSnapshot {
     std::vector<uint8_t> tree_frontier;   // CommitmentTree::SerializeFrontier
-    std::vector<uint8_t> anchor_history;  // AnchorHistory::SerializeBytes
+    std::vector<uint8_t> anchor_history;  // AnchorHistory::SerializePersistenceBytes (legacy v1 accepted)
     std::vector<uint8_t> nullifiers;      // NullifierSet::SerializeContent
 };
 
