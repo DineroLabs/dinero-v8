@@ -20,6 +20,7 @@
 #include "daemon/services/wallet_service.h"
 #include "dinero/daemon/execution_context.h"
 #include "consensus/chainparams.h"
+#include "consensus/shielded/wallet_activation.h"
 #include "consensus/pq/p2mr_consensus.h"
 #include "primitives/transaction.h"
 #include "wallet/canonical_wallet_utxo.h"
@@ -148,32 +149,18 @@ WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool requir
 // Mainnet lockout for the FUND-MOVING shielded RPCs, pending the
 // spend-authority activation height.
 //
-// The shielded pool is live on mainnet (shielded_activation_height = 8650), so
-// these calls work today. But a note sent to ANOTHER party's address is
-// committed to a key the SENDER derives, leaving the sender able to spend it
-// back. The circuit that closes this shipped dormant
-// (shielded_spend_auth_activation_height = UINT32_MAX on every network) and
-// activation additionally needs a paired epoch reset.
-//
-// MAINNET ONLY, deliberately. regtest and testnet are untouched: the shielded
-// integration suite drives these exact RPCs on regtest, and gating them
-// everywhere would disable the tests that protect this subsystem.
-//
-// READ-ONLY methods are NOT gated. wallet.shieldedbalance, wallet.listshielded
-// and wallet.getshieldedaddress neither move value nor create a spendable
-// note; blocking them would hide a user's existing balance and look like data
-// loss. Only shield / unshield / transfer are refused.
-//
-// The mainnet pool is empty (shielded_tree_size = 0), so nothing is stranded.
-// Remove this once an activation height is set and the wallet side is
-// complete — the Qt lockout (kShieldedUiLockedOut) should be lifted with it.
-bool RejectIfShieldedSpendLocked(Json& err) {
-    if (GetActiveChain() == Chain::MAINNET) {
-        err["error"]         = "shielded_spend_locked";
-        err["error_message"] =
-            "shielded shield/unshield/transfer are temporarily unavailable on "
-            "mainnet: the spend-authority fix is not yet activated. Balance "
-            "and address queries still work.";
+// Production fund-moving RPCs wait for the committed Auth epoch. Read-only
+// balance/address calls remain available. The same decision is published to Qt.
+bool RejectIfShieldedSpendLocked(const ExecutionContext& ctx, Json& err) {
+    if (GetActiveChain() == Chain::REGTEST) return false;
+    auto cs = ctx.daemon ? std::dynamic_pointer_cast<dinero::ChainstateService>(
+                              ctx.daemon->chainstate) : nullptr;
+    const auto& params = Params();
+    if (!cs || !dinero::consensus::shielded::WalletAuthEpochReady(
+                   cs->getBlockHeight(), params.shielded_spend_auth_activation_height,
+                   params.shielded_spend_auth_epoch_reset_height)) {
+        err["error"] = "shielded_spend_locked";
+        err["error_message"] = "Shielded payments await the confirmed spend-authority activation block.";
         return true;
     }
     return false;
@@ -265,7 +252,7 @@ void StoreCachedShieldedAddress(WalletManager& wm,
 Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
-    if (RejectIfShieldedSpendLocked(result)) return result;
+    if (RejectIfShieldedSpendLocked(ctx, result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -692,7 +679,7 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
 Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
-    if (RejectIfShieldedSpendLocked(result)) return result;
+    if (RejectIfShieldedSpendLocked(ctx, result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -899,7 +886,7 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
 Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
-    if (RejectIfShieldedSpendLocked(result)) return result;
+    if (RejectIfShieldedSpendLocked(ctx, result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -1412,6 +1399,13 @@ Json rpc_wallet_shieldedbalance(const ExecutionContext& ctx, const Json& params)
             ++pending_count;
         }
     }
+
+    Json spend_status;
+    const bool spend_locked = RejectIfShieldedSpendLocked(ctx, spend_status);
+    result["spend_enabled"] = !spend_locked;
+    result["spend_activation_height"] = static_cast<uint64_t>(Params().shielded_spend_auth_activation_height);
+    result["private_covenants_enabled"] = false;
+    if (spend_locked) result["spend_disabled_reason"] = spend_status["error_message"];
 
     result["balance_una"]  = static_cast<int64_t>(bal);
     result["balance_din"]  = static_cast<double>(bal) / 1e8;

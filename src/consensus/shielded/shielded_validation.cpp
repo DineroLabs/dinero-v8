@@ -1,3 +1,4 @@
+#include "consensus/shielded/private_covenant.h"
 /**
  * Shielded pool consensus validation + state application.
  * See include/consensus/shielded/shielded_validation.h.
@@ -35,7 +36,7 @@ struct HashHasher {
     }
 };
 
-bool VerifySpendProof(const ShieldedSpend& spend, const ValidationContext& ctx) {
+bool VerifySpendProof(const ShieldedSpend& spend, const ShieldedBundle& bundle, const ValidationContext& ctx) {
     // CONFIRMED-CRIT-05: blocks at/above the binding-activation height require the
     // public-input-bound proof rule; older blocks use the pre-fix unbound rule.
     const bool bind = ctx.block_height >= ctx.shielded_input_binding_activation_height;
@@ -50,10 +51,21 @@ bool VerifySpendProof(const ShieldedSpend& spend, const ValidationContext& ctx) 
     const bool spend_auth =
         ctx.shielded_spend_auth_activation_height != UINT32_MAX &&
         ctx.block_height >= ctx.shielded_spend_auth_activation_height;
-    const SpendPublicInputs pub{spend.nullifier, spend.anchor, spend.cv};
+    SpendPublicInputs pub{spend.nullifier, spend.anchor, spend.cv};
+    const bool covenant = !spend.zk_proof.empty() && spend.zk_proof[0] == kPrivateCovenantProofVersion;
+    if (covenant) {
+        const auto minimum = PrivateCovenantProofHeight(spend.zk_proof);
+        if (!spend_auth || !bind || !cv_bound || !ctx.private_covenant_envelope ||
+            ctx.shielded_private_covenant_activation_height == UINT32_MAX ||
+            ctx.block_height < ctx.shielded_private_covenant_activation_height ||
+            !minimum || ctx.block_height < *minimum || bundle.spends.size() != 1 ||
+            bundle.outputs.empty() || bundle.outputs.size() > 2) return false;
+        pub.covenant_outputs = PrivateCovenantOutputRoot(bundle.outputs);
+        pub.covenant_minimum_height = *minimum;
+    }
     return VerifySpend(
         spend.zk_proof, pub, dinero::crypto::GetSecp256k1ContextSignVerify(),
-        bind, cv_bound, spend_auth);
+        bind, cv_bound, spend_auth, covenant);
 }
 
 bool VerifyOutputProof(const ShieldedOutput& output, const ValidationContext& ctx) {
@@ -223,7 +235,7 @@ ShieldedValidationError ValidateShieldedBundle(
 
     // 4. ZK proof verification
     for (const auto& spend : bundle.spends) {
-        if (!VerifySpendProof(spend, ctx)) {
+        if (!VerifySpendProof(spend, bundle, ctx)) {
             return ShieldedValidationError::ProofInvalid;
         }
     }
@@ -253,7 +265,8 @@ ValidationContext BuildShieldedValidationContext(
     const AnchorHistory*         anchor_history,
     uint32_t                     shielded_input_binding_activation_height,
     uint32_t                     shielded_cv_binding_activation_height,
-    uint32_t                     shielded_spend_auth_activation_height) {
+    uint32_t                     shielded_spend_auth_activation_height,
+    uint32_t                     shielded_private_covenant_activation_height) {
     ValidationContext ctx(
         nullifier_set,
         commitment_tree,
@@ -268,6 +281,8 @@ ValidationContext BuildShieldedValidationContext(
     ctx.shielded_cv_binding_activation_height = shielded_cv_binding_activation_height;
     ctx.shielded_spend_auth_activation_height =
         shielded_spend_auth_activation_height;
+    ctx.shielded_private_covenant_activation_height = shielded_private_covenant_activation_height;
+    ctx.private_covenant_envelope = tx.vin.empty() && tx.vout.empty() && tx.has_explicit_fee;
     return ctx;
 }
 

@@ -13,6 +13,9 @@
 #include <gtest/gtest.h>
 
 #include "consensus/shielded/commitment_tree.h"
+#include "consensus/shielded/private_covenant.h"
+#include "consensus/shielded/bundle_builder.h"
+#include "consensus/shielded/shielded_validation.h"
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/pedersen_commit.h"
 #include "consensus/shielded/pedersen_generators.h"
@@ -449,6 +452,107 @@ struct AuthFixture {
         ASSERT_EQ(PedersenCommit(witness.rcv, 123'456'789ULL, pub.cv), PedersenResult::Ok);
     }
 };
+
+// This profile is not accepted by the transaction validator yet. These tests
+// establish the proof-level commitment before wiring wallet and consensus.
+TEST(ShieldedPrivateCovenantTest, CommitsRulesAndRejectsOrdinarySpendBypass) {
+    AuthFixture fx;
+    fx.Build();
+    ShieldedOutput first{}, second{};
+    first.commitment = MakeHash(1); first.encrypted_note = {1, 2, 3};
+    second.commitment = MakeHash(2); second.encrypted_note = {4, 5, 6};
+    fx.pub.covenant_outputs = PrivateCovenantOutputRoot({first, second});
+    fx.pub.covenant_minimum_height = 120000;
+    const Hash ownership = AuthRecipientCommitmentKey(
+        fx.key.pk_d, PoseidonHash2(fx.nullifier_key, NullifierKeyTag()));
+    const auto locked_key = PrivateCovenantOwnershipKey(
+        ownership, fx.pub.covenant_outputs, fx.pub.covenant_minimum_height);
+    const auto cm = NoteCommitment(fx.d, locked_key, fx.value, fx.randomness);
+    const auto index = fx.tree.Append(cm);
+    fx.witness.leaf_index = index;
+    fx.witness.merkle_path = fx.tree.GetAuthPath(index)->siblings;
+    fx.pub.anchor = fx.tree.Root();
+    fx.pub.nullifier = ComputeNullifier(fx.nullifier_key, index);
+    ASSERT_TRUE(BuildSpendCircuit(fx.witness, fx.pub, true, true, true).is_satisfied());
+    EXPECT_FALSE(BuildSpendCircuit(fx.witness, fx.pub, true, true, false).is_satisfied());
+    auto proof = ProveSpend(fx.witness, fx.pub, nullptr, true, true, true, true);
+    ASSERT_FALSE(proof.empty());
+    EXPECT_TRUE(VerifySpend(proof, fx.pub, nullptr, true, true, true, true));
+    EXPECT_FALSE(VerifySpend(proof, fx.pub, nullptr, true, true, true, false));
+    auto changed = fx.pub;
+    changed.covenant_outputs = PrivateCovenantOutputRoot({second, first});
+    EXPECT_FALSE(VerifySpend(proof, changed, nullptr, true, true, true, true));
+    changed = fx.pub;
+    first.encrypted_note[0] ^= 1;
+    changed.covenant_outputs = PrivateCovenantOutputRoot({first, second});
+    EXPECT_FALSE(VerifySpend(proof, changed, nullptr, true, true, true, true));
+    changed = fx.pub;
+    --changed.covenant_minimum_height;
+    EXPECT_FALSE(VerifySpend(proof, changed, nullptr, true, true, true, true));
+    EXPECT_TRUE(ProveSpend(fx.witness, fx.pub, nullptr, false, true, true, true).empty());
+}
+
+TEST(ShieldedPrivateCovenantTest, BundleEnforcesActivationMaturityAndCiphertext) {
+    AuthFixture fx;
+    fx.Build();
+    OutputWitness output{};
+    output.value = ValueAsHash(123456000);
+    output.public_key = MakeHash(9); output.randomness = MakeHash(10);
+    output.d = MakeHash(11); output.rcv = MakeHash(12);
+    OutputPublicInputs op{};
+    op.commitment = NoteCommitment(output.d, output.public_key, output.value, output.randomness);
+    ASSERT_EQ(PedersenCommit(output.rcv, 123456000, op.cv), PedersenResult::Ok);
+    PlannedOutput planned_output{};
+    planned_output.commitment = op.commitment;
+    planned_output.value_una = 123456000;
+    planned_output.rcv = output.rcv;
+    planned_output.encrypted_note = {1, 2, 3};
+    planned_output.output_proof = ProveOutput(output, op, nullptr, true, true);
+    planned_output.nonce = MakeHash(13);
+    ASSERT_FALSE(planned_output.output_proof.empty());
+    ShieldedOutput committed_output{};
+    committed_output.commitment = op.commitment;
+    committed_output.encrypted_note = planned_output.encrypted_note;
+    fx.pub.covenant_outputs = PrivateCovenantOutputRoot({committed_output});
+    fx.pub.covenant_minimum_height = 120000;
+    const auto ownership = AuthRecipientCommitmentKey(fx.key.pk_d, PoseidonHash2(fx.nullifier_key, NullifierKeyTag()));
+    const auto locked = PrivateCovenantOwnershipKey(ownership, fx.pub.covenant_outputs, 120000);
+    const auto index = fx.tree.Append(NoteCommitment(fx.d, locked, fx.value, fx.randomness));
+    fx.witness.leaf_index = index;
+    fx.witness.merkle_path = fx.tree.GetAuthPath(index)->siblings;
+    fx.pub.anchor = fx.tree.Root(); fx.pub.nullifier = ComputeNullifier(fx.nullifier_key, index);
+    PlannedSpend spend{};
+    spend.nullifier = fx.pub.nullifier; spend.anchor = fx.pub.anchor;
+    spend.value_una = 123456789; spend.rcv = fx.witness.rcv; spend.nonce = MakeHash(14);
+    spend.spend_proof = ProveSpend(fx.witness, fx.pub, nullptr, true, true, true, true);
+    ASSERT_FALSE(spend.spend_proof.empty());
+    const auto sighash = MakeHash(15);
+    ShieldedBundle bundle;
+    ASSERT_EQ(BuildShieldedBundle({spend}, {planned_output}, sighash, bundle), BundleBuildResult::Ok);
+    ValidationContext context(nullptr, &fx.tree, 120000, -789, 0, nullptr, sighash);
+    context.shielded_input_binding_activation_height = 0;
+    context.shielded_cv_binding_activation_height = 0;
+    context.shielded_spend_auth_activation_height = 0;
+    context.shielded_private_covenant_activation_height = 120000;
+    context.private_covenant_envelope = true;
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::Ok);
+    context.block_height = 119999;
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::ProofInvalid);
+    context.block_height = 120000;
+    context.shielded_private_covenant_activation_height = UINT32_MAX;
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::ProofInvalid);
+    context.shielded_private_covenant_activation_height = 0;
+    context.block_height = 119999; // active protocol, but note is still locked
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::ProofInvalid);
+    context.block_height = 120000;
+    context.private_covenant_envelope = false;
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::ProofInvalid);
+    context.private_covenant_envelope = true;
+    planned_output.encrypted_note[0] ^= 1;
+    // Rebuild the binding signature so the covenant proof must reject this.
+    ASSERT_EQ(BuildShieldedBundle({spend}, {planned_output}, sighash, bundle), BundleBuildResult::Ok);
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::ProofInvalid);
+}
 
 TEST(ShieldedSpendAuthTest, ValidAuthProofVerifies) {
     AuthFixture fx;

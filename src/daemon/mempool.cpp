@@ -2451,7 +2451,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         /*anchor_history=*/nullptr,
         binding_activation,
         dinero::Params().shielded_cv_binding_activation_height,
-        dinero::Params().shielded_spend_auth_activation_height);
+        dinero::Params().shielded_spend_auth_activation_height,
+        dinero::Params().shielded_private_covenant_activation_height);
     const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != consensus::shielded::ShieldedValidationError::Ok) {
         set_reason("shielded validation failed: " +
@@ -3280,7 +3281,8 @@ bool Mempool::validateTransaction(
             /*anchor_history=*/nullptr,
             dinero::Params().shielded_input_binding_activation_height,
             dinero::Params().shielded_cv_binding_activation_height,
-            dinero::Params().shielded_spend_auth_activation_height);
+            dinero::Params().shielded_spend_auth_activation_height,
+        dinero::Params().shielded_private_covenant_activation_height);
         const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
         if (validation != consensus::shielded::ShieldedValidationError::Ok) {
             error = "Shielded validation failed: " +

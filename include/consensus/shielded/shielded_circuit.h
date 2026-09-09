@@ -81,6 +81,10 @@ struct SpendPublicInputs {
     /// `cv_bound` is enabled (post-activation). Ignored by the legacy
     /// (pre-activation) circuit, which leaves it default-zero.
     ValueCommitment cv{};
+    // Experimental private covenant inputs, ignored by historical profiles.
+    Hash covenant_outputs{};
+    uint32_t covenant_minimum_height = 0;
+
 };
 
 /**
@@ -107,13 +111,16 @@ struct SpendPublicInputs {
  *     The circuit also binds the independently nvk-derived nullifier key to
  *     the address commitment, so viewing and spending remain separate roles.
  *
- * DORMANT: no network sets `shielded_spend_auth_activation_height` below
- * UINT32_MAX, so no consensus path passes `spend_auth = true` today.
+ * Mainnet schedules Auth at height 110000. Historical profiles are preserved.
+ * private_covenant adds a distinct 0x07 profile binding an output-template root
+ * and minimum block height into the ownership key and public inputs. Its
+ * transaction gate is independent and dormant on all networks.
  */
 zk::zkvm::R1CS BuildSpendCircuit(const SpendWitness& witness,
                                   const SpendPublicInputs& pub,
                                   bool cv_bound = false,
-                                  bool spend_auth = false);
+                                  bool spend_auth = false,
+                                  bool private_covenant = false);
 
 /**
  * Generate a Spartan proof for a spend.
@@ -126,7 +133,8 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  secp256k1_context_struct* ctx,
                                  bool bind_public_inputs = true,
                                  bool cv_bound = false,
-                                 bool spend_auth = false);
+                                 bool spend_auth = false,
+                                  bool private_covenant = false);
 
 /**
  * Verify a spend proof against public inputs.
@@ -141,7 +149,8 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  secp256k1_context_struct* ctx,
                  bool bind_public_inputs = true,
                  bool cv_bound = false,
-                 bool spend_auth = false);
+                 bool spend_auth = false,
+                                  bool private_covenant = false);
 
 // NOTE: audit-only transcript-desync provers (ProveSpend_AuditDesync /
 // ProveOutput_AuditDesync) used by the public-input-binding regression tests are

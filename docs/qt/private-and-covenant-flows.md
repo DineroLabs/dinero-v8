@@ -1,5 +1,8 @@
 # Private payments and covenant UX
 
+Historical first-patch record. For subsequent navigation, activation and private
+covenant proof work, see [current checkpoint](../activation/shielded-110000-worklog.md).
+
 Status: local implementation on codex/qt-private-contract-flows, based on
 1589bf641. No production activation or consensus changes.
 

@@ -299,35 +299,17 @@ void ShieldedWidget::setupUI() {
     root->addStretch();
 }
 
-// Lockout constant lives in shieldedwidget.h — shared with mainwindow.cpp.
+// Capabilities come from the daemon, never from an address prefix.
 void ShieldedWidget::setActiveBanner(bool active, const QString& reason) {
-    const bool activationLockApplies = !ShieldedTransferPolicy::showFundMovingControls(
-        kShieldedUiLockedOut, hrpFromAddress(currentAddress_));
-    if (activationLockApplies) {
-        shieldedActive_ = false;
-        statusBanner_->setText(
-            "🔒 Shielded transfers are temporarily unavailable  —  "
-            "this feature is being finished and is held closed until its "
-            "activation height is set. Receive addresses still derive locally; "
-            "shield, unshield and private send are disabled.");
-        statusBanner_->setStyleSheet(
-            "QLabel { padding: 8px 12px; border-radius: 6px; background: #3a3f4a; "
-            "color: #d5d9e0; font-weight: 600; }");
-        if (shieldBtn_)   shieldBtn_->setEnabled(false);
-        if (transferBtn_) transferBtn_->setEnabled(false);
-        if (unshieldBtn_) unshieldBtn_->setEnabled(false);
-        if (fundMovingSurface_) fundMovingSurface_->setVisible(false);
-        return;
-    }
     if (fundMovingSurface_) fundMovingSurface_->setVisible(true);
     shieldedActive_ = active;
     if (active) {
-        statusBanner_->setText("✅ Shielded pool ACTIVE on this network");
+        statusBanner_->setText("✅ Private payments enabled by the daemon");
         statusBanner_->setStyleSheet(
             "QLabel { padding: 8px 12px; border-radius: 6px; background: #2d4a32; "
             "color: #b8e0bf; font-weight: 600; }");
     } else {
-        QString msg = "⚠️ Shielded pool not yet active on this network";
+        QString msg = "Private payments unavailable";
         if (!reason.isEmpty()) msg += "  —  " + reason;
         msg += "  —  receive addresses still derive locally; shield/unshield/send await activation.";
         statusBanner_->setText(msg);
@@ -353,6 +335,7 @@ void ShieldedWidget::setWalletScope(const QString& walletName) {
     const QString nextScope = walletName.trimmed();
     if (walletScope_ == nextScope) return;
 
+    setActiveBanner(false, "Waiting for wallet activation status");
     walletScope_ = nextScope;
     transferSubmitting_ = false;
     shieldSubmitting_ = false;
@@ -595,7 +578,7 @@ void ShieldedWidget::onShieldClicked() {
     // Defence in depth for the lockout above. Disabling the buttons is what a
     // user hits; this is what a future refactor hits if it wires another
     // trigger to this slot.
-    if (kShieldedUiLockedOut && hrpFromAddress(currentAddress_) != "rdins") return;
+    if (!shieldedActive_) return;
     if (shieldJournalStage_ == "accepted") {
         clearOperationJournal("shield");
         shieldAmountEdit_->clear();
@@ -644,7 +627,7 @@ void ShieldedWidget::onTransferClicked() {
     // Defence in depth for the lockout above. Disabling the buttons is what a
     // user hits; this is what a future refactor hits if it wires another
     // trigger to this slot.
-    if (kShieldedUiLockedOut && hrpFromAddress(currentAddress_) != "rdins") return;
+    if (!shieldedActive_) return;
     if (transferJournalStage_ == "accepted") {
         clearTransferJournal();
         transferAddressEdit_->clear();
@@ -714,7 +697,7 @@ void ShieldedWidget::onUnshieldClicked() {
     // Defence in depth for the lockout above. Disabling the buttons is what a
     // user hits; this is what a future refactor hits if it wires another
     // trigger to this slot.
-    if (kShieldedUiLockedOut && hrpFromAddress(currentAddress_) != "rdins") return;
+    if (!shieldedActive_) return;
     if (unshieldJournalStage_ == "accepted") {
         clearOperationJournal("unshield");
         unshieldAmountEdit_->clear();
@@ -789,9 +772,7 @@ void ShieldedWidget::updateReceiveAddress(const QJsonValue& result) {
         recordIssuedAddress(static_cast<uint64_t>(j), currentAddress_);
     }
     applyActiveHrp();
-    if (hrpFromAddress(currentAddress_) == "rdins") {
-        setActiveBanner(true);
-    }
+
 }
 
 void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result) {
@@ -835,11 +816,11 @@ void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result
     }
 
     if (method == "wallet.shieldedbalance") {
-        if (innerError == "shielded_not_active") {
-            setActiveBanner(false, "chainparams.shielded_activation_height = UINT32_MAX");
-            return;
-        }
-        setActiveBanner(true);
+        const auto status = result.toObject();
+        const bool allowed = ShieldedTransferPolicy::daemonAllowsSpending(status);
+        setActiveBanner(allowed, innerError.isEmpty()
+            ? status.value("spend_disabled_reason").toString("Daemon has not enabled private payments")
+            : innerError);
         if (innerError.isEmpty()) updateBalanceLabels(result);
         return;
     }

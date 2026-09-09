@@ -118,17 +118,16 @@ static ChainParams g_mainnet = {
     // it forward. The fork-aware binary MUST be deployed to every fleet node
     // BEFORE height 61000; a node still on an older binary at the cutover splits.
     .shielded_cv_binding_activation_height = 61000,
-    .shielded_spend_auth_epoch_reset_height = UINT32_MAX,
+    // Operator-selected mainnet Auth cutover, 2026-09-09. This is a hard fork:
+    // upgrade all validating nodes before 110000. Historical rules stay intact.
+    .shielded_spend_auth_activation_height = 110000,
+    .shielded_outgoing_recovery_activation_height = 110000,
+    .shielded_spend_auth_epoch_reset_height = 110000,
     .shielded_epoch_reset_height = 61000,
 
-    // Reject a coinbase carrying a shielded bundle, MAINNET. DORMANT — the
-    // activation height has not been chosen yet. It must be set to a height
-    // safely ahead of the tip and every fleet node upgraded before it passes,
-    // because this rule makes an upgraded node reject a block un-upgraded nodes
-    // accept. Leaving it at UINT32_MAX is the safe state: the walk-convergence
-    // fix already makes a coinbase-attached bundle inert on every path, so
-    // there is no urgency in activating.
-    .shielded_coinbase_reject_activation_height = UINT32_MAX,
+    // Reject shielded coinbase bundles at the Auth cutover; coinbase funds
+    // continue to use transparent outputs and their existing maturity rules.
+    .shielded_coinbase_reject_activation_height = 110000,
 
     // state_commitment_v1, MAINNET: DORMANT. No height may be selected until
     // every "Still owed before any activation" gate in
@@ -505,6 +504,7 @@ std::string ConsensusChecksum(const ChainParams& params) {
        << "shielded_epoch_reset_height=" << params.shielded_epoch_reset_height << '\n'
        << "shielded_spend_auth_activation_height=" << params.shielded_spend_auth_activation_height << '\n'
        << "shielded_spend_auth_epoch_reset_height=" << params.shielded_spend_auth_epoch_reset_height << '\n'
+       << "shielded_private_covenant_activation_height=" << params.shielded_private_covenant_activation_height << '\n'
        << "shielded_outgoing_recovery_activation_height=" << params.shielded_outgoing_recovery_activation_height << '\n'
        << "shielded_coinbase_reject_activation_height=" << params.shielded_coinbase_reject_activation_height << '\n'
        << "enforce_witness_commitment="
@@ -649,6 +649,12 @@ static void ValidateChainParams(const ChainParams& params) {
         throw std::runtime_error(
             "invalid chainparams: shielded_spend_auth_epoch_reset_height must "
             "equal shielded_spend_auth_activation_height");
+    }
+
+    if (params.shielded_private_covenant_activation_height != UINT32_MAX &&
+        (params.shielded_spend_auth_activation_height == UINT32_MAX ||
+         params.shielded_private_covenant_activation_height < params.shielded_spend_auth_activation_height)) {
+        throw std::runtime_error("private covenants require spend authority at or before activation");
     }
 
     if (params.shielded_outgoing_recovery_activation_height != UINT32_MAX &&

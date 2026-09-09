@@ -14,37 +14,9 @@
 
 class RpcClient;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// SHIELDED UI LOCKOUT — single source of truth for the whole Qt app.
-//
-// The shielded pool IS live on mainnet (shielded_activation_height = 8650), so
-// these controls would otherwise work. They are held closed on purpose until
-// the spend-authority rollout has an agreed activation height.
-//
-// A note sent to ANOTHER party's address is currently committed to a key the
-// SENDER derives, so the sender retains the ability to spend it back. The
-// circuit closing this shipped dormant (shielded_spend_auth_activation_height
-// = UINT32_MAX everywhere) and activation additionally needs a paired epoch
-// reset. The mainnet pool is empty (shielded_tree_size = 0), so holding the UI
-// closed strands nothing.
-//
-// The daemon independently rejects wallet.shield / wallet.unshield /
-// wallet.transfer on mainnet. This UI gate prevents accidental presentation;
-// neither gate substitutes for the dormant consensus activation.
-//
-// Consumed by BOTH shieldedwidget.cpp (tab controls) and mainwindow.cpp (the
-// Send tab's mode list). Set to false to restore the feature.
-inline constexpr bool kShieldedUiLockedOut = true;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Shielded pool surface — wire-up to the v7 daemon's Phase-5-complete shielded
-// RPCs (wallet.shield, wallet.unshield, wallet.transfer, wallet.shieldedbalance,
-// wallet.listshielded, wallet.getshieldedaddress).
-//
-// On mainnet/testnet the activation gate is currently UINT32_MAX, so all
-// shielded RPCs return `shielded_not_active`. The widget surfaces that state
-// in a banner; on regtest the same widget is fully functional.
-// ─────────────────────────────────────────────────────────────────────────────
+// Private payment controls follow wallet.shieldedbalance.spend_enabled.
+// Missing capabilities, RPC errors and wallet changes fail closed. The daemon
+// independently checks the committed Auth epoch before moving production funds.
 class ShieldedWidget : public QWidget {
     Q_OBJECT
 public:
