@@ -25,15 +25,21 @@ PrivateCovenantWidget::PrivateCovenantWidget(RpcClient* rpc,QWidget* parent):QWi
     intro->setWordWrap(true); layout->addWidget(intro);
     status_=new QLabel("Waiting for network capability"); status_->setWordWrap(true); layout->addWidget(status_);
     auto* form=new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setFormAlignment(Qt::AlignLeft|Qt::AlignTop);
     source_=new QComboBox; source_->addItem("Public balance","public"); source_->addItem("Private balance","private");
     form->addRow("Funding source:",source_);
     owner_=new QLineEdit; owner_->setObjectName("privateCovenantOwner");
     owner_->setPlaceholderText("Your shielded address; its wallet will control the contract");
     form->addRow("Contract owner:",owner_);
     auto* ownAddress=new QPushButton("Use my shielded address");
+    ownAddress->setObjectName("privateCovenantOwnAddress");
     form->addRow(QString(),ownAddress);
+    ownerStatus_=new QLabel; ownerStatus_->setObjectName("privateCovenantOwnerStatus");
+    ownerStatus_->setWordWrap(true); form->addRow(QString(),ownerStatus_);
     connect(ownAddress,&QPushButton::clicked,this,[this]{
-        if(scope_.isEmpty()) return;
+        if(scope_.isEmpty()) { ownerStatus_->setText("Select or load a wallet first."); return; }
+        ownerStatus_->setText("Getting your shielded address…");
         ownerRequestScope_=scope_;
         rpc_->callNamed("wallet.getshieldedaddress",{{"account",0},{"j",0}});
     });
@@ -77,6 +83,9 @@ PrivateCovenantWidget::PrivateCovenantWidget(RpcClient* rpc,QWidget* parent):QWi
     layout->addWidget(contracts_);
     connect(rpc_,&RpcClient::connectionFailed,this,[this](const QString&){ active_=false; updateEnabled(); });
     connect(rpc_,&RpcClient::rpcError,this,[this](const QString& method,int code,const QString& message){
+        if(method=="wallet.getshieldedaddress" && !ownerRequestScope_.isEmpty() && ownerRequestScope_==scope_) {
+            ownerRequestScope_.clear(); ownerStatus_->setText("Could not get your shielded address: "+message);
+        }
         if(method=="wallet.shieldedbalance") { active_=false; updateEnabled(); }
         if(method==pendingMethod_) {
             // A transport/RPC failure is not proof of rejection. Keep the durable
@@ -96,8 +105,10 @@ PrivateCovenantWidget::PrivateCovenantWidget(RpcClient* rpc,QWidget* parent):QWi
     connect(rpc_,&RpcClient::rpcResult,this,[this](const QString& method,const QJsonValue& result){
         if(scope_.isEmpty() && method!=pendingMethod_) return;
         const auto object=result.toObject();
-        if(method=="wallet.getshieldedaddress" && ownerRequestScope_==scope_) {
-            if(!object.value("address").toString().isEmpty()) owner_->setText(object.value("address").toString());
+        if(method=="wallet.getshieldedaddress" && !ownerRequestScope_.isEmpty() && ownerRequestScope_==scope_) {
+            const auto address=object.value("address").toString();
+            if(!address.isEmpty() && (!object.contains("error") || object.value("error").isNull())) { owner_->setText(address); ownerStatus_->setText("Your shielded address is ready."); }
+            else ownerStatus_->setText("Could not get your shielded address: "+object.value("error_message").toString(object.value("error").toString("Daemon returned no address.")));
             ownerRequestScope_.clear();
         } else if(method=="wallet.shieldedbalance") {
             active_=object.value("error").isUndefined() && object.value("private_covenants_enabled").isBool() && object.value("private_covenants_enabled").toBool();
@@ -134,7 +145,7 @@ QString PrivateCovenantWidget::journalKey() const {
 }
 void PrivateCovenantWidget::setWalletScope(const QString& scope) {
     if(scope_==scope) return;
-    scope_=scope; ownerRequestScope_.clear(); active_=false; notes_={}; owner_->clear();
+    scope_=scope; ownerRequestScope_.clear(); active_=false; notes_={}; owner_->clear(); ownerStatus_->clear();
     height_->setValue(0); fee_->setText("0.01000000"); fundingFee_->setText("0.01000000"); source_->setCurrentIndex(0);
     for(int r=0;r<2;++r) for(int c=0;c<2;++c) outputs_->item(r,c)->setText({});
     // Preserve a live operation's original journal even across wallet switches.

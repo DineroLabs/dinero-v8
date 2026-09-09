@@ -4,6 +4,8 @@
 #include <QTcpServer>
 #include <QComboBox>
 #include <QTabWidget>
+#include <QPushButton>
+#include <QLabel>
 #include "mainwindow.h"
 #include "rpcclient.h"
 #include "shieldedwidget.h"
@@ -69,6 +71,26 @@ private Q_SLOTS:
         QCOMPARE(modes->currentData().toString(),QString("public_transfer"));
         QVERIFY(!recipient->isHidden());
         modes->setCurrentIndex(modes->findData("private_contract"));
+        // A startup wallet reply must survive clearing the previous drafts.
+        // Before the fix, clearing after binding silently disabled address lookup.
+        QVERIFY(QMetaObject::invokeMethod(&window,"checkRescanStatus",Qt::DirectConnection));
+        Q_EMIT rpc->rpcResult("wallet.getinfo",QJsonObject{{"wallet_name","alpha"},{"hd_enabled",true},{"locked",true}});
+        auto* ownAddress=window.findChild<QPushButton*>("privateCovenantOwnAddress"); QVERIFY(ownAddress);
+        auto* owner=window.findChild<QLineEdit*>("privateCovenantOwner"); QVERIFY(owner);
+        auto* addressStatus=window.findChild<QLabel*>("privateCovenantOwnerStatus"); QVERIFY(addressStatus);
+        ownAddress->click();
+        Q_EMIT rpc->rpcResult("wallet.getshieldedaddress",QJsonObject{{"address","dins1cachedaddress"}});
+        QCOMPARE(owner->text(),QString("dins1cachedaddress"));
+        QVERIFY(QMetaObject::invokeMethod(&window,"checkRescanStatus",Qt::DirectConnection));
+        Q_EMIT rpc->rpcResult("wallet.getinfo",QJsonObject{{"wallet_name","beta"},{"hd_enabled",true},{"locked",true}});
+        QVERIFY(owner->text().isEmpty());
+        ownAddress->click();
+        Q_EMIT rpc->rpcResult("wallet.getshieldedaddress",QJsonObject{{"error","wallet_locked_receive_cache_miss"},{"error_message","Unlock once to derive your address"}});
+        QVERIFY(owner->text().isEmpty());
+        QVERIFY(addressStatus->text().contains("Unlock once"));
+        ownAddress->click();
+        Q_EMIT rpc->rpcError("wallet.getshieldedaddress",-1,"Connection failed");
+        QVERIFY(addressStatus->text().contains("Connection failed"));
         const QString screenshot = qEnvironmentVariable("DINERO_QT_NAV_SCREENSHOT");
         if (!screenshot.isEmpty()) {
             window.show();

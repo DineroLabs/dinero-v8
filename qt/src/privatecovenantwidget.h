@@ -29,7 +29,7 @@ private:
     QString scope_, pendingMethod_, pendingJournal_, ownerRequestScope_;
     bool active_=false, uncertain_=false;
     QJsonArray notes_;
-    QLabel *status_;
+    QLabel *status_, *ownerStatus_;
     QComboBox *source_;
     QLineEdit *owner_, *fee_, *fundingFee_;
     QSpinBox *height_;

@@ -12775,8 +12775,8 @@ void MainWindow::onWalletCreated(const QString& walletName, const QString& finge
     }
 
     pendingWalletOpenName_.clear();
-    bindWalletScopedState(walletName);
     clearWalletScopedUiState();
+    bindWalletScopedState(walletName);
     refreshWalletMiningAddress();
     updateWalletSwitcherState();
   }
@@ -14208,7 +14208,6 @@ void MainWindow::checkRescanStatus() {
       // SECURITY FIX: Reset unlock state when wallet changes
       // New wallet must be explicitly unlocked - never inherit unlock from previous wallet
       if (walletSwitched) {
-        bindWalletScopedState(currentWalletName_);
         walletUnlocked_ = unlocked;
         unlockSecondsRemaining_ = 0;
         unlockCountdownTimer_->stop();
@@ -14225,8 +14224,9 @@ void MainWindow::checkRescanStatus() {
           btnWalletLock_->setToolTip("Wallet locked. Click to unlock for Taproot signing.");
         }
 
-        // Clear stale data from previous wallet
+        // Clear the old scope before binding the newly reported wallet.
         clearWalletScopedUiState();
+        bindWalletScopedState(currentWalletName_);
         refreshWalletMiningAddress();
         if (currentWalletName_.isEmpty() && changeAddrMgr_) {
           changeAddrMgr_->setWalletIdentityKey(QString());
