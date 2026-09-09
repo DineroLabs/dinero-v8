@@ -1,8 +1,9 @@
 # Shielded candidate hardware profile
 
 This is the initial qualification target, not a claim that unmeasured devices
-are supported. Current measurements are of a proof test process on Apple M4 Max
-(macOS arm64, 128 GiB installed RAM); they do not measure all daemon memory.
+are supported. Measurements cover proof test processes on Apple M4 Max
+(macOS arm64, 128 GiB installed RAM) and an AMD EPYC Linux CI runner; they do
+not measure all daemon memory.
 
 | Role | Initial qualification target | Release acceptance |
 |---|---|---|
@@ -18,6 +19,28 @@ changing them must not alter block validity or silently reject slow proofs.
 The wallet runtime currently serializes operations through its runtime mutex;
 that does not limit simultaneous validation on other threads or processes.
 Do not assume a global one-proof concurrency cap exists.
+
+## Current expanded proof qualification
+
+Both hosts pass 24 fresh processes: five transaction shapes and three
+maximum-count block mixes, each repeated three times. Proof counts alone did
+not establish the expensive mix; eight individual unshields cost more than
+four spends plus four outputs. All three mixes use the same 30-second block
+verification limit, and all shapes use the same 2-GiB proof-process RSS limit.
+
+| Measured host | Balanced 8 proofs | 8 spends | 8 outputs | Peak proof RSS |
+|---|---:|---:|---:|---:|
+| Apple M4 Max (macos, 16 logical CPUs) | 11.658 s | 14.849 s | 8.520 s | 767.0 MiB |
+| AMD EPYC 7763 64-Core Processor (linux, 4 logical CPUs) | 18.863 s | 23.261 s | 14.327 s | 819.5 MiB |
+
+Complete reports: [Mac](../audits/SHIELDED_RESOURCE_MIXES_MACOS.json) and
+[Linux](../audits/SHIELDED_RESOURCE_MIXES_LINUX.json). Fixture/runner source is
+`25fe324732d017e7806bb6e0e09304116c99f6e6`; production code is unchanged from
+verified runtime ce100. Linux uses the recorded PR merge build. The reports
+separate binary and harness identities. These measured cases improve coverage;
+they are not an exhaustive worst-case proof or loaded-fleet qualification.
+The Mac release meta-suite ran concurrently. Earlier reports below retain their
+original, narrower balanced-block scope and are not retroactively relabeled.
 
 ## Reproduce
 
@@ -40,7 +63,7 @@ Repeat with at least 20 samples and representative concurrent node load for
 fleet sign-off. A zero/unsupported RSS measurement does not pass. Windows
 release-build smoke is separate from Windows proof-memory qualification.
 
-## Current local proof measurements
+## Historical initial local proof measurements
 
 Three repetitions per shape, including two distinct 2-in/2-out transactions
 which together consume the eight-proof block limit. All sample processes perform
@@ -58,7 +81,7 @@ Linux CI now runs the same capacity gate. Windows and both macOS architectures
 also run release artifact builds; build success alone is not a proof-capacity
 result. Keep the qualification ledger explicit about this distinction.
 
-## Linux CI proof qualification
+## Historical first Linux CI proof qualification
 
 The four-logical-CPU Ubuntu x86-64 runner also passed all eighteen fresh-process
 measurements ([run 34316707990](https://github.com/DineroLabs/dinero-v8/actions/runs/34316707990)).
@@ -95,7 +118,7 @@ reports the failing shape and limits explicitly. Earlier 20-second measurements
 remain historical evidence under their original budget. This revision does not
 certify every four-core machine; measured loaded behavior selects actual hosts.
 
-## Final runtime candidate on this Mac
+## Historical e792 Mac qualification
 
 A fresh 18-process run of runtime `e79295a8b` under the v2 qualifier passes
 on Apple M4 Max. Maximum normal transfer construction/verification was
@@ -115,4 +138,28 @@ now also measures eight independent one-spend unshields and eight one-output
 shields, with distinct spends/outpoints and explicit count checks. All three
 block mixes use the same 30-second verification limit. The default matrix is
 now eight shapes / 24 fresh processes at three repetitions; older 18-process
-reports retain their narrower coverage. Final mix results are pending.
+reports retain their narrower coverage. Both expanded host runs pass; current measurements are recorded above.
+
+## Verified ce100 Linux runtime
+
+[Run 34331611771](https://github.com/DineroLabs/dinero-v8/actions/runs/34331611771)
+passes all 18 fresh-process samples under desktop-v2 on an AMD EPYC 7763 runner
+allocated four logical CPUs. The PR merge tree is identical to runtime ce100.
+Normal transfer maxima are 25.343 s construction and 6.581 s verification;
+maximum eight-proof block verification is 19.017 s; peak process RSS is
+858,849,280 bytes (819 MiB). The [complete current report](../audits/SHIELDED_RESOURCE_QUALIFICATION_CE100_LINUX.json)
+records source/harness and binary identity. This adds a current Linux proof
+qualification; it does not upgrade the historical Mac run to a newer binary
+or qualify loaded production hosts, mobile proving or physical hardware wallets.
+
+## Fresh ce100 Mac qualification
+
+A separate 18-process run of the current ce100 proof executable also passes
+on Apple M4 Max. Normal transfer maxima are 11.901 s construction
+and 4.025 s verification; maximum eight-proof block verification
+is 11.766 s; peak proof-process RSS is 804,274,176 bytes.
+The [fresh report](../audits/SHIELDED_RESOURCE_QUALIFICATION_CE100_MACOS.json) records
+the new binary hash and separate harness revision. The historical Mac binary
+was different, so its timing run was not reused. The release meta-suite ran
+concurrently; this is development-host evidence, not a controlled fleet-load
+or minimum-memory-machine qualification.

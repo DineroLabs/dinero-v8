@@ -2,6 +2,64 @@
 
 This is the entry point for the combined shielded work. It distinguishes code that exists from verification and activation. Review and release work is tracked in [PR #720](https://github.com/DineroLabs/dinero-v8/pull/720); the existing-main epoch repair is isolated in [PR #719](https://github.com/DineroLabs/dinero-v8/pull/719). The integration worktree is `dinero-v8-shielded-integration`, branch `codex/shielded-integration`. Original contributor worktrees are preserved. The combined branch is now [published on GitHub](https://github.com/DineroLabs/dinero-v8/tree/codex/shielded-integration); it is not merged to main.
 
+## Completion on the verified runtime
+
+The four implementation priorities are complete on runtime
+`ce100c9867c1c410c22e7147d1fb848e4e727a04`. The verification manifest below
+records the exact source tree, local executable, CI merge tree, platform
+artifacts, proof measurements and named-test coverage. A documentation-only
+follow-up records these results; it does not replace the verified binaries.
+All nine workflows also pass on test-only follow-up `25fe32473`, including
+all 515 previously covered CI names and the expanded proof qualification.
+
+1. The existing-main epoch-reset undo repair is merged in **PR #719**.
+2. The combined candidate is built and verified across Linux, Windows and both
+   macOS architectures. Named coverage accounts for all 575 locally registered
+   tests: **574 executed and passed** across current-candidate CI, the local
+   complement, strict IBD and ReleaseSuite. `CsnArchivalMainnetReplay` is an
+   explicit external opt-in soak and was **not executed**. This is distributed
+   coverage, not a claim of one full local sweep. ReleaseSuite ran the optional
+   Phase 2 and restart/churn gates. `ReleaseIdentityFreeze` was not run
+   (`RC_MODE=0`); no production RC is claimed.
+3. Gate D has direct binding tests, six independent forged-snapshot mutations
+   and five controls. DNRS-aware external mining and the supported coordinator
+   are implemented and tested with real solved blocks and post-state equality.
+4. The user-designated cryptographic/consensus review, hardware targets and
+   compatibility/rollout plan are complete for this dormant development
+   candidate. The reviewer also implemented fixes; this is not independent
+   third-party assurance or production activation approval.
+
+The 167,935-byte recipient-plus-change transfer now fits the bounded Auth relay
+and consensus profile. The full recipient-authority relay, mining, restart,
+reorg and recipient-spend lifecycle passes. The strengthened deep-fork scenario
+also passes: all five nodes end at height 3022 with equal hash/work and no
+missing bodies, after competing-fork adoption, return and a new block.
+
+The additional deep-anchor, checkpoint rewind, dropped-header ownership and
+stored-body quarantine repairs are in **PR #720**, not yet on main. These have
+specific reproductions; they do not establish that #709/#717 share a cause.
+Old lossy undo needs replay/reindex to reconstruct absent historical data.
+
+Recommended qualification targets are **4 modern physical cores / 16 GiB RAM /
+SSD for validators**, and **8 cores / 16 GiB for desktop proving wallets**
+(**32 GiB** when sharing an archival node). The expanded 24-process
+qualification passes on both hosts. Linux's slowest
+measured eight-proof mix verifies in 23.261 s, with peak proof-process RSS
+859,324,416 bytes. These results qualify the measured proof process, not every
+minimum-spec machine or whole-node production load.
+
+Still outside this completed implementation: actual fleet qualification and
+canary deployment, pool migration or empty-pool evidence, burial-risk approval,
+and a separately reviewed future activation-height commit. New mainnet/testnet
+DNRS and Auth upgrades remain dormant. No release tag, production deployment
+or network activation was performed.
+
+See [final verification](SHIELDED_INTEGRATION_FINAL_VERIFICATION.json),
+[named-test coverage](SHIELDED_INTEGRATION_FINAL_COVERAGE.json),
+[review](SHIELDED_INTEGRATION_REVIEW.md),
+[hardware profile](../specs/shielded_hardware_profile.md), and
+[rollout plan](../specs/shielded_upgrade_rollout.md).
+
 ## What is already on GitHub
 
 The fetched `origin/dinero-main` is `adb9643477e6ba2190a56ccf141bd6cca2621101`, including the independently landed epoch-undo repair in PR #719. Its 468-test main suite, 22 serial e2e tests, durability and remaining required checks passed before merge.
@@ -39,97 +97,14 @@ The original recipient-authority worktree still shows uncommitted files intentio
 
 “Activation remains disabled” in the recipient-authority report refers to the new upgrade, not the already deployed shielded pool. No production activation height is selected by this integration.
 
-## Verification and remaining work
 
-Before integration, the recipient-authority work passed its Release two-node relay/restart/reorg/recipient-spend lifecycle; 44 validation, 10 outgoing, and 15 prover-kit tests; and focused resource/reindex/P2P tests. Five measured real transaction shapes span 46,373–394,953 bytes. These are component results, not proof of the merged tree. See [resource profile](../specs/shielded_auth_resource_profile.md) and [authority review](SHIELDED_RECIPIENT_AUTHORITY_IMPLEMENTATION_REVIEW.md).
+## Retained earlier evidence
 
-Gate E's local CTest files show the AssumeUtxoReplay failure followed by a passing rerun. The supplied reports and rolling local log files do not establish one final all-green sweep for the exact combined tree.
-
-The complete Release all-target build passes. All 44 focused CTest suites pass on the fixed build (52.83 seconds). The outgoing-recovery lifecycle passes (42.65 seconds), and the previously failing epoch-reset boundary passes (56.02 seconds), including persisted undo after restart, cross-reset reconnect and reindex. The two-node Auth relay/mining/restart/reorg/final-recipient-spend lifecycle passes (123.96 seconds). All three daemon lifecycles pass. These are 44 focused tests plus three lifecycle tests, not a claim that all 572 registered tests were executed. This is a local macOS Release development build with system OpenSSL, not a packaged release qualification. Exact source and daemon identity and test names are recorded in [the verification manifest](SHIELDED_INTEGRATION_VERIFICATION.json). The initial Release configuration registered 572 tests; Gate D adds two, bringing that inventory to 574. StateCommitmentMining subsequently brings the current inventory to 575. Source inspection confirms that both Auth resource checks and DNRS checks survived in live block validation and reindex. All six overlapping files were reviewed: chain parameters/header, block validation, reindex, daemon options and test CMake registration. The first clean all-target build exposed missing `gtest_main` dependencies in standalone test targets using archive-path links. The integration fixes all seven instances of that pattern, including the shielded replay and delta-parity targets. This is a pre-existing build-order defect exposed by the fresh build, not a consensus failure. The all-target build also exposed a new outgoing-recovery library-boundary defect: standalone shielded pool/adversarial binaries could not resolve the envelope helpers. Those pure helpers now live in `dinero_shielded` beside `shielded_wallet_ops`, rather than only in `dinero_wallet`, eliminating the missing dependency without duplicate implementations. An inventory of all registered worktrees found no other uncommitted files with shielded/snapshot/state-commitment names outside the captured recipient-authority worktree.
-
-The current completion ledger (runtime changes through `937819df7ea62a0fd459b21cfaa7a3b07dc45338`):
-
-1. **Gate D:** six independent forged-snapshot mutations and five controls are implemented and locally verified. The staged-import fix prevents rejected snapshots from publishing live state. Review added explicit coinbase-type validation; its regression failed before the change and all seven binding-helper unit tests now pass. See [Gate D evidence](SHIELDED_GATE_D_VERIFICATION.md).
-2. **Mining:** canonical `getblocktemplate` DNRS metadata and immutable template rules are implemented. The supported `mining.getjob`/`mining.submit` coordinator shares the canonical assembler. The reported TODO belonged to an uncompiled obsolete prototype, now retired. `StateCommitmentMining` solves actual external/coordinator blocks, compares post-state roots, tests restart and dormancy, and passes locally.
-3. **Review and hardware:** the user designated Codex as cryptographic/consensus reviewer. Its [implementation-agent review](SHIELDED_INTEGRATION_REVIEW.md) found and fixed the unconstrained Auth address-domain witness, missing snapshot coinbase-type check and incomplete activation checksum telemetry. This is not independent third-party review. The [hardware profile](../specs/shielded_hardware_profile.md) defines measured acceptance budgets and provisional minimum-host targets. Eighteen fresh-process proof measurements passed locally, including maximum eight-proof blocks. Physical hardware wallets and mobile proving remain outside the supported initial scope.
-4. **Verification and rollout:** the [compatibility/rollout plan](../specs/shielded_upgrade_rollout.md) is implemented as a concrete release checklist. Linux, Windows and both macOS artifact builds passed on preceding candidate `a7c23d3e7`; all are rerunning on the deeper undo repair. The preceding Tests workflow failed its assertion ratchet and promotion fixture; its main CTest step was skipped, so it does not supply an all-green main lane. The eleven new relay checks now use always-on failures, and the dormant promotion fixture passes all cases locally after its missing override and macOS log-count command were repaired. Candidate CI is running; no production activation or release publication has occurred. Production fleet measurements, pool migration/empty-pool evidence, burial-risk decisions and future activation heights remain explicit pre-activation requirements.
-5. **Full-sweep triage:** the preliminary 574-test run exposed pre-existing harness defects, fractional fee truncation and a missing mock-service dormancy setting; fixes have passing targeted controls. The strict IBD convergence failure also reproduces on separately built main plus only the epoch-undo fix. Logs are preserved under `shielded-integration-evidence/ibd-baseline-control`; the repeated full-batch continuation was isolated with a red-before/green-after side-branch regression and repaired. The original strict scenario passed through the post-heal block. A stronger scenario now requires all consumers to adopt the competing fork before healing, and exposed a second, ordinary deep-anchor undo defect. The repair restores per-block anchor snapshots; its first 2,221-block fork adoption passes. The return-fork run is pending after correcting the harness to observe ongoing body downloads while the canonical tip remains held. Success now requires P2P convergence without manual replay. This does not resolve #709/#717 by attribution. The release meta-gate requires an explicitly identified baseline binary; a separately built baseline is now available. Final results are pending.
-6. **Existing convergence investigations remain separate:** [#717](https://github.com/DineroLabs/dinero-v8/issues/717) is open; [#709](https://github.com/DineroLabs/dinero-v8/issues/709) was marked closed, but its latest inspected comment explicitly rejects treating post-#712 green runs as proof of resolution. Passing a rerun does not establish a fix.
-
-This is an integrated development candidate, not a production activation or release sign-off.
-
-## Reconnect/root mismatch investigation
-
-Claude's report is valid, not a resolved old finding. On the combined tree before the fix, `ShieldedEpochResetBoundary` reproduces a rejection at height 113 after invalidating below the reset at 115 and reconsidering. The committed root differs from the recomputed root; the diagnostic reports `anchors_bytes=3572` (99 entries rather than the 100-entry window).
-
-A minimal unit test reproduces this without mining, proof generation or peer timing: populate beyond the anchor-window depth, capture/reset/restore, roll back two more heights and reconnect one. The restored history differs from an independent never-reset history. `CaptureShieldedEpoch` stored only `SerializeBytes()` (active window); the eviction journal was dropped. Crossing the reset restored the visible window but could not refill it on further rollback. The same capture/restore code exists on `origin/dinero-main`: Gate E exposes an existing state-restoration defect through newly enforced DNRS equality.
-
-Fix commit `9b32673b3` captures the existing full persistence envelope and restores through its backward-compatible reader. Consensus root serialization remains the original active-window representation. A second test pins legacy-v1 undo readability. Both pass in the 10-test epoch-reset unit suite; the regression was demonstrated red before the fix. The boundary lifecycle now restarts before disconnect to exercise persisted undo. Old records that never stored the eviction journal cannot recover that absent information merely by upgrading; regenerating such historical undo through replay/reindex is a separate operational prerequisite if those deep cross-reset rollbacks must be supported. The fix protects newly captured undo; it does not claim retroactive repair of already lossy records.
-
-The historical green report at `8f2604c10` is superseded for main by the verified PR #719 merge. It does not establish that convergence investigations #709/#717 are resolved. This evidence concerns main, not Gate E or this integration. The report that no gates branch was pushed is superseded by the published integration branch, which contains the eight Gate E commits.
-
-
-A second root-restoration defect was found by the stronger scenario after the
-epoch repair landed. Ordinary undo depended on a bounded 100-entry eviction
-journal; deep rollback exhausted it and reconnecting at height 601 produced a
-different DNRS root. Commit `5720355c4` stores/restores pre-block anchor envelopes
-in both undo formats and across live, stateless and reindex paths, including
-empty blocks. Its minimal deep regression was red before the repair; focused
-codec, rejection-atomicity and reindex checks pass. The reviewed repair is in
-PR #720; it is not yet on main. See the review and rollout plan for historical
-undo regeneration and storage costs. Final full-tree verification is pending.
-
-The frozen predecessor also exposed missing anchor rewind during contaminated
-Utreexo checkpoint recovery. Commit `937819df7` restores anchors alongside the
-existing frontier/nullifier rewind. The DNRS-active regression now compares the
-full shielded root and passes offline recovery plus a second offline restart.
-This is a separate concrete recovery defect, not attributed to #709/#717.
-
-## Verification update after the e792 sweep
-
-Runtime `e79295a8b` passed Linux, Windows and both macOS artifact builds,
-including Windows mining/restart and installer/uninstaller checks; the
-reproducible Linux build also passed. These are predecessor development
-artifacts. Its Linux proof measurements were valid but failed the provisional
-20-second maximum-block budget at 20.433–20.495 seconds. The original report
-is retained. The hardware review adopts the documented 30-second desktop-v2
-proof-component budget; a fresh 18-process Mac run passes. See the hardware
-profile for the rationale and the remaining whole-node qualification limits.
-
-The selected-build audit found two top-level gates, AcceptanceParity and
-IBDTorture, falling back to an older `build/dinerod` when CTest used `build-final`.
-Both now receive the CMake target path explicitly, record executable hashes and
-reject binary changes during a run. The initial two executions are excluded
-from candidate evidence. Corrected e792 parity passes all 500 corpus blocks and
-four compatibility fixtures against separately built main plus the epoch fix.
-The stronger IBD replacement did not pass: all consumers adopted the fork,
-but only A returned to the source chain before the harness cutoff; B/C had one
-missing body. No DNRS root mismatch was observed. The harness now measures
-elapsed seconds and permits the scheduler's recovery window, with download
-diagnostics; actual full convergence remains required.
-
-The sweep also found a locally rate-dropped headers reply retaining global
-request ownership and blocking a CSN refresh. The [review](SHIELDED_INTEGRATION_REVIEW.md)
-records the identical main/candidate source path, five ordinary passing
-controls on each binary, and the deterministic drop regression. Commits
-`f2920e5fe`/`cbc1ea3e3` release only the matching nonzero owner and schedule a
-bounded retry without weakening the receive limit. All targets build, all
-five header-sync/coalescer suites pass, and the bridge-assisted spend lifecycle
-passes on the repaired binary. New combined and release verification is
-required for this additional runtime repair; predecessor results are not
-being relabeled as an all-green final sweep. PR #720 carries the latest checks.
-
-Further tracing showed that the two final missing bodies had actually been
-stored successfully but retained earlier unreadable-quarantine markers. The
-review records the root cause and direct red/green persistence regression.
-Position publication now clears those markers only after strict hash-checked
-readback, serialized with activation. This additional repair is included in the
-next frozen candidate; merely increasing a timeout is not its disposition.
-
-All twelve runtime-ce100 CI workflows now pass, including the full/serial
-Tests lanes, durability, Windows mining/restart/installer checks, Linux and
-both macOS artifacts, reproducibility, vectors and proof qualification. Strict
-IBD passes at height 3022 with all five nodes matching hash/work. The first
-local ReleaseSuite failed the old ancestor fixture after its recovery stages
-passed. The review records baseline reproduction and the harness-only repair;
-the same frozen runtime is being rerun through the meta-suite.
+Earlier component results and 572/574-test inventories remain in the original
+[verification manifest](SHIELDED_INTEGRATION_VERIFICATION.json). They are not
+substituted for the final runtime's named coverage above. The first full sweeps
+and release meta run found real recovery defects and test-fixture errors; the
+[review](SHIELDED_INTEGRATION_REVIEW.md) records their controls and disposition.
+The earlier Linux proof run that failed the provisional 20-second budget is
+retained under its original failed result. The current 30-second profile and
+its engineering rationale are explicit in the hardware document.

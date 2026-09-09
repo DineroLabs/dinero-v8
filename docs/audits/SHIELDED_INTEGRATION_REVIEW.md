@@ -6,6 +6,26 @@ independent third-party audit, formal proof, or network activation approval.
 An external audit remains an additional assurance option; it is not being
 represented as completed by this report.
 
+## Final designated-review disposition
+
+**Approved as a dormant development candidate**, reviewed runtime
+`ce100c9867c1c410c22e7147d1fb848e4e727a04`, with the test-only follow-up
+recorded in the [final verification](SHIELDED_INTEGRATION_FINAL_VERIFICATION.json).
+All twelve runtime CI workflows and all nine test-follow-up workflows pass.
+Named coverage accounts for 574 executed
+passes and one explicitly unrun external opt-in soak. Strict five-node IBD
+converges at height 3022, and the corrected full release meta-suite passes,
+including Phase 2 shielded recovery and restart/churn. Artifact builds and proof
+resource qualification pass with the scope and hashes recorded in the manifest.
+
+No unresolved implementation blocker was found in this review's scope after
+the recorded repairs. This is not a claim of absence of vulnerabilities.
+Production activation is not approved: minimum-host/fleet measurements, canary
+compatibility, migration/empty-pool evidence and burial/height decisions remain
+as documented in the rollout plan. Historical lossy undo must be regenerated
+where deep historical rollback is required. These results do not establish the causes of #709/#717. The discovery notes below retain the intermediate evidence; this
+final disposition supersedes their then-pending verification statements.
+
 ## Scope and method
 
 Reviewed recipient key derivation and note ownership, Auth spend R1CS and
@@ -76,10 +96,9 @@ paths and ports). These are separately scoped from shielded cryptography.
 
 ## Review conclusion and release limits
 
-The corrected code is suitable to continue candidate verification. Sign-off for
-production activation is withheld until the exact candidate's full and release
-matrix results, resource qualification and fleet compatibility evidence are
-recorded. Green reruns of #709/#717 cannot be substituted for a convergence
+The final candidate verification and proof-component qualification pass.
+Production activation remains withheld for the fleet and protocol decisions
+listed above. Green reruns of #709/#717 cannot be substituted for a convergence
 root cause. The user-selected reviewer role does not supply absent hardware,
 fleet or release evidence. Mainnet/testnet activation remains dormant.
 
@@ -217,3 +236,15 @@ and verifies the dependency and rejection boundary. The existing policy admits
 main-baseline and candidate binaries pass all six checks. Cleanup now targets
 only the owned daemon PID. The original failed meta log is retained and a full
 meta rerun is required; no daemon rebuild or runtime change is involved.
+
+## Proof-mix qualification gap closed
+
+The initial eight-proof benchmark used balanced transfers only. The review
+identified that spend proofs cost more, so a single proof-count case did not
+qualify all relevant extremes. Test-only commit 25fe32473 adds eight independent
+Auth unshields and eight shields with distinct spends/outpoints, verifies exact
+mix counts and cross-transaction nullifier uniqueness, and applies the same
+30-second budget to all block shapes. Expanded 24-process matrices pass on Mac
+and Linux. The final manifest and hardware table record the slower all-spend
+mix and retain the original narrower reports; no consensus or daemon limit
+changed to obtain these results.
