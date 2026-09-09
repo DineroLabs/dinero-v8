@@ -15,6 +15,7 @@
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/shielded_serialization.h"
 
+#include <algorithm>
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
 #include <cmath>
