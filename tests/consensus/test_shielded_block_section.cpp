@@ -108,6 +108,48 @@ TEST(ShieldedBlockSection, EmptyBlockAtActivationRecordsRootOnce) {
     EXPECT_EQ(f.anchors.Size(), 1u);
 }
 
+// Deep reorgs exceed the bounded eviction journal even without an epoch reset.
+TEST(ShieldedBlockSection, OrdinaryUndoRestoresDeepAnchorHistory) {
+    Fixture f;
+    std::vector<std::vector<uint8_t>> frontiers(351), anchors(351);
+    std::vector<uint8_t> expected;
+    std::string error;
+    for (uint32_t h = 1; h <= 350; ++h) {
+        frontiers[h] = f.tree.SerializeFrontier();
+        anchors[h] = f.anchors.SerializePersistenceBytes();
+        std::optional<ShieldedEpochSnapshot> reset;
+        ASSERT_TRUE(ConnectBlockShieldedSection({}, {}, h,
+            kShieldedEpochResetDormant, 1, f.tree, f.nullifiers,
+            &f.anchors, reset, error)) << error;
+        if (h == 120) expected = f.anchors.SerializeBytes();
+    }
+    // Simulate restarting at the high tip before disconnecting past retention.
+    auto persisted = f.anchors.SerializePersistenceBytes();
+    f.anchors.Clear();
+    ASSERT_EQ(f.anchors.DeserializePersistenceBytes(persisted), AnchorHistory::IoResult::Ok);
+    for (uint32_t h = 350; h > 120; --h) {
+        ASSERT_TRUE(DisconnectBlockShieldedSection(h, std::nullopt,
+            frontiers[h], f.tree, f.nullifiers, &f.anchors, error, anchors[h])) << error;
+    }
+    EXPECT_EQ(f.anchors.SerializeBytes(), expected);
+    EXPECT_EQ(f.anchors.Size(), AnchorHistory::kDepth);
+}
+
+TEST(ShieldedBlockSection, CorruptAnchorUndoRejectsBeforeMutation) {
+    Fixture f;
+    f.tree.Append(MakeHash(9));
+    f.anchors.RecordRoot(10, f.tree.Root());
+    ASSERT_TRUE(f.nullifiers.Insert(MakeHash(10), 10));
+    const auto frontier = f.tree.SerializeFrontier();
+    const auto anchors = f.anchors.SerializePersistenceBytes();
+    std::string error;
+    EXPECT_FALSE(DisconnectBlockShieldedSection(10, std::nullopt, frontier,
+        f.tree, f.nullifiers, &f.anchors, error, std::vector<uint8_t>{1, 2, 3}));
+    EXPECT_EQ(f.tree.SerializeFrontier(), frontier);
+    EXPECT_EQ(f.anchors.SerializePersistenceBytes(), anchors);
+    EXPECT_EQ(f.nullifiers.Size(), 1u);
+}
+
 // (c) Reset height + non-empty bundles -> rejected by the wall rule.
 TEST(ShieldedBlockSection, RejectsShieldedTxAtResetHeight) {
     Fixture f;

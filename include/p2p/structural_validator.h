@@ -77,11 +77,10 @@ public:
     StructuralValidationResult validateTx(const std::vector<uint8_t>& raw);
 
 private:
-    StructuralValidationResult validateParsedTx(const dinero::Transaction& tx) const;
+    StructuralValidationResult validateParsedTx(const dinero::Transaction& tx, bool in_block = false) const;
 
     // Size limits (Bitcoin-compatible)
     static constexpr size_t MAX_BLOCK_SIZE = 4 * 1024 * 1024;  // 4MB
-    static constexpr size_t MAX_TX_SIZE = 100000;               // 100KB (consensus/limits.h)
     static constexpr size_t MIN_BLOCK_HEADER_SIZE = 128;        // Dinero BlockHeader v1
 };
 

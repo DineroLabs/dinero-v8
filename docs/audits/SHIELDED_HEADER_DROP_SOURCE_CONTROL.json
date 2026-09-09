@@ -1,0 +1,10 @@
+{
+  "source_path": "src/daemon/services/p2p_service.cpp",
+  "blocks_identical": true,
+  "source_blocks": {
+    "f1b654850963ba77f9675bbee9dbf78a7af1e504": "    else if (msg.command == \"headers\" && OnHeaders) {\n        if (!checkHeadersRate(peer_addr)) {\n            logger_interface_->warning(\"[P2PService] Headers rate limit exceeded for \" + peer_addr +\n                                       \" \u2014 dropping message (DoS protection)\");\n            return;\n        }\n        OnHeaders(peer_addr, msg);\n    }\n",
+    "e79295a8b92ee60739cca23c80624523c3bbe29a": "    else if (msg.command == \"headers\" && OnHeaders) {\n        if (!checkHeadersRate(peer_addr)) {\n            logger_interface_->warning(\"[P2PService] Headers rate limit exceeded for \" + peer_addr +\n                                       \" \u2014 dropping message (DoS protection)\");\n            return;\n        }\n        OnHeaders(peer_addr, msg);\n    }\n"
+  },
+  "runtime_original_failure": "CSN received block-111 INV after a headers response was locally rate-dropped at height 101; original request remained reserved. Five ordinary runs per binary passed; no baseline daemon failure claimed.",
+  "deterministic_regression": "New drop notification initially modeled the original no-op and failed ownership-release assertion; implemented cancellation and retry coalescer tests pass."
+}

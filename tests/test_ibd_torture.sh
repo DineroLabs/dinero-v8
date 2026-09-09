@@ -89,8 +89,8 @@ case "${PROFILE}" in
         D_RPC_READY_TIMEOUT=60
         D_PROGRESS_TIMEOUT=480
         D_CONVERGE_TIMEOUT=900
-        D_NO_PROGRESS_TIMEOUT=45
-        D_PROGRESS_EXTENSION=30
+        D_NO_PROGRESS_TIMEOUT=150
+        D_PROGRESS_EXTENSION=180
         D_MAX_PROGRESS_TIMEOUT=1800
         D_CHURN_LOOPS=8
         D_CHURN_INTERVAL=3
@@ -109,8 +109,8 @@ case "${PROFILE}" in
         D_RPC_READY_TIMEOUT=60
         D_PROGRESS_TIMEOUT=900
         D_CONVERGE_TIMEOUT=1200
-        D_NO_PROGRESS_TIMEOUT=45
-        D_PROGRESS_EXTENSION=30
+        D_NO_PROGRESS_TIMEOUT=150
+        D_PROGRESS_EXTENSION=180
         D_MAX_PROGRESS_TIMEOUT=1800
         D_CHURN_LOOPS=6
         D_CHURN_INTERVAL=2
@@ -129,8 +129,8 @@ case "${PROFILE}" in
         D_RPC_READY_TIMEOUT=45
         D_PROGRESS_TIMEOUT=300
         D_CONVERGE_TIMEOUT=300
-        D_NO_PROGRESS_TIMEOUT=30
-        D_PROGRESS_EXTENSION=20
+        D_NO_PROGRESS_TIMEOUT=150
+        D_PROGRESS_EXTENSION=180
         D_MAX_PROGRESS_TIMEOUT=900
         D_CHURN_LOOPS=1
         D_CHURN_INTERVAL=1
@@ -143,6 +143,9 @@ case "${PROFILE}" in
         ;;
 esac
 
+# The scheduler retries stalled downloads after 90 seconds. A 30/45-second
+# harness stall cutoff preempted that recovery on the final missing return-fork
+# body. Allow one watchdog interval plus margin, retaining the overall bound.
 # Tunables
 SHARED_BASE_BLOCKS="${SHARED_BASE_BLOCKS:-${D_SHARED_BASE_BLOCKS}}"
 SOURCE_PRE_BLOCKS="${SOURCE_PRE_BLOCKS:-${D_SOURCE_PRE_BLOCKS}}"
@@ -478,9 +481,10 @@ stop_all_nodes() {
 }
 
 cleanup() {
+    local result=$?
     stop_all_nodes
-    if [[ "${KEEP_DATADIR}" == "1" ]]; then
-        warn "KEEP_DATADIR=1 set, preserving ${WORKDIR}"
+    if [[ "${KEEP_DATADIR}" == "1" || "$result" != 0 ]]; then
+        warn "Preserving IBD evidence (exit=$result): ${WORKDIR}"
     else
         rm -rf "${WORKDIR}"
     fi
@@ -767,7 +771,9 @@ print_state_idx() {
     t="$(state_triplet_idx "${idx}")"
     IFS='|' read -r h hash work <<< "${t}"
     peers="$(connection_count_idx "${idx}")"
-    echo "  $(name_of "${idx}"): height=${h} hash=${hash} work=${work} peers=${peers}"
+    local downloads
+    downloads="$(rpc_result_idx "${idx}" "blockchain.getsynchealth" '[]' 2>/dev/null | jq -c '.block_download // {}' || true)"
+    echo "  $(name_of "${idx}"): height=${h} hash=${hash} work=${work} peers=${peers} downloads=${downloads}"
 }
 
 print_network_state() {
@@ -827,7 +833,15 @@ snapshot_nodes() {
     local s=""
     local i
     for i in 0 1 2 3 4; do
-        s+="${i}:$(state_triplet_idx "${i}")|"
+        # A reorg deliberately holds the old active tip until every replacement
+        # body is available. Tip-only sampling mistook real body downloads for
+        # a stall and aborted after 45 seconds on the 2,221-block return fork.
+        # Include outstanding body work; the overall timeout remains bounded,
+        # and success still requires exact active hash/work convergence.
+        local outstanding
+        outstanding="$(rpc_result_idx "${i}" "blockchain.getsynchealth" '[]' 2>/dev/null |
+            jq -r '(.block_download.missing // 0) + (.block_download.in_flight // 0)' 2>/dev/null || echo NA)"
+        s+="${i}:$(state_triplet_idx "${i}"):${outstanding}|"
     done
     echo "${s}"
 }
@@ -860,6 +874,8 @@ wait_nodes_converged_with_progress() {
     local no_progress=0
     local deadline="${base_timeout}"
     local previous_snapshot=""
+    local started_seconds=${SECONDS}
+    local last_progress_seconds=${SECONDS}
 
     while [[ "${waited}" -lt "${MAX_PROGRESS_TIMEOUT}" && "${waited}" -lt "${deadline}" ]]; do
         if all_nodes_converged; then
@@ -871,6 +887,7 @@ wait_nodes_converged_with_progress() {
         if [[ "${snapshot}" != "${previous_snapshot}" ]]; then
             previous_snapshot="${snapshot}"
             no_progress=0
+            last_progress_seconds=${SECONDS}
 
             local extended_deadline=$((waited + PROGRESS_EXTENSION))
             if [[ "${extended_deadline}" -gt "${deadline}" ]]; then
@@ -880,7 +897,7 @@ wait_nodes_converged_with_progress() {
                 fi
             fi
         else
-            no_progress=$((no_progress + 1))
+            no_progress=$((SECONDS - last_progress_seconds))
             if [[ "${no_progress}" -ge "${NO_PROGRESS_TIMEOUT}" ]]; then
                 warn "Convergence stalled for ${no_progress}s without state change"
                 print_network_state
@@ -889,7 +906,7 @@ wait_nodes_converged_with_progress() {
         fi
 
         sleep 1
-        waited=$((waited + 1))
+        waited=$((SECONDS - started_seconds))
     done
 
     warn "Convergence timed out after ${waited}s (deadline=${deadline}s)"
@@ -1152,12 +1169,32 @@ phase2_restart_mid_sync() {
 phase3_compete_and_heal() {
     log_header "Phase 3 - Competing Fork Exposure + Heal"
 
-    info "Releasing withheld fork to all IBD nodes"
-    connect_bidirectional "${IDX_A}" "${IDX_F}"
-    connect_bidirectional "${IDX_B}" "${IDX_F}"
-    connect_bidirectional "${IDX_C}" "${IDX_S}"
-    connect_bidirectional "${IDX_S}" "${IDX_F}"
-    assert_nodes_alive
+    # Keep S's independent branch mineable while A/B/C adopt F. The full
+    # sweep exposed mining racing a higher-work, body-incomplete header chain:
+    # generatetoaddress correctly reported non-activation, aborting this fixture.
+    # Do not retry/hide that RPC failure; establish the intended topology first.
+    rpc_result_idx "${IDX_S}" "setnetworkactive" '[false]' | jq -e '.applied == true and .networkactive == false' >/dev/null
+    assert_no_peers_idx "${IDX_S}"
+    local source_height source_hash fork_height fork_hash idx
+    source_height="$(rpc_scalar_idx "${IDX_S}" "getblockcount" '[]' '.')"
+    source_hash="$(rpc_scalar_idx "${IDX_S}" "getbestblockhash" '[]' '.')"
+    fork_height="$(rpc_scalar_idx "${IDX_F}" "getblockcount" '[]' '.')"
+    fork_hash="$(rpc_scalar_idx "${IDX_F}" "getbestblockhash" '[]' '.')"
+
+    info "Releasing withheld fork to IBD nodes while source remains isolated"
+    for idx in "${IDX_A}" "${IDX_B}" "${IDX_C}"; do
+        connect_bidirectional "${idx}" "${IDX_F}"
+    done
+    for idx in "${IDX_A}" "${IDX_B}" "${IDX_C}"; do
+        if ! wait_height_at_least_idx "${idx}" "${fork_height}" "${PROGRESS_TIMEOUT}"; then
+            fail "Node $(name_of "${idx}") did not adopt the competing fork"
+        fi
+        if [[ "$(rpc_scalar_idx "${idx}" "getbestblockhash" '[]' '.')" != "${fork_hash}" ]]; then
+            fail "Node $(name_of "${idx}") did not select the expected fork tip"
+        fi
+    done
+    pass "IBD nodes adopted the competing fork before source catch-up"
+    assert_no_peers_idx "${IDX_S}"
 
     # Mine source catch-up blocks to force deterministic winner.
     info "Mining source catch-up blocks: ${SOURCE_POST_BLOCKS}"
@@ -1196,6 +1233,12 @@ phase3_compete_and_heal() {
         mine_blocks_idx "${IDX_S}" "${extra}"
     fi
 
+    if [[ "$(rpc_scalar_idx "${IDX_S}" "getblockhash" "[${source_height}]" '.')" != "${source_hash}" ]]; then
+        fail "Source catch-up did not extend its original isolated branch"
+    fi
+    assert_no_peers_idx "${IDX_S}"
+    rpc_result_idx "${IDX_S}" "setnetworkactive" '[true]' | jq -e '.applied == true and .networkactive == true' >/dev/null
+
     # Full-heal connectivity fanout.
     connect_bidirectional "${IDX_A}" "${IDX_S}"
     connect_bidirectional "${IDX_B}" "${IDX_S}"
@@ -1203,12 +1246,9 @@ phase3_compete_and_heal() {
     connect_bidirectional "${IDX_A}" "${IDX_F}"
     connect_bidirectional "${IDX_B}" "${IDX_F}"
 
+    info "Source catch-up mined; waiting for P2P return-fork recovery"
     if ! wait_nodes_converged_with_progress "${CONVERGE_TIMEOUT}"; then
-        warn "Initial heal stalled; attempting explicit withheld-block release to lagging nodes"
-        recover_lagging_nodes_from_source
-        if ! wait_nodes_converged_with_progress "${CONVERGE_TIMEOUT}"; then
-            fail "Nodes failed to converge after fork heal"
-        fi
+        fail "Nodes failed to converge through P2P after fork heal"
     fi
 
     # Final nudge block to assert post-heal stability.
@@ -1251,12 +1291,25 @@ final_gate() {
     pass "IBD torture gate passed"
 }
 
+binary_sha256() {
+    python3 - "$1" <<'PYHASH'
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], 'rb') as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b''):
+        h.update(chunk)
+print(h.hexdigest())
+PYHASH
+}
+
 main() {
     log_header "IBD Torture Harness"
     info "Profile=${PROFILE}"
     info "Workdir: ${WORKDIR}"
     info "RPC base=${BASE_RPC_PORT}, P2P base=${BASE_P2P_PORT}"
-    info "dinerod=${DINEROD}"
+    local daemon_fingerprint
+    daemon_fingerprint="$(binary_sha256 "${DINEROD}")"
+    info "dinerod=${DINEROD} sha256=${daemon_fingerprint}"
     info "Knobs: shared=${SHARED_BASE_BLOCKS} src_pre=${SOURCE_PRE_BLOCKS} fork_pre=${FORK_PRE_BLOCKS} src_withheld=${SOURCE_WITHHELD_BLOCKS} fork_withheld=${FORK_WITHHELD_BLOCKS} src_post=${SOURCE_POST_BLOCKS} ibd_target=${IBD_PROGRESS_TARGET} churn_loops=${CHURN_LOOPS} phase1_start_timeout=${PHASE1_START_TIMEOUT} phase1_no_progress=${PHASE1_NO_PROGRESS_TIMEOUT} mine_batch=${MINE_BATCH_SIZE}"
 
     assert_distinct_datadirs
@@ -1265,6 +1318,7 @@ main() {
     phase1_ibd_with_adversity
     phase2_restart_mid_sync
     phase3_compete_and_heal
+    [[ "$(binary_sha256 "${DINEROD}")" == "${daemon_fingerprint}" ]] || fail "Daemon binary changed during IBD verification"
     final_gate
 }
 

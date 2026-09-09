@@ -18,6 +18,7 @@
 #include "primitives/block.h"
 // Note: Transaction is already included via primitives/block.h -> wallet/transaction.h
 #include "daemon/block_acceptor.h"
+#include "consensus/state_commitment.h"  // DNRS state commitment (state_commitment_v1)
 #include "daemon/daemon_context.h"  // For DaemonContext access
 #include "daemon/services/chainstate_service.h"  // For BlockValidator access
 #include "consensus/block_validation.h"  // For ComputeUtreexoRootPure
@@ -584,6 +585,36 @@ din::Json handle_generatetoaddress(
                     }
 
                     MaybeAddFilterCommitment(block, selected_mempool_txs, chain_db, height);
+
+                    // STATE COMMITMENT (state_commitment_v1): generatetoaddress
+                    // hand-builds its coinbase — the THIRD coinbase-assembly
+                    // path — so it needs the same rule and the same oracle as
+                    // both BlockAssembler paths, before the merkle root below.
+                    // A path the rule misses mines only invalid blocks under
+                    // enforcement (this site's omission failed the entire
+                    // regtest mining corpus on the first full-suite run).
+                    if (dinero::consensus::IsStateCommitmentActive(
+                            height,
+                            dinero::Params().state_commitment_activation_height)) {
+                        auto cs = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                            daemon_ctx ? daemon_ctx->chainstate : nullptr);
+                        std::optional<dinero::uint256> post_root;
+                        if (cs) {
+                            post_root = cs->PredictPostBlockShieldedRootForTemplate(
+                                block.vtx, height);
+                        }
+                        if (!post_root.has_value()) {
+                            throw std::runtime_error(
+                                "generatetoaddress: state-commitment oracle failed "
+                                "at height " + std::to_string(height) +
+                                " — refusing to mine an invalid block");
+                        }
+                        dinero::TxOutput sc_output;
+                        sc_output.value = dinero::AmountUna::Zero();
+                        sc_output.scriptPubKey =
+                            dinero::consensus::BuildStateCommitmentScript(*post_root);
+                        block.vtx[0].vout.push_back(std::move(sc_output));
+                    }
 
                     if (!selected_mempool_txs.empty()) {
                         dinero::consensus::BlockUtreexoData utreexo_data;

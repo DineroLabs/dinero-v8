@@ -39,6 +39,13 @@ jobs:
         run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
       - name: Run the canonical local readiness command
         run: SHIELDED_EVIDENCE_DIR="$RUNNER_TEMP/shielded-readiness" ./scripts/shielded-readiness.sh
+      - name: Qualify proof resources on this runner
+        run: >-
+          python3 tools/shielded_resource_qualification.py
+          --binary build-shielded-readiness/test_shielded_validation
+          --binary-source-commit "$GITHUB_SHA"
+          --output "$RUNNER_TEMP/shielded-readiness/resources"
+          --repetitions 3
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 /**
  * Phase G.2: Block & TX Download Coordination Implementation
  *
@@ -89,7 +90,7 @@ void DownloadCoordinator::handleTx(
     }
 
     // Structural check: size limit
-    if (data.size() > MAX_TX_SIZE) {
+    if (data.size() > dinero::consensus::shielded::WireTxByteLimit(data)) {
         // Oversized tx, reject and clear in-flight
         inflight_.remove(inv);
         return;

@@ -1,13 +1,22 @@
 # Shielded spend-authority activation profile
 
-**Status:** implemented, dormant in v8.1.9; activation height is
+**Status:** implemented, dormant; activation height is
 `UINT32_MAX` on all shipped networks.
 
 Activation is a coordinated consensus cutover, not a wallet feature toggle.
 At the reset height the block MUST contain no shielded activity and the tree,
 anchor window, and nullifier set are reset. Beginning with the following block,
-new outputs commit to `pk_d_spend = s*G`, spends use proof version `0x05`, and
-legacy proofs and pre-reset notes are rejected.
+new outputs commit to the composite recipient ownership key
+`Poseidon(pk_d_spend, nfk_commitment)`, spends use proof version `0x06`, and
+legacy proofs and pre-reset notes are rejected. The abandoned, never-activated
+`0x05` experiment is not accepted under this profile.
+
+The same activation requires transaction version 6 (bundle committed by txid)
+and the [Auth resource profile](shielded_auth_resource_profile.md): 512,000
+transaction bytes, 2,048,000 weight, four spends/two outputs, and block-wide
+eight-proof/1,000,000 shielded-byte bounds. Relay package and orphan-memory
+policies are coordinated with these rules. Historical v5 validation remains
+unchanged before the cutover.
 
 ## Distinct reset implementation
 
@@ -18,7 +27,7 @@ required to differ from the historical reset. Both reset boundaries feed the
 same mempool wall, connect/disconnect snapshot, reindex, stateless undo,
 ChainDB purge, and restart stale-state protections. Consensus proof validation
 also consumes the spend-authority activation height and requires proof version
-`0x05` at the boundary.
+`0x06` at the boundary.
 
 No production height has been selected. Mainnet RPC and Qt lockouts remain in
 place. The mechanism being present does not authorize activation.
@@ -32,7 +41,12 @@ The cutover MUST NOT be scheduled until:
 4. archival, stateless, snapshot, and reindex nodes produce identical state;
 5. sender/recipient tests prove that the recipient can spend and the sender
    cannot;
-6. all mobile/prover-kit callers support 75-byte address payloads.
+6. all mobile/prover-kit callers support 107-byte address payloads and the
+   explicit `ak`/`nvk` API needed to keep viewing authority non-spending;
+7. outgoing-view envelope v3 lifecycle and physical hardware-wallet behavior
+   pass on the exact release candidate;
+8. the two-node Auth relay/restart/reorg lifecycle passes on that candidate,
+   and its measured verification time and memory fit supported release hardware.
 
 RPC and Qt lockouts remain enabled until the active chain is past the cutover
 and runtime state markers agree. Removing either lock independently is a

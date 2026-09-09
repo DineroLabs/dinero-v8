@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 /**
  * Phase G.2: Block & TX Download Coordination - Pure Unit Tests
  *
@@ -26,6 +27,7 @@
 #include "../../include/p2p/inflight_manager.h"
 #include <iostream>
 #include <cassert>
+#include <stdexcept>
 #include <vector>
 #include <set>
 #include <map>
@@ -309,7 +311,26 @@ void test_multiple_objects() {
 // Main Test Runner
 //=============================================================================
 
+void test_auth_transaction_download_bounds() {
+    for (size_t size : {size_t(168000), dinero::consensus::shielded::kAuthMaxTxBytes,
+                       dinero::consensus::shielded::kAuthMaxTxBytes + 1}) {
+        InFlightManager inflight;
+        MockDownloadSink sink;
+        DownloadCoordinator coordinator(inflight, sink);
+        Hash256 hash{};
+        hash.data[0] = 0x77;
+        InventoryVector inv(MSG_TX, hash);
+        inflight.add(inv, "peer1");
+        std::vector<uint8_t> bytes(size, 0);
+        bytes[0] = 6;
+        coordinator.handleTx("peer1", hash, bytes);
+        if (!(sink.received_txs.size() == (size <= dinero::consensus::shielded::kAuthMaxTxBytes ? 1u : 0u))) throw std::runtime_error("resource boundary: sink.received_txs.size() == (size <= dinero::consensus::shielded::kAuthMaxTxBytes ? 1u : 0u)");
+        if (!(inflight.count() == 0)) throw std::runtime_error("resource boundary: inflight.count() == 0");
+    }
+}
+
 int main() {
+    test_auth_transaction_download_bounds();
     std::cout << "========================================" << std::endl;
     std::cout << "G.2: Download Coordination Tests" << std::endl;
     std::cout << "========================================" << std::endl;

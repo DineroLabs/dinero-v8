@@ -145,6 +145,7 @@ TEST(ShieldedExternalVectors, KeyAndAddressDerivationMatch) {
     EXPECT_EQ(Hex(keys.sk), expected["sk"].asString());
     EXPECT_EQ(Hex(keys.ask), expected["ask"].asString());
     EXPECT_EQ(Hex(keys.nsk), expected["nsk"].asString());
+    EXPECT_EQ(Hex(keys.nvk), expected["nvk"].asString());
     EXPECT_EQ(Hex(keys.ovk), expected["ovk"].asString());
     EXPECT_EQ(Hex(keys.dk), expected["dk"].asString());
     EXPECT_EQ(Hex(keys.ak), expected["ak"].asString());
@@ -157,6 +158,10 @@ TEST(ShieldedExternalVectors, KeyAndAddressDerivationMatch) {
     EXPECT_EQ(Hex(drv::HashToPoint(address.d, drv::kDstDiv)), address_expected["p_d"].asString());
     EXPECT_EQ(Hex(address.pk_d), address_expected["pk_d_enc"].asString());
     EXPECT_EQ(Hex(address.pk_d_spend), address_expected["pk_d_spend"].asString());
+    EXPECT_EQ(Hex(address.nfk_commitment),
+              address_expected["nullifier_key_commitment"].asString());
+    EXPECT_EQ(Hex(drv::DeriveDiversifiedNullifierKey(keys.nvk, address.d)),
+              address_expected["nullifier_key"].asString());
     EXPECT_EQ(Hex(address.payload), address_expected["payload"].asString());
     EXPECT_EQ(address.address, address_expected["mainnet"].asString());
     EXPECT_EQ(drv::EncodeShieldedAddress(address.payload, drv::kHrpTestnet),
@@ -204,6 +209,17 @@ TEST(ShieldedExternalVectors, CommitmentsAndNullifiersMatch) {
     EXPECT_EQ(Hex(sh::ComputeNullifier(sk_note, 0)), expected["nullifier_leaf_0"].asString());
     EXPECT_EQ(Hex(sh::ComputeNullifier(sk_note, UINT64_MAX)),
               expected["nullifier_leaf_u64max"].asString());
+
+    const auto auth_ownership = ArrayFromHex<32>(expected["auth_ownership_key"].asString());
+    EXPECT_EQ(Hex(sh::AuthRecipientCommitmentKey(
+                  ArrayFromHex<32>(Vectors()["derivation"]["address_j0"]["pk_d_spend"].asString()),
+                  ArrayFromHex<32>(Vectors()["derivation"]["address_j0"]["nullifier_key_commitment"].asString()))),
+              expected["auth_ownership_key"].asString());
+    EXPECT_EQ(Hex(sh::NoteCommitment(d, auth_ownership, value, rcm)),
+              expected["auth_note_commitment"].asString());
+    EXPECT_EQ(Hex(sh::ComputeNullifier(
+                  ArrayFromHex<32>(Vectors()["derivation"]["address_j0"]["nullifier_key"].asString()), 0)),
+              expected["auth_nullifier_leaf_0"].asString());
 }
 
 void BindTranscript(Transcript& transcript, const std::string& name,
@@ -217,11 +233,11 @@ void BindTranscript(Transcript& transcript, const std::string& name,
     }
     if (name.find("v03") != std::string::npos ||
         name.find("v04") != std::string::npos ||
-        name.find("v05") != std::string::npos) {
+        name.find("v06") != std::string::npos) {
         transcript.append_u64("cv0", cv[0]);
         transcript.append_scalar("cvx", Scalar(cv.data() + 1));
     }
-    if (name.find("v05") != std::string::npos) transcript.append_u64("auth", 1);
+    if (name.find("v06") != std::string::npos) transcript.append_u64("auth", 1);
 }
 
 TEST(ShieldedExternalVectors, AllProofVersionTranscriptPreamblesMatch) {
@@ -241,7 +257,7 @@ TEST(ShieldedExternalVectors, AllProofVersionTranscriptPreamblesMatch) {
         {"output_v02_legacy", "dinero.shielded.output.v1"},
         {"spend_v03_cv", "dinero.shielded.spend.v1"},
         {"output_v04_cv", "dinero.shielded.output.v1"},
-        {"spend_v05_auth_dormant", "dinero.shielded.spend.v1"},
+        {"spend_v06_auth_dormant", "dinero.shielded.spend.v1"},
     }};
     for (const auto& [name, domain] : cases) {
         Transcript transcript(domain);

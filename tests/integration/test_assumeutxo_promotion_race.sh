@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 #
+# state_commitment_v1: this suite runs DORMANT (explicit override below).
+# Its subject is AssumeUTXO snapshot/replay behavior, not commitment
+# enforcement -- under regtest's active-at-1 default, export stamps v5 and
+# the load-time binding chain requires burial depth the fixture's
+# export-at-tip-and-reload shape cannot satisfy. Enforcement itself is
+# exercised by the state-commitment suites and the forged-snapshot e2e.
+#
 # AssumeUTXO promotion-race regtest (#353 bug 2).
 #
 # THE BUG (fixed by commit e5df3e9d1, under test here):
@@ -130,7 +137,7 @@ rpc() {  # <rpcport> <datadir> <method> [params-json]
 start_node() {  # <datadir> <rpcport> <p2pport> <wsport> <logfile> [extra args...]
     local datadir="$1" rpcport="$2" p2pport="$3" wsport="$4" logfile="$5"; shift 5
     mkdir -p "$datadir"
-    "$DINEROD" --regtest --datadir="$datadir" \
+    "$DINEROD" --regtest --consensus-state-commitment-height=4294967295 --datadir="$datadir" \
         --rpcport="$rpcport" --port="$p2pport" --wallet-socket-port="$wsport" \
         --listen=1 "$@" > "$logfile" 2>&1 &
     LAST_NODE_PID=$!

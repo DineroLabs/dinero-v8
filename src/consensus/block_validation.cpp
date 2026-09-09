@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 #include "consensus/block_validation.h"
 #include "consensus/covenants.h"
 #include "consensus/consensus_write_batch.h"
@@ -33,6 +34,8 @@ extern "C" {
 #include "consensus/cpu_budget_monitor.h"  // Phase E.3: CPU budget monitoring
 #include "consensus/subsidy.h"  // Canonical monetary policy
 #include "consensus/utreexo_stump.h"       // Transition proof cross-check
+#include "consensus/state_commitment.h"    // state_commitment_v1: DNRS lookup + IsStateCommitmentActive
+#include "consensus/shielded/shielded_root.h"  // post-block SHR1 root for the commitment value check
 #include <algorithm>
 #include <sstream>
 #include <set>
@@ -307,6 +310,9 @@ bool BlockValidator::ValidateAndApplyBlock(const Block& block, uint32_t height, 
 bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
                                             uint256& computed_utreexo_root,
                                             std::string& error) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     std::cout << "\n🔍 [ComputeUtreexoRootPure] ENTRY" << std::endl;
     std::cout << "   height=" << height << std::endl;
     std::cout << "   block.vtx.size()=" << block.vtx.size() << std::endl;
@@ -545,6 +551,9 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
     const std::function<const UTXOEntry*(const OutPoint&)>& utxo_lookup,
     uint256& computed_utreexo_root,
     std::string& error) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     if (!IsUtreexoActive(height)) {
         computed_utreexo_root.SetNull();
         return true;
@@ -672,8 +681,20 @@ bool BlockValidator::ApplyBlockShieldedSection(
     const Block& block, uint32_t height,
     const std::vector<int64_t>& pending_shielded_deltas,
     BlockUndo& undo, std::string& error) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     if (!(shielded_tree_ && shielded_nullifiers_)) {
-        return true;  // shielded state not wired — nothing to apply
+        // Shielded state not wired — nothing to apply. Under state-commitment
+        // enforcement that is not a pass: a validator that cannot compute the
+        // post-block shielded root cannot verify the coinbase commitment, and
+        // unverifiable fails closed.
+        if (IsStateCommitmentActive(
+                height, dinero::Params().state_commitment_activation_height)) {
+            error = "coinbase-state-commitment-unverifiable-shielded-state-unwired";
+            return false;
+        }
+        return true;
     }
     namespace shld = dinero::consensus::shielded;
     auto* tree = static_cast<shld::CommitmentTree*>(shielded_tree_);
@@ -712,13 +733,87 @@ bool BlockValidator::ApplyBlockShieldedSection(
     // see the single canonical implementation and its rationale comments in
     // ConnectBlockShieldedSection (shielded_block_section.cpp).
     auto* anchors = static_cast<shld::AnchorHistory*>(shielded_anchor_history_);
-    return shld::ConnectBlockShieldedSection(
-        bundles, deltas, height,
-        dinero::Params().shielded_epoch_reset_height,
-        dinero::Params().shielded_spend_auth_epoch_reset_height,
-        dinero::Params().shielded_activation_height,
-        *tree, *nullifiers, anchors,
-        undo.pre_reset_shielded_epoch, error);
+    const auto pre_frontier = tree->SerializeFrontier();
+    undo.pre_block_shielded_frontier = pre_frontier;
+    const auto pre_anchors = anchors ? std::optional<shld::AnchorHistory>(*anchors) : std::nullopt;
+    undo.pre_block_shielded_anchors = anchors
+        ? std::optional<std::vector<uint8_t>>(anchors->SerializePersistenceBytes()) : std::nullopt;
+    undo.pre_reset_shielded_epoch.reset();
+    bool applied = false;
+    struct ShieldedApplyRollback {
+        std::function<void()> restore;
+        bool& committed;
+        ~ShieldedApplyRollback() { if (!committed) restore(); }
+    } rollback{[&] {
+        if (undo.pre_reset_shielded_epoch && anchors) {
+            shld::RestoreShieldedEpoch(*undo.pre_reset_shielded_epoch, *tree, *anchors, *nullifiers);
+        } else {
+            tree->DeserializeFrontier(pre_frontier.data(), pre_frontier.size());
+            if (height > 0) nullifiers->RollbackAbove(height - 1);
+            if (anchors && pre_anchors) *anchors = *pre_anchors;
+        }
+    }, applied};
+    if (!shld::ConnectBlockShieldedSection(
+            bundles, deltas, height,
+            dinero::Params().shielded_epoch_reset_height,
+            dinero::Params().shielded_spend_auth_epoch_reset_height,
+            dinero::Params().shielded_activation_height,
+            *tree, *nullifiers, anchors,
+            undo.pre_reset_shielded_epoch, error)) {
+        return false;
+    }
+
+    // state_commitment_v1: at/after activation the coinbase's DNRS commitment
+    // must equal the POST-BLOCK shielded root — the state this block leaves
+    // behind, which the apply above has just produced. Checked here so both
+    // call sites (stateful and stateless CSN) enforce identically. The
+    // presence/uniqueness half is also enforced statelessly in
+    // ConnectBlockInternal's coinbase rules; this is the value half, which
+    // needs post-apply state. Dormant networks never reach any of it.
+    if (IsStateCommitmentActive(height,
+                                dinero::Params().state_commitment_activation_height)) {
+        if (anchors == nullptr) {
+            // Legacy wiring without anchor history cannot compute the full
+            // SHR1 root, so it cannot verify the commitment. Unverifiable
+            // fails closed under enforcement.
+            error = "coinbase-state-commitment-unverifiable-no-anchor-state";
+            return false;
+        }
+        const auto post_root = shld::ComputeShieldedRoot(*tree, *nullifiers, *anchors);
+        if (!post_root) {
+            error = "coinbase-state-commitment-unverifiable-nullifiers-unreadable";
+            return false;
+        }
+        const auto lookup = FindStateCommitment(block.vtx[0]);
+        if (lookup.status != StateCommitmentStatus::Ok) {
+            // Distinguishable per class; the exact lookup status narrows it.
+            error = (lookup.status == StateCommitmentStatus::Duplicate)
+                        ? "coinbase-state-commitment-duplicate"
+                        : (lookup.status == StateCommitmentStatus::Malformed)
+                              ? "coinbase-state-commitment-malformed"
+                              : "coinbase-state-commitment-missing";
+            return false;
+        }
+        if (lookup.root != *post_root) {
+            // Component breakdown so a mismatch names WHICH container
+            // diverged, not just that one did — a mismatch here after a
+            // reorg means some path did not perfectly invert state.
+            const auto tr = tree->Root();
+            uint256 tr256;
+            std::memcpy(tr256.data, tr.data(), 32);
+            const auto acc = shld::AccumulateNullifierSet(*nullifiers);
+            const auto ab = anchors->SerializeBytes();
+            error = "coinbase-state-commitment-mismatch (committed " +
+                    lookup.root.GetHex().substr(0, 16) + "… vs post-block " +
+                    post_root->GetHex().substr(0, 16) + "…; tree=" +
+                    tr256.GetHex().substr(0, 12) +
+                    " acc=" + (acc ? acc->GetHex().substr(0, 12) : std::string("unreadable")) +
+                    " anchors_bytes=" + std::to_string(ab.size()) + ")";
+            return false;
+        }
+    }
+    applied = true;
+    return true;
 }
 
 // ABC-CSN reorg replay: recompute pending_shielded_deltas for an already-
@@ -739,6 +834,9 @@ bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
     const Block& block, uint32_t height,
     std::vector<int64_t>& deltas_out, std::string& error,
     const std::vector<SpentOutputData>* fallback_spent_outputs) {
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
     deltas_out.clear();
 
     // A block with no shielded-semantics txs produces no deltas, so it needs
@@ -878,6 +976,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // Initialize undo data before any validation exits so callers always get
     // a height/hash-consistent container and rollback can capture genesis-state snapshots.
     undo = BlockUndo(height, block_hash);
+    if (!shielded::CheckAuthBlockResources(block.vtx, height,
+            Params().shielded_spend_auth_activation_height, error)) return false;
+
 
     // ═════════════════════════════════════════════════════════════════════════
     // Apr 13 2026 Stage 3 — Utreexo canonical-roots fork activation.
@@ -1305,6 +1406,25 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         UsesShieldedValueSemantics(coinbase_tx)) {
         error = "coinbase-carries-shielded-bundle";
         return false;
+    }
+
+    // state_commitment_v1, stateless half: at/after activation the coinbase
+    // must carry exactly one well-formed DNRS commitment. Presence and
+    // uniqueness are checkable here with no state; the VALUE (equality with
+    // the post-block shielded root) is checked post-apply in
+    // ApplyBlockShieldedSection, which is the only place post-block state
+    // exists. Same single authority as every other enforcement site.
+    if (IsStateCommitmentActive(height,
+                                Params().state_commitment_activation_height)) {
+        const auto sc_lookup = FindStateCommitment(coinbase_tx);
+        if (sc_lookup.status != StateCommitmentStatus::Ok) {
+            error = (sc_lookup.status == StateCommitmentStatus::Duplicate)
+                        ? "coinbase-state-commitment-duplicate"
+                        : (sc_lookup.status == StateCommitmentStatus::Malformed)
+                              ? "coinbase-state-commitment-malformed"
+                              : "coinbase-state-commitment-missing";
+            return false;
+        }
     }
 
     uint64_t total_fees = 0;
@@ -2054,12 +2174,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // #274: mirror the normal path's undo population (see Phase 2 success
         // block below). Without the frontier, a shielded block's undo cannot
         // restore the commitment tree on disconnect and the ConnectTip publish
-        // invariant refuses the tip. Moving is safe here: success is committed
-        // (block_connect_success below), so restore_on_failure never reads the
-        // moved-from local. Do NOT set undo.pre_block_snapshot — stateless
+        // invariant refuses the tip. Keep the local frontier intact until the
+        // shielded apply succeeds: the failure guard still needs it if DNRS
+        // or epoch validation rejects. Do NOT set undo.pre_block_snapshot — stateless
         // mode has no UTXO snapshot.
         if (!pre_block_shielded_frontier.empty()) {
-            undo.pre_block_shielded_frontier = std::move(pre_block_shielded_frontier);
+            undo.pre_block_shielded_frontier = pre_block_shielded_frontier;
         } else {
             undo.pre_block_shielded_frontier.reset();
         }
@@ -2615,7 +2735,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         undo.pre_block_snapshot.reset();
     }
     if (!pre_block_shielded_frontier.empty()) {
-        undo.pre_block_shielded_frontier = std::move(pre_block_shielded_frontier);
+        undo.pre_block_shielded_frontier = pre_block_shielded_frontier;
     } else {
         undo.pre_block_shielded_frontier.reset();
     }
@@ -2679,7 +2799,7 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
             if (!shielded::DisconnectBlockShieldedSection(
                     height, undo.pre_reset_shielded_epoch,
                     undo.pre_block_shielded_frontier, *tree, *nullifiers,
-                    anchors, error)) {
+                    anchors, error, undo.pre_block_shielded_anchors)) {
                 return false;
             }
         } else if (undo.pre_reset_shielded_epoch.has_value() ||
@@ -2846,7 +2966,7 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
         if (!shielded::DisconnectBlockShieldedSection(
                 height, undo.pre_reset_shielded_epoch,
                 undo.pre_block_shielded_frontier, *tree, *nullifiers, anchors,
-                error)) {
+                error, undo.pre_block_shielded_anchors)) {
             restore_legacy_on_failure();
             return false;
         }
@@ -2868,6 +2988,9 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
                                         bool is_coinbase, uint64_t& total_input_value, 
                                         std::string& error) {
     total_input_value = 0;
+    size_t resource_proofs = 0;
+    if (!shielded::CheckAuthTransactionResources(tx, height,
+            Params().shielded_spend_auth_activation_height, resource_proofs, error)) return false;
     const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
     
     // NOTE: this branch is currently UNREACHABLE — both call sites (the per-tx

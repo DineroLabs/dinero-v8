@@ -1482,6 +1482,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_rpc_transfer_addressed_detec
     message(STATUS "  ✓ ShieldedRpcTransferAddressedDetectEndToEnd registered")
 endif()
 
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outgoing_recovery_lifecycle.sh)
+    add_test(
+        NAME ShieldedOutgoingRecoveryLifecycle
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outgoing_recovery_lifecycle.sh
+    )
+    set_tests_properties(ShieldedOutgoingRecoveryLifecycle PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+        LABELS "integration;shielded;wallet;outgoing-view;restart;reorg;mandatory"
+        TIMEOUT 1200
+        RUN_SERIAL TRUE
+    )
+    message(STATUS "  ✓ ShieldedOutgoingRecoveryLifecycle registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_outputs_rpc_feed.sh)
     add_test(
         NAME ShieldedOutputsRpcFeed
@@ -2176,6 +2190,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ShieldedRpcTransferEndToEnd ShieldedRpcTransferMultiEndToEnd
         ShieldedRpcGetAddress ShieldedRpcTransferAddressedEndToEnd
         ShieldedRpcTransferAddressedDetectEndToEnd
+        ShieldedOutgoingRecoveryLifecycle
         WalletAuthoritativeMnemonic
         ShieldedTipMarkerRestartEquivalence
         ShieldedDaemonRestartEquivalence
@@ -2271,3 +2286,30 @@ if(_dinero_integration_tests)
     endforeach()
     message(STATUS "  ✓ Integration tests receive binary paths via ENVIRONMENT")
 endif()
+
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+    add_test(NAME ShieldedAuthRelayLifecycle
+      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+    set_tests_properties(ShieldedAuthRelayLifecycle PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+      LABELS "integration;shielded;p2p;wallet;restart;reorg;mandatory"
+      TIMEOUT 2400 RUN_SERIAL TRUE)
+    message(STATUS "  ✓ ShieldedAuthRelayLifecycle registered")
+endif()
+
+# Gate D must run in the mandatory serial lane; missing Python is a failure,
+# never a reason to silently omit the security gate from registration.
+add_test(NAME SnapshotBindingMutations
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_snapshot_binding_mutations.py)
+set_tests_properties(SnapshotBindingMutations PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;shielded;assumeutxo;snapshot;mandatory"
+  TIMEOUT 600 RUN_SERIAL TRUE)
+
+# Exercise the supported external/coordinator interfaces with DNRS enforced.
+add_test(NAME StateCommitmentMining
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_state_commitment_mining.py)
+set_tests_properties(StateCommitmentMining PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;shielded;mining;mandatory"
+  TIMEOUT 240 RUN_SERIAL TRUE)

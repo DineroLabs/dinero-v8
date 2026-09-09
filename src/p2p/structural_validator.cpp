@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 /**
  * Phase G.3.2: Structural Validation Implementation
  *
@@ -137,7 +138,7 @@ StructuralValidationResult StructuralValidator::validateBlock(const std::vector<
             return StructuralValidationResult::Fail("Transaction extends past end of block payload");
         }
 
-        auto tx_result = validateParsedTx(tx);
+        auto tx_result = validateParsedTx(tx, /*in_block=*/true);
         if (!tx_result.ok) {
             return tx_result;
         }
@@ -228,7 +229,7 @@ StructuralValidationResult StructuralValidator::validateTx(const std::vector<uin
         return StructuralValidationResult::Fail("Transaction payload is empty");
     }
 
-    if (raw.size() > dinero::consensus::MAX_TX_SIZE) {
+    if (raw.size() > dinero::consensus::shielded::WireTxByteLimit(raw)) {
         return StructuralValidationResult::Fail("Transaction exceeds maximum size");
     }
 
@@ -248,15 +249,26 @@ StructuralValidationResult StructuralValidator::validateTx(const std::vector<uin
     return validateParsedTx(tx);
 }
 
-StructuralValidationResult StructuralValidator::validateParsedTx(const dinero::Transaction& tx) const {
-    if (tx.vin.empty()) {
+StructuralValidationResult StructuralValidator::validateParsedTx(const dinero::Transaction& tx, bool in_block) const {
+    const bool shielded = dinero::consensus::shielded::HasShieldedResources(tx);
+    if (!shielded && tx.vin.empty()) {
         return StructuralValidationResult::Fail("Transaction must have at least one input");
     }
 
-    if (tx.vout.empty()) {
+    if (!shielded && tx.vout.empty()) {
         return StructuralValidationResult::Fail("Transaction must have at least one output");
     }
-    if (tx.GetWeight() == 0 || tx.GetWeight() > dinero::consensus::MAX_TX_WEIGHT) {
+    // Stateless prefilter accepts the union of historical and dormant profiles.
+    // Admission and block connection enforce the actual target-height profile.
+    std::string resource_error;
+    if (!in_block && !dinero::consensus::shielded::CheckTxResourceEnvelope(tx, true, resource_error)) {
+        return StructuralValidationResult::Fail(resource_error);
+    }
+    // Historical block structure enforced weight, not the standalone relay
+    // byte ceiling. Applying the latter here would reject old v5 witness
+    // bundles >100 KB that were valid inside blocks. Contextual Auth block
+    // validation separately requires v6 and the new exact byte/weight limits.
+    if (tx.GetWeight() == 0 || tx.GetWeight() > dinero::consensus::shielded::TxWeightLimit(tx, true)) {
         return StructuralValidationResult::Fail("Transaction weight exceeds limit");
     }
 

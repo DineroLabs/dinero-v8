@@ -22,6 +22,18 @@ void ReleaseUtf(JNIEnv* env, jstring value, const char* chars) {
     }
 }
 
+struct ScopedShieldedAccountKeys {
+    dinero::wallet::shielded::ShieldedAccountKeys* keys = nullptr;
+
+    explicit ScopedShieldedAccountKeys(
+        dinero::wallet::shielded::ShieldedAccountKeys& input) : keys(&input) {}
+    ScopedShieldedAccountKeys(const ScopedShieldedAccountKeys&) = delete;
+    ScopedShieldedAccountKeys& operator=(const ScopedShieldedAccountKeys&) = delete;
+    ~ScopedShieldedAccountKeys() {
+        if (keys != nullptr) OPENSSL_cleanse(keys, sizeof(*keys));
+    }
+};
+
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -95,14 +107,19 @@ Java_org_dinerolabs_dinerodpi_node_NativeNodeCore_nativeShieldedAddresses(
         if (!dinero::bip39::MnemonicToSeed(mnemonic_chars, passphrase_chars, seed) || seed.size() != 64) {
             throw std::runtime_error("invalid mnemonic");
         }
-        const auto keys = dinero::wallet::shielded::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+        auto keys = dinero::wallet::shielded::DeriveShieldedAccount(
+            seed.data(), seed.size(), 0);
+        ScopedShieldedAccountKeys keys_guard(keys);
         for (int index = 0; index < count; ++index) {
             using namespace dinero::wallet::shielded;
             const auto diversifier = ChaCha20Diversifier(keys.dk, static_cast<uint64_t>(index));
             const auto point = HashToPoint(diversifier, kDstDiv);
             const auto pk_d = DerivePkD(keys.ivk, point);
-            const auto spend = DeriveDiversifiedSpendKey(keys.ivk, diversifier).pk_d;
-            const auto payload = BuildAddressPayload(diversifier, pk_d, spend);
+            const auto spend = DeriveDiversifiedSpendPublicKey(keys.ak, diversifier);
+            const auto nfk_commitment = NullifierKeyCommitment(
+                DeriveDiversifiedNullifierKey(keys.nvk, diversifier));
+            const auto payload = BuildAddressPayload(
+                diversifier, pk_d, spend, nfk_commitment);
             if (index != 0) addresses << '\n';
             addresses << EncodeShieldedAddress(payload, kHrpMainnet);
         }

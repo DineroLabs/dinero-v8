@@ -134,6 +134,12 @@ void HeaderSyncP2P::Tick(uint64_t now_ms) {
     }
 }
 
+bool HeaderSyncP2P::OnHeadersRateLimited(uint64_t peer_id) {
+    // Reuse transport-failure cancellation: no peer penalty, header insertion,
+    // or immediate send. The service owns the receive-window retry delay.
+    return sync_manager_->MarkHeadersRequestFailed(peer_id);
+}
+
 bool HeaderSyncP2P::IsSynchronized() const {
     return sync_manager_->IsSynchronized();
 }

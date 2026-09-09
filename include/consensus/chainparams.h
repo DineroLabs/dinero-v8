@@ -244,12 +244,13 @@ struct ChainParams {
     // never control, so THE SENDER CAN SPEND THE NOTE THEY SENT, at any time,
     // forever — first-spender wins and the nullifier set rejects the loser.
     //
-    // At and above it, the note is committed to pk_d = s·G where `s` derives
-    // from the RECIPIENT's incoming viewing key, and the spend circuit proves
-    // knowledge of dlog(pk_d). The sender never learns `s`. Because nf is also
-    // derived from `s`, this closes the matching linkability leak (the sender
-    // could otherwise recognise when the note was spent) in the same change.
-    // Such proofs carry a distinct version byte (0x05 spend).
+    // At and above it, the note is committed to both pk_d = s·G, where `s`
+    // requires the RECIPIENT's secret ask, and a commitment to an independent
+    // nvk-derived nullifier key. The spend circuit proves knowledge of both.
+    // A full-viewing wallet can authenticate the note and track its nullifier
+    // without learning `s`; the sender learns neither private value.
+    // Such proofs carry a distinct version byte (0x06 spend). The earlier
+    // dormant 0x05 experiment is never reinterpreted as this authority model.
     //
     // MUST be >= shielded_cv_binding_activation_height: the auth circuit is a
     // strict superset of the cv-bound one, and an auth-without-cv variant would
@@ -267,6 +268,13 @@ struct ChainParams {
     // fleet-coordinated before it ships — a wrong boundary splits the chain.
     // ===========================================================================
     uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
+
+    // Wallet-format activation for outgoing-view recovery envelope v3. This
+    // is deliberately independent from consensus spend authority even though
+    // it may not precede it: coupling the names would let a wallet-format
+    // rollout accidentally activate with a consensus fork. UINT32_MAX is an
+    // explicit dormant sentinel (including at height UINT32_MAX).
+    uint32_t shielded_outgoing_recovery_activation_height = UINT32_MAX;
 
     // Distinct epoch reset paired with spend-authority activation. MUST equal
     // shielded_spend_auth_activation_height. This cannot reuse the historical
@@ -308,6 +316,51 @@ struct ChainParams {
     // fleet before it ships — a wrong boundary splits the chain.
     // ===========================================================================
     uint32_t shielded_coinbase_reject_activation_height = UINT32_MAX;
+
+    // ===========================================================================
+    // CONSENSUS (dormant): state_commitment_v1 activation height.
+    //
+    // At or above this height: the base block's coinbase must carry exactly one
+    // well-formed DNRS state commitment; snapshots whose base is at or above it
+    // must be v5 (coinbase + merkle branch, verified at load); the replay
+    // shielded-root comparison and the unreadable-state branches become fatal.
+    // Below it, everything stays advisory — byte-for-byte today's behavior.
+    //
+    // SNAPSHOT-TRUST activation is a SEPARATE policy from shielded-TRANSACTION
+    // activation (shielded_activation_height above). They must be able to move
+    // independently; nothing may key one gate on the other's height.
+    //
+    // The single authority for reading this is
+    // consensus::IsStateCommitmentActive(height, activation_height) — never a
+    // hand-written comparison (two sites computing dormancy differently
+    // disagree at exactly one height and fail OPEN).
+    //
+    // The struct default is UINT32_MAX (never activate). MAINNET AND TESTNET
+    // STAY DORMANT: per the activation governance order recorded in
+    // docs/specs/state_commitment_v1.md, no height may be selected until
+    // forged-snapshot rejection, burial policy ratification, fail-closed
+    // wiring, and the independent HUMAN consensus review are all complete.
+    // Regtest activates at 1 (not 0: the genesis coinbase carries no
+    // commitment, and activating at 0 would invalidate genesis or demand an
+    // exemption nobody has tested).
+    // ===========================================================================
+    uint32_t state_commitment_activation_height = UINT32_MAX;
+
+    // ===========================================================================
+    // POLICY: state-commitment burial depth (blocks).
+    //
+    // A snapshot base's state commitment is relied upon only when the base
+    // header is an ANCESTOR of the selected best-work, PoW-validated header
+    // tip AND lies at least this many blocks below it. Ancestry is part of the
+    // definition: height difference alone would let a high-but-not-best side
+    // chain look buried.
+    //
+    // VALUES ARE PROVISIONAL TEST NUMBERS, not ratified policy: final
+    // per-network depths await the human consensus review and a network/reorg
+    // analysis (user ruling, 2026-09-08). They gate nothing while
+    // state_commitment_activation_height is dormant.
+    // ===========================================================================
+    uint32_t state_commitment_burial_depth = 288;
 
     // Genesis block parameters
     GenesisParams genesis;

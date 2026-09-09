@@ -92,6 +92,13 @@ The reviewer MUST analyze the complete composition of:
 - the Pedersen tally;
 - BIP340 verification under the x-only binding key.
 
+> **Historical profile notice:** this package describes the dormant legacy
+> spend-authority profile. The recipient-bound profile and its separately
+> versioned address/proof/vector rules are specified in
+> `docs/specs/shielded_protocol_v1.md` and
+> `docs/specs/shielded_spend_authority_activation.md`. Do not use the legacy
+> `rcm`-derived construction as the activation review target.
+
 ### 3.2 Spend authorization
 
 Establish that an accepted spend requires knowledge of the `rcm`-derived

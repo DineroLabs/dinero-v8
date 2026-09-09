@@ -27,7 +27,9 @@ BASELINE_BIN="${BASELINE_DINEROD:-}"
 CURRENT_BIN="${CURRENT_DINEROD:-${ROOT_DIR}/build/dinerod}"
 BASELINE_SHA="${BASELINE_SHA:-unknown}"
 BASELINE_LABEL="${BASELINE_LABEL:-unknown}"
-CURRENT_SHA="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+HARNESS_SHA="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+# The harness checkout does not establish an externally supplied binary's SHA.
+CURRENT_SHA="${CURRENT_SHA:-unknown}"
 
 REQUIRE_BASELINE=0
 
@@ -44,6 +46,7 @@ Environment:
   BASELINE_DINEROD          Path to baseline dinerod (required for real parity)
   BASELINE_SHA              Git SHA for baseline binary (recommended)
   BASELINE_LABEL            Human-readable baseline tag/label (recommended for RC)
+  CURRENT_SHA               Verified source SHA for current binary (optional)
   CURRENT_DINEROD           Path to current dinerod (default: ${ROOT_DIR}/build/dinerod)
   BLOCK_COUNT               Number of valid corpus blocks (default: 500)
   MAX_MINE_ITERS            Nonce search iterations for fixture re-mine (default: 2000000)
@@ -793,6 +796,21 @@ run_fixture_case() {
 # Main
 # -----------------------------------------------------------------------------
 
+binary_sha256() {
+    python3 - "$1" <<'PYHASH'
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], 'rb') as f:
+    for chunk in iter(lambda: f.read(1024 * 1024), b''):
+        h.update(chunk)
+print(h.hexdigest())
+PYHASH
+}
+
+BASELINE_BINARY_SHA256="$(binary_sha256 "${BASELINE_BIN}")"
+CURRENT_BINARY_SHA256="$(binary_sha256 "${CURRENT_BIN}")"
+log "baseline=${BASELINE_BIN} sha256=${BASELINE_BINARY_SHA256}"
+log "current=${CURRENT_BIN} sha256=${CURRENT_BINARY_SHA256} source=${CURRENT_SHA} harness=${HARNESS_SHA}"
 log "Generating valid corpus (${BLOCK_COUNT} blocks)"
 generate_corpus
 
@@ -937,5 +955,10 @@ if [[ "${FAILURES}" -ne 0 ]]; then
     exit 1
 fi
 
+if [[ "$(binary_sha256 "${BASELINE_BIN}")" != "${BASELINE_BINARY_SHA256}" ||
+      "$(binary_sha256 "${CURRENT_BIN}")" != "${CURRENT_BINARY_SHA256}" ]]; then
+    echo "FAIL: daemon binary changed during acceptance verification" >&2
+    exit 1
+fi
 log "PASS: acceptance parity gate"
 exit 0

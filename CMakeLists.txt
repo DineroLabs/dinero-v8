@@ -990,6 +990,10 @@ add_library(dinero_core STATIC
   # state_commitment_v1 coinbase encoder/parser. Format only --
   # advisory, no activation height, no consensus enforcement.
   src/consensus/state_commitment.cpp
+  # state_commitment_v1 snapshot binding proof (v5 snapshots): merkle branch
+  # + DNRS verification chain. Pure policy; enforcement gates on
+  # state_commitment_activation_height.
+  src/consensus/snapshot_binding.cpp
   src/consensus/assumeutxo_fork_guard.cpp
   src/consensus/block_status_generation.cpp
 

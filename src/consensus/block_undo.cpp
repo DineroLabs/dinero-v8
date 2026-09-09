@@ -7,6 +7,7 @@
 #include <cstring>
 #include <sstream>
 #include <iomanip>
+#include <stdexcept>
 
 namespace dinero {
 namespace consensus {
@@ -71,6 +72,10 @@ std::string BlockUndo::ToJson() const {
 
     if (pre_block_shielded_frontier.has_value()) {
         root["pre_block_shielded_frontier"] = BytesToHex(*pre_block_shielded_frontier);
+    }
+
+    if (pre_block_shielded_anchors.has_value()) {
+        root["pre_block_shielded_anchors"] = BytesToHex(*pre_block_shielded_anchors);
     }
 
     if (pre_reset_shielded_epoch.has_value()) {
@@ -139,6 +144,10 @@ BlockUndo BlockUndo::FromJson(const std::string& json_str) {
     if (root.isMember("pre_block_shielded_frontier")) {
         undo.pre_block_shielded_frontier =
             HexToBytes(root["pre_block_shielded_frontier"].asString());
+    }
+
+    if (root.isMember("pre_block_shielded_anchors")) {
+        undo.pre_block_shielded_anchors = HexToBytes(root["pre_block_shielded_anchors"].asString());
     }
 
     if (root.isMember("pre_reset_shielded_epoch")) {
@@ -260,6 +269,9 @@ std::vector<uint8_t> BlockUndo::Serialize() const {
         WriteBytes(data, pre_reset_shielded_epoch->nullifiers);
     }
 
+    // Optional trailer: old records stop before this byte.
+    data.push_back(pre_block_shielded_anchors.has_value() ? 1 : 0);
+    if (pre_block_shielded_anchors) WriteBytes(data, *pre_block_shielded_anchors);
     return data;
 }
 
@@ -313,6 +325,14 @@ BlockUndo BlockUndo::Deserialize(const std::vector<uint8_t>& data) {
         }
     }
 
+    if (ptr < end && *ptr++ != 0) {
+        if (end - ptr < 4) throw std::runtime_error("truncated shielded anchor undo length");
+        const uint8_t* length_ptr = ptr;
+        const uint32_t length = ReadUInt32(length_ptr);
+        if (static_cast<size_t>(end - length_ptr) < length)
+            throw std::runtime_error("truncated shielded anchor undo");
+        undo.pre_block_shielded_anchors = ReadBytes(ptr);
+    }
     return undo;
 }
 

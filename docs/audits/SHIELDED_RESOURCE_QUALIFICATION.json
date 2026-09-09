@@ -1,0 +1,390 @@
+{
+  "scope": "proof-component-only",
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "logical_cpus": 16,
+  "source_commit": "8714f3cfc30e7cd9540720383a66e89e927abda4",
+  "source_dirty": true,
+  "binary_sha256": "c0e6c8f351b182943a3495c6e151cc2a0ee69cd66decd3e8780e73f165098465",
+  "budgets": {
+    "rss_bytes": 2147483648,
+    "prove_ms": 120000,
+    "verify_ms": 30000,
+    "block_verify_ms": 20000
+  },
+  "measurements": [
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3520,
+      "verify_ms": 1056,
+      "process_peak_rss_bytes": 570081280,
+      "shape": "shield",
+      "iteration": 1,
+      "wall_seconds": 4.598157209344208
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3563,
+      "verify_ms": 1064,
+      "process_peak_rss_bytes": 570114048,
+      "shape": "shield",
+      "iteration": 2,
+      "wall_seconds": 4.647644416429102
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3523,
+      "verify_ms": 1056,
+      "process_peak_rss_bytes": 570228736,
+      "shape": "shield",
+      "iteration": 3,
+      "wall_seconds": 4.600689957849681
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11769,
+      "verify_ms": 3907,
+      "process_peak_rss_bytes": 801882112,
+      "shape": "transfer_1in_2out",
+      "iteration": 1,
+      "wall_seconds": 15.699021167121828
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11800,
+      "verify_ms": 3973,
+      "process_peak_rss_bytes": 801980416,
+      "shape": "transfer_1in_2out",
+      "iteration": 2,
+      "wall_seconds": 15.803023957647383
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11901,
+      "verify_ms": 3952,
+      "process_peak_rss_bytes": 801914880,
+      "shape": "transfer_1in_2out",
+      "iteration": 3,
+      "wall_seconds": 15.8774868324399
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 16704,
+      "verify_ms": 5792,
+      "process_peak_rss_bytes": 801964032,
+      "shape": "transfer_2in_2out",
+      "iteration": 1,
+      "wall_seconds": 22.519640082493424
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 16721,
+      "verify_ms": 5780,
+      "process_peak_rss_bytes": 801996800,
+      "shape": "transfer_2in_2out",
+      "iteration": 2,
+      "wall_seconds": 22.52423887513578
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 16871,
+      "verify_ms": 5923,
+      "process_peak_rss_bytes": 802045952,
+      "shape": "transfer_2in_2out",
+      "iteration": 3,
+      "wall_seconds": 22.817245374433696
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 26494,
+      "verify_ms": 9481,
+      "process_peak_rss_bytes": 802160640,
+      "shape": "transfer_4in_2out",
+      "iteration": 1,
+      "wall_seconds": 36.00495916698128
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 26514,
+      "verify_ms": 9542,
+      "process_peak_rss_bytes": 802209792,
+      "shape": "transfer_4in_2out",
+      "iteration": 2,
+      "wall_seconds": 36.079756583087146
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 26373,
+      "verify_ms": 9451,
+      "process_peak_rss_bytes": 801980416,
+      "shape": "transfer_4in_2out",
+      "iteration": 3,
+      "wall_seconds": 35.846102125011384
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 5124,
+      "verify_ms": 1862,
+      "process_peak_rss_bytes": 801832960,
+      "shape": "unshield",
+      "iteration": 1,
+      "wall_seconds": 7.009029041975737
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 5081,
+      "verify_ms": 1814,
+      "process_peak_rss_bytes": 801751040,
+      "shape": "unshield",
+      "iteration": 2,
+      "wall_seconds": 6.917655332945287
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 5114,
+      "verify_ms": 1821,
+      "process_peak_rss_bytes": 801964032,
+      "shape": "unshield",
+      "iteration": 3,
+      "wall_seconds": 6.956545917317271
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 33489,
+      "verify_ms": 11695,
+      "process_peak_rss_bytes": 804192256,
+      "shape": "block_8proofs",
+      "iteration": 1,
+      "wall_seconds": 45.20623870845884
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 32947,
+      "verify_ms": 11596,
+      "process_peak_rss_bytes": 804241408,
+      "shape": "block_8proofs",
+      "iteration": 2,
+      "wall_seconds": 44.565447667613626
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 33452,
+      "verify_ms": 11666,
+      "process_peak_rss_bytes": 804274176,
+      "shape": "block_8proofs",
+      "iteration": 3,
+      "wall_seconds": 45.14082387462258
+    }
+  ],
+  "summary": {
+    "shield": {
+      "prove_ms": {
+        "p50": 3523,
+        "p95": 3563,
+        "max": 3563
+      },
+      "verify_ms": {
+        "p50": 1056,
+        "p95": 1064,
+        "max": 1064
+      },
+      "process_peak_rss_bytes": {
+        "p50": 570114048,
+        "p95": 570228736,
+        "max": 570228736
+      },
+      "qualified": true
+    },
+    "transfer_1in_2out": {
+      "prove_ms": {
+        "p50": 11800,
+        "p95": 11901,
+        "max": 11901
+      },
+      "verify_ms": {
+        "p50": 3952,
+        "p95": 3973,
+        "max": 3973
+      },
+      "process_peak_rss_bytes": {
+        "p50": 801914880,
+        "p95": 801980416,
+        "max": 801980416
+      },
+      "qualified": true
+    },
+    "transfer_2in_2out": {
+      "prove_ms": {
+        "p50": 16721,
+        "p95": 16871,
+        "max": 16871
+      },
+      "verify_ms": {
+        "p50": 5792,
+        "p95": 5923,
+        "max": 5923
+      },
+      "process_peak_rss_bytes": {
+        "p50": 801996800,
+        "p95": 802045952,
+        "max": 802045952
+      },
+      "qualified": true
+    },
+    "transfer_4in_2out": {
+      "prove_ms": {
+        "p50": 26494,
+        "p95": 26514,
+        "max": 26514
+      },
+      "verify_ms": {
+        "p50": 9481,
+        "p95": 9542,
+        "max": 9542
+      },
+      "process_peak_rss_bytes": {
+        "p50": 802160640,
+        "p95": 802209792,
+        "max": 802209792
+      },
+      "qualified": true
+    },
+    "unshield": {
+      "prove_ms": {
+        "p50": 5114,
+        "p95": 5124,
+        "max": 5124
+      },
+      "verify_ms": {
+        "p50": 1821,
+        "p95": 1862,
+        "max": 1862
+      },
+      "process_peak_rss_bytes": {
+        "p50": 801832960,
+        "p95": 801964032,
+        "max": 801964032
+      },
+      "qualified": true
+    },
+    "block_8proofs": {
+      "prove_ms": {
+        "p50": 33452,
+        "p95": 33489,
+        "max": 33489
+      },
+      "verify_ms": {
+        "p50": 11666,
+        "p95": 11695,
+        "max": 11695
+      },
+      "process_peak_rss_bytes": {
+        "p50": 804241408,
+        "p95": 804274176,
+        "max": 804274176
+      },
+      "qualified": true
+    }
+  },
+  "qualified": true,
+  "source_files_sha256": {
+    "src/test/shielded_validation_tests.cpp": "9c67aee0e36d854acc03b8ecdcb83ee30da016564a9b38b7130899fc569b5fae",
+    "src/consensus/shielded/shielded_circuit.cpp": "0369139be17eacb3ad478f169509e1199701cf1dbd8d9ecb2a9a2241fec525cd",
+    "include/consensus/shielded/resource_limits.h": "c54f3c850b501e0a22db8e2df736a985e7e702c41a9539de367ca6ffb27c3da3",
+    "tools/shielded_resource_qualification.py": "7ae03bddfff8763b26fef5f197f95ab2c82d6aee17994b6b6686ab1b731c1b33"
+  },
+  "load_context": "Fresh benchmark process for each sample; other daemon verification tests were running on the same host. This is proof-component qualification, not an isolated hardware floor or full daemon qualification."
+}

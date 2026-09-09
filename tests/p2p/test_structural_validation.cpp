@@ -29,6 +29,7 @@
 #include "primitives/transaction.h"
 
 #include <cassert>
+#include <stdexcept>
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -302,7 +303,20 @@ void test_utreexo_trailing_bytes_rejected() {
     std::cout << "  [✓] Utreexo trailing bytes rejected!" << std::endl;
 }
 
+void test_legacy_block_witness_keeps_historical_size_rule() {
+    auto tx = MakeStandardTx();
+    tx.version = Transaction::TX_VERSION_SHIELDED;
+    tx.witness_version = 0;
+    tx.shielded_bundle_bytes.resize(150'000, 0);
+    if (!(tx.GetSize() > 100'000)) throw std::runtime_error("resource boundary: tx.GetSize() > 100'000");
+    if (!(tx.GetWeight() < 400'000)) throw std::runtime_error("resource boundary: tx.GetWeight() < 400'000");
+    StructuralValidator validator;
+    if (!(!validator.validateTx(SerializeTx(tx)).ok)) throw std::runtime_error("resource boundary: !validator.validateTx(SerializeTx(tx)).ok");
+    if (!(validator.validateBlock(SerializeBlock({MakeCoinbaseTx(), tx})).ok)) throw std::runtime_error("resource boundary: validator.validateBlock(SerializeBlock({MakeCoinbaseTx(), tx})).ok");
+}
+
 int main() {
+    test_legacy_block_witness_keeps_historical_size_rule();
     std::cout << "========================================" << std::endl;
     std::cout << "G.3.2: Structural Validation Tests" << std::endl;
     std::cout << "========================================" << std::endl;

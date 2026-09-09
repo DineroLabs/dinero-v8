@@ -212,6 +212,18 @@ static void secureClearString(std::string& data) {
     }
 }
 
+struct ScopedShieldedAccountKeys {
+    wallet::shielded::ShieldedAccountKeys* keys = nullptr;
+
+    explicit ScopedShieldedAccountKeys(
+        wallet::shielded::ShieldedAccountKeys& input) : keys(&input) {}
+    ScopedShieldedAccountKeys(const ScopedShieldedAccountKeys&) = delete;
+    ScopedShieldedAccountKeys& operator=(const ScopedShieldedAccountKeys&) = delete;
+    ~ScopedShieldedAccountKeys() {
+        if (keys != nullptr) OPENSSL_cleanse(keys, sizeof(*keys));
+    }
+};
+
 // Encryption flow must never reset derivation/UTXO tables.
 static constexpr bool kResetAddressStateDuringEncryption = false;
 static_assert(!kResetAddressStateDuringEncryption,
@@ -2539,6 +2551,22 @@ void WalletManager::close() {
     clearPrivateKeyCache();
     secureClearBytes(master_seed_);
     secureClearString(encryption_key_);
+    // Viewing authority may survive wallet.lock so background scanning can
+    // continue, but it must never survive closing/switching wallets. Retaining
+    // either cache here would let the next wallet opened in this process scan
+    // with the previous wallet's incoming or outgoing identity.
+    for (auto& ivk : shielded_incoming_viewing_keys_) {
+        OPENSSL_cleanse(ivk.data(), ivk.size());
+    }
+    for (auto& authority : shielded_recipient_viewing_authorities_) {
+        OPENSSL_cleanse(&authority, sizeof(authority));
+    }
+    for (auto& ovk : shielded_outgoing_viewing_keys_) {
+        OPENSSL_cleanse(ovk.data(), ovk.size());
+    }
+    shielded_incoming_viewing_keys_.clear();
+    shielded_recipient_viewing_authorities_.clear();
+    shielded_outgoing_viewing_keys_.clear();
     primary_address_.clear();
     wallet_locked_ = true;
     unlock_timeout_ = 0;
@@ -3085,6 +3113,41 @@ void WalletManager::encryptWallet(const std::string& passphrase) {
     master_seed_ = seed_to_store;
     WLOG_INFO("✅ HD wallet master seed encrypted with wallet passphrase");
 
+    // Populate receive/nullifier/outgoing viewing authority before the first
+    // lock erases master_seed_. Previously these caches were populated only by
+    // unlockWallet(), so a freshly encrypted wallet could not recognize the
+    // very next shielded block while locked. Viewing authority intentionally
+    // survives lock (but is cleansed by close/unload); spend authority does not.
+    shielded_incoming_viewing_keys_.clear();
+    shielded_recipient_viewing_authorities_.clear();
+    shielded_outgoing_viewing_keys_.clear();
+    try {
+        constexpr uint32_t kShieldedScanAccounts = 4;
+        for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
+            auto keys = wallet::shielded::DeriveShieldedAccount(
+                master_seed_.data(), master_seed_.size(), acct);
+            ScopedShieldedAccountKeys keys_guard(keys);
+            shielded_incoming_viewing_keys_.push_back(keys.ivk);
+            shielded_recipient_viewing_authorities_.push_back(
+                {keys.ivk, keys.ak, keys.nvk});
+            shielded_outgoing_viewing_keys_.push_back(keys.ovk);
+        }
+    } catch (...) {
+        for (auto& ivk : shielded_incoming_viewing_keys_) {
+            OPENSSL_cleanse(ivk.data(), ivk.size());
+        }
+        for (auto& authority : shielded_recipient_viewing_authorities_) {
+            OPENSSL_cleanse(&authority, sizeof(authority));
+        }
+        for (auto& ovk : shielded_outgoing_viewing_keys_) {
+            OPENSSL_cleanse(ovk.data(), ovk.size());
+        }
+        shielded_incoming_viewing_keys_.clear();
+        shielded_recipient_viewing_authorities_.clear();
+        shielded_outgoing_viewing_keys_.clear();
+        WLOG_WARN("Shielded viewing authority cache unavailable during wallet encryption");
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // CRITICAL FIX: Update encryption_metadata table
     // ═══════════════════════════════════════════════════════════════
@@ -3372,12 +3435,18 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
         WLOG_INFO("✅ HD wallet master seed loaded into memory (" + std::to_string(master_seed_.size()) + " bytes)");
 
         shielded_incoming_viewing_keys_.clear();
+        shielded_recipient_viewing_authorities_.clear();
+        shielded_outgoing_viewing_keys_.clear();
         try {
             constexpr uint32_t kShieldedScanAccounts = 4;
             for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
                 auto keys = wallet::shielded::DeriveShieldedAccount(
                     master_seed_.data(), master_seed_.size(), acct);
+                ScopedShieldedAccountKeys keys_guard(keys);
                 shielded_incoming_viewing_keys_.push_back(keys.ivk);
+                shielded_recipient_viewing_authorities_.push_back(
+                    {keys.ivk, keys.ak, keys.nvk});
+                shielded_outgoing_viewing_keys_.push_back(keys.ovk);
             }
             WLOG_INFO("✅ Shielded incoming viewing keys cached for receive scanning (" +
                       std::to_string(shielded_incoming_viewing_keys_.size()) +
@@ -3386,7 +3455,15 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
             for (auto& ivk : shielded_incoming_viewing_keys_) {
                 OPENSSL_cleanse(ivk.data(), ivk.size());
             }
+            for (auto& ovk : shielded_outgoing_viewing_keys_) {
+                OPENSSL_cleanse(ovk.data(), ovk.size());
+            }
+            for (auto& authority : shielded_recipient_viewing_authorities_) {
+                OPENSSL_cleanse(&authority, sizeof(authority));
+            }
             shielded_incoming_viewing_keys_.clear();
+            shielded_outgoing_viewing_keys_.clear();
+            shielded_recipient_viewing_authorities_.clear();
             WLOG_WARN(std::string("Shielded incoming viewing key cache skipped: ") + e.what());
         }
     } else {
@@ -3478,12 +3555,61 @@ WalletManager::GetShieldedIncomingViewingKeys() const {
         for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
             auto keys = wallet::shielded::DeriveShieldedAccount(
                 master_seed_.data(), master_seed_.size(), acct);
+            ScopedShieldedAccountKeys keys_guard(keys);
             ivks.push_back(keys.ivk);
         }
     } catch (...) {
         ivks.clear();
     }
     return ivks;
+}
+
+std::vector<WalletManager::ShieldedOutgoingViewingKey>
+WalletManager::GetShieldedOutgoingViewingKeys() const {
+    if (!shielded_outgoing_viewing_keys_.empty()) {
+        return shielded_outgoing_viewing_keys_;
+    }
+    if (master_seed_.size() != 64) return {};
+
+    std::vector<ShieldedOutgoingViewingKey> ovks;
+    try {
+        constexpr uint32_t kShieldedScanAccounts = 4;
+        for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
+            auto keys = wallet::shielded::DeriveShieldedAccount(
+                master_seed_.data(), master_seed_.size(), acct);
+            ScopedShieldedAccountKeys keys_guard(keys);
+            ovks.push_back(keys.ovk);
+        }
+    } catch (...) {
+        for (auto& ovk : ovks) OPENSSL_cleanse(ovk.data(), ovk.size());
+        ovks.clear();
+    }
+    return ovks;
+}
+
+std::vector<WalletManager::ShieldedRecipientViewingAuthority>
+WalletManager::GetShieldedRecipientViewingAuthorities() const {
+    if (!shielded_recipient_viewing_authorities_.empty()) {
+        return shielded_recipient_viewing_authorities_;
+    }
+    if (master_seed_.size() != 64) return {};
+
+    std::vector<ShieldedRecipientViewingAuthority> authorities;
+    try {
+        constexpr uint32_t kShieldedScanAccounts = 4;
+        for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
+            auto keys = wallet::shielded::DeriveShieldedAccount(
+                master_seed_.data(), master_seed_.size(), acct);
+            ScopedShieldedAccountKeys keys_guard(keys);
+            authorities.push_back({keys.ivk, keys.ak, keys.nvk});
+        }
+    } catch (...) {
+        for (auto& authority : authorities) {
+            OPENSSL_cleanse(&authority, sizeof(authority));
+        }
+        authorities.clear();
+    }
+    return authorities;
 }
 
 std::string WalletManager::GetV7P2MRStorePath() const {

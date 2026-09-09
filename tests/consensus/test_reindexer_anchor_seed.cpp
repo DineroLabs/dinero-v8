@@ -570,6 +570,23 @@ void testVerifyShieldedFrontierBytesMismatch(const std::filesystem::path& tmp) {
                   "pre_block_shielded_frontier-bytes-mismatch");
 }
 
+void testVerifyShieldedAnchorSnapshot(const std::filesystem::path& tmp) {
+    auto f = BuildHappyPathFixture(1);
+    f.pre_state.shielded_active_at_height = true;
+    f.pre_state.shielded_frontier_serialized = {1, 2, 3};
+    f.undo.pre_block_shielded_frontier = f.pre_state.shielded_frontier_serialized;
+    dinero::consensus::shielded::AnchorHistory anchors;
+    f.pre_state.shielded_anchors_serialized = anchors.SerializePersistenceBytes();
+    f.candidate_undo_bytes = f.undo.Serialize();
+    RunVerifyCase(tmp, "missing anchor undo", f, false, "missing-pre_block_shielded_anchors");
+    f.undo.pre_block_shielded_anchors = std::vector<uint8_t>{1, 2};
+    f.candidate_undo_bytes = f.undo.Serialize();
+    RunVerifyCase(tmp, "mismatched anchor undo", f, false, "pre_block_shielded_anchors-bytes-mismatch");
+    f.undo.pre_block_shielded_anchors = f.pre_state.shielded_anchors_serialized;
+    f.candidate_undo_bytes = f.undo.Serialize();
+    RunVerifyCase(tmp, "matching anchor undo", f, true, "");
+}
+
 }  // namespace
 
 int main() {
@@ -608,6 +625,7 @@ int main() {
     testVerifyCreatedNotInBlock(tmp);
     testVerifyForestReverseFails(tmp);
     testVerifyShieldedFrontierMismatch(tmp);
+    testVerifyShieldedAnchorSnapshot(tmp);
     testVerifyShieldedFrontierBytesMismatch(tmp);
 
     std::cout << "\n========================================" << std::endl;

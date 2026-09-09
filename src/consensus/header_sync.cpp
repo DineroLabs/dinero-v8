@@ -250,6 +250,12 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
     ProcessResult result;
     const bool owns_request = active_sync_peer_ == peer_id;
     const bool may_drive_state = owns_request || active_sync_peer_ == 0;
+    // Consuming this peer's response supersedes its previous continuation.
+    // A late response must not redirect another peer's outstanding request.
+    if (may_drive_state) {
+        auto peer = peers_.find(peer_id);
+        if (peer != peers_.end()) peer->second.continuation_hash.reset();
+    }
 
     if (headers.empty()) {
         // Empty headers message means peer has no more headers to send
@@ -375,6 +381,12 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
         }
     }
 
+    if (result.request_more && peer_it != peers_.end()) {
+        // Strict IBD exposed repeated genesis..2000 batches when this valid
+        // fork had not yet overtaken the best-work tip. Continue from the
+        // received frontier; best-work selection remains the selector's job.
+        peer_it->second.continuation_hash = headers.back().GetHash();
+    }
     result.accepted = true;
     return result;
 }
@@ -449,6 +461,12 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
         return std::nullopt;
     }
 
+    if (peer_it->second.continuation_hash &&
+        chain_selector_->ContainsHeader(*peer_it->second.continuation_hash) &&
+        locator.front() != *peer_it->second.continuation_hash) {
+        locator.insert(locator.begin(), *peer_it->second.continuation_hash);
+    }
+
     peer_it->second.last_request_time = GetCurrentTimeMs();
     active_sync_peer_ = peer_id;
     UpdateSyncTimeout(peer_id);
@@ -456,12 +474,14 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
     return locator;
 }
 
-void HeaderSyncManager::MarkHeadersRequestFailed(uint64_t peer_id) {
+bool HeaderSyncManager::MarkHeadersRequestFailed(uint64_t peer_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (active_sync_peer_ == peer_id) {
+    if (active_sync_peer_ != 0 && active_sync_peer_ == peer_id) {
         active_sync_peer_ = 0;
         TransitionTo(HeaderSyncState::IDLE);
+        return true;
     }
+    return false;
 }
 
 // ============================================================================

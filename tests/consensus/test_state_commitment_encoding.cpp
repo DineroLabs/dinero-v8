@@ -6,9 +6,9 @@
 // tests freeze the encoding BEFORE any activation height exists, because
 // after activation a layout change is a chain split.
 //
-// Scope: format only. No activation height is selected and no consensus
-// enforcement is wired; RequiresStateCommitment() returns false everywhere by
-// construction, and one test pins that.
+// Scope: format only. No mainnet/testnet activation height is selected;
+// IsStateCommitmentActive() is dormant at the UINT32_MAX sentinel there, and
+// the tests below pin both the dormant sweep and the sentinel's value.
 #include <gtest/gtest.h>
 
 #include <cstring>
@@ -217,15 +217,40 @@ TEST(StateCommitmentCoinbase, FilterCommitmentIsNotMistakenForStateCommitment) {
 // Pre-activation posture.
 // ---------------------------------------------------------------------------
 
-TEST(StateCommitmentActivation, NoHeightRequiresTheCommitmentYet) {
-    // Format work must not activate anything. If this ever fails, enforcement
-    // was enabled outside the separate reviewed change that should own it.
-    for (uint64_t h : {uint64_t{0}, uint64_t{1}, uint64_t{61000}, uint64_t{99677},
-                       uint64_t{1000000}, UINT64_MAX}) {
-        EXPECT_FALSE(dinero::consensus::RequiresStateCommitment(h))
-            << "height " << h << " must not require a commitment during format work";
+TEST(StateCommitmentActivation, DormantSentinelActivatesNothingAtAnyHeight) {
+    // With the activation height at the dormant sentinel, NO height is active —
+    // including the degenerate height == UINT32_MAX point, which the sentinel
+    // guard exists to close (the height is attacker-influenceable: a snapshot
+    // file claims its own base height). If this ever fails, enforcement was
+    // enabled outside the separate reviewed change that should own it.
+    for (uint32_t h : {uint32_t{0}, uint32_t{1}, uint32_t{61000},
+                       uint32_t{99677}, uint32_t{1000000}, UINT32_MAX}) {
+        EXPECT_FALSE(dinero::consensus::IsStateCommitmentActive(
+            h, StateCommitment::kActivationHeightUnset))
+            << "height " << h << " must not be active while dormant";
     }
-    EXPECT_EQ(StateCommitment::kActivationHeightUnset, UINT64_MAX);
+    // This pin is NOT a tautology: it exists so that an accidental activation
+    // (someone assigning a plausible number to the sentinel constant) fails a
+    // test instead of silently arming every dormant network. Do not delete it.
+    EXPECT_EQ(StateCommitment::kActivationHeightUnset, UINT32_MAX);
+}
+
+TEST(StateCommitmentActivation, ActiveAtAndAboveASelectedHeight) {
+    // The single authority's >= semantics, swept around a boundary.
+    constexpr uint32_t kActivation = 1000;
+    EXPECT_FALSE(dinero::consensus::IsStateCommitmentActive(0, kActivation));
+    EXPECT_FALSE(dinero::consensus::IsStateCommitmentActive(999, kActivation));
+    EXPECT_TRUE(dinero::consensus::IsStateCommitmentActive(1000, kActivation));
+    EXPECT_TRUE(dinero::consensus::IsStateCommitmentActive(1001, kActivation));
+    // Degenerate queried height with a REAL activation: >= holds, i.e. the
+    // predicate errs toward ACTIVE — fail-closed for enforcement sites. The
+    // safety argument is the failure DIRECTION, not unreachability: the height
+    // comes from attacker-controlled snapshot metadata.
+    EXPECT_TRUE(dinero::consensus::IsStateCommitmentActive(UINT32_MAX, kActivation));
+    // Activation at height 1 (the regtest configuration): genesis is exempt,
+    // block 1 onward is not.
+    EXPECT_FALSE(dinero::consensus::IsStateCommitmentActive(0, 1));
+    EXPECT_TRUE(dinero::consensus::IsStateCommitmentActive(1, 1));
 }
 
 TEST(StateCommitmentActivation, ParsingIsAdvisoryAndDoesNotDependOnHeight) {

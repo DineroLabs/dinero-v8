@@ -78,6 +78,7 @@ using dinero::OutPoint;                   // Phase M.0: Make OutPoint available 
 #include <iomanip>
 #include <algorithm>
 #include <cmath>
+#include "consensus/limits.h"
 #include <cctype>
 #include <limits>
 #include <map>
@@ -2691,6 +2692,17 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         if (fee_rate <= 0.0) {
             fee_rate = 1.0;  // 1 una/byte minimum
         }
+
+        // Coin selection and the signer use an integer una/vbyte rate. A
+        // positive fractional estimate previously truncated to zero, making a
+        // normal send fail with "Fee is zero". Round up once for every caller.
+        const double max_safe_rate = static_cast<double>(
+            std::numeric_limits<uint64_t>::max() / dinero::consensus::MAX_BLOCK_WEIGHT);
+        if (!std::isfinite(fee_rate) || fee_rate > max_safe_rate) {
+            result["error"] = "Invalid fee rate: outside safe transaction fee range";
+            return result;
+        }
+        fee_rate = std::ceil(std::max(1.0, fee_rate));
 
         if (amount_din <= 0) {
             result["error"] = "Invalid amount: must be positive";

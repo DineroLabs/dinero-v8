@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 #include "daemon/mempool.h"
 #include "dinero/compat/int128.hpp"
 #include "primitives/block.h"  // Block type for onBlockConnected/onBlockDisconnected
@@ -720,6 +721,15 @@ TxAcceptResult Mempool::submitTransactionInternal(
     // Calculate ancestors (unconfirmed parents)
     uint32_t ancestor_count = 0;
     uint64_t ancestor_size = tx_size;  // Start with this transaction's size
+    uint64_t package_height = 0;
+    if (chain_db_) {
+        auto tip = chain_db_->getTip();
+        if (tip.status() == Status::Ok) package_height = static_cast<uint64_t>(tip.value().height) + 1;
+    }
+    const bool auth_packages = consensus::shielded::AuthResourcesActive(package_height,
+        dinero::Params().shielded_spend_auth_activation_height);
+    bool ancestor_has_auth = consensus::shielded::HasShieldedResources(tx);
+
     std::unordered_set<uint256> visited_ancestors;
     std::vector<uint256> to_visit_ancestors;
 
@@ -744,6 +754,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
         ancestor_count++;
         ancestor_size += ancestor_it->second.tx_size;
+        ancestor_has_auth |= consensus::shielded::HasShieldedResources(ancestor_it->second.tx);
 
         // Add this ancestor's parents
         for (const auto& input : ancestor_it->second.tx.vin) {
@@ -757,7 +768,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
     // Check ancestor limits
     constexpr uint32_t MAX_ANCESTORS = 25;
-    constexpr uint64_t MAX_ANCESTOR_SIZE = 101 * 1024;  // 101KB
+    const uint64_t MAX_ANCESTOR_SIZE = consensus::shielded::PackageByteLimit(auth_packages, ancestor_has_auth);
 
     if (ancestor_count > MAX_ANCESTORS) {
         MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: too many ancestors (" +
@@ -793,6 +804,8 @@ TxAcceptResult Mempool::submitTransactionInternal(
         // Count descendants of this parent (including the new transaction)
         uint32_t descendant_count = 1;  // Count the new transaction
         uint64_t descendant_size = tx_size;
+        bool descendant_has_auth = consensus::shielded::HasShieldedResources(tx) ||
+            consensus::shielded::HasShieldedResources(parent_it->second.tx);
         std::unordered_set<uint256> visited_descendants;
         std::vector<uint256> to_visit_descendants;
 
@@ -823,6 +836,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
             descendant_count++;
             descendant_size += descendant_it->second.tx_size;
+            descendant_has_auth |= consensus::shielded::HasShieldedResources(descendant_it->second.tx);
 
             // Add this descendant's children
             for (const auto& [mempool_txid, entry] : m_transactions) {
@@ -839,8 +853,8 @@ TxAcceptResult Mempool::submitTransactionInternal(
         }
 
         // Check descendant limits for this parent
-        constexpr uint32_t MAX_DESCENDANTS = 25;
-        constexpr uint64_t MAX_DESCENDANT_SIZE = 101 * 1024;  // 101KB
+        constexpr uint32_t MAX_DESCENDANTS = consensus::shielded::kMaxPackageTransactions;
+        const uint64_t MAX_DESCENDANT_SIZE = consensus::shielded::PackageByteLimit(auth_packages, descendant_has_auth);
 
         if (descendant_count > MAX_DESCENDANTS) {
             MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
@@ -1984,21 +1998,22 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
     bool scoring_timed_out = false;
     size_t freeze_fork_excluded = 0;
     for (const auto& [txid, entry] : m_transactions) {
-        if (isTemplateExcludedLocked(txid, now, nullptr)) {
-            ++template_excluded;
-            continue;
-        }
-        if (!selectable_at_height(txid, entry, nullptr)) {
-            continue;
-        }
-
-        // Check timeout: if scoring is taking too long, stop scoring remaining txs
+        // Check before expensive height-gated proof verification. Checking
+        // afterwards discarded the first fully validated shielded tx when a
+        // single proof exceeded the budget, starving it on every template.
         if (std::chrono::steady_clock::now() - selectionStart > SELECTION_TIMEOUT) {
             MPLOG_WARN("selectTransactionsForBlock: timeout during ancestor scoring after " +
                 std::to_string(scored_txs.size()) + " of " +
                 std::to_string(m_transactions.size()) + " txs");
             scoring_timed_out = true;
             break;
+        }
+        if (isTemplateExcludedLocked(txid, now, nullptr)) {
+            ++template_excluded;
+            continue;
+        }
+        if (!selectable_at_height(txid, entry, nullptr)) {
+            continue;
         }
 
         TxWithAncestorScore score;
@@ -2134,10 +2149,15 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
     std::unordered_set<uint256> included;  // Phase M.0: uint256
     size_t current_size = 0;
     uint64_t current_weight = 0;
+    consensus::shielded::AuthBlockResourceUsage current_auth_resources;
+    bool considered_selection_candidate = false;
 
     for (const auto& score : scored_txs) {
-        // Check timeout: stop adding transactions if we've exceeded the budget
-        if (std::chrono::steady_clock::now() - selectionStart > SELECTION_TIMEOUT) {
+        // Complete at most one validated package even if its proof check
+        // exhausted the budget during scoring. All validity/size/weight
+        // checks below still apply; only later packages stop at the deadline.
+        if (considered_selection_candidate &&
+            std::chrono::steady_clock::now() - selectionStart > SELECTION_TIMEOUT) {
             MPLOG_WARN("selectTransactionsForBlock: timeout during selection after " +
                 std::to_string(selected.size()) + " txs included, returning partial template");
             break;
@@ -2150,6 +2170,24 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
         if (!selectable_at_height(score.txid, *score.entry, nullptr)) {
             continue;
         }
+        considered_selection_candidate = true;
+
+        // Validate every missing ancestor before mutating the selected set.
+        // Selecting entries one by one could discover an unselectable later
+        // ancestor after committing earlier ones, which also made incremental
+        // Auth resource accounting under-count those partial additions.
+        bool package_valid = true;
+        for (const auto& ancestor_txid : score.ancestors) {
+            if (included.count(ancestor_txid)) continue;
+            auto ancestor_it = m_transactions.find(ancestor_txid);
+            if (ancestor_it == m_transactions.end() ||
+                !selectable_at_height(ancestor_txid, ancestor_it->second,
+                                      nullptr)) {
+                package_valid = false;
+                break;
+            }
+        }
+        if (!package_valid) continue;
 
         // Calculate total size if we include this transaction + all ancestors
         size_t package_size = score.entry->tx_size;
@@ -2162,7 +2200,37 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
             }
         }
 
-        uint64_t package_weight = package_size * 4;  // Simplified weight
+        // Include only packages that fit the block's independently bounded
+        // proof work. Track the running count rather than repeatedly copying
+        // and decoding every transaction already selected (quadratic on a
+        // transparent-heavy block).
+        auto candidate_auth_resources = current_auth_resources;
+        bool auth_resources_ok = true;
+        auto add_auth_resources = [&](const Transaction& candidate) {
+            std::string resource_error;
+            if (!consensus::shielded::AccumulateAuthBlockResources(
+                    candidate, next_block_height,
+                    dinero::Params().shielded_spend_auth_activation_height,
+                    candidate_auth_resources, resource_error)) {
+                auth_resources_ok = false;
+            }
+        };
+        for (const auto& ancestor : score.ancestors) {
+            if (!included.count(ancestor)) {
+                auto it = m_transactions.find(ancestor);
+                if (it != m_transactions.end()) add_auth_resources(it->second.tx);
+            }
+        }
+        add_auth_resources(score.entry->tx);
+        if (!auth_resources_ok) continue;
+
+        uint64_t package_weight = score.entry->tx.GetWeight();
+        for (const auto& ancestor : score.ancestors) {
+            if (!included.count(ancestor)) {
+                auto it = m_transactions.find(ancestor);
+                if (it != m_transactions.end()) package_weight += it->second.tx.GetWeight();
+            }
+        }
 
         // Check if package fits in block
         if (current_size + package_size > max_block_size ||
@@ -2171,31 +2239,23 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
         }
 
         // Include all ancestors first (in correct order)
-        bool package_valid = true;
         for (const auto& ancestor_txid : score.ancestors) {
             if (!included.count(ancestor_txid)) {
                 auto ancestor_it = m_transactions.find(ancestor_txid);
                 if (ancestor_it != m_transactions.end()) {
-                    if (!selectable_at_height(ancestor_txid, ancestor_it->second, nullptr)) {
-                        package_valid = false;
-                        break;
-                    }
                     selected.push_back(ancestor_it->second.tx);
                     included.insert(ancestor_txid);
                     current_size += ancestor_it->second.tx_size;
-                    current_weight += ancestor_it->second.tx_size * 4;
+                    current_weight += ancestor_it->second.tx.GetWeight();
                 }
             }
         }
-        if (!package_valid) {
-            continue;
-        }
-
         // Include the transaction itself
         selected.push_back(score.entry->tx);
         included.insert(score.txid);
         current_size += score.entry->tx_size;
-        current_weight += score.entry->tx_size * 4;
+        current_weight += score.entry->tx.GetWeight();
+        current_auth_resources = candidate_auth_resources;
 
         MPLOG_DEBUG("CPFP: Selected " + score.txid.GetHex() + " with " +
                      std::to_string(score.ancestors.size()) + " ancestors, " +
@@ -2258,6 +2318,17 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
             return false;
         }
         return true;
+    }
+
+    std::string resource_error;
+    size_t proofs = 0;
+    const auto auth_height = dinero::Params().shielded_spend_auth_activation_height;
+    if (!consensus::shielded::CheckTxResourceEnvelope(tx,
+            consensus::shielded::AuthResourcesActive(next_block_height, auth_height), resource_error) ||
+        !consensus::shielded::CheckAuthTransactionResources(tx, next_block_height,
+            auth_height, proofs, resource_error)) {
+        if (reason) *reason = resource_error;
+        return false;
     }
 
     // Shielded epoch reset wall: the cutover block must be shielded-empty, so no
@@ -2910,12 +2981,19 @@ bool Mempool::validateTransaction(
         return false;
     }
 
-    // Check transaction size
-    size_t tx_size = tx.Serialize().size() / 2; // Hex string size / 2 = bytes
-    if (tx_size > 100000) { // 100KB limit per transaction
-        error = "Transaction too large: " + std::to_string(tx_size) + " bytes";
-        return false;
+    // Serialize() returns bytes, not hex. Use the same byte/weight profile
+    // at admission and template selection, with the actual target height.
+    uint64_t resource_height = target_height.value_or(0);
+    if (!target_height && chain_db_) {
+        auto tip = chain_db_->getTip();
+        if (tip.status() == Status::Ok) resource_height = static_cast<uint64_t>(tip.value().height) + 1;
     }
+    const auto activation = dinero::Params().shielded_spend_auth_activation_height;
+    if (!consensus::shielded::CheckTxResourceEnvelope(tx,
+            consensus::shielded::AuthResourcesActive(resource_height, activation), error)) return false;
+    size_t proof_count = 0;
+    if (!consensus::shielded::CheckAuthTransactionResources(tx, resource_height,
+            activation, proof_count, error)) return false;
 
     if (tx.HasConfidentialOutputs()) {
         error = "legacy private lane removed";

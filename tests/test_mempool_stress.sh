@@ -43,17 +43,17 @@ print_test() {
 
 pass() {
     echo -e "${GREEN}PASS:${NC} $1"
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
 }
 
 fail() {
     echo -e "${RED}FAIL:${NC} $1"
-    ((TESTS_FAILED++))
+    TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
 skip() {
     echo -e "${YELLOW}SKIP:${NC} $1"
-    ((TESTS_SKIPPED++))
+    TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
 }
 
 info() {
@@ -116,7 +116,6 @@ wait_for_daemon() {
 start_daemon() {
     rm -rf "$DATADIR"
     mkdir -p "$DATADIR"
-    pkill -f "dinerod.*$PORT_RPC" 2>/dev/null || true
     sleep 1
 
     "$DINEROD" \
@@ -137,7 +136,6 @@ stop_daemon() {
         wait "$DAEMON_PID" 2>/dev/null || true
         DAEMON_PID=""
     fi
-    pkill -f "dinerod.*$PORT_RPC" 2>/dev/null || true
     sleep 1
 }
 
@@ -186,7 +184,18 @@ send_test_tx() {
 }
 
 clear_mempool() {
-    rpc_result "mempool.clear" "[]" >/dev/null 2>&1 || true
+    # Settle through block connection so wallet spend state and pool agree.
+    # The assembler may need multiple blocks for a dependent chain.
+    local rounds=0
+    while [ "$(rpc_scalar "mempool.getinfo" "[]" '.size')" -gt 0 ]; do
+        [ "$rounds" -lt 40 ] || return 1
+        mine_blocks 1 "$MINER_ADDR" || return 1
+        rounds=$((rounds + 1))
+    done
+    if [ "$rounds" -gt 0 ]; then
+        rpc_result "wallet.rescanblockchain" "[0]" >/dev/null || return 1
+    fi
+
 }
 
 unlock_all_utxos() {
@@ -195,7 +204,7 @@ unlock_all_utxos() {
 
 test_acceptance_burst() {
     print_test "TEST 1" "Acceptance burst (independent transactions)"
-    clear_mempool
+    clear_mempool || { fail "Could not settle previous mempool phase"; return 1; }
     unlock_all_utxos
 
     local accepted=0
@@ -230,35 +239,51 @@ test_acceptance_burst() {
 
 test_ancestor_chain_policy() {
     print_test "TEST 2" "Ancestor-chain pressure (single UTXO path)"
-    clear_mempool
+    clear_mempool || { fail "Could not settle previous mempool phase"; return 1; }
 
-    # Force chain-building from one spend source:
-    # lock all UTXOs, unlock one, then repeatedly spend to self.
-    rpc_result "wallet.lockunspent" "[false,[]]" >/dev/null
-    rpc_result "wallet.lockunspent" "[true,[{\"txid\":\"$FUNDING_UTXO_TXID\",\"vout\":$FUNDING_UTXO_VOUT}]]" >/dev/null
+    # ReleaseSuite exposed that the old fixture reused a pre-burst outpoint
+    # and expected automatic selection to spend unconfirmed change. Main also
+    # fails that fixture. Explicit raw inputs make every child depend on the
+    # preceding accepted transaction, independent of wallet coin selection.
+    local utxo prev_txid prev_vout prev_script prev_amount
+    utxo="$(rpc_result "wallet.listunspent" "[]" | jq -c '[.[] | select(.confirmations > 0)][0]')"
+    prev_txid="$(echo "$utxo" | jq -r '.txid // empty')"
+    prev_vout="$(echo "$utxo" | jq -r '.vout')"
+    prev_script="$(echo "$utxo" | jq -r '.scriptPubKey')"
+    prev_amount="$(echo "$utxo" | jq -r '.amount')"
+    [ -n "$prev_txid" ] || { fail "No confirmed ancestor-chain funding output"; return 1; }
 
-    local accepted=0
-    local rejected=0
-    local reject_reason=""
-    local limit_attempts=30
-
+    local accepted=0 rejected=0 reject_reason="" limit_attempts=30
+    local next_amount raw signed response txid decoded
     for ((i=1; i<=limit_attempts; i++)); do
-        local result ok reason
-        result="$(send_test_tx "$MINER_ADDR" "0.05")"
-        ok="$(echo "$result" | jq -r '.accepted // false')"
-        if [ "$ok" == "true" ]; then
-            ((accepted++))
-            continue
+        next_amount="$(python3 - "$prev_amount" <<'AMOUNT'
+from decimal import Decimal
+import sys
+print(format(Decimal(sys.argv[1]) - Decimal('0.001'), '.8f'))
+AMOUNT
+)"
+        raw="$(rpc_scalar "wallet.createrawtransaction" "[[{\"txid\":\"$prev_txid\",\"vout\":$prev_vout}],{\"$MINER_ADDR\":$next_amount}]" '.hex // empty')" || { fail "Could not construct ancestor child"; return 1; }
+        signed="$(rpc_result "wallet.signrawtransaction" "[\"$raw\",[{\"txid\":\"$prev_txid\",\"vout\":$prev_vout,\"scriptPubKey\":\"$prev_script\",\"amount\":$prev_amount}]]")" || { fail "Could not sign ancestor child"; return 1; }
+        [ "$(echo "$signed" | jq -r '.complete')" = true ] || { fail "Ancestor signature incomplete"; return 1; }
+        raw="$(echo "$signed" | jq -r '.hex')"
+        response="$(rpc_raw "wallet.sendrawtransaction" "[\"$raw\"]")"
+        reject_reason="$(echo "$response" | jq -r '.error.message // .result.error // .result.reject_reason // empty')"
+        if [ -n "$reject_reason" ]; then
+            rejected=1
+            info "First rejection at tx #$i: $reject_reason"
+            break
         fi
-
-        rejected=1
-        reason="$(echo "$result" | jq -r '.reject_reason // .error // "unknown rejection"')"
-        reject_reason="$reason"
-        info "First rejection at tx #$i: $reject_reason"
-        break
+        txid="$(echo "$response" | jq -r '.result.txid // .result.result // empty')"
+        [ -n "$txid" ] || { fail "Missing accepted ancestor txid: $response"; return 1; }
+        accepted=$((accepted + 1))
+        decoded="$(rpc_result "wallet.getrawtransaction" "[\"$txid\",true]")"
+        [ "$(echo "$decoded" | jq '.vin | length')" -eq 1 ] &&
+            [ "$(echo "$decoded" | jq -r '.vin[0].txid')" = "$prev_txid" ] || { fail "Child does not spend preceding parent"; return 1; }
+        prev_txid="$txid"
+        prev_vout=0
+        prev_script="$(echo "$decoded" | jq -r '.vout[0].scriptPubKey.hex')"
+        prev_amount="$next_amount"
     done
-
-    unlock_all_utxos
 
     if [ "$accepted" -eq 0 ]; then
         fail "Ancestor test produced zero accepted transactions"
@@ -270,8 +295,12 @@ test_ancestor_chain_policy() {
         return 1
     fi
 
+    [ "$accepted" -eq 26 ] || { fail "Expected a root plus 25 ancestors before rejection, got $accepted"; return 1; }
+
+    [ "$(rpc_scalar "mempool.getinfo" "[]" '.size')" -eq "$accepted" ] || { fail "Rejected child changed mempool size"; return 1; }
+
     if echo "$reject_reason" | tr '[:upper:]' '[:lower:]' | grep -Eq "ancestor|chain|too-long-mempool-chain"; then
-        pass "Ancestor policy rejection observed after $accepted accepted txs"
+        pass "Ancestor limit (25 predecessors) rejected the next child after $accepted accepted txs"
     else
         fail "Unexpected rejection reason: $reject_reason"
         return 1
@@ -296,7 +325,7 @@ test_decode_rejection_surface() {
 
 test_mined_inclusion() {
     print_test "TEST 4" "Accepted transaction is mined and chain advances"
-    clear_mempool
+    clear_mempool || { fail "Could not settle previous mempool phase"; return 1; }
     unlock_all_utxos
 
     local dest result ok txid tip_hash in_block mempool_size mempool_ids tx_still_in_mempool
@@ -340,8 +369,8 @@ main() {
         echo -e "${RED}ERROR:${NC} dinerod not found at $DINEROD"
         exit 1
     fi
-    if ! command -v jq >/dev/null 2>&1; then
-        echo -e "${RED}ERROR:${NC} jq is required"
+    if ! command -v jq >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${RED}ERROR:${NC} jq and python3 are required"
         exit 1
     fi
 

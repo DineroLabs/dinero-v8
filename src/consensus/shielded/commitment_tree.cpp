@@ -66,6 +66,23 @@ const Hash& AddrBindTag() {
     return kTag;
 }
 
+const Hash& NullifierKeyTag() {
+    static const Hash kTag = []() {
+        Hash h{};
+        constexpr const char kDst[] = "DIN/v7/shielded/nfkey/v1";
+        constexpr size_t kDstLen = sizeof(kDst) - 1;
+        static_assert(kDstLen <= HASH_BYTES, "NFKEY_TAG must fit in 32 bytes");
+        std::memcpy(h.data(), kDst, kDstLen);
+        return h;
+    }();
+    return kTag;
+}
+
+Hash AuthRecipientCommitmentKey(const Hash& spend_public_key,
+                                const Hash& nullifier_key_commitment) {
+    return Poseidon(spend_public_key, nullifier_key_commitment);
+}
+
 Hash NoteCommitment(const Hash& d,
                     const Hash& recipient_pk,
                     const Hash& value_commitment,

@@ -127,6 +127,11 @@ public:
     /**
      * Check if we're synchronized.
      */
+    // A locally discarded reply cannot satisfy its outstanding request.
+    // Returns true only when this peer owned that request; callers schedule a
+    // bounded retry after the receive-rate window, without penalizing the peer.
+    bool OnHeadersRateLimited(uint64_t peer_id);
+
     bool IsSynchronized() const;
 
     /**

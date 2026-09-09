@@ -103,6 +103,8 @@ std::vector<uint8_t> UndoRecord::Serialize() const {
         write_bytes(pre_reset_shielded_epoch->nullifiers);
     }
 
+    result.push_back(pre_block_shielded_anchors.has_value() ? 1 : 0);
+    if (pre_block_shielded_anchors) write_bytes(*pre_block_shielded_anchors);
     return result;
 }
 
@@ -219,6 +221,9 @@ UndoRecord UndoRecord::Deserialize(const std::vector<uint8_t>& data) {
         }
     }
 
+    if (offset < data.size() && data[offset++] != 0) {
+        result.pre_block_shielded_anchors = read_bytes();
+    }
     return result;
 }
 

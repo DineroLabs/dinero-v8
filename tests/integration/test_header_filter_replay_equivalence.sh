@@ -173,8 +173,9 @@ mine_blocks() {
 send_to_address() {
     local address="$1"
     local amount="$2"
+    local fee_rate="${3:-0}"
     local result
-    result="$(rpc_call "wallet.sendtoaddress" "[\"${address}\",${amount}]")"
+    result="$(rpc_call "wallet.sendtoaddress" "[\"${address}\",${amount},${fee_rate}]")"
     rpc_has_error "${result}" && fail "wallet.sendtoaddress failed: ${result}"
     local txid
     txid="$(jq -r '.result.txid // .result // empty' <<<"${result}")"
@@ -381,7 +382,8 @@ mine_blocks 110 "${MINER_ADDR}"
 send_to_address "${RECIPIENT_ADDR}" "1.25"
 mine_blocks 1 "${MINER_ADDR}"
 send_to_address "${SECOND_RECIPIENT_ADDR}" "0.75"
-send_to_address "${RECIPIENT_ADDR}" "0.50"
+# A positive fractional estimate must not truncate to a zero signing fee.
+send_to_address "${RECIPIENT_ADDR}" "0.50" "0.5"
 mine_blocks 2 "${MINER_ADDR}"
 wait_for_sync_state 113 "live steady state"
 

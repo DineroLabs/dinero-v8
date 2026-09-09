@@ -636,6 +636,8 @@ target_include_directories(wallet_test_deps PUBLIC
 add_executable(test_reindex
   tests/test_reindex.cpp
   src/consensus/reindexer.cpp
+  # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+  src/consensus/state_commitment.cpp
   src/consensus/genesis_canonical.cpp
   src/common/logger.cpp
   src/consensus/undo.cpp
@@ -678,6 +680,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_acceptance_parity.sh)
 
   set_tests_properties(AcceptanceParity PROPERTIES
     LABELS "consensus;gate;parity;release"
+    # Alternate build directories must not compare a stale source-tree binary.
+    ENVIRONMENT "CURRENT_DINEROD=$<TARGET_FILE:dinerod>"
     TIMEOUT 1800
   )
 
@@ -702,6 +706,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/test_ibd_torture.sh)
 
   set_tests_properties(IBDTorture PROPERTIES
     LABELS "ibd;p2p;utreexo;gate;release"
+    # The build-final sweep exposed fallback to ${CMAKE_SOURCE_DIR}/build.
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     TIMEOUT 3600
   )
 
@@ -735,6 +741,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_undo_rebuild_orchestrator.cpp)
     tests/daemon/test_undo_rebuild_orchestrator.cpp
     src/daemon/undo_rebuild_orchestrator.cpp
     src/consensus/reindexer.cpp
+    # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+    src/consensus/state_commitment.cpp
     src/consensus/genesis_canonical.cpp
     src/consensus/undo.cpp
     src/primitives/transaction_serializer.cpp
@@ -916,6 +924,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reindexer_anchor_seed.cpp)
   add_executable(test_reindexer_anchor_seed
     tests/consensus/test_reindexer_anchor_seed.cpp
     src/consensus/reindexer.cpp
+    # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+    src/consensus/state_commitment.cpp
     src/consensus/genesis_canonical.cpp
     src/consensus/undo.cpp
     src/common/logger.cpp
@@ -959,6 +969,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_reindex_equivalence.
     tests/consensus/test_shielded_reindex_equivalence.cpp
     src/consensus/genesis_canonical.cpp
     src/consensus/reindexer.cpp
+    # state_commitment_v1: reindexer now mirrors the coinbase DNRS rule
+    src/consensus/state_commitment.cpp
     src/common/logger.cpp
     src/consensus/undo.cpp
     src/primitives/transaction_serializer.cpp
@@ -1649,7 +1661,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/daa_golden_vectors_test.cpp)
     src/test/daa_golden_vectors_test.cpp
   )
 
-  add_dependencies(test_daa_golden_vectors gtest)
+  add_dependencies(test_daa_golden_vectors gtest gtest_main)
 
   target_link_libraries(test_daa_golden_vectors PRIVATE
     dinero_core
@@ -2160,7 +2172,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_stateless_replay_shielded_dec
   add_executable(test_stateless_replay_shielded_decision
     tests/consensus/test_stateless_replay_shielded_decision.cpp
   )
-  add_dependencies(test_stateless_replay_shielded_decision gtest)
+  # TARGET_FILE links do not order archive builds: a clean parallel build
+  # exposed the missing gtest_main dependency during shielded integration.
+  add_dependencies(test_stateless_replay_shielded_decision gtest gtest_main)
   target_link_libraries(test_stateless_replay_shielded_decision PRIVATE
     $<TARGET_FILE:gtest>
     $<TARGET_FILE:gtest_main>
@@ -2218,7 +2232,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_shielded_delta_parity.cpp
     src/wallet/taproot_tx_signer.cpp    # BIP341 Taproot sighash (test signing util)
   )
 
-  add_dependencies(test_csn_shielded_delta_parity gtest)
+  add_dependencies(test_csn_shielded_delta_parity gtest gtest_main)
 
   target_link_libraries(test_csn_shielded_delta_parity PRIVATE
     dinero_core
@@ -2379,10 +2393,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
   )
-  add_test(NAME ShieldedValidation COMMAND test_shielded_validation)
+  add_test(NAME ShieldedValidation COMMAND test_shielded_validation
+    --gtest_filter=-*AuthResourceMeasurements)
+  # AuthResourceMeasurements is a reproducible capacity benchmark, not a
+  # correctness test. Keep it explicitly runnable by shape (documented in the
+  # resource-profile spec) without registering a multi-shape, hour-scale ctest
+  # that would dominate the ordinary correctness lane.
   set_tests_properties(ShieldedValidation PROPERTIES
     LABELS "shielded;consensus;mandatory"
-    TIMEOUT 600
+    # Recipient-bound proofs are intentionally production-shaped. On the
+    # 10-core macOS builder this suite progresses beyond ten minutes without
+    # stalling; retain a bounded timeout without killing valid proof work.
+    TIMEOUT 1200
   )
   message(STATUS "Shielded validation tests enabled")
 endif()
@@ -2680,6 +2702,45 @@ if(TARGET dinero_wallet AND TARGET gtest)
     TIMEOUT 60
   )
   message(STATUS "Shielded derivation tests enabled")
+
+  add_executable(test_shielded_outgoing_view
+    tests/wallet/test_shielded_outgoing_view.cpp
+    tests/stubs/mempool_test_stubs.cpp
+  )
+  add_dependencies(test_shielded_outgoing_view gtest dinero_wallet)
+  target_link_libraries(test_shielded_outgoing_view PRIVATE
+    GTest::gtest
+    GTest::gtest_main
+    dinero_wallet
+    wallet_test_deps
+    dinero_shielded
+    dinero_zk
+    jsoncpp_static
+    sqlite3
+  )
+  target_include_directories(test_shielded_outgoing_view BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/third_party/jsoncpp/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+  )
+  target_compile_definitions(test_shielded_outgoing_view PRIVATE
+    SHIELDED_OUTGOING_VECTOR_FILE="${CMAKE_SOURCE_DIR}/tests/vectors/shielded_outgoing_view_v3_external.json"
+    SHIELDED_OUTGOING_LEGACY_VECTOR_FILE="${CMAKE_SOURCE_DIR}/tests/vectors/shielded_outgoing_view_v2_external.json"
+  )
+  if(APPLE)
+    target_link_libraries(test_shielded_outgoing_view PRIVATE "-framework Security")
+  endif()
+  add_test(NAME ShieldedOutgoingView COMMAND test_shielded_outgoing_view)
+  set_tests_properties(ShieldedOutgoingView PROPERTIES
+    LABELS "shielded;wallet;outgoing-view;guardrail;mandatory"
+    # The activation-boundary case constructs real Spartan output proofs.
+    # Debug builds on Apple silicon take roughly 160 seconds; a one-minute
+    # timeout would turn proof generation into a false failure.
+    TIMEOUT 300
+  )
+  message(STATUS "Shielded outgoing-view production/vector tests enabled")
 
   # Independent shielded protocol vectors. The JSON fixture is generated by a
   # standard-library-only Python oracle which imports no Dinero code. This C++
@@ -3995,7 +4056,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_write_metrics_export.cpp)
     src/daemon/block_write_metrics.cpp
     src/metrics/metrics_registry.cpp
   )
-  add_dependencies(test_block_write_metrics_export gtest)
+  add_dependencies(test_block_write_metrics_export gtest gtest_main)
   target_link_libraries(test_block_write_metrics_export PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> Threads::Threads
   )
@@ -4016,7 +4077,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_write_metrics.cpp)
     tests/daemon/test_block_write_metrics.cpp
     src/daemon/block_write_metrics.cpp
   )
-  add_dependencies(test_block_write_metrics gtest)
+  add_dependencies(test_block_write_metrics gtest gtest_main)
   target_link_libraries(test_block_write_metrics PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main> Threads::Threads
   )
@@ -4039,7 +4100,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_active_tip_classification.cpp)
     tests/daemon/test_active_tip_classification.cpp
     src/primitives/uint256.cpp
   )
-  add_dependencies(test_active_tip_classification gtest)
+  add_dependencies(test_active_tip_classification gtest gtest_main)
   target_link_libraries(test_active_tip_classification PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
   )
@@ -4062,7 +4123,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_concurrent_in_flight.cpp)
     src/daemon/interfaces/ingress_types.cpp
     src/primitives/uint256.cpp
   )
-  add_dependencies(test_concurrent_in_flight gtest)
+  add_dependencies(test_concurrent_in_flight gtest gtest_main)
   target_link_libraries(test_concurrent_in_flight PRIVATE
     $<TARGET_FILE:gtest> $<TARGET_FILE:gtest_main>
   )
@@ -12142,6 +12203,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     RestoreRpcFuzzMalformedPayloadsNoCrashNoPartialWallets
     ReorgDepthFourClearsConfirmedBalanceWithoutChangeIndexRollback
     WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard
+    ShieldedViewingAuthorityClearedOnUnload
     EncryptionRoundTripRestoreAndDerivationPersistence
     RestoreResetsLegacyEncryptionStateBeforeReEncrypt
     ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
@@ -12681,3 +12743,26 @@ set_tests_properties(RpcRegistryRestartCycle PROPERTIES
   LABELS "rpc;nodecore;restart;regression"
   TIMEOUT 30
 )
+
+# Dormant Auth resource profile: real serialization and stateless relay boundary.
+add_executable(test_shielded_resource_limits
+  tests/consensus/test_shielded_resource_limits.cpp
+  src/p2p/structural_validator.cpp)
+target_link_libraries(test_shielded_resource_limits PRIVATE
+  GTest::gtest_main dinero_core dinero_shielded)
+target_include_directories(test_shielded_resource_limits PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME ShieldedResourceLimits COMMAND test_shielded_resource_limits)
+set_tests_properties(ShieldedResourceLimits PROPERTIES LABELS "shielded;consensus;p2p;mandatory" TIMEOUT 30)
+
+add_executable(test_snapshot_binding
+  tests/consensus/test_snapshot_binding.cpp
+  src/consensus/snapshot_binding.cpp
+  src/consensus/state_commitment.cpp
+  src/primitives/transaction.cpp
+  src/primitives/transaction_serializer.cpp
+  src/primitives/uint256.cpp)
+target_link_libraries(test_snapshot_binding PRIVATE GTest::gtest_main dinero_shielded dinero_crypto)
+target_include_directories(test_snapshot_binding PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME SnapshotBinding COMMAND test_snapshot_binding)
+set_tests_properties(SnapshotBinding PROPERTIES LABELS "shielded;consensus;snapshot;mandatory" TIMEOUT 30)

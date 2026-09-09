@@ -213,11 +213,13 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
         ccv, p2trScripts, 100000, Params(), &reason));
 }
 
-TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
+TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     SelectParams(Chain::MAINNET);
+    // Pin the expanded checksum including every shielded activation/reset.
+    // This is operator drift telemetry, not a block or peer protocol change.
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a");
+        "d7bc19c7d11a568f9b75182896fcaff53fc5b5b732b61cdff81ac3202d8eac25");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -233,6 +235,17 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     expect_committed(&ChainParams::csfs_activation_height);
     expect_committed(&ChainParams::txhash_activation_height);
     expect_committed(&ChainParams::ccv_activation_height);
+    expect_committed(&ChainParams::shielded_activation_height);
+    expect_committed(&ChainParams::shielded_input_binding_activation_height);
+    expect_committed(&ChainParams::shielded_cv_binding_activation_height);
+    expect_committed(&ChainParams::shielded_epoch_reset_height);
+    expect_committed(&ChainParams::shielded_spend_auth_activation_height);
+    expect_committed(&ChainParams::shielded_spend_auth_epoch_reset_height);
+    expect_committed(&ChainParams::shielded_outgoing_recovery_activation_height);
+    expect_committed(&ChainParams::shielded_coinbase_reject_activation_height);
+
+    // state_commitment_v1 joined the checksum with its dormant wiring.
+    expect_committed(&ChainParams::state_commitment_activation_height);
 }
 
 TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {

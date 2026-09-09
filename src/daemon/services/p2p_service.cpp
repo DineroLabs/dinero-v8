@@ -2365,6 +2365,17 @@ void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessa
         if (!checkHeadersRate(peer_addr)) {
             logger_interface_->warning("[P2PService] Headers rate limit exceeded for " + peer_addr +
                                        " — dropping message (DoS protection)");
+            // CsnBridgeAssistedSpendFlow exposed a requested reply dropped here
+            // while its global flight remained reserved for the 15-minute
+            // timeout. Release only this peer's flight, then retry after the
+            // receive window; unsolicited floods cannot cancel another owner.
+            if (auto* ctx = DaemonContext::instance();
+                ctx && ctx->header_sync &&
+                ctx->header_sync->OnHeadersRateLimited(daemon::HeaderPeerId(peer_addr))) {
+                std::lock_guard<std::mutex> lock(header_refresh_mutex_);
+                daemon::deferHeaderRefreshAfterRateLimit(
+                    std::chrono::steady_clock::now(), header_refresh_states_[peer_addr]);
+            }
             return;
         }
         OnHeaders(peer_addr, msg);

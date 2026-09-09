@@ -20,9 +20,21 @@
  *     cryptographic strength over a properly proven coinbase commitment.
  *
  * Verification cost for a snapshot-bootstrapping node (headers, no blocks) is
- * one block: the snapshot base. Snapshots therefore carry the base block's
- * coinbase transaction and its merkle branch, which verify against the
+ * one block: the snapshot base. That requires the snapshot to carry the base
+ * block's coinbase transaction and its merkle branch, verified against the
  * PoW-authenticated header without fetching the block.
+ *
+ * FORMAT REALITY, per snapshot version — do not read the paragraph above as a
+ * property v4 has:
+ *   - v4 carries NO coinbase and NO merkle branch. Before the genesis->base
+ *     replay completes, a v4 snapshot's shielded section is authenticated only
+ *     by the snapshot's own checksum (and, for shipped snapshots, the registry
+ *     file hash — which protects only snapshots the project shipped, not the
+ *     any-node-can-publish goal).
+ *   - v5 carries the coinbase + merkle branch and is verified at LOAD time:
+ *     DNRS commitment -> proven coinbase -> tx merkle root -> selected
+ *     best-work header. Mandatory for any base at or above the
+ *     state-commitment activation height.
  *
  * No circularity: the committed value is post-block shielded state, and a
  * coinbase transaction cannot itself alter shielded state.
@@ -39,10 +51,12 @@
  * domain-separates the coinbase encoding, the other the digest preimage. A
  * value from one must never parse as the other.
  *
- * ADVISORY ONLY. This header defines and parses the format. It selects no
- * activation height and wires no consensus enforcement — those belong in a
- * separate reviewed commit after the format is frozen and reviewed. See
- * StateCommitment::kActivationHeightUnset below.
+ * ACTIVATION. IsStateCommitmentActive() below is the single authority for
+ * whether the commitment is enforced at a height; the per-network activation
+ * height lives in chainparams (state_commitment_activation_height, dormant at
+ * UINT32_MAX on mainnet and testnet). No mainnet/testnet height may be
+ * selected until every gate in docs/specs/state_commitment_v1.md's
+ * "Still owed before any activation" list is closed.
  */
 
 #include <cstddef>
@@ -77,11 +91,38 @@ struct StateCommitment {
     static constexpr size_t OFFSET_VERSION  = 6;
     static constexpr size_t OFFSET_ROOT     = 7;
 
-    /// Deliberately unset. Enforcement is a separate, reviewed change; nothing
-    /// in this header may gate consensus on a height. A sentinel rather than a
-    /// plausible number, so an accidental comparison cannot silently activate.
-    static constexpr uint64_t kActivationHeightUnset = UINT64_MAX;
+    /// Dormancy sentinel for state_commitment_activation_height. uint32_t on
+    /// purpose: it must be the same type as the chainparams field and the
+    /// snapshot header's block_height, because a silently-widened UINT32_MAX
+    /// comparison behaves differently in two places — the exact
+    /// one-sentinel-two-behaviors bug the single activation predicate below
+    /// exists to rule out.
+    static constexpr uint32_t kActivationHeightUnset = UINT32_MAX;
 };
+
+/// THE single authority for "is the state commitment enforced at this height".
+/// Every layer — snapshot-format selection, the v5 proof requirement,
+/// load-time fail-closed checks, replay mismatch enforcement, coinbase
+/// commitment validation and mining, tests, and RPC status reporting — must
+/// call this rather than hand-writing the comparison: two sites computing
+/// dormancy differently disagree at exactly one height, and an enforcement
+/// site that wrongly believes it is dormant fails OPEN.
+///
+/// Heights compared here can be ATTACKER-CONTROLLED (a snapshot file's claimed
+/// base height). The sentinel guard means a claimed height of UINT32_MAX with
+/// activation unset stays dormant-and-rejected-elsewhere rather than
+/// spuriously active; with activation set, `>=` errs toward active, i.e. the
+/// failure direction is closed, not open.
+///
+/// Both heights are parameters (not read from Params()) so tests can sweep
+/// them independently — including the mixed quadrants where a coupling bug
+/// between this activation and any other would hide.
+constexpr bool IsStateCommitmentActive(uint32_t height,
+                                       uint32_t activation_height)
+{
+    return activation_height != UINT32_MAX &&
+           height >= activation_height;
+}
 
 /// Why a coinbase lookup did not yield exactly one usable commitment.
 /// Distinguished so callers and tests can assert the precise failure rather
@@ -112,9 +153,5 @@ std::vector<size_t> FindStateCommitmentCandidates(const Transaction& coinbase);
 
 /// Exactly-one lookup. Duplicates are an error, not a preference for the last.
 StateCommitmentLookup FindStateCommitment(const Transaction& coinbase);
-
-/// Always false: no activation height is selected yet. Present so call sites
-/// can be written and tested now and flipped in one reviewed place later.
-inline bool RequiresStateCommitment(uint64_t /*height*/) { return false; }
 
 }  // namespace dinero::consensus

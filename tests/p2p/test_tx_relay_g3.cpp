@@ -1,3 +1,4 @@
+#include "mempool/tx_orphan_pool.h"
 /**
  * Phase G.3: Mempool Relay - Integration Tests
  *
@@ -15,6 +16,7 @@
 #include "common/ilogger.h"
 #include <iostream>
 #include <cassert>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -462,7 +464,25 @@ void test_g3_4_duplicate_prevention() {
 // Main Test Runner
 // ============================================================================
 
+void test_auth_orphan_byte_budget() {
+    dinero::TxOrphanPool pool;
+    for (unsigned i = 0; i < 50; ++i) {
+        dinero::Transaction tx;
+        tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.witness_version = 0;
+        tx.lockTime = i;
+        tx.shielded_bundle_bytes.resize(500'000, 0);
+        if (!(pool.addOrphan(tx, "auth-peer-" + std::to_string(i)))) throw std::runtime_error("resource boundary: pool.addOrphan(tx, \"auth-peer-\" + std::to_string(i))");
+        if (!(pool.totalBytes() <= dinero::TxOrphanPool::MAX_ORPHAN_BYTES)) throw std::runtime_error("resource boundary: pool.totalBytes() <= dinero::TxOrphanPool::MAX_ORPHAN_BYTES");
+    }
+    if (!(pool.size() == 19)) throw std::runtime_error("resource boundary: pool.size() == 19"); // 20 * (500 KB + envelope) exceeds 10 MB.
+    for (const auto& id : pool.getOrphanTxIds()) pool.eraseOrphan(id);
+    if (!(pool.totalBytes() == 0)) throw std::runtime_error("resource boundary: pool.totalBytes() == 0");
+    if (!(pool.size() == 0)) throw std::runtime_error("resource boundary: pool.size() == 0");
+}
+
 int main() {
+    test_auth_orphan_byte_budget();
     std::cout << "\n╔════════════════════════════════════════╗" << std::endl;
     std::cout << "║  Phase G.3: Mempool Relay Tests      ║" << std::endl;
     std::cout << "╚════════════════════════════════════════╝\n" << std::endl;

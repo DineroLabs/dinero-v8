@@ -51,6 +51,10 @@ struct UndoRecord {
     // pre_block_shielded_frontier so flatfile-backed reorg paths can restore
     // the exact pre-block shielded frontier after reindex-built blocks.
     std::optional<std::vector<uint8_t>> pre_block_shielded_frontier;
+    // Per-block anchor snapshot: the live eviction journal is bounded and
+    // cannot invert an arbitrarily deep reorg by itself. Persistence-only;
+    // consensus root encoding and the 100-root validity window do not change.
+    std::optional<std::vector<uint8_t>> pre_block_shielded_anchors;
     // Shielded epoch reset snapshot (present ONLY on the reset block). Mirrors
     // BlockUndo::pre_reset_shielded_epoch through the on-disk undo format so a
     // reorg that disconnects across the cutover can restore the full pre-reset

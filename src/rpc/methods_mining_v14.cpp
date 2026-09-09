@@ -24,6 +24,7 @@
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/gbt_template_time.h"
+#include "consensus/state_commitment.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll for getblocktemplate
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
@@ -508,18 +509,37 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
     capabilities.append("proposal");
     result["capabilities"] = capabilities;
 
-    // Mutable fields
-    din::Json mutable_fields(Json::arrayValue);
-    mutable_fields.append("time");
-    mutable_fields.append("transactions");
-    mutable_fields.append("prevblock");
-    result["mutable"] = mutable_fields;
+    // Utreexo and DNRS commit to this exact transaction set. ASERT also
+    // derives nBits from the template timestamp. Changing any of these fields
+    // requires a fresh template, not a locally edited one.
+    result["mutable"] = din::Json(Json::arrayValue);
 
-    // Rules (active consensus rules)
     din::Json rules(Json::arrayValue);
     rules.append("csv");
     rules.append("segwit");
-    rules.append("utreexo");  // Dinero native Utreexo support
+    rules.append("utreexo");
+    const bool state_commitment_active = ::dinero::consensus::IsStateCommitmentActive(
+        stats.height, ::dinero::Params().state_commitment_activation_height);
+    if (state_commitment_active) {
+        const auto commitment = ::dinero::consensus::FindStateCommitment(block->vtx.at(0));
+        if (commitment.status != ::dinero::consensus::StateCommitmentStatus::Ok) {
+            din::Json failure;
+            failure["error"] = "Assembler returned a missing or invalid DNRS commitment";
+            return failure;
+        }
+        rules.append("statecommitment");
+        din::Json binding;
+        binding["version"] = 1;
+        binding["root"] = commitment.root.GetHex();
+        binding["output_index"] = static_cast<int64_t>(commitment.index);
+        const auto& script = block->vtx[0].vout[commitment.index].scriptPubKey;
+        std::ostringstream encoded;
+        for (uint8_t byte : script) {
+            encoded << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(byte);
+        }
+        binding["script"] = encoded.str();
+        result["statecommitment"] = binding;
+    }
     result["rules"] = rules;
 
     ::dinero::g_logger.info("[v14 GBT] Block template created: height=" +

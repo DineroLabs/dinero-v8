@@ -61,6 +61,10 @@ namespace dinero::consensus::shielded {
 
 struct SpendWitness {
     Hash                                secret_key;
+    /// Auth profile only: nvk-derived per-note nullifier key. Kept separate
+    /// from secret_key so full-viewing authority can track spends without
+    /// gaining spend authority.
+    Hash                                nullifier_key;
     uint64_t                            leaf_index;
     Hash                                value;       ///< value encoded as scalar
     Hash                                randomness;
@@ -97,11 +101,11 @@ struct SpendPublicInputs {
  * VerifySpend, and resolved upward here):
  *   - false: `pk = Poseidon(sk, 0)`. The SENDER invents `sk` when building the
  *     recipient's note, so the sender retains the ability to spend it forever.
- *   - true:  `pk_d = s·G`, where `s` is derived from the RECIPIENT's incoming
- *     viewing key (DeriveDiversifiedSpendKey). The sender never learns `s`.
- *     The circuit proves knowledge of dlog(pk_d); it does NOT prove
- *     `s == Poseidon(ivk, d)` — `ivk` never enters the circuit, so the cost is
- *     one fixed-base scalar multiplication rather than a variable-base one.
+ *   - true: `pk_d = s·G`, where the RECIPIENT derives
+ *     `s = even_y_normalize(ask + Poseidon(ak,d))`. A full viewer can derive
+ *     and authenticate `pk_d` from public `ak`, but cannot recover `s`.
+ *     The circuit also binds the independently nvk-derived nullifier key to
+ *     the address commitment, so viewing and spending remain separate roles.
  *
  * DORMANT: no network sets `shielded_spend_auth_activation_height` below
  * UINT32_MAX, so no consensus path passes `spend_auth = true` today.

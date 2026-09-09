@@ -531,6 +531,67 @@ void Test9_ConcurrentTriggersProduceOneRequest() {
     std::cout << "   ✅ Sixteen concurrent triggers produced one request owner" << std::endl;
 }
 
+// A full side-branch batch can be valid without becoming the best-work tip.
+// The strict IBD main control repeated genesis..2000 until rate limited here.
+void Test10_SideBranchContinuationUsesReceivedFrontier() {
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync(&selector);
+    P2PCallbackMocks mocks;
+    sync.SetSendGetheadersCallback(
+        [&](uint64_t peer, const std::vector<uint256>& locator, const uint256& stop) {
+            return mocks.OnSendGetheaders(peer, locator, stop);
+        });
+    uint256 zero;
+    zero.SetNull();
+    const auto genesis = CreateTestHeader(zero, 1000000);
+    assert(selector.AddHeader(genesis));
+    const auto local = CreateHeaderChain(genesis.GetHash(), 2521, 1000001);
+    for (const auto& header : local) assert(selector.AddHeader(header));
+    const auto remote = CreateHeaderChain(genesis.GetHash(), 2821, 2000001);
+    sync.OnPeerConnected(10, 2821, remote.back().GetHash(), true);
+    assert(sync.RequestHeadersFromPeer(10));
+    const std::vector<BlockHeader> first(remote.begin(), remote.begin() + 2000);
+    const auto result = sync.ProcessHeaders(10, first);
+    assert(result.accepted && result.request_more);
+    assert(mocks.getheaders_calls.size() == 2);
+    assert(mocks.getheaders_calls.back().locator.front() == first.back().GetHash());
+    const std::vector<BlockHeader> rest(remote.begin() + 2000, remote.end());
+    assert(sync.ProcessHeaders(10, rest).accepted);
+    assert(sync.GetStats().local_best_height == 2821);
+    assert(sync.GetStats().current_sync_peer == 0);
+}
+
+void Test11_LocalRateDropReleasesOnlyItsRequest() {
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync(&selector);
+    P2PCallbackMocks mocks;
+    sync.SetSendGetheadersCallback([&](uint64_t peer, const auto& locator, const auto& stop) {
+        return mocks.OnSendGetheaders(peer, locator, stop);
+    });
+    uint256 zero; zero.SetNull();
+    assert(selector.AddHeader(CreateTestHeader(zero, 1000000)));
+    sync.OnPeerConnected(11, 0, zero, true);
+    sync.OnPeerConnected(12, 0, zero, true);
+    assert(!sync.OnHeadersRateLimited(0));
+    assert(sync.RequestHeadersFromPeer(11, true));
+    // An unrelated unsolicited flood cannot cancel another peer's flight.
+    assert(!sync.OnHeadersRateLimited(12));
+    assert(sync.GetStats().current_sync_peer == 11);
+    // CsnBridgeAssistedSpendFlow exposed a requested response dropped locally:
+    // preserving ownership here blocks every probe until the 15-minute timeout.
+    assert(sync.OnHeadersRateLimited(11));
+    assert(sync.GetStats().current_sync_peer == 0);
+    assert(sync.GetStats().stalled_peers == 0);
+    assert(mocks.getheaders_calls.size() == 1); // no immediate retry/flood
+    assert(!sync.OnHeadersRateLimited(11));     // no duplicate retry hint
+    assert(sync.RequestHeadersFromPeer(11, true));
+    assert(sync.ProcessHeaders(11, {}).accepted);
+    assert(sync.GetStats().current_sync_peer == 0);
+    assert(sync.RequestHeadersFromPeer(12, true));
+    assert(!sync.OnHeadersRateLimited(11));
+    assert(sync.GetStats().current_sync_peer == 12);
+}
+
 // ============================================================================
 // Main Test Runner
 // ============================================================================
@@ -548,6 +609,8 @@ int main() {
     Test7_SendFailureReleasesRequest();
     Test8_MissingParentReleasesRequestForRecovery();
     Test9_ConcurrentTriggersProduceOneRequest();
+    Test10_SideBranchContinuationUsesReceivedFrontier();
+    Test11_LocalRateDropReleasesOnlyItsRequest();
 
     std::cout << "\n=== ALL P2P INTEGRATION TESTS PASSED ===" << std::endl;
     std::cout << "\nPhase N.2 Step 2C Verification:" << std::endl;

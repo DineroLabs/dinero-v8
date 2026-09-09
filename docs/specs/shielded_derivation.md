@@ -56,8 +56,8 @@ This spec does **not** define:
 | ECDH shared secret | x-coordinate of `s · P` under even-y convention |
 
 **Why x-only / even-y:** secp256k1 compressed encoding is 33 bytes (1-byte
-prefix plus two 32-byte x-only keys); the current address payload is 75 bytes
-(11 + 32 + 32).
+prefix plus a 32-byte x coordinate); the current address publishes two x-only
+keys plus a nullifier-key commitment and is 107 bytes (11 + 32 + 32 + 32).
 To stay 32 bytes per public key, we adopt BIP340's even-y canonical form:
 every public key point is the unique `(x, y)` representative with `y` even.
 ECDH then takes the x-coordinate of `s · P` and is well-defined for both
@@ -108,6 +108,7 @@ These tags are ASCII bytes, no terminating NUL:
 ```
 DST_ASK = "DIN/v7/shielded/ask"   // 19 bytes
 DST_NSK = "DIN/v7/shielded/nsk"   // 19 bytes
+DST_NVK = "DIN/v7/shielded/nvk"   // 19 bytes
 DST_OVK = "DIN/v7/shielded/ovk"   // 19 bytes
 DST_DK  = "DIN/v7/shielded/dk"    // 18 bytes
 DST_DIV = "DIN/v7/shielded/div"   // 19 bytes
@@ -136,11 +137,11 @@ Poseidon-2 keeps the circuit small. The native evaluator and R1CS
 gadget MUST use the same Poseidon-2 parameters as `commitment_tree.cpp`
 — if they diverge, off-chain proofs won't verify on-chain.
 
-### 4.3 Spend authority and nullifier keys
+### 4.3 Spend authority and incoming-view component keys
 
 ```
 ask = PRF(sk, DST_ASK) mod q     // spend authority key, scalar
-nsk = PRF(sk, DST_NSK) mod q     // nullifier key, scalar
+nsk = PRF(sk, DST_NSK) mod q     // incoming-view component, scalar
 ```
 
 If `ask == 0` or `nsk == 0` (negligible probability), increment the input
@@ -157,14 +158,16 @@ nk = nsk · G                     // 32 bytes (x-only, even-y)
 `G` is the secp256k1 base point. If `ak.y` is odd, negate `ask` so that
 `ak.y` becomes even (BIP340 normalisation); same for `nsk`/`nk`.
 
-### 4.5 Outgoing viewing key and diversifier key
+### 4.5 Nullifier/outgoing viewing keys and diversifier key
 
 ```
+nvk = PRF(sk, DST_NVK)           // 32 bytes (symmetric nullifier view)
 ovk = PRF(sk, DST_OVK)           // 32 bytes (symmetric key, no mod q)
 dk  = PRF(sk, DST_DK)            // 32 bytes (ChaCha20 key for diversifier)
 ```
 
-`ovk` is the wallet's recovery key for outgoing notes (decrypts notes
+`nvk` derives per-diversifier nullifier keys and lets a full viewer identify
+spends without exposing `ask`. `ovk` is the wallet's recovery key for outgoing notes (decrypts notes
 *sent* by this wallet). `dk` keys the deterministic diversifier
 generator (§5.1).
 
@@ -183,12 +186,12 @@ addresses without exposing `ask`.
 ### 4.7 Full viewing key (FVK)
 
 ```
-fvk = (ak, nk, ovk)              // 96 bytes total
+fvk = (ak, nk, nvk, ovk)         // 128 bytes total
 ```
 
 `fvk` is what gets shared with auditors/watch-only wallets: it permits
-detection of incoming AND outgoing notes (via `ivk` derivable from
-`ak`/`nk`, and `ovk` directly), but cannot spend.
+detection of incoming and outgoing notes and derivation of their nullifiers
+(via `ivk` from `ak`/`nk`, plus `nvk` and `ovk`), but cannot spend.
 
 ---
 
@@ -246,11 +249,23 @@ encoded `pk_d_bytes` is the 32-byte big-endian x-coordinate.
 recoverable — the recipient and sender both know to use the even-y
 representative when computing ECDH.
 
-### 5.4 Address payload
+### 5.4 Recipient-bound authority and address payload
 
 ```
-address_payload = d || pk_d_enc || pk_d_spend // 11 + 32 + 32 = 75 bytes
+tweak          = Poseidon(ak, zero_pad_32(d))
+s_raw          = ask + tweak mod q
+(s, pk_d_spend)= even_y_normalize(s_raw, s_raw * G)
+nfk            = Poseidon(nvk, zero_pad_32(d))
+nfk_commitment = Poseidon(nfk, DST32("DIN/v7/shielded/nfkey/v1"))
+
+address_payload = d || pk_d_enc || pk_d_spend || nfk_commitment
+                // 11 + 32 + 32 + 32 = 107 bytes
 ```
+
+The public derivation `ak + tweak*G` MUST reproduce the same even-y
+`pk_d_spend`. This lets a full viewer authenticate the address while keeping
+`s` available only to a holder of `ask`. `nvk` independently grants nullifier
+tracking; it cannot derive `s`.
 
 ### 5.5 Bech32m encoding
 
@@ -266,12 +281,12 @@ address = bech32m_encode(HRP, convertbits(address_payload, 8, 5, pad=true))
 
 **No witness-version byte is prepended.** These addresses are NOT
 BIP173/BIP350 witness programs — they do not appear in scriptPubKey.
-The full payload is the 75 raw bytes from §5.4, bech32m-encoded
+The full payload is the 107 raw bytes from §5.4, bech32m-encoded
 directly. Length-disambiguation from `din1p`/`din1r` (which are 33-byte
 witness programs) is by encoded-string length: shielded addresses are
 deterministically longer.
 
-Example shape: `dins1q...` (about 132 characters total for mainnet).
+Example shape: `dins1q...` (about 184 characters total for mainnet).
 
 ---
 
@@ -386,7 +401,8 @@ bytes, raw scalars, or descriptor hex. The daemon's RPC handler:
    `dins` / `tdins` / `rdins` matching the active network. In
    particular, `din1p`, `din1r`, `bc1*`, and any non-Dinero-shielded
    HRP MUST be rejected at parse time, before any cryptographic work.
-3. Decodes the 75-byte payload (`d` ∥ `pk_d_enc` ∥ `pk_d_spend`) and only
+3. Decodes the 107-byte payload (`d` ∥ `pk_d_enc` ∥ `pk_d_spend` ∥
+   `nfk_commitment`) and only
    then constructs the output, computing `addr_bind` per §6.2 with the
    exact `(d, pk_d)` parsed from the address string.
 
@@ -441,9 +457,11 @@ dk:    7ca608cc6062bfebd3d1a6f7128cdbe9befc60edbb4fc29060fc6219e782c3f2
 ak:    864ba7ec6376210f1568f972d907b003723ff985e65305e620effb56789bcdff
 nk:    dcfcd14d2739a61201e4d870751c3592bddf8f4b591b9c2abefbf859fd5e19ff
 ivk:   51c856061f52ffa07c1f2f05cd0f1b0ded8e94428809044c1c486aba27e492c5
-fvk = (ak || nk || ovk):
+nvk:   4c4807b68296ad39974be9bc82d2a804d6e759ea43f5656c77400afa829a31f2
+fvk = (ak || nk || nvk || ovk):
        864ba7ec6376210f1568f972d907b003723ff985e65305e620effb56789bcdff
        dcfcd14d2739a61201e4d870751c3592bddf8f4b591b9c2abefbf859fd5e19ff
+       4c4807b68296ad39974be9bc82d2a804d6e759ea43f5656c77400afa829a31f2
        5eff91d8d132177c83f2302494d879ad01e064846a767617170406d48627ecc9
 ```
 
@@ -457,16 +475,16 @@ d (after ChaCha20, 11 bytes):
 pk_d  (x-only, even-y, 32 bytes):
        981db4b85ce150d7e74768cd6d9147148cba846857289d5c585b0681f9a469f9
 
-address_payload (75 bytes) = d || pk_d_enc || pk_d_spend:
-       6b92d6a2de35177cada44c
-       981db4b85ce150d7e74768cd6d9147148cba846857289d5c585b0681f9a469f9
+pk_d_spend (x-only, even-y, 32 bytes):
+       c7741e66eac72cdae5b382192277cf710347c8aa18031a011f669d0383725e31
 
-address (mainnet, dins):
-       dins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535ljkd4ggr
-address (testnet, tdins):
-       tdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lj5qhwc6
-address (regtest, rdins):
-       rdins1dwfddgk7x5thetdyfjvpmd9ctns4p4l8ga5v6mv3gu2gew5ydptj382utpdsdq0e535lj0pxq49
+nfk_commitment (32 bytes):
+       c14581c526350dc80acc3c586d8facf6ea1c16619e6241b2cf2d35d73a5c1f09
+
+The authoritative 107-byte payload and network address literals are generated by the
+independent oracle in `tests/vectors/shielded_protocol_v1_external.json` and
+consumed directly by the C++ conformance test. Keeping the long Bech32m values
+there avoids a second manually maintained copy in this document.
 ```
 
 **Spec divergence notes** (resolved in favor of code per §0
@@ -615,7 +633,7 @@ they touch:
 - `src/wallet/shielded_derivation.cpp` — new
 - `src/wallet/utxo_index.cpp:43` — extend path-prefix allowlist with `m/99'/`
 - `src/wallet/key_origin.cpp` — extend parser to accept purpose 99
-- `include/wallet/address_validator.h` + impl — validate `dins`/`tdins`/`rdins` HRPs and the 75-byte payload
+- `include/wallet/address_validator.h` + impl — validate `dins`/`tdins`/`rdins` HRPs and the 107-byte payload
 - `src/wallet/dinero_wallet_api.h` — `GetNetworkHRP()` callers do not change; shielded HRPs are queried via a new accessor
 - `src/test/shielded_derivation_tests.cpp` — new, must include all vectors from §8
 

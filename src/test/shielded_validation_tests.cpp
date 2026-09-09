@@ -12,8 +12,15 @@
 // pipeline against the real ShieldedCircuit.
 
 #include <gtest/gtest.h>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 #include "consensus/shielded/anchor_history.h"
+#include "consensus/shielded/resource_limits.h"
 #include "consensus/shielded/binding_sig.h"
 #include "consensus/shielded/bundle_builder.h"
 #include "consensus/shielded/commitment_tree.h"
@@ -886,19 +893,25 @@ TEST_F(ShieldedValidationFixture, SpendAuthorityBoundarySelectsRecipientProof) {
     auto addr = wallet::shielded::DeriveDiversifiedAddress(
         keys, 7, wallet::shielded::kHrpRegtest);
     const auto spend_key =
-        wallet::shielded::DeriveDiversifiedSpendKey(keys.ivk, addr.d);
+        wallet::shielded::DeriveDiversifiedSpendKey(keys.ask, keys.ak, addr.d);
+    const auto nfk = wallet::shielded::DeriveDiversifiedNullifierKey(
+        keys.nvk, addr.d);
+    const auto ownership = AuthRecipientCommitmentKey(
+        addr.pk_d_spend,
+        wallet::shielded::NullifierKeyCommitment(nfk));
 
     Hash d{};
     std::memcpy(d.data(), addr.d.data(), addr.d.size());
     const Hash randomness = MakeHash(0xD1, 0xA5);
     const Hash commitment =
-        NoteCommitment(d, addr.pk_d_spend, ValueAsHash(kNoteValue), randomness);
+        NoteCommitment(d, ownership, ValueAsHash(kNoteValue), randomness);
     const uint64_t leaf = tree.Append(commitment);
     auto path = tree.GetAuthPath(leaf);
     ASSERT_TRUE(path.has_value());
 
     wallet::shielded_ops::UnshieldNoteInput note;
     note.secret_key = spend_key.s;
+    note.nullifier_key = nfk;
     note.randomness = randomness;
     note.d = d;
     note.anchor = tree.Root();
@@ -908,6 +921,7 @@ TEST_F(ShieldedValidationFixture, SpendAuthorityBoundarySelectsRecipientProof) {
     note.key_scheme = wallet::NoteKeyScheme::Auth;
 
     auto tx = MakeUnshieldEnvelope(kNoteValue - kFee, kFee, 0xD2);
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
     auto built = wallet::shielded_ops::BuildUnshieldBundleForTx(
         tx, note, kFee, /*cv_bound=*/true);
     ASSERT_EQ(built.status, wallet::shielded_ops::OpStatus::Ok) << built.error;
@@ -917,7 +931,7 @@ TEST_F(ShieldedValidationFixture, SpendAuthorityBoundarySelectsRecipientProof) {
               shielded::BundleDecodeError::Ok);
     ASSERT_EQ(decoded.spends.size(), 1u);
     ASSERT_FALSE(decoded.spends[0].zk_proof.empty());
-    EXPECT_EQ(decoded.spends[0].zk_proof[0], 0x05);
+    EXPECT_EQ(decoded.spends[0].zk_proof[0], 0x06);
 
     ctx.block_height = 100;
     ctx.shielded_input_binding_activation_height = 0;
@@ -930,6 +944,12 @@ TEST_F(ShieldedValidationFixture, SpendAuthorityBoundarySelectsRecipientProof) {
         << "auth proof must be rejected one block before recipient authority";
     ctx.block_height = 101;
     EXPECT_EQ(ValidateShieldedBundle(decoded, ctx), ShieldedValidationError::Ok);
+
+    ctx.block_height = UINT32_MAX;
+    ctx.shielded_spend_auth_activation_height = UINT32_MAX;
+    EXPECT_EQ(ValidateShieldedBundle(decoded, ctx),
+              ShieldedValidationError::ProofInvalid)
+        << "UINT32_MAX is dormant even at the degenerate maximum height";
 }
 
 // Issue #273 regression: the shielded RPC handlers used a fixed default
@@ -1434,7 +1454,8 @@ TEST_F(ShieldedValidationFixture, AddressedRecipientOutputMatchesConventionBytes
 // Under the legacy rule the sender derives the note's spend key from an `rcm`
 // THEY chose, so the sender can spend the note they sent. Under auth the note
 // commits to pk_d_spend = s·G from the recipient's address, and spending needs
-// `s` = Poseidon(ivk, d), which only the recipient can derive.
+// `s` = even_y_normalize(ask + Poseidon(ak,d)), which only the recipient can
+// derive; public viewing material can authenticate but cannot spend.
 TEST_F(ShieldedValidationFixture, SpendAuthCommitsToRecipientSpendKey) {
     constexpr uint64_t kValue = 42'000'000;
 
@@ -1446,13 +1467,14 @@ TEST_F(ShieldedValidationFixture, SpendAuthCommitsToRecipientSpendKey) {
     // pk_d_spend authorises. Committing to the wrong one is unspendable value.
     ASSERT_NE(addr.pk_d, addr.pk_d_spend);
     // pk_d_spend really is the s·G the spend circuit will prove.
-    const auto dk = shdrv::DeriveDiversifiedSpendKey(keys.ivk, addr.d);
+    const auto dk = shdrv::DeriveDiversifiedSpendKey(keys.ask, keys.ak, addr.d);
     EXPECT_EQ(dk.pk_d, addr.pk_d_spend);
 
     sops::AddressedRecipient recipient;
     recipient.d          = addr.d;
     recipient.pk_d       = addr.pk_d;
     recipient.pk_d_spend = addr.pk_d_spend;
+    recipient.nfk_commitment = addr.nfk_commitment;
     recipient.value_una  = kValue;
 
     Hash rcm{};
@@ -1477,16 +1499,19 @@ TEST_F(ShieldedValidationFixture, SpendAuthCommitsToRecipientSpendKey) {
     EXPECT_EQ(legacy.commitment,
               NoteCommitment(d_packed, sender_known_pk, ValueAsHash(kValue), rcm));
 
-    // Auth commits to the recipient's SPEND key.
+    const Hash ownership = AuthRecipientCommitmentKey(
+        addr.pk_d_spend, addr.nfk_commitment);
+    // Auth commits jointly to recipient spend and nullifier-view authority.
     EXPECT_EQ(auth.commitment,
-              NoteCommitment(d_packed, addr.pk_d_spend, ValueAsHash(kValue), rcm));
+              NoteCommitment(d_packed, ownership, ValueAsHash(kValue), rcm));
     EXPECT_NE(auth.commitment, legacy.commitment)
         << "auth output still commits to a sender-derived key";
 
     // ★ The fund-burning mistake, pinned: committing to the DISCOVERY key would
     // demand dlog_G(ivk·P_d), which nobody knows. Auth must not produce it.
     EXPECT_NE(auth.commitment,
-              NoteCommitment(d_packed, addr.pk_d, ValueAsHash(kValue), rcm))
+              NoteCommitment(d_packed, AuthRecipientCommitmentKey(
+                  addr.pk_d, addr.nfk_commitment), ValueAsHash(kValue), rcm))
         << "auth committed to the discovery key — unspendable by everyone";
 
     // Discovery is untouched: same encrypted note under both rules, so the
@@ -1505,18 +1530,24 @@ TEST_F(ShieldedValidationFixture, SpendAuthTransferBuildsAddressedWalletChange) 
     auto input_addr = shdrv::DeriveDiversifiedAddress(keys, 10, shdrv::kHrpRegtest);
     auto recipient_addr = shdrv::DeriveDiversifiedAddress(keys, 11, shdrv::kHrpRegtest);
     auto change_addr = shdrv::DeriveDiversifiedAddress(keys, 12, shdrv::kHrpRegtest);
-    auto input_key = shdrv::DeriveDiversifiedSpendKey(keys.ivk, input_addr.d);
+    auto input_key = shdrv::DeriveDiversifiedSpendKey(
+        keys.ask, keys.ak, input_addr.d);
+    const auto input_nfk = shdrv::DeriveDiversifiedNullifierKey(
+        keys.nvk, input_addr.d);
 
     Hash input_d{};
     std::memcpy(input_d.data(), input_addr.d.data(), input_addr.d.size());
     const Hash input_rcm = MakeHash(0x91, 0x19);
     const auto leaf = tree.Append(NoteCommitment(
-        input_d, input_addr.pk_d_spend, ValueAsHash(kInput), input_rcm));
+        input_d, AuthRecipientCommitmentKey(
+                     input_addr.pk_d_spend, input_addr.nfk_commitment),
+        ValueAsHash(kInput), input_rcm));
     const auto path = tree.GetAuthPath(leaf);
     ASSERT_TRUE(path.has_value());
 
     sops::UnshieldNoteInput input;
     input.secret_key = input_key.s;
+    input.nullifier_key = input_nfk;
     input.randomness = input_rcm;
     input.d = input_d;
     input.anchor = tree.Root();
@@ -1529,15 +1560,19 @@ TEST_F(ShieldedValidationFixture, SpendAuthTransferBuildsAddressedWalletChange) 
     recipient.d = recipient_addr.d;
     recipient.pk_d = recipient_addr.pk_d;
     recipient.pk_d_spend = recipient_addr.pk_d_spend;
+    recipient.nfk_commitment = recipient_addr.nfk_commitment;
     recipient.value_una = kRecipient;
     sops::AddressedRecipient change;
     change.d = change_addr.d;
     change.pk_d = change_addr.pk_d;
     change.pk_d_spend = change_addr.pk_d_spend;
+    change.nfk_commitment = change_addr.nfk_commitment;
     change.value_una = kChange;
 
     dinero::Transaction tx;
-    tx.version = dinero::Transaction::TX_VERSION_SHIELDED;
+    // Auth resource profile requires txid commitment to the bundle.
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    tx.witness_version = 0;
     tx.SetExplicitFee(kFee);
     auto built = sops::BuildAddressedTransferBundleForTx(
         tx, {input}, recipient, kChange, kFee, nullptr,
@@ -1545,7 +1580,9 @@ TEST_F(ShieldedValidationFixture, SpendAuthTransferBuildsAddressedWalletChange) 
     ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
     EXPECT_TRUE(built.had_change);
     EXPECT_EQ(built.change_key_scheme, wallet::NoteKeyScheme::Auth);
-    EXPECT_EQ(built.change_public_key, change_addr.pk_d_spend);
+    EXPECT_EQ(built.change_public_key,
+              AuthRecipientCommitmentKey(change_addr.pk_d_spend,
+                                         change_addr.nfk_commitment));
     Hash expected_change_d{};
     std::memcpy(expected_change_d.data(), change_addr.d.data(), change_addr.d.size());
     EXPECT_EQ(built.change_d, expected_change_d);
@@ -1555,7 +1592,7 @@ TEST_F(ShieldedValidationFixture, SpendAuthTransferBuildsAddressedWalletChange) 
               shielded::BundleDecodeError::Ok);
     ASSERT_EQ(decoded.spends.size(), 1u);
     ASSERT_EQ(decoded.outputs.size(), 2u);
-    EXPECT_EQ(decoded.spends[0].zk_proof.front(), 0x05);
+    EXPECT_EQ(decoded.spends[0].zk_proof.front(), 0x06);
     const auto change_it = std::find_if(decoded.outputs.begin(), decoded.outputs.end(),
         [&](const auto& output) { return output.commitment == built.change_commitment; });
     ASSERT_NE(change_it, decoded.outputs.end());
@@ -1588,18 +1625,19 @@ TEST_F(ShieldedValidationFixture, SpendAuthRefusesMissingSpendKey) {
     EXPECT_EQ(out.error, "spend_auth_requires_pk_d_spend");
 }
 
-// Round-trip the new 75-byte payload, and confirm a legacy 43-byte address is
-// REJECTED rather than half-parsed into a zero spend key.
+// Round-trip the new 107-byte payload, and confirm legacy 43- and 75-byte
+// addresses are REJECTED rather than half-parsed into missing authority.
 TEST_F(ShieldedValidationFixture, AddressRoundTripsBothKeysAndRejectsLegacy) {
     auto seed = RoundtripSeed();
     auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), /*account=*/0);
     auto addr = shdrv::DeriveDiversifiedAddress(keys, /*j=*/7, shdrv::kHrpRegtest);
-    ASSERT_EQ(addr.payload.size(), 75u);
+    ASSERT_EQ(addr.payload.size(), 107u);
 
     auto decoded = shdrv::DecodeShieldedAddress(addr.address);
     EXPECT_EQ(decoded.d, addr.d);
     EXPECT_EQ(decoded.pk_d, addr.pk_d);
     EXPECT_EQ(decoded.pk_d_spend, addr.pk_d_spend);
+    EXPECT_EQ(decoded.nfk_commitment, addr.nfk_commitment);
 
     // A legacy 43-byte payload must not decode.
     std::vector<uint8_t> legacy(addr.payload.begin(), addr.payload.begin() + 43);
@@ -1608,6 +1646,15 @@ TEST_F(ShieldedValidationFixture, AddressRoundTripsBothKeysAndRejectsLegacy) {
     const std::string legacy_addr =
         bech32::EncodeRaw(shdrv::kHrpRegtest, data5, bech32::Encoding::BECH32M);
     EXPECT_THROW(shdrv::DecodeShieldedAddress(legacy_addr), std::runtime_error);
+
+    std::vector<uint8_t> unsafe_view_authority(
+        addr.payload.begin(), addr.payload.begin() + 75);
+    data5.clear();
+    ASSERT_TRUE(bech32::convertbits(data5, unsafe_view_authority, 8, 5,
+                                    /*pad=*/true));
+    const std::string unsafe_addr = bech32::EncodeRaw(
+        shdrv::kHrpRegtest, data5, bech32::Encoding::BECH32M);
+    EXPECT_THROW(shdrv::DecodeShieldedAddress(unsafe_addr), std::runtime_error);
 }
 
 // ── Bundle limits vs the real binding constraint ────────────────────
@@ -1643,4 +1690,218 @@ TEST_F(ShieldedValidationFixture, ShieldedBundleLimitsAreNotTheBindingConstraint
 }
 
 }  // namespace
+
+// Real builders and validators, including outgoing envelopes. Kept separately
+// filterable so resource measurements can be reproduced without the full suite.
+TEST_F(ShieldedValidationFixture, AuthWalletRejectsUnsupportedShapeBeforeProving) {
+    dinero::Transaction tx;
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    tx.witness_version = 0;
+    std::vector<sops::UnshieldNoteInput> spends(5);
+    sops::AddressedRecipient recipient;
+    recipient.value_una = 1;
+    auto result = sops::BuildAddressedTransferBundleForTx(tx, spends, recipient,
+        0, 1, nullptr, true, true);
+    EXPECT_EQ(result.status, sops::OpStatus::InvalidParams);
+    EXPECT_EQ(result.error, "shielded_transaction_resource_limit");
+    EXPECT_TRUE(tx.shielded_bundle_bytes.empty());
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED;
+    spends.resize(1);
+    auto legacy = sops::BuildAddressedTransferBundleForTx(tx, spends, recipient,
+        0, 1, nullptr, true, true);
+    EXPECT_EQ(legacy.status, sops::OpStatus::InvalidParams);
+    EXPECT_EQ(legacy.error, "shielded-auth-requires-tx-v6");
+}
+
+TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
+    const char* shape_env = std::getenv("AUTH_RESOURCE_SHAPE");
+    const std::string requested_shape = shape_env ? shape_env : "";
+    ASSERT_TRUE(requested_shape.empty() || requested_shape == "shield" ||
+        requested_shape == "transfer_1in_2out" || requested_shape == "transfer_2in_2out" ||
+        requested_shape == "transfer_4in_2out" || requested_shape == "unshield" ||
+        requested_shape == "block_8proofs" || requested_shape == "block_8spends" ||
+        requested_shape == "block_8outputs");
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, 0, shdrv::kHrpRegtest);
+    sops::AddressedRecipient recipient;
+    recipient.d = addr.d;
+    recipient.pk_d = addr.pk_d;
+    recipient.pk_d_spend = addr.pk_d_spend;
+    recipient.nfk_commitment = addr.nfk_commitment;
+    recipient.value_una = 70'000'000;
+    sops::OutgoingViewEmissionContext outgoing;
+    outgoing.ovk = keys.ovk;
+    outgoing.current_tip_height = 100;
+    outgoing.spend_auth_activation_height = 2;
+    outgoing.outgoing_activation_height = 2;
+    std::vector<sops::UnshieldNoteInput> notes;
+    for (unsigned i = 0; i < 8; ++i) {
+        sops::UnshieldNoteInput note;
+        note.secret_key = shdrv::DeriveDiversifiedSpendKey(keys.ask, keys.ak, addr.d).s;
+        note.nullifier_key = shdrv::DeriveDiversifiedNullifierKey(keys.nvk, addr.d);
+        std::copy(addr.d.begin(), addr.d.end(), note.d.begin());
+        note.randomness = MakeHash(0xE1, i + 1);
+        note.value_una = 100'000'000;
+        note.key_scheme = wallet::NoteKeyScheme::Auth;
+        note.leaf_index = tree.Append(NoteCommitment(note.d,
+            AuthRecipientCommitmentKey(addr.pk_d_spend, addr.nfk_commitment),
+            ValueAsHash(note.value_una), note.randomness));
+        notes.push_back(note);
+    }
+    for (auto& note : notes) {
+        note.anchor = tree.Root();
+        note.merkle_path = tree.GetAuthPath(note.leaf_index)->siblings;
+    }
+    const auto report = [&](const char* shape, const dinero::Transaction& tx,
+                            std::chrono::steady_clock::time_point start) {
+        auto prove_end = std::chrono::steady_clock::now();
+        ShieldedBundle bundle;
+        ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle),
+                  shielded::BundleDecodeError::Ok);
+        auto context = shielded::BuildShieldedValidationContext(tx, &nullifier_set,
+            &tree, 101, bundle.value_balance, 0, nullptr, 0, 0, 2);
+        ASSERT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::Ok);
+        std::string resource_error;
+        size_t proofs = 0;
+        ASSERT_TRUE(shielded::CheckAuthTransactionResources(tx,101,2,proofs,resource_error)) << resource_error;
+        auto end = std::chrono::steady_clock::now();
+        size_t spend_proofs = 0, output_proofs = 0, notes_bytes = 0;
+        for (const auto& spend : bundle.spends) spend_proofs += spend.zk_proof.size();
+        for (const auto& output : bundle.outputs) {
+            output_proofs += output.zk_proof.size();
+            notes_bytes += output.encrypted_note.size();
+        }
+        uint64_t peak_rss = 0;
+#ifndef _WIN32
+        struct rusage usage{};
+        getrusage(RUSAGE_SELF, &usage);
+        peak_rss = usage.ru_maxrss;
+#ifndef __APPLE__
+        peak_rss *= 1024; // Linux/BSD report KiB; macOS reports bytes.
+#endif
+#endif
+        std::cout << "AUTH_RESOURCE shape=" << shape
+            << " bytes=" << tx.GetSize() << " weight=" << tx.GetWeight()
+            << " spend_proofs=" << spend_proofs << " output_proofs=" << output_proofs
+            << " encrypted_notes=" << notes_bytes
+            << " range_container=" << bundle.aggregated_range_proof.size()
+            << " other=" << tx.GetSize() - spend_proofs - output_proofs - notes_bytes - bundle.aggregated_range_proof.size()
+            << " prove_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(prove_end-start).count()
+            << " verify_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(end-prove_end).count()
+            << " process_peak_rss_bytes=" << peak_rss << std::endl;
+    };
+    constexpr uint64_t fee = 1'000'000;
+    auto start = std::chrono::steady_clock::now();
+    if (requested_shape.empty() || requested_shape == "shield") {
+        auto shield_tx = MakeShieldToRecipientEnvelope(fee);
+        shield_tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        auto shield = sops::BuildAddressedShieldBundleForTx(shield_tx, recipient, nullptr, true, true, &outgoing);
+        ASSERT_EQ(shield.status, sops::OpStatus::Ok) << shield.error;
+        report("shield", shield_tx, start);
+    }
+    for (size_t n : {1u, 2u, 4u}) {
+        const std::string shape = n == 1 ? "transfer_1in_2out" : n == 2 ? "transfer_2in_2out" : "transfer_4in_2out";
+        if (!requested_shape.empty() && requested_shape != shape) continue;
+        start = std::chrono::steady_clock::now();
+        dinero::Transaction tx;
+        tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.witness_version = 0;
+        tx.SetExplicitFee(fee);
+        std::vector<sops::UnshieldNoteInput> spends(notes.begin(), notes.begin()+n);
+        auto change = recipient;
+        change.value_una = n * 100'000'000 - recipient.value_una - fee;
+        auto result = sops::BuildAddressedTransferBundleForTx(tx, spends, recipient,
+            change.value_una, fee, nullptr, true, true, &change, &outgoing);
+        ASSERT_EQ(result.status, sops::OpStatus::Ok) << result.error;
+        report(n == 1 ? "transfer_1in_2out" : n == 2 ? "transfer_2in_2out" : "transfer_4in_2out", tx, start);
+    }
+    if (requested_shape == "block_8proofs" || requested_shape == "block_8spends" ||
+        requested_shape == "block_8outputs") {
+        std::vector<dinero::Transaction> transactions;
+        if (requested_shape == "block_8proofs") {
+            for (size_t offset : {0u, 2u}) {
+                dinero::Transaction tx;
+                tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+                tx.witness_version = 0;
+                tx.SetExplicitFee(fee);
+                std::vector<sops::UnshieldNoteInput> spends(notes.begin()+offset, notes.begin()+offset+2);
+                auto change = recipient;
+                change.value_una = 200'000'000 - recipient.value_una - fee;
+                auto built = sops::BuildAddressedTransferBundleForTx(tx, spends, recipient,
+                    change.value_una, fee, nullptr, true, true, &change, &outgoing);
+                ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+                transactions.push_back(std::move(tx));
+            }
+        } else {
+            // Equal proof counts do not imply equal cost: qualify both pure
+            // mixes as well as the balanced transfers before sizing hosts.
+            for (size_t i = 0; i < 8; ++i) {
+                if (requested_shape == "block_8spends") {
+                    auto tx = MakeUnshieldEnvelope(notes[i].value_una - fee, fee,
+                        static_cast<uint8_t>(0xD2 + i));
+                    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+                    auto built = sops::BuildUnshieldBundleForTx(tx, notes[i], fee, true);
+                    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+                    transactions.push_back(std::move(tx));
+                } else {
+                    auto tx = MakeShieldToRecipientEnvelope(fee);
+                    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+                    tx.vin[0].prevout.vout = static_cast<uint32_t>(i);
+                    auto built = sops::BuildAddressedShieldBundleForTx(tx, recipient,
+                        nullptr, true, true, &outgoing);
+                    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+                    transactions.push_back(std::move(tx));
+                }
+            }
+        }
+        const auto verify_start = std::chrono::steady_clock::now();
+        shielded::AuthBlockResourceUsage usage;
+        std::string error;
+        size_t spend_count = 0, output_count = 0;
+        for (const auto& tx : transactions) {
+            ASSERT_TRUE(shielded::AccumulateAuthBlockResources(tx,101,2,usage,error)) << error;
+            ShieldedBundle bundle;
+            ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes,&bundle), shielded::BundleDecodeError::Ok);
+            spend_count += bundle.spends.size();
+            output_count += bundle.outputs.size();
+            auto context = shielded::BuildShieldedValidationContext(tx, &nullifier_set,
+                &tree,101,bundle.value_balance,0,nullptr,0,0,2);
+            ASSERT_EQ(ValidateShieldedBundle(bundle,context),ShieldedValidationError::Ok);
+            for (const auto& spend : bundle.spends) {
+                ASSERT_FALSE(nullifier_set.Contains(spend.nullifier));
+                nullifier_set.Insert(spend.nullifier,101);
+            }
+        }
+        ASSERT_EQ(usage.proofs,8u);
+        ASSERT_EQ(spend_count, requested_shape == "block_8spends" ? 8u :
+            requested_shape == "block_8outputs" ? 0u : 4u);
+        ASSERT_EQ(output_count, 8u - spend_count);
+        ASSERT_LE(usage.shielded_bytes,shielded::kAuthMaxBlockShieldedBytes);
+        const auto end = std::chrono::steady_clock::now();
+        uint64_t rss = 0;
+#ifndef _WIN32
+        struct rusage usage_rss{};
+        getrusage(RUSAGE_SELF,&usage_rss);
+        rss = usage_rss.ru_maxrss;
+#ifndef __APPLE__
+        rss *= 1024;
+#endif
+#endif
+        std::cout << "AUTH_RESOURCE shape=" << requested_shape << " bytes=" << usage.shielded_bytes
+            << " proofs=" << usage.proofs
+            << " prove_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(verify_start-start).count()
+            << " verify_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(end-verify_start).count()
+            << " process_peak_rss_bytes=" << rss << std::endl;
+    }
+    if (requested_shape.empty() || requested_shape == "unshield") {
+        start = std::chrono::steady_clock::now();
+        auto unshield_tx = MakeUnshieldEnvelope(notes[0].value_una-fee, fee, 0xD2);
+        unshield_tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        auto unshield = sops::BuildUnshieldBundleForTx(unshield_tx, notes[0], fee, true);
+        ASSERT_EQ(unshield.status, sops::OpStatus::Ok) << unshield.error;
+        report("unshield", unshield_tx, start);
+    }
+}
+
 }  // namespace dinero::consensus::shielded::testing

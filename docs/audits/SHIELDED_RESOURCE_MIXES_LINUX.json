@@ -1,0 +1,482 @@
+{
+  "scope": "proof-component-only",
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "machine": "x86_64",
+  "logical_cpus": 4,
+  "source_commit": "95c538b2aba831e2f21199c409e4498f4fd874b7",
+  "harness_commit": "95c538b2aba831e2f21199c409e4498f4fd874b7",
+  "harness_dirty": false,
+  "binary_sha256": "cc01980658168aa70a8ed321149a58f30f379cf8b324f38001794c55f91eaf3d",
+  "budgets": {
+    "rss_bytes": 2147483648,
+    "prove_ms": 120000,
+    "verify_ms": 30000,
+    "block_verify_ms": 30000
+  },
+  "measurements": [
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 8378,
+      "verify_ms": 1811,
+      "process_peak_rss_bytes": 583860224,
+      "shape": "shield",
+      "iteration": 1,
+      "wall_seconds": 10.249205233999987
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 8383,
+      "verify_ms": 1809,
+      "process_peak_rss_bytes": 583704576,
+      "shape": "shield",
+      "iteration": 2,
+      "wall_seconds": 10.246324934000086
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 8380,
+      "verify_ms": 1810,
+      "process_peak_rss_bytes": 584912896,
+      "shape": "shield",
+      "iteration": 3,
+      "wall_seconds": 10.245308037999962
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 27188,
+      "verify_ms": 6462,
+      "process_peak_rss_bytes": 825090048,
+      "shape": "transfer_1in_2out",
+      "iteration": 1,
+      "wall_seconds": 33.71473340800003
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 27212,
+      "verify_ms": 6468,
+      "process_peak_rss_bytes": 825597952,
+      "shape": "transfer_1in_2out",
+      "iteration": 2,
+      "wall_seconds": 33.74528287600003
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 27155,
+      "verify_ms": 6466,
+      "process_peak_rss_bytes": 825700352,
+      "shape": "transfer_1in_2out",
+      "iteration": 3,
+      "wall_seconds": 33.68687919999991
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 38185,
+      "verify_ms": 9372,
+      "process_peak_rss_bytes": 858071040,
+      "shape": "transfer_2in_2out",
+      "iteration": 1,
+      "wall_seconds": 47.62830341199992
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 38226,
+      "verify_ms": 9371,
+      "process_peak_rss_bytes": 857886720,
+      "shape": "transfer_2in_2out",
+      "iteration": 2,
+      "wall_seconds": 47.66736329300011
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 38117,
+      "verify_ms": 9384,
+      "process_peak_rss_bytes": 857964544,
+      "shape": "transfer_2in_2out",
+      "iteration": 3,
+      "wall_seconds": 47.57269860800011
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 60185,
+      "verify_ms": 15190,
+      "process_peak_rss_bytes": 858378240,
+      "shape": "transfer_4in_2out",
+      "iteration": 1,
+      "wall_seconds": 75.44001478199993
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 60166,
+      "verify_ms": 15213,
+      "process_peak_rss_bytes": 858411008,
+      "shape": "transfer_4in_2out",
+      "iteration": 2,
+      "wall_seconds": 75.44310252800005
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 60243,
+      "verify_ms": 15284,
+      "process_peak_rss_bytes": 858267648,
+      "shape": "transfer_4in_2out",
+      "iteration": 3,
+      "wall_seconds": 75.59386982600017
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 11668,
+      "verify_ms": 2901,
+      "process_peak_rss_bytes": 825217024,
+      "shape": "unshield",
+      "iteration": 1,
+      "wall_seconds": 14.6359562130001
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 11690,
+      "verify_ms": 2896,
+      "process_peak_rss_bytes": 825507840,
+      "shape": "unshield",
+      "iteration": 2,
+      "wall_seconds": 14.654012982999802
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 11676,
+      "verify_ms": 2917,
+      "process_peak_rss_bytes": 825556992,
+      "shape": "unshield",
+      "iteration": 3,
+      "wall_seconds": 14.65898973000003
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 75859,
+      "verify_ms": 18760,
+      "process_peak_rss_bytes": 858644480,
+      "shape": "block_8proofs",
+      "iteration": 1,
+      "wall_seconds": 94.68268605999992
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 75712,
+      "verify_ms": 18763,
+      "process_peak_rss_bytes": 858894336,
+      "shape": "block_8proofs",
+      "iteration": 2,
+      "wall_seconds": 94.53674887300008
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 75722,
+      "verify_ms": 18863,
+      "process_peak_rss_bytes": 858546176,
+      "shape": "block_8proofs",
+      "iteration": 3,
+      "wall_seconds": 94.64786081400007
+    },
+    {
+      "bytes": 605712,
+      "proofs": 8,
+      "prove_ms": 88727,
+      "verify_ms": 23153,
+      "process_peak_rss_bytes": 859324416,
+      "shape": "block_8spends",
+      "iteration": 1,
+      "wall_seconds": 111.94187819700005
+    },
+    {
+      "bytes": 605712,
+      "proofs": 8,
+      "prove_ms": 88721,
+      "verify_ms": 23164,
+      "process_peak_rss_bytes": 859246592,
+      "shape": "block_8spends",
+      "iteration": 2,
+      "wall_seconds": 111.94548751000002
+    },
+    {
+      "bytes": 605712,
+      "proofs": 8,
+      "prove_ms": 88694,
+      "verify_ms": 23261,
+      "process_peak_rss_bytes": 859308032,
+      "shape": "block_8spends",
+      "iteration": 3,
+      "wall_seconds": 112.016261988
+    },
+    {
+      "bytes": 370984,
+      "proofs": 8,
+      "prove_ms": 62974,
+      "verify_ms": 14318,
+      "process_peak_rss_bytes": 587042816,
+      "shape": "block_8outputs",
+      "iteration": 1,
+      "wall_seconds": 77.34497525300003
+    },
+    {
+      "bytes": 370984,
+      "proofs": 8,
+      "prove_ms": 63089,
+      "verify_ms": 14327,
+      "process_peak_rss_bytes": 587005952,
+      "shape": "block_8outputs",
+      "iteration": 2,
+      "wall_seconds": 77.46992617599972
+    },
+    {
+      "bytes": 370984,
+      "proofs": 8,
+      "prove_ms": 63116,
+      "verify_ms": 14312,
+      "process_peak_rss_bytes": 585482240,
+      "shape": "block_8outputs",
+      "iteration": 3,
+      "wall_seconds": 77.48050760999968
+    }
+  ],
+  "summary": {
+    "shield": {
+      "prove_ms": {
+        "p50": 8380,
+        "p95": 8383,
+        "max": 8383
+      },
+      "verify_ms": {
+        "p50": 1810,
+        "p95": 1811,
+        "max": 1811
+      },
+      "process_peak_rss_bytes": {
+        "p50": 583860224,
+        "p95": 584912896,
+        "max": 584912896
+      },
+      "qualified": true
+    },
+    "transfer_1in_2out": {
+      "prove_ms": {
+        "p50": 27188,
+        "p95": 27212,
+        "max": 27212
+      },
+      "verify_ms": {
+        "p50": 6466,
+        "p95": 6468,
+        "max": 6468
+      },
+      "process_peak_rss_bytes": {
+        "p50": 825597952,
+        "p95": 825700352,
+        "max": 825700352
+      },
+      "qualified": true
+    },
+    "transfer_2in_2out": {
+      "prove_ms": {
+        "p50": 38185,
+        "p95": 38226,
+        "max": 38226
+      },
+      "verify_ms": {
+        "p50": 9372,
+        "p95": 9384,
+        "max": 9384
+      },
+      "process_peak_rss_bytes": {
+        "p50": 857964544,
+        "p95": 858071040,
+        "max": 858071040
+      },
+      "qualified": true
+    },
+    "transfer_4in_2out": {
+      "prove_ms": {
+        "p50": 60185,
+        "p95": 60243,
+        "max": 60243
+      },
+      "verify_ms": {
+        "p50": 15213,
+        "p95": 15284,
+        "max": 15284
+      },
+      "process_peak_rss_bytes": {
+        "p50": 858378240,
+        "p95": 858411008,
+        "max": 858411008
+      },
+      "qualified": true
+    },
+    "unshield": {
+      "prove_ms": {
+        "p50": 11676,
+        "p95": 11690,
+        "max": 11690
+      },
+      "verify_ms": {
+        "p50": 2901,
+        "p95": 2917,
+        "max": 2917
+      },
+      "process_peak_rss_bytes": {
+        "p50": 825507840,
+        "p95": 825556992,
+        "max": 825556992
+      },
+      "qualified": true
+    },
+    "block_8proofs": {
+      "prove_ms": {
+        "p50": 75722,
+        "p95": 75859,
+        "max": 75859
+      },
+      "verify_ms": {
+        "p50": 18763,
+        "p95": 18863,
+        "max": 18863
+      },
+      "process_peak_rss_bytes": {
+        "p50": 858644480,
+        "p95": 858894336,
+        "max": 858894336
+      },
+      "qualified": true
+    },
+    "block_8spends": {
+      "prove_ms": {
+        "p50": 88721,
+        "p95": 88727,
+        "max": 88727
+      },
+      "verify_ms": {
+        "p50": 23164,
+        "p95": 23261,
+        "max": 23261
+      },
+      "process_peak_rss_bytes": {
+        "p50": 859308032,
+        "p95": 859324416,
+        "max": 859324416
+      },
+      "qualified": true
+    },
+    "block_8outputs": {
+      "prove_ms": {
+        "p50": 63089,
+        "p95": 63116,
+        "max": 63116
+      },
+      "verify_ms": {
+        "p50": 14318,
+        "p95": 14327,
+        "max": 14327
+      },
+      "process_peak_rss_bytes": {
+        "p50": 587005952,
+        "p95": 587042816,
+        "max": 587042816
+      },
+      "qualified": true
+    }
+  },
+  "qualified": true,
+  "budget_policy": "initial-desktop-v2; proof component only; explicit overrides in budgets",
+  "cpu_model": "AMD EPYC 7763 64-Core Processor"
+}

@@ -34,6 +34,8 @@
 #include "network/stateless_node.h"  // CSN reorg: For RewindToCheckpoint/ReplayBlock
 #include "storage/chain_write_token.h"  // For genesis bootstrap token
 #include "consensus/chainparams.h"   // For Params()
+#include "consensus/state_commitment.h"  // IsStateCommitmentActive — the single dormancy authority
+#include "consensus/snapshot_binding.h"  // v5 binding-proof verification chain (spec Rule 4)
 #include "consensus/utreexo_delta_codec.h"  // UD sidecar codec + forward replay (campaign phase 2)
 #include "storage/forest_restore.h"  // shared checkpoint+sidecar replay walk (campaign phase 3)
 #include "consensus/chainwork.h"     // For canonical genesis proof
@@ -1816,6 +1818,61 @@ std::optional<uint256> ChainstateService::ComputeShieldedRoot(
     return root;
 }
 
+std::optional<uint256> ChainstateService::PredictPostBlockShieldedRootForTemplate(
+    const std::vector<Transaction>& txs, uint32_t height) {
+    // Decode bundles OUTSIDE the lock — deserialization needs no state.
+    std::vector<consensus::shielded::ShieldedBundle> bundles;
+    for (size_t i = 1; i < txs.size(); ++i) {
+        if (!txs[i].IsShielded()) continue;
+        consensus::shielded::ShieldedBundle bundle;
+        if (consensus::shielded::DeserializeShieldedBundle(
+                txs[i].shielded_bundle_bytes, &bundle) !=
+            consensus::shielded::BundleDecodeError::Ok) {
+            return std::nullopt;  // an undecodable bundle has no post-state
+        }
+        bundles.push_back(std::move(bundle));
+    }
+
+    // Snapshot the three containers consistently under the same lock that
+    // makes them move together (see ComputeShieldedRoot above). Blocking
+    // acquire, not try_lock: the assembler builds a template and can wait a
+    // connect out; returning "busy" would leave the template without a
+    // commitment, which under enforcement is an invalid block.
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    std::vector<consensus::shielded::NullifierEntry> entries;
+    const bool enumerated = shielded_nullifiers_.ForEach(
+        [&entries](uint32_t h, const uint8_t* nf) {
+            consensus::shielded::NullifierEntry e;
+            e.height = h;
+            std::copy(nf, nf + 32, e.nullifier.begin());
+            entries.push_back(e);
+            return true;
+        });
+    if (!enumerated) {
+        // Unreadable is not empty — refuse to predict rather than commit to
+        // the empty-set digest (the accumulator's core rule).
+        return std::nullopt;
+    }
+    const auto predicted = consensus::shielded::PredictPostBlockShieldedRoot(
+        bundles, height,
+        dinero::Params().shielded_epoch_reset_height,
+        dinero::Params().shielded_spend_auth_epoch_reset_height,
+        dinero::Params().shielded_activation_height,
+        shielded_tree_, std::move(entries), shielded_anchor_history_);
+    if (predicted && logger_) {
+        // Component provenance for the commitment: lets a later
+        // coinbase-state-commitment-mismatch be diffed against what the
+        // template actually committed to, container by container.
+        const auto pre_anchor_bytes = shielded_anchor_history_.SerializeBytes().size();
+        logger_->debug("[StateCommitmentOracle] h=" + std::to_string(height) +
+                       " predicted=" + predicted->GetHex().substr(0, 16) +
+                       " pre_tree_size=" + std::to_string(shielded_tree_.Size()) +
+                       " pre_anchor_bytes=" + std::to_string(pre_anchor_bytes) +
+                       " bundles=" + std::to_string(bundles.size()));
+    }
+    return predicted;
+}
+
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row written by ConsensusWriteBatch::Commit() (commit 85eacb55d).
@@ -2035,6 +2092,7 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
     }
 
     std::vector<uint8_t> frontier_at_active_tip;
+    std::optional<std::vector<uint8_t>> anchors_at_active_tip;
     if (active_height > 0 || stored_tip_height > 0) {
         const auto next_hash_result =
             chain_db_->getBlockHashByHeight(static_cast<int>(active_height + 1));
@@ -2071,6 +2129,22 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
             // Fall through with frontier_at_active_tip empty.
         } else {
             frontier_at_active_tip = *undo_result.value().pre_block_shielded_frontier;
+            anchors_at_active_tip = undo_result.value().pre_block_shielded_anchors;
+        }
+    }
+
+    // A forest recovery can rewind from a high checkpoint to genesis. The
+    // old helper rewound tree/nullifiers but left the high-tip anchors intact;
+    // CsnContaminatedCheckpointRecovery then failed DNRS at block 1.
+    // Decode before changing live state. New per-block undo provides the exact
+    // window even beyond the in-memory eviction journal's retention.
+    consensus::shielded::AnchorHistory restored_anchors;
+    if (active_height >= dinero::Params().shielded_activation_height && active_height > 0) {
+        if (!anchors_at_active_tip ||
+            restored_anchors.DeserializePersistenceBytes(*anchors_at_active_tip) !=
+                consensus::shielded::AnchorHistory::IoResult::Ok) {
+            if (logger_) logger_->error("[ChainstateService] Missing or invalid anchor undo for startup rewind; reindex required");
+            return false;
         }
     }
 
@@ -2085,6 +2159,7 @@ bool ChainstateService::RewindShieldedStateToActiveTipForStartup(uint32_t stored
     }
 
     shielded_nullifiers_.RollbackAbove(active_height);
+    shielded_anchor_history_ = std::move(restored_anchors);
 
     if (!PersistShieldedState()) {
         if (logger_) {
@@ -6032,7 +6107,13 @@ StatusOr<UndoRecord> ChainstateService::RegenerateUndoFromBlockTrivial(const Blo
             undo.created.push_back(out);
         }
     }
-    // No shielded state, no frontier snapshot needed.
+    if (!active_tip_ || active_tip_->hash != block.GetHash()) return Status::Internal;
+    if (active_tip_->height >= dinero::Params().shielded_activation_height && active_tip_->height > 0) {
+        undo.pre_block_shielded_frontier = shielded_tree_.SerializeFrontier();
+        auto pre_anchors = shielded_anchor_history_;
+        pre_anchors.RollbackAbove(active_tip_->height - 1);
+        undo.pre_block_shielded_anchors = pre_anchors.SerializePersistenceBytes();
+    }
     return undo;
 }
 
@@ -6171,9 +6252,10 @@ StatusOr<UndoRecord> ChainstateService::RegenerateUndoFromBlock(const Block& blo
     // DisconnectBlock will use this snapshot to restore the live tree
     // to its pre-block shape.
     //
-    // For blocks with no shielded outputs, leave the field unset:
-    // DisconnectBlock's transparent-only path doesn't need a snapshot.
-    if (shielded_outputs_in_block > 0) {
+    // Empty blocks also record an anchor at shielded-active heights. Capture
+    // their unchanged frontier and the pre-block anchor window as well.
+    if (!active_tip_ || active_tip_->hash != block.GetHash()) return Status::Internal;
+    if (shielded_outputs_in_block > 0 || active_tip_->height >= dinero::Params().shielded_activation_height) {
         const uint64_t live_size = shielded_tree_.Size();
         if (shielded_outputs_in_block > live_size) {
             if (logger_) {
@@ -6223,6 +6305,11 @@ StatusOr<UndoRecord> ChainstateService::RegenerateUndoFromBlock(const Block& blo
                                       dinero::Params().network_id == "regtest");
 
         undo.pre_block_shielded_frontier = truncated_clone.SerializeFrontier();
+        if (active_tip_->height > 0) {
+            auto pre_anchors = shielded_anchor_history_;
+            pre_anchors.RollbackAbove(active_tip_->height - 1);
+            undo.pre_block_shielded_anchors = pre_anchors.SerializePersistenceBytes();
+        }
     }
 
     return undo;
@@ -6266,7 +6353,21 @@ bool ChainstateService::HasStoredBlockBody(const uint256& hash) const {
 // tip never becomes a reorg candidate. Mirror block_acceptor's metadata write
 // for the store-only case, preserving any existing undo reference.
 void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos) {
+    // The scheduler invokes this outside its mutex. Serialize publication with
+    // ConnectTip's failed-read quarantine so an older failed read cannot mark
+    // the newly repaired body unreadable after we clear it.
+    auto activation_lock = AcquireBlockIngressActivationLock();
     if (!chain_db_) return;
+    const auto release_readable_quarantine = [&]() {
+        // Deep fork-heal testing exposed bodies downloaded below the active tip
+        // that never reach the ordinary scheduler drain. Metadata publication
+        // must repair their readability marker too, but only after a strict
+        // read verifies the stored bytes/hash. This grants no consensus validity.
+        if (unreadable_blocks_.contains(hash) &&
+            ReadStoredBlock(hash).status() == Status::Ok) {
+            unreadable_blocks_.clear(hash);
+        }
+    };
     if (pos.offset > std::numeric_limits<uint32_t>::max()) {
         if (logger_) logger_->warning("[#309] PersistStoredBodyPosition: data offset exceeds uint32 for " +
                                       hash.GetHex().substr(0, 16));
@@ -6275,6 +6376,7 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
     const auto persist_result = storage::PersistVerifiedArchivalBodyPosition(
         *chain_db_, block_storage_.get(), hash, pos);
     if (persist_result.status() == Status::Ok) {
+        release_readable_quarantine();
         if (logger_) {
             if (persist_result.value() == storage::BodyPositionPersistResult::ReplacedStale) {
                 logger_->warning("[#309] PersistStoredBodyPosition: replaced stale body position " +
@@ -6349,6 +6451,7 @@ void ChainstateService::PersistStoredBodyPosition(const uint256& hash, const Fil
     metadata.status_flags |= BLOCK_HAVE_DATA;
     ChainWriteToken token = ChainWriteToken::CreateForTesting();
     Status st = chain_db_->putHeaderMetadataPreservingExistingUndo(token, hash, metadata, nullptr);
+    if (st == Status::Ok) release_readable_quarantine();
     if (logger_) {
         if (st != Status::Ok) {
             logger_->warning("[#309] PersistStoredBodyPosition: putHeaderMetadata failed for " +
@@ -10019,6 +10122,17 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
         // stamping V3 makes the reader skip the SHLD bytes and then misread the
         // trailing checksum → every snapshot fails to load.
         header.version = SNAPSHOT_VERSION_V4;
+        // v5: when the state commitment is active at the base height, the
+        // snapshot must carry the binding proof (base coinbase + merkle
+        // branch) — a v4 snapshot inside enforcement is unloadable by the
+        // format policy. Dormant networks keep emitting v4 so the existing
+        // fleet's loaders are untouched until a height is deliberately
+        // selected. Single authority, as everywhere.
+        const bool write_v5_binding = consensus::IsStateCommitmentActive(
+            tip.height, Params().state_commitment_activation_height);
+        if (write_v5_binding) {
+            header.version = SNAPSHOT_VERSION_V5;
+        }
 
         // Get consensus UTXO set (all UTXOs on chain, not just wallet-owned)
         const auto& all_utxos = consensus_utxo_set_->GetUTXOs();
@@ -10221,6 +10335,67 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
                       std::to_string(shielded_section.anchor_history_bytes) + "B nullifiers=" +
                       std::to_string(shielded_section.nullifier_bytes) + "B root=" +
                       shielded_section.commitment_root.GetHex().substr(0, 16) + "...");
+
+        // v5 binding-proof section: base coinbase + merkle branch, appended
+        // after the shielded section, covered by the same trailing checksum.
+        // The block is the one already loaded (and utreexo-cross-checked)
+        // above — the SAME block whose header this snapshot claims as base.
+        if (write_v5_binding) {
+            const auto& base_block = tip_block_result.value();
+            if (base_block.vtx.empty()) {
+                result.error_message = "v5 binding section: base block has no coinbase";
+                return result;
+            }
+            const auto coinbase_bytes =
+                base_block.vtx[0].Serialize(TxSerializationMode::WithWitness);
+            if (coinbase_bytes.empty() ||
+                coinbase_bytes.size() > SNAPSHOT_V5_MAX_COINBASE_BYTES) {
+                result.error_message =
+                    "v5 binding section: coinbase serialization empty or over cap";
+                return result;
+            }
+            const auto branch =
+                consensus::ComputeCoinbaseMerkleBranch(base_block.vtx);
+            if (branch.size() > SNAPSHOT_V5_MAX_BRANCH_HASHES) {
+                result.error_message = "v5 binding section: branch depth over cap";
+                return result;
+            }
+            // Self-check before writing: the proof this section carries must
+            // verify against the header it will be checked against at load.
+            // An exporter that writes an unverifiable proof ships a snapshot
+            // every enforcing loader rejects — fail the export instead.
+            if (!consensus::VerifyCoinbaseMerkleBranch(
+                    base_block.vtx[0].GetTxid().AsUint256(), branch,
+                    base_block.header.merkle_root)) {
+                result.error_message =
+                    "v5 binding section: self-verification failed (branch does "
+                    "not reach the base header's merkle root)";
+                return result;
+            }
+
+            const uint32_t binding_magic = SNAPSHOT_V5_BINDING_MAGIC;
+            const uint32_t binding_version = SNAPSHOT_V5_BINDING_SECTION_VERSION;
+            const uint64_t cb_len = coinbase_bytes.size();
+            const uint32_t branch_count = static_cast<uint32_t>(branch.size());
+            file.write(reinterpret_cast<const char*>(&binding_magic), sizeof(binding_magic));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&binding_magic), sizeof(binding_magic));
+            file.write(reinterpret_cast<const char*>(&binding_version), sizeof(binding_version));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&binding_version), sizeof(binding_version));
+            file.write(reinterpret_cast<const char*>(&cb_len), sizeof(cb_len));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&cb_len), sizeof(cb_len));
+            file.write(reinterpret_cast<const char*>(&branch_count), sizeof(branch_count));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&branch_count), sizeof(branch_count));
+            file.write(reinterpret_cast<const char*>(coinbase_bytes.data()),
+                       static_cast<std::streamsize>(coinbase_bytes.size()));
+            sha256.Write(coinbase_bytes.data(), coinbase_bytes.size());
+            for (const auto& h : branch) {
+                file.write(reinterpret_cast<const char*>(h.data), 32);
+                sha256.Write(reinterpret_cast<const uint8_t*>(h.data), 32);
+            }
+            logger_->info("[ExportSnapshot] v5 binding section: coinbase=" +
+                          std::to_string(cb_len) + "B branch=" +
+                          std::to_string(branch_count) + " hashes");
+        }
 
         // Finalize checksum and write it
         uint8_t checksum_bytes[32];
@@ -10552,13 +10727,19 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             return result;
         }
 
-        // Verify version (v2 legacy + v3 with Utreexo section + v4 with shielded section)
+        // Verify version (v2 legacy + v3 with Utreexo section + v4 with
+        // shielded section + v5 with the state-commitment binding proof).
+        // Known-version screen only — the ACCEPTANCE policy (which versions
+        // load at which heights) is EvaluateSnapshotFormat below, the single
+        // decision point; keeping a second acceptance rule here would be two
+        // policies that can disagree.
         if (header.version != SNAPSHOT_VERSION_V2 && header.version != SNAPSHOT_VERSION_V3 &&
-            header.version != SNAPSHOT_VERSION_V4) {
+            header.version != SNAPSHOT_VERSION_V4 && header.version != SNAPSHOT_VERSION_V5) {
             result.error_message = "Unsupported snapshot version: " + std::to_string(header.version) +
                                   " (supported: " + std::to_string(SNAPSHOT_VERSION_V2) +
                                   ", " + std::to_string(SNAPSHOT_VERSION_V3) +
-                                  ", " + std::to_string(SNAPSHOT_VERSION_V4) + ")";
+                                  ", " + std::to_string(SNAPSHOT_VERSION_V4) +
+                                  ", " + std::to_string(SNAPSHOT_VERSION_V5) + ")";
             return result;
         }
         // ═════════════════════════════════════════════════════════════════════
@@ -10575,7 +10756,8 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
         // ═════════════════════════════════════════════════════════════════════
         switch (consensus::EvaluateSnapshotFormat(
                     header.version, header.block_height,
-                    Params().shielded_activation_height)) {
+                    Params().shielded_activation_height,
+                    Params().state_commitment_activation_height)) {
             case consensus::SnapshotFormatVerdict::RejectV2Deprecated:
                 result.error_message =
                     "Snapshot container v2 is no longer supported (deprecated). "
@@ -10596,6 +10778,19 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                     "shielded commitment tree and wedges on the first "
                     "post-snapshot shielded spend. Remedy: regenerate or obtain "
                     "a trusted v4 snapshot.";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            case consensus::SnapshotFormatVerdict::RejectV4PostStateCommitmentActivation:
+                result.error_message =
+                    "Snapshot container v4 is not usable at height " +
+                    std::to_string(header.block_height) +
+                    ": the state commitment is enforced from height " +
+                    std::to_string(Params().state_commitment_activation_height) +
+                    ", and a v4 snapshot carries no coinbase/merkle-branch "
+                    "binding proof, so its shielded section cannot be "
+                    "authenticated against the chain at load time. Remedy: "
+                    "regenerate or obtain a v5 snapshot, which carries the "
+                    "proof.";
                 logger_->error("[LoadSnapshot] " + result.error_message);
                 return result;
             case consensus::SnapshotFormatVerdict::RejectUnknownVersion:
@@ -10955,6 +11150,56 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                           std::to_string(shielded_section.nullifier_bytes) + "B");
         }
 
+        // v5 binding-proof section (base coinbase + merkle branch). Parsed and
+        // checksummed here with the other sections; VERIFIED against temporary
+        // shielded state below, before any live-state import. Parse failures are structural
+        // (attacker-controlled sizes) — reject before allocation, same discipline as the v4 caps above.
+        const bool has_v5_binding_section = (header.version >= SNAPSHOT_VERSION_V5);
+        std::vector<uint8_t> binding_coinbase_buf;
+        std::vector<uint256> binding_branch;
+        if (has_v5_binding_section) {
+            uint32_t b_magic = 0, b_version = 0, b_branch_count = 0;
+            uint64_t b_cb_len = 0;
+            file.read(reinterpret_cast<char*>(&b_magic), sizeof(b_magic));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&b_magic), sizeof(b_magic));
+            file.read(reinterpret_cast<char*>(&b_version), sizeof(b_version));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&b_version), sizeof(b_version));
+            file.read(reinterpret_cast<char*>(&b_cb_len), sizeof(b_cb_len));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&b_cb_len), sizeof(b_cb_len));
+            file.read(reinterpret_cast<char*>(&b_branch_count), sizeof(b_branch_count));
+            sha256.Write(reinterpret_cast<const uint8_t*>(&b_branch_count), sizeof(b_branch_count));
+            if (b_magic != SNAPSHOT_V5_BINDING_MAGIC) {
+                result.error_message = "Invalid v5 binding section magic";
+                return result;
+            }
+            if (b_version != SNAPSHOT_V5_BINDING_SECTION_VERSION) {
+                result.error_message = "Unsupported v5 binding section version: " +
+                                       std::to_string(b_version);
+                return result;
+            }
+            if (b_cb_len == 0 || b_cb_len > SNAPSHOT_V5_MAX_COINBASE_BYTES ||
+                b_branch_count > SNAPSHOT_V5_MAX_BRANCH_HASHES) {
+                result.error_message = "v5 binding section exceeds configured caps";
+                return result;
+            }
+            binding_coinbase_buf.resize(static_cast<size_t>(b_cb_len));
+            file.read(reinterpret_cast<char*>(binding_coinbase_buf.data()),
+                      static_cast<std::streamsize>(binding_coinbase_buf.size()));
+            sha256.Write(binding_coinbase_buf.data(), binding_coinbase_buf.size());
+            binding_branch.resize(b_branch_count);
+            for (auto& h : binding_branch) {
+                file.read(reinterpret_cast<char*>(h.data), 32);
+                sha256.Write(reinterpret_cast<const uint8_t*>(h.data), 32);
+            }
+            if (!file.good()) {
+                result.error_message = "v5 binding section truncated";
+                return result;
+            }
+            logger_->info("[LoadSnapshot] v5 binding section: coinbase=" +
+                          std::to_string(b_cb_len) + "B branch=" +
+                          std::to_string(b_branch_count) + " hashes");
+        }
+
         // Read stored checksum from file
         uint8_t stored_checksum[32];
         file.read(reinterpret_cast<char*>(stored_checksum), 32);
@@ -11048,31 +11293,199 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
 
             snapshot_forest = std::move(deserialized_forest);
             logger_->info("[LoadSnapshot] v3 Utreexo root binding verified against base block header");
+        }
 
-            // A fresh snapshot bootstrap knows the base through the persistent
-            // header selector before it has downloaded that block's body.  The
-            // forest checkpoint verifier, however, reads the committed header
-            // from ChainDB.  Persist the already-PoW-validated selector copy so
-            // the first post-base disconnect/reorg can restore the snapshot
-            // checkpoint without depending on a body having arrived first.
-            // putHeader touches only the header CF; it does not promote the
-            // pre-base canonical height index before background validation.
-            if (snapshot_base_header.has_value() && chain_db_) {
-                ChainWriteToken token;
-                const auto header_status = chain_db_->putHeader(
-                    token,
-                    snapshot_base_header->hash,
-                    snapshot_base_header->header,
-                    static_cast<int>(snapshot_base_header->height),
-                    snapshot_base_header->chainwork);
-                if (header_status != Status::Ok) {
-                    result.error_message =
-                        "Failed to persist verified snapshot base header";
-                    logger_->error("[LoadSnapshot] " + result.error_message);
-                    return result;
-                }
-                logger_->info("[LoadSnapshot] Persisted verified snapshot base header");
+        // Gate D: a refused snapshot must not publish even partially imported
+        // state. Decode into temporary containers and authenticate the full SHR1
+        // root BEFORE BulkLoad, lifecycle changes, metadata or header writes.
+        std::optional<uint256> staged_shielded_root;
+        if (has_v4_shielded_section) {
+            namespace shld = consensus::shielded;
+            shld::CommitmentTree staged_tree;
+            shld::AnchorHistory staged_anchors;
+            shld::NullifierSet staged_nullifiers;
+            if (!shielded_frontier_buf.empty() &&
+                !staged_tree.DeserializeFrontier(shielded_frontier_buf.data(),
+                                                shielded_frontier_buf.size())) {
+                result.error_message = "Failed to restore shielded commitment-tree frontier from snapshot";
+                return result;
             }
+            const auto tree_root = staged_tree.Root();
+            if (std::memcmp(tree_root.data(), shielded_section.commitment_root.data, 32) != 0) {
+                result.error_message = "Restored shielded tree root does not match snapshot commitment_root";
+                return result;
+            }
+            if (!shielded_anchor_buf.empty() &&
+                staged_anchors.DeserializeBytes(shielded_anchor_buf) != shld::AnchorHistory::IoResult::Ok) {
+                result.error_message = "Failed to restore shielded anchor history from snapshot";
+                return result;
+            }
+            if (staged_nullifiers.Open(":memory:") != shld::NullifierSet::OpenResult::Ok ||
+                !staged_nullifiers.DeserializeContent(shielded_nullifier_buf)) {
+                result.error_message = "Failed to stage shielded nullifier payload from snapshot";
+                return result;
+            }
+            staged_shielded_root = shld::ComputeShieldedRoot(staged_tree, staged_nullifiers, staged_anchors);
+            if (!staged_shielded_root) {
+                result.error_message = "Snapshot shielded root uncomputable during staging";
+                return result;
+            }
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // state_commitment_v1 LOAD-TIME BINDING VERIFICATION (v5, spec Rule 4).
+        // Chain of custody, in the mandated order:
+        //   burial/ancestry → merkle branch → exactly-one DNRS → full-SHR1
+        //   equality against the STAGED state's computed root.
+        // ENFORCED (rejects the load) when the state commitment is active at
+        // the claimed base height; ADVISORY (log-only) for a v5 snapshot
+        // loaded while dormant — carrying a proof early is legal and gets
+        // checked opportunistically. Every reject names its verdict CLASS.
+        // The base header used is the STORED, PoW-validated one from the
+        // header selector's best-work chain — never anything the snapshot
+        // file claims about itself beyond (hash, height), which the ancestry
+        // step authenticates.
+        // ═════════════════════════════════════════════════════════════════════
+        {
+            const bool binding_enforced = consensus::IsStateCommitmentActive(
+                header.block_height, Params().state_commitment_activation_height);
+            auto binding_fail = [&](consensus::SnapshotBindingVerdict v,
+                                    const std::string& detail) -> bool {
+                const std::string msg =
+                    std::string("v5 binding verification: ") +
+                    consensus::SnapshotBindingVerdictName(v) + " — " + detail;
+                if (binding_enforced) {
+                    result.error_message = msg;
+                    logger_->error("[LoadSnapshot] " + msg + " (REJECTING load)");
+                    return true;  // caller returns result
+                }
+                logger_->warning("[LoadSnapshot] " + msg +
+                                 " (advisory: state commitment dormant here)");
+                return false;
+            };
+
+            if (binding_enforced && !has_v5_binding_section) {
+                // Unreachable in practice — the format policy already rejects
+                // v4-under-enforcement — but belt-and-braces: two gates, one
+                // verdict class.
+                result.error_message =
+                    std::string("v5 binding verification: ") +
+                    consensus::SnapshotBindingVerdictName(
+                        consensus::SnapshotBindingVerdict::MissingProof) +
+                    " — no binding section at enforced base height " +
+                    std::to_string(header.block_height);
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+
+            if (has_v5_binding_section) {
+                // (a) Ancestry + burial against the selected best-work chain.
+                std::optional<uint256> ancestor_at_base;
+                uint32_t best_height = 0;
+                if (header_chain_selector_) {
+                    if (auto best = header_chain_selector_->GetBestHeaderValue()) {
+                        best_height = best->height;
+                    }
+                    HeaderIndexEntry at_base;
+                    if (header_chain_selector_->GetHeaderAtHeightCopy(
+                            header.block_height, at_base)) {
+                        ancestor_at_base = at_base.hash;
+                    }
+                }
+                const auto burial = consensus::EvaluateSnapshotBurial(
+                    header.block_hash, header.block_height, ancestor_at_base,
+                    best_height, Params().state_commitment_burial_depth);
+                if (burial != consensus::SnapshotBindingVerdict::Ok) {
+                    if (binding_fail(burial,
+                            "base " + header.block_hash.GetHex().substr(0, 16) +
+                            "…@" + std::to_string(header.block_height) +
+                            " vs best-work height " + std::to_string(best_height) +
+                            ", required depth " +
+                            std::to_string(Params().state_commitment_burial_depth))) {
+                        return result;
+                    }
+                } else {
+                    // (b)+(c)+(d): proven coinbase → DNRS → computed root.
+                    Transaction binding_coinbase;
+                    size_t consumed = 0;
+                    HeaderIndexEntry at_base;
+                    const bool have_base_entry =
+                        header_chain_selector_ &&
+                        header_chain_selector_->GetHeaderAtHeightCopy(
+                            header.block_height, at_base);
+                    if (!have_base_entry) {
+                        if (binding_fail(consensus::SnapshotBindingVerdict::
+                                             InsufficientBurialOrNonAncestry,
+                                         "base header entry unavailable")) {
+                            return result;
+                        }
+                    } else if (!TransactionSerializer::Deserialize(binding_coinbase,
+                                                                   binding_coinbase_buf,
+                                                                   consumed) ||
+                               consumed != binding_coinbase_buf.size()) {
+                        if (binding_fail(consensus::SnapshotBindingVerdict::
+                                             InvalidMerkleProof,
+                                         "carried coinbase does not deserialize "
+                                         "cleanly")) {
+                            return result;
+                        }
+                    } else {
+                        const auto& restored_root = staged_shielded_root;
+                        if (!restored_root) {
+                            if (binding_fail(consensus::SnapshotBindingVerdict::
+                                                 CommitmentMismatch,
+                                             "restored shielded root "
+                                             "uncomputable (nullifier set "
+                                             "unreadable) — unverifiable fails "
+                                             "closed")) {
+                                return result;
+                            }
+                        } else {
+                            const auto verdict = consensus::EvaluateSnapshotBinding(
+                                binding_coinbase, binding_branch,
+                                at_base.header.merkle_root, *restored_root);
+                            if (verdict != consensus::SnapshotBindingVerdict::Ok) {
+                                if (binding_fail(verdict,
+                                        "proof does not bind the restored "
+                                        "shielded state to the base header")) {
+                                    return result;
+                                }
+                            } else {
+                                logger_->info(
+                                    "[LoadSnapshot] v5 binding VERIFIED: DNRS → "
+                                    "coinbase → merkle root → best-work header at "
+                                    "height " + std::to_string(header.block_height) +
+                                    (binding_enforced ? " (enforced)" : " (advisory)"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // A fresh snapshot bootstrap knows the base through the persistent
+        // header selector before it has downloaded that block's body.  The
+        // forest checkpoint verifier, however, reads the committed header
+        // from ChainDB.  Persist the already-PoW-validated selector copy so
+        // the first post-base disconnect/reorg can restore the snapshot
+        // checkpoint without depending on a body having arrived first.
+        // putHeader touches only the header CF; it does not promote the
+        // pre-base canonical height index before background validation.
+        if (snapshot_base_header.has_value() && chain_db_) {
+            ChainWriteToken token;
+            const auto header_status = chain_db_->putHeader(
+                token,
+                snapshot_base_header->hash,
+                snapshot_base_header->header,
+                static_cast<int>(snapshot_base_header->height),
+                snapshot_base_header->chainwork);
+            if (header_status != Status::Ok) {
+                result.error_message =
+                    "Failed to persist verified snapshot base header";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                return result;
+            }
+            logger_->info("[LoadSnapshot] Persisted verified snapshot base header");
         }
 
         // Pass 2: BulkLoad consensus UTXO set
@@ -11257,6 +11670,7 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                     return result;
                 }
             }
+            shielded_anchor_history_.Clear();
             if (!shielded_anchor_buf.empty() &&
                 shielded_anchor_history_.DeserializeBytes(shielded_anchor_buf) !=
                     consensus::shielded::AnchorHistory::IoResult::Ok) {
@@ -11264,61 +11678,17 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                 logger_->error("[LoadSnapshot] " + result.error_message);
                 return result;
             }
-            // Restore the nullifier set from the carried NSCF payload (see
-            // NullifierSet::SerializeContent): 'NSCF'(u32) | version(u16) |
-            // count(u64) | count x [ height(u32) | nullifier(32) ]. Re-inserting
-            // is mandatory: an empty nullifier set on a snapshot node is
-            // fail-OPEN — the commitment tree is append-only, so an already-spent
-            // pre-snapshot note still has a valid membership proof against the
-            // current root, and a node with an empty set would ACCEPT a re-spend
-            // (shielded double-spend / inflation / consensus split). Full nodes
-            // reject via their populated set.
-            if (!shielded_nullifier_buf.empty()) {
-                const std::vector<uint8_t>& nb = shielded_nullifier_buf;
-                auto rd_u16 = [&nb](size_t o) -> uint16_t {
-                    return static_cast<uint16_t>(nb[o] | (static_cast<uint16_t>(nb[o + 1]) << 8));
-                };
-                auto rd_u32 = [&nb](size_t o) -> uint32_t {
-                    return static_cast<uint32_t>(nb[o]) | (static_cast<uint32_t>(nb[o + 1]) << 8) |
-                           (static_cast<uint32_t>(nb[o + 2]) << 16) | (static_cast<uint32_t>(nb[o + 3]) << 24);
-                };
-                auto rd_u64 = [&nb](size_t o) -> uint64_t {
-                    uint64_t v = 0;
-                    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(nb[o + i]) << (i * 8);
-                    return v;
-                };
-                constexpr uint32_t kNscfTag        = 0x4653434E;  // 'NSCF'
-                constexpr size_t   kNscfHeaderSize = 14;          // tag(4)+ver(2)+count(8)
-                constexpr size_t   kEntrySize      = 4 + 32;      // height(4)+nullifier(32)
-                if (nb.size() < kNscfHeaderSize || rd_u32(0) != kNscfTag) {
-                    result.error_message = "v4 shielded nullifier payload: bad NSCF header";
-                    logger_->error("[LoadSnapshot] " + result.error_message);
-                    return result;
-                }
-                const uint16_t nver = rd_u16(4);
-                if (nver != 1) {
-                    result.error_message = "v4 shielded nullifier payload: unsupported NSCF version " +
-                                           std::to_string(nver);
-                    logger_->error("[LoadSnapshot] " + result.error_message);
-                    return result;
-                }
-                const uint64_t ncount = rd_u64(6);
-                if (nb.size() != kNscfHeaderSize + ncount * kEntrySize) {
-                    result.error_message = "v4 shielded nullifier payload: size mismatch (count=" +
-                                           std::to_string(ncount) + ", bytes=" + std::to_string(nb.size()) + ")";
-                    logger_->error("[LoadSnapshot] " + result.error_message);
-                    return result;
-                }
-                size_t off = kNscfHeaderSize;
-                uint64_t inserted = 0;
-                for (uint64_t i = 0; i < ncount; ++i) {
-                    const uint32_t h = rd_u32(off); off += 4;
-                    consensus::shielded::Hash nf{};
-                    std::memcpy(nf.data(), nb.data() + off, 32); off += 32;
-                    if (shielded_nullifiers_.Insert(nf, h)) ++inserted;
-                }
-                logger_->info("[LoadSnapshot] v4 nullifier set restored: " +
-                              std::to_string(inserted) + "/" + std::to_string(ncount) + " entries");
+            // Use the same decoder as preflight and REPLACE the set. An
+            // insertion-only restore could retain stale rows or ignore failed
+            // inserts, making the live state differ from the proven candidate.
+            if (!shielded_nullifiers_.DeserializeContent(shielded_nullifier_buf)) {
+                result.error_message = "Failed to restore staged shielded nullifier payload";
+                return result;
+            }
+            const auto imported_root = ComputeShieldedRoot();
+            if (!imported_root || imported_root != staged_shielded_root) {
+                result.error_message = "Imported shielded state differs from verified staged snapshot";
+                return result;
             }
 
             // Persist the restored shielded state to ChainDB immediately, so a
@@ -12519,6 +12889,7 @@ dinero::UndoRecord BlockUndoToUndoRecord(const consensus::BlockUndo& block_undo,
     // Note: Utreexo delta is persisted separately as a sidecar key (UD:<blockhash>)
     // so legacy UndoRecord format remains backward-compatible.
     undo.pre_block_shielded_frontier = block_undo.pre_block_shielded_frontier;
+    undo.pre_block_shielded_anchors = block_undo.pre_block_shielded_anchors;
     undo.pre_reset_shielded_epoch    = block_undo.pre_reset_shielded_epoch;
 
     return undo;
@@ -12543,6 +12914,7 @@ consensus::BlockUndo UndoRecordToBlockUndo(const dinero::UndoRecord& undo_record
 
     // Note: utreexo_delta is loaded from sidecar key (UD:<blockhash>) in DisconnectTip.
     block_undo.pre_block_shielded_frontier = undo_record.pre_block_shielded_frontier;
+    block_undo.pre_block_shielded_anchors = undo_record.pre_block_shielded_anchors;
     block_undo.pre_reset_shielded_epoch    = undo_record.pre_reset_shielded_epoch;
 
     return block_undo;
@@ -12880,7 +13252,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         if (!consensus::shielded::DisconnectBlockShieldedSection(
                 tip_to_disconnect->height, undo.pre_reset_shielded_epoch,
                 undo.pre_block_shielded_frontier, shielded_tree_,
-                shielded_nullifiers_, &shielded_anchor_history_, derr)) {
+                shielded_nullifiers_, &shielded_anchor_history_, derr, undo.pre_block_shielded_anchors)) {
             if (logger_) {
                 logger_->error("[DisconnectTip-CSN] " + derr);
             }
@@ -14000,6 +14372,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     }
 
     const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        (!block_undo.pre_block_shielded_anchors || existing_undo.value().pre_block_shielded_anchors.has_value()) &&
         existing_undo.value().spent.size() == expected_spent_count &&
         !existing_undo.value().created.empty() &&
         (!block_has_shielded ||
@@ -15531,6 +15904,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
         }
         if (shielded_undo) {
             undo_record.pre_block_shielded_frontier = shielded_undo->pre_block_shielded_frontier;
+            undo_record.pre_block_shielded_anchors = shielded_undo->pre_block_shielded_anchors;
             undo_record.pre_reset_shielded_epoch = shielded_undo->pre_reset_shielded_epoch;
         }
     }
@@ -15546,6 +15920,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // rewritten now that we have the real shielded undo in hand.
     auto existing_undo = ReadStoredUndo(block_index->hash);
     const bool existing_undo_valid = existing_undo.status() == Status::Ok &&
+        (!shielded_undo || !shielded_undo->pre_block_shielded_anchors || existing_undo.value().pre_block_shielded_anchors.has_value()) &&
         existing_undo.value().spent.size() == expected_spent_count &&
         !existing_undo.value().created.empty() &&
         (!block_has_shielded ||
@@ -16652,12 +17027,24 @@ void ChainstateService::BackgroundValidationWorker() {
         // or a stateful BlockValidator would reject every shielded tx in honest
         // history), so the comparison costs one hash of state we already hold.
         //
-        // DELIBERATELY NOT FATAL YET. The replay is a third construction path —
-        // not live ConnectTip, not --reindex — and nothing has ever compared its
-        // shielded output. Divergences were found in both other paths, so
+        // ADVISORY while state_commitment_v1 is dormant; FATAL once it is
+        // enforced at the base height. The dormant rationale stands: the
+        // replay is a third construction path — not live ConnectTip, not
+        // --reindex — and divergences were found in both other paths, so
         // enforcing before real snapshots have proven agreement risks failing
-        // HONEST nodes into a full resync. Log first; enforce once the evidence
-        // is in.
+        // HONEST nodes into a full resync. Under enforcement that trade
+        // inverts: every non-verifying outcome must fail the validation —
+        // skipping on unreadable state would make unreadability the way to
+        // dodge the check, and continuing past a mismatch would promote a
+        // node to FullyValidated on shielded state that genesis history
+        // contradicts. IsStateCommitmentActive is the single dormancy
+        // authority; target_height is the snapshot base this replay rebuilt.
+        const bool shielded_enforced = consensus::IsStateCommitmentActive(
+            static_cast<uint32_t>(target_height),
+            Params().state_commitment_activation_height);
+        // Set only under enforcement; each branch carries a DISTINGUISHABLE
+        // reason so a failure names its class, never a collapsed "rejected".
+        std::optional<std::string> shielded_fatal;
         if (auto expected_shielded =
                 utxo_index_->GetMetadata(assumeutxo::kExpectedShieldedRootKey)) {
             const auto* tree = replay->ShieldedTree();
@@ -16667,11 +17054,29 @@ void ChainstateService::BackgroundValidationWorker() {
                 const auto replayed =
                     consensus::shielded::ComputeShieldedRoot(*tree, *nulls, *anchors);
                 if (!replayed) {
-                    logger_->warning("[BackgroundValidation] shielded root: replay nullifier "
-                                     "set unreadable — comparison skipped");
+                    if (shielded_enforced) {
+                        shielded_fatal =
+                            "shielded root unverifiable: replay nullifier set "
+                            "unreadable at enforced base height " +
+                            std::to_string(target_height) +
+                            " — unreadable state fails closed under enforcement";
+                        logger_->error("[BackgroundValidation] " + *shielded_fatal);
+                    } else {
+                        logger_->warning("[BackgroundValidation] shielded root: replay nullifier "
+                                         "set unreadable — comparison skipped");
+                    }
                 } else if (replayed->GetHex() == expected_shielded.value()) {
                     logger_->info("[BackgroundValidation] shielded root MATCHES the snapshot: " +
                                   replayed->GetHex());
+                } else if (shielded_enforced) {
+                    shielded_fatal =
+                        "SHIELDED ROOT MISMATCH at enforced base height " +
+                        std::to_string(target_height) +
+                        " — snapshot=" + expected_shielded.value() +
+                        " replayed=" + replayed->GetHex() +
+                        ": the snapshot's shielded section does not match "
+                        "genesis history";
+                    logger_->error("[BackgroundValidation] " + *shielded_fatal);
                 } else {
                     logger_->error(
                         "[BackgroundValidation] SHIELDED ROOT MISMATCH (advisory, not fatal) "
@@ -16683,16 +17088,37 @@ void ChainstateService::BackgroundValidationWorker() {
                         "the live path. Both need explaining before state_commitment_v1 "
                         "activates.");
                 }
+            } else if (shielded_enforced) {
+                shielded_fatal =
+                    "shielded root unverifiable: replay produced no shielded "
+                    "containers at enforced base height " +
+                    std::to_string(target_height);
+                logger_->error("[BackgroundValidation] " + *shielded_fatal);
             }
+        } else if (shielded_enforced) {
+            // No expected root recorded at load: an unverifiable snapshot
+            // inside enforcement fails closed rather than silently skipping
+            // the one check that authenticates its shielded section.
+            shielded_fatal =
+                "shielded root unverifiable: no expected root was recorded at "
+                "snapshot load (base height " + std::to_string(target_height) +
+                " is inside state-commitment enforcement)";
+            logger_->error("[BackgroundValidation] " + *shielded_fatal);
         }
 
         const bool lifecycle_promoted_to_fully_validated =
             assumeutxo_lifecycle_->OnReplayComplete(
                 /*replay_performed=*/true,
-                commitment_match && root_match,
+                commitment_match && root_match && !shielded_fatal.has_value(),
                 expected_commitment.value(),
-                recomputed + (root_match ? "" : " (utreexo root mismatch)"),
+                recomputed + (root_match ? "" : " (utreexo root mismatch)") +
+                    (shielded_fatal.has_value() ? " (shielded root failure)" : ""),
                 /*missing_body_count=*/0, std::chrono::steady_clock::now());
+
+        if (shielded_fatal.has_value()) {
+            OnBackgroundValidationComplete(false, *shielded_fatal);
+            return;
+        }
 
         if (!(commitment_match && root_match)) {
             OnBackgroundValidationComplete(false,

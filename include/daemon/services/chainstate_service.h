@@ -228,6 +228,20 @@ public:
     std::optional<uint256> ComputeShieldedRoot(
         ShieldedRootStatus* status = nullptr) const;
 
+    /**
+     * state_commitment_v1: predict the POST-BLOCK shielded root for a
+     * candidate block template (the value the coinbase DNRS commitment must
+     * carry). Thin locked wrapper over the pure
+     * consensus::shielded::PredictPostBlockShieldedRoot — the mining-side
+     * twin of the connect tail. Blocking acquire (unlike ComputeShieldedRoot
+     * above): a template without a commitment is an invalid block under
+     * enforcement, so the assembler waits a connect out rather than
+     * publishing one. nullopt = undecodable bundle or unreadable nullifier
+     * set; the caller must not build an enforced-height template from it.
+     */
+    std::optional<uint256> PredictPostBlockShieldedRootForTemplate(
+        const std::vector<Transaction>& txs, uint32_t height);
+
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row §1.4 names. After ActivateBestChain settles on the
     // canonical tip and the in-memory shielded state is loaded,
@@ -1026,6 +1040,10 @@ public:
     // path is otherwise only assigned inside Init(DaemonContext&); the setter
     // lets PersistShieldedState() succeed so the rewind reaches its marker
     // persist (the assertion under test). Test-only — not called in production.
+    // Reproduce a failed ConnectTip read without activating a synthetic chain.
+    void MarkBlockBodyUnreadableForTesting(const uint256& hash) {
+        unreadable_blocks_.mark(hash);
+    }
     void RealignShieldedStateToActiveTipAfterHealForTesting() {
         RealignShieldedStateToActiveTipAfterHeal();
     }

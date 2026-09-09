@@ -240,6 +240,15 @@ public:
     bool isWalletLocked() const;
     using ShieldedIncomingViewingKey = std::array<uint8_t, 32>;
     std::vector<ShieldedIncomingViewingKey> GetShieldedIncomingViewingKeys() const;
+    struct ShieldedRecipientViewingAuthority {
+        std::array<uint8_t, 32> ivk{};
+        std::array<uint8_t, 32> ak{};
+        std::array<uint8_t, 32> nvk{};
+    };
+    std::vector<ShieldedRecipientViewingAuthority>
+    GetShieldedRecipientViewingAuthorities() const;
+    using ShieldedOutgoingViewingKey = std::array<uint8_t, 32>;
+    std::vector<ShieldedOutgoingViewingKey> GetShieldedOutgoingViewingKeys() const;
 
     // ═══════════════════════════════════════════════════════════════
     // V7 post-quantum wallet integration
@@ -946,6 +955,12 @@ private:
     // spend-unlock timeout and wallet.lock so incoming shielded notes can still
     // be detected while spending stays locked.
     std::vector<ShieldedIncomingViewingKey> shielded_incoming_viewing_keys_;
+    std::vector<ShieldedRecipientViewingAuthority>
+        shielded_recipient_viewing_authorities_;
+    // Outgoing viewing keys reveal sent-note metadata but do not authorize a
+    // spend. Like ivks, they intentionally survive wallet.lock after one
+    // successful unlock so background confirmation/reorg scanning continues.
+    std::vector<ShieldedOutgoingViewingKey> shielded_outgoing_viewing_keys_;
 
     // ═══════════════════════════════════════════════════════════════
     // V7 post-quantum wallet master key (spec V7_WALLET_SCHEMA.md §5b)

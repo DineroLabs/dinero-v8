@@ -1,0 +1,1640 @@
+{
+  "source": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+  "tree": "951a2c189a9c82700f02a78c0997a59147c0b9e6",
+  "dirty": "",
+  "binary": "/Users/haydarevich/src/dinero-v8-shielded-integration/build/dinerod",
+  "binary_sha256": "c1a6f40aa628502c82bdec6f7574fc988eeb08f32d067aba58b83ee377e8c585",
+  "configuration": "Release, local system OpenSSL3.6.3; all targets; source configured after final commit; development qualification",
+  "started_utc": "2026-09-09T08:56:03.702623+00:00",
+  "coverage_plan": "Reconcile current Tests CI passed names with local 64-test complement, separate strict IBD, ReleaseSuite and focused regressions; all 575 names must be accounted for. Do not reuse predecessor CI results as current evidence.",
+  "github_pr_merge": {
+    "sha": "3f77bf0d6b84c804cdde3a2ad9dbed515a494049",
+    "tree": "951a2c189a9c82700f02a78c0997a59147c0b9e6",
+    "parents": [
+      "adb9643477e6ba2190a56ccf141bd6cca2621101",
+      "ce100c9867c1c410c22e7147d1fb848e4e727a04"
+    ],
+    "tree_matches_local_source": true
+  },
+  "local_complement": {
+    "ctest_count": 64,
+    "exit": 0,
+    "executed_passes": 63,
+    "opt_in_not_run": [
+      "CsnArchivalMainnetReplay"
+    ],
+    "duration_seconds": 1365.38,
+    "skip_reason": "Existing external live-mainnet soak requires explicit opt-in and authenticated production bridges; not a default local/CI gate. Its exit-0 skip is not counted as execution evidence."
+  },
+  "strict_ibd": {
+    "exit": 0,
+    "profile": "strict",
+    "final_height": 3022,
+    "tip_hash": "50c80250be1550c79a7eec4fe1242ff93fc3a7328de4e3da17a830f9c7deacb4",
+    "chainwork": "0x00000000000000000000000000000000000000000000000000000000051ee0db",
+    "all_five_nodes_match": true,
+    "all_nodes_missing_bodies": 0,
+    "manual_return_fork_replay": false,
+    "binary_hash_unchanged": true,
+    "log_sha256": "cec4bb6a870169626569f5aa4c094e35c6d7619efe9e0bed53806afc5db88c2a",
+    "final_download_state": {
+      "S": {
+        "available": true,
+        "headers_synced": true,
+        "in_flight": 0,
+        "is_fully_synchronized": true,
+        "local_tip_height": 3022,
+        "missing": 0,
+        "phase": "steady_state",
+        "queued": 0,
+        "queued_not_in_flight": 0,
+        "send_getdata_ready": true
+      },
+      "F": {
+        "available": true,
+        "headers_synced": true,
+        "in_flight": 0,
+        "is_fully_synchronized": true,
+        "local_tip_height": 3022,
+        "missing": 0,
+        "phase": "steady_state",
+        "queued": 1500,
+        "queued_not_in_flight": 1500,
+        "send_getdata_ready": true
+      },
+      "A": {
+        "available": true,
+        "headers_synced": true,
+        "in_flight": 0,
+        "is_fully_synchronized": true,
+        "local_tip_height": 3022,
+        "missing": 0,
+        "phase": "steady_state",
+        "queued": 0,
+        "queued_not_in_flight": 0,
+        "send_getdata_ready": true
+      },
+      "B": {
+        "available": true,
+        "headers_synced": true,
+        "in_flight": 0,
+        "is_fully_synchronized": true,
+        "local_tip_height": 3022,
+        "missing": 0,
+        "phase": "steady_state",
+        "queued": 0,
+        "queued_not_in_flight": 0,
+        "send_getdata_ready": true
+      },
+      "C": {
+        "available": true,
+        "headers_synced": true,
+        "in_flight": 0,
+        "is_fully_synchronized": true,
+        "local_tip_height": 3022,
+        "missing": 0,
+        "phase": "steady_state",
+        "queued": 0,
+        "queued_not_in_flight": 0,
+        "send_getdata_ready": true
+      }
+    },
+    "observation": "Fork source F has 1500 queued/non-in-flight entries despite missing=0 and matching final tip; consumers A/B/C have zero queued. This gate proves convergence and its existing RSS/fatal-log bounds, not whole-node CPU/queue housekeeping qualification."
+  },
+  "artifact_manifests": {
+    "linux": {
+      "source_commit": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "run_url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331644676",
+      "conclusion": "success",
+      "verified_sidecar_entries": [
+        "dinero-linux-x86_64-0.0.0-dev.tar.gz",
+        "dinero-linux-x86_64-0.0.0-dev/dinerod",
+        "dinero-linux-x86_64-0.0.0-dev/dinero-cli"
+      ],
+      "scope": "development artifact only; no release publication",
+      "artifacts": {
+        "dinero-linux-x86_64-0.0.0-dev.tar.gz": {
+          "archive_sha256": "5fdfa8864f23e5568961d2e6a456207dcade04ff7d7747254722f4e2a0e6c9c6",
+          "binaries": {
+            "dinero-linux-x86_64-0.0.0-dev/dinero-cli": "52f987eb74fdc5f47509832bf0c46a801885eb8fa679b39a1eda20b1752c1b4e",
+            "dinero-linux-x86_64-0.0.0-dev/dinerod": "7a786a434d20ae3a4ee9eeebea122ee49c18f9985e9db1b1e3c45ef5e3e005a6"
+          }
+        }
+      }
+    },
+    "macos": {
+      "source_commit": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "run_url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331647434",
+      "conclusion": "success",
+      "sidecars_verified": true,
+      "scope": "unsigned development operator artifacts; no release publication",
+      "artifacts": {
+        "dinero-operator-v8.0.0-dev-macOS-arm64-unsigned.tar.gz": {
+          "archive_sha256": "0d3f59d30795dccf8da0d967f99d64c4d31937f38791f03c3dd6841168a9255f",
+          "binaries": {
+            "dinero-operator-v8.0.0-dev-macOS-arm64/bin/dinero-cli": "065dca93480b0445f5d9404e350b9df028764d29cc71fcea92e2453eab154fbd",
+            "dinero-operator-v8.0.0-dev-macOS-arm64/bin/dinerod": "541d950b36f94b32dfb67a126e4d377c98c3a2b4e180ff7d9ffc4317de30c7fb"
+          }
+        },
+        "dinero-operator-v8.0.0-dev-macOS-x86_64-unsigned.tar.gz": {
+          "archive_sha256": "68c7e86a93bbe8fe02785adee417bf06e0b88ce22a884a24baf6c0639f13175b",
+          "binaries": {
+            "dinero-operator-v8.0.0-dev-macOS-x86_64/bin/dinero-cli": "3171dd200293f8b61f0dcbf9b203059b563b7e4bd4355c3aa65cd1638a6d1c68",
+            "dinero-operator-v8.0.0-dev-macOS-x86_64/bin/dinerod": "1913937d43ae0115201333a42e43d5ec8d486b97f7611df3af112f4be77685c7"
+          }
+        }
+      }
+    },
+    "windows": {
+      "run_id": 34331650014,
+      "source_commit": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "files": [
+        {
+          "file": "Dinero-Server-8.0.18-openssl357-ci-windows-x86_64-Setup.exe",
+          "bytes": 46004408,
+          "sha256": "1e3597d206463ee6e3b6541dbfeb80fa20316592a0aeb95d78a999a37f2eef49"
+        }
+      ]
+    }
+  },
+  "proof_qualification": {
+    "source_commit": "3f77bf0d6b84c804cdde3a2ad9dbed515a494049",
+    "harness_commit": "3f77bf0d6b84c804cdde3a2ad9dbed515a494049",
+    "binary_sha256": "7025a67c75dfb6b6d349f7ff1e9c939b801c1e5d132f8be944b1e20f01a908cf",
+    "cpu_model": "AMD EPYC 7763 64-Core Processor",
+    "logical_cpus": 4,
+    "budget_policy": "initial-desktop-v2; proof component only; explicit overrides in budgets",
+    "budgets": {
+      "rss_bytes": 2147483648,
+      "prove_ms": 120000,
+      "verify_ms": 30000,
+      "block_verify_ms": 30000
+    },
+    "qualified": true,
+    "summary": {
+      "shield": {
+        "prove_ms": {
+          "p50": 7784,
+          "p95": 7873,
+          "max": 7873
+        },
+        "verify_ms": {
+          "p50": 1839,
+          "p95": 1840,
+          "max": 1840
+        },
+        "process_peak_rss_bytes": {
+          "p50": 585072640,
+          "p95": 585170944,
+          "max": 585170944
+        },
+        "qualified": true
+      },
+      "transfer_1in_2out": {
+        "prove_ms": {
+          "p50": 25318,
+          "p95": 25343,
+          "max": 25343
+        },
+        "verify_ms": {
+          "p50": 6573,
+          "p95": 6581,
+          "max": 6581
+        },
+        "process_peak_rss_bytes": {
+          "p50": 825466880,
+          "p95": 825520128,
+          "max": 825520128
+        },
+        "qualified": true
+      },
+      "transfer_2in_2out": {
+        "prove_ms": {
+          "p50": 35713,
+          "p95": 35927,
+          "max": 35927
+        },
+        "verify_ms": {
+          "p50": 9548,
+          "p95": 9557,
+          "max": 9557
+        },
+        "process_peak_rss_bytes": {
+          "p50": 857985024,
+          "p95": 858230784,
+          "max": 858230784
+        },
+        "qualified": true
+      },
+      "transfer_4in_2out": {
+        "prove_ms": {
+          "p50": 56300,
+          "p95": 56373,
+          "max": 56373
+        },
+        "verify_ms": {
+          "p50": 15423,
+          "p95": 15518,
+          "max": 15518
+        },
+        "process_peak_rss_bytes": {
+          "p50": 858152960,
+          "p95": 858275840,
+          "max": 858275840
+        },
+        "qualified": true
+      },
+      "unshield": {
+        "prove_ms": {
+          "p50": 10980,
+          "p95": 10995,
+          "max": 10995
+        },
+        "verify_ms": {
+          "p50": 2968,
+          "p95": 2989,
+          "max": 2989
+        },
+        "process_peak_rss_bytes": {
+          "p50": 825565184,
+          "p95": 825655296,
+          "max": 825655296
+        },
+        "qualified": true
+      },
+      "block_8proofs": {
+        "prove_ms": {
+          "p50": 70660,
+          "p95": 70681,
+          "max": 70681
+        },
+        "verify_ms": {
+          "p50": 18997,
+          "p95": 19017,
+          "max": 19017
+        },
+        "process_peak_rss_bytes": {
+          "p50": 858677248,
+          "p95": 858849280,
+          "max": 858849280
+        },
+        "qualified": true
+      }
+    },
+    "workflow_run": 34331611771
+  },
+  "mac_proof_binary_identity": {
+    "current_path": "/Users/haydarevich/src/dinero-v8-shielded-integration/build/test_shielded_validation",
+    "current_sha256": "c0e6c8f351b182943a3495c6e151cc2a0ee69cd66decd3e8780e73f165098465",
+    "measured_sha256": "abfa3477c9760ac59321f99be606450ef11340350e025bf61a341d00d7238b3b",
+    "byte_identical": false,
+    "measurement_source_commit": "e79295a8b92ee60739cca23c80624523c3bbe29a",
+    "note": "Historical binary was different; fresh current-binary qualification is recorded separately."
+  },
+  "release_suite_completed": {
+    "exit": 0,
+    "duration_seconds": 2603.72,
+    "harness_commit": "611ea3362b60c81aa2e441e6106390c3d2e7a094",
+    "binary_unchanged": true,
+    "stage_seconds": {
+      "WalletMainnetReadiness": "47",
+      "AcceptanceParity": "245",
+      "P2PStorm": "830",
+      "IBDTorture(release)": "559",
+      "UtreexoConsensus": "33",
+      "Phase1CanonicalRecovery": "314",
+      "ShieldedCanonicalRecovery": "107",
+      "Phase2ShieldedCanonicalRecovery": "98",
+      "MempoolStress": "25",
+      "RestartChurnBoringness": "346"
+    },
+    "first_attempt_exit": 8,
+    "first_attempt_log": "ce100-release-first-failed.log",
+    "production_rc": false,
+    "release_identity_freeze_ran": false
+  },
+  "coverage": {
+    "source_commit": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+    "registered_count": 575,
+    "executed_pass_count": 574,
+    "ci_passed_names": [
+      "ABI_Stability",
+      "ActivationBoundaryCritical",
+      "ActiveTipClassification",
+      "AddressBalanceMempoolOverlay",
+      "AddressIndexCrossHRP",
+      "AddressManagerServiceBoundary",
+      "AddressParentChildMempoolLifecycle",
+      "AddrmanRelaySelect",
+      "AmountUna",
+      "AnchorHistory",
+      "ArchivalBlockReader",
+      "ArchivalConfigDefaults",
+      "AsertSignedShift",
+      "AssertionsEnabled",
+      "AssumeUTXOForkGuard",
+      "AssumeUTXOMetadataLifecycle",
+      "AssumeUTXOPrecheck",
+      "AssumeUtxoAnchor73035",
+      "AssumeUtxoAnchor84131",
+      "AssumeUtxoAnchor99677",
+      "AssumeUtxoCorruptCheckpointRecovery",
+      "AssumeUtxoForwardConnect",
+      "AssumeUtxoIncompleteReorgRecovery",
+      "AssumeUtxoLateWalletImport",
+      "AssumeUtxoLifecycle",
+      "AssumeUtxoPrebaseMempoolResolution",
+      "AssumeUtxoPrebaseSpendStatelessUndo",
+      "AssumeUtxoPromotionRace",
+      "AssumeUtxoReplay",
+      "AssumeUtxoReplayE2E",
+      "AssumeUtxoSnapshotRotationSelfHeal",
+      "BIP119CTVVectors",
+      "BIP32DeriverEquivalence",
+      "BIP341SighashVectors",
+      "BIP39",
+      "Bech32Validator",
+      "BlockConstruction",
+      "BlockDownloadScheduler",
+      "BlockDownloadSchedulerG6BVerification",
+      "BlockDownloadSchedulerRestartBootstrap",
+      "BlockHeight",
+      "BlockIngressServiceBoundary",
+      "BlockRelayG2Verification",
+      "BlockRequestPeerOrder",
+      "BlockSerialization",
+      "BlockStatusGeneration",
+      "BlockStorageRoundTrip",
+      "BlockTemplateDeterminism",
+      "BlockValidationInvariants",
+      "BlockWriteMetrics",
+      "BlockWriteMetricsExport",
+      "BridgeForestReadLock",
+      "CSNIntegration",
+      "CSNShieldedReorgInvertibility",
+      "CTFeePolicyTests",
+      "CTVerifyBalance",
+      "CcvAdversarial",
+      "CcvBoundedState",
+      "CcvReferenceModel",
+      "CcvSuccessorBinding",
+      "ChainDBClearAllCoins",
+      "ChainDBPreBaseCoins",
+      "ChainDBWriteFailureRecovery",
+      "ChainIdentitySync",
+      "ChainParamsSelection",
+      "ChainstateCommitBatchInterval",
+      "ChainstateRecoveryMarker",
+      "ChainworkFromHex",
+      "ClockSource",
+      "CmakeInstallLayout",
+      "CoinbaseIntegrity",
+      "ColdStartConsensus",
+      "CommitmentTree",
+      "CompactBlockBinarySerialization",
+      "CompactBlockServiceBoundary",
+      "ConcurrentInFlight",
+      "ConfigFileLoader",
+      "ConnectTipRestartEquivalence",
+      "ConnectionManagerG6Verification",
+      "ConsensusCoreSt",
+      "ConsensusFormalVerification",
+      "ConsensusIntrospectionRpc",
+      "ConsensusInvariants",
+      "ConsensusLimits",
+      "ConsensusRing2Validity",
+      "ConsensusUTXOSetFuzz",
+      "ConsensusUTXOSetTransactional",
+      "ConsensusUTXOSetTransactionalUnit",
+      "ConsensusValidationTripwires",
+      "ConsensusValidationVerification",
+      "ConsensusWriteBatchLeak",
+      "Consensus_ByzantineToleranceOracles_DB1_DB5_R5_5e",
+      "Consensus_DeterminismOracles_DD1_DD5_R5_5f",
+      "Consensus_Int128Compat_Native",
+      "Consensus_Int128Compat_Struct",
+      "Consensus_LivenessOracle_DL1_R5_5c",
+      "Consensus_LivenessOracles_DL2_DL5_R5_5c",
+      "Consensus_PartitionToleranceOracles_DN1_DN5_R5_5d",
+      "Consensus_SafetyOracle_DC1_R5_5b",
+      "Consensus_SafetyOracles_DC2_DC5_R5_5b",
+      "Consensus_SimulatorSmoke_R5_5a",
+      "Consensus_TraceSmoke_R5_5a",
+      "ContractSigningPackageSecurity",
+      "CovenantActivation",
+      "CovenantFuzz",
+      "CovenantProfileWallet",
+      "CovenantScriptPath",
+      "CovenantSystemLifecycle",
+      "CovenantTests",
+      "CovenantWalletMultinodeLifecycle",
+      "CovenantWalletRecovery",
+      "CrossSeedRestartReorgParity",
+      "CrossSeedTeardownLifecycle",
+      "CsnAcceptWindow",
+      "CsnEpochResetCrashAtomicity",
+      "CsnProofRefresh",
+      "CsnSpendReorgReconciliation",
+      "CsnStaleProofRetry",
+      "D3ShieldedReverseApply",
+      "DAAGoldenVectors",
+      "DNSResolverG8Verification",
+      "DaemonInvariants",
+      "DaemonOperationalSafety",
+      "DaemonStartupPolicy",
+      "DatadirGuard",
+      "DeferredBaseChildForgedRoot",
+      "DescriptorPsbtIntegration",
+      "DescriptorPsbtSimple",
+      "DineroBackup",
+      "DineroPrepareUpgrade",
+      "DiskSpaceClassify",
+      "DoctorDiagnostics",
+      "DownloadCoordinationVerification",
+      "DpiHeaderFilterProofFlow",
+      "DpiProtocol",
+      "EcAddCompleteBinding",
+      "EconomicStressTests",
+      "Economic_AttackOracles_E16_E20_R6_6e",
+      "Economic_IncentiveOracles_E11_E15_R6_6d",
+      "Economic_LivenessOracles_E6_E10_R6_6c",
+      "Economic_SafetyOracles_E1_E5_R6_6b",
+      "Economic_SimulatorSmoke_R6_6a",
+      "EscapeHatchTests",
+      "Execution_CompositionState_R7_7e",
+      "Execution_CovenantSemantics_R7_7d",
+      "Execution_SemanticDeterminism_R7_7f",
+      "Execution_SemanticSafety_R7_7b",
+      "Execution_SimulatorSmoke_R7_7a",
+      "Execution_TaprootPath_R7_7c",
+      "ExternalMinerCoinbaseTxnFilterCommitment",
+      "FailureLogCapture",
+      "FeLessThanP",
+      "FeeBumpEngine",
+      "FeeBumpRpc",
+      "FeeConfigVerification",
+      "FeeEstimationG4Verification",
+      "FilterCommitmentActivation",
+      "FilterCommitmentActivationBoundary",
+      "FleetWatcherTests",
+      "ForestDeltaReplayEquivalence",
+      "ForestLockStress",
+      "ForestRestore",
+      "ForestSerializationIntegrity",
+      "ForkBlockStatusRestart",
+      "ForkChoiceTest",
+      "ForkPointRootValidation",
+      "FormalInvariants",
+      "GenerateSnapshotPipeline",
+      "GenerationToctouBarrier",
+      "GenesisInvariants",
+      "GuardedForestExclusion",
+      "HashDomainsM3",
+      "HashWrapperVectors",
+      "HeaderForkChoice",
+      "HeaderMetadataRecovery",
+      "HeaderPoWVerification",
+      "HeaderRealMainnetReplay",
+      "HeaderRefreshCoalescer",
+      "HeaderRestartSafety",
+      "HeaderSideBranchBound",
+      "HeaderStatusBits",
+      "HeaderStatusOverwriteAllowlist",
+      "HeaderSyncP2PIntegration",
+      "HeaderSyncRestartRecovery",
+      "HeaderSyncStallBehavior",
+      "HeaderSyncStateMachine",
+      "HeadersSyncServiceBoundary",
+      "HeadersWireV1",
+      "HealthCheck",
+      "IBDSmokeTest",
+      "InFlightManagerVerification",
+      "InvGetDataHandlerVerification",
+      "InvalidityRestartSticky",
+      "InventorySerializationVerification",
+      "KillSwitchTest",
+      "LoggerRotation",
+      "MainnetCheckpoints",
+      "MainnetDryRun",
+      "MempoolAddressQueries",
+      "MempoolPolicyUnit",
+      "MempoolProofStaleness",
+      "MerkleGolden",
+      "MerkleInvariants",
+      "MetricsServiceBoundary",
+      "MineAfterInvalidate",
+      "MineAfterInvalidateRestart",
+      "MinerRaceSafety",
+      "MiningCompletenessPolicyTripwires",
+      "MiningEventBusUnit",
+      "MiningHeaderReservedSmoke",
+      "MiningHeight2",
+      "MiningPolicyE2E",
+      "MiningPolicyTripwires",
+      "MiningRestartPolicyTripwires",
+      "Mining_CorrectnessOracle_R4_4c",
+      "Mining_DeterminismOracle_MD1_R4_4f",
+      "Mining_DeterminismOracle_MD2_R4_4f",
+      "Mining_DeterminismOracle_MD3_R4_4f",
+      "Mining_DeterminismOracle_MD4_R4_4f",
+      "Mining_DeterminismOracle_MD5_R4_4f",
+      "Mining_Framework_Determinism_R4_4b",
+      "Mining_GbtTemplateTime",
+      "Mining_LivenessOracle_ML1_R4_4e",
+      "Mining_LivenessOracle_ML2_R4_4e",
+      "Mining_LivenessOracle_ML3_R4_4e",
+      "Mining_LivenessOracle_ML4_R4_4e",
+      "Mining_LivenessOracle_ML5_R4_4e",
+      "Mining_PayoutSpec",
+      "Mining_PersistenceStore_SelfTests_R4_4g1",
+      "Mining_PoolPayoutIntegration",
+      "Mining_SafetyOracle_MS1_R4_4d",
+      "Mining_SafetyOracle_MS2_R4_4d",
+      "Mining_SafetyOracle_MS3_R4_4d",
+      "Mining_SafetyOracle_MS4_R4_4d",
+      "Mining_SafetyOracle_MS5_R4_4d",
+      "Mining_SubsidyCalculator_R4_4c",
+      "Mining_W1_5_Integration",
+      "Mining_W1_BlockAssemblyContext",
+      "Mining_WitnessExtranonce_Invariants",
+      "MonetaryConstants",
+      "NodeCoreRuntimeGuards",
+      "NotifyDrainWorker",
+      "NullifierAccumulator",
+      "NullifierSet",
+      "NullifierSetProvenance",
+      "P2MRAddressIndexRpcSmoke",
+      "P2PAdversarial",
+      "P2PHandshakeVerification",
+      "P2PIdlePeerReap",
+      "P2PManager_TS1_Integration",
+      "P2PPingPongVerification",
+      "P2PProperties",
+      "P2PServiceNetworkControl",
+      "P2PStalenessRecovery",
+      "P2P_Hardening",
+      "ParallelBlockDownloadTargeted",
+      "ParentChildRbfReplacementWithMempoolParent",
+      "Pedersen",
+      "PeerDiscoveryG5Verification",
+      "PeerGovernor",
+      "PeerQuality",
+      "PeerScoringServiceBoundary",
+      "PeerSendHealth",
+      "PeerSimulatorSmoke",
+      "PersistPreBaseBodyPosition",
+      "PersistenceSafety",
+      "PhaseM0ByteOrderInvariant",
+      "PortMappingPolicy",
+      "ProofBundleConsistency",
+      "ProofCache",
+      "ProofCompression",
+      "ProofGenerationCorrectness",
+      "ProofGossip",
+      "ProofLifecycle",
+      "ProofRouter",
+      "PropertyBasedTxGen",
+      "PropertyFrameworkSmoke",
+      "PruneEligibility",
+      "PruningTestSuite",
+      "PsbtBip86Guardrails",
+      "PsbtBip86Integration",
+      "QtContractProductionWiring",
+      "QtMempoolOverview",
+      "QtMiningConsoleStyle",
+      "QtMiningOutputLifetime",
+      "QtOverviewLatestBlocks",
+      "QtPoolPanelSafety",
+      "QtShieldedRpcStatus",
+      "QtUtreexoValidationPanel",
+      "QtVaultConsumerParity",
+      "QuicCryptoCapability",
+      "QuicDependency",
+      "QuicSession",
+      "QuicSessionStress",
+      "QuicTransport",
+      "RBFPolicyServiceBoundary",
+      "RIPEMD160CoreVectors",
+      "RIPEMD160SrcVectors",
+      "RIPEMD160StandaloneVectors",
+      "RPCGetTransactionTests",
+      "RateLimiterG7Verification",
+      "RbfCpfpDetector",
+      "RbfPolicyReporting",
+      "RealignShieldedAfterHeal",
+      "ReconsiderRestartBoundary",
+      "ReconstructSpentCoins",
+      "RecoveryMarkerRestartEquivalence",
+      "ReferenceWallet",
+      "ReindexDeepChain",
+      "ReindexerAnchorSeed",
+      "RelayHintsEviction",
+      "RelayHintsListRpc",
+      "RelayRegistryGrace",
+      "RelayTlsKeypair",
+      "RelayVirtualTransport",
+      "ReleaseSuiteConfigSmoke",
+      "ReorgCandidateEligibilityTest",
+      "ReorgEventFeed",
+      "ReorgSimulation",
+      "ReplayFailurePolicy",
+      "RestartChurnBoringnessGate",
+      "RetiredCoinType1447Hygiene",
+      "Ring8_BackwardCompatibility_BC1-BC4",
+      "Ring8_ChangeLegitimacy_CL1-CL3",
+      "Ring8_ExtensionGating_EG1-EG3",
+      "RollingCounter24h",
+      "RpcErrorEnvelope",
+      "RpcRegistryRestartCycle",
+      "RpcStopCleanShutdown",
+      "ScriptInterpreter",
+      "ScriptJSONTests",
+      "ScriptValidityCrashOrdering",
+      "ScriptValidityDurability",
+      "ScriptValidityReorg",
+      "SegWitSerializationRoundTrip",
+      "SelectParamsFreshProcess",
+      "SerializationVectors",
+      "ShieldedAdversarialHardening",
+      "ShieldedAuthRelayLifecycle",
+      "ShieldedBlockSection",
+      "ShieldedBlockSectionDeltaParity",
+      "ShieldedBlockSectionStatelessReplayDecision",
+      "ShieldedCircuit",
+      "ShieldedCvBinding",
+      "ShieldedDerivation",
+      "ShieldedEmptyRangeProofInflation",
+      "ShieldedEpochReset",
+      "ShieldedGeneratorFailClosed",
+      "ShieldedNoteStoreRollback",
+      "ShieldedNullifierCrashBoundary",
+      "ShieldedOutgoingRecoveryLifecycle",
+      "ShieldedOutgoingView",
+      "ShieldedOutputFeed",
+      "ShieldedPoolRoundTrip",
+      "ShieldedPromotionBoundary",
+      "ShieldedProtocolExternalVectors",
+      "ShieldedProtocolOracle",
+      "ShieldedProverKit",
+      "ShieldedReindexEquivalence",
+      "ShieldedResourceLimits",
+      "ShieldedRoot",
+      "ShieldedRootMultinodeDeepReorg",
+      "ShieldedSerialization",
+      "ShieldedSerializationOOM",
+      "ShieldedV030Vectors",
+      "ShieldedValidation",
+      "ShieldedValidationContext",
+      "ShieldedVectorsGenerate",
+      "ShieldedVectorsMatchGolden",
+      "ShieldedWalletRejectRollback",
+      "ShieldedWitness",
+      "Signature_Rejection",
+      "SnapshotBinding",
+      "SnapshotBindingMutations",
+      "SnapshotFormatPolicy",
+      "SnapshotFormatPolicyRuntime",
+      "SoakMetricsTest",
+      "SpartanSoundness",
+      "StaleTipRecovery",
+      "StateCommitmentCanonical",
+      "StateCommitmentEncoding",
+      "StateCommitmentExternalVectors",
+      "StateCommitmentMining",
+      "StateCommitmentTransitions",
+      "StateTransitionVerification",
+      "StatelessVerification",
+      "StaticInitLogging",
+      "StopGate",
+      "StructuralValidationVerification",
+      "SubsidySchedule",
+      "SubsidyValidationVerification",
+      "SupplyCapValidation",
+      "SyncProfilePolicy",
+      "SyncSnapshotBehaviorMatrix",
+      "SyncStatsRecorder",
+      "TaprootAddressDecoding",
+      "TaprootAssetTests",
+      "TaprootConsensus",
+      "TaprootKeyGeneration",
+      "TaprootScriptPathConsensus",
+      "TaprootSignRawTransactionRbfConfirmation",
+      "TaprootSignRawTransactionRbfOverlay",
+      "TemplateStaleness",
+      "TestnetColdStartGenesis",
+      "TestnetInvariantsVerification",
+      "ThreadSafety_TS1",
+      "ThreadSafety_TS2",
+      "ThreadSafety_TS3",
+      "TimeoutRetryVerification",
+      "TokenBucket",
+      "TorOnionService",
+      "TransactionSerialization",
+      "TransitionOnlyProofMode",
+      "TransitionProofForestSync",
+      "TwoNodeSync",
+      "TxGeneratorTest",
+      "TxInclusionAnalyzer",
+      "TxRelayG3Verification",
+      "UTXOIndexCorrectness",
+      "UTXOPositionIndexRebuild",
+      "UndoAuditCoinbaseGate",
+      "UndoRebuildOrchestrator",
+      "UnreadableBlockSet",
+      "UtreexoAccumulator",
+      "UtreexoAdversarial",
+      "UtreexoBatchRemove",
+      "UtreexoConnectPerf",
+      "UtreexoDeltaCodec",
+      "UtreexoE2ERelay",
+      "UtreexoEphemeral",
+      "UtreexoForestMove",
+      "UtreexoHeight2RootLock",
+      "UtreexoLiveReorgStateRestoration",
+      "UtreexoMaturityBoundLeafExperiment",
+      "UtreexoSafetyGate",
+      "UtreexoStatelessProofMinimal",
+      "UtreexoStumpDeletion",
+      "UtreexoStumpInvariant",
+      "UtreexoTransitionProof",
+      "UtreexoTxRelay",
+      "Utreexo_ForestMutation_U2",
+      "Utreexo_ForkPointRoot_U4",
+      "Utreexo_ProofGeneration_U1",
+      "UtxoSetCanonicalActivation",
+      "UtxoSetDigest",
+      "ValidationBypass",
+      "ValidationOracleV41",
+      "ValidationOracleV42",
+      "ValidationOracleV43",
+      "ValidationOracleV44",
+      "ValidationOracleV45",
+      "ValidationOracleV46",
+      "ValidationOracleV47",
+      "ValidationOracleV51",
+      "ValidationOracleV52",
+      "ValidationOracleV53",
+      "ValidationOracleV54",
+      "ValidationOracleV55",
+      "ValidationOracleV56",
+      "ValidationOracleV57",
+      "ValidationQueueHandoff",
+      "ValidationSinkVerification",
+      "VaultLedger",
+      "VaultLedgerStore",
+      "VaultService",
+      "VaultStateMachines",
+      "VersionNonceTracker",
+      "ViewBuilderTests",
+      "WalletAuthoritativeMnemonic",
+      "WalletBlockIntegration",
+      "WalletCrashSafety",
+      "WalletCreateRawTransactionScriptPubKeyOutputs",
+      "WalletDescriptorActiveContext",
+      "WalletDeterminism",
+      "WalletFFIConcurrency",
+      "WalletFeeBumpHooks",
+      "WalletHeight2Coinbase",
+      "WalletIngressParity",
+      "WalletListUnspentExcludesMempoolSpent",
+      "WalletMainnetReadiness_AuthoritativeMnemonicBindingAndLegacyFailClosed",
+      "WalletMainnetReadiness_Bip86DeterminismProperty1000RandomMnemonics",
+      "WalletMainnetReadiness_EncryptionRoundTripRestoreAndDerivationPersistence",
+      "WalletMainnetReadiness_InvalidMnemonicRestoreFailsWithoutPartialWallet",
+      "WalletMainnetReadiness_RejectsNonBip86PolicyWithoutPartialWallet",
+      "WalletMainnetReadiness_ReorgDepthFourClearsConfirmedBalanceWithoutChangeIndexRollback",
+      "WalletMainnetReadiness_ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata",
+      "WalletMainnetReadiness_RestoreResetsLegacyEncryptionStateBeforeReEncrypt",
+      "WalletMainnetReadiness_RestoreRpcFuzzMalformedPayloadsNoCrashNoPartialWallets",
+      "WalletMainnetReadiness_ShieldedViewingAuthorityClearedOnUnload",
+      "WalletMainnetReadiness_WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard",
+      "WalletMempoolRoundtrip",
+      "WalletOwnershipInvariant",
+      "WalletPathHygiene",
+      "WalletPipeline",
+      "WalletPsbtPolicyContext",
+      "WalletRescanUtxoSet",
+      "WalletRestoreRescan",
+      "WalletSidecarMigration",
+      "Wallet_W2_1_SyncStatus",
+      "Wallet_W2_2_SyncETA",
+      "Wallet_W2_4_ReorgVisibility",
+      "Wallet_W2_5_SlowReasonAnalyzer",
+      "Wallet_W2_6_SyncIntegration",
+      "Wallet_W2_6_SyncRPC",
+      "WitnessCommitment",
+      "WitnessCommitmentEnforcement",
+      "WitnessMagicTranslation",
+      "WitnessMerkleIsolation",
+      "WsCookiePathResolution",
+      "test_ct_selection_policy",
+      "test_header_hash_vectors",
+      "test_json_logger",
+      "test_logger_injection",
+      "test_range_proofs",
+      "test_reorg_log"
+    ],
+    "ci_local_intersection_count": 509,
+    "local_complement_executed_names": [
+      "AcceptanceParity",
+      "BridgeCsnHistoricalRangeSoak",
+      "BridgeCsnHistoricalSpendRelay",
+      "CSNRecoveryShieldedApply",
+      "CSNShieldedSpendSync",
+      "CompactBlockRelayE2E",
+      "ConsensusFuzzer",
+      "CsnBridgeAssistedSpendFlow",
+      "CsnContaminatedCheckpointRecovery",
+      "CsnSyncLiveSpendTraffic",
+      "D3FullUserTxMissingUndo",
+      "DashboardRpcsSmoke",
+      "FrontierWriteGapRecovery",
+      "FrontierWriteGapRecovery_AtomicPersistOn",
+      "HeaderBacklogRestartEquivalence",
+      "HeaderCFRestartEquivalence",
+      "HeaderFilterReplayEquivalence",
+      "InterruptedReorgFailSafe",
+      "InvalidityCrashRestartEquivalence",
+      "InvalidityImportEquivalence",
+      "LaggingPeerCatchupNoOrphans",
+      "MacOSNestedBundleSigning",
+      "MempoolTestAcceptReadOnly",
+      "PeerMetadataRuntimeIdentity",
+      "PositionIndexRestartEquivalence",
+      "RebuildUndoRange",
+      "RebuildUndoRangeCrashOracles",
+      "ReconsiderCrashRestartEquivalence",
+      "ReindexChainstateUtreexoEquivalence",
+      "ReindexCopiedDatadir",
+      "ReindexCopiedDatadir_AtomicPersistOn",
+      "ReindexLegacyV2ForestFixture",
+      "ReindexPromotionRestartEquivalence",
+      "ReorgMarkerAlignedRestartEquivalence",
+      "SHA256Gadget",
+      "ShieldedDaemonRestartEquivalence",
+      "ShieldedEpochResetBoundary",
+      "ShieldedEpochResetStateless",
+      "ShieldedOutputsRpcFeed",
+      "ShieldedReorgDisconnectRestartEquivalence",
+      "ShieldedReorgInvertibility",
+      "ShieldedReorgInvertibility_AtomicPersistOn",
+      "ShieldedReorgInvertibility_AtomicPersistToggleOffToOn",
+      "ShieldedReorgInvertibility_AtomicPersistToggleOnToOff",
+      "ShieldedReorgSecondRestartInvalidityEquivalence",
+      "ShieldedRpcGetAddress",
+      "ShieldedRpcShieldEndToEnd",
+      "ShieldedRpcTransferAddressedDetectEndToEnd",
+      "ShieldedRpcTransferAddressedEndToEnd",
+      "ShieldedRpcTransferEndToEnd",
+      "ShieldedRpcTransferMultiEndToEnd",
+      "ShieldedRpcUnshieldEndToEnd",
+      "ShieldedTipMarkerRestartEquivalence",
+      "ShieldedTipPersistRestartEquivalence",
+      "TipPersistRestartEquivalence",
+      "UndoMetadataRestamp",
+      "UnifiedBatchAtomicity",
+      "UnifiedBatchAtomicity_AtomicPersistOn",
+      "UtreexoCheckpointInterval",
+      "UtreexoDeltaReplayRestart",
+      "UtreexoDeltaTorture",
+      "UtreexoMempoolCanonicalSeparation",
+      "Utreexo_SpendPathValidation_U3"
+    ],
+    "separate_passes": [
+      "IBDTorture",
+      "ReleaseSuite"
+    ],
+    "explicit_opt_in_not_run": [
+      "CsnArchivalMainnetReplay"
+    ],
+    "uncovered": [],
+    "note": "Distributed exact-candidate coverage, not one full local sweep. QUIC/Linux-only names are additional platform coverage. The external opt-in mainnet soak is not counted as executed."
+  },
+  "expanded_qualification_source": {
+    "commit": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+    "tree": "0ecbef5c75879e428288126c478e77b22b6ab9dd",
+    "pr_merge": "95c538b2aba831e2f21199c409e4498f4fd874b7",
+    "merge_parents": [
+      "adb9643477e6ba2190a56ccf141bd6cca2621101",
+      "25fe324732d017e7806bb6e0e09304116c99f6e6"
+    ],
+    "merge_tree_equals_test_source_tree": true,
+    "changes_since_runtime": [
+      "docs/audits/SHIELDED_INTEGRATION_REVIEW.md",
+      "docs/audits/SHIELDED_INTEGRATION_STATUS.md",
+      "docs/specs/shielded_hardware_profile.md",
+      "src/test/shielded_validation_tests.cpp",
+      "tests/test_mempool_stress.sh",
+      "tools/shielded_resource_qualification.py"
+    ],
+    "production_source_changes": []
+  },
+  "retained_log_hashes": {
+    "ce100-all-target-build.log": "fa28ba8a23cbe355643c4c00fdeea80cc06ddf542b23c92c57d4e970db3426f7",
+    "ce100-configure.log": "cd6120143e1840fb893d00513a2d66a8a16090c5c9fbd2ee6b253f36a13e359a",
+    "ce100-focused.log": "9aba1d8121b7949e26f1f2c09deeef4febe30ed4b957b13bba57bbc1c3215d48",
+    "ce100-linux-ci.log": "a20469c4114d007a1b184396b1ffdf8e2c08f8261088fc1df046d2c693897511",
+    "ce100-macos-ci.log": "25b0e8a5b1a0eaf731f4a4b944f0a23f7919960cf705b162bd7d10a6bfe97f89",
+    "ce100-windows-ci.log": "7c69f63d7856640275e1802107a3fc03bc68670a82a0ca08f15f833d6b71ccfb",
+    "ce100-readiness-ci.log": "dbc3b4f8e5ae954110275b005ebe2eaa1c80eab3f70a1ce5dacaae1c5ffcc23f",
+    "proof-mixes-build.log": "d949a2f57773f914c4fb535af24684fcaff8f0e346afa718156859abf17366dc",
+    "proof-mixes-linux-ci.log": "17fa9b892c11432a69c17e876f47688e9b31f73c6a5e37c51e563e2a09eb388a",
+    "proof-mixes-macos.log": "edc01d521426f58bc9c568f3529c09ae263cc70f7b4089f6337dbb5b20afcf09",
+    "proof-mixes-tests-ci.log": "d0dff4af9e73937482ada3267e371469a08b4c946764ab241a46315e7b30592f"
+  },
+  "expanded_proof_results_ready": {
+    "macos": {
+      "qualified": true,
+      "samples": 24,
+      "source_commit": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "binary_sha256": "e3b27d4332dc8c3fe32eaa529b8fadcb919c6dce10009456445609c8afa67954",
+      "block_maxima_ms": {
+        "block_8proofs": 11658,
+        "block_8spends": 14849,
+        "block_8outputs": 8520
+      },
+      "peak_rss_bytes": 804208640
+    },
+    "linux": {
+      "qualified": true,
+      "samples": 24,
+      "source_commit": "95c538b2aba831e2f21199c409e4498f4fd874b7",
+      "binary_sha256": "cc01980658168aa70a8ed321149a58f30f379cf8b324f38001794c55f91eaf3d",
+      "block_maxima_ms": {
+        "block_8proofs": 18863,
+        "block_8spends": 23261,
+        "block_8outputs": 14327
+      },
+      "peak_rss_bytes": 859324416
+    }
+  },
+  "ci_runs": [
+    {
+      "conclusion": "success",
+      "databaseId": 34331650014,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Windows OpenSSL Release Smoke",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331650014"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331647434,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "macOS Release Build",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331647434"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331644676,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Linux Release",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331644676"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611767,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Shielded outgoing-view vectors",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611767"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611788,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Root hygiene",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611788"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611768,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "CI",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611768"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611793,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Core Heavy",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611793"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611804,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Reproducible Linux daemon",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611804"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611771,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Shielded readiness",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611771"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611783,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Covenant readiness",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611783"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611825,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Shielded protocol vectors",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611825"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34331611772,
+      "headSha": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+      "name": "Tests",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34331611772"
+    }
+  ],
+  "release_suite": {
+    "exit": 0,
+    "rc_mode": 0,
+    "phase2_shielded_recovery_enabled": true,
+    "restart_churn_enabled": true,
+    "release_identity_freeze_enabled": false,
+    "baseline_sha": "f1b654850963ba77f9675bbee9dbf78a7af1e504",
+    "baseline_binary_sha256": "101a1e822be659dbb3371bb3585243f789768c382e5189b955d99b0ed8cf08b1",
+    "scope": "Development release meta-gate; not production RC publication",
+    "harness_commit": "611ea3362b60c81aa2e441e6106390c3d2e7a094",
+    "first_attempt_exit": 8,
+    "first_attempt_disposition": "Original ancestor fixture failed on candidate and main control; explicit raw ancestor-chain repair passes both. Original failed meta log retained separately."
+  },
+  "log_hashes": {
+    "release": "ee9896df83e77bd600c57ed2863268a711ededcb72e14255828638629b5b4d11",
+    "tests-ci": "377a63a93200b99758d73dc5286700f59395e72f263b318a4e0c126c5be1ceac"
+  },
+  "mac_proof_qualification": {
+    "source_commit": "ce100c9867c1c410c22e7147d1fb848e4e727a04",
+    "harness_commit": "611ea3362b60c81aa2e441e6106390c3d2e7a094",
+    "binary_sha256": "c0e6c8f351b182943a3495c6e151cc2a0ee69cd66decd3e8780e73f165098465",
+    "cpu_model": "Apple M4 Max",
+    "logical_cpus": 16,
+    "budget_policy": "initial-desktop-v2; proof component only; explicit overrides in budgets",
+    "budgets": {
+      "rss_bytes": 2147483648,
+      "prove_ms": 120000,
+      "verify_ms": 30000,
+      "block_verify_ms": 30000
+    },
+    "qualified": true,
+    "summary": {
+      "shield": {
+        "prove_ms": {
+          "p50": 3486,
+          "p95": 3497,
+          "max": 3497
+        },
+        "verify_ms": {
+          "p50": 1058,
+          "p95": 1059,
+          "max": 1059
+        },
+        "process_peak_rss_bytes": {
+          "p50": 570294272,
+          "p95": 570343424,
+          "max": 570343424
+        },
+        "qualified": true
+      },
+      "transfer_1in_2out": {
+        "prove_ms": {
+          "p50": 11664,
+          "p95": 11901,
+          "max": 11901
+        },
+        "verify_ms": {
+          "p50": 3981,
+          "p95": 4025,
+          "max": 4025
+        },
+        "process_peak_rss_bytes": {
+          "p50": 801914880,
+          "p95": 801980416,
+          "max": 801980416
+        },
+        "qualified": true
+      },
+      "transfer_2in_2out": {
+        "prove_ms": {
+          "p50": 16798,
+          "p95": 16897,
+          "max": 16897
+        },
+        "verify_ms": {
+          "p50": 5890,
+          "p95": 5984,
+          "max": 5984
+        },
+        "process_peak_rss_bytes": {
+          "p50": 802095104,
+          "p95": 802111488,
+          "max": 802111488
+        },
+        "qualified": true
+      },
+      "transfer_4in_2out": {
+        "prove_ms": {
+          "p50": 26214,
+          "p95": 26831,
+          "max": 26831
+        },
+        "verify_ms": {
+          "p50": 9422,
+          "p95": 9491,
+          "max": 9491
+        },
+        "process_peak_rss_bytes": {
+          "p50": 802078720,
+          "p95": 802078720,
+          "max": 802078720
+        },
+        "qualified": true
+      },
+      "unshield": {
+        "prove_ms": {
+          "p50": 5090,
+          "p95": 5107,
+          "max": 5107
+        },
+        "verify_ms": {
+          "p50": 1828,
+          "p95": 1874,
+          "max": 1874
+        },
+        "process_peak_rss_bytes": {
+          "p50": 801882112,
+          "p95": 802045952,
+          "max": 802045952
+        },
+        "qualified": true
+      },
+      "block_8proofs": {
+        "prove_ms": {
+          "p50": 32997,
+          "p95": 33515,
+          "max": 33515
+        },
+        "verify_ms": {
+          "p50": 11751,
+          "p95": 11766,
+          "max": 11766
+        },
+        "process_peak_rss_bytes": {
+          "p50": 804225024,
+          "p95": 804274176,
+          "max": 804274176
+        },
+        "qualified": true
+      }
+    },
+    "scope": "Proof process on development Mac while release testing ran; not controlled fleet load"
+  },
+  "expanded_proof_qualification": {
+    "macos": {
+      "source_commit": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "harness_commit": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "binary_sha256": "e3b27d4332dc8c3fe32eaa529b8fadcb919c6dce10009456445609c8afa67954",
+      "cpu_model": "Apple M4 Max",
+      "logical_cpus": 16,
+      "budget_policy": "initial-desktop-v2; proof component only; explicit overrides in budgets",
+      "budgets": {
+        "rss_bytes": 2147483648,
+        "prove_ms": 120000,
+        "verify_ms": 30000,
+        "block_verify_ms": 30000
+      },
+      "qualified": true,
+      "summary": {
+        "shield": {
+          "prove_ms": {
+            "p50": 3463,
+            "p95": 3532,
+            "max": 3532
+          },
+          "verify_ms": {
+            "p50": 1005,
+            "p95": 1013,
+            "max": 1013
+          },
+          "process_peak_rss_bytes": {
+            "p50": 569950208,
+            "p95": 570032128,
+            "max": 570032128
+          },
+          "qualified": true
+        },
+        "transfer_1in_2out": {
+          "prove_ms": {
+            "p50": 11661,
+            "p95": 11762,
+            "max": 11762
+          },
+          "verify_ms": {
+            "p50": 3923,
+            "p95": 3936,
+            "max": 3936
+          },
+          "process_peak_rss_bytes": {
+            "p50": 801980416,
+            "p95": 801996800,
+            "max": 801996800
+          },
+          "qualified": true
+        },
+        "transfer_2in_2out": {
+          "prove_ms": {
+            "p50": 16674,
+            "p95": 16858,
+            "max": 16858
+          },
+          "verify_ms": {
+            "p50": 5768,
+            "p95": 5857,
+            "max": 5857
+          },
+          "process_peak_rss_bytes": {
+            "p50": 801816576,
+            "p95": 801996800,
+            "max": 801996800
+          },
+          "qualified": true
+        },
+        "transfer_4in_2out": {
+          "prove_ms": {
+            "p50": 26330,
+            "p95": 26909,
+            "max": 26909
+          },
+          "verify_ms": {
+            "p50": 9389,
+            "p95": 9607,
+            "max": 9607
+          },
+          "process_peak_rss_bytes": {
+            "p50": 801882112,
+            "p95": 802160640,
+            "max": 802160640
+          },
+          "qualified": true
+        },
+        "unshield": {
+          "prove_ms": {
+            "p50": 5037,
+            "p95": 5047,
+            "max": 5047
+          },
+          "verify_ms": {
+            "p50": 1817,
+            "p95": 1854,
+            "max": 1854
+          },
+          "process_peak_rss_bytes": {
+            "p50": 801636352,
+            "p95": 801980416,
+            "max": 801980416
+          },
+          "qualified": true
+        },
+        "block_8proofs": {
+          "prove_ms": {
+            "p50": 32923,
+            "p95": 33188,
+            "max": 33188
+          },
+          "verify_ms": {
+            "p50": 11545,
+            "p95": 11658,
+            "max": 11658
+          },
+          "process_peak_rss_bytes": {
+            "p50": 803979264,
+            "p95": 804208640,
+            "max": 804208640
+          },
+          "qualified": true
+        },
+        "block_8spends": {
+          "prove_ms": {
+            "p50": 39883,
+            "p95": 40423,
+            "max": 40423
+          },
+          "verify_ms": {
+            "p50": 14820,
+            "p95": 14849,
+            "max": 14849
+          },
+          "process_peak_rss_bytes": {
+            "p50": 803930112,
+            "p95": 804143104,
+            "max": 804143104
+          },
+          "qualified": true
+        },
+        "block_8outputs": {
+          "prove_ms": {
+            "p50": 27547,
+            "p95": 27681,
+            "max": 27681
+          },
+          "verify_ms": {
+            "p50": 8312,
+            "p95": 8520,
+            "max": 8520
+          },
+          "process_peak_rss_bytes": {
+            "p50": 571473920,
+            "p95": 571604992,
+            "max": 571604992
+          },
+          "qualified": true
+        }
+      }
+    },
+    "linux": {
+      "source_commit": "95c538b2aba831e2f21199c409e4498f4fd874b7",
+      "harness_commit": "95c538b2aba831e2f21199c409e4498f4fd874b7",
+      "binary_sha256": "cc01980658168aa70a8ed321149a58f30f379cf8b324f38001794c55f91eaf3d",
+      "cpu_model": "AMD EPYC 7763 64-Core Processor",
+      "logical_cpus": 4,
+      "budget_policy": "initial-desktop-v2; proof component only; explicit overrides in budgets",
+      "budgets": {
+        "rss_bytes": 2147483648,
+        "prove_ms": 120000,
+        "verify_ms": 30000,
+        "block_verify_ms": 30000
+      },
+      "qualified": true,
+      "summary": {
+        "shield": {
+          "prove_ms": {
+            "p50": 8380,
+            "p95": 8383,
+            "max": 8383
+          },
+          "verify_ms": {
+            "p50": 1810,
+            "p95": 1811,
+            "max": 1811
+          },
+          "process_peak_rss_bytes": {
+            "p50": 583860224,
+            "p95": 584912896,
+            "max": 584912896
+          },
+          "qualified": true
+        },
+        "transfer_1in_2out": {
+          "prove_ms": {
+            "p50": 27188,
+            "p95": 27212,
+            "max": 27212
+          },
+          "verify_ms": {
+            "p50": 6466,
+            "p95": 6468,
+            "max": 6468
+          },
+          "process_peak_rss_bytes": {
+            "p50": 825597952,
+            "p95": 825700352,
+            "max": 825700352
+          },
+          "qualified": true
+        },
+        "transfer_2in_2out": {
+          "prove_ms": {
+            "p50": 38185,
+            "p95": 38226,
+            "max": 38226
+          },
+          "verify_ms": {
+            "p50": 9372,
+            "p95": 9384,
+            "max": 9384
+          },
+          "process_peak_rss_bytes": {
+            "p50": 857964544,
+            "p95": 858071040,
+            "max": 858071040
+          },
+          "qualified": true
+        },
+        "transfer_4in_2out": {
+          "prove_ms": {
+            "p50": 60185,
+            "p95": 60243,
+            "max": 60243
+          },
+          "verify_ms": {
+            "p50": 15213,
+            "p95": 15284,
+            "max": 15284
+          },
+          "process_peak_rss_bytes": {
+            "p50": 858378240,
+            "p95": 858411008,
+            "max": 858411008
+          },
+          "qualified": true
+        },
+        "unshield": {
+          "prove_ms": {
+            "p50": 11676,
+            "p95": 11690,
+            "max": 11690
+          },
+          "verify_ms": {
+            "p50": 2901,
+            "p95": 2917,
+            "max": 2917
+          },
+          "process_peak_rss_bytes": {
+            "p50": 825507840,
+            "p95": 825556992,
+            "max": 825556992
+          },
+          "qualified": true
+        },
+        "block_8proofs": {
+          "prove_ms": {
+            "p50": 75722,
+            "p95": 75859,
+            "max": 75859
+          },
+          "verify_ms": {
+            "p50": 18763,
+            "p95": 18863,
+            "max": 18863
+          },
+          "process_peak_rss_bytes": {
+            "p50": 858644480,
+            "p95": 858894336,
+            "max": 858894336
+          },
+          "qualified": true
+        },
+        "block_8spends": {
+          "prove_ms": {
+            "p50": 88721,
+            "p95": 88727,
+            "max": 88727
+          },
+          "verify_ms": {
+            "p50": 23164,
+            "p95": 23261,
+            "max": 23261
+          },
+          "process_peak_rss_bytes": {
+            "p50": 859308032,
+            "p95": 859324416,
+            "max": 859324416
+          },
+          "qualified": true
+        },
+        "block_8outputs": {
+          "prove_ms": {
+            "p50": 63089,
+            "p95": 63116,
+            "max": 63116
+          },
+          "verify_ms": {
+            "p50": 14318,
+            "p95": 14327,
+            "max": 14327
+          },
+          "process_peak_rss_bytes": {
+            "p50": 587005952,
+            "p95": 587042816,
+            "max": 587042816
+          },
+          "qualified": true
+        }
+      }
+    },
+    "test_source_commit": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+    "linux_run": 34341438040,
+    "linux_ci": {
+      "conclusion": "success",
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438040"
+    }
+  },
+  "test_followup_ci_runs": [
+    {
+      "conclusion": "success",
+      "databaseId": 34341438149,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "CI",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438149"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438043,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Root hygiene",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438043"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438039,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Shielded outgoing-view vectors",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438039"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438128,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Core Heavy",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438128"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438035,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Covenant readiness",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438035"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438124,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Shielded protocol vectors",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438124"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438139,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Reproducible Linux daemon",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438139"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438040,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Shielded readiness",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438040"
+    },
+    {
+      "conclusion": "success",
+      "databaseId": 34341438107,
+      "headSha": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+      "name": "Tests",
+      "status": "completed",
+      "url": "https://github.com/DineroLabs/dinero-v8/actions/runs/34341438107"
+    }
+  ],
+  "completed_utc": "2026-09-09T11:48:52.583630+00:00",
+  "binary_hash_unchanged": true,
+  "test_followup_ci_coverage": {
+    "source_commit": "25fe324732d017e7806bb6e0e09304116c99f6e6",
+    "unique_passed_names": 515,
+    "all_original_ci_names_passed": true,
+    "additional_names": [],
+    "run_id": 34341438107
+  },
+  "followup_scope": {
+    "release_harness_commit": "611ea3362b60c81aa2e441e6106390c3d2e7a094",
+    "runtime_unchanged": true,
+    "changed_paths_before_final_documentation": [
+      "docs/audits/SHIELDED_INTEGRATION_REVIEW.md",
+      "docs/audits/SHIELDED_INTEGRATION_STATUS.md",
+      "docs/specs/shielded_hardware_profile.md",
+      "src/test/shielded_validation_tests.cpp",
+      "tests/test_mempool_stress.sh",
+      "tools/shielded_resource_qualification.py"
+    ],
+    "note": "Runtime and packaged artifacts were built at ce100; the follow-up changes only test fixtures, the proof qualification runner and evidence/docs. The fixed release harness was executed against the same frozen daemon."
+  }
+}

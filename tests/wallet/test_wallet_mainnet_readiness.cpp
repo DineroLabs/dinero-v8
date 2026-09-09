@@ -1303,3 +1303,40 @@ TEST(WalletMainnetReadiness, WrongBip39PassphraseFailsCleanlyWithExpectedAddress
 
     fs::remove_all(root);
 }
+
+// Viewing authority intentionally survives wallet.lock so the background
+// scanner can keep recognizing notes. It must not survive wallet.unload: the
+// next wallet opened in this process has a different shielded identity.
+TEST(WalletMainnetReadiness, ShieldedViewingAuthorityClearedOnUnload) {
+    const fs::path root = make_temp_dir("din_wallet_viewing_authority_");
+    fs::create_directories(root);
+
+    dinero::WalletManager wallet(root);
+    wallet.create("authority");
+    wallet.open("authority");
+    wallet.encryptWallet("viewing-authority-passphrase");
+
+    // First-time encryption must populate the long-lived scan caches before it
+    // locks and erases the seed. Calling these accessors on an unencrypted
+    // wallet would only derive temporary copies, while unlocking here would
+    // hide the first-lock regression this test is meant to catch.
+    ASSERT_TRUE(wallet.isWalletLocked());
+    EXPECT_FALSE(wallet.HaveMasterSeed());
+    const auto incoming = wallet.GetShieldedIncomingViewingKeys();
+    const auto outgoing = wallet.GetShieldedOutgoingViewingKeys();
+    const auto recipient = wallet.GetShieldedRecipientViewingAuthorities();
+    ASSERT_FALSE(incoming.empty());
+    ASSERT_FALSE(outgoing.empty());
+    ASSERT_FALSE(recipient.empty());
+
+    wallet.unload();
+    EXPECT_FALSE(wallet.hasActiveWallet());
+    EXPECT_TRUE(wallet.GetShieldedIncomingViewingKeys().empty())
+        << "incoming viewing authority leaked across wallet unload";
+    EXPECT_TRUE(wallet.GetShieldedOutgoingViewingKeys().empty())
+        << "outgoing viewing authority leaked across wallet unload";
+    EXPECT_TRUE(wallet.GetShieldedRecipientViewingAuthorities().empty())
+        << "recipient/nullifier viewing authority leaked across wallet unload";
+
+    fs::remove_all(root);
+}

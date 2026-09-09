@@ -6,6 +6,7 @@
  *   wallet.unshield        — private → transparent
  *   wallet.shieldedbalance — private pool balance + note count
  *   wallet.listshielded    — list unspent shielded notes
+ *   wallet.listshieldedoutgoing — sender-recovered output metadata
  *
  * Spending handlers require an unlocked wallet. Read/receive handlers stay
  * available while locked so wallets can receive and display already-indexed
@@ -48,7 +49,10 @@ namespace {
 
 using namespace dinero;
 namespace ops  = dinero::wallet::shielded_ops;
+namespace shielded_wallet = ::dinero::wallet::shielded;
 using din::Json;
+
+const char* HrpForActiveChain();
 
 TxAcceptResult SubmitShieldedWalletTransaction(Mempool& mempool,
                                                const Transaction& tx,
@@ -650,10 +654,8 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
     auto submit = SubmitShieldedWalletTransaction(
         mempool_service->mempool(), signed_tx, "rpc:wallet.shield");
     if (!submit.accepted()) {
-        if (!have_recipient) {
-            RollbackRejectedShieldedWalletMutation(
-                *wm, {}, {built.attach.commitment}, result);
-        }
+        RollbackRejectedShieldedWalletMutation(
+            *wm, {}, {built.attach.commitment}, result);
         SetShieldedWalletMempoolRejection(
             result, submit, signed_tx, fee_autosized);
         return result;
@@ -1089,6 +1091,11 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
     auto select_for_fee = [&](uint64_t fee, bool autosized) -> bool {
         auto picks_opt = ops::SelectTransferNotesForValue(*wm, amount_una + fee);
         if (!picks_opt) {
+            if (ops::GetShieldedBalance(*wm) >= amount_una + fee) {
+                result["error"] = "shielded_input_limit";
+                result["error_message"] = "balance is spread across more notes than one transaction supports; consolidate notes first";
+                return false;
+            }
             result["error"] = "insufficient_balance";
             result["error_message"] = autosized
                 ? "available unspent confirmed shielded balance < amount + "
@@ -1220,10 +1227,11 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         auto submit = SubmitShieldedWalletTransaction(
             mempool_service->mempool(), tx, "rpc:wallet.transfer");
         if (!submit.accepted()) {
-            const std::vector<consensus::shielded::Hash> pending_commitments =
-                attach_rc.had_change
-                    ? std::vector<consensus::shielded::Hash>{attach_rc.change_commitment}
-                    : std::vector<consensus::shielded::Hash>{};
+            std::vector<consensus::shielded::Hash> pending_commitments{
+                attach_rc.recipient_commitment};
+            if (attach_rc.had_change) {
+                pending_commitments.push_back(attach_rc.change_commitment);
+            }
             RollbackRejectedShieldedWalletMutation(
                 *wm, attach_rc.spend_nullifiers, pending_commitments, result);
             SetShieldedWalletMempoolRejection(result, submit, tx, fee_autosized);
@@ -1469,6 +1477,48 @@ Json rpc_wallet_listshielded(const ExecutionContext& ctx, const Json& params) {
     return result;
 }
 
+// wallet.listshieldedoutgoing — persisted sender-side recovery results.
+// Read-only history remains available while spend-locked and after restart;
+// discovering additional history requires a cached or imported outgoing view
+// key, which this RPC never exports.
+Json rpc_wallet_listshieldedoutgoing(const ExecutionContext& ctx,
+                                     const Json& params) {
+    (void)params;
+    Json result;
+    if (RejectIfShieldedNotActive(result)) return result;
+    auto* wm = AcquireWallet(ctx, result, false);
+    if (!wm) return result;
+
+    auto to_hex = [](const auto& bytes) {
+        std::ostringstream out;
+        out << std::hex << std::setfill('0');
+        for (uint8_t b : bytes) out << std::setw(2) << static_cast<int>(b);
+        return out.str();
+    };
+
+    const auto notes = ops::ListOutgoingShieldedNotes(*wm);
+    Json entries = din::arr();
+    for (const auto& n : notes) {
+        Json entry;
+        entry["commitment_hex"] = to_hex(n.commitment);
+        entry["recipient_address_payload_hex"] =
+            to_hex(n.recipient_address_payload);
+        entry["recipient_address"] = shielded_wallet::EncodeShieldedAddress(
+            n.recipient_address_payload, HrpForActiveChain());
+        entry["value_una"] = static_cast<int64_t>(n.value_una);
+        entry["value_din"] = static_cast<double>(n.value_una) / 1e8;
+        entry["memo_hex"] = to_hex(n.memo);
+        entry["txid"] = n.txid;
+        entry["confirmed"] = n.confirmed;
+        entry["created_height"] = static_cast<int64_t>(n.created_height);
+        entry["confirmed_height"] = static_cast<int64_t>(n.confirmed_height);
+        entries.append(entry);
+    }
+    result["outputs"] = entries;
+    result["count"] = static_cast<int64_t>(notes.size());
+    return result;
+}
+
 // ---------------------------------------------------------------------------
 // wallet.getshieldedaddress
 //
@@ -1483,8 +1533,6 @@ Json rpc_wallet_listshielded(const ExecutionContext& ctx, const Json& params) {
 // activation gate only restricts on-chain transactions, not local
 // address derivation.
 // ---------------------------------------------------------------------------
-namespace shielded_wallet = ::dinero::wallet::shielded;
-
 const char* HrpForActiveChain() {
     switch (dinero::GetActiveChain()) {
         case dinero::Chain::MAINNET: return shielded_wallet::kHrpMainnet;
@@ -1605,6 +1653,10 @@ void registerShieldedWalletMethods() {
                                   rpc_wallet_listshielded,
                                   RegisterMode::Overwrite,
                                   "v7-shielded");
+    g_rpcRegistry.registerHandler("wallet.listshieldedoutgoing",
+                                  rpc_wallet_listshieldedoutgoing,
+                                  RegisterMode::Overwrite,
+                                  "v8-shielded-outgoing-view");
     g_rpcRegistry.registerHandler("wallet.getshieldedaddress",
                                   rpc_wallet_getshieldedaddress,
                                   RegisterMode::Overwrite,

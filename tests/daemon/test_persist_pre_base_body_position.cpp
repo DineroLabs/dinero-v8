@@ -164,12 +164,16 @@ void test01_PreBaseBodyBecomesReadableFromHeaderChain(
     require(!svc.hasBlockByHash(hash),
             "t01: precondition — body must not resolve before the persist call");
 
+    // A prior activation attempt may have quarantined the body before its
+    // scheduler download finished. Side-branch bodies below the active tip
+    // never reach the ordinary drain that previously cleared this marker.
+    svc.MarkBlockBodyUnreadableForTesting(hash);
     // The #309 persist callback the scheduler invokes after storing a body.
     svc.PersistStoredBodyPosition(hash, pos);
 
     require(svc.hasBlockByHash(hash),
             "t01: REGRESSION — pre-base body still unresolvable after persist "
-            "(no header-metadata row was created)");
+            "(metadata publication or quarantine repair is missing)");
 
     const auto read = svc.getBlockByHash(hash);
     require(read.status() == Status::Ok,
@@ -197,6 +201,26 @@ void test01_PreBaseBodyBecomesReadableFromHeaderChain(
     require(md.chainwork == entry->chainwork,
             "t01: chainwork must be copied from the header chain entry");
     require(!(md.chainwork == arith_uint256()), "t01: chainwork must not be zero");
+
+    // Existing metadata also needs quarantine repair. A bad replacement must
+    // not clear the marker merely because a position was written to metadata.
+    svc.MarkBlockBodyUnreadableForTesting(hash);
+    svc.PersistStoredBodyPosition(hash, pos);
+    require(svc.hasBlockByHash(hash), "t01: readable existing body stayed quarantined");
+    const auto wrong_body = storage->writeBlock(genesis.GetHash(), MakeBody(genesis, 0x01));
+    require(wrong_body.status() == Status::Ok, "t01: could not stage wrong-hash body");
+    const auto bad_pos = wrong_body.value();
+    auto bad_metadata = md;
+    bad_metadata.data_pos = static_cast<uint32_t>(bad_pos.offset);
+    bad_metadata.data_size = bad_pos.size;
+    const ChainWriteToken token = ChainWriteToken::CreateForTesting();
+    require(db.putHeaderMetadataPreservingExistingUndo(token, hash, bad_metadata, nullptr) == Status::Ok,
+            "t01: could not stage unreadable body metadata");
+    svc.MarkBlockBodyUnreadableForTesting(hash);
+    svc.PersistStoredBodyPosition(hash, bad_pos);
+    require(!svc.hasBlockByHash(hash), "t01: unreadable replacement escaped quarantine");
+    svc.PersistStoredBodyPosition(hash, pos);
+    require(svc.hasBlockByHash(hash), "t01: verified replacement stayed quarantined");
 
     storage->close();
     db.close();

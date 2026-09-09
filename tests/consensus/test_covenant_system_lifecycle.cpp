@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 #include "consensus/block_validation.h"
 #include "consensus/chainparams.h"
 #include "consensus/covenants.h"
@@ -478,6 +479,68 @@ TEST_F(
             persistence_file.string()));
         EXPECT_EQ(restarted_active.size(), 1U);
     }
+}
+
+
+TEST_F(CovenantSystemLifecycleTest, AuthMempoolResourceGateTracksTipAndReorg) {
+    namespace sh = dinero::consensus::shielded;
+    struct RestoreAuthHeight {
+        uint32_t previous = dinero::MutableParams().shielded_spend_auth_activation_height;
+        ~RestoreAuthHeight() { dinero::MutableParams().shielded_spend_auth_activation_height = previous; }
+    } restore;
+    dinero::MutableParams().shielded_spend_auth_activation_height = 100;
+    Transaction tx;
+    tx.version = Transaction::TX_VERSION_SHIELDED_V2;
+    tx.witness_version = 0;
+    tx.SetExplicitFee(1'000'000);
+    sh::ShieldedBundle bundle;
+    sh::ShieldedOutput output;
+    output.zk_proof.resize(168'000, 4);
+    bundle.outputs.push_back(output);
+    tx.shielded_bundle_bytes = sh::SerializeShieldedBundle(bundle);
+    Mempool pool(&db_);
+    for (uint32_t tip : {98u, 99u, 98u}) {
+        SetTip(db_, tip, uint8_t(tip));
+        auto result = pool.submitTransactionTestOnly(tx, "auth-resources");
+        EXPECT_FALSE(result.accepted());
+        if (tip == 99) {
+            // Passing the resource gate must NOT bypass cryptographic/state
+            // checks. This fixture deliberately has no shielded state wired.
+            EXPECT_NE(result.message.find("Shielded state unavailable"), std::string::npos) << result.message;
+        } else {
+            EXPECT_NE(result.message.find("transaction-size-limit-exceeded"), std::string::npos) << result.message;
+        }
+        EXPECT_EQ(pool.size(), 0u);
+    }
+    dinero::MempoolEntry entry(tx, 1'000'000, 99);
+    EXPECT_EQ(entry.tx_size, tx.GetSize());
+}
+
+TEST_F(CovenantSystemLifecycleTest, AuthBlockResourceGateRejectsBeforeStateMutation) {
+    namespace sh = dinero::consensus::shielded;
+    struct RestoreAuthHeight {
+        uint32_t previous = dinero::MutableParams().shielded_spend_auth_activation_height;
+        ~RestoreAuthHeight() { dinero::MutableParams().shielded_spend_auth_activation_height = previous; }
+    } restore;
+    dinero::MutableParams().shielded_spend_auth_activation_height = 100;
+    InMemoryConsensusUTXOSet utxos;
+    ASSERT_TRUE(utxos.AddCoin(spend_.funding_outpoint, spend_.funding_coin));
+    BlockValidator validator(&utxos);
+    Transaction tx;
+    tx.version = Transaction::TX_VERSION_SHIELDED_V2;
+    tx.witness_version = 0;
+    tx.shielded_bundle_bytes.resize(sh::kAuthMaxTxBytes, 0);
+    Block block;
+    block.vtx.push_back(tx);
+    BlockUndo undo;
+    std::string error;
+    dinero::uint256 root;
+    EXPECT_FALSE(validator.ApplyBlock(block, 100, {}, undo, root, error));
+    EXPECT_EQ(error, "transaction-size-limit-exceeded");
+    EXPECT_EQ(utxos.GetSetSize(), 1u);
+    EXPECT_TRUE(utxos.HaveCoin(spend_.funding_outpoint));
+    EXPECT_FALSE(validator.ComputeUtreexoRootPure(block,100,root,error));
+    EXPECT_EQ(error, "transaction-size-limit-exceeded");
 }
 
 } // namespace

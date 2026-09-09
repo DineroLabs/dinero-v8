@@ -80,7 +80,6 @@ private:
 
     // Size limits (Bitcoin-compatible)
     static constexpr size_t MAX_BLOCK_SIZE = 4 * 1024 * 1024;  // 4MB
-    static constexpr size_t MAX_TX_SIZE = 100000;               // 100KB (consensus/limits.h)
 
     // Helper: Check if we requested this object
     bool wasRequested(const InventoryVector& inv) const;

@@ -47,6 +47,7 @@ class BlockTemplate:
     coinbase_txid: str = ""
     utreexo_commitment: str = ""
     target: str = ""
+    time_mutable: bool = False
 
     def __post_init__(self):
         """Calculate target from bits"""
@@ -179,6 +180,7 @@ class DineroCoinMiner:
                 coinbase_txid=coinbase_txn.get("txid", ""),
                 utreexo_commitment=utreexo_obj.get("commitment", result.get("utreexocommitment", "")),
                 target=result.get("target", ""),
+                time_mutable="time" in result.get("mutable", []),
             )
         except Exception as e:
             print(f"[ERROR] Failed to get block template: {e}")
@@ -374,8 +376,8 @@ class DineroCoinMiner:
         return hashlib.sha256(hashlib.sha256(data).digest()).digest()
 
     def hash_to_hex(self, hash_bytes: bytes) -> str:
-        """Convert hash to display hex (reversed)"""
-        return hash_bytes[::-1].hex()
+        """BlockHeader::GetHash displays the SHA256d digest in hash order."""
+        return hash_bytes.hex()
 
     def compute_merkle_root(self, tx_hashes: List[bytes]) -> bytes:
         """Compute merkle root from transaction hashes"""
@@ -410,15 +412,7 @@ class DineroCoinMiner:
         if template.coinbase_tx_hex:
             return bytes.fromhex(template.coinbase_tx_hex)
 
-        if not self.mining_address:
-            raise ValueError("Template missing coinbasetxn and no mining address was provided")
-
-        print("[WARN] Template missing coinbasetxn, falling back to local coinbase construction")
-        return self.create_coinbase_tx(
-            template.height,
-            template.coinbase_value,
-            self.mining_address
-        )
+        raise ValueError("Template missing daemon-owned coinbasetxn; request a fresh template")
 
     def mine_block(self, template: BlockTemplate, max_nonce: int = 0xffffffff) -> Optional[Tuple[bytes, int]]:
         """
@@ -443,7 +437,8 @@ class DineroCoinMiner:
         merkle_root_hex = merkle_root[::-1].hex()
 
         # Timestamp is miner-owned within the daemon-provided window.
-        timestamp = max(template.curtime, template.mintime, int(time.time()))
+        timestamp = (max(template.curtime, template.mintime, int(time.time()))
+                     if template.time_mutable else template.curtime)
         if template.maxtime:
             timestamp = min(timestamp, template.maxtime)
 

@@ -1,0 +1,386 @@
+{
+  "scope": "proof-component-only",
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "machine": "x86_64",
+  "logical_cpus": 4,
+  "source_commit": "5f320953a3a35e800bdbf88a3a69f65dc5904b08",
+  "source_dirty": false,
+  "binary_sha256": "7025a67c75dfb6b6d349f7ff1e9c939b801c1e5d132f8be944b1e20f01a908cf",
+  "budgets": {
+    "rss_bytes": 2147483648,
+    "prove_ms": 120000,
+    "verify_ms": 30000,
+    "block_verify_ms": 20000
+  },
+  "measurements": [
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 7763,
+      "verify_ms": 1837,
+      "process_peak_rss_bytes": 585043968,
+      "shape": "shield",
+      "iteration": 1,
+      "wall_seconds": 9.642630540999903
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 7788,
+      "verify_ms": 1839,
+      "process_peak_rss_bytes": 583782400,
+      "shape": "shield",
+      "iteration": 2,
+      "wall_seconds": 9.664434146999952
+    },
+    {
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 7729,
+      "verify_ms": 1838,
+      "process_peak_rss_bytes": 583782400,
+      "shape": "shield",
+      "iteration": 3,
+      "wall_seconds": 9.604358281000032
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 25297,
+      "verify_ms": 6577,
+      "process_peak_rss_bytes": 825315328,
+      "shape": "transfer_1in_2out",
+      "iteration": 1,
+      "wall_seconds": 31.92487702899996
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 25338,
+      "verify_ms": 6585,
+      "process_peak_rss_bytes": 825143296,
+      "shape": "transfer_1in_2out",
+      "iteration": 2,
+      "wall_seconds": 31.974225080999986
+    },
+    {
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 25365,
+      "verify_ms": 6567,
+      "process_peak_rss_bytes": 825536512,
+      "shape": "transfer_1in_2out",
+      "iteration": 3,
+      "wall_seconds": 31.982388858000036
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 35553,
+      "verify_ms": 9528,
+      "process_peak_rss_bytes": 858042368,
+      "shape": "transfer_2in_2out",
+      "iteration": 1,
+      "wall_seconds": 45.13769758600006
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 35569,
+      "verify_ms": 9517,
+      "process_peak_rss_bytes": 858181632,
+      "shape": "transfer_2in_2out",
+      "iteration": 2,
+      "wall_seconds": 45.13834669300013
+    },
+    {
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 35618,
+      "verify_ms": 9516,
+      "process_peak_rss_bytes": 858001408,
+      "shape": "transfer_2in_2out",
+      "iteration": 3,
+      "wall_seconds": 45.18854760199997
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 56217,
+      "verify_ms": 15449,
+      "process_peak_rss_bytes": 858279936,
+      "shape": "transfer_4in_2out",
+      "iteration": 1,
+      "wall_seconds": 71.71318125899984
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 56276,
+      "verify_ms": 15402,
+      "process_peak_rss_bytes": 858251264,
+      "shape": "transfer_4in_2out",
+      "iteration": 2,
+      "wall_seconds": 71.72773869100001
+    },
+    {
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 56653,
+      "verify_ms": 15350,
+      "process_peak_rss_bytes": 858374144,
+      "shape": "transfer_4in_2out",
+      "iteration": 3,
+      "wall_seconds": 72.05036126799996
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 11004,
+      "verify_ms": 2946,
+      "process_peak_rss_bytes": 825171968,
+      "shape": "unshield",
+      "iteration": 1,
+      "wall_seconds": 13.999992814000052
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 11001,
+      "verify_ms": 2960,
+      "process_peak_rss_bytes": 825159680,
+      "shape": "unshield",
+      "iteration": 2,
+      "wall_seconds": 14.008123081999884
+    },
+    {
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 10972,
+      "verify_ms": 2948,
+      "process_peak_rss_bytes": 825520128,
+      "shape": "unshield",
+      "iteration": 3,
+      "wall_seconds": 13.970459090999839
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 70520,
+      "verify_ms": 18992,
+      "process_peak_rss_bytes": 858759168,
+      "shape": "block_8proofs",
+      "iteration": 1,
+      "wall_seconds": 89.5600584629999
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 70614,
+      "verify_ms": 18922,
+      "process_peak_rss_bytes": 858718208,
+      "shape": "block_8proofs",
+      "iteration": 2,
+      "wall_seconds": 89.58580930700009
+    },
+    {
+      "bytes": 487322,
+      "proofs": 8,
+      "prove_ms": 70530,
+      "verify_ms": 19014,
+      "process_peak_rss_bytes": 858718208,
+      "shape": "block_8proofs",
+      "iteration": 3,
+      "wall_seconds": 89.58896500100013
+    }
+  ],
+  "summary": {
+    "shield": {
+      "prove_ms": {
+        "p50": 7763,
+        "p95": 7788,
+        "max": 7788
+      },
+      "verify_ms": {
+        "p50": 1838,
+        "p95": 1839,
+        "max": 1839
+      },
+      "process_peak_rss_bytes": {
+        "p50": 583782400,
+        "p95": 585043968,
+        "max": 585043968
+      },
+      "qualified": true
+    },
+    "transfer_1in_2out": {
+      "prove_ms": {
+        "p50": 25338,
+        "p95": 25365,
+        "max": 25365
+      },
+      "verify_ms": {
+        "p50": 6577,
+        "p95": 6585,
+        "max": 6585
+      },
+      "process_peak_rss_bytes": {
+        "p50": 825315328,
+        "p95": 825536512,
+        "max": 825536512
+      },
+      "qualified": true
+    },
+    "transfer_2in_2out": {
+      "prove_ms": {
+        "p50": 35569,
+        "p95": 35618,
+        "max": 35618
+      },
+      "verify_ms": {
+        "p50": 9517,
+        "p95": 9528,
+        "max": 9528
+      },
+      "process_peak_rss_bytes": {
+        "p50": 858042368,
+        "p95": 858181632,
+        "max": 858181632
+      },
+      "qualified": true
+    },
+    "transfer_4in_2out": {
+      "prove_ms": {
+        "p50": 56276,
+        "p95": 56653,
+        "max": 56653
+      },
+      "verify_ms": {
+        "p50": 15402,
+        "p95": 15449,
+        "max": 15449
+      },
+      "process_peak_rss_bytes": {
+        "p50": 858279936,
+        "p95": 858374144,
+        "max": 858374144
+      },
+      "qualified": true
+    },
+    "unshield": {
+      "prove_ms": {
+        "p50": 11001,
+        "p95": 11004,
+        "max": 11004
+      },
+      "verify_ms": {
+        "p50": 2948,
+        "p95": 2960,
+        "max": 2960
+      },
+      "process_peak_rss_bytes": {
+        "p50": 825171968,
+        "p95": 825520128,
+        "max": 825520128
+      },
+      "qualified": true
+    },
+    "block_8proofs": {
+      "prove_ms": {
+        "p50": 70530,
+        "p95": 70614,
+        "max": 70614
+      },
+      "verify_ms": {
+        "p50": 18992,
+        "p95": 19014,
+        "max": 19014
+      },
+      "process_peak_rss_bytes": {
+        "p50": 858718208,
+        "p95": 858759168,
+        "max": 858759168
+      },
+      "qualified": true
+    }
+  },
+  "qualified": true,
+  "ci_run": "https://github.com/DineroLabs/dinero-v8/actions/runs/34316707990",
+  "pull_request_head": "1ba1cbd619cd4418b248f74e863580178b0d0ad9",
+  "source_note": "GitHub tests the PR merge ref; source_commit is that merge revision."
+}

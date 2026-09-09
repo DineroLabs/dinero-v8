@@ -1,3 +1,4 @@
+#include "consensus/shielded/resource_limits.h"
 /**
  * Shielded wallet operations — shield + unshield handlers.
  * See include/wallet/shielded_wallet_ops.h.
@@ -14,6 +15,7 @@
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/shielded_serialization.h"
 
+#include <algorithm>
 #include <openssl/rand.h>
 #include <openssl/crypto.h>
 #include <cmath>
@@ -267,6 +269,7 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
 
     out.status        = OpStatus::Ok;
     out.commitment    = commitment;
+    out.spend_secret_key = secret_key;
     out.nullifier_key = secret_key;
     out.public_key    = public_key;
     out.randomness    = randomness;
@@ -281,6 +284,18 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               uint64_t fee_una,
                                               bool cv_bound) {
     AttachUnshieldResult out;
+    const bool auth_resources = note.key_scheme == NoteKeyScheme::Auth;
+    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded-auth-requires-tx-v6";
+        return out;
+    }
+    if (auth_resources && (!sh::CheckAuthBundleCounts(1, 0) ||
+                          tx.GetSize() > sh::kAuthMaxTxBytes)) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded_transaction_resource_limit";
+        return out;
+    }
 
     if (note.value_una == 0) {
         out.status = OpStatus::InvalidParams;
@@ -333,6 +348,7 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
 
     sh::SpendWitness sw{};
     sw.secret_key  = note.secret_key;
+    sw.nullifier_key = note.nullifier_key;
     sw.leaf_index  = note.leaf_index;
     sw.value       = value_hash;
     sw.randomness  = note.randomness;
@@ -341,7 +357,10 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
     sw.merkle_path = note.merkle_path;
 
     sh::SpendPublicInputs spi{};
-    spi.nullifier = sh::ComputeNullifier(note.secret_key, note.leaf_index);
+    const bool note_spend_auth = (note.key_scheme == NoteKeyScheme::Auth);
+    spi.nullifier = sh::ComputeNullifier(
+        note_spend_auth ? note.nullifier_key : note.secret_key,
+        note.leaf_index);
     spi.anchor    = note.anchor;
     if (cv_bound && !ComputeBundleCv(rcv, note.value_una, spi.cv)) {
         out.status = OpStatus::InternalError;
@@ -352,8 +371,6 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
     // The proof variant must match the NOTE's convention, not a separately
     // passed flag: an auth note is unspendable by the legacy circuit and
     // vice-versa. Derived from the note so the two cannot drift apart.
-    const bool note_spend_auth =
-        (note.key_scheme == NoteKeyScheme::Auth);
     auto spend_proof = sh::ProveSpend(sw, spi, nullptr,
                                       /*bind_public_inputs=*/true, cv_bound,
                                       note_spend_auth);
@@ -400,6 +417,12 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
         return out;
     }
     tx.shielded_bundle_bytes = std::move(bundle_bytes);
+    if (auth_resources && !sh::CheckTxResourceEnvelope(tx, true, out.error)) {
+        tx.shielded_bundle_bytes.clear();
+        out.status = OpStatus::InvalidParams;
+        return out;
+    }
+
 
     out.status       = OpStatus::Ok;
     out.nullifier    = spi.nullifier;
@@ -472,6 +495,18 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
                                               uint64_t fee_una,
                                               bool cv_bound) {
     AttachTransferResult out;
+    const bool auth_resources = note.key_scheme == NoteKeyScheme::Auth;
+    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded-auth-requires-tx-v6";
+        return out;
+    }
+    if (auth_resources && (!sh::CheckAuthBundleCounts(1, 1) ||
+                          tx.GetSize() > sh::kAuthMaxTxBytes)) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded_transaction_resource_limit";
+        return out;
+    }
 
     if (note.value_una == 0) {
         out.status = OpStatus::InvalidParams;
@@ -520,6 +555,7 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     sh::Hash spend_rcv = RandomHash();
     sh::SpendWitness sw{};
     sw.secret_key  = note.secret_key;
+    sw.nullifier_key = note.nullifier_key;
     sw.leaf_index  = note.leaf_index;
     sw.value       = spend_value_hash;
     sw.randomness  = note.randomness;
@@ -528,7 +564,10 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     sw.merkle_path = note.merkle_path;
 
     sh::SpendPublicInputs spi{};
-    spi.nullifier = sh::ComputeNullifier(note.secret_key, note.leaf_index);
+    const bool note_spend_auth = (note.key_scheme == NoteKeyScheme::Auth);
+    spi.nullifier = sh::ComputeNullifier(
+        note_spend_auth ? note.nullifier_key : note.secret_key,
+        note.leaf_index);
     spi.anchor    = note.anchor;
     if (cv_bound && !ComputeBundleCv(spend_rcv, note.value_una, spi.cv)) {
         out.status = OpStatus::InternalError;
@@ -539,8 +578,6 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     // The proof variant must match the NOTE's convention, not a separately
     // passed flag: an auth note is unspendable by the legacy circuit and
     // vice-versa. Derived from the note so the two cannot drift apart.
-    const bool note_spend_auth =
-        (note.key_scheme == NoteKeyScheme::Auth);
     auto spend_proof = sh::ProveSpend(sw, spi, nullptr,
                                       /*bind_public_inputs=*/true, cv_bound,
                                       note_spend_auth);
@@ -634,6 +671,12 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
         return out;
     }
     tx.shielded_bundle_bytes = std::move(bundle_bytes);
+    if (auth_resources && !sh::CheckTxResourceEnvelope(tx, true, out.error)) {
+        tx.shielded_bundle_bytes.clear();
+        out.status = OpStatus::InvalidParams;
+        return out;
+    }
+
 
     out.status         = OpStatus::Ok;
     out.spend_nullifier = spi.nullifier;
@@ -656,6 +699,18 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     uint64_t fee_una,
     bool cv_bound) {
     AttachMultiTransferResult out;
+    const bool auth_resources = std::any_of(spends.begin(), spends.end(), [](const auto& n) { return n.key_scheme == NoteKeyScheme::Auth; });
+    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded-auth-requires-tx-v6";
+        return out;
+    }
+    if (auth_resources && (!sh::CheckAuthBundleCounts(spends.size(), output_values.size()) ||
+                          tx.GetSize() > sh::kAuthMaxTxBytes)) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded_transaction_resource_limit";
+        return out;
+    }
 
     if (spends.empty()) {
         out.status = OpStatus::InvalidParams;
@@ -732,6 +787,7 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         sh::Hash s_rcv = RandomHash();
         sh::SpendWitness sw{};
         sw.secret_key  = s.secret_key;
+        sw.nullifier_key = s.nullifier_key;
         sw.leaf_index  = s.leaf_index;
         sw.value       = value_hash;
         sw.randomness  = s.randomness;
@@ -740,7 +796,9 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         sw.merkle_path = s.merkle_path;
 
         sh::SpendPublicInputs spi{};
-        spi.nullifier = sh::ComputeNullifier(s.secret_key, s.leaf_index);
+        const bool s_spend_auth = (s.key_scheme == NoteKeyScheme::Auth);
+        spi.nullifier = sh::ComputeNullifier(
+            s_spend_auth ? s.nullifier_key : s.secret_key, s.leaf_index);
         spi.anchor    = s.anchor;
         if (cv_bound && !ComputeBundleCv(s_rcv, s.value_una, spi.cv)) {
             out.status = OpStatus::InternalError;
@@ -748,7 +806,6 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
             return out;
         }
 
-        const bool s_spend_auth = (s.key_scheme == NoteKeyScheme::Auth);
         auto proof = sh::ProveSpend(sw, spi, nullptr,
                                     /*bind_public_inputs=*/true, cv_bound,
                                     s_spend_auth);
@@ -859,6 +916,12 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         return out;
     }
     tx.shielded_bundle_bytes = std::move(bundle_bytes);
+    if (auth_resources && !sh::CheckTxResourceEnvelope(tx, true, out.error)) {
+        tx.shielded_bundle_bytes.clear();
+        out.status = OpStatus::InvalidParams;
+        return out;
+    }
+
 
     out.status       = OpStatus::Ok;
     out.bundle_bytes = tx.shielded_bundle_bytes.size();
@@ -868,6 +931,10 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
 // ── Phase 5 Wave 3d: addressed transfer (any-recipient + self change) ─
 
 namespace shdrv = ::dinero::wallet::shielded;
+
+OutgoingViewEmissionContext::~OutgoingViewEmissionContext() {
+    OPENSSL_cleanse(ovk.data(), ovk.size());
+}
 
 // Shared addressed-recipient output construction. Extracted verbatim from
 // BuildAddressedTransferBundleForTx so the transfer path AND the
@@ -881,7 +948,8 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     bool cv_bound,
     bool spend_auth,
     const sh::Hash* rcm_override,
-    const sh::Hash* esk_override) {
+    const sh::Hash* esk_override,
+    const OutgoingViewEmissionContext* outgoing) {
     AddressedRecipientOutput out;
 
     if (recipient.value_una == 0) {
@@ -903,10 +971,11 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     //     of the note they just sent and can spend it out from under the
     //     recipient at any time. The recipient's pk_d is used only to encrypt.
     //
-    //   AUTH (spend_auth = true): pk_note = recipient.pk_d, straight from their
-    //     address. Spending it requires `s` with s·G = pk_d, which only the
-    //     recipient can derive (s = Poseidon(ivk, d)). The sender never learns
-    //     it, so the note stops being sender-spendable.
+    //   AUTH (spend_auth = true): pk_note commits to both recipient.pk_d_spend
+    //     and recipient.nfk_commitment. Spending requires `s` with
+    //     s·G = pk_d_spend, plus the private nfk opening. A viewer can
+    //     authenticate both public commitments but cannot recover either
+    //     secret; the sender never learns them.
     //
     // `rcm` stays random and stays in the plaintext either way — under AUTH it
     // is only the commitment's blinding factor, no longer a spend key.
@@ -914,8 +983,8 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     sh::Hash recipient_pk;
     if (spend_auth) {
         // Commit to the recipient's SPEND key, s·G, taken from their address.
-        // Spending requires `s` = Poseidon(ivk, d), which only the recipient
-        // can derive, so the sender cannot spend the note they just sent.
+        // Spending requires `s` derived from ask + Poseidon(ak,d), which only
+        // the recipient can derive. The sender cannot spend the note.
         //
         // NOT recipient.pk_d — that is ivk·P_d, the DISCOVERY key. Committing
         // to it would demand dlog_G(ivk·P_d) from the spender, which nobody
@@ -927,7 +996,13 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
             out.error = "spend_auth_requires_pk_d_spend";
             return out;
         }
-        recipient_pk = recipient.pk_d_spend;
+        if (recipient.nfk_commitment == sh::Hash{}) {
+            out.status = OpStatus::InvalidParams;
+            out.error = "spend_auth_requires_nfk_commitment";
+            return out;
+        }
+        recipient_pk = sh::AuthRecipientCommitmentKey(
+            recipient.pk_d_spend, recipient.nfk_commitment);
     } else {
         sh::Hash recipient_sk = shdrv::DeriveNoteSpendKey(recipient_rcm);
         recipient_pk = sh::PoseidonHash2(recipient_sk, zero);
@@ -973,9 +1048,11 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
         std::memcpy(nplain.memo.data(), recipient_memo->data(), nplain.memo.size());
     }
     shdrv::EncryptedNote enc_bytes;
+    sh::Hash esk_normalized{};
     try {
         enc_bytes = shdrv::EncryptNoteForRecipient(dvf, recipient.pk_d, nplain,
-                                                   esk_override);
+                                                   esk_override,
+                                                   &esk_normalized);
     } catch (const std::exception& e) {
         out.status = OpStatus::InternalError;
         out.error = std::string("encrypt_note_failed: ") + e.what();
@@ -988,11 +1065,57 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     planned.rcv            = recipient_rcv;
     planned.encrypted_note =
         std::vector<uint8_t>(enc_bytes.begin(), enc_bytes.end());
+
+    if (outgoing != nullptr) {
+        if (!shdrv::IsOutgoingActivationPolicyValid(
+                outgoing->spend_auth_activation_height,
+                outgoing->outgoing_activation_height)) {
+            OPENSSL_cleanse(esk_normalized.data(), esk_normalized.size());
+            out.status = OpStatus::InvalidParams;
+            out.error = "invalid_outgoing_recovery_activation_policy";
+            return out;
+        }
+        const bool outgoing_active =
+            shdrv::IsOutgoingRuleActive(
+                outgoing->current_tip_height,
+                outgoing->spend_auth_activation_height) &&
+            shdrv::IsOutgoingRuleActive(
+                outgoing->current_tip_height,
+                outgoing->outgoing_activation_height);
+        if (outgoing_active) {
+            if (!spend_auth) {
+                OPENSSL_cleanse(esk_normalized.data(), esk_normalized.size());
+                out.status = OpStatus::InvalidParams;
+                out.error = "outgoing_recovery_requires_spend_authority";
+                return out;
+            }
+            shdrv::OutgoingConstructionInput input;
+            input.ovk = outgoing->ovk;
+            input.public_output.commitment = recipient_commitment;
+            input.public_output.value_commitment = recipient_opi.cv;
+            input.recipient_encrypted_note = enc_bytes;
+            input.pk_d_enc = recipient.pk_d;
+            input.pk_d_spend = recipient.pk_d_spend;
+            input.nfk_commitment = recipient.nfk_commitment;
+            input.esk_normalized = esk_normalized;
+            auto envelope = shdrv::BuildOutgoingEnvelope(input);
+            if (envelope.verdict != shdrv::OutgoingRecoveryVerdict::Ok) {
+                OPENSSL_cleanse(esk_normalized.data(), esk_normalized.size());
+                out.status = OpStatus::InternalError;
+                out.error = std::string("outgoing_recovery_build_failed:") +
+                            shdrv::OutgoingRecoveryVerdictName(envelope.verdict);
+                return out;
+            }
+            planned.encrypted_note = std::move(envelope.envelope);
+        }
+    }
+    OPENSSL_cleanse(esk_normalized.data(), esk_normalized.size());
     planned.output_proof   = std::move(recipient_proof);
     planned.nonce          = RandomHash();
 
     out.status     = OpStatus::Ok;
     out.commitment = recipient_commitment;
+    out.value_commitment = recipient_opi.cv;
     out.randomness = recipient_rcm;
     out.planned    = std::move(planned);
     return out;
@@ -1007,8 +1130,21 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     const std::array<uint8_t, 512>* recipient_memo,
     bool cv_bound,
     bool spend_auth,
-    const AddressedRecipient* change_recipient) {
+    const AddressedRecipient* change_recipient,
+    const OutgoingViewEmissionContext* outgoing) {
     AttachAddressedTransferResult out;
+    const bool auth_resources = spend_auth;
+    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded-auth-requires-tx-v6";
+        return out;
+    }
+    if (auth_resources && (!sh::CheckAuthBundleCounts(spends.size(), (change_value_una ? 2u : 1u)) ||
+                          tx.GetSize() > sh::kAuthMaxTxBytes)) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded_transaction_resource_limit";
+        return out;
+    }
 
     if (spends.empty()) {
         out.status = OpStatus::InvalidParams;
@@ -1058,6 +1194,7 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         sh::Hash s_rcv = RandomHash();
         sh::SpendWitness sw{};
         sw.secret_key  = s.secret_key;
+        sw.nullifier_key = s.nullifier_key;
         sw.leaf_index  = s.leaf_index;
         sw.value       = value_hash;
         sw.randomness  = s.randomness;
@@ -1065,14 +1202,15 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         sw.rcv         = s_rcv;
         sw.merkle_path = s.merkle_path;
         sh::SpendPublicInputs spi{};
-        spi.nullifier = sh::ComputeNullifier(s.secret_key, s.leaf_index);
+        const bool s_spend_auth = (s.key_scheme == NoteKeyScheme::Auth);
+        spi.nullifier = sh::ComputeNullifier(
+            s_spend_auth ? s.nullifier_key : s.secret_key, s.leaf_index);
         spi.anchor    = s.anchor;
         if (cv_bound && !ComputeBundleCv(s_rcv, s.value_una, spi.cv)) {
             out.status = OpStatus::InternalError;
             out.error = "cv_commit_failed";
             return out;
         }
-        const bool s_spend_auth = (s.key_scheme == NoteKeyScheme::Auth);
         auto proof = sh::ProveSpend(sw, spi, nullptr,
                                     /*bind_public_inputs=*/true, cv_bound,
                                     s_spend_auth);
@@ -1096,7 +1234,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     //    commitment / encryption / proof convention has ONE definition
     //    (reused by the shield-to-recipient path).
     auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo,
-                                              cv_bound, spend_auth);
+                                              cv_bound, spend_auth, nullptr,
+                                              nullptr, outgoing);
     if (rout.status != OpStatus::Ok) {
         out.status = rout.status;
         out.error  = rout.error;
@@ -1126,7 +1265,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
                 return out;
             }
             auto change_out = BuildAddressedRecipientOutput(
-                *change_recipient, nullptr, cv_bound, true);
+                *change_recipient, nullptr, cv_bound, true, nullptr, nullptr,
+                outgoing);
             if (change_out.status != OpStatus::Ok) {
                 out.status = change_out.status;
                 out.error = "change_" + change_out.error;
@@ -1134,7 +1274,9 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
             }
             change_commitment = change_out.commitment;
             change_randomness = change_out.randomness;
-            change_public_key = change_recipient->pk_d_spend;
+            change_public_key = sh::AuthRecipientCommitmentKey(
+                change_recipient->pk_d_spend,
+                change_recipient->nfk_commitment);
             std::memcpy(change_d.data(), change_recipient->d.data(),
                         change_recipient->d.size());
             change_key_scheme = NoteKeyScheme::Auth;
@@ -1207,6 +1349,12 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         return out;
     }
     tx.shielded_bundle_bytes = std::move(bundle_bytes);
+    if (auth_resources && !sh::CheckTxResourceEnvelope(tx, true, out.error)) {
+        tx.shielded_bundle_bytes.clear();
+        out.status = OpStatus::InvalidParams;
+        return out;
+    }
+
 
     out.status               = OpStatus::Ok;
     out.recipient_commitment = recipient_commitment;
@@ -1241,8 +1389,21 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     const AddressedRecipient& recipient,
     const std::array<uint8_t, 512>* recipient_memo,
     bool cv_bound,
-    bool spend_auth) {
+    bool spend_auth,
+    const OutgoingViewEmissionContext* outgoing) {
     AttachShieldResult out;
+    const bool auth_resources = spend_auth;
+    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded-auth-requires-tx-v6";
+        return out;
+    }
+    if (auth_resources && (!sh::CheckAuthBundleCounts(0, 1) ||
+                          tx.GetSize() > sh::kAuthMaxTxBytes)) {
+        out.status = OpStatus::InvalidParams;
+        out.error = "shielded_transaction_resource_limit";
+        return out;
+    }
 
     if (recipient.value_una == 0) {
         out.status = OpStatus::InvalidParams;
@@ -1267,7 +1428,8 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     // ONE addressed recipient output (shared construction). No shielded
     // spends, no shielded change — transparent change is the RPC's job.
     auto rout = BuildAddressedRecipientOutput(recipient, recipient_memo,
-                                              cv_bound, spend_auth);
+                                              cv_bound, spend_auth, nullptr,
+                                              nullptr, outgoing);
     if (rout.status != OpStatus::Ok) {
         out.status = rout.status;
         out.error  = rout.error;
@@ -1302,6 +1464,12 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
         return out;
     }
     tx.shielded_bundle_bytes = std::move(bundle_bytes);
+    if (auth_resources && !sh::CheckTxResourceEnvelope(tx, true, out.error)) {
+        tx.shielded_bundle_bytes.clear();
+        out.status = OpStatus::InvalidParams;
+        return out;
+    }
+
 
     out.status       = OpStatus::Ok;
     out.commitment   = rout.commitment;  // recipient commitment (their note)

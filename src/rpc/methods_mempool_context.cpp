@@ -727,7 +727,7 @@ din::Json rpc_context_mempool_getbyfee(const ExecutionContext& ctx, const din::J
             uint256 txid = tx.GetTxid().AsUint256();  // Phase M.4: Unwrap TxId
             din::Json tx_obj;
             tx_obj["txid"] = txid.GetHex();  // Convert to hex at RPC boundary
-            tx_obj["size"] = static_cast<int>(tx.Serialize().size() / 2);
+            tx_obj["size"] = static_cast<int>(tx.GetSize());
 
             // Add fee information from mempool entry
             auto fee_opt = mempool.getTransactionFee(txid);

@@ -290,6 +290,10 @@ TEST_F(UtreexoSafetyGateTest, CreateNewBlockQuarantinesTemplatePoisoningTx) {
 
 int main(int argc, char** argv) {
     dinero::SelectParams(dinero::Chain::REGTEST);
+    // This fixture supplies a Utreexo validator, not a daemon shielded-state
+    // service. The full sweep exposed its accidental DNRS oracle dependency.
+    // StateCommitmentMining covers the live enforced template path separately.
+    dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
