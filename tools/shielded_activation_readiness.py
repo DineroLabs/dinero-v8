@@ -13,6 +13,8 @@ def source_checks(repo: pathlib.Path):
     chainparams = (repo / "src/consensus/chainparams_impl.cpp").read_text()
     rpc = (repo / "src/rpc/shielded_rpc_json.cpp").read_text()
     ui = (repo / "qt/src/shieldedwidget.h").read_text()
+    ui_impl = (repo / "qt/src/shieldedwidget.cpp").read_text()
+    ui_policy = (repo / "qt/src/shieldedtransferpolicy.h").read_text()
     header = (repo / "include/consensus/chainparams.h").read_text()
     validation = (repo / "src/consensus/shielded/shielded_validation.cpp").read_text()
     block = (repo / "src/consensus/shielded/shielded_block_section.cpp").read_text()
@@ -21,7 +23,19 @@ def source_checks(repo: pathlib.Path):
     checks = {
         "mainnet_wallet_rpc_locked": "GetActiveChain() == Chain::MAINNET" in rpc and
             "shielded_spend_locked" in rpc,
-        "qt_ui_locked": bool(re.search(r"kShieldedUiLockedOut\s*=\s*true", ui)),
+        # The permanent product lock was replaced by daemon capability gating.
+        # These are wiring checks; Qt's behavioral tests cover malformed status,
+        # RPC errors and wallet changes. Do not treat visible controls as active.
+        "qt_ui_capability_gated":
+            'status.value("spend_enabled").isBool()' in ui_policy and
+            'status.value("spend_enabled").toBool()' in ui_policy and
+            'status.value("error").isNull()' in ui_policy and
+            "ShieldedTransferPolicy::daemonAllowsSpending(status)" in ui_impl and
+            "setActiveBanner(allowed," in ui_impl and
+            "bool shieldedActive_ = false" in ui and
+            'setActiveBanner(false, "Waiting for wallet activation status")' in ui_impl and
+            'setActiveBanner(false, "daemon: " + message)' in ui_impl and
+            ui_impl.count("if (!rpc_ || !shieldedActive_ ||") == 3,
         "spend_auth_default_dormant": bool(re.search(
             r"shielded_spend_auth_activation_height\s*=\s*UINT32_MAX", header)),
         "activation_order_enforced": "spend_auth_activation_height <" in chainparams and

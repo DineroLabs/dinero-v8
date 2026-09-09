@@ -127,3 +127,19 @@ such balances; this remains an explicit property of the selected cutover.
 
 Evidence directory:
 `/Users/haydarevich/src/shielded-integration-evidence/qt-private-contracts-20260909`.
+
+
+## PR #721 readiness follow-up
+
+The first GitHub run exposed two stale readiness expectations: the source
+preflight still required the retired permanent Qt lock, and CovenantActivation
+pinned the pre-cutover consensus checksum. The preflight now checks the explicit
+boolean daemon capability, error rejection, initial/wallet-change/error lockout,
+and all three submission guards. Seven in-memory broken-gating mutations were
+rejected. Existing Qt capability, navigation and private widget tests passed.
+
+The checksum was independently recomputed using Python SHA-256 over the 25
+serialized parameter fields. The golden value now pins the 110000 schedule;
+the field-mutation test also covers the new private covenant activation height.
+CovenantActivation passes locally. No consensus or wallet behavior was changed
+by this follow-up. GitHub's initial private covenant lifecycle passed in 323 s.
