@@ -105,3 +105,14 @@ peak process RSS was 804,225,024 bytes (767 MiB). The
 records the test-binary hash and separates its source revision from the harness.
 Other development tests were running, but this is not a controlled representative
 production-load or minimum-machine qualification.
+
+## Maximum-count proof mixes
+
+The original eight-proof benchmark contains four spends and four outputs in
+two transfers. It is not a measured worst case for every proof mix: individual
+spends are more expensive than outputs in the recorded samples. Qualification
+now also measures eight independent one-spend unshields and eight one-output
+shields, with distinct spends/outpoints and explicit count checks. All three
+block mixes use the same 30-second verification limit. The default matrix is
+now eight shapes / 24 fresh processes at three repetitions; older 18-process
+reports retain their narrower coverage. Final mix results are pending.

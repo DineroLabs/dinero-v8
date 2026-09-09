@@ -1719,7 +1719,8 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
     ASSERT_TRUE(requested_shape.empty() || requested_shape == "shield" ||
         requested_shape == "transfer_1in_2out" || requested_shape == "transfer_2in_2out" ||
         requested_shape == "transfer_4in_2out" || requested_shape == "unshield" ||
-        requested_shape == "block_8proofs");
+        requested_shape == "block_8proofs" || requested_shape == "block_8spends" ||
+        requested_shape == "block_8outputs");
     auto seed = RoundtripSeed();
     auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), 0);
     auto addr = shdrv::DeriveDiversifiedAddress(keys, 0, shdrv::kHrpRegtest);
@@ -1735,7 +1736,7 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
     outgoing.spend_auth_activation_height = 2;
     outgoing.outgoing_activation_height = 2;
     std::vector<sops::UnshieldNoteInput> notes;
-    for (unsigned i = 0; i < 4; ++i) {
+    for (unsigned i = 0; i < 8; ++i) {
         sops::UnshieldNoteInput note;
         note.secret_key = shdrv::DeriveDiversifiedSpendKey(keys.ask, keys.ak, addr.d).s;
         note.nullifier_key = shdrv::DeriveDiversifiedNullifierKey(keys.nvk, addr.d);
@@ -1815,28 +1816,55 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
         ASSERT_EQ(result.status, sops::OpStatus::Ok) << result.error;
         report(n == 1 ? "transfer_1in_2out" : n == 2 ? "transfer_2in_2out" : "transfer_4in_2out", tx, start);
     }
-    if (requested_shape == "block_8proofs") {
+    if (requested_shape == "block_8proofs" || requested_shape == "block_8spends" ||
+        requested_shape == "block_8outputs") {
         std::vector<dinero::Transaction> transactions;
-        for (size_t offset : {0u, 2u}) {
-            dinero::Transaction tx;
-            tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
-            tx.witness_version = 0;
-            tx.SetExplicitFee(fee);
-            std::vector<sops::UnshieldNoteInput> spends(notes.begin()+offset, notes.begin()+offset+2);
-            auto change = recipient;
-            change.value_una = 200'000'000 - recipient.value_una - fee;
-            auto built = sops::BuildAddressedTransferBundleForTx(tx, spends, recipient,
-                change.value_una, fee, nullptr, true, true, &change, &outgoing);
-            ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
-            transactions.push_back(std::move(tx));
+        if (requested_shape == "block_8proofs") {
+            for (size_t offset : {0u, 2u}) {
+                dinero::Transaction tx;
+                tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+                tx.witness_version = 0;
+                tx.SetExplicitFee(fee);
+                std::vector<sops::UnshieldNoteInput> spends(notes.begin()+offset, notes.begin()+offset+2);
+                auto change = recipient;
+                change.value_una = 200'000'000 - recipient.value_una - fee;
+                auto built = sops::BuildAddressedTransferBundleForTx(tx, spends, recipient,
+                    change.value_una, fee, nullptr, true, true, &change, &outgoing);
+                ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+                transactions.push_back(std::move(tx));
+            }
+        } else {
+            // Equal proof counts do not imply equal cost: qualify both pure
+            // mixes as well as the balanced transfers before sizing hosts.
+            for (size_t i = 0; i < 8; ++i) {
+                if (requested_shape == "block_8spends") {
+                    auto tx = MakeUnshieldEnvelope(notes[i].value_una - fee, fee,
+                        static_cast<uint8_t>(0xD2 + i));
+                    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+                    auto built = sops::BuildUnshieldBundleForTx(tx, notes[i], fee, true);
+                    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+                    transactions.push_back(std::move(tx));
+                } else {
+                    auto tx = MakeShieldToRecipientEnvelope(fee);
+                    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+                    tx.vin[0].prevout.vout = static_cast<uint32_t>(i);
+                    auto built = sops::BuildAddressedShieldBundleForTx(tx, recipient,
+                        nullptr, true, true, &outgoing);
+                    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+                    transactions.push_back(std::move(tx));
+                }
+            }
         }
         const auto verify_start = std::chrono::steady_clock::now();
         shielded::AuthBlockResourceUsage usage;
         std::string error;
+        size_t spend_count = 0, output_count = 0;
         for (const auto& tx : transactions) {
             ASSERT_TRUE(shielded::AccumulateAuthBlockResources(tx,101,2,usage,error)) << error;
             ShieldedBundle bundle;
             ASSERT_EQ(shielded::DeserializeShieldedBundle(tx.shielded_bundle_bytes,&bundle), shielded::BundleDecodeError::Ok);
+            spend_count += bundle.spends.size();
+            output_count += bundle.outputs.size();
             auto context = shielded::BuildShieldedValidationContext(tx, &nullifier_set,
                 &tree,101,bundle.value_balance,0,nullptr,0,0,2);
             ASSERT_EQ(ValidateShieldedBundle(bundle,context),ShieldedValidationError::Ok);
@@ -1846,6 +1874,9 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
             }
         }
         ASSERT_EQ(usage.proofs,8u);
+        ASSERT_EQ(spend_count, requested_shape == "block_8spends" ? 8u :
+            requested_shape == "block_8outputs" ? 0u : 4u);
+        ASSERT_EQ(output_count, 8u - spend_count);
         ASSERT_LE(usage.shielded_bytes,shielded::kAuthMaxBlockShieldedBytes);
         const auto end = std::chrono::steady_clock::now();
         uint64_t rss = 0;
@@ -1857,7 +1888,7 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
         rss *= 1024;
 #endif
 #endif
-        std::cout << "AUTH_RESOURCE shape=block_8proofs bytes=" << usage.shielded_bytes
+        std::cout << "AUTH_RESOURCE shape=" << requested_shape << " bytes=" << usage.shielded_bytes
             << " proofs=" << usage.proofs
             << " prove_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(verify_start-start).count()
             << " verify_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(end-verify_start).count()

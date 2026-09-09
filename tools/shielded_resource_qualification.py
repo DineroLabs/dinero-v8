@@ -14,7 +14,7 @@ import platform
 import subprocess
 import time
 
-SHAPES = ('shield','transfer_1in_2out','transfer_2in_2out','transfer_4in_2out','unshield','block_8proofs')
+SHAPES = ('shield','transfer_1in_2out','transfer_2in_2out','transfer_4in_2out','unshield','block_8proofs','block_8spends','block_8outputs')
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -78,7 +78,7 @@ def main():
                 ordered=sorted(row[key] for row in rows)
                 summary[key]={'p50':ordered[math.ceil(len(rows)*.5)-1],
                               'p95':ordered[math.ceil(len(rows)*.95)-1],'max':ordered[-1]}
-            verify_limit=args.max_block_verify_ms if shape=='block_8proofs' else args.max_verify_ms
+            verify_limit=args.max_block_verify_ms if shape.startswith('block_') else args.max_verify_ms
             summary['qualified']=(summary['process_peak_rss_bytes']['max']>0 and
                 summary['process_peak_rss_bytes']['max']<=args.max_rss_mib*1024**2 and
                 summary['prove_ms']['max']<=args.max_prove_ms and
