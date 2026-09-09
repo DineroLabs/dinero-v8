@@ -33,6 +33,7 @@ const char* SnapshotBindingVerdictName(SnapshotBindingVerdict v) {
         case SnapshotBindingVerdict::Ok: return "ok";
         case SnapshotBindingVerdict::MissingProof: return "missing-proof";
         case SnapshotBindingVerdict::InvalidMerkleProof: return "invalid-merkle-proof";
+        case SnapshotBindingVerdict::InvalidCoinbase: return "invalid-coinbase";
         case SnapshotBindingVerdict::MalformedOrDuplicateCommitment:
             return "malformed-or-duplicate-commitment";
         case SnapshotBindingVerdict::CommitmentMismatch: return "commitment-mismatch";
@@ -97,6 +98,12 @@ SnapshotBindingVerdict EvaluateSnapshotBinding(
         return SnapshotBindingVerdict::InvalidMerkleProof;
     }
 
+    // Merkle membership alone does not establish transaction type. Requiring
+    // the null coinbase prevout also rules out a short non-coinbase encoding
+    // being interpreted as a 64-byte internal merkle node.
+    if (!coinbase.IsCoinbase()) {
+        return SnapshotBindingVerdict::InvalidCoinbase;
+    }
     const StateCommitmentLookup lookup = FindStateCommitment(coinbase);
     if (lookup.status != StateCommitmentStatus::Ok) {
         return SnapshotBindingVerdict::MalformedOrDuplicateCommitment;

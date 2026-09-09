@@ -13,6 +13,7 @@ using namespace dinero::consensus;
 uint256 Value(uint8_t n) { uint256 v; std::memset(v.data, n, 32); return v; }
 Transaction Coinbase(const uint256& root) {
     Transaction tx; tx.vin.resize(1); tx.vout.resize(1);
+    tx.vin[0].prevout.vout = 0xffffffff;
     tx.vout[0].scriptPubKey = BuildStateCommitmentScript(root); return tx;
 }
 // Independent test oracle: OpenSSL SHA256 and explicit level construction,
@@ -75,6 +76,18 @@ TEST(SnapshotBinding, PreciseBindingFailureClassesAndVerificationOrder) {
         EXPECT_EQ(EvaluateSnapshotBinding(cb,{},Value(250),root),SnapshotBindingVerdict::InvalidMerkleProof);
     }
 }
+TEST(SnapshotBinding, RequiresCoinbaseEvenWhenMerkleProofMatches) {
+    const auto root=Value(9);
+    for (int kind=0;kind<3;++kind) {
+        auto tx=Coinbase(root);
+        if(kind==0) tx.vin[0].prevout.vout=0;
+        if(kind==1) tx.vin[0].prevout.txid=TxId(Value(1));
+        if(kind==2) tx.vin.clear();
+        ASSERT_FALSE(tx.IsCoinbase());
+        EXPECT_EQ(EvaluateSnapshotBinding(tx,{},tx.GetTxid().AsUint256(),root),
+                  SnapshotBindingVerdict::InvalidCoinbase);
+    }
+}
 TEST(SnapshotBinding, FullStateBindingDetectsNullifiersAndAnchorsWithUnchangedTree) {
     shielded::CommitmentTree tree; shielded::AnchorHistory anchors; shielded::NullifierSet nfs;
     ASSERT_EQ(nfs.Open(":memory:"),shielded::NullifierSet::OpenResult::Ok);
@@ -101,6 +114,7 @@ TEST(SnapshotBinding, BurialRequiresSelectedAncestorAndExactDepthWithoutOverflow
     EXPECT_EQ(EvaluateSnapshotBurial(base,UINT32_MAX,base,UINT32_MAX,1),SnapshotBindingVerdict::InsufficientBurialOrNonAncestry);
 }
 TEST(SnapshotBinding, StableVerdictNames) {
+    EXPECT_STREQ(SnapshotBindingVerdictName(SnapshotBindingVerdict::InvalidCoinbase),"invalid-coinbase");
     EXPECT_STREQ(SnapshotBindingVerdictName(SnapshotBindingVerdict::MissingProof),"missing-proof");
     EXPECT_STREQ(SnapshotBindingVerdictName(SnapshotBindingVerdict::InvalidMerkleProof),"invalid-merkle-proof");
     EXPECT_STREQ(SnapshotBindingVerdictName(SnapshotBindingVerdict::MalformedOrDuplicateCommitment),"malformed-or-duplicate-commitment");

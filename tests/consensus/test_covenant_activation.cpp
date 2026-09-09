@@ -213,15 +213,13 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
         ccv, p2trScripts, 100000, Params(), &reason));
 }
 
-TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
+TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     SelectParams(Chain::MAINNET);
-    // Pinned literal updated when state_commitment_activation_height joined
-    // the checksum input (dormant UINT32_MAX on mainnet — the value below
-    // commits to the dormant state; it changes again, loudly, the moment a
-    // height is selected, which is the checksum doing its job).
+    // Pin the expanded checksum including every shielded activation/reset.
+    // This is operator drift telemetry, not a block or peer protocol change.
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "6273236323d0458fc4729e350f6a7281bf44f91ac45f34ad5bc06bd14a4475c8");
+        "d7bc19c7d11a568f9b75182896fcaff53fc5b5b732b61cdff81ac3202d8eac25");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -237,6 +235,15 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     expect_committed(&ChainParams::csfs_activation_height);
     expect_committed(&ChainParams::txhash_activation_height);
     expect_committed(&ChainParams::ccv_activation_height);
+    expect_committed(&ChainParams::shielded_activation_height);
+    expect_committed(&ChainParams::shielded_input_binding_activation_height);
+    expect_committed(&ChainParams::shielded_cv_binding_activation_height);
+    expect_committed(&ChainParams::shielded_epoch_reset_height);
+    expect_committed(&ChainParams::shielded_spend_auth_activation_height);
+    expect_committed(&ChainParams::shielded_spend_auth_epoch_reset_height);
+    expect_committed(&ChainParams::shielded_outgoing_recovery_activation_height);
+    expect_committed(&ChainParams::shielded_coinbase_reject_activation_height);
+
     // state_commitment_v1 joined the checksum with its dormant wiring.
     expect_committed(&ChainParams::state_commitment_activation_height);
 }

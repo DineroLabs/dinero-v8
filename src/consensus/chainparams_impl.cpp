@@ -498,6 +498,15 @@ std::string ConsensusChecksum(const ChainParams& params) {
        // node-local acceptance policy, not block validity.
        << "state_commitment_height="
        << params.state_commitment_activation_height << '\n'
+       // Fleet drift detection must cover the shielded cutovers as well.
+       << "shielded_activation_height=" << params.shielded_activation_height << '\n'
+       << "shielded_input_binding_activation_height=" << params.shielded_input_binding_activation_height << '\n'
+       << "shielded_cv_binding_activation_height=" << params.shielded_cv_binding_activation_height << '\n'
+       << "shielded_epoch_reset_height=" << params.shielded_epoch_reset_height << '\n'
+       << "shielded_spend_auth_activation_height=" << params.shielded_spend_auth_activation_height << '\n'
+       << "shielded_spend_auth_epoch_reset_height=" << params.shielded_spend_auth_epoch_reset_height << '\n'
+       << "shielded_outgoing_recovery_activation_height=" << params.shielded_outgoing_recovery_activation_height << '\n'
+       << "shielded_coinbase_reject_activation_height=" << params.shielded_coinbase_reject_activation_height << '\n'
        << "enforce_witness_commitment="
        << params.enforce_witness_commitment << '\n'
        << "witness_commitment_height="

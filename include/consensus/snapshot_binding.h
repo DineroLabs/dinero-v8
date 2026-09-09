@@ -45,6 +45,8 @@ enum class SnapshotBindingVerdict {
     /// The carried coinbase does not hash up the carried branch to the base
     /// header's transaction merkle root (or the branch is degenerate).
     InvalidMerkleProof,
+    /// The proven transaction is not a coinbase.
+    InvalidCoinbase,
     /// FindStateCommitment on the proven coinbase did not yield exactly one
     /// well-formed DNRS commitment (missing, duplicate, or malformed — the
     /// lookup's own status distinguishes those three for diagnostics; as a
@@ -78,7 +80,7 @@ bool VerifyCoinbaseMerkleBranch(const uint256& txid,
                                 const std::vector<uint256>& branch,
                                 const uint256& merkle_root);
 
-/// The pure verification core for a carried proof: branch → exactly-one DNRS
+/// The pure verification core for a carried proof: branch → coinbase type → exactly-one DNRS
 /// parse → compare against the full SHR1 root computed from the restored
 /// state. Burial/ancestry and proof PRESENCE are decided by the caller (they
 /// need chain context and file context respectively); this function assumes
