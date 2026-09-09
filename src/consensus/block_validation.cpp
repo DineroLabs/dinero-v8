@@ -765,9 +765,20 @@ bool BlockValidator::ApplyBlockShieldedSection(
             return false;
         }
         if (lookup.root != *post_root) {
+            // Component breakdown so a mismatch names WHICH container
+            // diverged, not just that one did — a mismatch here after a
+            // reorg means some path did not perfectly invert state.
+            const auto tr = tree->Root();
+            uint256 tr256;
+            std::memcpy(tr256.data, tr.data(), 32);
+            const auto acc = shld::AccumulateNullifierSet(*nullifiers);
+            const auto ab = anchors->SerializeBytes();
             error = "coinbase-state-commitment-mismatch (committed " +
                     lookup.root.GetHex().substr(0, 16) + "… vs post-block " +
-                    post_root->GetHex().substr(0, 16) + "…)";
+                    post_root->GetHex().substr(0, 16) + "…; tree=" +
+                    tr256.GetHex().substr(0, 12) +
+                    " acc=" + (acc ? acc->GetHex().substr(0, 12) : std::string("unreadable")) +
+                    " anchors_bytes=" + std::to_string(ab.size()) + ")";
             return false;
         }
     }

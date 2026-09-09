@@ -1853,12 +1853,24 @@ std::optional<uint256> ChainstateService::PredictPostBlockShieldedRootForTemplat
         // the empty-set digest (the accumulator's core rule).
         return std::nullopt;
     }
-    return consensus::shielded::PredictPostBlockShieldedRoot(
+    const auto predicted = consensus::shielded::PredictPostBlockShieldedRoot(
         bundles, height,
         dinero::Params().shielded_epoch_reset_height,
         dinero::Params().shielded_spend_auth_epoch_reset_height,
         dinero::Params().shielded_activation_height,
         shielded_tree_, std::move(entries), shielded_anchor_history_);
+    if (predicted && logger_) {
+        // Component provenance for the commitment: lets a later
+        // coinbase-state-commitment-mismatch be diffed against what the
+        // template actually committed to, container by container.
+        const auto pre_anchor_bytes = shielded_anchor_history_.SerializeBytes().size();
+        logger_->debug("[StateCommitmentOracle] h=" + std::to_string(height) +
+                       " predicted=" + predicted->GetHex().substr(0, 16) +
+                       " pre_tree_size=" + std::to_string(shielded_tree_.Size()) +
+                       " pre_anchor_bytes=" + std::to_string(pre_anchor_bytes) +
+                       " bundles=" + std::to_string(bundles.size()));
+    }
+    return predicted;
 }
 
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
@@ -10669,13 +10681,19 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
             return result;
         }
 
-        // Verify version (v2 legacy + v3 with Utreexo section + v4 with shielded section)
+        // Verify version (v2 legacy + v3 with Utreexo section + v4 with
+        // shielded section + v5 with the state-commitment binding proof).
+        // Known-version screen only — the ACCEPTANCE policy (which versions
+        // load at which heights) is EvaluateSnapshotFormat below, the single
+        // decision point; keeping a second acceptance rule here would be two
+        // policies that can disagree.
         if (header.version != SNAPSHOT_VERSION_V2 && header.version != SNAPSHOT_VERSION_V3 &&
-            header.version != SNAPSHOT_VERSION_V4) {
+            header.version != SNAPSHOT_VERSION_V4 && header.version != SNAPSHOT_VERSION_V5) {
             result.error_message = "Unsupported snapshot version: " + std::to_string(header.version) +
                                   " (supported: " + std::to_string(SNAPSHOT_VERSION_V2) +
                                   ", " + std::to_string(SNAPSHOT_VERSION_V3) +
-                                  ", " + std::to_string(SNAPSHOT_VERSION_V4) + ")";
+                                  ", " + std::to_string(SNAPSHOT_VERSION_V4) +
+                                  ", " + std::to_string(SNAPSHOT_VERSION_V5) + ")";
             return result;
         }
         // ═════════════════════════════════════════════════════════════════════

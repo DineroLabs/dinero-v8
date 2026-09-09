@@ -1423,6 +1423,36 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
             }
         }
 
+        // STATE COMMITMENT (state_commitment_v1): same rule and same oracle as
+        // CreateJob's insertion — this is the second coinbase-assembly path
+        // (generatetoaddress and template-based flows route here), and a path
+        // the rule misses mines only invalid blocks under enforcement, which
+        // is exactly how the full-suite run caught this site's omission.
+        if (dinero::consensus::IsStateCommitmentActive(
+                height, dinero::Params().state_commitment_activation_height)) {
+            auto* daemon_ctx = DaemonContext::instance();
+            auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                daemon_ctx ? daemon_ctx->chainstate : nullptr);
+            std::optional<uint256> post_root;
+            if (chainstate) {
+                post_root = chainstate->PredictPostBlockShieldedRootForTemplate(
+                    block->vtx, height);
+            }
+            if (!post_root.has_value()) {
+                last_template_error_ =
+                    "CreateNewBlock: state-commitment oracle failed at height " +
+                    std::to_string(height) +
+                    " — refusing to assemble an invalid template";
+                dinero::g_logger.error("[BlockAssembler] " + last_template_error_);
+                return nullptr;
+            }
+            auto sc_script = dinero::consensus::BuildStateCommitmentScript(*post_root);
+            TxOutput sc_output;
+            sc_output.value = AmountUna::Zero();
+            sc_output.scriptPubKey = std::move(sc_script);
+            block->vtx[0].vout.push_back(sc_output);
+        }
+
         std::vector<TxEntryFlags> template_flags;
         template_flags.reserve(block->vtx.size());
         for (size_t i = 0; i < block->vtx.size(); ++i) {

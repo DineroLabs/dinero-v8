@@ -215,9 +215,13 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
 
 TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     SelectParams(Chain::MAINNET);
+    // Pinned literal updated when state_commitment_activation_height joined
+    // the checksum input (dormant UINT32_MAX on mainnet — the value below
+    // commits to the dormant state; it changes again, loudly, the moment a
+    // height is selected, which is the checksum doing its job).
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "68e0a99766e8ab1224ee040ec715bbbd0a544a59d4b3a96025dd35f77f4e960a");
+        "6273236323d0458fc4729e350f6a7281bf44f91ac45f34ad5bc06bd14a4475c8");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -233,6 +237,8 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryCovenantHeight) {
     expect_committed(&ChainParams::csfs_activation_height);
     expect_committed(&ChainParams::txhash_activation_height);
     expect_committed(&ChainParams::ccv_activation_height);
+    // state_commitment_v1 joined the checksum with its dormant wiring.
+    expect_committed(&ChainParams::state_commitment_activation_height);
 }
 
 TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {

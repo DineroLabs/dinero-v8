@@ -622,6 +622,15 @@ int main(int argc, char** argv) {
         }
 
         dinero::SelectParams(dinero::Chain::REGTEST);
+        // state_commitment_v1: dormant for this fixture builder. Its reference
+        // blocks are hand-built without coinbase DNRS commitments and its
+        // subject is live-vs-reindex shielded equivalence — under regtest's
+        // active-at-1 default the reindexer's mirrored presence rule rejects
+        // block 1 before any equivalence can be measured. The reindexer reads
+        // the same Params(), so this override governs both the build and the
+        // reindex sides identically. Enforcement itself is exercised by the
+        // state-commitment suites and the forged-snapshot e2e.
+        dinero::MutableParams().state_commitment_activation_height = UINT32_MAX;
 
         const auto canonical = dinero::BuildCanonicalGenesis(dinero::Params());
         dinero::Transaction genesis_coinbase;

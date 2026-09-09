@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 #
+# state_commitment_v1: this suite runs DORMANT (explicit override below).
+# Its subject is AssumeUTXO snapshot/replay behavior, not commitment
+# enforcement -- under regtest's active-at-1 default, export stamps v5 and
+# the load-time binding chain requires burial depth the fixture's
+# export-at-tip-and-reload shape cannot satisfy. Enforcement itself is
+# exercised by the state-commitment suites and the forged-snapshot e2e.
+#
 # AssumeUTXO replay engine e2e (regtest).
 # Spec docs/design/assumeutxo-fatal-state-machine.md Required Tests:
 #   Scenario A+D = Test 4 (good snapshot retires trust marker through REAL
@@ -142,7 +149,7 @@ rpc() {  # <rpcport> <datadir> <method> [params-json]
 start_node() {  # <datadir> <rpcport> <p2pport> <wsport> <logfile> [extra args...]
     local datadir="$1" rpcport="$2" p2pport="$3" wsport="$4" logfile="$5"; shift 5
     mkdir -p "$datadir"
-    "$DINEROD" --regtest --datadir="$datadir" \
+    "$DINEROD" --regtest --consensus-state-commitment-height=4294967295 --datadir="$datadir" \
         --rpcport="$rpcport" --port="$p2pport" --wallet-socket-port="$wsport" \
         --listen=1 "$@" > "$logfile" 2>&1 &
     local i
@@ -549,7 +556,7 @@ pass "C1: different-base load refused over RPC mid-lifecycle: $ERR_MSG"
 # refuse: the node is never bricked, and it still never serves the wrong snapshot.
 stop_node "$C_DIR"
 mkdir -p "$C_DIR"
-"$DINEROD" --regtest --datadir="$C_DIR" \
+"$DINEROD" --regtest --consensus-state-commitment-height=4294967295 --datadir="$C_DIR" \
     --rpcport="$C_RPC" --port="$C_P2P" --wallet-socket-port="$C_WS" \
     --listen=1 --assumeutxo_bg_stall_timeout=3600 \
     --assumeutxo_snapshot="$SNAP2" > "$C_DIR/daemon2.log" 2>&1 &

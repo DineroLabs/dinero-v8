@@ -450,6 +450,8 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     uint16_t wallet_socket_port = 0;  // 0 = use default (will be set from env or default)
     long shielded_epoch_reset_override = -1;  // <0 = unset; REGTEST test-only fork activation
     long shielded_spend_auth_override = -1;   // paired auth activation/reset; REGTEST only
+    long state_commitment_height_override = -1;   // <0 = unset; REGTEST only (UINT32_MAX = dormant)
+    long state_commitment_burial_override = -1;   // <0 = unset; REGTEST only
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -478,6 +480,32 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
                 shielded_epoch_reset_override = std::stol(val);
             } catch (const std::exception&) {
                 std::cerr << "Error: invalid --consensus-shielded-epoch-reset-height value: "
+                          << val << "\n";
+                return 1;
+            }
+        } else if (arg.find("--consensus-state-commitment-height=") == 0) {
+            // REGTEST test-only: move (or, with 4294967295, disarm) the
+            // state_commitment_v1 activation so pre-existing e2e suites whose
+            // subject is NOT commitment enforcement can run dormant, while the
+            // enforcement suites use regtest's active-at-1 default. Refused on
+            // any non-regtest chain below — mainnet/testnet activation is set
+            // exclusively in chainparams via the governance process.
+            const std::string val =
+                arg.substr(std::string("--consensus-state-commitment-height=").size());
+            try {
+                state_commitment_height_override = std::stol(val);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid --consensus-state-commitment-height value: "
+                          << val << "\n";
+                return 1;
+            }
+        } else if (arg.find("--consensus-state-commitment-burial-depth=") == 0) {
+            const std::string val = arg.substr(
+                std::string("--consensus-state-commitment-burial-depth=").size());
+            try {
+                state_commitment_burial_override = std::stol(val);
+            } catch (const std::exception&) {
+                std::cerr << "Error: invalid --consensus-state-commitment-burial-depth value: "
                           << val << "\n";
                 return 1;
             }
@@ -792,6 +820,36 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
         mp.shielded_spend_auth_epoch_reset_height = h;
         std::cout << "[Network] REGTEST: spend authority + distinct epoch reset "
                      "forced at height " << h << " (test-only)\n";
+    }
+
+    // REGTEST-only state_commitment_v1 overrides, same discipline as the
+    // shielded overrides above: hard-refused off regtest; mainnet/testnet
+    // activation moves only through chainparams + the recorded governance
+    // order (burial policy, fail-closed wiring, forged-snapshot rejection,
+    // human review, THEN height selection).
+    if (state_commitment_height_override >= 0) {
+        if (chain != dinero::Chain::REGTEST) {
+            std::cerr << "[FATAL] --consensus-state-commitment-height is REGTEST-only\n";
+            return 1;
+        }
+        auto& mp = dinero::MutableParams();
+        mp.state_commitment_activation_height =
+            static_cast<uint32_t>(state_commitment_height_override);
+        std::cout << "[Network] REGTEST: state commitment activation forced to height "
+                  << mp.state_commitment_activation_height
+                  << (mp.state_commitment_activation_height == UINT32_MAX
+                          ? " (dormant)" : "")
+                  << " (test-only)\n";
+    }
+    if (state_commitment_burial_override >= 0) {
+        if (chain != dinero::Chain::REGTEST) {
+            std::cerr << "[FATAL] --consensus-state-commitment-burial-depth is REGTEST-only\n";
+            return 1;
+        }
+        dinero::MutableParams().state_commitment_burial_depth =
+            static_cast<uint32_t>(state_commitment_burial_override);
+        std::cout << "[Network] REGTEST: state commitment burial depth forced to "
+                  << state_commitment_burial_override << " (test-only)\n";
     }
 
     // Consensus crypto precondition. Shielded validation fails closed when the
