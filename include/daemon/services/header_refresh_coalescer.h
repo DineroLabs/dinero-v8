@@ -33,6 +33,15 @@ inline HeaderRefreshAction noteHeaderAnnouncement(
     return HeaderRefreshAction::QUEUE_TRAILING;
 }
 
+// A reply discarded by our receive limiter is local backpressure, not an
+// unresponsive peer. Retry only after a fresh rate window, coalescing new INV.
+inline void deferHeaderRefreshAfterRateLimit(
+        std::chrono::steady_clock::time_point now,
+        HeaderRefreshState& state) {
+    state.last_request = now;
+    state.trailing_request_pending = true;
+}
+
 inline bool takeTrailingHeaderRefresh(
         std::chrono::steady_clock::time_point now,
         std::chrono::milliseconds minimum_interval,

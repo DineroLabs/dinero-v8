@@ -561,6 +561,36 @@ void Test10_SideBranchContinuationUsesReceivedFrontier() {
     assert(sync.GetStats().current_sync_peer == 0);
 }
 
+void Test11_LocalRateDropReleasesOnlyItsRequest() {
+    HeaderChainSelector selector;
+    HeaderSyncP2P sync(&selector);
+    P2PCallbackMocks mocks;
+    sync.SetSendGetheadersCallback([&](uint64_t peer, const auto& locator, const auto& stop) {
+        return mocks.OnSendGetheaders(peer, locator, stop);
+    });
+    uint256 zero; zero.SetNull();
+    assert(selector.AddHeader(CreateTestHeader(zero, 1000000)));
+    sync.OnPeerConnected(11, 0, zero, true);
+    sync.OnPeerConnected(12, 0, zero, true);
+    assert(sync.RequestHeadersFromPeer(11, true));
+    // An unrelated unsolicited flood cannot cancel another peer's flight.
+    assert(!sync.OnHeadersRateLimited(12));
+    assert(sync.GetStats().current_sync_peer == 11);
+    // CsnBridgeAssistedSpendFlow exposed a requested response dropped locally:
+    // preserving ownership here blocks every probe until the 15-minute timeout.
+    assert(sync.OnHeadersRateLimited(11));
+    assert(sync.GetStats().current_sync_peer == 0);
+    assert(sync.GetStats().stalled_peers == 0);
+    assert(mocks.getheaders_calls.size() == 1); // no immediate retry/flood
+    assert(!sync.OnHeadersRateLimited(11));     // no duplicate retry hint
+    assert(sync.RequestHeadersFromPeer(11, true));
+    assert(sync.ProcessHeaders(11, {}).accepted);
+    assert(sync.GetStats().current_sync_peer == 0);
+    assert(sync.RequestHeadersFromPeer(12, true));
+    assert(!sync.OnHeadersRateLimited(11));
+    assert(sync.GetStats().current_sync_peer == 12);
+}
+
 // ============================================================================
 // Main Test Runner
 // ============================================================================
@@ -579,6 +609,7 @@ int main() {
     Test8_MissingParentReleasesRequestForRecovery();
     Test9_ConcurrentTriggersProduceOneRequest();
     Test10_SideBranchContinuationUsesReceivedFrontier();
+    Test11_LocalRateDropReleasesOnlyItsRequest();
 
     std::cout << "\n=== ALL P2P INTEGRATION TESTS PASSED ===" << std::endl;
     std::cout << "\nPhase N.2 Step 2C Verification:" << std::endl;

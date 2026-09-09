@@ -53,4 +53,18 @@ TEST(HeaderRefreshCoalescer, NewAnnouncementAfterQueuedWindowConsumesTrailingWor
         kStart + 2 * kInterval, kInterval, state));
 }
 
+TEST(HeaderRefreshCoalescer, LocalRateDropWaitsForFreshWindowAndCoalescesAnnouncements) {
+    HeaderRefreshState state;
+    const auto dropped = kStart + std::chrono::milliseconds(500);
+    dinero::daemon::deferHeaderRefreshAfterRateLimit(dropped, state);
+    EXPECT_FALSE(takeTrailingHeaderRefresh(dropped, kInterval, state));
+    EXPECT_EQ(noteHeaderAnnouncement(dropped + std::chrono::milliseconds(100),
+                                     kInterval, state),
+              HeaderRefreshAction::QUEUE_TRAILING);
+    EXPECT_FALSE(takeTrailingHeaderRefresh(dropped + std::chrono::milliseconds(999),
+                                          kInterval, state));
+    EXPECT_TRUE(takeTrailingHeaderRefresh(dropped + kInterval, kInterval, state));
+    EXPECT_FALSE(takeTrailingHeaderRefresh(dropped + 2 * kInterval, kInterval, state));
+}
+
 }  // namespace

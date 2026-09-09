@@ -213,7 +213,7 @@ public:
         uint64_t peer_id, bool probe = false);
 
     /** Release a reserved request when transport send fails. */
-    void MarkHeadersRequestFailed(uint64_t peer_id);
+    bool MarkHeadersRequestFailed(uint64_t peer_id);
 
     // ========================================================================
     // Statistics and Diagnostics
