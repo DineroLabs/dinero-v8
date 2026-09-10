@@ -49,8 +49,9 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     src/contracts/escrow_contract.cpp
     src/contracts/daemon_mediator.cpp
 
-    # Socket wallet server (always enabled)
-    ${SOCKET_SERVER_SOURCES}
+    # Native Apple NodeCore needs the implementation directly: daemon-only
+    # source-list variables are not defined here. Mobile uses its stubs above.
+    $<$<STREQUAL:${CMAKE_SYSTEM_NAME},Darwin>:src/grpc/socket_wallet_server.cpp>
 
     # RPC server infrastructure (internal, not HTTP-exposed on iOS)
     src/daemon/http_rpc_server.cpp

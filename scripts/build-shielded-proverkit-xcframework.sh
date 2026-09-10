@@ -155,6 +155,7 @@ _dinero_shielded_build_unshield_bundle
 _dinero_shielded_compute_note_commitment
 _dinero_shielded_compute_nullifier
 _dinero_shielded_derive_address
+_dinero_shielded_derive_address_v2
 _dinero_shielded_free_result
 EOF
 }
@@ -215,6 +216,13 @@ build_dynamic_framework() {
   abi_globals="$(nm -gU "$fw/ShieldedProverKit" 2>/dev/null | grep -cE ' T _dinero_shielded_' || true)"
   leaked=$(( total_globals - abi_globals ))
   [ "$leaked" -eq 0 ] || die "framework leaks $leaked non-ABI global symbol(s) — refusing to ship"
+
+  # Every declared ABI entry must survive the export filter, not just avoid leaks.
+  local symbol exported
+  exported="$(nm -gU "$fw/ShieldedProverKit" | awk '{print $NF}')"
+  while IFS= read -r symbol; do
+    grep -Fxq "$symbol" <<< "$exported" || die "framework is missing ABI symbol $symbol"
+  done < "$ABI_EXPORTS"
 
   cp "$ROOT_DIR/include/shielded_prover_kit/"*.h "$fw/Headers/"
 
