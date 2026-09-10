@@ -212,8 +212,14 @@ CBlockIndex* AddBlockIndex(const BlockHeader& header, uint32_t height) {
         // Process any orphans waiting for this block
         OnParentValidated(raw_ptr);
     } else {
-        // Queue as orphan until parent becomes available
+        // Queue as orphan until parent becomes available.
         MaybeQueueOrphan(raw_ptr);
+        // Header arrival establishes graph identity even before validation.
+        // A child received first otherwise keeps pprev=null while a stored
+        // competing branch waits for activation, which rejects it as having
+        // no common ancestor. ProcessOrphanQueue links waiting children but
+        // retains its CanConnect check before granting any validation status.
+        ProcessOrphanQueue(raw_ptr->hash);
     }
 
     dinero::g_logger.info("Added block: height=" + std::to_string(height) +
