@@ -22,9 +22,9 @@ QString MinerController::versionLabel() {
     const QString version = QString::fromStdString(identity.version);
     const QString revision = QString::fromStdString(identity.short_sha);
     if (revision.isEmpty() || revision == QStringLiteral("unknown")) {
-        return version;
+        return QString("Core release %1 · miner build unavailable").arg(version);
     }
-    return QString("%1 (%2)").arg(version, revision);
+    return QString("Core release %1 · miner build %2").arg(version, revision);
 }
 
 bool MinerController::running() const {
