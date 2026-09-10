@@ -1,5 +1,6 @@
 #include "minercontroller.h"
 #include <solo_miner/miner.h>
+#include <solo_miner/build_identity.h>
 #include <QByteArray>
 #include <QDir>
 
@@ -14,6 +15,16 @@ MinerController::MinerController(QObject* parent)
 
 MinerController::~MinerController() {
     shutdownSilently();
+}
+
+QString MinerController::versionLabel() {
+    const auto identity = dinero::solo::GetBuildIdentity();
+    const QString version = QString::fromStdString(identity.version);
+    const QString revision = QString::fromStdString(identity.short_sha);
+    if (revision.isEmpty() || revision == QStringLiteral("unknown")) {
+        return version;
+    }
+    return QString("%1 (%2)").arg(version, revision);
 }
 
 bool MinerController::running() const {

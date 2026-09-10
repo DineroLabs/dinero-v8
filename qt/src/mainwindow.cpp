@@ -11525,8 +11525,9 @@ void MainWindow::startInternalMiner(bool useGpu) {
   }
 
   if (txtMiningOutput_) {
-    const QString engine = useGpu ? QStringLiteral("Embedded GPU solo miner")
-                                  : QString("Embedded CPU solo miner · %1 threads").arg(threads);
+    const QString identity = MinerController::versionLabel();
+    const QString engine = useGpu ? QString("Embedded GPU solo miner · v%1").arg(identity)
+                                  : QString("Embedded CPU solo miner · v%1 · %2 threads").arg(identity).arg(threads);
     const QString auth = cookiePath.isEmpty() ? QStringLiteral("cookie auth unavailable")
                                               : QStringLiteral("cookie auth active");
     const QString backend = useGpu ? QStringLiteral("Metal active")
