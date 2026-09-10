@@ -14,7 +14,7 @@ namespace dinero {
 std::unordered_map<std::string, std::unique_ptr<CBlockIndex>> g_block_index;
 
 // Global candidate tips (ordered by work, then hash)
-std::set<CBlockIndex*, ByWorkThenHash> g_candidates;
+BlockCandidates g_candidates;
 
 // Orphan pool for headers/blocks with missing parents
 std::unordered_map<std::string, std::vector<CBlockIndex*>> g_orphan_pool;
@@ -212,7 +212,7 @@ void RemoveCandidate(CBlockIndex* block_index) {
 
 CBlockIndex* GetBestCandidate() {
     if (g_candidates.empty()) return nullptr;
-    return *g_candidates.begin(); // First element has most work
+    return g_candidates.Best([](CBlockIndex*) { return true; });
 }
 
 // === Header-First Sync Implementation ===

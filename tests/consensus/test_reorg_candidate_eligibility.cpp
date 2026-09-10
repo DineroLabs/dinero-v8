@@ -176,6 +176,36 @@ int main() {
         check(!reorg_eligible(tip), "tip without body → not eligible");
     }
 
+    std::cout << "=== candidate chainwork refresh ===\n";
+    {
+        auto* active = mk(94, DATA, nullptr, "active");
+        auto* imported = mk(98, DATA, nullptr, "imported");
+        active->chainwork = std::string(62, '0') + "94";
+        imported->chainwork = std::string(62, '0') + "01";
+        dinero::BlockCandidates candidates;
+        candidates.insert(active);
+        candidates.insert(imported);
+        auto eligible = [](CBlockIndex*) { return true; };
+        check(candidates.Best(eligible) == active, "original work selects active tip");
+        // Header import/materialization repairs work after candidacy. The
+        // current block-index work, not insertion-time order, must win.
+        imported->chainwork = std::string(62, '0') + "98";
+        check(candidates.Best(eligible) == imported, "work refresh reranks before reinsertion");
+        candidates.insert(imported);
+        check(candidates.size() == 2, "reinsertion cannot duplicate a candidate");
+        check(candidates.Best(eligible) == imported, "refreshed higher work wins after reinsertion");
+        candidates.erase(imported);
+        check(candidates.Best(eligible) == active, "erasure works after work changes");
+        candidates.insert(imported);
+        imported->chainwork = active->chainwork;
+        check(candidates.Best(eligible) == (dinero::ByWorkThenHash{}(active, imported) ? active : imported),
+              "equal-work refresh preserves consensus hash tie-break");
+        check(candidates.Best([&](CBlockIndex* b) { return b != active; }) == imported,
+              "eligibility excludes an otherwise best candidate");
+        check(candidates.Best([](CBlockIndex*) { return false; }) == nullptr,
+              "no ready candidate returns null");
+    }
+
     std::cout << "=== operational activation retry preservation ===\n";
     {
         using namespace std::chrono_literals;
