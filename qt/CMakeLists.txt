@@ -1456,6 +1456,17 @@ if(BUILD_TESTING)
   target_compile_definitions(test_pool_share PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PoolShare COMMAND test_pool_share)
 
+  add_executable(test_pool_earnings
+    tests/test_pool_earnings.cpp
+    src/poolearnings.h
+  )
+  target_link_libraries(test_pool_earnings PRIVATE
+    Qt6::Core
+    Qt6::Test
+  )
+  target_compile_definitions(test_pool_earnings PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PoolEarnings COMMAND test_pool_earnings)
+
   add_executable(test_node_poller
     tests/test_node_poller.cpp
     src/nodepoller.cpp

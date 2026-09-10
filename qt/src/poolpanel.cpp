@@ -2,6 +2,7 @@
 
 #include "poolpanel.h"
 
+#include "poolearnings.h"
 #include "poolshare.h"
 #include "rpcclient.h"
 
@@ -32,6 +33,10 @@
 namespace {
 
 constexpr qint64 kUnaPerDin = 100000000;
+/// `blockchain.getaddresshistory` caps at 200 entries. Asking for the cap
+/// makes a truncated answer detectable: a reply holding exactly this many
+/// entries may have older ones behind it.
+constexpr int kEarningsHistoryPage = 200;
 /// Marks which request a reply belongs to. One QNetworkAccessManager serves
 /// both the status GET and the payout POST, and `finished` fires for both.
 constexpr QNetworkRequest::Attribute kKindAttr = QNetworkRequest::User;
@@ -362,12 +367,15 @@ void PoolPanel::setupUi() {
     root->addWidget(status_group_);
 
     // ---- Earnings, from the chain ------------------------------------
-    auto* earn_group = new QGroupBox("Current unspent fee balance (verified on-chain)");
+    auto* earn_group = new QGroupBox("Fee earnings (verified on-chain)");
     auto* earn_layout = new QVBoxLayout(earn_group);
     auto* earn_hint = new QLabel(
-        "Current confirmed, unspent outputs at this address, read from your node. This is not "
-        "lifetime earnings: spent outputs are intentionally excluded.");
+        "Read from your node, not from the pool \xE2\x80\x94 so it is still right when the pool is "
+        "down, and it cannot be overstated by a pool reporting on itself."
+        "<br/><b>Lifetime</b> is every fee ever paid to this address and only ever rises. "
+        "<b>Unspent</b> is what is still sitting there, so it falls when you move funds out.");
     earn_hint->setWordWrap(true);
+    earn_hint->setTextFormat(Qt::RichText);
     earn_hint->setStyleSheet("color: #9fb3c8;");
     earn_layout->addWidget(earn_hint);
 
@@ -379,6 +387,14 @@ void PoolPanel::setupUi() {
     btn_check_earnings_ = new QPushButton("Check");
     earn_row->addWidget(btn_check_earnings_);
     earn_layout->addLayout(earn_row);
+
+    // Lifetime leads: it is the number that answers "what has this pool
+    // earned me". Unspent sits under it as the balance it actually is.
+    lbl_lifetime_ = new QLabel("\xE2\x80\x93");
+    lbl_lifetime_->setTextFormat(Qt::RichText);
+    lbl_lifetime_->setWordWrap(true);
+    lbl_lifetime_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    earn_layout->addWidget(lbl_lifetime_);
 
     lbl_earnings_ = new QLabel("\xE2\x80\x93");
     lbl_earnings_->setTextFormat(Qt::RichText);
@@ -1106,18 +1122,57 @@ void PoolPanel::onCheckEarningsClicked() {
         lbl_earnings_->setText("<span style='color:#d8a37b;'>Enter your fee address.</span>");
         return;
     }
+    // Two questions, two calls. The balance is a UTXO-set sum and comes
+    // back immediately; the lifetime total makes the node walk its blocks
+    // backwards, which is seconds rather than milliseconds on a synced
+    // chain, so it gets its own progress text.
+    lbl_lifetime_->setText("reading the chain\xE2\x80\xA6 (this walks the block history and can take a few seconds)");
     lbl_earnings_->setText("checking the chain\xE2\x80\xA6");
     earnings_in_flight_ = true;
+    lifetime_in_flight_ = true;
     btn_check_earnings_->setEnabled(false);
     rpc_->call("blockchain.getaddressbalance", QJsonArray{addr});
+    rpc_->call("blockchain.getaddresshistory", QJsonArray{addr, kEarningsHistoryPage});
+}
+
+void PoolPanel::finishEarningsRequest() {
+    if (!earnings_in_flight_ && !lifetime_in_flight_) {
+        btn_check_earnings_->setEnabled(true);
+    }
+}
+
+void PoolPanel::applyLifetime(const QJsonValue& result) {
+    if (!result.isObject()) {
+        lbl_lifetime_->setText("<span style='color:#e06c75;'>Unexpected history reply from the node.</span>");
+        return;
+    }
+    const poolearnings::Received received =
+        poolearnings::sumReceived(result.toObject(), kEarningsHistoryPage);
+    QString detail = QString("Every fee ever paid to this address, across %1 %2 the node could see.")
+                         .arg(received.count)
+                         .arg(received.count == 1 ? "payment" : "payments");
+    if (!received.complete) {
+        detail = QString("<span style='color:#d8a37b;'>%1</span>").arg(received.caveat.toHtmlEscaped());
+    }
+    lbl_lifetime_->setText(
+        QString("<span style='font-size:19px; font-weight:700; color:#7bd88f;'>%1</span>"
+                "<span style='color:#9fb3c8; font-size:11px;'> lifetime</span>"
+                "<br/><span style='color:#9fb3c8; font-size:11px;'>%2</span>")
+            .arg(formatDin(received.total_una), detail));
 }
 
 void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
+    if (method == "blockchain.getaddresshistory") {
+        lifetime_in_flight_ = false;
+        applyLifetime(result);
+        finishEarningsRequest();
+        return;
+    }
     if (method != "blockchain.getaddressbalance") {
         return;
     }
     earnings_in_flight_ = false;
-    btn_check_earnings_->setEnabled(true);
+    finishEarningsRequest();
     if (!result.isObject()) {
         lbl_earnings_->setText("<span style='color:#e06c75;'>Unexpected reply from the node.</span>");
         return;
@@ -1136,18 +1191,29 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
     }
     lbl_earnings_->setText(
         QString("<span style='font-size:15px; font-weight:600; color:#7bd88f;'>%1</span>"
-                "<br/><span style='color:#9fb3c8; font-size:11px;'>Confirmed unspent balance at this address. "
-                "It excludes any pool fees that have already been spent.</span>")
+                "<span style='color:#9fb3c8; font-size:11px;'> unspent now</span>"
+                "<br/><span style='color:#9fb3c8; font-size:11px;'>Confirmed outputs still sitting at this "
+                "address. Lower than lifetime by whatever you have already moved out.</span>")
             .arg(formatDin(*balance)));
 }
 
 void PoolPanel::onRpcError(const QString& method, int code, const QString& message) {
+    const QString rendered = QString("<span style='color:#e06c75;'>Node could not answer: %1 [%2]</span>")
+                                 .arg(message.toHtmlEscaped())
+                                 .arg(code);
+    // Reported per line: the balance and the history fail independently,
+    // and a node that can answer one but not the other should still show
+    // the answer it has rather than blanking both.
+    if (method == "blockchain.getaddresshistory") {
+        lifetime_in_flight_ = false;
+        lbl_lifetime_->setText(rendered);
+        finishEarningsRequest();
+        return;
+    }
     if (method != "blockchain.getaddressbalance") {
         return;
     }
     earnings_in_flight_ = false;
-    btn_check_earnings_->setEnabled(true);
-    lbl_earnings_->setText(QString("<span style='color:#e06c75;'>Node could not answer: %1 [%2]</span>")
-                               .arg(message.toHtmlEscaped())
-                               .arg(code));
+    finishEarningsRequest();
+    lbl_earnings_->setText(rendered);
 }

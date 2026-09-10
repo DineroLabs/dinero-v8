@@ -63,6 +63,11 @@ private:
     void setupUi();
     void setupConnections();
     void applyStatus(const QJsonObject& status);
+    void applyLifetime(const QJsonValue& result);
+    /// Re-enables Check once BOTH the balance and the history reply have
+    /// landed; either one arriving first must not re-arm the button while
+    /// the other is still outstanding.
+    void finishEarningsRequest();
     bool validateStatus(const QJsonObject& status, QString* error) const;
     void markStatusStale(const QString& reason);
     void updateHealth(const QJsonObject& status, bool legacy);
@@ -92,6 +97,7 @@ private:
     bool payout_in_flight_ = false;
     bool fee_in_flight_ = false;
     bool earnings_in_flight_ = false;
+    bool lifetime_in_flight_ = false;
     bool has_valid_status_ = false;
     QDateTime last_valid_status_;
     QGroupBox* why_group_ = nullptr;
@@ -151,6 +157,9 @@ private:
     // Chain-verified earnings.
     QLineEdit* fee_address_input_;
     QPushButton* btn_check_earnings_;
+    /// Lifetime total (only rises) above the unspent balance (falls when
+    /// the operator moves funds out). Both are read from the chain.
+    QLabel* lbl_lifetime_ = nullptr;
     QLabel* lbl_earnings_;
 
     static constexpr int REFRESH_INTERVAL_MS = 15000;
