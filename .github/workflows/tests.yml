@@ -495,6 +495,23 @@ jobs:
             echo "collected:"; find "$dest" -type f -printf '  %s\t%p\n' | sort -rn | head -20
           fi
 
+      # #717: these preserved datadirs are outside the churn gate's artifact
+      # root. Upload only logs/RPC diagnostics, never cookies or wallet files.
+      - name: Collect CSN reorg failure evidence
+        if: always()
+        run: |
+          dest=build-tests/Testing/csn-reorg-logs
+          mkdir -p "$dest"
+          for root in /tmp/dinero_bridge_spend_reorg_* /tmp/dinero_csn_spend_reorg_*; do
+            [ -d "$root" ] || continue
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            for f in "$root"/daemon.log "$root"/failure-*.json "$root"/failure-*.stderr; do
+              [ -f "$f" ] || continue
+              tail -c 20971520 "$f" > "$dest/$name/$(basename "$f")"
+            done
+          done
+
       - name: Collect snapshot-binding failure evidence
         if: always()
         run: |
