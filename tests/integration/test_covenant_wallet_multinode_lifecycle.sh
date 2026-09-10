@@ -358,6 +358,19 @@ mkdir -p "${DATA_GUARD}"
 PID_GUARD=$!
 wait_rpc "${GUARD_RPC}" "${DATA_GUARD}" \
     || fail "mainnet guard daemon RPC did not start"
+# Construction remains useful offline, but funding cannot advertise locks
+# before the live contextual validation paths enforce them. This check runs
+# before any wallet exists: rejection must precede all funding side effects.
+for lock_params in '{"locktime":1}' '{"sequence":3}' '{"sequence":4194305}' '{"sequence":0}'; do
+    locked_request="$(jq -nc --argjson locks "${lock_params}" \
+        '$locks + {outputs:[{value_una:1,script_pubkey:"51"}],spend_fee_una:1}')"
+    locked_result="$(rpc_failure_result "${GUARD_RPC}" "${DATA_GUARD}" \
+        "wallet.covenant.ctvfund" "${locked_request}")"
+    jq -e '.success == false and (.error | contains("Timelock funding disabled"))' \
+        <<<"${locked_result}" >/dev/null || fail "timelock funding guard did not fail closed"
+done
+pass "relative, time-based and absolute lock funding rejected before wallet side effects"
+
 GUARD_CTV="$(covenant_result "${GUARD_RPC}" "${DATA_GUARD}" \
     "wallet.covenant.ctvcreate" \
     '{"outputs":[{"value_una":1,"script_pubkey":"51"}]}')"

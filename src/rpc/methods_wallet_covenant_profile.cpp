@@ -452,6 +452,15 @@ din::Json RpcCtvFund(
             throw std::invalid_argument(
                 "wallet.covenant.ctvfund requires an object with outputs");
         }
+        // Live two-node tests found premature relative and absolute CTV
+        // spends admitted AND mined. Until contextual lock enforcement is
+        // deployed, never accept funds for a promise the chain does not enforce.
+        // Offline construction/import and existing spending remain unchanged.
+        if (UInt32(params, "locktime", 0) != 0 ||
+            (UInt32(params, "sequence", 0xfffffffeU) & 0x80000000U) == 0) {
+            throw std::invalid_argument(
+                "Timelock funding disabled pending contextual lock enforcement");
+        }
         // A pre-activation CTV leaf executes as an unenforced script. Never
         // let a consumer wallet fund it before the next-block spend rules are
         // active, even though offline descriptor construction remains useful.

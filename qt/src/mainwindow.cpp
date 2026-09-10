@@ -3296,11 +3296,17 @@ void MainWindow::setupUI() {
     cmbContractTemplate_ = new QComboBox;
     cmbContractTemplate_->addItem("Simple Lock", "vault");
     cmbContractTemplate_->addItem("Lock with Recovery Key (Unavailable)", "conditional");
-    cmbContractTemplate_->addItem("Time Lock", "timelock");
+    cmbContractTemplate_->addItem("Time Lock (Unavailable)", "timelock");
+    if (auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model())) {
+      if (auto* item = model->item(cmbContractTemplate_->count() - 1)) {
+        item->setEnabled(false);
+        item->setToolTip("Pending Core contextual lock enforcement verification");
+      }
+    }
     cmbContractTemplate_->addItem("Batch Payment", "payroll");
     cmbContractTemplate_->addItem("Custom (Advanced, Unavailable)", "custom");
     cmbContractTemplate_->setToolTip("Simple Lock: funds locked to a spending template\n"
-                                     "Timelock: funds locked for N blocks/hours/days\n"
+                                     "Timelock: unavailable pending Core lock enforcement\n"
                                      "Payroll: batch payment to multiple recipients (CTV)\n"
                                      "Recovery and custom scripts are not available");
     templateRow->addWidget(cmbContractTemplate_);
@@ -15004,23 +15010,8 @@ void MainWindow::onSendTransaction() {
         "\xE2\x9D\x8C Recovery contracts are disabled until the multi-path descriptor profile is available."));
       btnSend_->setEnabled(true); updateSendModeUi(); return;
     } else if (templateKey == "timelock") {
-      templateLabel = "Timelock";
-      int delay = spnTimelockDuration_ ? spnTimelockDuration_->value() : 144;
-      const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
-      delay = CovenantFormPolicy::delayBlocks(delay, unit);
-      if (delay <= 0 || delay > 65535) {
-        lblSendStatus_->setText("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks.");
-        btnSend_->setEnabled(true); updateSendModeUi(); return;
-      }
-      covenantSequence = static_cast<quint32>(delay);
-      if (fundingValueUna <= kContractSpendFeeUna) {
-        lblSendStatus_->setText("\xe2\x9d\x8c Contract amount is too small after the fixed spend fee.");
-        btnSend_->setEnabled(true); updateSendModeUi(); return;
-      }
-      covenantOutputs.append(QJsonObject{
-        {"value_una", fundingValueUna - kContractSpendFeeUna},
-        {"address", recipient}});
-      covenantDescription = QString("CTV payment spendable %1 blocks after funding confirmation").arg(delay);
+      lblSendStatus_->setText("Timelock funding is unavailable pending Core lock enforcement verification.");
+      btnSend_->setEnabled(true); updateSendModeUi(); return;
     } else if (templateKey == "payroll") {
       templateLabel = "Payroll";
       int recipientCount = 0;
