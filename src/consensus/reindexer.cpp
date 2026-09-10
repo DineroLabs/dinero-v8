@@ -1,3 +1,4 @@
+#include "consensus/contextual_locks.h"
 #include "consensus/shielded/resource_limits.h"
 #include "consensus/reindexer.h"
 #include "consensus/reindexer_detail.h"  // DiskBlockRecord, SelectCanonicalChain
@@ -2355,6 +2356,34 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 spent.is_confidential = coin.is_confidential;
                 spent.commitment = coin.commitment;
                 undo.spent.push_back(std::move(spent));
+            }
+        }
+
+        if (tx_idx > 0) {
+            std::vector<std::optional<uint32_t>> lock_heights;
+            for (const auto& coin : input_coins) lock_heights.push_back(coin.height);
+            const auto lookup_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+                if (height == 0 || wanted >= height) return std::nullopt;
+                auto hash = block.header.prev_block_hash;
+                uint32_t cursor_height = height - 1;
+                std::vector<uint64_t> times;
+                for (;;) {
+                    auto header = chain_db_->getHeader(hash);
+                    if (!header.ok()) return std::nullopt;
+                    if (cursor_height <= wanted) times.push_back(header.value().timestamp);
+                    if (times.size() == 11 || cursor_height == 0) break;
+                    hash = header.value().prev_block_hash;
+                    --cursor_height;
+                }
+                if (times.empty()) return std::nullopt;
+                std::sort(times.begin(), times.end());
+                return times[times.size() / 2];
+            };
+            std::string lock_error;
+            if (!CheckContextualLocks(tx, height, Params().contextual_locks_activation_height,
+                    lock_heights, lookup_mtp, lock_error)) {
+                g_logger.error("[reindex] " + lock_error + " height=" + std::to_string(height));
+                return Status::Invalid;
             }
         }
 

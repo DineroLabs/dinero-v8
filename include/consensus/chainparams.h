@@ -346,6 +346,9 @@ struct ChainParams {
     // exemption nobody has tested).
     // ===========================================================================
     uint32_t state_commitment_activation_height = UINT32_MAX;
+    // Contextual absolute and relative transaction locks. Preserve pre-cutover
+    // history; selected separately from the shielded Auth activation.
+    uint32_t contextual_locks_activation_height = UINT32_MAX;
 
     // ===========================================================================
     // POLICY: state-commitment burial depth (blocks).

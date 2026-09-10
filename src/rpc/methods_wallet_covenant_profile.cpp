@@ -458,8 +458,12 @@ din::Json RpcCtvFund(
         // Offline construction/import and existing spending remain unchanged.
         if (UInt32(params, "locktime", 0) != 0 ||
             (UInt32(params, "sequence", 0xfffffffeU) & 0x80000000U) == 0) {
-            throw std::invalid_argument(
-                "Timelock funding disabled pending contextual lock enforcement");
+            const auto activation = dinero::Params().contextual_locks_activation_height;
+            if (!context.daemon || !context.daemon->chainstate || activation == UINT32_MAX ||
+                context.daemon->chainstate->getBlockHeight() == UINT32_MAX ||
+                static_cast<uint64_t>(context.daemon->chainstate->getBlockHeight()) + 1 < activation) {
+                throw std::invalid_argument("Timelock funding disabled before contextual lock enforcement activation");
+            }
         }
         // A pre-activation CTV leaf executes as an unenforced script. Never
         // let a consumer wallet fund it before the next-block spend rules are

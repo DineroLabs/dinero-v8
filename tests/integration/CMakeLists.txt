@@ -1024,6 +1024,19 @@ set_tests_properties(CovenantWalletMultinodeLifecycle PROPERTIES
 )
 message(STATUS "  ✓ CovenantWalletMultinodeLifecycle registered unconditionally")
 
+add_test(
+    NAME ContextualLocksLifecycle
+    COMMAND ${CMAKE_COMMAND} -E env
+        "DINEROD=$<TARGET_FILE:dinerod>"
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_contextual_locks_lifecycle.sh
+)
+set_tests_properties(ContextualLocksLifecycle PROPERTIES
+    LABELS "integration;covenant;wallet;rpc;multinode;relay;restart;reorg;regtest;serial"
+    TIMEOUT 360
+    RUN_SERIAL TRUE
+)
+message(STATUS "  ✓ ContextualLocksLifecycle registered unconditionally")
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_wallet_listunspent_excludes_mempool_spent.sh)
     add_test(
         NAME WalletListUnspentExcludesMempoolSpent
@@ -2180,6 +2193,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ParentChildRbfReplacementWithMempoolParent
         WalletCreateRawTransactionScriptPubKeyOutputs
         CovenantWalletMultinodeLifecycle
+        ContextualLocksLifecycle
         WalletListUnspentExcludesMempoolSpent
         RbfPolicyReporting FilterCommitmentActivationBoundary
         ExternalMinerCoinbaseTxnFilterCommitment

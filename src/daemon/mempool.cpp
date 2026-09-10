@@ -1,3 +1,5 @@
+#include "consensus/contextual_locks.h"
+#include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
 #include "daemon/mempool.h"
 #include "dinero/compat/int128.hpp"
@@ -3171,6 +3173,33 @@ bool Mempool::validateTransaction(
         e.isCoinbase     = false;  // unused by script validation
         utxo_entries.push_back(std::move(e));
     }
+
+    std::vector<std::optional<uint32_t>> lock_heights;
+    for (const auto& input : tx.vin) {
+        const auto outpoint = OutPoint{input.prevout.txid, input.prevout.vout};
+        std::optional<uint32_t> creation;
+        if (m_transactions.count(input.prevout.txid.AsUint256())) {
+            creation = next_block_height_for_scripts;
+        } else if (prebase_coin_resolver_ && prebase_coin_predicate_ && prebase_coin_predicate_(outpoint)) {
+            if (const auto coin = prebase_coin_resolver_(outpoint)) creation = coin->height;
+        } else {
+            auto coin = coins_view_.getCoin(outpoint);
+            if (coin.ok()) creation = coin.value().height;
+            else if (const auto recovered = recoverConflictedInputUTXO(outpoint)) creation = recovered->height;
+        }
+        lock_heights.push_back(creation);
+    }
+    const auto lookup_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+        if (!chain_db_) return std::nullopt;
+        const auto tip = chain_db_->getTip();
+        if (!tip.ok()) return std::nullopt;
+        const auto* cursor = FindBlockIndex(tip.value().hash);
+        while (cursor && cursor->height > wanted) cursor = cursor->pprev;
+        if (!cursor || cursor->height != wanted) return std::nullopt;
+        return cursor->GetMedianTimePast();
+    };
+    if (!consensus::CheckContextualLocks(tx, next_block_height_for_scripts,
+            Params().contextual_locks_activation_height, lock_heights, lookup_mtp, error)) return false;
 
     const consensus::PrecomputedTransactionData
         covenant_precomputed(tx, utxo_entries);

@@ -451,6 +451,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     long shielded_epoch_reset_override = -1;  // <0 = unset; REGTEST test-only fork activation
     long shielded_spend_auth_override = -1;
     int64_t private_covenant_override = -1;   // paired auth activation/reset; REGTEST only
+    int64_t contextual_locks_height_override = -1;
     long state_commitment_height_override = -1;   // <0 = unset; REGTEST only (UINT32_MAX = dormant)
     long state_commitment_burial_override = -1;   // <0 = unset; REGTEST only
 
@@ -484,6 +485,14 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
                           << val << "\n";
                 return 1;
             }
+        } else if (arg.find("--consensus-contextual-locks-height=") == 0) {
+            const auto value = arg.substr(std::string("--consensus-contextual-locks-height=").size());
+            try {
+                size_t parsed = 0;
+                const auto height = std::stoull(value, &parsed);
+                if (parsed != value.size() || height > UINT32_MAX || value.empty() || value[0] == '-') throw std::invalid_argument("height");
+                contextual_locks_height_override = static_cast<int64_t>(height);
+            } catch (...) { std::cerr << "Invalid contextual locks height\n"; return 1; }
         } else if (arg.find("--consensus-state-commitment-height=") == 0) {
             // REGTEST test-only: move (or, with 4294967295, disarm) the
             // state_commitment_v1 activation so pre-existing e2e suites whose
@@ -849,6 +858,13 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     // activation moves only through chainparams + the recorded governance
     // order (burial policy, fail-closed wiring, forged-snapshot rejection,
     // human review, THEN height selection).
+    if (contextual_locks_height_override >= 0) {
+        if (chain != dinero::Chain::REGTEST) {
+            std::cerr << "--consensus-contextual-locks-height is REGTEST-only\n"; return 1;
+        }
+        dinero::MutableParams().contextual_locks_activation_height =
+            static_cast<uint32_t>(contextual_locks_height_override);
+    }
     if (state_commitment_height_override >= 0) {
         if (chain != dinero::Chain::REGTEST) {
             std::cerr << "[FATAL] --consensus-state-commitment-height is REGTEST-only\n";

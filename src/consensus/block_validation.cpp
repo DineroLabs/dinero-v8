@@ -1,3 +1,5 @@
+#include "consensus/contextual_locks.h"
+#include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
 #include "consensus/block_validation.h"
 #include "consensus/covenants.h"
@@ -1549,6 +1551,14 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                           << height << "." << std::endl;
             };
 
+            const auto lookup_lock_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+                const auto* cursor = FindBlockIndex(block.header.prev_block_hash);
+                while (cursor && cursor->height > wanted) cursor = cursor->pprev;
+                if (!cursor || cursor->height != wanted) return std::nullopt;
+                return cursor->GetMedianTimePast();
+            };
+            std::vector<std::optional<uint32_t>> stateless_lock_heights;
+
             // Build vector of all UTXOs for this transaction (needed for BIP341 Taproot sighash)
             fee_input_utxos.reserve(tx.vin.size());
 
@@ -1591,6 +1601,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     defer_legacy_maturity();
                 }
 
+                stateless_lock_heights.push_back(v2_leaf
+                    ? std::optional<uint32_t>(spent_output.created_height) : std::nullopt);
+                if (!v2_leaf && height >= Params().contextual_locks_activation_height &&
+                    tx.version >= 2 && (input.sequence & 0x80000000U) == 0) {
+                    stateless_relative_locks_unverified_ = true;
+                }
                 fee_input_utxos.emplace_back(
                     AmountUna::Una(spent_output.value),
                     spent_output.scriptPubKey,
@@ -1600,6 +1616,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     spent_output.commitment
                 );
             }
+
+            if (!CheckContextualLocks(tx, height, Params().contextual_locks_activation_height,
+                    stateless_lock_heights, lookup_lock_mtp, error, true)) return false;
 
             const PrecomputedTransactionData
                 covenant_precomputed(tx, fee_input_utxos);
@@ -1670,12 +1689,12 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             // STATEFUL PATH: Validate using UTXO database
 
             // Validate transaction
-            if (!ValidateTransaction(tx, height, false, total_input_value, error)) {
+            if (!ValidateTransaction(tx, height, false, block.header.prev_block_hash, total_input_value, error)) {
                 return false;
             }
         } else {
             // Fallback: Legacy Phase 5 IBD stateless path
-            if (!ValidateTransaction(tx, height, false, total_input_value, error)) {
+            if (!ValidateTransaction(tx, height, false, block.header.prev_block_hash, total_input_value, error)) {
                 return false;
             }
         }
@@ -2986,7 +3005,7 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
 }
 
 bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height, 
-                                        bool is_coinbase, uint64_t& total_input_value, 
+                                        bool is_coinbase, const uint256& parent_hash, uint64_t& total_input_value,
                                         std::string& error) {
     total_input_value = 0;
     size_t resource_proofs = 0;
@@ -3104,6 +3123,17 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
         // Phase M.6.2: Extract raw value for boundary type
         total_input_value += utxo.value.GetUna();
     }
+
+    std::vector<std::optional<uint32_t>> lock_heights;
+    for (const auto& coin : input_utxos) lock_heights.push_back(coin.height);
+    const auto lookup_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+        const auto* cursor = FindBlockIndex(parent_hash);
+        while (cursor && cursor->height > wanted) cursor = cursor->pprev;
+        if (!cursor || cursor->height != wanted) return std::nullopt;
+        return cursor->GetMedianTimePast();
+    };
+    if (!CheckContextualLocks(tx, height, Params().contextual_locks_activation_height,
+            lock_heights, lookup_mtp, error)) return false;
 
     if (tx.HasConfidentialOutputs() || HasConfidentialInputs(input_utxos)) {
         error = "Legacy private lane removed";

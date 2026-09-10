@@ -93,6 +93,7 @@ public:
     // NON-FORKING: this changes no consensus rule a stateful node enforces and
     // rejects no block a stateful node accepts. The durable cryptographic fix is
     // the future leaf-format hard fork (see FOLLOW-UP in block_validation.cpp).
+    bool statelessRelativeLocksUnverified() const { return stateless_relative_locks_unverified_; }
     bool statelessMaturityUnverified() const { return stateless_maturity_unverified_; }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -256,7 +257,7 @@ public:
      * @return true if transaction is valid
      */
     bool ValidateTransaction(const Transaction& tx, uint32_t height, bool is_coinbase,
-                           uint64_t& total_input_value, std::string& error);
+                           const uint256& parent_hash, uint64_t& total_input_value, std::string& error);
     
     // NOTE: Removed VerifyP2WPKH - now using ScriptVerifier directly (supports P2WPKH + Taproot)
 
@@ -355,6 +356,9 @@ private:
     // coinbase-maturity rule could not be independently validated (deferred to
     // consensus). See statelessMaturityUnverified() above. Latches; never reset.
     bool stateless_maturity_unverified_ = false;
+    // Legacy v1 spent-output proofs do not authenticate creation heights. As with
+    // coinbase maturity, report this trust limitation explicitly to consumers.
+    bool stateless_relative_locks_unverified_ = false;
 
     // Intra-block UTXO overlay: tracks outputs created by earlier transactions
     // in the same block, enabling transaction chaining within a single block.
