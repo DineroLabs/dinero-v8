@@ -140,6 +140,23 @@ private Q_SLOTS:
         QVERIFY(!r.complete);
     }
 
+    // mainwindow's address explorer calls the SAME two RPCs on the SAME
+    // RpcClient, and every panel connected to it sees every reply. Without
+    // an address check, searching an address in the explorer would repaint
+    // the Pool tab's earnings with that address's numbers.
+    void repliesForAnotherAddressAreRejected() {
+        QJsonObject r;
+        r["address"] = "din1pTHEIRS";
+        QVERIFY(!poolearnings::isForAddress(r, "din1pOURS"));
+        QVERIFY(poolearnings::isForAddress(r, "din1pTHEIRS"));
+    }
+
+    // An older node that does not echo the address back leaves us with
+    // nothing to compare, so the in-flight bookkeeping is all we have.
+    void aReplyWithNoAddressIsAccepted() {
+        QVERIFY(poolearnings::isForAddress(QJsonObject{}, "din1pOURS"));
+    }
+
     // The node's own inability to see the chain outranks the other two:
     // it is the one the operator can actually act on (reindex).
     void snapshotCaveatOutranksTruncation() {

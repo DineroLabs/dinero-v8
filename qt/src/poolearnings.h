@@ -43,6 +43,24 @@ struct Received {
     QString caveat;
 };
 
+/// Whether a reply belongs to the address we asked about.
+///
+/// `RpcClient` broadcasts every reply to every connected widget, and
+/// mainwindow's address explorer calls these same two RPCs on the same
+/// client. Without this check, searching an address over there repaints
+/// the Pool tab's earnings with that address's numbers.
+///
+/// A node that does not echo `address` back leaves nothing to compare,
+/// so the reply is accepted and the caller's in-flight bookkeeping is
+/// the only guard.
+inline bool isForAddress(const QJsonObject& result, const QString& expected) {
+    const QJsonValue echoed = result.value(QStringLiteral("address"));
+    if (!echoed.isString()) {
+        return true;
+    }
+    return echoed.toString() == expected;
+}
+
 /// `requested_count` is what the caller asked `getaddresshistory` for. A
 /// reply holding exactly that many entries hit the cap and may have been
 /// cut off, which is indistinguishable from an exact fit — so it is

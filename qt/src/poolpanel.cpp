@@ -1126,6 +1126,7 @@ void PoolPanel::onCheckEarningsClicked() {
     // back immediately; the lifetime total makes the node walk its blocks
     // backwards, which is seconds rather than milliseconds on a synced
     // chain, so it gets its own progress text.
+    earnings_address_ = addr;
     lbl_lifetime_->setText("reading the chain\xE2\x80\xA6 (this walks the block history and can take a few seconds)");
     lbl_earnings_->setText("checking the chain\xE2\x80\xA6");
     earnings_in_flight_ = true;
@@ -1163,12 +1164,19 @@ void PoolPanel::applyLifetime(const QJsonValue& result) {
 
 void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
     if (method == "blockchain.getaddresshistory") {
+        if (!lifetime_in_flight_ ||
+            !poolearnings::isForAddress(result.toObject(), earnings_address_)) {
+            return;
+        }
         lifetime_in_flight_ = false;
         applyLifetime(result);
         finishEarningsRequest();
         return;
     }
     if (method != "blockchain.getaddressbalance") {
+        return;
+    }
+    if (!earnings_in_flight_ || !poolearnings::isForAddress(result.toObject(), earnings_address_)) {
         return;
     }
     earnings_in_flight_ = false;
@@ -1205,12 +1213,15 @@ void PoolPanel::onRpcError(const QString& method, int code, const QString& messa
     // and a node that can answer one but not the other should still show
     // the answer it has rather than blanking both.
     if (method == "blockchain.getaddresshistory") {
+        if (!lifetime_in_flight_) {
+            return;
+        }
         lifetime_in_flight_ = false;
         lbl_lifetime_->setText(rendered);
         finishEarningsRequest();
         return;
     }
-    if (method != "blockchain.getaddressbalance") {
+    if (method != "blockchain.getaddressbalance" || !earnings_in_flight_) {
         return;
     }
     earnings_in_flight_ = false;

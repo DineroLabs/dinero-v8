@@ -98,6 +98,10 @@ private:
     bool fee_in_flight_ = false;
     bool earnings_in_flight_ = false;
     bool lifetime_in_flight_ = false;
+    /// The address the in-flight earnings check is for. RpcClient
+    /// broadcasts replies to every widget, so a reply is only ours if it
+    /// echoes this back.
+    QString earnings_address_;
     bool has_valid_status_ = false;
     QDateTime last_valid_status_;
     QGroupBox* why_group_ = nullptr;
