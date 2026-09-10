@@ -12146,23 +12146,19 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
     std::vector<CBlockIndex*> incompatible;
     std::vector<CBlockIndex*> invalid;
     const auto now = std::chrono::steady_clock::now();
-    for (CBlockIndex* candidate : candidates_) {
+    CBlockIndex* best = candidates_.Best([&](CBlockIndex* candidate) {
         if (!candidate || !IsReorgCandidateEligible(candidate) ||
             HasInvalidAncestor(candidate)) {
             invalid.push_back(candidate);
-            continue;
+            return false;
         }
-        if (shares_active_ancestor(candidate)) {
-            if (activation_retries_.IsReady(candidate->hash, now)) {
-                return candidate; // First retry-ready compatible element has most work
-            }
-            // Operationally failed candidates remain in the set while their
-            // bounded retry cooldown runs; they are neither invalid nor an
-            // incompatible branch.
-            continue;
+        if (!shares_active_ancestor(candidate)) {
+            incompatible.push_back(candidate);
+            return false;
         }
-        incompatible.push_back(candidate);
-    }
+        // Cooldown affects eligibility, never membership or chainwork order.
+        return activation_retries_.IsReady(candidate->hash, now);
+    });
 
     for (CBlockIndex* candidate : invalid) {
         if (candidate && logger_) {
@@ -12182,7 +12178,7 @@ CBlockIndex* ChainstateService::GetBestCandidate() {
         candidates_.erase(candidate);
     }
 
-    return nullptr;
+    return best;
 }
 
 // ============================================================================

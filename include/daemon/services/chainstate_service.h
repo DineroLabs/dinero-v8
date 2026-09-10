@@ -1363,7 +1363,7 @@ private:
 
     // Phase 41: BlockIndex graph for fork tracking and reorg logic
     std::unordered_map<uint256, std::unique_ptr<class CBlockIndex>> block_index_;
-    std::set<class CBlockIndex*, struct ByWorkThenHash> candidates_;
+    BlockCandidates candidates_;
     consensus::ActivationRetryTracker activation_retries_;
     std::unordered_map<uint256, std::vector<class CBlockIndex*>> orphan_pool_;
     class CBlockIndex* active_tip_ = nullptr;  // Current active chain tip
