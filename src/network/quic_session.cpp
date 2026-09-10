@@ -1088,7 +1088,10 @@ struct QuicSession::Impl {
             if (ngtcp2_failed) {
                 MaybePublishHandshakeFailed(impl);
                 impl.Stop();
-                impl.stopping.store(true);
+                {
+                    std::scoped_lock lock(impl.inbox_mutex, impl.outbox_mutex);
+                    impl.stopping.store(true);
+                }
                 impl.outbox_cv.notify_all();
             }
             DrainAndShip(impl);
@@ -1216,18 +1219,18 @@ bool QuicSession::StartServer(const UdpAddr& local,
 }
 
 void QuicSession::EnqueueIncomingPacket(std::vector<uint8_t> packet) {
-    if (impl_->stopping.load()) return;  // drop post-Close; prevents destructor hang
     {
         std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
+        if (impl_->stopping.load()) return;  // serialize enqueue with Close
         impl_->incoming_packets.push_back(std::move(packet));
     }
     impl_->inbox_cv.notify_one();
 }
 
 void QuicSession::EnqueueOutgoingStream(std::vector<uint8_t> payload, bool fin) {
-    if (impl_->stopping.load()) return;  // drop post-Close; prevents destructor hang
     {
         std::lock_guard<std::mutex> lock(impl_->inbox_mutex);
+        if (impl_->stopping.load()) return;  // serialize enqueue with Close
         impl_->outgoing_streams.emplace_back(std::move(payload), fin);
     }
     impl_->inbox_cv.notify_one();
@@ -1263,7 +1266,13 @@ std::string QuicSession::last_error() const {
 }
 
 void QuicSession::Close() {
-    impl_->stopping.store(true);
+    // Both condition-variable predicates read stopping. Publish under their
+    // mutexes so shutdown cannot notify between a false predicate and sleep.
+    // An idle session has an infinite wait deadline, so a lost wakeup hangs join.
+    {
+        std::scoped_lock lock(impl_->inbox_mutex, impl_->outbox_mutex);
+        impl_->stopping.store(true);
+    }
     impl_->inbox_cv.notify_all();
     impl_->outbox_cv.notify_all();
 }
