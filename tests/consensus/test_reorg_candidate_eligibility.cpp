@@ -13,6 +13,7 @@
  * (deterministic, no network/timing), plus the full reorg-candidacy composition.
  */
 #include <iostream>
+#include <algorithm>
 #include <vector>
 #include <memory>
 #include <string>
@@ -221,6 +222,33 @@ int main() {
         check(retries.RecordFailure(candidate, start + 70ms) == 40ms, "retry delay remains capped");
         retries.Clear(candidate);
         check(retries.IsReady(candidate, start), "success clears retry state");
+    }
+
+    // Reproduce child-before-parent import while the branch still awaits
+    // validation. Graph connectivity must not depend on chain validity.
+    {
+        BlockHeader root_header;
+        root_header.nonce = 92001;
+        root_header.difficulty = 0x207fffff;
+        auto* root = dinero::AddBlockIndex(root_header, 0);
+        root->status = 0; // Known header, not a connected validation base.
+        BlockHeader parent_header = root_header;
+        parent_header.prev_block_hash = root->hash;
+        parent_header.nonce++;
+        BlockHeader child_header = parent_header;
+        child_header.prev_block_hash = parent_header.GetHash();
+        child_header.nonce++;
+        auto* child = dinero::AddBlockIndex(child_header, 2);
+        check(child->pprev == nullptr, "child initially awaits missing parent");
+        auto* parent = dinero::AddBlockIndex(parent_header, 1);
+        check(child->pprev == parent, "unvalidated arriving parent repairs child ancestry");
+        check(std::count(parent->children.begin(), parent->children.end(), child) == 1,
+              "arriving parent owns exactly one child link");
+        check((child->status & dinero::BLOCK_VALID_CHAIN) == 0,
+              "repair does not promote unvalidated child");
+        dinero::AddBlockIndex(parent_header, 1);
+        check(std::count(parent->children.begin(), parent->children.end(), child) == 1,
+              "repeated parent insertion does not duplicate child link");
     }
 
     std::cout << (g_failures == 0
