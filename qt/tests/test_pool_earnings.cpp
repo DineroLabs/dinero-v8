@@ -140,6 +140,29 @@ private Q_SLOTS:
         QVERIFY(!r.complete);
     }
 
+    // The card is labelled "fee earnings", and a pool's fee is always a
+    // coinbase output. Nothing stops an operator reusing the address as
+    // an ordinary wallet address, and an ordinary payment landing there
+    // is not pool income.
+    void nonCoinbaseReceiptsAreNotPoolEarnings() {
+        const auto r = poolearnings::sumReceived(
+            history({entry("receive", 500), entry("receive", 400, /*coinbase=*/false)}), 200);
+        QCOMPARE(r.total_una, 500);
+        QCOMPARE(r.count, 1);
+    }
+
+    // A node that does not report the flag at all must not be read as
+    // "nothing here was mined", which would zero the whole figure.
+    void aMissingCoinbaseFlagStillCounts() {
+        QJsonObject e;
+        e["type"] = "receive";
+        e["amount"] = 500;
+        e["amount_hidden"] = false;
+        const auto r = poolearnings::sumReceived(history({e}), 200);
+        QCOMPARE(r.total_una, 500);
+        QCOMPARE(r.count, 1);
+    }
+
     // mainwindow's address explorer calls the SAME two RPCs on the SAME
     // RpcClient, and every panel connected to it sees every reply. Without
     // an address check, searching an address in the explorer would repaint

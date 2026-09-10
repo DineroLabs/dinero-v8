@@ -1149,7 +1149,7 @@ void PoolPanel::applyLifetime(const QJsonValue& result) {
     }
     const poolearnings::Received received =
         poolearnings::sumReceived(result.toObject(), kEarningsHistoryPage);
-    QString detail = QString("Every fee ever paid to this address, across %1 %2 the node could see.")
+    QString detail = QString("Every block reward paid to this address, across %1 %2 the node could see.")
                          .arg(received.count)
                          .arg(received.count == 1 ? "payment" : "payments");
     if (!received.complete) {

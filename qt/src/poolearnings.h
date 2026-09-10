@@ -79,6 +79,15 @@ inline Received sumReceived(const QJsonObject& result, int requested_count) {
         if (entry.value(QStringLiteral("type")).toString() != QLatin1String("receive")) {
             continue;
         }
+        // A pool's fee is always a coinbase output. Nothing stops an
+        // operator reusing the fee address as an ordinary wallet address,
+        // and an ordinary payment landing there is not pool income. A
+        // node that omits the flag entirely is not saying "not mined",
+        // so a missing flag still counts.
+        const QJsonValue coinbase = entry.value(QStringLiteral("is_coinbase"));
+        if (coinbase.isBool() && !coinbase.toBool()) {
+            continue;
+        }
         if (entry.value(QStringLiteral("amount_hidden")).toBool()) {
             hidden_seen = true;
             continue;
@@ -102,7 +111,8 @@ inline Received sumReceived(const QJsonObject& result, int requested_count) {
         out.complete = false;
         out.caveat = QStringLiteral(
             "At least this much — this node was bootstrapped from a snapshot and does not hold "
-            "the block bodies before its snapshot base, so earlier fee payments cannot be counted.");
+            "the block bodies before its snapshot base, so earlier payments cannot be counted. "
+            "Reindexing the node from genesis is what makes this figure exact.");
     } else if (requested_count > 0 && txs.size() >= requested_count) {
         out.complete = false;
         out.caveat = QStringLiteral(
