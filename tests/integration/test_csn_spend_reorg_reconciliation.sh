@@ -72,8 +72,30 @@ info() { mark_logs; echo -e "${CYAN}$1${NC}"; }
 pass() { echo -e "${GREEN}  $1${NC}"; }
 fail() { echo -e "${RED}FAILED: $1${NC}"; exit 1; }
 
+capture_failure_rpc() {
+    local datadir="$1" port="$2" cookie method
+    [[ -d "$datadir" && -n "$port" ]] || return 0
+    cookie=$(cat "${datadir}/.cookie" 2>/dev/null || true)
+    [[ -n "$cookie" ]] || return 0
+    # #717: collect both nodes' live state BEFORE teardown. A log tail alone
+    # cannot distinguish a missing branch announcement from stalled validation.
+    # Each request is bounded; a wedged diagnostic RPC must not wedge cleanup.
+    for method in getblockchaininfo getbestblockhash getpeerinfo getrawmempool; do
+        curl -sS --connect-timeout 1 --max-time 3 -u "$cookie" \
+            -H 'Content-Type: application/json' \
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":[]}" \
+            "http://127.0.0.1:${port}/" \
+            > "${datadir}/failure-${method}.json" \
+            2> "${datadir}/failure-${method}.stderr" || true
+    done
+}
+
 cleanup() {
     echo -e "\n${YELLOW}Cleaning up...${NC}"
+    if [[ ${EXIT_CODE} -ne 0 ]]; then
+        capture_failure_rpc "${DATADIR_BRIDGE}" "${RPC_PORT_BRIDGE:-}"
+        capture_failure_rpc "${DATADIR_CSN}" "${RPC_PORT_CSN:-}"
+    fi
     [[ -n "${PID_CSN}" ]] && kill "${PID_CSN}" 2>/dev/null || true
     [[ -n "${PID_BRIDGE}" ]] && kill "${PID_BRIDGE}" 2>/dev/null || true
     [[ -n "${DATADIR_CSN}" ]] && pkill -9 -f "dinerod.*${DATADIR_CSN}" 2>/dev/null || true

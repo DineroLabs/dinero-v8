@@ -79,7 +79,9 @@ dinero_dump_log_from_mark() {
         return 0
     fi
 
-    printf '%s\n' "${slice}" | head -n "${max_lines}"
+    # Consume the complete slice: head closes early and makes printf fail
+    # with SIGPIPE under pipefail, aborting the caller's failure cleanup.
+    printf '%s\n' "${slice}" | sed -n "1,${max_lines}p"
 }
 
 # Whole-file grep for diagnostically interesting lines.

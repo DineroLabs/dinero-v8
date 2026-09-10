@@ -134,6 +134,20 @@ check "absent log file is named in the output" \
     contains "${MISSING_DUMP}" "no log file at"
 
 echo
+echo "-- large failure dumps must not abort cleanup under errexit/pipefail"
+LARGE_LOG="${TMPDIR_TEST}/large.log"
+awk 'BEGIN { for (i=0; i<20000; i++) print "diagnostic line " i " with enough content to exceed the pipe buffer" }' > "${LARGE_LOG}"
+bash -e -o pipefail -c '
+    source "$1"
+    dinero_dump_failure_log "$2" 0 Large 10
+    echo CLEANUP_COMPLETED
+' _ "${SCRIPT_DIR}/helpers/failure_log_capture.sh" "${LARGE_LOG}" > "${TMPDIR_TEST}/large-dump.txt"
+check "cleanup continues after a bounded large log dump" \
+    grep -q CLEANUP_COMPLETED "${TMPDIR_TEST}/large-dump.txt"
+check "only ten diagnostic lines are emitted" \
+    test "$(grep -c '^diagnostic line' "${TMPDIR_TEST}/large-dump.txt")" -eq 10
+
+echo
 echo "-- source tripwire: no ungated per-RPC debug print may return to the daemon"
 # This is a SOURCE-LEVEL scan, not a behavioural test: it cannot prove the gate
 # works at runtime, only that nobody has re-added an ungated per-request print.
