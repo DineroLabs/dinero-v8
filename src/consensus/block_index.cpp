@@ -29,7 +29,7 @@ std::unordered_map<uint256, std::unique_ptr<CBlockIndex>> g_block_index;
 std::recursive_mutex g_block_index_mutex;
 
 // Global candidate tips (ordered by work, then hash)
-std::set<CBlockIndex*, ByWorkThenHash> g_candidates;
+BlockCandidates g_candidates;
 
 // Orphan pool for headers/blocks with missing parents
 std::unordered_map<uint256, std::vector<CBlockIndex*>> g_orphan_pool;
@@ -272,12 +272,12 @@ void RemoveCandidate(CBlockIndex* block_index) {
 CBlockIndex* GetBestCandidate() {
     std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);  // #353
     if (g_candidates.empty()) return nullptr;
-    return *g_candidates.begin(); // First element has most work
+    return g_candidates.Best([](CBlockIndex*) { return true; });
 }
 
 std::vector<CBlockIndex*> GetCandidateTipsSnapshot() {
     std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);
-    return {g_candidates.begin(), g_candidates.end()};
+    return g_candidates.Snapshot();
 }
 
 // === Header-First Sync Implementation ===
