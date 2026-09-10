@@ -59,6 +59,18 @@ typedef struct dinero_shielded_unshield_request {
     const dinero_shielded_spend_note* note;
 } dinero_shielded_unshield_request;
 
+/* Explicit Auth-profile request. The base note's d must be an 11-byte
+ * diversifier followed by 21 zero bytes. ask is sensitive account spend
+ * authority; caller owns and must cleanse its memory. Native copies and
+ * derived secrets are cleansed on every exit. Never persist derived secrets.
+ */
+typedef struct dinero_shielded_auth_unshield_request {
+    dinero_shielded_unshield_request base;
+    uint8_t ask32[32];
+    uint8_t ak32[32];
+    uint8_t nvk32[32];
+} dinero_shielded_auth_unshield_request;
+
 typedef struct dinero_shielded_unshield_result {
     uint8_t nullifier[32];
     uint8_t anchor[32];
@@ -78,8 +90,22 @@ dinero_shielded_compute_nullifier(const uint8_t rcm[32],
                                   uint64_t leaf_index,
                                   uint8_t out_nullifier[32]);
 
+/* Auth-profile viewing helper. Derives the recipient-bound commitment and
+ * nullifier from public spend key ak and nullifier viewing key nvk. No spend
+ * secret is accepted or returned. d11 is the exact 11-byte diversifier.
+ * Outputs are valid only on DINERO_SHIELDED_OK; legacy helpers are unchanged.
+ */
+DINERO_SHIELDED_PROVERKIT_API int dinero_shielded_compute_auth_note(
+    const uint8_t ak32[32], const uint8_t nvk32[32], const uint8_t d11[11],
+    const uint8_t rcm32[32], uint64_t value_una, uint64_t leaf_index,
+    uint8_t out_commitment32[32], uint8_t out_nullifier32[32]);
+
 DINERO_SHIELDED_PROVERKIT_API int dinero_shielded_build_unshield_bundle(
     const dinero_shielded_unshield_request* req,
+    dinero_shielded_unshield_result* out);
+
+DINERO_SHIELDED_PROVERKIT_API int dinero_shielded_build_auth_unshield_bundle(
+    const dinero_shielded_auth_unshield_request* req,
     dinero_shielded_unshield_result* out);
 
 DINERO_SHIELDED_PROVERKIT_API void
