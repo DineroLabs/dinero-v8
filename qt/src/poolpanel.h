@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include "poolearnings.h"
+
 #include <QGroupBox>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -64,6 +66,9 @@ private:
     void setupConnections();
     void applyStatus(const QJsonObject& status);
     void applyLifetime(const QJsonValue& result);
+    /// Paints the running total. `final_page` distinguishes a mid-walk
+    /// figure, which is still climbing, from the answer.
+    void renderLifetime(bool final_page);
     /// Re-enables Check once BOTH the balance and the history reply have
     /// landed; either one arriving first must not re-arm the button while
     /// the other is still outstanding.
@@ -102,6 +107,9 @@ private:
     /// broadcasts replies to every widget, so a reply is only ours if it
     /// echoes this back.
     QString earnings_address_;
+    /// Running total across history pages, and how many have landed.
+    poolearnings::Received lifetime_acc_;
+    int lifetime_pages_ = 0;
     bool has_valid_status_ = false;
     QDateTime last_valid_status_;
     QGroupBox* why_group_ = nullptr;

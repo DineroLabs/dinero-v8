@@ -25,6 +25,8 @@
 #pragma once
 
 #include <QJsonArray>
+#include <optional>
+
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
@@ -61,16 +63,16 @@ inline bool isForAddress(const QJsonObject& result, const QString& expected) {
     return echoed.toString() == expected;
 }
 
-/// `requested_count` is what the caller asked `getaddresshistory` for. A
-/// reply holding exactly that many entries hit the cap and may have been
-/// cut off, which is indistinguishable from an exact fit — so it is
-/// reported as possibly truncated rather than assumed complete.
-inline Received sumReceived(const QJsonObject& result, int requested_count) {
-    Received out;
-    const QJsonArray txs = result.value(QStringLiteral("transactions")).toArray();
-
-    bool hidden_seen = false;
-    bool malformed_seen = false;
+/// `blockchain.getaddresshistory` caps each reply at 200 entries, so one
+/// call is a PAGE, not the history. DineroSJ's fee address carries 8,082
+/// receipts across heights 7,562-109,580: reading only the first page
+/// reported 2,000 DIN against a true 33,845 DIN, which is worse than no
+/// figure at all. Paging with `from_height` reads the lot — 41 calls and
+/// 5.4s against that address on a synced node.
+///
+/// Fold one page into a running total.
+inline void addPage(Received& acc, const QJsonObject& page) {
+    const QJsonArray txs = page.value(QStringLiteral("transactions")).toArray();
     for (const QJsonValue& value : txs) {
         const QJsonObject entry = value.toObject();
         // Sends are the operator moving their own money out. Counting
@@ -81,54 +83,83 @@ inline Received sumReceived(const QJsonObject& result, int requested_count) {
         }
         // A pool's fee is always a coinbase output. Nothing stops an
         // operator reusing the fee address as an ordinary wallet address,
-        // and an ordinary payment landing there is not pool income. A
-        // node that omits the flag entirely is not saying "not mined",
-        // so a missing flag still counts.
+        // and an ordinary payment landing there is not pool income — on
+        // DineroSJ two such payments account for 1,500 DIN of a balance
+        // that is otherwise all block rewards. A node that omits the flag
+        // is not saying "not mined", so a missing flag still counts.
         const QJsonValue coinbase = entry.value(QStringLiteral("is_coinbase"));
         if (coinbase.isBool() && !coinbase.toBool()) {
             continue;
         }
         if (entry.value(QStringLiteral("amount_hidden")).toBool()) {
-            hidden_seen = true;
+            acc.complete = false;
+            acc.caveat = QStringLiteral(
+                "At least this much — one or more payments to this address are confidential and "
+                "their amounts cannot be read.");
             continue;
         }
         const QJsonValue amount = entry.value(QStringLiteral("amount"));
         if (!amount.isDouble()) {
-            malformed_seen = true;
+            acc.complete = false;
+            acc.caveat = QStringLiteral(
+                "At least this much — the node returned an entry whose amount could not be read.");
             continue;
         }
-        out.total_una += static_cast<qint64>(amount.toDouble());
-        ++out.count;
+        acc.total_una += static_cast<qint64>(amount.toDouble());
+        ++acc.count;
     }
 
-    // Ordered by what the operator can do about it. A node that cannot
-    // see its own history is fixable (reindex); a truncated page is a
-    // property of the RPC; a confidential amount is unknowable here.
-    const bool node_incomplete =
-        result.contains(QStringLiteral("history_complete")) &&
-        !result.value(QStringLiteral("history_complete")).toBool();
-    if (node_incomplete) {
-        out.complete = false;
-        out.caveat = QStringLiteral(
+    // A node that cannot see its own history outranks the rest: it is the
+    // one the operator can actually act on, and it is the common case,
+    // since RUN-A-POOL.md has every new operator bootstrap from a
+    // snapshot.
+    if (page.contains(QStringLiteral("history_complete")) &&
+        !page.value(QStringLiteral("history_complete")).toBool()) {
+        acc.complete = false;
+        acc.caveat = QStringLiteral(
             "At least this much — this node was bootstrapped from a snapshot and does not hold "
             "the block bodies before its snapshot base, so earlier payments cannot be counted. "
             "Reindexing the node from genesis is what makes this figure exact.");
-    } else if (requested_count > 0 && txs.size() >= requested_count) {
-        out.complete = false;
-        out.caveat = QStringLiteral(
-            "At least this much — the node returned a full page of %1 entries, so older fee "
-            "payments may not be included.")
-                         .arg(requested_count);
-    } else if (hidden_seen) {
-        out.complete = false;
-        out.caveat = QStringLiteral(
-            "At least this much — one or more payments to this address are confidential and "
-            "their amounts cannot be read.");
-    } else if (malformed_seen) {
-        out.complete = false;
-        out.caveat = QStringLiteral(
-            "At least this much — the node returned an entry whose amount could not be read.");
     }
+}
+
+/// The height to request next, or nothing when this page ended the walk.
+///
+/// A page short of the cap means the node had no more to give. A full
+/// page resumes one block below the oldest entry it returned; genesis is
+/// the floor, because asking below it would either error or restart the
+/// walk at the tip and never terminate.
+inline std::optional<int> nextFromHeight(const QJsonObject& page, int requested_count) {
+    const QJsonArray txs = page.value(QStringLiteral("transactions")).toArray();
+    if (requested_count <= 0 || txs.size() < requested_count) {
+        return std::nullopt;
+    }
+    int lowest = -1;
+    for (const QJsonValue& value : txs) {
+        const QJsonValue height = value.toObject().value(QStringLiteral("height"));
+        if (!height.isDouble()) continue;
+        const int h = static_cast<int>(height.toDouble());
+        if (lowest < 0 || h < lowest) lowest = h;
+    }
+    if (lowest <= 0) {
+        return std::nullopt;
+    }
+    return lowest - 1;
+}
+
+/// Paging gave up before the history ran out. The only case where the
+/// total really is truncated.
+inline void markPageCapReached(Received& acc) {
+    acc.complete = false;
+    acc.caveat = QStringLiteral(
+        "At least this much — the address has more history than this check reads in one go.");
+}
+
+/// One page, for callers that do not page. Kept so a single reply can be
+/// summed on its own.
+inline Received sumReceived(const QJsonObject& page) {
+    Received out;
+    addPage(out, page);
     return out;
 }
 

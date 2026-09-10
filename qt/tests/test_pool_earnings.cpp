@@ -42,6 +42,12 @@ QJsonObject entry(const QString& type, qint64 amount, bool coinbase = true) {
     return e;
 }
 
+QJsonObject entryAt(const QString& type, qint64 amount, int height) {
+    QJsonObject e = entry(type, amount);
+    e["height"] = height;
+    return e;
+}
+
 QJsonObject history(const QJsonArray& txs, bool complete = true) {
     QJsonObject r;
     r["transactions"] = txs;
@@ -59,7 +65,7 @@ private Q_SLOTS:
     // two of them since spent, lifetime is still all three.
     void sumsEveryReceiptRegardlessOfLaterSpending() {
         const auto r = poolearnings::sumReceived(
-            history({entry("receive", 500), entry("receive", 250), entry("receive", 125)}), 200);
+            history({entry("receive", 500), entry("receive", 250), entry("receive", 125)}));
         QCOMPARE(r.total_una, 875);
         QCOMPARE(r.count, 3);
         QVERIFY(r.complete);
@@ -71,14 +77,14 @@ private Q_SLOTS:
     // lifetime figure back into a balance.
     void spendsAreNotReceipts() {
         const auto r = poolearnings::sumReceived(
-            history({entry("receive", 500), entry("send", 400), entry("receive", 100)}), 200);
+            history({entry("receive", 500), entry("send", 400), entry("receive", 100)}));
         QCOMPARE(r.total_una, 600);
         QCOMPARE(r.count, 2);
         QVERIFY(r.complete);
     }
 
     void emptyHistoryIsZeroNotAnError() {
-        const auto r = poolearnings::sumReceived(history({}), 200);
+        const auto r = poolearnings::sumReceived(history({}));
         QCOMPARE(r.total_una, 0);
         QCOMPARE(r.count, 0);
         QVERIFY(r.complete);
@@ -87,30 +93,59 @@ private Q_SLOTS:
     // A snapshot-bootstrapped node cannot see pre-base blocks at all, so
     // the sum is a floor. `history_complete` is the node saying so.
     void snapshotNodeReportsALowerBound() {
-        const auto r = poolearnings::sumReceived(
-            history({entry("receive", 500)}, /*complete=*/false), 200);
+        const auto r = poolearnings::sumReceived(history({entry("receive", 500)}, /*complete=*/false));
         QCOMPARE(r.total_una, 500);
         QVERIFY(!r.complete);
         QVERIFY(r.caveat.contains("snapshot", Qt::CaseInsensitive));
     }
 
-    // A full page means the RPC stopped at its cap; there may be older
-    // receipts it never reached.
-    void afullPageMayHaveBeenTruncated() {
+    // A full page is not the end of the history, it is the RPC's cap.
+    // DineroSJ's fee address holds 8,082 receipts; stopping at the first
+    // page reported 2,000 DIN against a true 33,845 DIN. So a full page
+    // must ask for the next one, starting below the oldest height seen.
+    void aFullPageAsksForTheNextOne() {
         QJsonArray txs;
-        for (int i = 0; i < 200; ++i) txs.append(entry("receive", 1));
-        const auto r = poolearnings::sumReceived(history(txs), 200);
-        QCOMPARE(r.total_una, 200);
-        QVERIFY(!r.complete);
-        QVERIFY(r.caveat.contains("200"));
+        for (int i = 0; i < 200; ++i) txs.append(entryAt("receive", 1, 5000 + i));
+        const auto next = poolearnings::nextFromHeight(history(txs), 200);
+        QVERIFY(next.has_value());
+        QCOMPARE(*next, 4999);
     }
 
-    // One short of the cap is a complete answer.
-    void aPartialPageIsComplete() {
+    // One short of the cap means the node had nothing more to give.
+    void aPartialPageEndsThePaging() {
         QJsonArray txs;
-        for (int i = 0; i < 199; ++i) txs.append(entry("receive", 1));
-        const auto r = poolearnings::sumReceived(history(txs), 200);
-        QVERIFY(r.complete);
+        for (int i = 0; i < 199; ++i) txs.append(entryAt("receive", 1, 5000 + i));
+        QVERIFY(!poolearnings::nextFromHeight(history(txs), 200).has_value());
+    }
+
+    // Genesis is the floor. Asking for -1 would either error or restart
+    // the walk at the tip, which would loop forever.
+    void pagingStopsAtGenesis() {
+        QJsonArray txs;
+        for (int i = 0; i < 200; ++i) txs.append(entryAt("receive", 1, 0));
+        QVERIFY(!poolearnings::nextFromHeight(history(txs), 200).has_value());
+    }
+
+    // Pages accumulate: the panel folds each reply into one running total
+    // rather than replacing it.
+    void pagesAccumulateIntoOneTotal() {
+        poolearnings::Received acc;
+        poolearnings::addPage(acc, history({entryAt("receive", 500, 900),
+                                            entryAt("receive", 400, 800)}));
+        poolearnings::addPage(acc, history({entryAt("receive", 100, 700)}));
+        QCOMPARE(acc.total_una, 1000);
+        QCOMPARE(acc.count, 3);
+        QVERIFY(acc.complete);
+    }
+
+    // Stopping at the page cap is the one case where the figure really is
+    // truncated, and it has to say so.
+    void hittingThePageCapIsReportedAsAFloor() {
+        poolearnings::Received acc;
+        poolearnings::addPage(acc, history({entryAt("receive", 500, 900)}));
+        poolearnings::markPageCapReached(acc);
+        QVERIFY(!acc.complete);
+        QVERIFY(acc.caveat.contains("At least"));
     }
 
     // A confidential receipt carries no `amount` at all. Skipping it
@@ -121,7 +156,7 @@ private Q_SLOTS:
         hidden["type"] = "receive";
         hidden["amount_hidden"] = true;
         QJsonArray txs{entry("receive", 500), hidden};
-        const auto r = poolearnings::sumReceived(history(txs), 200);
+        const auto r = poolearnings::sumReceived(history(txs));
         QCOMPARE(r.total_una, 500);
         QCOMPARE(r.count, 1);
         QVERIFY(!r.complete);
@@ -135,7 +170,7 @@ private Q_SLOTS:
         bad["type"] = "receive";
         bad["amount_hidden"] = false;
         bad["amount"] = "not a number";
-        const auto r = poolearnings::sumReceived(history({entry("receive", 500), bad}), 200);
+        const auto r = poolearnings::sumReceived(history({entry("receive", 500), bad}));
         QCOMPARE(r.total_una, 500);
         QVERIFY(!r.complete);
     }
@@ -146,7 +181,7 @@ private Q_SLOTS:
     // is not pool income.
     void nonCoinbaseReceiptsAreNotPoolEarnings() {
         const auto r = poolearnings::sumReceived(
-            history({entry("receive", 500), entry("receive", 400, /*coinbase=*/false)}), 200);
+            history({entry("receive", 500), entry("receive", 400, /*coinbase=*/false)}));
         QCOMPARE(r.total_una, 500);
         QCOMPARE(r.count, 1);
     }
@@ -158,7 +193,7 @@ private Q_SLOTS:
         e["type"] = "receive";
         e["amount"] = 500;
         e["amount_hidden"] = false;
-        const auto r = poolearnings::sumReceived(history({e}), 200);
+        const auto r = poolearnings::sumReceived(history({e}));
         QCOMPARE(r.total_una, 500);
         QCOMPARE(r.count, 1);
     }
@@ -185,7 +220,7 @@ private Q_SLOTS:
     void snapshotCaveatOutranksTruncation() {
         QJsonArray txs;
         for (int i = 0; i < 200; ++i) txs.append(entry("receive", 1));
-        const auto r = poolearnings::sumReceived(history(txs, /*complete=*/false), 200);
+        const auto r = poolearnings::sumReceived(history(txs, /*complete=*/false));
         QVERIFY(!r.complete);
         QVERIFY(r.caveat.contains("snapshot", Qt::CaseInsensitive));
     }

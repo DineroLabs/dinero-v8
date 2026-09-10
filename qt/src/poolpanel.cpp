@@ -37,6 +37,9 @@ constexpr qint64 kUnaPerDin = 100000000;
 /// makes a truncated answer detectable: a reply holding exactly this many
 /// entries may have older ones behind it.
 constexpr int kEarningsHistoryPage = 200;
+/// Paging guard. DineroSJ's fee address takes 41 pages; 200 pages covers
+/// 40,000 receipts and stops a malformed reply from looping forever.
+constexpr int kEarningsMaxPages = 200;
 /// Marks which request a reply belongs to. One QNetworkAccessManager serves
 /// both the status GET and the payout POST, and `finished` fires for both.
 constexpr QNetworkRequest::Attribute kKindAttr = QNetworkRequest::User;
@@ -1127,6 +1130,8 @@ void PoolPanel::onCheckEarningsClicked() {
     // backwards, which is seconds rather than milliseconds on a synced
     // chain, so it gets its own progress text.
     earnings_address_ = addr;
+    lifetime_acc_ = poolearnings::Received{};
+    lifetime_pages_ = 0;
     lbl_lifetime_->setText("reading the chain\xE2\x80\xA6 (this walks the block history and can take a few seconds)");
     lbl_earnings_->setText("checking the chain\xE2\x80\xA6");
     earnings_in_flight_ = true;
@@ -1144,22 +1149,47 @@ void PoolPanel::finishEarningsRequest() {
 
 void PoolPanel::applyLifetime(const QJsonValue& result) {
     if (!result.isObject()) {
+        lifetime_in_flight_ = false;
         lbl_lifetime_->setText("<span style='color:#e06c75;'>Unexpected history reply from the node.</span>");
         return;
     }
-    const poolearnings::Received received =
-        poolearnings::sumReceived(result.toObject(), kEarningsHistoryPage);
-    QString detail = QString("Every block reward paid to this address, across %1 %2 the node could see.")
-                         .arg(received.count)
-                         .arg(received.count == 1 ? "payment" : "payments");
-    if (!received.complete) {
-        detail = QString("<span style='color:#d8a37b;'>%1</span>").arg(received.caveat.toHtmlEscaped());
+    const QJsonObject page = result.toObject();
+    poolearnings::addPage(lifetime_acc_, page);
+    ++lifetime_pages_;
+
+    // One reply is a page, not the history. Keep asking until the node
+    // returns a short page, or until the guard trips.
+    const std::optional<int> next = poolearnings::nextFromHeight(page, kEarningsHistoryPage);
+    if (next && lifetime_pages_ < kEarningsMaxPages) {
+        renderLifetime(/*final=*/false);
+        rpc_->call("blockchain.getaddresshistory",
+                   QJsonArray{earnings_address_, kEarningsHistoryPage, *next});
+        return;
+    }
+    if (next) {
+        poolearnings::markPageCapReached(lifetime_acc_);
+    }
+    lifetime_in_flight_ = false;
+    renderLifetime(/*final=*/true);
+}
+
+void PoolPanel::renderLifetime(bool final_page) {
+    const poolearnings::Received& r = lifetime_acc_;
+    QString detail;
+    if (!final_page) {
+        detail = QString("reading the chain\xE2\x80\xA6 %1 block rewards so far").arg(r.count);
+    } else if (!r.complete) {
+        detail = QString("<span style='color:#d8a37b;'>%1</span>").arg(r.caveat.toHtmlEscaped());
+    } else {
+        detail = QString("Every block reward ever paid to this address, across %1 %2.")
+                     .arg(r.count)
+                     .arg(r.count == 1 ? "payment" : "payments");
     }
     lbl_lifetime_->setText(
         QString("<span style='font-size:19px; font-weight:700; color:#7bd88f;'>%1</span>"
                 "<span style='color:#9fb3c8; font-size:11px;'> lifetime</span>"
                 "<br/><span style='color:#9fb3c8; font-size:11px;'>%2</span>")
-            .arg(formatDin(received.total_una), detail));
+            .arg(formatDin(r.total_una), detail));
 }
 
 void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
@@ -1168,7 +1198,6 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
             !poolearnings::isForAddress(result.toObject(), earnings_address_)) {
             return;
         }
-        lifetime_in_flight_ = false;
         applyLifetime(result);
         finishEarningsRequest();
         return;
