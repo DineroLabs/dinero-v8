@@ -132,13 +132,12 @@ cleanup() {
     #
     # The failure mode worth capturing: node B's height OSCILLATES DOWNWARD
     # (e.g. 30 -> 29 -> 50 -> 49 -> 73 -> 68 -> 51) while node A sits stable at
-    # the target, so B never converges. A node should not move to a lower-work
-    # chain; the reason is in B's log, which no longer exists by the time anyone
-    # looks.
+    # the target, so B never converges. Height can fall on a valid higher-work
+    # reorg; preserve the logs and cumulative work before attributing a defect.
     #
     # On a non-zero exit, copy each datadir's logs to STRESS_LOG_PRESERVE_DIR
     # (defaults to a stable path under the artifact root when the caller sets
-    # one). Only *.log is copied -- the chainstate can be gigabytes.
+    # one). Only named diagnostic logs are copied, never chainstate or cookies.
     if [ "$exit_code" -ne 0 ]; then
         local preserve="${STRESS_LOG_PRESERVE_DIR:-${ARTIFACT_ROOT:-/tmp}/stress-failure-logs-$$}"
         mkdir -p "$preserve" 2>/dev/null || true
@@ -151,6 +150,8 @@ cleanup() {
             # this preserved exactly those and nothing readable.
             [ -f "$dir/daemon.log" ] && cp "$dir/daemon.log" \
                 "$preserve/node-$node-daemon.log" 2>/dev/null || true
+            [ -f "$dir/convergence-state.log" ] && cp "$dir/convergence-state.log" \
+                "$preserve/node-$node-convergence-state.log" 2>/dev/null || true
         done
         log_warn "Failure logs preserved in: $preserve"
         ls -1 "$preserve" 2>/dev/null | sed 's/^/  preserved: /' || true
@@ -621,13 +622,26 @@ stop_and_converge() {
         log_warn "── convergence failure state ─────────────────────────────"
         if [ "$ha" = "$first_a" ] && [ "$hb" = "$first_b" ]; then
             log_warn "  BOTH NODES STUCK: neither height moved during the wait"
-            log_warn "  (A ${first_a}->${ha}, B ${first_b}->${hb}) — not CI slowness"
+            log_warn "  (A ${first_a}->${ha}, B ${first_b}->${hb}) — inspect chainwork and peers before attribution"
         elif [ "$ha" = "$hb" ]; then
             log_warn "  EQUAL HEIGHT, DIFFERENT TIPS: unresolved fork at ${ha}"
         else
             log_warn "  heights moved during the wait (A ${first_a}->${ha}, B ${first_b}->${hb})"
             log_warn "  — consistent with slow propagation rather than a stall"
         fi
+        # Heights alone do not order competing branches. Preserve full RPC
+        # state before teardown (including chainwork/headers and peer state),
+        # using a .log name already covered by the churn artifact collector.
+        local side method state_dir
+        for side in a b; do
+            if [ "$side" = a ]; then state_dir="$DATA_A"; else state_dir="$DATA_B"; fi
+            for method in getblockchaininfo getpeerinfo mining.getstatus; do
+                printf '\n=== %s ===\n' "$method" >> "$state_dir/convergence-state.log"
+                "rpc_$side" "$method" >> "$state_dir/convergence-state.log" 2>&1 || true
+            done
+            log_warn "  Node $side full state: $state_dir/convergence-state.log"
+        done
+
         log_warn "  A: height=${ha} tip=${ta}"
         log_warn "  B: height=${hb} tip=${tb}"
 
