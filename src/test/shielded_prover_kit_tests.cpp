@@ -169,7 +169,7 @@ sh::ShieldedValidationError ValidateBundleForTx(
     const sh::ShieldedBundle& bundle,
     const dinero::Transaction& tx,
     const sh::CommitmentTree& tree,
-    int64_t transparent_value_delta) {
+    int64_t transparent_value_delta, bool auth = false) {
     sh::NullifierSet nullifiers;
     const auto nf_path = TempDbPath();
     EXPECT_EQ(nullifiers.Open(nf_path), sh::NullifierSet::OpenResult::Ok);
@@ -182,6 +182,10 @@ sh::ShieldedValidationError ValidateBundleForTx(
         /*anchor_history=*/nullptr,
         sh::ComputeShieldedTxSighash(tx),
     };
+    if (auth) {
+        ctx.shielded_cv_binding_activation_height = 0;
+        ctx.shielded_spend_auth_activation_height = 0;
+    }
     const auto rc = sh::ValidateShieldedBundle(bundle, ctx);
     nullifiers.Close();
     std::filesystem::remove(nf_path);
@@ -569,4 +573,94 @@ TEST(ShieldedProverKit, LegacyAddressAbiFailsClosedWithoutAuthorityMaterial) {
                   keys.dk.data(), keys.ivk.data(), 0, deriv::kHrpMainnet,
                   buf, &len),
               DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
+}
+
+TEST(ShieldedProverKit, AuthViewingHelperMatchesRecipientDerivation) {
+    auto seed = ProverKitGoldenSeed();
+    auto keys = deriv::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    auto address = deriv::DeriveDiversifiedAddress(keys, 3, deriv::kHrpMainnet);
+    auto rcm = MakeHash(7);
+    sh::Hash packed_d{};
+    std::copy(address.d.begin(), address.d.end(), packed_d.begin());
+    sh::Hash value{};
+    value[31] = 42;
+    const auto expected = sh::NoteCommitment(packed_d,
+        sh::AuthRecipientCommitmentKey(address.pk_d_spend, address.nfk_commitment), value, rcm);
+    const auto expected_nf = sh::ComputeNullifier(
+        deriv::DeriveDiversifiedNullifierKey(keys.nvk, address.d), 5);
+    sh::Hash cm{}, nf{};
+    ASSERT_EQ(dinero_shielded_compute_auth_note(keys.ak.data(), keys.nvk.data(),
+        address.d.data(), rcm.data(), 42, 5, cm.data(), nf.data()), DINERO_SHIELDED_OK);
+    EXPECT_EQ(cm, expected);
+    EXPECT_EQ(nf, expected_nf);
+    auto changed_nvk = keys.nvk;
+    changed_nvk[0] ^= 1;
+    sh::Hash changed_cm{}, changed_nf{};
+    ASSERT_EQ(dinero_shielded_compute_auth_note(keys.ak.data(), changed_nvk.data(),
+        address.d.data(), rcm.data(), 42, 5, changed_cm.data(), changed_nf.data()), DINERO_SHIELDED_OK);
+    EXPECT_NE(cm, changed_cm);
+    EXPECT_NE(nf, changed_nf);
+    EXPECT_EQ(dinero_shielded_compute_auth_note(nullptr, keys.nvk.data(),
+        address.d.data(), rcm.data(), 42, 5, cm.data(), nf.data()), DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
+}
+
+TEST(ShieldedProverKit, AuthUnshieldValidatesAndRejectsWrongAuthority) {
+    auto seed = ProverKitGoldenSeed();
+    const auto keys = deriv::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    const auto address = deriv::DeriveDiversifiedAddress(keys, 0, deriv::kHrpMainnet);
+    const auto rcm = MakeHash(0x51);
+    constexpr uint64_t value = 100000000, fee = 10000;
+    sh::Hash d{};
+    std::copy(address.d.begin(), address.d.end(), d.begin());
+    const auto cm = sh::NoteCommitment(d, sh::AuthRecipientCommitmentKey(
+        address.pk_d_spend, address.nfk_commitment), ValueAsHash(value), rcm);
+    sh::CommitmentTree tree;
+    const auto index = tree.Append(cm);
+    auto path = tree.GetAuthPath(index);
+    ASSERT_TRUE(path.has_value());
+    dinero_shielded_spend_note note{};
+    CopyHashToBytes(d, note.d);
+    CopyHashToBytes(rcm, note.rcm);
+    CopyHashToBytes(tree.Root(), note.anchor);
+    note.leaf_index = index;
+    note.value_una = value;
+    for (size_t i=0; i<sh::TREE_DEPTH; ++i) CopyHashToBytes(path->siblings[i], note.merkle_path[i]);
+    auto tx = MakeUnshieldEnvelope(value-fee, fee, 0x55);
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    auto serialized = SerializeUnsignedShieldedEnvelopeForProver(tx);
+    dinero_shielded_auth_unshield_request req{};
+    req.base.version = static_cast<uint8_t>(tx.version);
+    req.base.serialized_unsigned_tx = serialized.data();
+    req.base.serialized_unsigned_tx_len = serialized.size();
+    req.base.fee_una = fee;
+    req.base.note = &note;
+    CopyHashToBytes(keys.ask, req.ask32);
+    CopyHashToBytes(keys.ak, req.ak32);
+    CopyHashToBytes(keys.nvk, req.nvk32);
+    dinero_shielded_unshield_result result{};
+    ASSERT_EQ(dinero_shielded_build_auth_unshield_bundle(&req, &result), DINERO_SHIELDED_OK)
+        << (result.error ? result.error : "");
+    auto bundle = DecodeResultBundle(result);
+    tx.shielded_bundle_bytes.assign(result.bundle_bytes, result.bundle_bytes+result.bundle_len);
+    EXPECT_EQ(ValidateBundleForTx(bundle, tx, tree, -static_cast<int64_t>(value), true), sh::ShieldedValidationError::Ok);
+    auto changed_tx = tx;
+    changed_tx.vout[0].scriptPubKey.back() ^= 1;
+    EXPECT_NE(ValidateBundleForTx(bundle, changed_tx, tree, -static_cast<int64_t>(value), true),
+              sh::ShieldedValidationError::Ok);
+    dinero_shielded_free_result(&result);
+    req.nvk32[0] ^= 1;
+    EXPECT_NE(dinero_shielded_build_auth_unshield_bundle(&req, &result), DINERO_SHIELDED_OK);
+    dinero_shielded_free_result(&result);
+    req.nvk32[0] ^= 1;
+    note.merkle_path[0][0] ^= 1;
+    EXPECT_NE(dinero_shielded_build_auth_unshield_bundle(&req, &result), DINERO_SHIELDED_OK);
+    dinero_shielded_free_result(&result);
+    note.merkle_path[0][0] ^= 1;
+    req.ask32[0] ^= 1;
+    EXPECT_NE(dinero_shielded_build_auth_unshield_bundle(&req, &result), DINERO_SHIELDED_OK);
+    dinero_shielded_free_result(&result);
+    req.ask32[0] ^= 1;
+    note.d[31] = 1;
+    EXPECT_EQ(dinero_shielded_build_auth_unshield_bundle(&req, &result), DINERO_SHIELDED_ERR_INVALID_ARGUMENT);
+    dinero_shielded_free_result(&result);
 }

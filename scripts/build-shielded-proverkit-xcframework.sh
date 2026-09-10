@@ -152,8 +152,10 @@ write_abi_exports() {
   # NodeCore.xcframework's copies.
   cat > "$ABI_EXPORTS" <<'EOF'
 _dinero_shielded_build_unshield_bundle
+_dinero_shielded_build_auth_unshield_bundle
 _dinero_shielded_compute_note_commitment
 _dinero_shielded_compute_nullifier
+_dinero_shielded_compute_auth_note
 _dinero_shielded_derive_address
 _dinero_shielded_derive_address_v2
 _dinero_shielded_free_result
