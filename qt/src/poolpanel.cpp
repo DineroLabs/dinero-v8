@@ -2,6 +2,7 @@
 
 #include "poolpanel.h"
 
+#include "poolshare.h"
 #include "rpcclient.h"
 
 #include <QFormLayout>
@@ -233,13 +234,33 @@ void PoolPanel::setupUi() {
     grid->addWidget(lbl_connected_miners_, 1, 1);
     grid->addWidget(new QLabel("Operator fee:"), 1, 2);
     grid->addWidget(lbl_fee_, 1, 3);
-    grid->addWidget(new QLabel("PPLNS window:"), 2, 0);
+    // "This run" and the PPLNS window do not survive a restart equally,
+    // and after one they disagree — which reads as a bug unless the panel
+    // says why. The share/block counters live in the pool's in-memory
+    // Ledger; the window is written to the PPLNS journal and is restored.
+    const QString counters_tip = QStringLiteral(
+        "Counted in memory since the pool process started, so a pool restart resets them to zero.\n"
+        "The PPLNS window is journaled to disk and is NOT reset, which is why the two disagree "
+        "after a restart.\n"
+        "The blocks themselves are on the chain either way; only these counters reset.");
+    const QString window_tip = QStringLiteral(
+        "Shares still inside the payout window, and the time they span.\n"
+        "Journaled to disk, so it survives a pool restart — unlike the counters beside it.");
+    auto* window_caption = new QLabel("PPLNS window:");
+    window_caption->setToolTip(window_tip);
+    lbl_window_->setToolTip(window_tip);
+    grid->addWidget(window_caption, 2, 0);
     grid->addWidget(lbl_window_, 2, 1);
     grid->addWidget(new QLabel("Template producer:"), 2, 2);
     grid->addWidget(lbl_producer_, 2, 3);
-    grid->addWidget(new QLabel("Shares (this run):"), 3, 0);
+    auto* shares_caption = new QLabel("Shares (since pool restart):");
+    auto* blocks_caption = new QLabel("Blocks found (since pool restart):");
+    for (QLabel* l : {shares_caption, blocks_caption, lbl_shares_, lbl_blocks_}) {
+        l->setToolTip(counters_tip);
+    }
+    grid->addWidget(shares_caption, 3, 0);
     grid->addWidget(lbl_shares_, 3, 1);
-    grid->addWidget(new QLabel("Blocks found (this run):"), 3, 2);
+    grid->addWidget(blocks_caption, 3, 2);
     grid->addWidget(lbl_blocks_, 3, 3);
     grid->addWidget(new QLabel("Daemon:"), 4, 0);
     grid->addWidget(lbl_daemon_, 4, 1);
@@ -309,16 +330,25 @@ void PoolPanel::setupUi() {
     history_grid->addWidget(new QLabel("24 hours"), 2, 0); history_grid->addWidget(lbl_history_24h_, 2, 1);
     grid->addWidget(history, 12, 0, 1, 4);
 
-    miners_table_ = new QTableWidget(0, 3);
-    miners_table_->setHorizontalHeaderLabels({"Contributor payout script", "Next-block share", "Window weight"});
+    // Two share columns, because they are two different numbers and the
+    // difference is the operator's own fee. `bps` from /status is a share
+    // of the CONTRIBUTOR POT, which exists only after the fee has been
+    // taken off the block; reporting it alone under a heading like
+    // "next-block share" overstates every contributor by exactly the fee.
+    // The split column is kept so the table still agrees with a hand-run
+    // `curl /status`.
+    miners_table_ = new QTableWidget(0, 4);
+    miners_table_->setHorizontalHeaderLabels(
+        {"Contributor payout script", "Share of contributor split", "Share of block", "Window weight"});
     miners_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     miners_table_->verticalHeader()->setVisible(false);
-    // The script is the long column; the two numeric ones get fixed widths
+    // The script is the long column; the numeric ones get fixed widths
     // so the header stops truncating to "tributor payout sc".
     miners_table_->horizontalHeader()->setStretchLastSection(false);
     miners_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    miners_table_->setColumnWidth(1, 150);
-    miners_table_->setColumnWidth(2, 150);
+    miners_table_->setColumnWidth(1, 180);
+    miners_table_->setColumnWidth(2, 130);
+    miners_table_->setColumnWidth(3, 150);
     miners_table_->verticalHeader()->setDefaultSectionSize(24);
     miners_table_->setMaximumHeight(24 * 5 + 28);
     auto* contributors = new QGroupBox("PPLNS contributors (not connected sessions)");
@@ -890,8 +920,16 @@ void PoolPanel::applyStatus(const QJsonObject& s) {
         const QJsonObject m = miners.at(i).toObject();
         const qint64 bps = strictInt(m.value("bps")).value_or(0);
         miners_table_->setItem(i, 0, new QTableWidgetItem(m.value("payout_script_hex").toString()));
-        miners_table_->setItem(i, 1, new QTableWidgetItem(QString("%1%").arg(bps / 100.0, 0, 'f', 2)));
-        miners_table_->setItem(i, 2, new QTableWidgetItem(m.value("window_weight").toString()));
+        miners_table_->setItem(i, 1, new QTableWidgetItem(poolshare::splitShareText(bps)));
+        // Uses the fee the pool is reporting on THIS refresh; an operator
+        // who changes the fee sees this column move on the next poll.
+        auto* block_share = new QTableWidgetItem(poolshare::blockShareText(bps, fee_bps));
+        block_share->setToolTip(
+            QString("%1 of the contributor split, which is the block reward less your %2% fee.")
+                .arg(poolshare::splitShareText(bps))
+                .arg(fee_bps / 100.0, 0, 'f', 2));
+        miners_table_->setItem(i, 2, block_share);
+        miners_table_->setItem(i, 3, new QTableWidgetItem(m.value("window_weight").toString()));
     }
     // Size to the contributors actually present (capped), so the card does
     // not reserve a block of empty rows for miners that are not there.
