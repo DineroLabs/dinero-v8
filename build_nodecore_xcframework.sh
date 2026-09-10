@@ -252,6 +252,8 @@ cmake -S "${PROJECT_ROOT}" -B "${DEVICE_BUILD}" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=${IOS_DEPLOY_TARGET} \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_NODECORE=ON \
+    -DENABLE_GPU_MINING=OFF \
+    -DENABLE_HARDWARE_WALLETS=OFF \
     -DBUILD_LIGHTNINGD=OFF \
     -DDINERO_ENABLE_PORTMAPPING=OFF \
     -DDINERO_VENDORED_OPENSSL_DIR="${OPENSSL_DEVICE_DIR}" \
@@ -275,6 +277,8 @@ cmake -S "${PROJECT_ROOT}" -B "${SIM_BUILD}" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=${IOS_DEPLOY_TARGET} \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_NODECORE=ON \
+    -DENABLE_GPU_MINING=OFF \
+    -DENABLE_HARDWARE_WALLETS=OFF \
     -DBUILD_LIGHTNINGD=OFF \
     -DDINERO_ENABLE_PORTMAPPING=OFF \
     -DDINERO_VENDORED_OPENSSL_DIR="${OPENSSL_SIM_DIR}" \
@@ -296,6 +300,8 @@ mkdir -p "${MAC_ARM64_BUILD}" "${MAC_X86_64_BUILD}"
 cmake -S "${PROJECT_ROOT}" -B "${MAC_ARM64_BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_NODECORE=ON \
+    -DENABLE_GPU_MINING=OFF \
+    -DENABLE_HARDWARE_WALLETS=OFF \
     -DBUILD_LIGHTNINGD=OFF \
     -DDINERO_ENABLE_PORTMAPPING=OFF \
     -DDINERO_RELEASE=ON \
@@ -309,6 +315,8 @@ cmake --build "${MAC_ARM64_BUILD}" --target nodecore_ffi --config Release -j${NC
 cmake -S "${PROJECT_ROOT}" -B "${MAC_X86_64_BUILD}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_NODECORE=ON \
+    -DENABLE_GPU_MINING=OFF \
+    -DENABLE_HARDWARE_WALLETS=OFF \
     -DBUILD_LIGHTNINGD=OFF \
     -DDINERO_ENABLE_PORTMAPPING=OFF \
     -DDINERO_RELEASE=ON \
@@ -368,8 +376,12 @@ create_fat_lib() {
     add_if_exists "${BUILD_DIR}/src/consensus/shielded/libdinero_shielded.a"
     add_if_exists "${BUILD_DIR}/libdinero_consensus.a"
     add_if_exists "${BUILD_DIR}/libdinero_tx_primitives.a"
+    # Required by shielded account derivation and wallet address RPCs.
+    add_if_exists "${BUILD_DIR}/libdinero_bip32.a"
+    add_if_exists "${BUILD_DIR}/libdinero_address_encoding.a"
     add_if_exists "${BUILD_DIR}/libdinero_crypto.a"
     add_if_exists "${BUILD_DIR}/libdinero_zk.a"
+    # Contains the backend interface even with optional GPU mining disabled.
     add_if_exists "${BUILD_DIR}/libdinero_gpu_mining.a"
     add_if_exists "${BUILD_DIR}/libvalidation_oracles.a"
     add_if_exists "${BUILD_DIR}/third_party/argon2/libargon2.a"
