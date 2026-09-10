@@ -45,6 +45,7 @@ enum class NoteKeyScheme : uint8_t {
     /// pk_d = s·G, where `s` derives from the RECIPIENT's ask plus a public
     /// (ak,d) tweak. A full viewer can authenticate ownership but cannot spend.
     Auth = 1,
+    PrivateCovenant = 2,
 };
 
 struct ShieldedNote {
@@ -70,6 +71,7 @@ struct ShieldedNote {
     /// Defaults to LegacySenderKey so rows written by older daemons (and the
     /// ADD COLUMN default) read back as legacy, which is what they are.
     NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey;
+    std::array<uint8_t, 512> covenant_memo{};
 };
 
 struct OutgoingShieldedNote {
@@ -105,7 +107,8 @@ public:
                  uint64_t leaf_index,
                  uint32_t created_height,
                  NoteKeyScheme key_scheme = NoteKeyScheme::LegacySenderKey,
-                 const consensus::shielded::Hash& diversifier = {});
+                 const consensus::shielded::Hash& diversifier = {},
+                 const std::array<uint8_t,512>& covenant_memo = {});
 
     /// Legacy compatibility overload: legacy notes use their spend secret as
     /// the nullifier key. Auth-profile callers must use the explicit overload.
@@ -129,7 +132,8 @@ public:
                         uint32_t created_height,
                         NoteKeyScheme key_scheme =
                             NoteKeyScheme::LegacySenderKey,
-                        const consensus::shielded::Hash& diversifier = {});
+                        const consensus::shielded::Hash& diversifier = {},
+                 const std::array<uint8_t,512>& covenant_memo = {});
 
     bool AddPendingNote(uint64_t value_una,
                         const consensus::shielded::Hash& secret_key,

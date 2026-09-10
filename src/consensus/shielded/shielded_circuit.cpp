@@ -1,3 +1,4 @@
+#include "consensus/shielded/private_covenant.h"
 /**
  * Shielded pool ZK circuits — Spartan proofs over Poseidon-2 R1CS.
  * See include/consensus/shielded/shielded_circuit.h.
@@ -65,6 +66,7 @@ constexpr uint8_t kOutputProofVersionCv = 0x04;
 // was derivable from incoming viewing material. Never reinterpret a v0x05
 // proof under the corrected ask/nvk-separated circuit.
 constexpr uint8_t kSpendProofVersionAuth = 0x06;
+constexpr uint8_t kSpendProofVersionPrivateCovenant = 0x07;
 
 // ── cv-binding helpers (Audit Critical #1) ──────────────────────────────
 //
@@ -222,7 +224,7 @@ std::vector<Scalar> ZeroErrorVector(const R1CS& cs) {
 }
 
 void BindSpendTranscript(Transcript& transcript, const SpendPublicInputs& pub,
-                         bool cv_bound, bool spend_auth = false) {
+                         bool cv_bound, bool spend_auth = false, bool private_covenant = false) {
     transcript.append_scalar("nf", HashToScalar(pub.nullifier));
     transcript.append_scalar("an", HashToScalar(pub.anchor));
     if (cv_bound) {
@@ -237,6 +239,11 @@ void BindSpendTranscript(Transcript& transcript, const SpendPublicInputs& pub,
         // this is defence in depth. Appended ONLY when spend_auth is set, so
         // legacy and cv-bound transcripts stay byte-identical to today's.
         transcript.append_u64("auth", 1);
+    }
+    if (private_covenant) {
+        transcript.append_u64("private_covenant", 1);
+        transcript.append_u64("covenant_minimum_height", pub.covenant_minimum_height);
+        transcript.append_scalar("covenant_outputs", HashToScalar(pub.covenant_outputs));
     }
 }
 
@@ -321,7 +328,7 @@ Variable merkle_path_gadget(R1CS& cs,
 R1CS BuildSpendCircuit(const SpendWitness& witness,
                        const SpendPublicInputs& pub,
                        bool cv_bound,
-                       bool spend_auth) {
+                       bool spend_auth, bool private_covenant) {
     R1CS cs;
     // spend_auth is a strict superset of cv_bound: an auth-without-cv variant
     // would reopen the mint-from-nothing hole cv-binding closed. Resolve the
@@ -334,6 +341,7 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
     // a SILENTLY DIFFERENT circuit than they asked for if they pass
     // (spend_auth=true, cv_bound=false) — unreachable via ProveSpend/
     // VerifySpend, which reject that pair first. Pass a valid pair.
+    if (private_covenant) spend_auth = true;
     if (spend_auth) {
         cv_bound = true;
     }
@@ -353,6 +361,12 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
         LoadCvPoint(pub.cv, cv_x, cv_y);
         cv_pub = AllocCvInputPoint(cs, cv_x, cv_y);
         ValueGenCoords(v_x, v_y);
+    }
+
+    Variable covenant_outputs{}, covenant_height{};
+    if (private_covenant) {
+        covenant_outputs = cs.alloc_input(HashToScalar(pub.covenant_outputs));
+        covenant_height = cs.alloc_input(U64ToScalar(pub.covenant_minimum_height));
     }
 
     // Private witness
@@ -446,6 +460,16 @@ R1CS BuildSpendCircuit(const SpendWitness& witness,
         pk = poseidon2_gadget(cs, sk, zero_var, "derive_pk");
     }
 
+    if (private_covenant) {
+        Variable covenant_tag = cs.alloc(HashToScalar(PrivateCovenantTag()));
+        cs.enforce_equal(LinearCombination(covenant_tag),
+                         LinearCombination::constant(HashToScalar(PrivateCovenantTag())),
+                         "private_covenant_domain");
+        Variable terms = poseidon2_gadget(cs, covenant_height, covenant_outputs, "covenant_terms");
+        Variable policy = poseidon2_gadget(cs, covenant_tag, terms, "covenant_policy");
+        pk = poseidon2_gadget(cs, pk, policy, "covenant_ownership");
+    }
+
     // 2. Phase 2 wave 5: address-binding tag.
     //    addr_bind = Poseidon(ADDR_TAG, Poseidon(d, pk))
     Variable tag = cs.alloc(HashToScalar(AddrBindTag()));
@@ -497,11 +521,11 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
                                  secp256k1_context_struct* ctx,
                                  bool bind_public_inputs,
                                  bool cv_bound,
-                                 bool spend_auth) {
+                                 bool spend_auth, bool private_covenant) {
     auto* sctx = ResolveCtx(ctx);
     // spend_auth requires cv_bound (strict superset). Reject the invalid pair
     // rather than silently resolving it, so a miswired caller fails loudly.
-    if (spend_auth && !cv_bound) {
+    if ((spend_auth && !cv_bound) || (private_covenant && (!spend_auth || !bind_public_inputs))) {
         return {};
     }
     // cv-bound proving needs the Pedersen value generator V; fail closed if
@@ -509,22 +533,26 @@ std::vector<uint8_t> ProveSpend(const SpendWitness& witness,
     if (cv_bound && !PedersenGeneratorsReady()) {
         return {};
     }
-    auto cs = BuildSpendCircuit(witness, pub, cv_bound, spend_auth);
+    auto cs = BuildSpendCircuit(witness, pub, cv_bound, spend_auth, private_covenant);
     if (!cs.is_satisfied()) {
         return {};
     }
 
     Transcript transcript("dinero.shielded.spend.v1");
-    BindSpendTranscript(transcript, pub, cv_bound, spend_auth);
+    BindSpendTranscript(transcript, pub, cv_bound, spend_auth, private_covenant);
 
     const auto& gens = ShieldedGenerators(cs, sctx);
     SpartanProof proof = zk::zkvm::r1cs_spartan_prove(
         cs, ZeroErrorVector(cs), Scalar::one(), gens, transcript, sctx, bind_public_inputs);
 
     std::vector<uint8_t> proof_bytes;
-    proof_bytes.push_back(spend_auth ? kSpendProofVersionAuth
+    proof_bytes.push_back(private_covenant ? kSpendProofVersionPrivateCovenant : spend_auth ? kSpendProofVersionAuth
                                      : (cv_bound ? kSpendProofVersionCv
                                                  : kSpendProofVersion));
+    if (private_covenant) {
+        for (unsigned i = 0; i < 4; ++i)
+            proof_bytes.push_back(static_cast<uint8_t>(pub.covenant_minimum_height >> (8 * i)));
+    }
     auto serialized = proof.serialize(sctx);
     proof_bytes.insert(proof_bytes.end(), serialized.begin(), serialized.end());
     return proof_bytes;
@@ -565,10 +593,10 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
                  secp256k1_context_struct* ctx,
                  bool bind_public_inputs,
                  bool cv_bound,
-                 bool spend_auth) {
+                 bool spend_auth, bool private_covenant) {
     auto* sctx = ResolveCtx(ctx);
     // spend_auth requires cv_bound (strict superset). Reject the invalid pair.
-    if (spend_auth && !cv_bound) {
+    if ((spend_auth && !cv_bound) || (private_covenant && (!spend_auth || !bind_public_inputs))) {
         return false;
     }
     // cv-bound verification needs V; without it the verifier circuit can't be
@@ -578,16 +606,23 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
     }
     SpartanProof proof;
     const uint8_t expected_version =
-        spend_auth ? kSpendProofVersionAuth
+        private_covenant ? kSpendProofVersionPrivateCovenant : spend_auth ? kSpendProofVersionAuth
                    : (cv_bound ? kSpendProofVersionCv : kSpendProofVersion);
-    if (!DeserializeShieldedProof(proof_bytes, expected_version, proof, sctx)) {
+    std::vector<uint8_t> covenant_proof;
+    if (private_covenant) {
+        const auto height = PrivateCovenantProofHeight(proof_bytes);
+        if (!height || *height != pub.covenant_minimum_height) return false;
+        covenant_proof.push_back(kPrivateCovenantProofVersion);
+        covenant_proof.insert(covenant_proof.end(), proof_bytes.begin() + 5, proof_bytes.end());
+    }
+    if (!DeserializeShieldedProof(private_covenant ? covenant_proof : proof_bytes, expected_version, proof, sctx)) {
         return false;
     }
 
     const SpendWitness dummy = DummySpendWitness();
-    const auto verifier_cs = BuildSpendCircuit(dummy, pub, cv_bound, spend_auth);
+    const auto verifier_cs = BuildSpendCircuit(dummy, pub, cv_bound, spend_auth, private_covenant);
     Transcript transcript("dinero.shielded.spend.v1");
-    BindSpendTranscript(transcript, pub, cv_bound, spend_auth);
+    BindSpendTranscript(transcript, pub, cv_bound, spend_auth, private_covenant);
 
     const auto& gens = ShieldedGenerators(verifier_cs, sctx);
     const auto circuit_hash = zk::zkvm::spartan_hash_r1cs_structure(verifier_cs);

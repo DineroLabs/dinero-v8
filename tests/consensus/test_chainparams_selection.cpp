@@ -38,6 +38,7 @@
 // separate SelectParamsFreshProcess executable.
 
 #include "consensus/chainparams.h"
+#include "consensus/shielded/wallet_activation.h"
 
 #include <gtest/gtest.h>
 
@@ -183,12 +184,12 @@ TEST(ChainParamsSelection, OutgoingRecoveryCannotPrecedeSpendAuthority) {
     EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
 }
 
-// Spend authority and outgoing recovery ship DORMANT on every network.
+// Spend authority and outgoing recovery remain opt-in on test networks.
 // Regtest is deliberately not active by default: explicit command-line
 // heights make lifecycle rehearsals opt-in without weakening the production
 // sentinel or making unrelated hand-built block fixtures cross the fork.
-TEST(ChainParamsSelection, SpendAuthDormantOnAllNetworks) {
-    for (const Chain chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
+TEST(ChainParamsSelection, SpendAuthDormantOnTestNetworks) {
+    for (const Chain chain : {Chain::TESTNET, Chain::REGTEST}) {
         SelectParams(chain);
         EXPECT_EQ(Params().shielded_spend_auth_activation_height, UINT32_MAX)
             << "spend authority must stay dormant until activation review";
@@ -196,6 +197,31 @@ TEST(ChainParamsSelection, SpendAuthDormantOnAllNetworks) {
         EXPECT_EQ(Params().shielded_outgoing_recovery_activation_height,
                   UINT32_MAX);
     }
+}
+
+TEST(ChainParamsSelection, WalletWaitsForCommittedAuthResetAndRelocksOnReorg) {
+    using dinero::consensus::shielded::WalletAuthEpochReady;
+    EXPECT_FALSE(WalletAuthEpochReady(109999, 110000, 110000));
+    EXPECT_TRUE(WalletAuthEpochReady(110000, 110000, 110000));
+    EXPECT_TRUE(WalletAuthEpochReady(110001, 110000, 110000));
+    EXPECT_FALSE(WalletAuthEpochReady(109999, 110000, 110000));
+    EXPECT_FALSE(WalletAuthEpochReady(UINT32_MAX, UINT32_MAX, UINT32_MAX));
+    EXPECT_FALSE(WalletAuthEpochReady(110000, 110000, 109999));
+}
+
+TEST(ChainParamsSelection, MainnetAuthCutoverPreservesHistoricalRules) {
+    SelectParams(Chain::MAINNET);
+    EXPECT_EQ(Params().shielded_activation_height, 8650U);
+    EXPECT_EQ(Params().shielded_input_binding_activation_height, 32300U);
+    EXPECT_EQ(Params().shielded_cv_binding_activation_height, 61000U);
+    EXPECT_EQ(Params().shielded_epoch_reset_height, 61000U);
+    EXPECT_EQ(Params().shielded_spend_auth_activation_height, 110000U);
+    EXPECT_EQ(Params().shielded_private_covenant_activation_height, 110000U);
+    EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, 110000U);
+    EXPECT_EQ(Params().shielded_outgoing_recovery_activation_height, 110000U);
+    EXPECT_EQ(Params().shielded_coinbase_reject_activation_height, 110000U);
+    EXPECT_EQ(Params().state_commitment_activation_height, 111000U);
+    EXPECT_GT(Params().state_commitment_activation_height, Params().shielded_spend_auth_epoch_reset_height);
 }
 
 // The assertion this file exists for. A plain EXPECT_THROW passes against the

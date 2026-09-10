@@ -215,11 +215,11 @@ TEST(CovenantActivation, RelayPolicyRejectsDormantRevealedOpcodes) {
 
 TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     SelectParams(Chain::MAINNET);
-    // Pin the expanded checksum including every shielded activation/reset.
+    // Pin Auth/private covenants at 110000 and DNRS at 111000.
     // This is operator drift telemetry, not a block or peer protocol change.
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "d7bc19c7d11a568f9b75182896fcaff53fc5b5b732b61cdff81ac3202d8eac25");
+        "4712e91b8906019cc21287c83739c973de0179f5a753b44735fb3675b314ba3a");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -241,6 +241,7 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     expect_committed(&ChainParams::shielded_epoch_reset_height);
     expect_committed(&ChainParams::shielded_spend_auth_activation_height);
     expect_committed(&ChainParams::shielded_spend_auth_epoch_reset_height);
+    expect_committed(&ChainParams::shielded_private_covenant_activation_height);
     expect_committed(&ChainParams::shielded_outgoing_recovery_activation_height);
     expect_committed(&ChainParams::shielded_coinbase_reject_activation_height);
 

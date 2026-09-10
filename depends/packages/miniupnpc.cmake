@@ -1,11 +1,16 @@
 set(miniupnpc_version 2.3.3)
 set(miniupnpc_file "miniupnpc-${miniupnpc_version}.tar.gz")
-set(miniupnpc_url "https://miniupnp.tuxfamily.org/files/${miniupnpc_file}")
+# The upstream host intermittently resets CI downloads. Both locations carry
+# the identical release archive; URL_HASH remains mandatory for either source.
+set(miniupnpc_url
+  "https://distfiles.macports.org/miniupnpc/${miniupnpc_file}"
+  "https://miniupnp.tuxfamily.org/files/${miniupnpc_file}")
 set(miniupnpc_sha256 d52a0afa614ad6c088cc9ddff1ae7d29c8c595ac5fdd321170a05f41e634bd1a)
 
 ExternalProject_Add(miniupnpc
   URL "${miniupnpc_url}"
   URL_HASH SHA256=${miniupnpc_sha256}
+  TIMEOUT 60
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   DOWNLOAD_DIR "${DINERO_DEPENDS_SOURCES_DIR}"
   PREFIX "${DINERO_DEPENDS_WORK_DIR}/miniupnpc"

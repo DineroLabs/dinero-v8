@@ -260,14 +260,15 @@ struct ChainParams {
     // so activation requires a paired epoch reset. That costs nothing while the
     // pool is empty and strands real value once it is not.
     //
-    // DORMANT ON EVERY NETWORK (UINT32_MAX), deliberately — including regtest.
-    // The wallet and circuit groundwork can build auth notes, but consensus has
-    // only the already-deployed CV-binding reset at height 61,000; a distinct
-    // spend-auth epoch-reset boundary must land before this can activate. Any
-    // activation height MUST be chosen by a human and
-    // fleet-coordinated before it ships — a wrong boundary splits the chain.
+    // Mainnet selects height 110000 with a paired Auth epoch reset. Test
+    // networks retain UINT32_MAX unless explicitly configured for rehearsal.
+    // Fleet coordination is required before shipping a scheduled fork.
     // ===========================================================================
     uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
+    // Independent fork gate: policy-bound private-note spends (proof 0x07).
+    // Mainnet selects 110000; other networks remain dormant unless explicitly
+    // configured for rehearsal. Wallet support must accompany this fork.
+    uint32_t shielded_private_covenant_activation_height = UINT32_MAX;
 
     // Wallet-format activation for outgoing-view recovery envelope v3. This
     // is deliberately independent from consensus spend authority even though

@@ -405,7 +405,7 @@ TEST_F(ShieldedNoteStoreRollbackTest, UnknownAuthoritySchemeFailsClosedOnOpen) {
     ASSERT_EQ(sqlite3_open(path_.string().c_str(), &raw), SQLITE_OK);
     char* err = nullptr;
     ASSERT_EQ(sqlite3_exec(raw,
-                           "UPDATE shielded_notes SET key_scheme = 2;",
+                           "UPDATE shielded_notes SET key_scheme = 3;",
                            nullptr, nullptr, &err),
               SQLITE_OK)
         << (err ? err : "");
@@ -417,3 +417,86 @@ TEST_F(ShieldedNoteStoreRollbackTest, UnknownAuthoritySchemeFailsClosedOnOpen) {
 }
 
 }  // namespace
+
+#include "wallet/private_covenant_descriptor.h"
+
+namespace {
+dinero::wallet::PrivateCovenantDescriptor TestPrivateDescriptor() {
+    std::array<uint8_t,64> seed{}; seed[0]=17;
+    const auto keys=dinero::wallet::shielded::DeriveShieldedAccount(seed.data(),seed.size(),0);
+    const auto address=dinero::wallet::shielded::DeriveDiversifiedAddress(keys,0,"rdins");
+    dinero::wallet::PrivateCovenantDescriptor d;
+    d.seed[0]=37; d.minimum_height=120; d.fee_una=1000;
+    d.outputs={{address.payload,40000},{address.payload,20000}};
+    return d;
+}
+TEST(PrivateCovenantDescriptor, CanonicalRecoveryAndTamperRejection) {
+    using namespace dinero::wallet;
+    auto d=TestPrivateDescriptor();
+    auto memo=EncodePrivateCovenantDescriptor(d);
+    auto recovered=DecodePrivateCovenantDescriptor(memo);
+    ASSERT_TRUE(recovered);
+    EXPECT_EQ(PrivateCovenantFundingValue(*recovered),61000);
+    EXPECT_EQ(EncodePrivateCovenantDescriptor(*recovered),memo);
+    EXPECT_EQ(PrivateCovenantDescriptorRoot(*recovered),PrivateCovenantDescriptorRoot(d));
+    memo.back()=1; EXPECT_FALSE(DecodePrivateCovenantDescriptor(memo));
+    memo=EncodePrivateCovenantDescriptor(d); memo[8]=3;
+    EXPECT_FALSE(DecodePrivateCovenantDescriptor(memo));
+    d.outputs[0].value_una=INT64_MAX;
+    EXPECT_THROW(EncodePrivateCovenantDescriptor(d),std::invalid_argument);
+}
+TEST(PrivateCovenantDescriptor, ExactCiphertextAndDomainSeparation) {
+    using namespace dinero::wallet;
+    auto d=TestPrivateDescriptor();
+    const auto a=DerivePrivateCovenantOutputs(d), b=DerivePrivateCovenantOutputs(d);
+    ASSERT_EQ(a.size(),2);
+    EXPECT_EQ(a[0].output.encrypted_note,b[0].output.encrypted_note);
+    EXPECT_EQ(a[0].output.commitment,b[0].output.commitment);
+    EXPECT_NE(a[0].rcm,a[0].esk);
+    EXPECT_NE(a[0].esk,a[1].esk);
+    const auto root=PrivateCovenantDescriptorRoot(d);
+    std::swap(d.outputs[0],d.outputs[1]); EXPECT_NE(root,PrivateCovenantDescriptorRoot(d));
+    d.seed[0]++; EXPECT_NE(a[0].esk,DerivePrivateCovenantOutputs(d)[0].esk);
+}
+TEST_F(ShieldedNoteStoreRollbackTest, PrivateDescriptorSurvivesRestartWithoutSpendSecret) {
+    using namespace dinero::wallet;
+    const auto memo=EncodePrivateCovenantDescriptor(TestPrivateDescriptor());
+    ASSERT_TRUE(store_.AddNote(61000,HashWithByte(1),HashWithByte(2),HashWithByte(3),
+        HashWithByte(4),HashWithByte(5),0,10,NoteKeyScheme::PrivateCovenant,{},memo));
+    EXPECT_FALSE(store_.AddNote(60000,HashWithByte(1),HashWithByte(2),HashWithByte(3),
+        HashWithByte(4),HashWithByte(6),1,10,NoteKeyScheme::PrivateCovenant,{},memo));
+    store_.Close(); ASSERT_EQ(store_.Open(path_.string()),ShieldedNoteStore::OpenResult::Ok);
+    const auto note=store_.GetByLeafIndex(0); ASSERT_TRUE(note);
+    EXPECT_EQ(note->key_scheme,NoteKeyScheme::PrivateCovenant);
+    EXPECT_EQ(note->covenant_memo,memo);
+    EXPECT_EQ(note->secret_key,sh::Hash{});
+}
+}
+
+#include "consensus/shielded/shielded_serialization.h"
+TEST(PrivateCovenantDescriptor, PolicySurvivesWireCanonicalizationAcrossSeeds) {
+    using namespace dinero::wallet;
+    for(uint8_t seed=1;seed<=32;++seed) {
+        auto descriptor=TestPrivateDescriptor(); descriptor.seed[0]=seed;
+        const auto material=DerivePrivateCovenantOutputs(descriptor);
+        sh::ShieldedBundle bundle;
+        for(const auto& output:material) bundle.outputs.push_back(output.output);
+        sh::ShieldedBundle decoded;
+        ASSERT_EQ(sh::DeserializeShieldedBundle(sh::SerializeShieldedBundle(bundle),&decoded),sh::BundleDecodeError::Ok);
+        EXPECT_EQ(PrivateCovenantDescriptorRoot(descriptor),sh::PrivateCovenantOutputRoot(decoded.outputs))
+            << "descriptor seed " << int(seed) << " must bind the actual wire output order";
+    }
+}
+
+TEST_F(ShieldedNoteStoreRollbackTest, InvalidPrivateDescriptorFailsClosedOnOpen) {
+    using namespace dinero::wallet;
+    const auto memo=EncodePrivateCovenantDescriptor(TestPrivateDescriptor());
+    ASSERT_TRUE(store_.AddNote(61000,HashWithByte(1),HashWithByte(2),HashWithByte(3),
+        HashWithByte(4),HashWithByte(5),0,10,NoteKeyScheme::PrivateCovenant,{},memo));
+    store_.Close();
+    sqlite3* raw=nullptr;
+    ASSERT_EQ(sqlite3_open(path_.string().c_str(),&raw),SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw,"UPDATE shielded_notes SET covenant_memo=zeroblob(512)",nullptr,nullptr,nullptr),SQLITE_OK);
+    sqlite3_close(raw);
+    EXPECT_EQ(store_.Open(path_.string()),ShieldedNoteStore::OpenResult::SchemaError);
+}

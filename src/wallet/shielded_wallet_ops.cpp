@@ -1,3 +1,4 @@
+#include "wallet/private_covenant_descriptor.h"
 #include "consensus/shielded/resource_limits.h"
 /**
  * Shielded wallet operations — shield + unshield handlers.
@@ -284,6 +285,9 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               uint64_t fee_una,
                                               bool cv_bound) {
     AttachUnshieldResult out;
+    if (note.key_scheme == NoteKeyScheme::PrivateCovenant) {
+        out.status = OpStatus::InvalidParams; out.error = "private_covenant_requires_contract_spend"; return out;
+    }
     const bool auth_resources = note.key_scheme == NoteKeyScheme::Auth;
     if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
         out.status = OpStatus::InvalidParams;
@@ -495,6 +499,9 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
                                               uint64_t fee_una,
                                               bool cv_bound) {
     AttachTransferResult out;
+    if (note.key_scheme == NoteKeyScheme::PrivateCovenant) {
+        out.status = OpStatus::InvalidParams; out.error = "private_covenant_requires_contract_spend"; return out;
+    }
     const bool auth_resources = note.key_scheme == NoteKeyScheme::Auth;
     if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
         out.status = OpStatus::InvalidParams;
@@ -1008,6 +1015,15 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
         recipient_pk = sh::PoseidonHash2(recipient_sk, zero);
         OPENSSL_cleanse(recipient_sk.data(), recipient_sk.size());
     }
+    if (recipient.covenant_memo) {
+        const auto descriptor = DecodePrivateCovenantDescriptor(*recipient.covenant_memo);
+        if (!spend_auth || !cv_bound || !descriptor ||
+            PrivateCovenantFundingValue(*descriptor) != recipient.value_una) {
+            out.status = OpStatus::InvalidParams; out.error = "invalid_private_covenant_funding"; return out;
+        }
+        recipient_pk = sh::PrivateCovenantOwnershipKey(recipient_pk,
+            PrivateCovenantDescriptorRoot(*descriptor), descriptor->minimum_height);
+    }
     sh::Hash recipient_value_hash = ValueToHash(recipient.value_una);
     sh::Hash recipient_d_packed{};
     std::memcpy(recipient_d_packed.data(), recipient.d.data(), recipient.d.size());
@@ -1047,6 +1063,7 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     if (recipient_memo != nullptr) {
         std::memcpy(nplain.memo.data(), recipient_memo->data(), nplain.memo.size());
     }
+    if (recipient.covenant_memo) nplain.memo = *recipient.covenant_memo;
     shdrv::EncryptedNote enc_bytes;
     sh::Hash esk_normalized{};
     try {
@@ -1066,7 +1083,7 @@ AddressedRecipientOutput BuildAddressedRecipientOutput(
     planned.encrypted_note =
         std::vector<uint8_t>(enc_bytes.begin(), enc_bytes.end());
 
-    if (outgoing != nullptr) {
+    if (outgoing != nullptr && !recipient.covenant_memo) {
         if (!shdrv::IsOutgoingActivationPolicyValid(
                 outgoing->spend_auth_activation_height,
                 outgoing->outgoing_activation_height)) {

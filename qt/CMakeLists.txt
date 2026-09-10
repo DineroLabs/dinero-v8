@@ -516,6 +516,8 @@ endif()
 # ═══════════════════════════════════════════════════════════════════════════════
 
 set(GUI_SOURCES
+  src/privatecovenantwidget.cpp
+  src/privatecovenantwidget.h
   src/main.cpp
   src/rpcclient.cpp
   src/rpcclient.h
@@ -1344,6 +1346,25 @@ else()
 endif()
 
 if(BUILD_TESTING)
+  # Exercise the real window/composer ownership, with an isolated RPC endpoint.
+  get_target_property(_wallet_test_sources dinero-qt SOURCES)
+  list(FILTER _wallet_test_sources EXCLUDE REGEX "(^|/)main\\.cpp$")
+  add_executable(test_wallet_navigation ${_wallet_test_sources} tests/test_wallet_navigation.cpp)
+  target_link_libraries(test_wallet_navigation PRIVATE
+    $<TARGET_PROPERTY:dinero-qt,LINK_LIBRARIES> Qt6::Test)
+  target_include_directories(test_wallet_navigation PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src $<TARGET_PROPERTY:dinero-qt,INCLUDE_DIRECTORIES>)
+  target_compile_definitions(test_wallet_navigation PRIVATE
+    QT_NO_KEYWORDS $<TARGET_PROPERTY:dinero-qt,COMPILE_DEFINITIONS>)
+  add_test(NAME WalletNavigation COMMAND test_wallet_navigation)
+  set_tests_properties(WalletNavigation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_covenant_form_policy tests/test_covenant_form_policy.cpp)
+  target_include_directories(test_covenant_form_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_covenant_form_policy PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME CovenantFormPolicy COMMAND test_covenant_form_policy)
+
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp
     src/peerheightsemantics.h
@@ -1763,3 +1784,13 @@ message(STATUS "  Experimental:  ${DIN_EXPERIMENTAL_FEATURES}")
 message(STATUS "  Build Type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "════════════════════════════════════════════════════")
 message(STATUS "")
+
+if(BUILD_TESTING)
+  add_executable(test_private_covenant_widget tests/test_private_covenant_widget.cpp
+    src/privatecovenantwidget.cpp src/privatecovenantwidget.h src/rpcclient.cpp src/rpcclient.h)
+  target_include_directories(test_private_covenant_widget PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_private_covenant_widget PRIVATE Qt6::Widgets Qt6::Network Qt6::Test)
+  target_compile_definitions(test_private_covenant_widget PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME PrivateCovenantWidget COMMAND test_private_covenant_widget)
+  set_tests_properties(PrivateCovenantWidget PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+endif()

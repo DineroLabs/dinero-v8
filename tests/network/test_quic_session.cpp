@@ -1,4 +1,5 @@
 #include "network/quic_session.h"
+#include "quic_loopback_pair.h"
 #include "network/quic_transport.h"
 
 #include <gtest/gtest.h>
@@ -56,16 +57,9 @@ TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
     options.private_key_pem = kTestPrivateKey;
     options.verify_peer = false;
 
-    std::shared_ptr<QuicSession> client_session;
-    std::shared_ptr<QuicSession> server_session;
-    auto client_writer = [&server_session](std::vector<uint8_t> bytes) {
-        if (server_session) server_session->EnqueueIncomingPacket(std::move(bytes));
-    };
-    auto server_writer = [&client_session](std::vector<uint8_t> bytes) {
-        if (client_session) client_session->EnqueueIncomingPacket(std::move(bytes));
-    };
-    server_session = std::make_shared<QuicSession>(server_writer);
-    client_session = std::make_shared<QuicSession>(client_writer);
+    dinero::network::test::QuicLoopbackPair pair;
+    auto& client_session = pair.client;
+    auto& server_session = pair.server;
 
     const auto client_addr = Localhost(22001);
     const auto server_addr = Localhost(22002);
@@ -106,12 +100,7 @@ TEST(QuicSession, LoopbackHandshakeAndOneEncryptedStreamPayload) {
 
     EXPECT_TRUE(info.mainnet_relay_ready);
 
-    // Explicit teardown so session destructors run while both sessions are
-    // still in scope, making the by-reference writer captures unambiguously safe.
-    client_session->Close();
-    server_session->Close();
-    client_session.reset();
-    server_session.reset();
+    // Pair teardown disconnects both writers before joining either session.
 }
 
 TEST(QuicSession, PostHandshakeStreamSurvivesDelayedSecondSend) {
@@ -129,16 +118,9 @@ TEST(QuicSession, PostHandshakeStreamSurvivesDelayedSecondSend) {
     options.private_key_pem = kTestPrivateKey;
     options.verify_peer = false;
 
-    std::shared_ptr<QuicSession> client_session;
-    std::shared_ptr<QuicSession> server_session;
-    auto client_writer = [&server_session](std::vector<uint8_t> bytes) {
-        if (server_session) server_session->EnqueueIncomingPacket(std::move(bytes));
-    };
-    auto server_writer = [&client_session](std::vector<uint8_t> bytes) {
-        if (client_session) client_session->EnqueueIncomingPacket(std::move(bytes));
-    };
-    server_session = std::make_shared<QuicSession>(server_writer);
-    client_session = std::make_shared<QuicSession>(client_writer);
+    dinero::network::test::QuicLoopbackPair pair;
+    auto& client_session = pair.client;
+    auto& server_session = pair.server;
 
     const auto client_addr = Localhost(22101);
     const auto server_addr = Localhost(22102);
@@ -182,10 +164,7 @@ TEST(QuicSession, PostHandshakeStreamSurvivesDelayedSecondSend) {
     EXPECT_TRUE(client_session->active()) << client_session->last_error();
     EXPECT_TRUE(server_session->active()) << server_session->last_error();
 
-    client_session->Close();
-    server_session->Close();
-    client_session.reset();
-    server_session.reset();
+    // Pair teardown disconnects both writers before joining either session.
 }
 
 int main(int argc, char** argv) {

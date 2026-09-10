@@ -314,6 +314,20 @@ void RpcClient::onReplyFinished() {
     QString currentServerUrl = url_.toString();
     serverFailCount_[currentServerUrl]++;
 
+    // A lost response does not prove a fund-moving request was rejected.
+    // Never replay it on another server (or after reloading a cookie). The
+    // wallet's operation journal owns reconciliation and explicit retry.
+    const bool fundMoving = method == "wallet.shield" || method == "wallet.unshield" ||
+        method == "wallet.transfer" || method == "wallet.sendtoaddress" ||
+        method == "sendtoaddress" || method == "sendrawtransaction" ||
+        method == "wallet.sendrawtransaction" || method.startsWith("wallet.covenant.");
+    if (fundMoving) {
+      if (httpStatus == 401) loadCookie(); // prepare the next explicitly reviewed request
+      Q_EMIT rpcError(method, httpStatus == 401 ? 401 : -1, httpStatus == 401 ? "unauthorized" : errorString);
+      Q_EMIT connectionFailed(errorString);
+      return;
+    }
+
     // Try failover if we've had multiple failures
     if (serverFailCount_[currentServerUrl] >= MAX_FAILURES_BEFORE_SWITCH && servers_.size() > 1) {
       qWarning() << "Server" << currentServerUrl << "failed" << serverFailCount_[currentServerUrl]

@@ -10,6 +10,15 @@ private Q_SLOTS:
     void parsesDinExactly();
     void rejectsInvalidDin();
     void productionLockoutIsReadOnly();
+    void daemonCapabilityFailsClosed() {
+        using ShieldedTransferPolicy::daemonAllowsSpending;
+        QVERIFY(!daemonAllowsSpending({}));
+        QVERIFY(!daemonAllowsSpending({{"spend_enabled", "true"}}));
+        QVERIFY(!daemonAllowsSpending({{"spend_enabled", false}}));
+        QVERIFY(!daemonAllowsSpending({{"spend_enabled", true}, {"error", "wallet_locked"}}));
+        QVERIFY(daemonAllowsSpending({{"spend_enabled", true}}));
+        QVERIFY(!daemonAllowsSpending({{"spend_enabled", false}})); // reorg revokes permission
+    }
 };
 
 void ShieldedTransferPolicyTest::onlyFreshOrRejectedIntentMaySubmit() {

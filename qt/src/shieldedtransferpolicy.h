@@ -1,9 +1,15 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
+#include <QJsonObject>
 #include <limits>
 
 namespace ShieldedTransferPolicy {
+inline bool daemonAllowsSpending(const QJsonObject& status) {
+    return (!status.contains("error") || status.value("error").isNull()) &&
+           status.value("spend_enabled").isBool() && status.value("spend_enabled").toBool();
+}
 inline bool maySubmit(const QString& stage, bool operationRunning) {
     return !operationRunning && (stage.isEmpty() || stage == "rejected");
 }

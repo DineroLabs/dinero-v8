@@ -1,3 +1,5 @@
+#include "wallet/private_covenant_descriptor.h"
+#include <openssl/rand.h>
 /**
  * Shielded pool JSON-RPC adapters.
  *
@@ -20,6 +22,7 @@
 #include "daemon/services/wallet_service.h"
 #include "dinero/daemon/execution_context.h"
 #include "consensus/chainparams.h"
+#include "consensus/shielded/wallet_activation.h"
 #include "consensus/pq/p2mr_consensus.h"
 #include "primitives/transaction.h"
 #include "wallet/canonical_wallet_utxo.h"
@@ -148,32 +151,18 @@ WalletManager* AcquireWallet(const ExecutionContext& ctx, Json& err, bool requir
 // Mainnet lockout for the FUND-MOVING shielded RPCs, pending the
 // spend-authority activation height.
 //
-// The shielded pool is live on mainnet (shielded_activation_height = 8650), so
-// these calls work today. But a note sent to ANOTHER party's address is
-// committed to a key the SENDER derives, leaving the sender able to spend it
-// back. The circuit that closes this shipped dormant
-// (shielded_spend_auth_activation_height = UINT32_MAX on every network) and
-// activation additionally needs a paired epoch reset.
-//
-// MAINNET ONLY, deliberately. regtest and testnet are untouched: the shielded
-// integration suite drives these exact RPCs on regtest, and gating them
-// everywhere would disable the tests that protect this subsystem.
-//
-// READ-ONLY methods are NOT gated. wallet.shieldedbalance, wallet.listshielded
-// and wallet.getshieldedaddress neither move value nor create a spendable
-// note; blocking them would hide a user's existing balance and look like data
-// loss. Only shield / unshield / transfer are refused.
-//
-// The mainnet pool is empty (shielded_tree_size = 0), so nothing is stranded.
-// Remove this once an activation height is set and the wallet side is
-// complete — the Qt lockout (kShieldedUiLockedOut) should be lifted with it.
-bool RejectIfShieldedSpendLocked(Json& err) {
-    if (GetActiveChain() == Chain::MAINNET) {
-        err["error"]         = "shielded_spend_locked";
-        err["error_message"] =
-            "shielded shield/unshield/transfer are temporarily unavailable on "
-            "mainnet: the spend-authority fix is not yet activated. Balance "
-            "and address queries still work.";
+// Production fund-moving RPCs wait for the committed Auth epoch. Read-only
+// balance/address calls remain available. The same decision is published to Qt.
+bool RejectIfShieldedSpendLocked(const ExecutionContext& ctx, Json& err) {
+    if (GetActiveChain() == Chain::REGTEST) return false;
+    auto cs = ctx.daemon ? std::dynamic_pointer_cast<dinero::ChainstateService>(
+                              ctx.daemon->chainstate) : nullptr;
+    const auto& params = Params();
+    if (!cs || !dinero::consensus::shielded::WalletAuthEpochReady(
+                   cs->getBlockHeight(), params.shielded_spend_auth_activation_height,
+                   params.shielded_spend_auth_epoch_reset_height)) {
+        err["error"] = "shielded_spend_locked";
+        err["error_message"] = "Shielded payments await the confirmed spend-authority activation block.";
         return true;
     }
     return false;
@@ -262,10 +251,10 @@ void StoreCachedShieldedAddress(WalletManager& wm,
 //   - explicit_fee = fee_una (committed to via the binding-sig sighash)
 // Signs the transparent inputs with TransactionSigner and submits to mempool.
 // ---------------------------------------------------------------------------
-Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
+Json RpcWalletShieldWithCovenant(const ExecutionContext& ctx, const Json& params, const std::array<uint8_t,512>* covenant_memo) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
-    if (RejectIfShieldedSpendLocked(result)) return result;
+    if (RejectIfShieldedSpendLocked(ctx, result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -478,7 +467,7 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
         if (have_recipient) {
             attach_rc = ops::AttachAddressedShieldOutputBundle(
                 tx, recipient_address, value_una, *wm,
-                have_recipient_memo ? &recipient_memo_buf : nullptr, persist);
+                have_recipient_memo ? &recipient_memo_buf : nullptr, persist, covenant_memo);
         } else {
             attach_rc = ops::AttachShieldOutputBundle(tx, value_una, *wm,
                                                       tip_height, persist);
@@ -679,6 +668,10 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
 }
 
 // ---------------------------------------------------------------------------
+Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
+    return RpcWalletShieldWithCovenant(ctx, params, nullptr);
+}
+
 // wallet.unshield
 //
 // Params: { "amount_una": <exact int>|"amount": <legacy DIN float>,
@@ -692,7 +685,7 @@ Json rpc_wallet_shield(const ExecutionContext& ctx, const Json& params) {
 Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
-    if (RejectIfShieldedSpendLocked(result)) return result;
+    if (RejectIfShieldedSpendLocked(ctx, result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -896,10 +889,10 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
 //
 // Both waves: empty transparent vin/vout, value_balance = -fee_una.
 // ---------------------------------------------------------------------------
-Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
+Json RpcWalletTransferWithCovenant(const ExecutionContext& ctx, const Json& params, const std::array<uint8_t,512>* covenant_memo) {
     Json result;
     if (ShieldedRefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
-    if (RejectIfShieldedSpendLocked(result)) return result;
+    if (RejectIfShieldedSpendLocked(ctx, result)) return result;
     if (RejectIfShieldedNotActive(result)) return result;
     auto* wm = AcquireWallet(ctx, result);
     if (!wm) return result;
@@ -1130,7 +1123,7 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             auto probe_rc = ops::AttachAddressedTransferInputBundle(
                 probe, leaf_indices, recipient_address, amount_una, fee_una, *wm,
                 recipient_memo.empty() ? nullptr : &recipient_memo,
-                /*persist=*/false);
+                /*persist=*/false, covenant_memo);
             if (probe_rc.status != ops::OpStatus::Ok) {
                 result["error"] = "attach_transfer_failed";
                 result["error_message"] = probe_rc.error;
@@ -1153,7 +1146,7 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
                         probe2, leaf_indices, recipient_address, amount_una,
                         final_fee, *wm,
                         recipient_memo.empty() ? nullptr : &recipient_memo,
-                        /*persist=*/false);
+                        /*persist=*/false, covenant_memo);
                     if (probe_rc2.status != ops::OpStatus::Ok) {
                         result["error"] = "attach_transfer_failed";
                         result["error_message"] = probe_rc2.error;
@@ -1187,7 +1180,7 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
             auto probe_rc = ops::AttachAddressedTransferInputBundle(
                 probe, leaf_indices, recipient_address, amount_una, fee_una, *wm,
                 recipient_memo.empty() ? nullptr : &recipient_memo,
-                /*persist=*/false);
+                /*persist=*/false, covenant_memo);
             if (probe_rc.status != ops::OpStatus::Ok) {
                 result["error"] = "attach_transfer_failed";
                 result["error_message"] = probe_rc.error;
@@ -1218,7 +1211,7 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
         dinero::Transaction tx = make_envelope(final_fee);
         auto attach_rc = ops::AttachAddressedTransferInputBundle(
             tx, leaf_indices, recipient_address, amount_una, final_fee, *wm,
-            recipient_memo.empty() ? nullptr : &recipient_memo);
+            recipient_memo.empty() ? nullptr : &recipient_memo, true, covenant_memo);
         if (attach_rc.status != ops::OpStatus::Ok) {
             result["error"] = "attach_transfer_failed";
             result["error_message"] = attach_rc.error;
@@ -1386,6 +1379,97 @@ Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
 }
 
 // ---------------------------------------------------------------------------
+Json rpc_wallet_transfer(const ExecutionContext& ctx, const Json& params) {
+    return RpcWalletTransferWithCovenant(ctx, params, nullptr);
+}
+
+bool PrivateCovenantsReady(const ExecutionContext& ctx) {
+    auto cs = ctx.daemon ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate) : nullptr;
+    const auto h = Params().shielded_private_covenant_activation_height;
+    return cs && !cs->IsInSafeMode() && h != UINT32_MAX && cs->getBlockHeight() >= h;
+}
+
+Json rpc_private_covenant_fund(const ExecutionContext& ctx, const Json& params) {
+    Json error;
+    if (!PrivateCovenantsReady(ctx)) { error["error"] = "private_covenants_not_active"; return error; }
+    Json forwarded;
+    std::array<uint8_t,512> memo{};
+    struct EraseMemo { std::array<uint8_t,512>& value; ~EraseMemo() { OPENSSL_cleanse(value.data(),value.size()); } } erase_memo{memo};
+    std::string source;
+    try {
+        dinero::wallet::PrivateCovenantDescriptor descriptor;
+        if (!params.isObject() || !params["minimum_height"].isUInt() ||
+            !params["spend_fee_una"].isInt64() || params["spend_fee_una"].asInt64() <= 0 ||
+            !params["outputs"].isArray() || params["outputs"].empty() || params["outputs"].size() > 2 ||
+            !params["owner_address"].isString()) throw std::invalid_argument("invalid covenant fields");
+        descriptor.minimum_height = params["minimum_height"].asUInt();
+        descriptor.fee_una = params["spend_fee_una"].asUInt64();
+        if (RAND_bytes(descriptor.seed.data(),descriptor.seed.size()) != 1) throw std::runtime_error("randomness unavailable");
+        const std::string hrp = GetActiveChain() == Chain::MAINNET ? "dins" : GetActiveChain() == Chain::TESTNET ? "tdins" : "rdins";
+        const auto owner = dinero::wallet::shielded::DecodeShieldedAddress(params["owner_address"].asString());
+        if (owner.hrp != hrp) throw std::invalid_argument("wrong owner network");
+        for (const auto& output : params["outputs"]) {
+            if (!output["value_una"].isInt64() || output["value_una"].asInt64() <= 0 || !output["address"].isString())
+                throw std::invalid_argument("invalid covenant payee");
+            const auto address = dinero::wallet::shielded::DecodeShieldedAddress(output["address"].asString());
+            if (address.hrp != hrp) throw std::invalid_argument("wrong payee network");
+            descriptor.outputs.push_back({address.payload,output["value_una"].asUInt64()});
+        }
+        memo = dinero::wallet::EncodePrivateCovenantDescriptor(descriptor);
+        forwarded["address"] = params["owner_address"];
+        forwarded["amount_una"] = static_cast<int64_t>(dinero::wallet::PrivateCovenantFundingValue(descriptor));
+        if (params.isMember("fee_una")) {
+            if (!params["fee_una"].isInt64() || params["fee_una"].asInt64() <= 0 ||
+                params["fee_una"].asInt64() > INT64_MAX-forwarded["amount_una"].asInt64())
+                throw std::invalid_argument("invalid funding fee");
+            forwarded["fee_una"] = params["fee_una"];
+        }
+        source = params.get("source", "public").asString();
+        if (source != "private" && source != "public") throw std::invalid_argument("source must be public or private");
+    } catch (const std::exception& e) { error["error"] = "invalid_private_covenant"; error["error_message"] = e.what(); return error; }
+    // Validation errors above are known to precede submission. Never classify
+    // an exception after broadcast as a safely retryable validation failure.
+    return source == "private" ? RpcWalletTransferWithCovenant(ctx,forwarded,&memo)
+                               : RpcWalletShieldWithCovenant(ctx,forwarded,&memo);
+}
+
+Json rpc_private_covenant_spend(const ExecutionContext& ctx, const Json& params) {
+    Json result;
+    if (ShieldedRefuseIfSafeMode(ctx,result)) return result;
+    if (RejectIfShieldedSpendLocked(ctx,result)) return result;
+    if (RejectIfShieldedNotActive(result)) return result;
+    if (!PrivateCovenantsReady(ctx)) { result["error"] = "private_covenants_not_active"; return result; }
+    auto* wallet = AcquireWallet(ctx,result); if (!wallet) return result;
+    if (!params.isObject() || !params["leaf_index"].isUInt64()) { result["error"] = "leaf_index_required"; return result; }
+    const auto cm_hex = params.get("commitment_hex", "").asString();
+    consensus::shielded::Hash expected_commitment{};
+    const auto nibble = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c-'0';
+        if (c >= 'a' && c <= 'f') return c-'a'+10;
+        if (c >= 'A' && c <= 'F') return c-'A'+10;
+        return -1;
+    };
+    if (cm_hex.size()!=64) { result["error"]="commitment_hex_required"; return result; }
+    for(size_t i=0;i<32;++i) {
+        const int high=nibble(cm_hex[2*i]), low=nibble(cm_hex[2*i+1]);
+        if(high<0 || low<0) { result["error"]="invalid_commitment_hex"; return result; }
+        expected_commitment[i]=static_cast<uint8_t>((high<<4)|low);
+    }
+    auto mempool = ctx.daemon ? std::dynamic_pointer_cast<dinero::MempoolService>(ctx.daemon->mempool) : nullptr;
+    if (!mempool) { result["error"] = "mempool_unavailable"; return result; }
+    dinero::Transaction tx;
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    const auto built = ops::AttachPrivateCovenantInputBundle(tx,params["leaf_index"].asUInt64(),expected_commitment,*wallet);
+    if (built.status != ops::OpStatus::Ok) { result["error"] = built.error; return result; }
+    auto submit = SubmitShieldedWalletTransaction(mempool->mempool(),tx,"rpc:wallet.covenant.privatespend");
+    if (!submit.accepted()) {
+        RollbackRejectedShieldedWalletMutation(*wallet,{built.nullifier},{},result);
+        SetShieldedWalletMempoolRejection(result,submit,tx,false); return result;
+    }
+    result["txid"] = tx.GetTxid().AsUint256().GetHex(); result["status"] = "private_covenant_spent";
+    return result;
+}
+
 // wallet.shieldedbalance
 // ---------------------------------------------------------------------------
 Json rpc_wallet_shieldedbalance(const ExecutionContext& ctx, const Json& params) {
@@ -1403,16 +1487,27 @@ Json rpc_wallet_shieldedbalance(const ExecutionContext& ctx, const Json& params)
 
     uint64_t bal = ops::GetShieldedBalance(*wm);
     auto notes = ops::ListShieldedNotes(*wm, true);
+    uint64_t covenant_balance = 0;
     int64_t pending_count = 0;
     int64_t confirmed_count = 0;
     for (const auto& note : notes) {
         if (note.confirmed && !note.spent) {
             ++confirmed_count;
+            if (note.key_scheme == dinero::wallet::NoteKeyScheme::PrivateCovenant) covenant_balance += note.value_una;
         } else if (!note.confirmed && !note.spent) {
             ++pending_count;
         }
     }
 
+    Json spend_status;
+    const bool spend_locked = RejectIfShieldedSpendLocked(ctx, spend_status);
+    result["spend_enabled"] = !spend_locked;
+    result["spend_activation_height"] = static_cast<uint64_t>(Params().shielded_spend_auth_activation_height);
+    result["private_covenants_enabled"] = PrivateCovenantsReady(ctx);
+    if (spend_locked) result["spend_disabled_reason"] = spend_status["error_message"];
+
+    result["covenant_balance_una"] = static_cast<int64_t>(covenant_balance);
+    result["ordinary_balance_una"] = static_cast<int64_t>(bal >= covenant_balance ? bal-covenant_balance : 0);
     result["balance_una"]  = static_cast<int64_t>(bal);
     result["balance_din"]  = static_cast<double>(bal) / 1e8;
     result["note_count"]   = confirmed_count;
@@ -1469,6 +1564,22 @@ Json rpc_wallet_listshielded(const ExecutionContext& ctx, const Json& params) {
             cm_hex += buf;
         }
         note["commitment_hex"] = cm_hex;
+        note["private_covenant"] = n.key_scheme == dinero::wallet::NoteKeyScheme::PrivateCovenant;
+        if (n.key_scheme == dinero::wallet::NoteKeyScheme::PrivateCovenant) {
+            const auto descriptor = dinero::wallet::DecodePrivateCovenantDescriptor(n.covenant_memo);
+            if (descriptor) {
+                note["minimum_height"] = descriptor->minimum_height;
+                auto cs = ctx.daemon ? std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate) : nullptr;
+                note["mature"] = cs && cs->getBlockHeight() >= descriptor->minimum_height;
+                note["spend_fee_una"] = static_cast<int64_t>(descriptor->fee_una);
+                note["outputs"] = Json(::Json::arrayValue);
+                const auto hrp = GetActiveChain() == Chain::MAINNET ? "dins" : GetActiveChain() == Chain::TESTNET ? "tdins" : "rdins";
+                for (const auto& payee : descriptor->outputs) {
+                    Json item; item["address"] = dinero::wallet::shielded::EncodeShieldedAddress(payee.address,hrp);
+                    item["value_una"] = static_cast<int64_t>(payee.value_una); note["outputs"].append(item);
+                }
+            } else note["descriptor_error"] = "private covenant recovery data missing";
+        }
         arr.append(note);
     }
 
@@ -1633,6 +1744,8 @@ Json rpc_wallet_getshieldedaddress(const ExecutionContext& ctx, const Json& para
 // Registration — external linkage (called from rpc_context_wiring.cpp)
 // ---------------------------------------------------------------------------
 void registerShieldedWalletMethods() {
+    g_rpcRegistry.registerHandler("wallet.covenant.privatefund", rpc_private_covenant_fund, RegisterMode::Overwrite, "v7-shielded");
+    g_rpcRegistry.registerHandler("wallet.covenant.privatespend", rpc_private_covenant_spend, RegisterMode::Overwrite, "v7-shielded");
     g_rpcRegistry.registerHandler("wallet.shield",
                                   rpc_wallet_shield,
                                   RegisterMode::Overwrite,

@@ -468,6 +468,7 @@ struct AddressedRecipient {
     /// can bind it into the note but cannot predict the eventual nullifier.
     consensus::shielded::Hash   nfk_commitment{};
     uint64_t                    value_una = 0;
+    std::optional<std::array<uint8_t,512>> covenant_memo;
 };
 
 struct AttachAddressedTransferResult {
@@ -537,7 +538,8 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     uint64_t fee_una,
     dinero::WalletManager& wallet,
     const std::string* recipient_memo_utf8 = nullptr,
-    bool persist = true);
+    bool persist = true,
+    const std::array<uint8_t,512>* covenant_memo = nullptr);
 
 // ── Shield-to-recipient: transparent → external dins1 address ─────────
 //
@@ -590,14 +592,13 @@ struct OutgoingViewEmissionContext {
  *     Spending requires both the recipient-bound scalar `s` (derived from
  *     `ask`, never `ivk`) and the per-note nullifier key derived from `nvk`.
  *
- * Defaults to false — the legacy behaviour — because
- * `shielded_spend_auth_activation_height` is UINT32_MAX on every network. The
- * caller must pass the height-derived flag; a note built under the wrong one is
+ * Defaults to false for historical callers. Production callers must pass
+ * the height-derived Auth flag; a note built under the wrong one is
  * rejected at consensus (version-byte mismatch), not silently mis-accepted.
  *
- * `rcm_override` / `esk_override` are ONLY for deterministic test vectors
- * (golden byte-pins on the construction convention). Production callers
- * MUST pass nullptr so every output gets a fresh rcm + esk (unlinkability).
+ * Overrides are for deterministic test vectors and recreation of an already
+ * committed private covenant output. Covenant material is derived from a fresh
+ * per-contract random seed. Other production callers MUST pass nullptr.
  */
 AddressedRecipientOutput BuildAddressedRecipientOutput(
     const AddressedRecipient& recipient,
@@ -643,6 +644,11 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     uint64_t value_una,
     dinero::WalletManager& wallet,
     const std::array<uint8_t, 512>* recipient_memo = nullptr,
-    bool persist = true);
+    bool persist = true,
+    const std::array<uint8_t,512>* covenant_memo = nullptr);
+
+AttachUnshieldResult AttachPrivateCovenantInputBundle(dinero::Transaction& tx,
+    uint64_t leaf_index, const consensus::shielded::Hash& expected_commitment,
+    dinero::WalletManager& wallet, bool persist = true);
 
 } // namespace dinero::wallet::shielded_ops

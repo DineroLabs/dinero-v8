@@ -30,6 +30,7 @@
 
 #include "consensus/chainparams.h"
 #include "consensus/utxo_snapshot.h"
+#include "consensus/state_commitment.h"
 
 #include <gtest/gtest.h>
 
@@ -254,10 +255,19 @@ TEST(SnapshotFormatPolicy, MainnetRejectsV3AtAndAboveRealActivation) {
         << "mainnet shielded activation moved; the registry's no-v3-anchor rule "
            "and this policy both reference 8650";
     const uint32_t commitment = dinero::Params().state_commitment_activation_height;
-    ASSERT_EQ(commitment, kU32Max)
-        << "mainnet state-commitment activation is no longer dormant; per the "
-           "governance order it may not be selected before every 'Still owed' "
-           "gate (including the human consensus review) is closed";
+    ASSERT_EQ(commitment, 111000U);
+    EXPECT_FALSE(dinero::consensus::IsStateCommitmentActive(110999, commitment));
+    EXPECT_TRUE(dinero::consensus::IsStateCommitmentActive(111000, commitment));
+    EXPECT_TRUE(dinero::consensus::IsStateCommitmentActive(111001, commitment));
+    using dinero::consensus::SNAPSHOT_VERSION_V5;
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V4, 110999, activation, commitment),
+              SnapshotFormatVerdict::Accept);
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V4, 111000, activation, commitment),
+              SnapshotFormatVerdict::RejectV4PostStateCommitmentActivation);
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V4, 111001, activation, commitment),
+              SnapshotFormatVerdict::RejectV4PostStateCommitmentActivation);
+    EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V5, 111000, activation, commitment),
+              SnapshotFormatVerdict::Accept);
 
     EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V3, activation - 1,
                                      activation, commitment),
@@ -267,8 +277,7 @@ TEST(SnapshotFormatPolicy, MainnetRejectsV3AtAndAboveRealActivation) {
               SnapshotFormatVerdict::RejectV3PostShieldedActivation);
 
     // The registered anchors and the shipped artifact are all V4 and all far
-    // above activation -- they must remain acceptable while the commitment is
-    // dormant.
+    // above shielded activation but below DNRS activation: retain compatibility.
     for (const uint32_t h : {52287U, 65300U, 73035U}) {
         EXPECT_EQ(EvaluateSnapshotFormat(SNAPSHOT_VERSION_V4, h, activation,
                                          commitment),

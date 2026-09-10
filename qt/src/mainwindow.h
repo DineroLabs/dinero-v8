@@ -220,6 +220,7 @@ private:
   void updateMiningOutputCinematicFrame();
   void updateWalletSwitcherState();
   bool shouldIgnoreWalletScopedResult(const QString& method) const;
+  class PrivateCovenantWidget* privateCovenantWidget_ = nullptr;
   void bindWalletScopedState(const QString& walletName);
   void clearWalletScopedUiState();
   void refreshWalletMiningAddress();
@@ -513,6 +514,14 @@ private:
   // must be null until the mining output widget exists.
   QTextEdit* txtMiningOutput_ = nullptr;
   QTabWidget* mainTabs_ = nullptr;
+  QWidget* sendComposer_ = nullptr;
+  QGroupBox* sendFormGroup_ = nullptr;
+  bool composerContractDraft_ = false;
+  bool sendSubmissionPending_ = false;
+  QString paymentRecipientDraft_, paymentAmountDraft_;
+  QString covenantRecipientDraft_, covenantAmountDraft_;
+  QVBoxLayout* sendComposerHome_ = nullptr;
+  QVBoxLayout* covenantComposerHome_ = nullptr;
   QWidget* miningTabWidget_ = nullptr;
   QWidget* miningInfoGroup_ = nullptr;
   QWidget* miningControlsGroup_ = nullptr;

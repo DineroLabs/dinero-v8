@@ -1,9 +1,11 @@
 # state_commitment_v1 — binding shielded state to the chain
 
-**Status:** implemented on `codex/shielded-integration`; regtest enforcement
-starts at height 1. Mainnet/testnet remain dormant. Historical gap demonstrations
-below describe their recorded source revisions, not the current integration.
-See [integration status](../audits/SHIELDED_INTEGRATION_STATUS.md).
+**Status (2026-09-09):** implemented and scheduled by the operator for mainnet
+height **111000**, separate from the Auth reset at 110000. Regtest enforcement
+starts at height 1; testnet remains dormant. This is a source configuration,
+not a claim of production deployment or completed fleet qualification.
+Historical gap demonstrations below describe their recorded source revisions.
+See [the 111000 activation record](../activation/dnrs-111000.md).
 
 ## The gap
 
@@ -333,14 +335,12 @@ property.
 
 ### Status
 
-The **format is frozen**; activation is not. No mainnet or testnet activation
-height is selected: `state_commitment_activation_height` is the dormant
-`UINT32_MAX` sentinel on both networks, `IsStateCommitmentActive()` — the
-single authority every enforcement site must call — answers false there at
-every height, and tests pin both the dormant sweep and the sentinel value.
-Regtest activates at height 1 so the enforcement machinery is exercised by
-tests. Selecting a real height remains a separate reviewed change gated on the
-"Still owed before any activation" list below.
+The format is frozen. Mainnet activation is scheduled at **111000**;
+`IsStateCommitmentActive()` remains the single predicate at every enforcement
+site. Testnet retains the `UINT32_MAX` sentinel, and regtest activates at 1.
+Existing pre-111000 snapshots retain their historical policy; they do not gain
+publisher-independent authentication retroactively. Production rollout and
+qualification remain required before the scheduled height.
 
 ## Adoption rule (post-activation)
 
@@ -350,7 +350,9 @@ A snapshot is acceptable when **all** hold:
 2. the base is buried at least *N* blocks below the header tip;
 3. `snapshot.utreexo_root == header.utreexo_root`, and the forest recomputes to
    it (already enforced today);
-4. `snapshot.shielded_root == header.shielded_root`.
+4. the v5 coinbase Merkle proof matches the selected header, and its unique
+   DNRS commitment equals the SHR1 digest recomputed from the snapshot.
+   There is no native shielded-root field in the unchanged 128-byte header.
 
 The compiled-in anchor registry then becomes unnecessary. Note it is already an
 **optional** gate, not a restriction on which heights may load:
@@ -471,11 +473,13 @@ live-state mutation. See [the Gate D report](../audits/SHIELDED_GATE_D_VERIFICAT
 for exact cases, results and limits. This is local engineering evidence, not the
 independent consensus review or approval to activate.
 
-## Still owed before any activation
+## Production rollout requirements
 
-* scheduled activation height + compatibility period, clear of any future
-  `shielded_epoch_reset_height`
-* independent review
+* Deploy and qualify the scheduled 111000 candidate with adequate compatibility
+  lead time; the Auth reset remains separately scheduled at 110000.
+* Complete release review and fleet qualification. The operator designated
+  Codex as reviewer; implementation-agent review is not independent review.
+* Preserve the existing snapshot burial policy and communicate its risk limits.
 
 ## Why determinism is the whole risk
 
