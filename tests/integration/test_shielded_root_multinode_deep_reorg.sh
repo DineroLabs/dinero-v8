@@ -56,9 +56,16 @@ rpc() { # <rpcport> <datadir> <method> [params-json]
     # No cookie yet = daemon still starting. Return empty rather than calling
     # curl with an empty --user, which prompts for a password and hangs the run.
     [[ -n "${cookie}" ]] || return 0
-    curl -s -m 120 --user "${cookie}" </dev/null \
+    local rc=0
+    curl -sS -m 120 --user "${cookie}" </dev/null \
         --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${m}\",\"params\":${p}}" \
-        -H 'content-type: application/json' "http://127.0.0.1:${rp}/"
+        -H 'content-type: application/json' "http://127.0.0.1:${rp}/" || rc=$?
+    if [[ "${rc}" != 0 ]]; then
+        # Method/port identify the failed operation without leaking credentials
+        # or wallet parameters. Preserve curl's exit status under set -e.
+        echo "[FAIL] RPC ${m} on port ${rp}: curl exit ${rc}; logs at ${WORK}" >&2
+        return "${rc}"
+    fi
 }
 jget() { python3 -c "import json,sys
 d=json.load(sys.stdin)
