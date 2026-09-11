@@ -141,6 +141,10 @@ jobs:
         uses: Jimver/cuda-toolkit@f1b76035ffe6d08118acdd33faf5ce002cf7c023 # v0.2.25
         with:
           cuda: '12.2.0'
+          # The action failed before installation while saving its cache.
+          # Download directly; CUDA availability is still checked by the build.
+          use-github-cache: false
+          use-local-cache: false
           method: local
           sub-packages: '["nvcc", "nvrtc"]'
 
