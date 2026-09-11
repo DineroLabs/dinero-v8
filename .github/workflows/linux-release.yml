@@ -191,6 +191,31 @@ jobs:
           echo "tarball=$OUT.tar.gz" >> "$GITHUB_OUTPUT"
           echo "sumfile=SHA256SUMS-linux-x86_64-$V" >> "$GITHUB_OUTPUT"
 
+      - name: Build and verify packaged-service Debian artifact
+        env:
+          DEB_BUILD_OPTIONS: parallel=2
+        run: |
+          sudo apt-get install -y --no-install-recommends debhelper devscripts zlib1g-dev
+          V='${{ steps.ver.outputs.version }}'
+          export DEBFULLNAME='DineroLabs Release' DEBEMAIL='team@dinerolabs.org'
+          dch --newversion "$V-1" --distribution stable 'Build the reviewed release source with current packaged-service metadata.'
+          dpkg-buildpackage -us -uc -b
+          DEB="../dinero-core_${V}-1_amd64.deb"
+          test "$(dpkg-deb -f "$DEB" Version)" = "$V-1"
+          test "$(dpkg-deb -f "$DEB" Architecture)" = amd64
+          mkdir -p deb-check
+          dpkg-deb -x "$DEB" deb-check
+          test -x deb-check/usr/bin/dinerod
+          test -x deb-check/usr/bin/dinero-cli
+          deb-check/usr/bin/dinerod --version
+          deb-check/usr/bin/dinero-cli --version
+          sudo dpkg -i "$DEB"
+          test "$(dpkg-query -W -f='${Status}' dinero-core)" = 'install ok installed'
+          test "$(systemctl is-active dinero.service || true)" != active
+          sudo dpkg -r dinero-core
+          cp "$DEB" .
+          sha256sum "dinero-core_${V}-1_amd64.deb" > "SHA256SUMS-dinero-core-${V}"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -198,6 +223,8 @@ jobs:
           path: |
             ${{ steps.pkg.outputs.tarball }}
             ${{ steps.pkg.outputs.sumfile }}
+            dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb
+            SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}
           if-no-files-found: error
 
       - name: Attach to release
