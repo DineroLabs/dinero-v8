@@ -135,6 +135,7 @@ static ChainParams g_mainnet = {
     // Deliberately separate from the Auth epoch reset at 110000.
     // Upgrade validators, miners and snapshot consumers before this height.
     .state_commitment_activation_height = 111000,
+    .contextual_locks_activation_height = 111000,
     // Local snapshot acceptance policy, not a consensus finality guarantee.
     // A base needs 288 descendant headers on the selected best-work chain.
     .state_commitment_burial_depth = 288,
@@ -452,6 +453,7 @@ static ChainParams g_regtest = {
     // genesis invalid (or demand an exemption nobody has tested). Height 1
     // lets tests exercise enforcement end-to-end from the first mined block.
     .state_commitment_activation_height = 1,
+    .contextual_locks_activation_height = 111000,
     // PROVISIONAL test value — small enough for integration tests to mine past.
     .state_commitment_burial_depth = 8,
 
@@ -497,6 +499,7 @@ std::string ConsensusChecksum(const ChainParams& params) {
        // node-local acceptance policy, not block validity.
        << "state_commitment_height="
        << params.state_commitment_activation_height << '\n'
+       << "contextual_locks_height=" << params.contextual_locks_activation_height << '\n'
        // Fleet drift detection must cover the shielded cutovers as well.
        << "shielded_activation_height=" << params.shielded_activation_height << '\n'
        << "shielded_input_binding_activation_height=" << params.shielded_input_binding_activation_height << '\n'

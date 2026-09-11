@@ -136,6 +136,39 @@ extern "C" int dinero_shielded_compute_note_commitment(
     }
 }
 
+extern "C" int dinero_shielded_compute_auth_note(
+    const uint8_t ak32[32], const uint8_t nvk32[32], const uint8_t d11[11],
+    const uint8_t rcm32[32], uint64_t value_una, uint64_t leaf_index,
+    uint8_t out_commitment32[32], uint8_t out_nullifier32[32]) {
+    if (!ak32 || !nvk32 || !d11 || !rcm32 ||
+        !out_commitment32 || !out_nullifier32) {
+        return DINERO_SHIELDED_ERR_INVALID_ARGUMENT;
+    }
+    try {
+        const auto ak = CopyHash(ak32);
+        auto nvk = CopyHash(nvk32);
+        HashCleanser nvk_guard{&nvk};
+        auto rcm = CopyHash(rcm32);
+        HashCleanser rcm_guard{&rcm};
+        deriv::Diversifier d{};
+        std::memcpy(d.data(), d11, d.size());
+        sh::Hash packed_d{};
+        std::memcpy(packed_d.data(), d.data(), d.size());
+        const auto pk = deriv::DeriveDiversifiedSpendPublicKey(ak, d);
+        auto nfk = deriv::DeriveDiversifiedNullifierKey(nvk, d);
+        HashCleanser nfk_guard{&nfk};
+        const auto recipient = sh::AuthRecipientCommitmentKey(
+            pk, deriv::NullifierKeyCommitment(nfk));
+        const auto cm = sh::NoteCommitment(packed_d, recipient, ValueToHash(value_una), rcm);
+        const auto nf = sh::ComputeNullifier(nfk, leaf_index);
+        std::memcpy(out_commitment32, cm.data(), cm.size());
+        std::memcpy(out_nullifier32, nf.data(), nf.size());
+        return DINERO_SHIELDED_OK;
+    } catch (...) {
+        return DINERO_SHIELDED_ERR_EXCEPTION;
+    }
+}
+
 extern "C" int dinero_shielded_compute_nullifier(
     const uint8_t rcm[32],
     uint64_t leaf_index,
@@ -156,9 +189,10 @@ extern "C" int dinero_shielded_compute_nullifier(
     }
 }
 
-extern "C" int dinero_shielded_build_unshield_bundle(
+static int BuildUnshieldBundle(
     const dinero_shielded_unshield_request* req,
-    dinero_shielded_unshield_result* out) {
+    dinero_shielded_unshield_result* out,
+    const dinero_shielded_auth_unshield_request* auth) {
     if (!out) {
         return DINERO_SHIELDED_ERR_INVALID_ARGUMENT;
     }
@@ -190,8 +224,10 @@ extern "C" int dinero_shielded_build_unshield_bundle(
 
         const auto* note = req->note;
         sh::Hash rcm = CopyHash(note->rcm);
-        sh::Hash sk_note = deriv::DeriveNoteSpendKey(rcm);
+        HashCleanser rcm_guard{&rcm};
+        sh::Hash sk_note{};
         HashCleanser sk_note_guard{&sk_note};
+        if (!auth) sk_note = deriv::DeriveNoteSpendKey(rcm);
 
         ops::UnshieldNoteInput input;
         input.secret_key = sk_note;
@@ -203,11 +239,33 @@ extern "C" int dinero_shielded_build_unshield_bundle(
         HashCleanser input_secret_guard{&input.secret_key};
         HashCleanser input_randomness_guard{&input.randomness};
         HashCleanser input_d_guard{&input.d};
+        HashCleanser input_nullifier_guard{&input.nullifier_key};
+        if (auth) {
+            for (size_t i = 11; i < input.d.size(); ++i) {
+                if (input.d[i] != 0) {
+                    return Fail(out, DINERO_SHIELDED_ERR_INVALID_ARGUMENT,
+                                "Auth diversifier has nonzero padding");
+                }
+            }
+            deriv::Diversifier d{};
+            std::memcpy(d.data(), input.d.data(), d.size());
+            auto ask = CopyHash(auth->ask32);
+            HashCleanser ask_guard{&ask};
+            auto nvk = CopyHash(auth->nvk32);
+            HashCleanser nvk_guard{&nvk};
+            auto spend = deriv::DeriveDiversifiedSpendKey(ask, CopyHash(auth->ak32), d);
+            HashCleanser spend_guard{&spend.s};
+            input.secret_key = spend.s;
+            input.nullifier_key = deriv::DeriveDiversifiedNullifierKey(nvk, d);
+            input.key_scheme = dinero::wallet::NoteKeyScheme::Auth;
+        }
+
         for (size_t i = 0; i < sh::TREE_DEPTH; ++i) {
             input.merkle_path[i] = CopyHash(note->merkle_path[i]);
         }
 
-        auto built = ops::BuildUnshieldBundleForTx(tx, input, req->fee_una);
+        auto built = ops::BuildUnshieldBundleForTx(tx, input, req->fee_una,
+                                                   /*cv_bound=*/auth != nullptr);
 
         if (built.status != ops::OpStatus::Ok) {
             const std::string message = built.error.empty()
@@ -226,6 +284,22 @@ extern "C" int dinero_shielded_build_unshield_bundle(
         return Fail(out, DINERO_SHIELDED_ERR_EXCEPTION,
                     "unknown exception");
     }
+}
+
+extern "C" int dinero_shielded_build_unshield_bundle(
+    const dinero_shielded_unshield_request* req,
+    dinero_shielded_unshield_result* out) {
+    return BuildUnshieldBundle(req, out, nullptr);
+}
+
+extern "C" int dinero_shielded_build_auth_unshield_bundle(
+    const dinero_shielded_auth_unshield_request* req,
+    dinero_shielded_unshield_result* out) {
+    if (!req) {
+        if (out) ResetResult(out);
+        return DINERO_SHIELDED_ERR_INVALID_ARGUMENT;
+    }
+    return BuildUnshieldBundle(&req->base, out, req);
 }
 
 extern "C" void dinero_shielded_free_result(

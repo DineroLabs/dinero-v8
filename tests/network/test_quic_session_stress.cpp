@@ -100,18 +100,21 @@ TEST(QuicSessionStress, OneThousandLoopbackHandshakesAllSucceed) {
     constexpr int kIterations = 1000;
     constexpr auto kPerHandshakeTimeout = std::chrono::seconds(5);
 
-    int successes = 0;
-    int failures = 0;
     for (int i = 0; i < kIterations; ++i) {
-        if (RunOneHandshake(kPerHandshakeTimeout)) {
-            ++successes;
-        } else {
-            ++failures;
-        }
+        if (i % 100 == 0) std::cout << "handshake iteration " << i << std::endl;
+        ASSERT_TRUE(RunOneHandshake(kPerHandshakeTimeout))
+            << "handshake failed at iteration " << i;
     }
+}
 
-    EXPECT_EQ(successes, kIterations) << "stress test failures: " << failures
-                                      << " of " << kIterations;
+TEST(QuicSessionStress, IdleCloseWakesSessionThread) {
+    for (int i = 0; i < 1000; ++i) {
+        if (i % 100 == 0) std::cout << "idle close iteration " << i << std::endl;
+        dinero::network::QuicSession session([](std::vector<uint8_t>) {});
+        if (i % 2) std::this_thread::yield();
+        // No connection/timer exists: shutdown is the only possible wakeup.
+        session.Close();
+    }
 }
 
 TEST(QuicSessionStress, TeardownDuringHandshakeIsSafe) {

@@ -3296,11 +3296,17 @@ void MainWindow::setupUI() {
     cmbContractTemplate_ = new QComboBox;
     cmbContractTemplate_->addItem("Simple Lock", "vault");
     cmbContractTemplate_->addItem("Lock with Recovery Key (Unavailable)", "conditional");
-    cmbContractTemplate_->addItem("Time Lock", "timelock");
+    cmbContractTemplate_->addItem("Time Lock (Unavailable)", "timelock");
+    if (auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model())) {
+      if (auto* item = model->item(cmbContractTemplate_->count() - 1)) {
+        item->setEnabled(false);
+        item->setToolTip("Pending Core contextual lock enforcement verification");
+      }
+    }
     cmbContractTemplate_->addItem("Batch Payment", "payroll");
     cmbContractTemplate_->addItem("Custom (Advanced, Unavailable)", "custom");
     cmbContractTemplate_->setToolTip("Simple Lock: funds locked to a spending template\n"
-                                     "Timelock: funds locked for N blocks/hours/days\n"
+                                     "Timelock: unavailable pending Core lock enforcement\n"
                                      "Payroll: batch payment to multiple recipients (CTV)\n"
                                      "Recovery and custom scripts are not available");
     templateRow->addWidget(cmbContractTemplate_);
@@ -15005,6 +15011,12 @@ void MainWindow::onSendTransaction() {
         "\xE2\x9D\x8C Recovery contracts are disabled until the multi-path descriptor profile is available."));
       btnSend_->setEnabled(true); updateSendModeUi(); return;
     } else if (templateKey == "timelock") {
+      auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model());
+      auto* item = model ? model->item(cmbContractTemplate_->currentIndex()) : nullptr;
+      if (!item || !item->isEnabled()) {
+        lblSendStatus_->setText("Timelock funding requires an upgraded node with contextual lock enforcement active.");
+        btnSend_->setEnabled(true); updateSendModeUi(); return;
+      }
       templateLabel = "Timelock";
       int delay = spnTimelockDuration_ ? spnTimelockDuration_->value() : 144;
       const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
@@ -15913,6 +15925,18 @@ void MainWindow::onWsSyncProgress(const QJsonObject& syncData) {
 // === Node Status Update (for status pill) ===
 
 void MainWindow::updateNodeStatus(const QJsonObject& blockchainInfo, const QJsonObject& networkInfo, const QJsonObject& mempoolInfo) {
+  if (cmbContractTemplate_) {
+    const int index = cmbContractTemplate_->findData("timelock");
+    if (auto* model = qobject_cast<QStandardItemModel*>(cmbContractTemplate_->model())) {
+      if (auto* item = model->item(index)) {
+        const bool active = blockchainInfo.value("contextual_locks_active").toBool(false);
+        item->setEnabled(active);
+        item->setText(active ? "Time Lock" : "Time Lock (Unavailable)");
+        item->setToolTip(active ? "Delay measured from funding confirmation" : "Requires active Core contextual lock enforcement");
+      }
+    }
+  }
+
   if (!lblNodeChain_ || !lblNodeHeight_ || !lblNodePeers_ || !lblNodeMempool_ || !lblNodeSyncStatus_) {
     return;
   }

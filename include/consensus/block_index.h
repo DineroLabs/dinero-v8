@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <memory>
 #include <set>
+#include <unordered_set>
+#include <algorithm>
 #include <unordered_map>
 #include <vector>
 #include "primitives/block.h"
@@ -177,8 +179,34 @@ struct ByWorkThenHash {
     }
 };
 
-// Global candidate tips set
-extern std::set<CBlockIndex*, ByWorkThenHash> g_candidates;
+class BlockCandidates {
+    // Block-index work is repaired during header import and restart. Membership
+    // must not depend on mutable comparator keys: std::set cannot be repaired
+    // by reinserting a pointer whose pointed-to work changed while in the set.
+    std::unordered_set<CBlockIndex*> entries_;
+public:
+    void insert(CBlockIndex* entry) { if (entry) entries_.insert(entry); }
+    void erase(CBlockIndex* entry) { entries_.erase(entry); }
+    bool empty() const { return entries_.empty(); }
+    size_t size() const { return entries_.size(); }
+    void clear() { entries_.clear(); }
+    std::vector<CBlockIndex*> Snapshot() const {
+        std::vector<CBlockIndex*> result(entries_.begin(), entries_.end());
+        std::sort(result.begin(), result.end(), ByWorkThenHash{});
+        return result;
+    }
+    template <typename Eligible>
+    CBlockIndex* Best(Eligible eligible) const {
+        CBlockIndex* best = nullptr;
+        for (auto* entry : entries_) {
+            if (eligible(entry) && (!best || ByWorkThenHash{}(entry, best))) best = entry;
+        }
+        return best;
+    }
+};
+
+// Global candidate tips membership; rank current work only when selecting.
+extern BlockCandidates g_candidates;
 
 // Block index management
 extern std::unordered_map<uint256, std::unique_ptr<CBlockIndex>> g_block_index;

@@ -276,14 +276,15 @@ TEST_F(
         spend_.funding_outpoint, spend_.funding_coin));
     BlockValidator validator(&utxos);
 
+    // These pre-contextual-lock activation fixtures do not require parent MTP.
     uint64_t input_value = 0;
     std::string error;
     EXPECT_FALSE(validator.ValidateTransaction(
-        spend_.tx, 19, false, input_value, error));
+        spend_.tx, 19, false, dinero::uint256{}, input_value, error));
 
     error.clear();
     EXPECT_TRUE(validator.ValidateTransaction(
-        spend_.tx, 20, false, input_value, error))
+        spend_.tx, 20, false, dinero::uint256{}, input_value, error))
         << error;
     EXPECT_EQ(input_value, 100'000U);
 
@@ -291,14 +292,14 @@ TEST_F(
     mutated.vout[0].value = AmountUna::Una(98'999);
     error.clear();
     EXPECT_FALSE(validator.ValidateTransaction(
-        mutated, 20, false, input_value, error));
+        mutated, 20, false, dinero::uint256{}, input_value, error));
 
     Transaction bad_control_block = spend_.tx;
     ASSERT_GT(bad_control_block.vin[0].witness[1].size(), 1U);
     bad_control_block.vin[0].witness[1][1] ^= 0x01;
     error.clear();
     EXPECT_FALSE(validator.ValidateTransaction(
-        bad_control_block, 20, false, input_value, error));
+        bad_control_block, 20, false, dinero::uint256{}, input_value, error));
 
     CovenantSpend wrong_template = spend_;
     ASSERT_EQ(wrong_template.tx.vin[0].witness[0].size(), 34U);
@@ -311,7 +312,7 @@ TEST_F(
     BlockValidator wrong_template_validator(&wrong_template_utxos);
     error.clear();
     EXPECT_FALSE(wrong_template_validator.ValidateTransaction(
-        wrong_template.tx, 20, false, input_value, error));
+        wrong_template.tx, 20, false, dinero::uint256{}, input_value, error));
 }
 
 TEST_F(

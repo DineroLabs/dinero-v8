@@ -13,6 +13,7 @@
  * (deterministic, no network/timing), plus the full reorg-candidacy composition.
  */
 #include <iostream>
+#include <algorithm>
 #include <vector>
 #include <memory>
 #include <string>
@@ -176,6 +177,36 @@ int main() {
         check(!reorg_eligible(tip), "tip without body → not eligible");
     }
 
+    std::cout << "=== candidate chainwork refresh ===\n";
+    {
+        auto* active = mk(94, DATA, nullptr, "active");
+        auto* imported = mk(98, DATA, nullptr, "imported");
+        active->chainwork = std::string(62, '0') + "94";
+        imported->chainwork = std::string(62, '0') + "01";
+        dinero::BlockCandidates candidates;
+        candidates.insert(active);
+        candidates.insert(imported);
+        auto eligible = [](CBlockIndex*) { return true; };
+        check(candidates.Best(eligible) == active, "original work selects active tip");
+        // Header import/materialization repairs work after candidacy. The
+        // current block-index work, not insertion-time order, must win.
+        imported->chainwork = std::string(62, '0') + "98";
+        check(candidates.Best(eligible) == imported, "work refresh reranks before reinsertion");
+        candidates.insert(imported);
+        check(candidates.size() == 2, "reinsertion cannot duplicate a candidate");
+        check(candidates.Best(eligible) == imported, "refreshed higher work wins after reinsertion");
+        candidates.erase(imported);
+        check(candidates.Best(eligible) == active, "erasure works after work changes");
+        candidates.insert(imported);
+        imported->chainwork = active->chainwork;
+        check(candidates.Best(eligible) == (dinero::ByWorkThenHash{}(active, imported) ? active : imported),
+              "equal-work refresh preserves consensus hash tie-break");
+        check(candidates.Best([&](CBlockIndex* b) { return b != active; }) == imported,
+              "eligibility excludes an otherwise best candidate");
+        check(candidates.Best([](CBlockIndex*) { return false; }) == nullptr,
+              "no ready candidate returns null");
+    }
+
     std::cout << "=== operational activation retry preservation ===\n";
     {
         using namespace std::chrono_literals;
@@ -191,6 +222,33 @@ int main() {
         check(retries.RecordFailure(candidate, start + 70ms) == 40ms, "retry delay remains capped");
         retries.Clear(candidate);
         check(retries.IsReady(candidate, start), "success clears retry state");
+    }
+
+    // Reproduce child-before-parent import while the branch still awaits
+    // validation. Graph connectivity must not depend on chain validity.
+    {
+        BlockHeader root_header;
+        root_header.nonce = 92001;
+        root_header.difficulty = 0x207fffff;
+        auto* root = dinero::AddBlockIndex(root_header, 0);
+        root->status = 0; // Known header, not a connected validation base.
+        BlockHeader parent_header = root_header;
+        parent_header.prev_block_hash = root->hash;
+        parent_header.nonce++;
+        BlockHeader child_header = parent_header;
+        child_header.prev_block_hash = parent_header.GetHash();
+        child_header.nonce++;
+        auto* child = dinero::AddBlockIndex(child_header, 2);
+        check(child->pprev == nullptr, "child initially awaits missing parent");
+        auto* parent = dinero::AddBlockIndex(parent_header, 1);
+        check(child->pprev == parent, "unvalidated arriving parent repairs child ancestry");
+        check(std::count(parent->children.begin(), parent->children.end(), child) == 1,
+              "arriving parent owns exactly one child link");
+        check((child->status & dinero::BLOCK_VALID_CHAIN) == 0,
+              "repair does not promote unvalidated child");
+        dinero::AddBlockIndex(parent_header, 1);
+        check(std::count(parent->children.begin(), parent->children.end(), child) == 1,
+              "repeated parent insertion does not duplicate child link");
     }
 
     std::cout << (g_failures == 0

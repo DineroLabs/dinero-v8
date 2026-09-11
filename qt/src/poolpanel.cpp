@@ -2,6 +2,9 @@
 
 #include "poolpanel.h"
 
+#include "poolcontract.h"
+#include "poolearnings.h"
+#include "poolshare.h"
 #include "rpcclient.h"
 
 #include <QFormLayout>
@@ -31,6 +34,13 @@
 namespace {
 
 constexpr qint64 kUnaPerDin = 100000000;
+/// `blockchain.getaddresshistory` caps at 200 entries. Asking for the cap
+/// makes a truncated answer detectable: a reply holding exactly this many
+/// entries may have older ones behind it.
+constexpr int kEarningsHistoryPage = 200;
+/// Paging guard. DineroSJ's fee address takes 41 pages; 200 pages covers
+/// 40,000 receipts and stops a malformed reply from looping forever.
+constexpr int kEarningsMaxPages = 200;
 /// Marks which request a reply belongs to. One QNetworkAccessManager serves
 /// both the status GET and the payout POST, and `finished` fires for both.
 constexpr QNetworkRequest::Attribute kKindAttr = QNetworkRequest::User;
@@ -233,13 +243,33 @@ void PoolPanel::setupUi() {
     grid->addWidget(lbl_connected_miners_, 1, 1);
     grid->addWidget(new QLabel("Operator fee:"), 1, 2);
     grid->addWidget(lbl_fee_, 1, 3);
-    grid->addWidget(new QLabel("PPLNS window:"), 2, 0);
+    // "This run" and the PPLNS window do not survive a restart equally,
+    // and after one they disagree — which reads as a bug unless the panel
+    // says why. The share/block counters live in the pool's in-memory
+    // Ledger; the window is written to the PPLNS journal and is restored.
+    const QString counters_tip = QStringLiteral(
+        "Counted in memory since the pool process started, so a pool restart resets them to zero.\n"
+        "The PPLNS window is journaled to disk and is NOT reset, which is why the two disagree "
+        "after a restart.\n"
+        "The blocks themselves are on the chain either way; only these counters reset.");
+    const QString window_tip = QStringLiteral(
+        "Shares still inside the payout window, and the time they span.\n"
+        "Journaled to disk, so it survives a pool restart — unlike the counters beside it.");
+    auto* window_caption = new QLabel("PPLNS window:");
+    window_caption->setToolTip(window_tip);
+    lbl_window_->setToolTip(window_tip);
+    grid->addWidget(window_caption, 2, 0);
     grid->addWidget(lbl_window_, 2, 1);
     grid->addWidget(new QLabel("Template producer:"), 2, 2);
     grid->addWidget(lbl_producer_, 2, 3);
-    grid->addWidget(new QLabel("Shares (this run):"), 3, 0);
+    auto* shares_caption = new QLabel("Shares (since pool restart):");
+    auto* blocks_caption = new QLabel("Blocks found (since pool restart):");
+    for (QLabel* l : {shares_caption, blocks_caption, lbl_shares_, lbl_blocks_}) {
+        l->setToolTip(counters_tip);
+    }
+    grid->addWidget(shares_caption, 3, 0);
     grid->addWidget(lbl_shares_, 3, 1);
-    grid->addWidget(new QLabel("Blocks found (this run):"), 3, 2);
+    grid->addWidget(blocks_caption, 3, 2);
     grid->addWidget(lbl_blocks_, 3, 3);
     grid->addWidget(new QLabel("Daemon:"), 4, 0);
     grid->addWidget(lbl_daemon_, 4, 1);
@@ -309,16 +339,25 @@ void PoolPanel::setupUi() {
     history_grid->addWidget(new QLabel("24 hours"), 2, 0); history_grid->addWidget(lbl_history_24h_, 2, 1);
     grid->addWidget(history, 12, 0, 1, 4);
 
-    miners_table_ = new QTableWidget(0, 3);
-    miners_table_->setHorizontalHeaderLabels({"Contributor payout script", "Next-block share", "Window weight"});
+    // Two share columns, because they are two different numbers and the
+    // difference is the operator's own fee. `bps` from /status is a share
+    // of the CONTRIBUTOR POT, which exists only after the fee has been
+    // taken off the block; reporting it alone under a heading like
+    // "next-block share" overstates every contributor by exactly the fee.
+    // The split column is kept so the table still agrees with a hand-run
+    // `curl /status`.
+    miners_table_ = new QTableWidget(0, 4);
+    miners_table_->setHorizontalHeaderLabels(
+        {"Contributor payout script", "Share of contributor split", "Share of block", "Window weight"});
     miners_table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     miners_table_->verticalHeader()->setVisible(false);
-    // The script is the long column; the two numeric ones get fixed widths
+    // The script is the long column; the numeric ones get fixed widths
     // so the header stops truncating to "tributor payout sc".
     miners_table_->horizontalHeader()->setStretchLastSection(false);
     miners_table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    miners_table_->setColumnWidth(1, 150);
-    miners_table_->setColumnWidth(2, 150);
+    miners_table_->setColumnWidth(1, 180);
+    miners_table_->setColumnWidth(2, 130);
+    miners_table_->setColumnWidth(3, 150);
     miners_table_->verticalHeader()->setDefaultSectionSize(24);
     miners_table_->setMaximumHeight(24 * 5 + 28);
     auto* contributors = new QGroupBox("PPLNS contributors (not connected sessions)");
@@ -332,12 +371,15 @@ void PoolPanel::setupUi() {
     root->addWidget(status_group_);
 
     // ---- Earnings, from the chain ------------------------------------
-    auto* earn_group = new QGroupBox("Current unspent fee balance (verified on-chain)");
+    auto* earn_group = new QGroupBox("Fee earnings (verified on-chain)");
     auto* earn_layout = new QVBoxLayout(earn_group);
     auto* earn_hint = new QLabel(
-        "Current confirmed, unspent outputs at this address, read from your node. This is not "
-        "lifetime earnings: spent outputs are intentionally excluded.");
+        "Read from your node, not from the pool \xE2\x80\x94 so it is still right when the pool is "
+        "down, and it cannot be overstated by a pool reporting on itself."
+        "<br/><b>Lifetime</b> is every fee ever paid to this address and only ever rises. "
+        "<b>Unspent</b> is what is still sitting there, so it falls when you move funds out.");
     earn_hint->setWordWrap(true);
+    earn_hint->setTextFormat(Qt::RichText);
     earn_hint->setStyleSheet("color: #9fb3c8;");
     earn_layout->addWidget(earn_hint);
 
@@ -349,6 +391,14 @@ void PoolPanel::setupUi() {
     btn_check_earnings_ = new QPushButton("Check");
     earn_row->addWidget(btn_check_earnings_);
     earn_layout->addLayout(earn_row);
+
+    // Lifetime leads: it is the number that answers "what has this pool
+    // earned me". Unspent sits under it as the balance it actually is.
+    lbl_lifetime_ = new QLabel("\xE2\x80\x93");
+    lbl_lifetime_->setTextFormat(Qt::RichText);
+    lbl_lifetime_->setWordWrap(true);
+    lbl_lifetime_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    earn_layout->addWidget(lbl_lifetime_);
 
     lbl_earnings_ = new QLabel("\xE2\x80\x93");
     lbl_earnings_->setTextFormat(Qt::RichText);
@@ -701,11 +751,23 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
 }
 
 bool PoolPanel::validateStatus(const QJsonObject& s, QString* error) const {
-    const auto schema = strictInt(s.value("schema_version"));
-    if (schema && *schema != 2) {
-        *error = QStringLiteral("unsupported schema_version %1").arg(*schema);
+    // A floor, not an equality. The ops contract only ever adds fields,
+    // so a pool newer than this panel is still readable — and rejecting
+    // one would mean an operator upgrading their pool takes their own
+    // Pool tab offline until a new wallet ships from a different repo.
+    // The version says what the pool IS; `schema_min_compatible` says
+    // what it is still readable BY, which is the only one of the two a
+    // client can safely act on. A newer pool that declares nothing is
+    // refused rather than assumed additive — a field can keep its name
+    // and type while changing meaning, and no field check catches that.
+    if (!poolcontract::isSupportedStatus(s)) {
+        *error = poolcontract::unsupportedStatusReason(s);
         return false;
     }
+    // Present means "at least v2, and the pool says this panel can read
+    // it", so the v2 field requirements below apply — that is what the
+    // compatibility declaration promises.
+    const auto schema = strictInt(s.value("schema_version"));
     const QList<const char*> common = {"pool_version", "uptime_secs", "connected_miners", "fee_bps",
         "window_entries", "window_span_secs", "template_heartbeat_age_secs",
         "template_phase", "accepted_shares_total", "rejected_shares_total", "blocks_found_total", "miners"};
@@ -890,8 +952,16 @@ void PoolPanel::applyStatus(const QJsonObject& s) {
         const QJsonObject m = miners.at(i).toObject();
         const qint64 bps = strictInt(m.value("bps")).value_or(0);
         miners_table_->setItem(i, 0, new QTableWidgetItem(m.value("payout_script_hex").toString()));
-        miners_table_->setItem(i, 1, new QTableWidgetItem(QString("%1%").arg(bps / 100.0, 0, 'f', 2)));
-        miners_table_->setItem(i, 2, new QTableWidgetItem(m.value("window_weight").toString()));
+        miners_table_->setItem(i, 1, new QTableWidgetItem(poolshare::splitShareText(bps)));
+        // Uses the fee the pool is reporting on THIS refresh; an operator
+        // who changes the fee sees this column move on the next poll.
+        auto* block_share = new QTableWidgetItem(poolshare::blockShareText(bps, fee_bps));
+        block_share->setToolTip(
+            QString("%1 of the contributor split, which is the block reward less your %2% fee.")
+                .arg(poolshare::splitShareText(bps))
+                .arg(fee_bps / 100.0, 0, 'f', 2));
+        miners_table_->setItem(i, 2, block_share);
+        miners_table_->setItem(i, 3, new QTableWidgetItem(m.value("window_weight").toString()));
     }
     // Size to the contributors actually present (capped), so the card does
     // not reserve a block of empty rows for miners that are not there.
@@ -1068,18 +1138,91 @@ void PoolPanel::onCheckEarningsClicked() {
         lbl_earnings_->setText("<span style='color:#d8a37b;'>Enter your fee address.</span>");
         return;
     }
+    // Two questions, two calls. The balance is a UTXO-set sum and comes
+    // back immediately; the lifetime total makes the node walk its blocks
+    // backwards, which is seconds rather than milliseconds on a synced
+    // chain, so it gets its own progress text.
+    earnings_address_ = addr;
+    lifetime_acc_ = poolearnings::Received{};
+    lifetime_pages_ = 0;
+    lbl_lifetime_->setText("reading the chain\xE2\x80\xA6 (this walks the block history and can take a few seconds)");
     lbl_earnings_->setText("checking the chain\xE2\x80\xA6");
     earnings_in_flight_ = true;
+    lifetime_in_flight_ = true;
     btn_check_earnings_->setEnabled(false);
     rpc_->call("blockchain.getaddressbalance", QJsonArray{addr});
+    rpc_->call("blockchain.getaddresshistory", QJsonArray{addr, kEarningsHistoryPage});
+}
+
+void PoolPanel::finishEarningsRequest() {
+    if (!earnings_in_flight_ && !lifetime_in_flight_) {
+        btn_check_earnings_->setEnabled(true);
+    }
+}
+
+void PoolPanel::applyLifetime(const QJsonValue& result) {
+    if (!result.isObject()) {
+        lifetime_in_flight_ = false;
+        lbl_lifetime_->setText("<span style='color:#e06c75;'>Unexpected history reply from the node.</span>");
+        return;
+    }
+    const QJsonObject page = result.toObject();
+    poolearnings::addPage(lifetime_acc_, page);
+    ++lifetime_pages_;
+
+    // One reply is a page, not the history. Keep asking until the node
+    // returns a short page, or until the guard trips.
+    const std::optional<int> next = poolearnings::nextFromHeight(page, kEarningsHistoryPage);
+    if (next && lifetime_pages_ < kEarningsMaxPages) {
+        renderLifetime(/*final=*/false);
+        rpc_->call("blockchain.getaddresshistory",
+                   QJsonArray{earnings_address_, kEarningsHistoryPage, *next});
+        return;
+    }
+    if (next) {
+        poolearnings::markPageCapReached(lifetime_acc_);
+    }
+    lifetime_in_flight_ = false;
+    renderLifetime(/*final=*/true);
+}
+
+void PoolPanel::renderLifetime(bool final_page) {
+    const poolearnings::Received& r = lifetime_acc_;
+    QString detail;
+    if (!final_page) {
+        detail = QString("reading the chain\xE2\x80\xA6 %1 block rewards so far").arg(r.count);
+    } else if (!r.complete) {
+        detail = QString("<span style='color:#d8a37b;'>%1</span>").arg(r.caveat.toHtmlEscaped());
+    } else {
+        detail = QString("Every block reward ever paid to this address, across %1 %2.")
+                     .arg(r.count)
+                     .arg(r.count == 1 ? "payment" : "payments");
+    }
+    lbl_lifetime_->setText(
+        QString("<span style='font-size:19px; font-weight:700; color:#7bd88f;'>%1</span>"
+                "<span style='color:#9fb3c8; font-size:11px;'> lifetime</span>"
+                "<br/><span style='color:#9fb3c8; font-size:11px;'>%2</span>")
+            .arg(formatDin(r.total_una), detail));
 }
 
 void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
+    if (method == "blockchain.getaddresshistory") {
+        if (!lifetime_in_flight_ ||
+            !poolearnings::isForAddress(result.toObject(), earnings_address_)) {
+            return;
+        }
+        applyLifetime(result);
+        finishEarningsRequest();
+        return;
+    }
     if (method != "blockchain.getaddressbalance") {
         return;
     }
+    if (!earnings_in_flight_ || !poolearnings::isForAddress(result.toObject(), earnings_address_)) {
+        return;
+    }
     earnings_in_flight_ = false;
-    btn_check_earnings_->setEnabled(true);
+    finishEarningsRequest();
     if (!result.isObject()) {
         lbl_earnings_->setText("<span style='color:#e06c75;'>Unexpected reply from the node.</span>");
         return;
@@ -1098,18 +1241,32 @@ void PoolPanel::onRpcResult(const QString& method, const QJsonValue& result) {
     }
     lbl_earnings_->setText(
         QString("<span style='font-size:15px; font-weight:600; color:#7bd88f;'>%1</span>"
-                "<br/><span style='color:#9fb3c8; font-size:11px;'>Confirmed unspent balance at this address. "
-                "It excludes any pool fees that have already been spent.</span>")
+                "<span style='color:#9fb3c8; font-size:11px;'> unspent now</span>"
+                "<br/><span style='color:#9fb3c8; font-size:11px;'>Confirmed outputs still sitting at this "
+                "address. Lower than lifetime by whatever you have already moved out.</span>")
             .arg(formatDin(*balance)));
 }
 
 void PoolPanel::onRpcError(const QString& method, int code, const QString& message) {
-    if (method != "blockchain.getaddressbalance") {
+    const QString rendered = QString("<span style='color:#e06c75;'>Node could not answer: %1 [%2]</span>")
+                                 .arg(message.toHtmlEscaped())
+                                 .arg(code);
+    // Reported per line: the balance and the history fail independently,
+    // and a node that can answer one but not the other should still show
+    // the answer it has rather than blanking both.
+    if (method == "blockchain.getaddresshistory") {
+        if (!lifetime_in_flight_) {
+            return;
+        }
+        lifetime_in_flight_ = false;
+        lbl_lifetime_->setText(rendered);
+        finishEarningsRequest();
+        return;
+    }
+    if (method != "blockchain.getaddressbalance" || !earnings_in_flight_) {
         return;
     }
     earnings_in_flight_ = false;
-    btn_check_earnings_->setEnabled(true);
-    lbl_earnings_->setText(QString("<span style='color:#e06c75;'>Node could not answer: %1 [%2]</span>")
-                               .arg(message.toHtmlEscaped())
-                               .arg(code));
+    finishEarningsRequest();
+    lbl_earnings_->setText(rendered);
 }

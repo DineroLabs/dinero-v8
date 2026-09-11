@@ -755,6 +755,12 @@ din::Json rpc_context_getblockchaininfo(const ExecutionContext& ctx, const din::
     uint32_t height = chainstate->getBlockHeight();
     const auto peer_sync = CollectPeerSyncTelemetry(ctx);
     result["blocks"] = static_cast<int>(height);
+    result["contextual_locks_activation_height"] = dinero::Params().contextual_locks_activation_height;
+    result["contextual_locks_active"] = dinero::Params().contextual_locks_activation_height != UINT32_MAX &&
+        static_cast<uint64_t>(height) + 1 >= dinero::Params().contextual_locks_activation_height;
+    if (const auto* validator = chainstate->GetBlockValidator()) {
+        result["legacy_relative_locks_deferral_observed"] = validator->statelessRelativeLocksUnverified();
+    }
 
     // Header height: report the highest locally known selector/header-sync view.
     uint32_t header_height = height;
