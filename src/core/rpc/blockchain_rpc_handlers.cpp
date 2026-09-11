@@ -329,6 +329,12 @@ Json::Value rpc_getblockchaininfo(const Json::Value& params) {
             // without independent maturity validation (latches).
             cval["coinbase_maturity_deferral_observed"] =
                 bv ? bv->statelessMaturityUnverified() : false;
+            cval["relative_locks_independently_validated"] = !stateless || (bv && !bv->statelessRelativeLocksUnverified());
+            cval["relative_locks_deferral_observed"] = bv ? bv->statelessRelativeLocksUnverified() : false;
+            cval["contextual_locks_activation_height"] = dinero::Params().contextual_locks_activation_height;
+            result["contextual_locks_activation_height"] = dinero::Params().contextual_locks_activation_height;
+            result["contextual_locks_active"] = dinero::Params().contextual_locks_activation_height != UINT32_MAX &&
+                result["blocks"].asUInt64() + 1 >= dinero::Params().contextual_locks_activation_height;
             result["consensus_validation"] = cval;
         }
 

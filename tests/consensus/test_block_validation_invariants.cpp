@@ -1611,3 +1611,60 @@ int main(int argc, char** argv) {
     testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+TEST(BlockValidationInvariants, ContextualLocksRejectPrematureBlocksBeforeScripts) {
+    SelectRegtestDormantCommitment();
+    const auto saved_lock_height = MutableParams().contextual_locks_activation_height;
+    struct Restore { uint32_t height; ~Restore() { MutableParams().contextual_locks_activation_height = height; } } restore{saved_lock_height};
+    MutableParams().contextual_locks_activation_height = 111000;
+    for (bool relative : {false, true}) {
+        ConsensusUTXOSet utxos;
+        const OutPoint funding(MakeTestTxId(50111), 0);
+        UTXOEntry coin(AmountUna::Una(10000), MakeMatrixScript(0x42), 110999, false);
+        ASSERT_TRUE(utxos.AddCoin(funding, coin));
+        ASSERT_NE(utxos.GetForest().add(HashUTXOForCreationHeight(
+            funding.txid.AsUint256(), 0, 10000, coin.scriptPubKey, coin.height, false)), UINT64_MAX);
+        Block block = MakeCoinbaseBlock(111000, MakeTestHash(110999));
+        Transaction spend;
+        spend.vin.resize(1);
+        spend.vin[0].prevout = TxOutPoint{funding.txid, funding.vout};
+        spend.vin[0].sequence = relative ? 3 : 0xfffffffe;
+        spend.lockTime = relative ? 0 : 111000;
+        TxOutput output; output.value = AmountUna::Una(9000); output.scriptPubKey = coin.scriptPubKey;
+        spend.vout.push_back(output);
+        block.vtx.push_back(spend);
+        TxOutput witness; witness.value = AmountUna::Zero();
+        witness.scriptPubKey = BuildWitnessCommitment(block.vtx);
+        block.vtx[0].vout.push_back(witness);
+        BlockValidator validator(&utxos);
+        validator.setValidationMode(ValidationMode::STATEFUL);
+        BlockUndo undo; uint256 root; std::string error;
+        EXPECT_FALSE(validator.ApplyBlock(block, 111000, MakeTestHash(111000), undo, root, error));
+        EXPECT_NE(error.find(relative ? "non-final-relative-height-lock" : "non-final-absolute-lock"), std::string::npos) << error;
+        EXPECT_NE(utxos.GetCoin(funding), nullptr);
+    }
+}
+
+TEST(BlockValidationInvariants, StatelessAuthenticatesRelativeLockAge) {
+    SelectRegtestDormantCommitment();
+    const auto saved_lock_height = MutableParams().contextual_locks_activation_height;
+    struct Restore { uint32_t height; ~Restore() { MutableParams().contextual_locks_activation_height = height; } } restore{saved_lock_height};
+    MutableParams().contextual_locks_activation_height = 20;
+    ConsensusUTXOSet utxos;
+    OutPoint funding; UTXOEntry coin; UtreexoHash leaf;
+    SeedCpfpFunding(utxos, funding, coin, leaf);
+    const uint32_t height = 21;
+    Block block = MakeCpfpMatrixBlock(height, funding);
+    block.vtx.resize(2);
+    block.vtx[1].vin[0].sequence = 3;
+    block.utreexo = BuildBridgeCpfpUtreexoData(utxos, block, height);
+    BlockValidator validator(&utxos);
+    validator.setValidationMode(ValidationMode::STATELESS);
+    uint256 root; std::string error;
+    ASSERT_TRUE(validator.ComputeUtreexoRootPure(block, height, root, error)) << error;
+    block.header.utreexo_root = root;
+    BlockUndo undo;
+    EXPECT_FALSE(validator.ConnectBlock(block, height, MakeTestHash(9121), undo, error));
+    EXPECT_NE(error.find("non-final-relative-height-lock"), std::string::npos) << error;
+    EXPECT_FALSE(validator.statelessRelativeLocksUnverified());
+}

@@ -206,7 +206,8 @@ wait_mempool_absent() {
 start_a() {
     mkdir -p "${DATA_A}"
     "${DINEROD}" \
-        --regtest \
+        --regtest --consensus-contextual-locks-height="${CONTEXTUAL_LOCKS_HEIGHT:-111000}" \
+        ${REINDEX_OPTION:-} \
         --datadir="${DATA_A}" \
         --rpcport="${NODE_A_RPC}" \
         --p2pport="${NODE_A_P2P}" \
@@ -222,7 +223,7 @@ start_a() {
 start_b() {
     mkdir -p "${DATA_B}"
     "${DINEROD}" \
-        --regtest \
+        --regtest --consensus-contextual-locks-height="${CONTEXTUAL_LOCKS_HEIGHT:-111000}" \
         --datadir="${DATA_B}" \
         --rpcport="${NODE_B_RPC}" \
         --p2pport="${NODE_B_P2P}" \
@@ -666,3 +667,58 @@ jq -e --arg txid "${CCV_TXID}" \
 
 pass "CCV transition survived wallet signing, restart, reorg revalidation, relay, and reconfirmation"
 pass "profile-v1 covenant wallet/RPC multi-node lifecycle completed"
+
+if [[ "${TEST_CONTEXTUAL_LOCKS:-0}" == 1 ]]; then
+info "Checking mobile batch, relative and absolute lock requests"
+capability=$(rpc_result "$NODE_A_RPC" "$DATA_A" getblockchaininfo '[]')
+jq -e '.contextual_locks_active == true and .contextual_locks_activation_height == 20' <<<"$capability" >/dev/null || fail "node did not report active contextual lock capability"
+for mode in batch relative absolute; do
+    lock=0
+    sequence=4294967294
+    if [[ "$mode" == relative ]]; then sequence=3; fi
+    if [[ "$mode" == absolute ]]; then
+        tip=$(rpc_result "$NODE_A_RPC" "$DATA_A" getblockcount '[]' | jq -r '.')
+        lock=$((tip + 4))
+    fi
+    request=$(jq -nc --arg a "$MINER_A" --arg b "$MINER_B" --argjson sequence "$sequence" --argjson lock "$lock" '{outputs:[{address:$a,value_una:100000},{address:$b,value_una:200000}],sequence:$sequence,locktime:$lock,spend_fee_una:1000}')
+    funded=$(covenant_result "$NODE_A_RPC" "$DATA_A" wallet.covenant.ctvfund "$request")
+    descriptor=$(jq -r '.recovery_descriptor' <<<"$funded")
+    script=$(jq -r '.taproot.script_pubkey' <<<"$funded")
+    mine "$NODE_A_RPC" "$DATA_A" "$MINER_A" 1
+    wait_same_tip || fail "parity funding convergence"
+    funding_hash="$(best_hash "$NODE_A_RPC" "$DATA_A")"
+    unspent=$(rpc_result "$NODE_A_RPC" "$DATA_A" wallet.listunspent '[1,9999999]')
+    prevout=$(jq -c --arg script "$script" '[.[] | select(.scriptPubKey==$script)][0] | {txid,vout}' <<<"$unspent")
+    [[ $(jq -r '.txid' <<<"$prevout") != null ]] || fail "mobile discovery did not find funding"
+    built=$(covenant_result "$NODE_A_RPC" "$DATA_A" wallet.covenant.ctvspend "$(jq -nc --arg descriptor "$descriptor" --argjson prevout "$prevout" '{descriptor:$descriptor,prevouts:[$prevout]}')")
+    raw=$(jq -r '.hex' <<<"$built")
+    if [[ "$mode" != batch ]]; then
+        rejected=$(rpc_failure_result "$NODE_A_RPC" "$DATA_A" wallet.sendrawtransaction "$(jq -nc --arg hex "$raw" '[$hex]')")
+        [[ "$rejected" == *non-final* ]] || fail "premature timelock rejected for unexpected reason: $rejected"
+        mine "$NODE_A_RPC" "$DATA_A" "$MINER_A" 4
+        wait_same_tip || fail "timelock convergence"
+    fi
+    sent=$(rpc_result "$NODE_A_RPC" "$DATA_A" wallet.sendrawtransaction "$(jq -nc --arg hex "$raw" '[$hex]')")
+    txid=$(jq -r '.txid // .result // . // empty' <<<"$sent")
+    wait_mempool_contains "$NODE_B_RPC" "$DATA_B" "$txid" || fail "mobile spend relay"
+    mine "$NODE_B_RPC" "$DATA_B" "$MINER_B" 1
+    wait_same_tip || fail "mobile spend confirmation"
+    if [[ "$mode" == relative ]]; then
+        rpc_result "$NODE_A_RPC" "$DATA_A" invalidateblock "$(jq -nc --arg hash "$funding_hash" '[$hash]')" >/dev/null
+        wait_mempool_absent "$NODE_A_RPC" "$DATA_A" "$txid" || fail "reorg retained immature relative spend"
+        rpc_result "$NODE_A_RPC" "$DATA_A" reconsiderblock "$(jq -nc --arg hash "$funding_hash" '[$hash]')" >/dev/null
+        wait_same_tip || fail "relative lock chain did not recover after reconsider"
+    fi
+    pass "mobile $mode funded, discovered and spent after lock enforcement"
+done
+
+    expected_tip="$(best_hash "$NODE_A_RPC" "$DATA_A")"
+    stop_a
+    stop_b
+    REINDEX_OPTION=--reindex-chainstate start_a
+    [[ "$(best_hash "$NODE_A_RPC" "$DATA_A")" == "$expected_tip" ]] || fail "reindex changed the matured covenant tip"
+    stop_a
+    start_a
+    [[ "$(best_hash "$NODE_A_RPC" "$DATA_A")" == "$expected_tip" ]] || fail "restart lost reindexed covenant tip"
+    pass "matured covenant chain reindexes and restarts at the identical tip"
+fi

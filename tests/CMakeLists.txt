@@ -12766,3 +12766,32 @@ target_link_libraries(test_snapshot_binding PRIVATE GTest::gtest_main dinero_shi
 target_include_directories(test_snapshot_binding PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME SnapshotBinding COMMAND test_snapshot_binding)
 set_tests_properties(SnapshotBinding PROPERTIES LABELS "shielded;consensus;snapshot;mandatory" TIMEOUT 30)
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_contextual_locks.cpp)
+  add_executable(test_contextual_locks
+    tests/consensus/test_contextual_locks.cpp
+    src/common/logger.cpp
+    src/common/json_logger.cpp
+  )
+  target_link_libraries(test_contextual_locks PRIVATE
+    dinero_core        # block_lifecycle.cpp (BranchHasDataToConnectedBase)
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    secp256k1
+  )
+  link_zstd_if_needed(test_contextual_locks)
+  target_include_directories(test_contextual_locks PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_contextual_locks PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME ContextualLocksTest COMMAND test_contextual_locks)
+endif()
