@@ -39,6 +39,8 @@
 
 #pragma once
 
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QString>
 
 #include <optional>
@@ -121,6 +123,57 @@ inline QString unsupportedSchemaReason(qint64 schema_version,
                 .arg(kPanelSchema);
     }
     return QString();
+}
+
+/// Read the two fields straight off a status payload and decide.
+///
+/// This, not `classifySchema`, is what the panel calls — because the
+/// decision is only as good as what reaches it, and absence has to
+/// survive parsing AS absence. Defaulting a missing declaration to
+/// `kPanelSchema` would report "compatible with clients like me" on
+/// behalf of a pool that never said so, which is precisely the hole the
+/// declaration exists to close.
+///
+/// A payload with no `schema_version` at all is the legacy path, which
+/// the panel handles by hiding the readings it cannot get rather than
+/// refusing the pool outright, so it is not this function's to reject.
+inline SchemaVerdict classifyStatus(const QJsonObject& status) {
+    const QJsonValue version = status.value(QStringLiteral("schema_version"));
+    if (!version.isDouble()) {
+        return SchemaVerdict::Supported;
+    }
+    // A declaration that is not a whole number is not a declaration.
+    std::optional<qint64> min_compatible;
+    const QJsonValue declared = status.value(QStringLiteral("schema_min_compatible"));
+    if (declared.isDouble()) {
+        const double raw = declared.toDouble();
+        const auto whole = static_cast<qint64>(raw);
+        if (static_cast<double>(whole) == raw) {
+            min_compatible = whole;
+        }
+    }
+    return classifySchema(static_cast<qint64>(version.toDouble()), min_compatible);
+}
+
+inline bool isSupportedStatus(const QJsonObject& status) {
+    return classifyStatus(status) == SchemaVerdict::Supported;
+}
+
+inline QString unsupportedStatusReason(const QJsonObject& status) {
+    const QJsonValue version = status.value(QStringLiteral("schema_version"));
+    if (!version.isDouble()) {
+        return QString();
+    }
+    std::optional<qint64> min_compatible;
+    const QJsonValue declared = status.value(QStringLiteral("schema_min_compatible"));
+    if (declared.isDouble()) {
+        const double raw = declared.toDouble();
+        const auto whole = static_cast<qint64>(raw);
+        if (static_cast<double>(whole) == raw) {
+            min_compatible = whole;
+        }
+    }
+    return unsupportedSchemaReason(static_cast<qint64>(version.toDouble()), min_compatible);
 }
 
 }  // namespace poolcontract

@@ -21,6 +21,8 @@
 
 #include <optional>
 
+#include <QJsonObject>
+
 #include "../src/poolcontract.h"
 
 class TestPoolContract : public QObject {
@@ -75,6 +77,58 @@ private Q_SLOTS:
     // cannot itself be is nonsense, not a promise.
     void anIncoherentDeclarationIsRefused() {
         QVERIFY(!poolcontract::isSupportedSchema(2, 3));
+    }
+
+    // ---- through the parse-and-validate path, not just the decision ----
+    //
+    // The decision function can be right while the payload path feeds it
+    // the wrong thing. Absence has to survive parsing as ABSENCE: a
+    // default of 2 applied to a schema-3 payload would report
+    // "compatible with clients like me" on a pool that never said so,
+    // recreating the hole this whole rule exists to close.
+
+    static QJsonObject status(int version) {
+        QJsonObject o;
+        o["schema_version"] = version;
+        return o;
+    }
+
+    void anUndeclaredNewerPayloadIsRejectedThroughTheParsePath() {
+        // The case that matters: schema 3, no declaration, nothing in
+        // the payload to default from.
+        QVERIFY(!poolcontract::isSupportedStatus(status(3)));
+        QVERIFY(!poolcontract::isSupportedStatus(status(4)));
+        QVERIFY(poolcontract::unsupportedStatusReason(status(3))
+                    .contains("does not state", Qt::CaseInsensitive));
+    }
+
+    void aDeclaredNewerPayloadIsAcceptedThroughTheParsePath() {
+        QJsonObject o = status(3);
+        o["schema_min_compatible"] = 2;
+        QVERIFY(poolcontract::isSupportedStatus(o));
+
+        o["schema_min_compatible"] = 3;
+        QVERIFY(!poolcontract::isSupportedStatus(o));
+    }
+
+    void todaysUndeclaredSchemaTwoPayloadIsStillAccepted() {
+        QVERIFY(poolcontract::isSupportedStatus(status(2)));
+    }
+
+    // A pool omitting the version entirely is the legacy path, which the
+    // panel handles separately by hiding the readings it cannot get.
+    // This check must not claim it as unsupported.
+    void aPayloadWithNoVersionIsLeftToTheLegacyPath() {
+        QVERIFY(poolcontract::isSupportedStatus(QJsonObject{}));
+    }
+
+    // A declaration that is not an integer is not a declaration.
+    void aMalformedDeclarationIsNotTreatedAsAPromise() {
+        QJsonObject o = status(3);
+        o["schema_min_compatible"] = "2";
+        QVERIFY(!poolcontract::isSupportedStatus(o));
+        o["schema_min_compatible"] = 2.5;
+        QVERIFY(!poolcontract::isSupportedStatus(o));
     }
 
     // Each refusal has a different fix, and the message has to say

@@ -760,14 +760,14 @@ bool PoolPanel::validateStatus(const QJsonObject& s, QString* error) const {
     // client can safely act on. A newer pool that declares nothing is
     // refused rather than assumed additive — a field can keep its name
     // and type while changing meaning, and no field check catches that.
-    const auto schema = strictInt(s.value("schema_version"));
-    const auto min_compatible = s.contains("schema_min_compatible")
-                                    ? strictInt(s.value("schema_min_compatible"))
-                                    : std::nullopt;
-    if (schema && !poolcontract::isSupportedSchema(*schema, min_compatible)) {
-        *error = poolcontract::unsupportedSchemaReason(*schema, min_compatible);
+    if (!poolcontract::isSupportedStatus(s)) {
+        *error = poolcontract::unsupportedStatusReason(s);
         return false;
     }
+    // Present means "at least v2, and the pool says this panel can read
+    // it", so the v2 field requirements below apply — that is what the
+    // compatibility declaration promises.
+    const auto schema = strictInt(s.value("schema_version"));
     const QList<const char*> common = {"pool_version", "uptime_secs", "connected_miners", "fee_bps",
         "window_entries", "window_span_secs", "template_heartbeat_age_secs",
         "template_phase", "accepted_shares_total", "rejected_shares_total", "blocks_found_total", "miners"};
