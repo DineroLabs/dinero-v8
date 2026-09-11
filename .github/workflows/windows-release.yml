@@ -457,7 +457,10 @@ jobs:
               # require its bundled daemon to have started.
               $dataDir = Join-Path $env:RUNNER_TEMP 'dinero-qt-startup-smoke'
               New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-              $qt = Start-Process -FilePath (Join-Path $case.Dir 'dinero-qt.exe') -ArgumentList "-datadir=$dataDir" -PassThru
+              Write-Host 'Installed daemon version/startup dependency check:'
+              & (Join-Path $case.Dir 'dinerod.exe') --version
+              if ($LASTEXITCODE -ne 0) { throw 'Installed daemon cannot execute --version' }
+              $qt = Start-Process -FilePath (Join-Path $case.Dir 'dinero-qt.exe') -ArgumentList "-datadir=$dataDir" -RedirectStandardOutput "$dataDir\qt-stdout.log" -RedirectStandardError "$dataDir\qt-stderr.log" -PassThru
               try {
                 $deadline = (Get-Date).AddSeconds(90)
                 $daemonSeen = $false
@@ -468,6 +471,19 @@ jobs:
                   $daemonSeen = $daemonSeen -or ($null -ne (Get-Process dinerod -ErrorAction SilentlyContinue))
                 } while ((Get-Date) -lt $deadline)
                 if (-not $daemonSeen) { throw 'dinero-qt stayed open but its embedded dinerod never started' }
+              } catch {
+                $qt.Refresh()
+                Write-Host "GUI window title: $($qt.MainWindowTitle)"
+                Get-NetTCPConnection -LocalPort 20998 -ErrorAction SilentlyContinue | Format-Table State,OwningProcess
+                Add-Type -AssemblyName UIAutomationClient
+                $window = [System.Windows.Automation.AutomationElement]::FromHandle($qt.MainWindowHandle)
+                if ($window) {
+                  $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+                  @($elements | Select-Object -First 100 | ForEach-Object { $_.Current.Name }) | Out-File "$dataDir\window-text.txt"
+                  Get-Content "$dataDir\window-text.txt"
+                }
+                Get-ChildItem $dataDir -Filter '*.log' -File | ForEach-Object { Write-Host $_.Name; Get-Content $_.FullName -Tail 60 }
+                throw
               } finally {
                 Get-Process dinerod -ErrorAction SilentlyContinue | Stop-Process -Force
                 if (-not $qt.HasExited) { Stop-Process -Id $qt.Id -Force }
@@ -476,6 +492,18 @@ jobs:
             $uninstall = Start-Process -FilePath (Join-Path $case.Dir 'Uninstall.exe') -ArgumentList '/S' -Wait -PassThru
             if ($uninstall.ExitCode -ne 0) { throw "uninstall failed: $($case.Installer)" }
           }
+
+      - name: Preserve failed installer diagnostics and signed candidates
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-candidate-failure-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
+            ${{ runner.temp }}/dinero-qt-startup-smoke/window-text.txt
+            packaging/windows/dist/Dinero-*-Setup.exe
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Checksum final Windows matrix
         id: sums
