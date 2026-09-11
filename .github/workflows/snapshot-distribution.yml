@@ -1,0 +1,20 @@
+name: Snapshot distribution policy
+on:
+  pull_request:
+    paths:
+      - 'packaging/snapshot/**'
+      - 'dinero-linux-server/dinero-snapshot-fetch.sh'
+      - '.github/workflows/snapshot-distribution.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  transition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          bash -n packaging/snapshot/dinero-snapshot-publish.sh
+          bash -n packaging/snapshot/dinero-snapshot-fetch.sh
+          cmp packaging/snapshot/dinero-snapshot-fetch.sh dinero-linux-server/dinero-snapshot-fetch.sh
+          python3 -m unittest discover -s packaging/snapshot -p 'test_*transition.py'

@@ -8,14 +8,13 @@
 # minutes from tip instead of weeks of forward sync behind a release-bundled
 # snapshot.
 #
-# Verification layers (all mandatory, any failure exits non-zero and leaves
-# no artifacts in --dest):
-#   1. ed25519 signature over the manifest bytes (dedicated fleet snapshot
-#      key, embedded below) — supply-chain gate.
-#   2. sha256 of the payload against the signed manifest — transfer gate.
-#   3. The daemon itself re-verifies the snapshot's in-file checksum and
-#      binds its utreexo root to the PoW-verified header chain at load time —
-#      the consensus gate. A forged snapshot cannot bind to real headers.
+# v4 / pre-activation snapshots require the pinned publisher signature.
+# Activated v5 snapshots may be downloaded without it: only the daemon's
+# mandatory DNRS/PoW state-binding validation authorizes their import.
+# Checksums detect transfer corruption; staging is NOT proof validation.
+# Use --require-publisher-signature to additionally pin the fleet publisher.
+# --mirror accepts an independently selected publisher; automatic discovery
+# is not implemented by this script.
 #
 # Usage:
 #   dinero-snapshot-fetch.sh [--dest DIR] [--conf FILE] [--mirror URL]
@@ -32,6 +31,7 @@ MIRRORS=(
 )
 DEST="."
 CONF=""
+REQUIRE_SIGNATURE=0
 
 # Dedicated fleet snapshot-signing key (ed25519; generated on the fleet
 # 2026-07-16, private key never leaves it). Matches the key embedded in the
@@ -45,6 +45,7 @@ while [ $# -gt 0 ]; do
         --dest)   DEST="$2"; shift 2 ;;
         --conf)   CONF="$2"; shift 2 ;;
         --mirror) MIRRORS=("$2"); shift 2 ;;
+        --require-publisher-signature) REQUIRE_SIGNATURE=1; shift ;;
         -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -61,6 +62,7 @@ sha256_of() {
     fi
 }
 
+command -v python3 >/dev/null 2>&1 || { echo "python3 required" >&2; exit 2; }
 command -v curl >/dev/null 2>&1 || { echo "curl required" >&2; exit 2; }
 command -v openssl >/dev/null 2>&1 || { echo "openssl required" >&2; exit 2; }
 
@@ -72,15 +74,19 @@ printf '%s\n' "$PUBKEY_PEM" > "$WORK/pub.pem"
 OK=0
 for MIRROR in "${MIRRORS[@]}"; do
     log "trying $MIRROR"
-    if ! curl -fsS -m 15  -o "$WORK/manifest.json" "$MIRROR/manifest.json" \
-       || ! curl -fsS -m 15 -o "$WORK/manifest.sig" "$MIRROR/manifest.sig"; then
+    rm -f "$WORK/manifest.sig"
+    if ! curl -fsS -m 15 -o "$WORK/manifest.json" "$MIRROR/manifest.json"; then
         log "  manifest unavailable — next mirror"
         continue
     fi
-
-    if ! openssl pkeyutl -verify -pubin -inkey "$WORK/pub.pem" -rawin \
+    SIGNATURE_OK=0
+    if curl -fsS -m 15 -o "$WORK/manifest.sig" "$MIRROR/manifest.sig" \
+       && openssl pkeyutl -verify -pubin -inkey "$WORK/pub.pem" -rawin \
             -in "$WORK/manifest.json" -sigfile "$WORK/manifest.sig" >/dev/null 2>&1; then
-        log "  SIGNATURE INVALID — refusing this mirror"
+        SIGNATURE_OK=1
+    fi
+    if [ "$REQUIRE_SIGNATURE" = 1 ] && [ "$SIGNATURE_OK" != 1 ]; then
+        log "  required publisher signature missing/invalid — next mirror"
         continue
     fi
 
@@ -94,8 +100,8 @@ for MIRROR in "${MIRRORS[@]}"; do
         log "  absurd size $BYTES — next mirror"; continue
     fi
 
-    log "  manifest verified: height=$HEIGHT sha=${SHA:0:12}… — downloading payload"
-    if ! curl -fsS -m 600 -o "$WORK/snapshot.dat" "$MIRROR/snapshot.dat"; then
+    log "  manifest received (not chain-verified): height=$HEIGHT sha=${SHA:0:12}… — downloading payload"
+    if ! curl -fsS -m 600 --max-filesize 536870912 -o "$WORK/snapshot.dat" "$MIRROR/snapshot.dat"; then
         log "  payload download failed — next mirror"
         continue
     fi
@@ -105,6 +111,28 @@ for MIRROR in "${MIRRORS[@]}"; do
         continue
     fi
 
+    # Decide from the downloaded header, never a mirror's claimed format.
+    # This is only a download gate: the daemon MUST verify the full v5 proof,
+    # state roots, selected-header ancestry and burial before importing state.
+    FORMAT=$(python3 - "$WORK/snapshot.dat" "$HEIGHT" <<'PYHEADER'
+import struct,sys
+with open(sys.argv[1],'rb') as f: h=f.read(44)
+assert len(h)==44 and h[:4]==b'UXTO', 'invalid snapshot header'
+version=struct.unpack_from('<I',h,4)[0]
+height=struct.unpack_from('<I',h,40)[0]
+assert height==int(sys.argv[2]), 'manifest/header height mismatch'
+assert version in (4,5), 'unsupported snapshot version'
+assert height < 111000 or version==5, 'activated base requires v5'
+# Pre-activation v5 cannot replace legacy publisher authentication.
+print('bound-v5' if version==5 and height>=111000 else 'legacy')
+PYHEADER
+) || { log "  invalid format/activation header — next mirror"; continue; }
+    if [ "$FORMAT" = legacy ] && [ "$SIGNATURE_OK" != 1 ]; then
+        log "  legacy snapshot requires publisher signature — next mirror"
+        continue
+    fi
+    log "  download checks passed; publisher_signature=$SIGNATURE_OK; daemon chain verification still required"
+
     OK=1
     break
 done
@@ -112,7 +140,7 @@ done
 
 mv -f "$WORK/snapshot.dat"  "$DEST/snapshot.dat"
 mv -f "$WORK/manifest.json" "$DEST/snapshot.dat.manifest.json"
-log "verified snapshot at height $HEIGHT staged in $DEST"
+log "snapshot download at height $HEIGHT staged in $DEST; awaiting daemon validation"
 
 if [ -n "$CONF" ]; then
     SNAP_PATH=$(cd "$DEST" && pwd)/snapshot.dat
