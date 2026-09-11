@@ -41,13 +41,14 @@ def ports():
             s.close()
 
 class Node:
-    def __init__(self, name, headers=None, dormant=False):
+    def __init__(self, name, headers=None, dormant=False, extra=()):
         self.path = WORK / name
         self.path.mkdir()
         if headers:
             shutil.copytree(headers, self.path / "headers")
         self.rpc_port, self.p2p, self.wallet = ports()
         self.extra = ["--consensus-state-commitment-height=4294967295"] if dormant else []
+        self.extra.extend(extra)
         self.process = None
         NODES.append(self)
         self.start()
@@ -135,10 +136,10 @@ def offsets(data):
     require(bind+20+cbsize+32*branches == len(data), "exact binding length")
     return shld, shld+72+frontier, bind, cbsize, branches
 
-def attempt(name, path, headers, expected=None, dormant=False, verified=False):
+def attempt(name, path, headers, expected=None, dormant=False, verified=False, extra=()):
     blob = path.read_bytes()
     require(hashlib.sha256(blob[:-32]).digest() == blob[-32:], f"{name}: fixture checksum invalid")
-    node = Node(name, headers, dormant)
+    node = Node(name, headers, dormant, extra)
     before = node.state()
     require(before["getblockcount"] == 0 and before["blockchain.getutreexocommitment"]["num_leaves"] == 0, f"{name}: consumer must start empty")
     response = node.raw("loadtxoutset", [str(path)])
@@ -169,6 +170,35 @@ try:
     source.call("generate", [12])
     original = WORK / "original.dat"
     source.call("dumptxoutset", [str(original)])
+    # Same chain, independently validated by a second node; no shared database.
+    peer = Node("independent_exporter")
+    for height in range(1, 13):
+        time.sleep(0.1)  # keep block-copy RPC traffic below the admission limit
+        block_hash = source.call("getblockhash", [height])
+        peer.call("submitblock", [source.call("getblock", [block_hash, 0])])
+    require(peer.call("getbestblockhash") == source.call("getbestblockhash"), "independent exporter tip")
+    time.sleep(2)  # cross the wall-clock second that previously changed file hashes
+    repeated, independent = WORK / "repeated.dat", WORK / "independent.dat"
+    source.call("dumptxoutset", [str(repeated)])
+    peer.call("dumptxoutset", [str(independent)])
+    exported = original.read_bytes()
+    base = source.call("getblock", [source.call("getbestblockhash")])
+    require(struct.unpack_from("<I", exported, 4)[0] == 5, "determinism fixture must be v5")
+    require(struct.unpack_from("<Q", exported, 52)[0] == base["time"], "v5 must use base timestamp")
+    require(exported == repeated.read_bytes(), "v5 repeated export changed bytes")
+    require(exported == independent.read_bytes(), "independent v5 exporter changed bytes")
+    peer.stop()
+    legacy = Node("legacy_exporter", dormant=True)
+    legacy.call("generate", [2])
+    legacy_file = WORK / "legacy_export.dat"
+    before = int(time.time())
+    legacy.call("dumptxoutset", [str(legacy_file)])
+    after = int(time.time())
+    legacy_data = legacy_file.read_bytes()
+    require(struct.unpack_from("<I", legacy_data, 4)[0] == 4, "legacy fixture must be v4")
+    require(before <= struct.unpack_from("<Q", legacy_data, 52)[0] <= after, "v4 export time changed")
+    legacy.stop()
+    print("PASS v5 independent/repeated byte identity and v4 timestamp compatibility", flush=True)
     source.stop()
     shutil.copytree(source.path / "headers", WORK / "unburied_headers")
     source.start(); source.call("generate", [8]); source.stop()
@@ -207,8 +237,67 @@ try:
     v4file = fixture(v4,"v4")
     attempt("v4_enforced",v4file,WORK / "buried_headers","Snapshot container v4 is not usable")
     attempt("valid_v5", original, WORK / "buried_headers", verified=True)
+    old_timestamp = bytearray(body)
+    struct.pack_into("<Q", old_timestamp, 52, int(time.time()))
+    attempt("legacy_v5_export_time", fixture(old_timestamp, "legacy_v5_export_time"),
+            WORK / "buried_headers", verified=True)
     attempt("v4_dormant",v4file,WORK / "buried_headers",dormant=True)
     attempt("payload_dormant",payload_file,WORK / "buried_headers",dormant=True)
+    # A short window after reset is valid when it is the window committed by
+    # that base. A count-only publisher gate would incorrectly refuse it.
+    reset_args = ["--consensus-shielded-epoch-reset-height=10"]
+    reset = Node("reset_exporter", extra=reset_args)
+    reset.call("generate", [12])
+    reset_file = WORK / "reset.dat"
+    reset.call("dumptxoutset", [str(reset_file)])
+    reset_body = reset_file.read_bytes()[:-32]
+    reset_shld, reset_anchor, _, _, _ = offsets(reset_body)
+    anchor_count = struct.unpack_from("<H", reset_body, reset_anchor+6)[0]
+    require(anchor_count == 3, f"reset+2 must retain exactly three roots: {anchor_count}")
+    reset.call("generate", [8]); reset.stop()
+    shutil.copytree(reset.path / "headers", WORK / "reset_headers")
+    attempt("valid_short_reset_window", reset_file, WORK / "reset_headers",
+            verified=True, extra=reset_args)
+    shortened = bytearray(reset_body)
+    anchor_bytes = struct.unpack_from("<Q", shortened, reset_shld+16)[0]
+    struct.pack_into("<Q", shortened, reset_shld+16, anchor_bytes-36)
+    struct.pack_into("<H", shortened, reset_anchor+6, anchor_count-1)
+    del shortened[reset_anchor+8:reset_anchor+44]
+    attempt("modified_short_reset_window", fixture(shortened, "shortened_reset"),
+            WORK / "reset_headers", "commitment-mismatch", extra=reset_args)
+    # Exercise canonical bytes with real commitments/nullifiers and a peer
+    # that reaches the same state after disconnect/reconnect and restart.
+    funded = Node("funded_exporter")
+    funded.call("generate", [130])
+    for amount in (100, 150):
+        funded.call("wallet.shield", [amount])
+        funded.call("generate", [2])
+    nullifiers = []
+    for amount in (50.0, 60.0):
+        spend = funded.call("wallet.unshield", {"amount":amount})
+        nullifiers.append(spend["nullifier_hex"])
+        funded.call("generate", [2])
+    require(len(set(nullifiers)) == 2, "must exercise two real nullifiers")
+    recovered = Node("reorg_exporter")
+    tip = funded.call("getblockcount")
+    for height in range(1, tip+1):
+        time.sleep(0.1)  # two source RPCs per block; do not flood the limiter
+        block_hash = funded.call("getblockhash", [height])
+        recovered.call("submitblock", [funded.call("getblock", [block_hash, 0])])
+    before_reorg = WORK / "funded.dat"
+    funded.call("dumptxoutset", [str(before_reorg)])
+    disconnected = funded.call("getblockhash", [131])
+    recovered.call("invalidateblock", [disconnected])
+    require(recovered.call("getblockcount") == 130, "reorg must disconnect shielded activity")
+    recovered.call("reconsiderblock", [disconnected])
+    require(recovered.call("getbestblockhash") == funded.call("getbestblockhash"), "reorg restored tip")
+    recovered.stop(); recovered.start()
+    after_reorg = WORK / "recovered.dat"
+    recovered.call("dumptxoutset", [str(after_reorg)])
+    require(before_reorg.read_bytes() == after_reorg.read_bytes(),
+            "nonempty v5 bytes differ after independent sync/reorg/restart")
+    funded.stop(); recovered.stop()
+    print("PASS nonempty v5 independent sync/reorg/restart byte identity (two nullifiers)", flush=True)
     result = {"cases":RESULTS, "daemon_sha256":hashlib.sha256(BINARY.read_bytes()).hexdigest()}
     if os.environ.get("GATE_D_REPORT"):
         Path(os.environ["GATE_D_REPORT"]).write_text(json.dumps(result,indent=2)+"\n")

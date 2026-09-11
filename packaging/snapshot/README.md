@@ -33,3 +33,20 @@ retain the last successfully validated publication while a v5 candidate waits.
 Tests: `python3 -m unittest discover -s packaging/snapshot -p 'test_*transition.py'`.
 These isolated tests cover scheduling/download policy; they do not replace the
 Core forged-proof rejection and real-node snapshot-load lifecycle tests.
+
+## Future discovery constraints
+
+Advertisements are untrusted availability hints. Never vote on provider counts
+or popularity to establish snapshot validity: Sybil identities supply no trust.
+Validate advertised base/format/size against independently verified selected
+headers before large downloads; cap attempts, bytes, concurrency and time.
+
+Group state candidates by base hash/format, but group interchangeable bytes only
+by matching verified full-file SHA256 and size. A matching advertised digest is
+not evidence that a returned range is correct. Cross-provider range resume needs
+chunk hashes or a file Merkle root bound to the exact expected file; otherwise
+only the final whole-file digest can detect bad ranges, with an explicit bounded
+single-provider retry policy. This feature is not implemented here.
+
+Publisher preference may reorder eligible providers; an explicit publisher pin
+restricts them. Neither should weaken the mandatory daemon chain-binding checks.
