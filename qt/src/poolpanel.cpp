@@ -2,6 +2,7 @@
 
 #include "poolpanel.h"
 
+#include "poolcontract.h"
 #include "poolearnings.h"
 #include "poolshare.h"
 #include "rpcclient.h"
@@ -750,9 +751,13 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
 }
 
 bool PoolPanel::validateStatus(const QJsonObject& s, QString* error) const {
+    // A floor, not an equality. The ops contract only ever adds fields,
+    // so a pool newer than this panel is still readable — and rejecting
+    // one would mean an operator upgrading their pool takes their own
+    // Pool tab offline until a new wallet ships from a different repo.
     const auto schema = strictInt(s.value("schema_version"));
-    if (schema && *schema != 2) {
-        *error = QStringLiteral("unsupported schema_version %1").arg(*schema);
+    if (schema && !poolcontract::isSupportedSchema(*schema)) {
+        *error = poolcontract::unsupportedSchemaReason(*schema);
         return false;
     }
     const QList<const char*> common = {"pool_version", "uptime_secs", "connected_miners", "fee_bps",
