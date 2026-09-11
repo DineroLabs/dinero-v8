@@ -1,3 +1,4 @@
+#include "solo_miner/windows_gpu_driver.h"
 // CUDA backend for IComputeBackend (daemon's GPU mining interface).
 //
 // Build-gated: only the substantive implementation compiles when
@@ -75,6 +76,7 @@ CUDABackend::~CUDABackend() {
 }
 
 std::vector<GPUDevice> CUDABackend::enumerateDevices() {
+    if (!dinero::gpu_driver::cudaAvailable()) return {};
     std::vector<GPUDevice> devices;
     if (cuInit(0) != CUDA_SUCCESS) {
         // Treat as "no devices" rather than an error — matches Runtime API
@@ -129,6 +131,7 @@ bool CUDABackend::initDevice(uint32_t device_id) {
         std::cerr << "[CUDA] Device already initialized" << std::endl;
         return false;
     }
+    if (!dinero::gpu_driver::cudaAvailable()) return false;
     if (!checkCu(cuInit(0), "cuInit")) return false;
 
     int device_count = 0;

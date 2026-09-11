@@ -177,3 +177,15 @@ if(METAL_FOUND)
 endif()
 
 message(STATUS "  ✅ GPU mining library configured")
+
+# Share the same runtime driver probe as the embedded solo miner.
+target_include_directories(dinero_gpu_mining PRIVATE ${CMAKE_SOURCE_DIR}/miner/include)
+if(MSVC)
+    target_link_libraries(dinero_gpu_mining PRIVATE delayimp)
+    if(CUDAToolkit_FOUND AND ENABLE_GPU_MINING)
+        target_link_options(dinero_gpu_mining INTERFACE /DELAYLOAD:nvcuda.dll)
+    endif()
+    if(OPENCL_FOUND AND ENABLE_GPU_MINING)
+        target_link_options(dinero_gpu_mining INTERFACE /DELAYLOAD:OpenCL.dll)
+    endif()
+endif()

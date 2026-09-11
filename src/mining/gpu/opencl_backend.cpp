@@ -1,3 +1,4 @@
+#include "solo_miner/windows_gpu_driver.h"
 #include "mining/gpu/opencl_backend.h"
 #include "mining/header_layout.h"  // DINERO_HEADER_SIZE_BYTES constant
 #include <iostream>
@@ -54,6 +55,7 @@ OpenCLBackend::~OpenCLBackend() {
 }
 
 std::vector<GPUDevice> OpenCLBackend::enumerateDevices() {
+    if (!dinero::gpu_driver::openclAvailable()) return {};
 #ifdef GPU_MINING_DISABLED_PHASE_10B
     std::cerr << "[OpenCL] GPU mining DISABLED - see Phase 10b audit report" << std::endl;
     return std::vector<GPUDevice>();

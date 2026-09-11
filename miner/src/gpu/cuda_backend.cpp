@@ -1,3 +1,4 @@
+#include "solo_miner/windows_gpu_driver.h"
 // CUDA implementation of IGpuBackend.
 //
 // Build-gated: only compiled when -DMINER_ENABLE_CUDA=ON. The kernel
@@ -98,6 +99,7 @@ private:
 };
 
 std::unique_ptr<CudaBackend> CudaBackend::create() {
+    if (!dinero::gpu_driver::cudaAvailable()) return nullptr;
     if (!checkCu(cuInit(0), "cuInit")) return nullptr;
 
     int device_count = 0;

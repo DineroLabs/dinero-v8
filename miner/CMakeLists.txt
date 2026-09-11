@@ -373,3 +373,16 @@ if(BUILD_CLI)
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
+
+# CUDA/OpenCL are optional runtime drivers even in a GPU-enabled Windows build.
+# Probe their presence before the first API call; do not make CPU startup depend
+# on an NVIDIA/OpenCL installation (caught by the installed release smoke).
+if(MSVC)
+    target_link_libraries(dinero-solo-miner PRIVATE delayimp)
+    if(MINER_ENABLE_CUDA)
+        target_link_options(dinero-solo-miner INTERFACE /DELAYLOAD:nvcuda.dll)
+    endif()
+    if(MINER_ENABLE_OPENCL)
+        target_link_options(dinero-solo-miner INTERFACE /DELAYLOAD:OpenCL.dll)
+    endif()
+endif()

@@ -1,3 +1,4 @@
+#include "solo_miner/windows_gpu_driver.h"
 // OpenCL implementation of IGpuBackend.
 //
 // Build-gated: only compiled when -DMINER_ENABLE_OPENCL=ON. The kernel
@@ -92,6 +93,7 @@ private:
 };
 
 std::unique_ptr<OpenClBackend> OpenClBackend::create() {
+    if (!dinero::gpu_driver::openclAvailable()) return nullptr;
     cl_uint platform_count = 0;
     if (!checkCl(clGetPlatformIDs(0, nullptr, &platform_count), "clGetPlatformIDs(count)"))
         return nullptr;
