@@ -215,7 +215,7 @@ jobs:
           test -x deb-check/usr/bin/dinerod
           test -x deb-check/usr/bin/dinero-cli
           deb-check/usr/bin/dinerod --version
-          deb-check/usr/bin/dinero-cli --version
+          deb-check/usr/bin/dinero-cli version
           sudo dpkg -i "$DEB"
           test "$(dpkg-query -W -f='${Status}' dinero-core)" = 'install ok installed'
           test "$(systemctl is-active dinero.service || true)" != active
