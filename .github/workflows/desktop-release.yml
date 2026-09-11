@@ -19,8 +19,12 @@ on:
     inputs:
       release_tag:
         description: 'Immutable Dinero release tag to package'
-        required: true
-        default: 'v8.1.9'
+        required: false
+        type: string
+
+      candidate_source:
+        description: 'Optional full reviewed SHA for Linux-only candidate packages'
+        required: false
         type: string
 
 permissions:
@@ -31,7 +35,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: desktop-release-${{ inputs.release_tag }}
+  group: desktop-release-${{ inputs.candidate_source || inputs.release_tag }}
   cancel-in-progress: false
 
 env:
@@ -88,7 +92,7 @@ jobs:
       - name: Checkout immutable release source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ inputs.candidate_source || inputs.release_tag }}
           path: source
           submodules: recursive
           fetch-depth: 1
@@ -110,15 +114,30 @@ jobs:
 
       - name: Record provenance
         id: provenance
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          test "$(git describe --tags --exact-match HEAD)" = "${{ inputs.release_tag }}"
+          if [ -n "$CANDIDATE_SOURCE" ]; then
+            [[ "$CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$RELEASE_TAG_INPUT"
+            test "$(git rev-parse HEAD)" = "$CANDIDATE_SOURCE"
+          else
+            test -n "$RELEASE_TAG_INPUT"
+            test "$(git describe --tags --exact-match HEAD)" = "$RELEASE_TAG_INPUT"
+          fi
           SOURCE_HEAD=$(git rev-parse HEAD)
           TOOLING_HEAD=$(git -C "${GITHUB_WORKSPACE}/tooling" rev-parse HEAD)
           SV2_HEAD=$(git -C "${GITHUB_WORKSPACE}/dinero-sv2" rev-parse HEAD)
           test "$TOOLING_HEAD" = "$GITHUB_SHA"
           test "$SV2_HEAD" = "$SV2_REF"
-          V="${{ inputs.release_tag }}"; V="${V#v}"
+          if [ -n "$CANDIDATE_SOURCE" ]; then
+            V=$(sed -nE 's/^project\(dinero VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES.*$/\1/p' CMakeLists.txt)
+            [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          else
+            V="${RELEASE_TAG_INPUT#v}"
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "source_head=$SOURCE_HEAD" >> "$GITHUB_OUTPUT"
           echo "tooling_head=$TOOLING_HEAD" >> "$GITHUB_OUTPUT"
@@ -199,7 +218,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release-inputs
-          gh release download "${{ inputs.release_tag }}" \
+          gh release download "${{ inputs.candidate_source && 'v8.1.11' || inputs.release_tag }}" \
             --repo DineroLabs/dinero-v8 \
             --pattern dinero-assumeutxo-99677-v4.dat \
             --pattern dinero-assumeutxo-99677-v4.manifest.json \
@@ -330,7 +349,7 @@ jobs:
 
   macos-intel-desktop:
     name: macOS Intel — unsigned Qt release stage
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.candidate_source == ''
     runs-on: macos-26-intel
     timeout-minutes: 180
 

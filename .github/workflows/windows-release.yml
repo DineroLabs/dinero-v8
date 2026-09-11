@@ -26,6 +26,11 @@ on:
         required: false
         type: string
 
+      candidate_source:
+        description: 'Optional full reviewed commit SHA for signed artifact-only preparation (no tag/upload)'
+        required: false
+        type: string
+
 permissions:
   contents: write        # required to attach artifacts to the release
 
@@ -50,7 +55,7 @@ jobs:
         with:
           # A manual recovery run must still build the immutable release tag,
           # not whichever commit happens to be at the selected workflow ref.
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.candidate_source || inputs.release_tag || github.ref }}
           submodules: recursive
           # Release-lineage validation needs the ancestry of the immutable tag.
           fetch-depth: 0
@@ -63,9 +68,20 @@ jobs:
       # else a dev marker so an unflagged run never embeds an empty version.
       - name: Resolve version
         id: ver
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         shell: bash
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ -n "$CANDIDATE_SOURCE" ]; then
+            [[ "$CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$RELEASE_TAG_INPUT" || exit 1
+            test "$GITHUB_REF_TYPE" != tag || exit 1
+            test "$(git rev-parse HEAD)" = "$CANDIDATE_SOURCE"
+            V=$(sed -nE 's/^project\(dinero VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES.*$/\1/p' CMakeLists.txt)
+            [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            TAG=""
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
             V="${GITHUB_REF_NAME#v}"
             TAG="$GITHUB_REF_NAME"
           elif [ -n "${{ inputs.release_tag }}" ]; then
@@ -80,7 +96,7 @@ jobs:
           echo "Building Windows release for version: $V"
 
       - name: Require Authenticode signing for a release cut
-        if: steps.ver.outputs.release_tag != ''
+        if: steps.ver.outputs.release_tag != '' || inputs.candidate_source != ''
         shell: bash
         run: |
           test "${{ vars.WINDOWS_SIGNING_READY }}" = true || {
@@ -105,15 +121,56 @@ jobs:
             --dir packaging/windows/dist \
             --clobber
 
+      - name: Fetch pinned previous snapshot for artifact-only candidate
+        if: inputs.candidate_source != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p packaging/windows/dist
+          gh release download v8.1.11 --repo DineroLabs/dinero-v8 \
+            --pattern 'dinero-assumeutxo-99677-v4.dat' \
+            --pattern 'dinero-assumeutxo-99677-v4.manifest.json' \
+            --dir packaging/windows/dist --clobber
+          echo 'd4b8d88c2fe765aa627ed0bc12205b2cfba6e4fa50aeb72fd9924990e83c29fd  packaging/windows/dist/dinero-assumeutxo-99677-v4.dat' | sha256sum --check
+
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install CUDA Toolkit 12.2 for the embedded solo miner
-        uses: Jimver/cuda-toolkit@f1b76035ffe6d08118acdd33faf5ce002cf7c023 # v0.2.25
-        with:
-          cuda: '12.2.0'
-          method: local
-          sub-packages: '["nvcc", "nvrtc"]'
+      - name: Install and verify CUDA Toolkit 12.2 for the embedded solo miner
+        timeout-minutes: 35
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path $env:RUNNER_TEMP 'cuda_12.2.0_536.25_windows.exe'
+          $url = 'https://developer.download.nvidia.com/compute/cuda/12.2.0/local_installers/cuda_12.2.0_536.25_windows.exe'
+          Write-Host 'Downloading CUDA installer (20-minute transfer limit)...'
+          & curl.exe --fail --location --retry 2 --connect-timeout 30 --max-time 1200 --output $installer $url
+          if ($LASTEXITCODE -ne 0) { throw "CUDA download failed: $LASTEXITCODE" }
+          Write-Host "Downloaded $((Get-Item $installer).Length) bytes; verifying signature..."
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'NVIDIA Corporation') {
+            throw 'CUDA installer does not have a valid NVIDIA signature'
+          }
+          Get-FileHash $installer -Algorithm SHA256
+          # NVIDIA CUDA 12.2 Windows guide: silent, selected toolkit packages,
+          # no driver installation or automatic reboot on the hosted runner.
+          Write-Host 'Starting CUDA installation (15-minute limit)...'
+          $install = Start-Process -FilePath $installer -ArgumentList '-s -n nvcc_12.2 cudart_12.2 nvrtc_12.2 nvrtc_dev_12.2' -PassThru
+          if (-not $install.WaitForExit(900000)) {
+            Stop-Process -Id $install.Id -Force
+            throw 'CUDA installation exceeded 15 minutes'
+          }
+          Write-Host "CUDA installer exit: $($install.ExitCode)"
+          if ($install.ExitCode -notin @(0, 3010)) { throw "CUDA installer failed: $($install.ExitCode)" }
+          $cudaRoot = Join-Path $env:ProgramFiles 'NVIDIA GPU Computing Toolkit\CUDA\v12.2'
+          foreach ($relative in @('bin\nvcc.exe', 'include\cuda.h', 'include\nvrtc.h', 'lib\x64\cuda.lib', 'lib\x64\nvrtc.lib', 'bin\nvrtc64_120_0.dll')) {
+            if (-not (Test-Path (Join-Path $cudaRoot $relative) -PathType Leaf)) { throw "CUDA package missing: $relative" }
+          }
+          & "$cudaRoot\bin\nvcc.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw 'CUDA compiler version check failed' }
+          "CUDA_PATH=$cudaRoot" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+          "$cudaRoot\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
 
       - name: Install Qt 6.9.1 (MSVC 2022 x86_64)
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -400,7 +457,10 @@ jobs:
               # require its bundled daemon to have started.
               $dataDir = Join-Path $env:RUNNER_TEMP 'dinero-qt-startup-smoke'
               New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
-              $qt = Start-Process -FilePath (Join-Path $case.Dir 'dinero-qt.exe') -ArgumentList "-datadir=$dataDir" -PassThru
+              Write-Host 'Installed daemon version/startup dependency check:'
+              & (Join-Path $case.Dir 'dinerod.exe') --version
+              if ($LASTEXITCODE -ne 0) { throw 'Installed daemon cannot execute --version' }
+              $qt = Start-Process -FilePath (Join-Path $case.Dir 'dinero-qt.exe') -ArgumentList "-datadir=$dataDir" -RedirectStandardOutput "$dataDir\qt-stdout.log" -RedirectStandardError "$dataDir\qt-stderr.log" -PassThru
               try {
                 $deadline = (Get-Date).AddSeconds(90)
                 $daemonSeen = $false
@@ -411,6 +471,19 @@ jobs:
                   $daemonSeen = $daemonSeen -or ($null -ne (Get-Process dinerod -ErrorAction SilentlyContinue))
                 } while ((Get-Date) -lt $deadline)
                 if (-not $daemonSeen) { throw 'dinero-qt stayed open but its embedded dinerod never started' }
+              } catch {
+                $qt.Refresh()
+                Write-Host "GUI window title: $($qt.MainWindowTitle)"
+                Get-NetTCPConnection -LocalPort 20998 -ErrorAction SilentlyContinue | Format-Table State,OwningProcess
+                Add-Type -AssemblyName UIAutomationClient
+                $window = [System.Windows.Automation.AutomationElement]::FromHandle($qt.MainWindowHandle)
+                if ($window) {
+                  $elements = $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+                  @($elements | Select-Object -First 100 | ForEach-Object { $_.Current.Name }) | Out-File "$dataDir\window-text.txt"
+                  Get-Content "$dataDir\window-text.txt"
+                }
+                Get-ChildItem $dataDir -Filter '*.log' -File | ForEach-Object { Write-Host $_.Name; Get-Content $_.FullName -Tail 60 }
+                throw
               } finally {
                 Get-Process dinerod -ErrorAction SilentlyContinue | Stop-Process -Force
                 if (-not $qt.HasExited) { Stop-Process -Id $qt.Id -Force }
@@ -419,6 +492,18 @@ jobs:
             $uninstall = Start-Process -FilePath (Join-Path $case.Dir 'Uninstall.exe') -ArgumentList '/S' -Wait -PassThru
             if ($uninstall.ExitCode -ne 0) { throw "uninstall failed: $($case.Installer)" }
           }
+
+      - name: Preserve failed installer diagnostics and signed candidates
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-candidate-failure-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/dinero-qt-startup-smoke/*.log
+            ${{ runner.temp }}/dinero-qt-startup-smoke/window-text.txt
+            packaging/windows/dist/Dinero-*-Setup.exe
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Checksum final Windows matrix
         id: sums

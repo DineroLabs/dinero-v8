@@ -495,6 +495,25 @@ jobs:
             echo "collected:"; find "$dest" -type f -printf '  %s\t%p\n' | sort -rn | head -20
           fi
 
+      # Preserve the two-node shielded-root test's diagnostics, not wallet data.
+      - name: Collect shielded-root reorg logs
+        if: always()
+        run: |
+          dest=build-tests/Testing/shielded-root-reorg-logs
+          mkdir -p "$dest"
+          for root in /tmp/dinero_shroot_multinode_*; do
+            [ -d "$root" ] || continue
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            for f in "$root"/A.log "$root"/B.log \
+                     "$root"/a/daemon.log "$root"/b/daemon.log \
+                     "$root"/a/regtest/daemon.log "$root"/b/regtest/daemon.log; do
+              [ -f "$f" ] || continue
+              rel=$(echo "${f#$root/}" | tr '/' '_')
+              tail -c 20971520 "$f" > "$dest/$name/$rel"
+            done
+          done
+
       # #717: these preserved datadirs are outside the churn gate's artifact
       # root. Upload only logs/RPC diagnostics, never cookies or wallet files.
       - name: Collect CSN reorg failure evidence

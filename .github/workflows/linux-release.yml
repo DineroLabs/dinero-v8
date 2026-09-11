@@ -31,6 +31,11 @@ on:
         required: false
         type: string
 
+      candidate_source:
+        description: 'Full reviewed commit SHA for versioned artifact-only preparation'
+        required: false
+        type: string
+
 permissions:
   contents: write
 
@@ -44,20 +49,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.candidate_source || inputs.release_tag || github.ref }}
           submodules: recursive
+          fetch-depth: 0
 
       - name: Resolve version
         id: ver
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+        shell: bash
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ -n "$CANDIDATE_SOURCE" ]; then
+            [[ "$CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$RELEASE_TAG_INPUT" || exit 1
+            test "$GITHUB_REF_TYPE" != tag || exit 1
+            test "$(git rev-parse HEAD)" = "$CANDIDATE_SOURCE"
+            V=$(sed -nE 's/^project\(dinero VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES.*$/\1/p' CMakeLists.txt)
+            [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            TAG=""
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
             V="${GITHUB_REF_NAME#v}"
+            TAG="$GITHUB_REF_NAME"
           elif [ -n "${{ inputs.release_tag }}" ]; then
             V="${{ inputs.release_tag }}"; V="${V#v}"
+            TAG="${{ inputs.release_tag }}"
           else
             V="0.0.0-dev"
+            TAG=""
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "Building Linux x86_64 release for version: $V"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Building Linux release for version: $V"
 
       # Kept in sync with tests.yml. The first dry-run of this lane failed at
       # configure with "Package 'libusb-1.0' ... not found": hardware wallets
@@ -168,6 +191,38 @@ jobs:
           echo "tarball=$OUT.tar.gz" >> "$GITHUB_OUTPUT"
           echo "sumfile=SHA256SUMS-linux-x86_64-$V" >> "$GITHUB_OUTPUT"
 
+      - name: Build and verify packaged-service Debian artifact
+        env:
+          DEB_BUILD_OPTIONS: parallel=2
+        run: |
+          sudo apt-get install -y --no-install-recommends debhelper devscripts zlib1g-dev
+          V='${{ steps.ver.outputs.version }}'
+          export DEBFULLNAME='DineroLabs Release' DEBEMAIL='team@dinerolabs.org'
+          dch --newversion "$V-1" --distribution stable 'Build the reviewed release source with current packaged-service metadata.'
+          # debhelper changes HOME during its build; preserve the installed
+          # Rust toolchain explicitly for the Bulletproofs FFI sub-build.
+          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          export RUSTUP_TOOLCHAIN="$(rustup show active-toolchain | awk '{print $1}')"
+          test -n "$RUSTUP_TOOLCHAIN"
+          cargo --version
+          dpkg-buildpackage -us -uc -b
+          DEB="../dinero-core_${V}-1_amd64.deb"
+          test "$(dpkg-deb -f "$DEB" Version)" = "$V-1"
+          test "$(dpkg-deb -f "$DEB" Architecture)" = amd64
+          mkdir -p deb-check
+          dpkg-deb -x "$DEB" deb-check
+          test -x deb-check/usr/bin/dinerod
+          test -x deb-check/usr/bin/dinero-cli
+          deb-check/usr/bin/dinerod --version
+          deb-check/usr/bin/dinero-cli version
+          sudo dpkg -i "$DEB"
+          test "$(dpkg-query -W -f='${Status}' dinero-core)" = 'install ok installed'
+          test "$(systemctl is-active dinero.service || true)" != active
+          sudo dpkg -r dinero-core
+          cp "$DEB" .
+          sha256sum "dinero-core_${V}-1_amd64.deb" > "SHA256SUMS-dinero-core-${V}"
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -175,6 +230,8 @@ jobs:
           path: |
             ${{ steps.pkg.outputs.tarball }}
             ${{ steps.pkg.outputs.sumfile }}
+            dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb
+            SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}
           if-no-files-found: error
 
       - name: Attach to release
@@ -185,4 +242,6 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             "${{ steps.pkg.outputs.tarball }}" \
             "${{ steps.pkg.outputs.sumfile }}" \
+            "dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb" \
+            "SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}" \
             --clobber
