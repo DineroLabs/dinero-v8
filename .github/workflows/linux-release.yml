@@ -235,4 +235,6 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             "${{ steps.pkg.outputs.tarball }}" \
             "${{ steps.pkg.outputs.sumfile }}" \
+            "dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb" \
+            "SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}" \
             --clobber
