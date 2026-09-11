@@ -755,9 +755,17 @@ bool PoolPanel::validateStatus(const QJsonObject& s, QString* error) const {
     // so a pool newer than this panel is still readable — and rejecting
     // one would mean an operator upgrading their pool takes their own
     // Pool tab offline until a new wallet ships from a different repo.
+    // The version says what the pool IS; `schema_min_compatible` says
+    // what it is still readable BY, which is the only one of the two a
+    // client can safely act on. A newer pool that declares nothing is
+    // refused rather than assumed additive — a field can keep its name
+    // and type while changing meaning, and no field check catches that.
     const auto schema = strictInt(s.value("schema_version"));
-    if (schema && !poolcontract::isSupportedSchema(*schema)) {
-        *error = poolcontract::unsupportedSchemaReason(*schema);
+    const auto min_compatible = s.contains("schema_min_compatible")
+                                    ? strictInt(s.value("schema_min_compatible"))
+                                    : std::nullopt;
+    if (schema && !poolcontract::isSupportedSchema(*schema, min_compatible)) {
+        *error = poolcontract::unsupportedSchemaReason(*schema, min_compatible);
         return false;
     }
     const QList<const char*> common = {"pool_version", "uptime_secs", "connected_miners", "fee_bps",
