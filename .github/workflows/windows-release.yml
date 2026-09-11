@@ -26,6 +26,11 @@ on:
         required: false
         type: string
 
+      candidate_source:
+        description: 'Optional full reviewed commit SHA for signed artifact-only preparation (no tag/upload)'
+        required: false
+        type: string
+
 permissions:
   contents: write        # required to attach artifacts to the release
 
@@ -50,7 +55,7 @@ jobs:
         with:
           # A manual recovery run must still build the immutable release tag,
           # not whichever commit happens to be at the selected workflow ref.
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.candidate_source || inputs.release_tag || github.ref }}
           submodules: recursive
           # Release-lineage validation needs the ancestry of the immutable tag.
           fetch-depth: 0
@@ -63,9 +68,20 @@ jobs:
       # else a dev marker so an unflagged run never embeds an empty version.
       - name: Resolve version
         id: ver
+        env:
+          CANDIDATE_SOURCE: ${{ inputs.candidate_source }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         shell: bash
         run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
+          if [ -n "$CANDIDATE_SOURCE" ]; then
+            [[ "$CANDIDATE_SOURCE" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            test -z "$RELEASE_TAG_INPUT" || exit 1
+            test "$GITHUB_REF_TYPE" != tag || exit 1
+            test "$(git rev-parse HEAD)" = "$CANDIDATE_SOURCE"
+            V=$(sed -nE 's/^project\(dinero VERSION ([0-9]+\.[0-9]+\.[0-9]+) LANGUAGES.*$/\1/p' CMakeLists.txt)
+            [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+            TAG=""
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
             V="${GITHUB_REF_NAME#v}"
             TAG="$GITHUB_REF_NAME"
           elif [ -n "${{ inputs.release_tag }}" ]; then
@@ -80,7 +96,7 @@ jobs:
           echo "Building Windows release for version: $V"
 
       - name: Require Authenticode signing for a release cut
-        if: steps.ver.outputs.release_tag != ''
+        if: steps.ver.outputs.release_tag != '' || inputs.candidate_source != ''
         shell: bash
         run: |
           test "${{ vars.WINDOWS_SIGNING_READY }}" = true || {
@@ -104,6 +120,19 @@ jobs:
             --pattern 'dinero-assumeutxo-99677-v4.manifest.json' \
             --dir packaging/windows/dist \
             --clobber
+
+      - name: Fetch pinned previous snapshot for artifact-only candidate
+        if: inputs.candidate_source != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          mkdir -p packaging/windows/dist
+          gh release download v8.1.11 --repo DineroLabs/dinero-v8 \
+            --pattern 'dinero-assumeutxo-99677-v4.dat' \
+            --pattern 'dinero-assumeutxo-99677-v4.manifest.json' \
+            --dir packaging/windows/dist --clobber
+          echo 'd4b8d88c2fe765aa627ed0bc12205b2cfba6e4fa50aeb72fd9924990e83c29fd  packaging/windows/dist/dinero-assumeutxo-99677-v4.dat' | sha256sum --check
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
