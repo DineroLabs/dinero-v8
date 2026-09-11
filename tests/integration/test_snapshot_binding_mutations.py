@@ -265,6 +265,13 @@ try:
     del shortened[reset_anchor+8:reset_anchor+44]
     attempt("modified_short_reset_window", fixture(shortened, "shortened_reset"),
             WORK / "reset_headers", "commitment-mismatch", extra=reset_args)
+    # Reordering whole entries is malformed chronological input. Check the
+    # parser rejection separately from structurally valid root mutations below.
+    reordered_entries = bytearray(reset_body)
+    first = reset_anchor+8
+    reordered_entries[first:first+72] = reset_body[first+36:first+72] + reset_body[first:first+36]
+    attempt("reordered_anchor_entries", fixture(reordered_entries, "reordered_entries"),
+            WORK / "reset_headers", "Failed to restore shielded anchor history", extra=reset_args)
     # Exercise canonical bytes with real commitments/nullifiers and a peer
     # that reaches the same state after disconnect/reconnect and restart.
     funded = Node("funded_exporter")
@@ -296,6 +303,31 @@ try:
     recovered.call("dumptxoutset", [str(after_reorg)])
     require(before_reorg.read_bytes() == after_reorg.read_bytes(),
             "nonempty v5 bytes differ after independent sync/reorg/restart")
+    # Use distinct real roots: empty-pool roots are equal, making a root-only
+    # reorder a no-op. Keep heights, entry count and section length unchanged
+    # so these mutations reach SHR1 binding rather than fail structural parsing.
+    funded_body = before_reorg.read_bytes()[:-32]
+    _, funded_anchor, _, _, _ = offsets(funded_body)
+    count = struct.unpack_from("<H", funded_body, funded_anchor+6)[0]
+    roots = [funded_anchor+12+36*i for i in range(count)]
+    left = roots[0]
+    right = next((pos for pos in roots[1:]
+                  if funded_body[pos:pos+32] != funded_body[left:left+32]), None)
+    require(right is not None, "anchor mutation fixture needs distinct real roots")
+    funded.call("generate", [8]); funded.stop()
+    shutil.copytree(funded.path / "headers", WORK / "funded_headers")
+    attempt("valid_nonempty_anchor_window", before_reorg, WORK / "funded_headers", verified=True)
+    reordered_roots = bytearray(funded_body)
+    reordered_roots[left:left+32], reordered_roots[right:right+32] = (
+        funded_body[right:right+32], funded_body[left:left+32])
+    require(reordered_roots != funded_body, "root reorder must change bytes")
+    attempt("reordered_anchor_roots", fixture(reordered_roots, "reordered_roots"),
+            WORK / "funded_headers", "commitment-mismatch")
+    substituted = bytearray(funded_body)
+    substituted[left:left+32] = funded_body[right:right+32]
+    require(substituted != funded_body, "root substitution must change bytes")
+    attempt("substituted_anchor_root", fixture(substituted, "substituted_root"),
+            WORK / "funded_headers", "commitment-mismatch")
     funded.stop(); recovered.stop()
     print("PASS nonempty v5 independent sync/reorg/restart byte identity (two nullifiers)", flush=True)
     result = {"cases":RESULTS, "daemon_sha256":hashlib.sha256(BINARY.read_bytes()).hexdigest()}
