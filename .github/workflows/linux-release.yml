@@ -199,6 +199,13 @@ jobs:
           V='${{ steps.ver.outputs.version }}'
           export DEBFULLNAME='DineroLabs Release' DEBEMAIL='team@dinerolabs.org'
           dch --newversion "$V-1" --distribution stable 'Build the reviewed release source with current packaged-service metadata.'
+          # debhelper changes HOME during its build; preserve the installed
+          # Rust toolchain explicitly for the Bulletproofs FFI sub-build.
+          export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+          export RUSTUP_TOOLCHAIN="$(rustup show active-toolchain | awk '{print $1}')"
+          test -n "$RUSTUP_TOOLCHAIN"
+          cargo --version
           dpkg-buildpackage -us -uc -b
           DEB="../dinero-core_${V}-1_amd64.deb"
           test "$(dpkg-deb -f "$DEB" Version)" = "$V-1"
