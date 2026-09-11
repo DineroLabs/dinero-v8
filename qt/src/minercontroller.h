@@ -25,6 +25,9 @@ public:
     explicit MinerController(QObject* parent = nullptr);
     ~MinerController() override;
 
+    // Identity of the linked solo-miner library (shared by CPU and GPU).
+    static QString versionLabel();
+
     /**
      * Start mining
      * @param rpcUrl       RPC endpoint (e.g., "http://127.0.0.1:20998")

@@ -215,6 +215,7 @@ if(TARGET dinerod)
   set(DINEROD_BINARY "$<TARGET_FILE:dinerod>" CACHE FILEPATH "Bundled dinerod binary (from in-tree CMake target)" FORCE)
 else()
   prefer_first_existing_binary(DINEROD_BINARY_AUTO
+    "${DINERO_SOURCE_ROOT}/build-core/dinerod"
     "${DINERO_SOURCE_ROOT}/build/dinerod"
     "${DINERO_SOURCE_ROOT}/build/bin/dinerod"
     "${DINERO_SOURCE_ROOT}/build-release/dinerod"
@@ -237,6 +238,16 @@ else()
   if(DINEROD_BINARY_NEEDS_REFRESH)
     set(DINEROD_BINARY "${DINEROD_BINARY_AUTO}" CACHE FILEPATH "Bundled dinerod binary" FORCE)
   endif()
+endif()
+
+# A standalone desktop bundle must not report success after removing its
+# embedded daemon without copying a replacement. This leaves Qt waiting for
+# an RPC server it cannot start (caught during the miner-label rebuild).
+if(APPLE AND NOT TARGET dinerod AND
+   (NOT DINEROD_BINARY OR NOT EXISTS "${DINEROD_BINARY}"))
+  message(FATAL_ERROR
+    "A macOS Qt bundle requires dinerod. Build the core daemon first or set "
+    "-DDINEROD_BINARY=/absolute/path/to/dinerod before rebuilding Qt.")
 endif()
 
 if(TARGET dinero-cli)
