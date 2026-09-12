@@ -1478,6 +1478,11 @@ if(BUILD_TESTING)
   target_compile_definitions(test_pool_earnings PRIVATE QT_NO_KEYWORDS)
   add_test(NAME PoolEarnings COMMAND test_pool_earnings)
 
+  add_executable(test_mining_session_status tests/test_mining_session_status.cpp)
+  target_link_libraries(test_mining_session_status PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_mining_session_status PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME MiningSessionStatus COMMAND test_mining_session_status)
+
   add_executable(test_pool_contract
     tests/test_pool_contract.cpp
     src/poolcontract.h

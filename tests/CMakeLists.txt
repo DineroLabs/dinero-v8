@@ -12795,3 +12795,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_contextual_locks.cpp)
   endif()
   add_test(NAME ContextualLocksTest COMMAND test_contextual_locks)
 endif()
+
+add_test(NAME MetalBuildDefault
+  COMMAND ${CMAKE_COMMAND}
+    -DCOMPONENTS_FILE=${CMAKE_SOURCE_DIR}/cmake/OptionalComponents.cmake
+    -P ${CMAKE_SOURCE_DIR}/tests/test_metal_build_default.cmake)
+set_tests_properties(MetalBuildDefault PROPERTIES LABELS "build;miner;regression" TIMEOUT 30)
