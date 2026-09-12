@@ -94,7 +94,12 @@ if [[ -n "$BUILD_DIR" ]]; then
         || fail "official Qt bundle requires DINERO_ENABLE_PORTMAPPING=ON"
     [[ "$(cache_value DINERO_ENABLE_QUIC || true)" == "ON" ]] \
         || fail "official Qt bundle requires DINERO_ENABLE_QUIC=ON for encrypted NAT relay"
+    [[ "$(cache_value MINER_ENABLE_METAL || true)" == "ON" ]] \
+        || fail "official macOS Qt bundle requires MINER_ENABLE_METAL=ON (reconfigure stale caches explicitly)"
     require_file "$BUILD_DIR/build.ninja"
+    grep -Eq 'DINERO_SOLO_HAS_GPU.*MINER_ENABLE_METAL|MINER_ENABLE_METAL.*DINERO_SOLO_HAS_GPU' "$BUILD_DIR/build.ninja" \
+        || fail "Metal was requested but not compiled into the embedded solo miner"
+
     grep -q 'DINERO_HAVE_MINIUPNPC' "$BUILD_DIR/build.ninja" \
         || fail "miniupnpc was requested but not compiled into the release"
     grep -q 'DINERO_HAVE_NATPMP' "$BUILD_DIR/build.ninja" \

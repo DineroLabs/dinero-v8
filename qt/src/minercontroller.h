@@ -62,6 +62,7 @@ public:
 
     // Property getters
     bool running() const;
+    QString activeBackend() const;
     QString status() const { return status_; }
     double hashrate() const { return hashrate_; }
     int accepted() const { return accepted_; }

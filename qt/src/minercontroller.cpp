@@ -31,6 +31,11 @@ bool MinerController::running() const {
     return miner_ && miner_->isRunning();
 }
 
+QString MinerController::activeBackend() const {
+    if (!running()) return {};
+    return QString::fromStdString(minerBackendToString(miner_->getStats().active_backend));
+}
+
 bool MinerController::sampleCandidate(quint32& nonce, QString& hash,
                                       QString& headerFields, int& height,
                                       quint32& difficultyBits) const {

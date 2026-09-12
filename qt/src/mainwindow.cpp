@@ -1,6 +1,7 @@
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
 #include "mainwindow.h"
+#include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
 #include "rpcclient.h"
@@ -4692,6 +4693,9 @@ void MainWindow::setupUI() {
                 lblMiningStatus_->setText(miningStatusInactiveText());
                 lblMiningStatus_->setStyleSheet(chromePillStyle());
             }
+            miningSessionHeader_ = QString("Embedded solo miner · %1 · Stopped")
+                                       .arg(MinerController::versionLabel());
+            if (txtMiningOutput_) replaceMiningOutputFirstLine(txtMiningOutput_, miningSessionHeader_);
             activeMinerType_ = "none";
             mining_stats_.mining_started = 0;
             if (lblMiningUptime_) {
@@ -11536,10 +11540,8 @@ void MainWindow::startInternalMiner(bool useGpu) {
                                   : QString("Embedded CPU solo miner · %1 · %2 threads").arg(identity).arg(threads);
     const QString auth = cookiePath.isEmpty() ? QStringLiteral("cookie auth unavailable")
                                               : QStringLiteral("cookie auth active");
-    const QString backend = useGpu ? QStringLiteral("Metal active")
-                                   : QStringLiteral("CPU active");
-    miningSessionHeader_ = QString("%1 · payout %2 · %3 · %4")
-                             .arg(engine, addr, auth, backend);
+    miningSessionHeader_ = QString("%1 · payout %2 · %3 · Starting…")
+                             .arg(engine, addr, auth);
     txtMiningOutput_->setPlainText(miningSessionHeader_);
   }
 
@@ -11554,10 +11556,19 @@ void MainWindow::startInternalMiner(bool useGpu) {
 
   // Use MinerController (in-process mining via dinero-solo-miner library)
   // MinerController::runningChanged signal handles UI state updates
-  minerCtrl_->start("http://127.0.0.1:20998", cookiePath, addr, useGpu ? 0 : threads, useGpu);
+  minerCtrl_->start("http://127.0.0.1:20998", cookiePath, addr, threads, useGpu);
 
-  activeMinerType_ = useGpu ? "internal_gpu" : "internal";
-  setMiningModeControlsLocked(true);
+  // A requested GPU is not proof that a GPU started. Read the selected backend
+  // only after start(), and preserve any startup diagnostics below the header.
+  const QString backend = minerCtrl_->activeBackend();
+  miningSessionHeader_ = QString("Embedded solo miner · %1 · payout %2 · %3%4")
+      .arg(MinerController::versionLabel(), addr,
+           miningSessionStatus(minerCtrl_->running(), backend, useGpu),
+           backend == "cpu" ? QString(" · %1 threads").arg(threads) : QString());
+  if (txtMiningOutput_) replaceMiningOutputFirstLine(txtMiningOutput_, miningSessionHeader_);
+
+  activeMinerType_ = !minerCtrl_->running() ? "none" : backend == "cpu" ? "internal" : "internal_gpu";
+  setMiningModeControlsLocked(minerCtrl_->running());
   updateOverviewHardwareTelemetry();
 }
 
