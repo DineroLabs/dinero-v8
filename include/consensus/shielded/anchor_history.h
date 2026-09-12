@@ -33,7 +33,9 @@ namespace dinero::consensus::shielded {
 
 class AnchorHistory {
 public:
-    /// Sapling depth — number of recent roots a spend may reference.
+    /// Consensus parameter: number of recent roots a spend may reference.
+    /// Also changes the anchor bytes committed by SHR1/DNRS; changing it
+    /// requires a coordinated consensus transition, not operator tuning.
     static constexpr size_t kDepth = 100;
 
     AnchorHistory() = default;
@@ -64,8 +66,8 @@ public:
      * a node that disconnected D blocks runs with `kDepth - D` anchors while a
      * never-reorged peer at the same tip has `kDepth`, so the reorged node
      * REJECTS as AnchorInvalid a block the peer accepts (audit finding #4).
-     * Mainnet has been past kDepth since long before the current tip, so the
-     * window is permanently full and this is reachable today.
+     * In steady state the window is full, making eviction restoration
+     * necessary. Genesis and epoch resets legitimately start shorter windows.
      *
      * Restoration only ever returns the window to what a never-reorged peer at
      * the same tip holds — it never widens it beyond kDepth.
@@ -97,8 +99,10 @@ public:
     //     [4 bytes]  height
     //     [32 bytes] root
     // No checksum: corruption is caught by length / version mismatch
-    // on read. Anchor history is non-canonical operator state — losing
-    // it just degrades the window briefly until refilled.
+    // on read. Historical callers could rebuild a missing window over time;
+    // under DNRS enforcement the exact window is committed consensus state.
+    // A missing/degraded window must not be assumed equivalent to the tip.
+    // Short windows are legitimate near genesis and epoch resets.
 
     enum class IoResult : uint8_t {
         Ok           = 0,

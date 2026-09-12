@@ -203,7 +203,7 @@ struct SnapshotMetadata {
     uint256 block_hash;       // Block hash this snapshot corresponds to
     uint32_t block_height;    // Block height
     uint64_t utxo_count;      // Number of UTXOs in snapshot
-    uint64_t timestamp;       // Unix timestamp when snapshot was created
+    uint64_t timestamp;       // v4: export time; v5: base block timestamp (new exports)
     uint64_t reserved;        // Reserved for future use
 
     SnapshotMetadata()

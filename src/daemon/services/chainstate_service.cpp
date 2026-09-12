@@ -10179,6 +10179,14 @@ consensus::SnapshotExportResult ChainstateService::ExportSnapshot(const std::fil
             return result;
         }
 
+        // A v5 file identifies chain state, not the publisher's export clock.
+        // Use the authenticated base block's time so independent exports can
+        // share byte identity. Publication time belongs in the outer manifest.
+        // Preserve legacy v4 creation-time semantics and existing reader rules.
+        if (write_v5_binding) {
+            header.timestamp = tip_block_result.value().header.timestamp;
+        }
+
         // Initialize SHA256 context for checksum computation
         crypto::CSHA256 sha256;
 
