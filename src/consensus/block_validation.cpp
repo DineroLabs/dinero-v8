@@ -2541,8 +2541,8 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         // Mining path: verify_root = false (computes root, doesn't verify)
         // Validation path: verify_root = true (computes + verifies root)
         //
-        // SHADOW MODE: Compare but DON'T reject blocks based on Utreexo mismatches
-        // Goal: Run both systems in parallel for testing/verification
+        // Consensus-enforced: the computed root is compared against the header
+        // commitment, and any mismatch rejects the block with bad-utreexo-root.
         if (verify_root) {
             // Convert block header commitment (uint256) to UtreexoHash.
             // With v2 commitment, even an empty forest has a non-null root
