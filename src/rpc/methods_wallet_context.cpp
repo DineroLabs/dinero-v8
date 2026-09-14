@@ -22,6 +22,7 @@
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
 #include "rpc/proof_bundle_consistency.h"
+#include "rpc/amount_parser.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
 #include "daemon/services/chainstate_service.h"
@@ -2549,8 +2550,9 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         }
     };
 
-    if (params.size() < 2) {
-        result["error"] = "Usage: wallet.sendtoaddress <address> <amount> [fee_rate] [comment]";
+    if ((!params.isObject() && params.size() < 2) ||
+        (params.isObject() && params.empty())) {
+        result["error"] = "Usage: wallet.sendtoaddress <address> <amount> [fee_rate] [comment], or {address, amount_una}";
         return result;
     }
 
@@ -2589,6 +2591,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         // Object: {"address": "...", "amount": 1.0, "preview": true} for dry-run
         std::string address;
         double amount_din = 0.0;
+        uint64_t parsed_amount_una = 0;
+        std::string amount_error;
         double fee_rate = 0.0;  // Will auto-estimate if not provided
         bool fee_auto_estimated = false;
         bool broadcast = true;  // Default: sign and broadcast (production behavior)
@@ -2601,12 +2605,20 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 result["error"] = "Missing or invalid 'address' parameter";
                 return result;
             }
-            if (!params.isMember("amount") || !params["amount"].isNumeric()) {
-                result["error"] = "Missing or invalid 'amount' parameter";
+            const bool has_amount = params.isMember("amount");
+            const bool has_amount_una = params.isMember("amount_una");
+            if (has_amount == has_amount_una) {
+                result["error"] = "Provide exactly one of 'amount' (DIN) or 'amount_una' (integer una)";
                 return result;
             }
             address = params["address"].asString();
-            amount_din = params["amount"].asDouble();
+            const bool amount_ok = has_amount_una
+                ? dinero::rpc::ParseUnaAmount(params["amount_una"], parsed_amount_una, amount_error)
+                : dinero::rpc::ParseDinAmountToUna(params["amount"], parsed_amount_una, amount_error);
+            if (!amount_ok) {
+                result["error"] = "Invalid amount: " + amount_error;
+                return result;
+            }
 
             if (params.isMember("fee_rate") && params["fee_rate"].isNumeric()) {
                 fee_rate = params["fee_rate"].asDouble();
@@ -2626,7 +2638,10 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         } else if (params.isArray() && params.size() >= 2) {
             // Array format (positional parameters)
             address = params[0].asString();
-            amount_din = params[1].asDouble();
+            if (!dinero::rpc::ParseDinAmountToUna(params[1], parsed_amount_una, amount_error)) {
+                result["error"] = "Invalid amount: " + amount_error;
+                return result;
+            }
 
             if (params.size() >= 3 && params[2].isNumeric()) {
                 fee_rate = params[2].asDouble();
@@ -2704,17 +2719,14 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         }
         fee_rate = std::ceil(std::max(1.0, fee_rate));
 
-        if (amount_din <= 0) {
-            result["error"] = "Invalid amount: must be positive";
-            return result;
-        }
+        amount_din = dinero::rpc::UnaToDin(parsed_amount_una);
 
         if (!broadcast) {
             log_info("[wallet.sendtoaddress] Preview mode (preview=true)");
         }
 
-        // Convert DIN to una (1 DIN = 1e8 una, 8 decimals like Bitcoin)
-        int64_t amount_una = static_cast<int64_t>(amount_din * 1e8);
+        // The RPC boundary already resolved the value to one exact una amount.
+        const int64_t amount_una = static_cast<int64_t>(parsed_amount_una);
 
         // Get active network HRP
         const std::string& hrp = dinero::HrpForActiveNetworkRef();
@@ -2921,7 +2933,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         int64_t total_available = 0;
         for (const auto& utxo : utxos) {
             if (utxo.spendable && utxo.is_mature && !utxo.is_confidential) {
-                total_available += static_cast<int64_t>(utxo.amount_din * 1e8);
+                total_available += static_cast<int64_t>(utxo.amount_una);
             }
         }
 
@@ -3252,6 +3264,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
 
             result["txid"] = sent_txid;
             result["amount"] = amount_din;
+            result["amount_una"] = static_cast<din::Json::UInt64>(parsed_amount_una);
             result["estimated_fee"] = fee_din;
             result["fee_rate"] = fee_rate;
             result["inputs"] = static_cast<int>(selected_utxos.size());
@@ -3300,6 +3313,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
         result["status"] = "preview";
         result["note"] = "Preview mode - omit preview=true to sign and broadcast";
         result["amount"] = amount_din;
+        result["amount_una"] = static_cast<din::Json::UInt64>(parsed_amount_una);
         result["estimated_fee"] = static_cast<double>(estimated_fee) / 1e8;
         result["fee_rate"] = fee_rate;
         result["fee_auto_estimated"] = fee_auto_estimated;
