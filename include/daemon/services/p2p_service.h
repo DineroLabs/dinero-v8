@@ -446,6 +446,10 @@ private:
     // across attempts so a multi-peer node eventually probes every peer.
     // Scheduler-tick thread only.
     std::size_t stale_probe_cursor_{0};
+    // #738 follow-up (audit 2026-09-14, HIGH-2): rate limit (steady seconds of
+    // the last warning) for the "getheaders not sent: flight already owned"
+    // warning in RequestHeaders(). Any thread may call RequestHeaders().
+    std::atomic<int64_t> inflight_refusal_warning_last_s_{0};
     // Tunables. The threshold MUST sit several block-times above the normal
     // inter-block gap, NOT at it: TARGET_SPACING_SEC is 120s and block arrival is
     // Poisson, so ~37% of healthy gaps already exceed 120s. A 120s threshold

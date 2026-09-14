@@ -470,8 +470,25 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
     peer_it->second.last_request_time = GetCurrentTimeMs();
     active_sync_peer_ = peer_id;
     UpdateSyncTimeout(peer_id);
+    if (probe) {
+        // #738 follow-up (audit 2026-09-14, HIGH-2): a probe has
+        // expected_headers==0, so UpdateSyncTimeout gave it the full
+        // 15-minute download budget; a connected-but-silent peer then pinned
+        // the single flight and every other probe/refresh was refused for
+        // 15 min. A probe expects an immediate reply: cap it at the probe
+        // timeout. Expiry goes through the same CheckForStall path (flight
+        // released, peer marked stalled).
+        peer_it->second.timeout_deadline = std::min(
+            peer_it->second.timeout_deadline,
+            peer_it->second.last_request_time + probe_timeout_ms_);
+    }
     TransitionTo(HeaderSyncState::REQUESTING_HEADERS);
     return locator;
+}
+
+void HeaderSyncManager::SetProbeTimeoutMs(uint64_t timeout_ms) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    probe_timeout_ms_ = timeout_ms;  // #738 follow-up (audit 2026-09-14)
 }
 
 bool HeaderSyncManager::MarkHeadersRequestFailed(uint64_t peer_id) {
@@ -514,6 +531,16 @@ HeaderSyncManager::SyncStats HeaderSyncManager::GetStats() const {
     }
 
     stats.current_sync_peer = active_sync_peer_;
+    stats.current_sync_age_ms = 0;  // #738 follow-up (audit 2026-09-14, HIGH-2)
+    if (active_sync_peer_ != 0) {
+        const auto owner = peers_.find(active_sync_peer_);
+        if (owner != peers_.end()) {
+            const uint64_t now = GetCurrentTimeMs();
+            stats.current_sync_age_ms = (now > owner->second.last_request_time)
+                                            ? now - owner->second.last_request_time
+                                            : 0;
+        }
+    }
     stats.state = state_;
 
     return stats;

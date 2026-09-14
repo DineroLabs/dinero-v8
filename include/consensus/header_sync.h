@@ -226,10 +226,22 @@ public:
         uint32_t active_peers;
         uint32_t stalled_peers;
         uint64_t current_sync_peer;
+        // #738 follow-up (audit 2026-09-14, HIGH-2): age of the outstanding
+        // request flight in ms (0 when none), so a refusal can name how long the
+        // owner has held it.
+        uint64_t current_sync_age_ms;
         HeaderSyncState state;
     };
 
     SyncStats GetStats() const;
+
+    // #738 follow-up (audit 2026-09-14, HIGH-2): flight timeout for a PROBE
+    // (BeginHeadersRequest(peer, probe=true): stale-tip recovery, inv-triggered
+    // refresh). A probe expects an immediate `headers` reply, empty or not, so
+    // it must not pin the single flight for the 15-minute download timeout
+    // when the peer stays silent. Override is for tests/regtest only.
+    static constexpr uint64_t HEADERS_PROBE_TIMEOUT_MS = 60 * 1000;  // 60 seconds
+    void SetProbeTimeoutMs(uint64_t timeout_ms);
 
     // ========================================================================
     // Peer Switch Callback
@@ -291,6 +303,9 @@ private:
 
     // Custom time source for testing (if null, uses system clock)
     std::function<uint64_t()> time_source_;
+
+    // #738 follow-up (audit 2026-09-14, HIGH-2): see HEADERS_PROBE_TIMEOUT_MS.
+    uint64_t probe_timeout_ms_{HEADERS_PROBE_TIMEOUT_MS};
 
     // Bitcoin Core timeout constants (from net_processing.cpp)
     static constexpr uint64_t HEADERS_DOWNLOAD_TIMEOUT_BASE_MS = 15 * 60 * 1000;  // 15 minutes

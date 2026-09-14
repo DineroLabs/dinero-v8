@@ -9020,6 +9020,46 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_stall_behavior.cp
 endif()
 
 # ============================================================================
+# #738 follow-up (audit 2026-09-14): recovery-probe hardening (gtest; the
+# raw-assert ratchet in scripts/ci/check_test_assertions.py admits no new
+# assert()-based tests, unlike the older sibling header-sync binaries).
+# ============================================================================
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_probe_hardening.cpp)
+  add_executable(test_header_sync_probe_hardening
+    tests/consensus/test_header_sync_probe_hardening.cpp
+    src/consensus/header_chain.cpp
+    src/consensus/header_store.cpp
+    src/consensus/header_sync.cpp
+  )
+  add_dependencies(test_header_sync_probe_hardening gtest gtest_main)
+  target_link_libraries(test_header_sync_probe_hardening PRIVATE
+    dinero_consensus
+    dinero_wallet
+    dinero_crypto
+    secp256k1
+    RocksDB::rocksdb
+    GTest::gtest_main
+  )
+  link_zstd_if_needed(test_header_sync_probe_hardening)
+  target_include_directories(test_header_sync_probe_hardening BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_header_sync_probe_hardening PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME HeaderSyncProbeHardening COMMAND test_header_sync_probe_hardening)
+  set_tests_properties(HeaderSyncProbeHardening PROPERTIES
+    LABELS "consensus;headers-sync;p2p;staleness-recovery;smoke"
+    TIMEOUT 30
+  )
+endif()
+
+# ============================================================================
 # Phase N.2 Step 2C: Header Sync P2P Integration Tests
 # ============================================================================
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_p2p_integration.cpp)

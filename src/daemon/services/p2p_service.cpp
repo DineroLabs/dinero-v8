@@ -1120,13 +1120,44 @@ bool P2PService::RequestHeaders(const std::string& peer_addr,
                 " reason=" + why +
                 " best_header=" + std::to_string(stats.local_best_height) +
                 " peer_best=" + std::to_string(stats.peer_best_height));
+        } else if (stats.current_sync_peer != 0) {
+            // #738 follow-up (audit 2026-09-14, HIGH-2): a refusal because
+            // another request owns the single flight used to be DEBUG-only,
+            // which hid a silent peer pinning the flight (and every recovery
+            // probe with it). Warn with the owner and the flight age, at most
+            // once per minute so a wedged flight cannot flood the log.
+            const int64_t now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                                      std::chrono::steady_clock::now().time_since_epoch()).count();
+            int64_t last_s = inflight_refusal_warning_last_s_.load(std::memory_order_relaxed);
+            const bool warn_now = (now_s - last_s >= 60) &&
+                inflight_refusal_warning_last_s_.compare_exchange_strong(
+                    last_s, now_s, std::memory_order_relaxed);
+            std::string owner_addr = "?";
+            if (p2p_mgr_) {
+                for (const auto& peer : p2p_mgr_->get_connected_peers()) {
+                    if (daemon::HeaderPeerId(peer.to_string()) == stats.current_sync_peer) {
+                        owner_addr = peer.to_string();
+                        break;
+                    }
+                }
+            }
+            const std::string line =
+                "[HeaderSync] getheaders not sent peer=" + peer_addr +
+                " reason=" + why + ": request flight already owned by " + owner_addr +
+                " (peer_id=" + std::to_string(stats.current_sync_peer) + ") for " +
+                std::to_string(stats.current_sync_age_ms / 1000) + "s state=" +
+                std::to_string(static_cast<int>(stats.state));
+            if (warn_now) {
+                logger_interface_->warning(line);
+            } else {
+                logger_interface_->debug(line);
+            }
         } else {
             logger_interface_->debug(
                 "[HeaderSync] getheaders not sent peer=" + peer_addr +
                 " reason=" + why + " state=" +
                 std::to_string(static_cast<int>(stats.state)) +
-                " owner=" + std::to_string(stats.current_sync_peer) +
-                " (ineligible, already in flight, or transport failure)");
+                " (ineligible or transport failure)");
         }
     }
     return sent;
