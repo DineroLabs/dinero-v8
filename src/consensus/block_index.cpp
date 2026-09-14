@@ -286,6 +286,84 @@ std::vector<CBlockIndex*> GetCandidateTipsSnapshot() {
     return g_candidates.Snapshot();
 }
 
+// === #741: read-only chain-tip enumeration (getchaintips) ===
+
+const char* ChainTipStatusName(ChainTipStatus status) {
+    switch (status) {
+        case ChainTipStatus::Active:       return "active";
+        case ChainTipStatus::ValidFork:    return "valid-fork";
+        case ChainTipStatus::ValidHeaders: return "valid-headers";
+        case ChainTipStatus::HeadersOnly:  return "headers-only";
+        case ChainTipStatus::Invalid:      return "invalid";
+    }
+    return "unknown";
+}
+
+ChainTipStatus ClassifyChainTip(const CBlockIndex* tip, const CBlockIndex* active_tip) {
+    if (tip && tip == active_tip) return ChainTipStatus::Active;
+    const uint32_t st = tip ? tip->status : 0u;
+    if (st & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) return ChainTipStatus::Invalid;
+    if (!(st & BLOCK_HAVE_DATA)) return ChainTipStatus::HeadersOnly;
+    // BLOCK_VALID_SCRIPTS is stamped by BlockAcceptor once every consensus
+    // check has passed and stays set on a block ChainstateService later
+    // disconnects, so an abandoned branch reads as valid-fork (Core semantics).
+    if (st & BLOCK_VALID_SCRIPTS) return ChainTipStatus::ValidFork;
+    return ChainTipStatus::ValidHeaders;
+}
+
+std::vector<ChainTipEntry> GetChainTipsSnapshot(const CBlockIndex* active_tip,
+                                                uint32_t max_fork_depth) {
+    std::lock_guard<std::recursive_mutex> lk(g_block_index_mutex);
+    std::vector<ChainTipEntry> out;
+
+    // Always report the active tip, even when a header-only child is already
+    // indexed (header-first sync), exactly as Core does.
+    if (active_tip) {
+        out.push_back(ChainTipEntry{active_tip, ChainTipStatus::Active, 0});
+    }
+
+    for (const auto& kv : g_block_index) {
+        const CBlockIndex* idx = kv.second.get();
+        if (!idx || idx == active_tip || !idx->children.empty()) continue;
+
+        ChainTipEntry entry;
+        entry.tip = idx;
+        entry.status = ClassifyChainTip(idx, active_tip);
+
+        if (active_tip) {
+            // Fork point must lie within max_fork_depth blocks below the active
+            // tip; a tip already deeper than that cannot qualify.
+            if (active_tip->height > idx->height &&
+                active_tip->height - idx->height > max_fork_depth) {
+                continue;
+            }
+            const CBlockIndex* a = active_tip;
+            const CBlockIndex* b = idx;
+            uint32_t depth = 0;   // how far below the active tip we have walked
+            bool bounded = true;
+            while (a && a->height > b->height) {
+                a = a->pprev;
+                if (++depth > max_fork_depth) { bounded = false; break; }
+            }
+            // O(branchlen): the walk we need to report the length anyway.
+            while (bounded && a && b && b->height > a->height) b = b->pprev;
+            while (bounded && a && b && a != b) {
+                a = a->pprev;
+                b = b->pprev;
+                if (++depth > max_fork_depth) { bounded = false; break; }
+            }
+            if (!bounded || !a || !b) continue;   // beyond window, or unlinked orphan
+            entry.branchlen = idx->height - a->height;
+        }
+        out.push_back(entry);
+    }
+
+    std::sort(out.begin(), out.end(), [](const ChainTipEntry& x, const ChainTipEntry& y) {
+        return ByWorkThenHash{}(x.tip, y.tip);
+    });
+    return out;
+}
+
 // === Header-First Sync Implementation ===
 
 bool MaybeQueueOrphan(CBlockIndex* block_index) {

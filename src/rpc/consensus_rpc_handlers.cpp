@@ -13,7 +13,7 @@ namespace dinero {
 
 /**
  * getchaintips - Returns information about all known tips in the block tree
- * 
+ *
  * Result:
  * [
  *   {
@@ -25,6 +25,13 @@ namespace dinero {
  *   },
  *   ...
  * ]
+ *
+ * #741: enumerates every known tip via GetChainTipsSnapshot(), not the
+ * ActivateBestChain candidate set. The candidate set drops a tip the moment it
+ * is activated and never re-adds it after a reorg abandons it, so the old
+ * handler returned exactly one tip after any reorg. Tips whose fork point is
+ * more than DEFAULT_CHAINTIPS_FORK_DEPTH blocks below the active tip are
+ * omitted to bound the per-call walk.
  */
 din::Json rpc_getchaintips(const ExecutionContext& ctx, const din::Json& params) {
     try {
@@ -37,53 +44,29 @@ din::Json rpc_getchaintips(const ExecutionContext& ctx, const din::Json& params)
         }
 
         const auto sync = chainstate->GetSyncSnapshot();
-        CBlockIndex* active_tip = sync.has_active_tip
+        const CBlockIndex* active_tip = sync.has_active_tip
             ? FindBlockIndex(sync.active_tip_hash)
             : nullptr;
-        
-        // Get all candidate tips
-        std::vector<CBlockIndex*> tips = GetCandidateTipsSnapshot();
-        if (active_tip && std::find(tips.begin(), tips.end(), active_tip) == tips.end()) {
-            tips.push_back(active_tip);
-        }
-        
-        // Sort by chainwork (descending) for consistent ordering
-        std::sort(tips.begin(), tips.end(), [](const CBlockIndex* a, const CBlockIndex* b) {
-            return chainwork::CompareWork(a->chainwork, b->chainwork) > 0;
-        });
-        
-        for (CBlockIndex* tip : tips) {
+
+        // Every known tip (active, abandoned/valid forks, header-only, invalid),
+        // sorted by chainwork descending (ByWorkThenHash) for stable ordering.
+        for (const ChainTipEntry& entry : GetChainTipsSnapshot(active_tip)) {
             din::Json tip_info(Json::objectValue);
-            tip_info["height"] = static_cast<int>(tip->height);
-            tip_info["hash"] = tip->hash.GetHex();
-            tip_info["chainwork"] = tip->chainwork;
-            
-            // Determine status and branch length
-            if (tip == active_tip) {
-                tip_info["status"] = "active";
-                tip_info["branchlen"] = 0;
-            } else {
-                tip_info["status"] = "valid-fork";
-                
-                // Calculate branch length (distance from common ancestor)
-                int branch_len = 0;
-                if (active_tip) {
-                    CBlockIndex* fork = chainstate->FindFork(active_tip, tip);
-                    branch_len = tip->height - (fork ? fork->height : 0);
-                }
-                tip_info["branchlen"] = branch_len;
-            }
-            
+            tip_info["height"] = static_cast<int>(entry.tip->height);
+            tip_info["hash"] = entry.tip->hash.GetHex();
+            tip_info["chainwork"] = entry.tip->chainwork;
+            tip_info["status"] = ChainTipStatusName(entry.status);
+            tip_info["branchlen"] = static_cast<int>(entry.branchlen);
             result.append(tip_info);
         }
-        
+
         return result;
-        
+
     } catch (const std::exception& e) {
         din::Json error(Json::objectValue);
         error["code"] = -1;
         error["message"] = std::string("getchaintips error: ") + e.what();
-        
+
         din::Json response(Json::objectValue);
         response["error"] = error;
         return response;
@@ -204,7 +187,22 @@ void RegisterConsensusRPCHandlers(RpcRegistry& registry) {
             .description = "Return information about all known tips in the block tree",
             .params = {},
             .result = {"array", "Array of chain tip objects"},
-            .help = "getchaintips\n\nReturn information about all known tips in the block tree, including the main chain and any valid forks."
+            .help = "getchaintips\n\n"
+                    "Return information about all known tips in the block tree, including the main chain, "
+                    "branches abandoned by a reorg, header-only branches and invalid branches.\n\n"
+                    "Result: array of objects, sorted by chainwork descending:\n"
+                    "  height     (numeric) height of the chain tip\n"
+                    "  hash       (string)  block hash of the tip\n"
+                    "  branchlen  (numeric) 0 for the active tip, otherwise the number of blocks between "
+                    "the tip and its fork point with the active chain\n"
+                    "  status     (string)  one of:\n"
+                    "               active        the active chain tip\n"
+                    "               valid-fork    fully validated branch that is not active (e.g. abandoned by a reorg)\n"
+                    "               valid-headers block bodies present but never fully validated\n"
+                    "               headers-only  headers known, block bodies not downloaded\n"
+                    "               invalid       branch contains an invalid block\n"
+                    "  chainwork  (string)  total chainwork up to this tip, hex\n\n"
+                    "Branches whose fork point is more than 2016 blocks below the active tip are omitted."
         }, "Consensus introspection");
     
     // getchainwork  

@@ -2,7 +2,7 @@
 
 **Auto-generated:** 2025-11-03 02:15:44
 
-**Total Methods:** 59
+**Total Methods:** 60
 
 **Discovery Version:** 2.0
 
@@ -22,7 +22,7 @@
 
 ## Blockchain
 
-**Methods in this category:** 4
+**Methods in this category:** 5
 
 ### getbestblockhash
 
@@ -78,6 +78,41 @@ Note: `utreexo_root` is the legacy display-order hex form for compatibility. Use
 
 ```bash
 dinero-cli getblockheader "hash_value"
+```
+
+---
+
+### getchaintips
+
+**Category:** `blockchain` (alias of `blockchain.getchaintips`)
+
+Returns information about all known tips in the block tree: the active chain,
+branches abandoned by a reorg, header-only branches and invalid branches
+(Bitcoin Core semantics).
+
+**Parameters:** None
+
+**Returns:** `array` - one object per tip, sorted by chainwork descending:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `height` | number | Height of the tip |
+| `hash` | string | Block hash of the tip |
+| `branchlen` | number | `0` for the active tip; otherwise blocks between the tip and its fork point with the active chain |
+| `status` | string | `active`, `valid-fork` (fully validated, not active — e.g. abandoned by a reorg), `valid-headers` (bodies present, never fully validated), `headers-only` (no bodies), `invalid` |
+| `chainwork` | string | Total chainwork up to this tip (hex) |
+
+Branches whose fork point is more than 2016 blocks below the active tip are
+omitted so a call stays bounded.
+
+**Example:**
+
+```bash
+dinero-cli getchaintips
+# [
+#   {"height": 9, "hash": "…", "branchlen": 0, "status": "active",     "chainwork": "…"},
+#   {"height": 8, "hash": "…", "branchlen": 2, "status": "valid-fork", "chainwork": "…"}
+# ]
 ```
 
 ---
