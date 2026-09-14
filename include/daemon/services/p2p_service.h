@@ -429,6 +429,16 @@ private:
     // mutable stall-tracking state it advances. MaybeRecoverStaleTip() reads the
     // live height/peer-count, calls the decision, and does the getheaders I/O.
     daemon::StaleTipState stale_tip_state_;
+    // #738: count of `headers` messages processed from peers (bumped in
+    // HandleP2PMessage on the network thread, read by the scheduler tick). The
+    // stall clock is keyed to THIS, not to our best-header height, so our own
+    // mined blocks cannot mask a silent peer that sits on a heavier chain.
+    std::atomic<uint64_t> peer_header_events_{0};
+    // #738: HeaderSyncManager grants a single request flight, so each recovery
+    // attempt reaches only the first eligible peer. Rotate the starting peer
+    // across attempts so a multi-peer node eventually probes every peer.
+    // Scheduler-tick thread only.
+    std::size_t stale_probe_cursor_{0};
     // Tunables. The threshold MUST sit several block-times above the normal
     // inter-block gap, NOT at it: TARGET_SPACING_SEC is 120s and block arrival is
     // Poisson, so ~37% of healthy gaps already exceed 120s. A 120s threshold
