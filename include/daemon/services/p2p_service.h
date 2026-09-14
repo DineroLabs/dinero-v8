@@ -27,6 +27,9 @@ namespace dinero {
 
 // Forward declarations
 class ILogger;
+namespace consensus {
+enum class HeaderRequestMode : uint8_t;
+}
 namespace daemon {
 class AddressManagerService;
 }
@@ -235,7 +238,7 @@ public:
     // continuation, recovery) reserves HeaderSyncManager's single flight and
     // therefore starts from the best-header chain rather than the active tip.
     bool RequestHeaders(const std::string& peer_addr,
-                        bool probe,
+                        consensus::HeaderRequestMode mode,
                         const char* reason);
     // #738 follow-up (audit 2026-09-14, HIGH-1): peer evidence for the stale-tip
     // clock. Called by the OnHeaders handler only when a `headers` message

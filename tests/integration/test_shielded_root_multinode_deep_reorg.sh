@@ -32,8 +32,31 @@ info() { echo "[INFO] $*"; }
 pass() { echo "[PASS] $*"; }
 fail() { echo "[FAIL] $*" >&2; cleanup; exit 1; }
 cleanup() {
-    for p in ${PIDS}; do kill "${p}" 2>/dev/null || true; done
-    sleep 2
+    local p alive attempt
+    local pids="${PIDS}"
+    PIDS=""
+    [[ -n "${pids// }" ]] || return 0
+
+    for p in ${pids}; do kill -TERM "${p}" 2>/dev/null || true; done
+    for attempt in $(seq 1 8); do
+        alive=0
+        for p in ${pids}; do
+            if kill -0 "${p}" 2>/dev/null; then alive=1; fi
+        done
+        [[ "${alive}" == 0 ]] && break
+        sleep 1
+    done
+
+    # A daemon blocked in shutdown must not retain its fixed P2P port and let
+    # the next repeated run connect to the old process. Force only survivors,
+    # then reap every child before returning from the test.
+    for p in ${pids}; do
+        if kill -0 "${p}" 2>/dev/null; then
+            echo "[INFO] forcing stale daemon pid ${p} to exit" >&2
+            kill -KILL "${p}" 2>/dev/null || true
+        fi
+    done
+    for p in ${pids}; do wait "${p}" 2>/dev/null || true; done
 }
 trap cleanup EXIT
 

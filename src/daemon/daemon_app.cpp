@@ -4434,7 +4434,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                             *frontier_refresh_height = validated_height;
                         }
                         if (p2p_service_for_csn->RequestHeaders(
-                                source_peer, true, "csn-frontier")) {
+                                source_peer, consensus::HeaderRequestMode::REFRESH,
+                                "csn-frontier")) {
                             g_logger.info("[CSN] Reached known header frontier at height " +
                                           std::to_string(validated_height) + " via " + source_peer +
                                           " — requested headers refresh");
@@ -5922,7 +5923,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                         auto p2p_locked = p2p_weak.lock();
                         if (!p2p_locked ||
                             !p2p_locked->RequestHeaders(
-                                peer_addr, true, "header-rejection-recovery")) {
+                                peer_addr, consensus::HeaderRequestMode::REFRESH,
+                                "header-rejection-recovery")) {
                             g_logger.warning("[Phase N.5] Recovery getheaders not sent for " +
                                              peer_addr +
                                              " (peer ineligible, another request owns the flight,"
@@ -6155,7 +6157,8 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                             if (should_request_headers && p2p_service &&
                                 p2p_service->RequestHeaders(
-                                    peer_addr, true, "stateless-compact-block")) {
+                                    peer_addr, consensus::HeaderRequestMode::REFRESH,
+                                    "stateless-compact-block")) {
                                 g_logger.info("[BlockRelay] Stateless cmpctblock hint from " + peer_addr +
                                               " — requested headers refresh");
                             } else {
@@ -6604,7 +6607,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                     GetPeerID(peer.to_string()), advertised_height,
                     peer_best_hash, peer.is_outbound);
                 p2p_service->RequestHeaders(
-                    peer.to_string(), true, "phase-n-wiring");
+                    peer.to_string(), consensus::HeaderRequestMode::REFRESH,
+                    "phase-n-wiring");
             }
             header_sync->StartSync();
 

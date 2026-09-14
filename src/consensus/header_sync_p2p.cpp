@@ -152,8 +152,9 @@ HeaderSyncManager::SyncStats HeaderSyncP2P::GetStats() const {
 // Private Helpers
 // ============================================================================
 
-bool HeaderSyncP2P::RequestHeadersFromPeer(uint64_t peer_id, bool probe) {
-    auto locator = sync_manager_->BeginHeadersRequest(peer_id, probe);
+bool HeaderSyncP2P::RequestHeadersFromPeer(uint64_t peer_id,
+                                          HeaderRequestMode mode) {
+    auto locator = sync_manager_->BeginHeadersRequest(peer_id, mode);
     if (!locator.has_value()) {
         return false;
     }

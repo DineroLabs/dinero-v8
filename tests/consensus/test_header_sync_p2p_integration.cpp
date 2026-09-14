@@ -259,7 +259,7 @@ void Test3_FullBatchRequestsMore() {
     assert(continuation.locator.front() != first_request.locator.front());
 
     // A refresh racing the continuation must be suppressed, not reset it.
-    assert(!sync_p2p.RequestHeadersFromPeer(1, true));
+    assert(!sync_p2p.RequestHeadersFromPeer(1, HeaderRequestMode::REFRESH));
     assert(mocks.getheaders_calls.size() == 2);
 
     std::cout << "   ✅ Full batch requested exactly one continuation from its new tip" << std::endl;
@@ -467,7 +467,7 @@ void Test8_MissingParentReleasesRequestForRecovery() {
     const auto stats = sync_p2p.GetStats();
     assert(stats.current_sync_peer == 0);
     assert(stats.state == HeaderSyncState::IDLE);
-    assert(sync_p2p.RequestHeadersFromPeer(8, true));
+    assert(sync_p2p.RequestHeadersFromPeer(8, HeaderRequestMode::REFRESH));
     assert(mocks.getheaders_calls.size() == 2);
 
     std::cout << "   ✅ Missing-parent rejection released ownership for recovery" << std::endl;
@@ -508,7 +508,7 @@ void Test9_ConcurrentTriggersProduceOneRequest() {
             while (!start.load(std::memory_order_acquire)) {
                 std::this_thread::yield();
             }
-            if (sync_p2p.RequestHeadersFromPeer(peer_id, true)) {
+            if (sync_p2p.RequestHeadersFromPeer(peer_id, HeaderRequestMode::REFRESH)) {
                 succeeded.fetch_add(1, std::memory_order_relaxed);
             }
         });
@@ -573,7 +573,7 @@ void Test11_LocalRateDropReleasesOnlyItsRequest() {
     sync.OnPeerConnected(11, 0, zero, true);
     sync.OnPeerConnected(12, 0, zero, true);
     assert(!sync.OnHeadersRateLimited(0));
-    assert(sync.RequestHeadersFromPeer(11, true));
+    assert(sync.RequestHeadersFromPeer(11, HeaderRequestMode::REFRESH));
     // An unrelated unsolicited flood cannot cancel another peer's flight.
     assert(!sync.OnHeadersRateLimited(12));
     assert(sync.GetStats().current_sync_peer == 11);
@@ -584,10 +584,10 @@ void Test11_LocalRateDropReleasesOnlyItsRequest() {
     assert(sync.GetStats().stalled_peers == 0);
     assert(mocks.getheaders_calls.size() == 1); // no immediate retry/flood
     assert(!sync.OnHeadersRateLimited(11));     // no duplicate retry hint
-    assert(sync.RequestHeadersFromPeer(11, true));
+    assert(sync.RequestHeadersFromPeer(11, HeaderRequestMode::REFRESH));
     assert(sync.ProcessHeaders(11, {}).accepted);
     assert(sync.GetStats().current_sync_peer == 0);
-    assert(sync.RequestHeadersFromPeer(12, true));
+    assert(sync.RequestHeadersFromPeer(12, HeaderRequestMode::REFRESH));
     assert(!sync.OnHeadersRateLimited(11));
     assert(sync.GetStats().current_sync_peer == 12);
 }

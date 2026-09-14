@@ -61,6 +61,15 @@ enum class PeerSwitchReason {
     NO_PROGRESS           // Peer not making progress on sync
 };
 
+// A request's purpose controls both eligibility and timeout policy. Refreshes
+// may query an equal-height peer but retain the normal download timeout. Only
+// stale-tip recovery is expected to fail fast so another peer can be tried.
+enum class HeaderRequestMode : uint8_t {
+    SYNCHRONIZATION,
+    REFRESH,
+    STALE_TIP_RECOVERY
+};
+
 // ============================================================================
 // Peer Header State
 // ============================================================================
@@ -209,12 +218,14 @@ public:
 
     /**
      * Atomically reserve the single header-request flight and capture a locator
-     * from the current best-header chain. A normal request requires the peer to
-     * be ahead; a probe may query an equal-height peer but still cannot overlap
-     * another request.
+     * from the current best-header chain. A synchronization request requires
+     * the peer to be ahead; refresh and stale-tip recovery requests may query
+     * an equal-height peer but still cannot overlap another request. Only
+     * stale-tip recovery uses the short timeout.
      */
     std::optional<std::vector<uint256>> BeginHeadersRequest(
-        uint64_t peer_id, bool probe = false);
+        uint64_t peer_id,
+        HeaderRequestMode mode = HeaderRequestMode::SYNCHRONIZATION);
 
     /** Release a reserved request when transport send fails. */
     bool MarkHeadersRequestFailed(uint64_t peer_id);
@@ -239,13 +250,13 @@ public:
 
     SyncStats GetStats() const;
 
-    // #738 follow-up (audit 2026-09-14, HIGH-2): flight timeout for a PROBE
-    // (BeginHeadersRequest(peer, probe=true): stale-tip recovery, inv-triggered
-    // refresh). A probe expects an immediate `headers` reply, empty or not, so
-    // it must not pin the single flight for the 15-minute download timeout
-    // when the peer stays silent. Override is for tests/regtest only.
-    static constexpr uint64_t HEADERS_PROBE_TIMEOUT_MS = 60 * 1000;  // 60 seconds
-    void SetProbeTimeoutMs(uint64_t timeout_ms);
+    // #738 follow-up (audit 2026-09-14, HIGH-2): stale-tip recovery expects an
+    // immediate `headers` reply, empty or not, so a silent peer must not pin
+    // the single flight for the 15-minute download timeout. Ordinary refreshes
+    // retain the normal timeout because a healthy peer can be busy syncing.
+    // Override is for tests/regtest only.
+    static constexpr uint64_t HEADERS_STALE_TIP_PROBE_TIMEOUT_MS = 60 * 1000;
+    void SetStaleTipProbeTimeoutMs(uint64_t timeout_ms);
 
     // #738 follow-up (audit 2026-09-14, MEDIUM-1): how long a MarkPeerStalled /
     // MarkPeerMisbehaving penalty excludes a still-connected peer from
@@ -316,8 +327,9 @@ private:
     // Custom time source for testing (if null, uses system clock)
     std::function<uint64_t()> time_source_;
 
-    // #738 follow-up (audit 2026-09-14, HIGH-2): see HEADERS_PROBE_TIMEOUT_MS.
-    uint64_t probe_timeout_ms_{HEADERS_PROBE_TIMEOUT_MS};
+    // #738 follow-up (audit 2026-09-14, HIGH-2): see
+    // HEADERS_STALE_TIP_PROBE_TIMEOUT_MS.
+    uint64_t stale_tip_probe_timeout_ms_{HEADERS_STALE_TIP_PROBE_TIMEOUT_MS};
 
     // Bitcoin Core timeout constants (from net_processing.cpp)
     static constexpr uint64_t HEADERS_DOWNLOAD_TIMEOUT_BASE_MS = 15 * 60 * 1000;  // 15 minutes

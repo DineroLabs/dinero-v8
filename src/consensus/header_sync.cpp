@@ -442,7 +442,7 @@ bool HeaderSyncManager::ShouldRequestHeaders(uint64_t peer_id) const {
 }
 
 std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
-    uint64_t peer_id, bool probe) {
+    uint64_t peer_id, HeaderRequestMode mode) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
 
     // #738 follow-up (audit 2026-09-14, MEDIUM-1): the recovery path calls this
@@ -462,7 +462,8 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
         return std::nullopt;
     }
 
-    if (!probe && !ShouldRequestHeaders(peer_id)) {
+    if (mode == HeaderRequestMode::SYNCHRONIZATION &&
+        !ShouldRequestHeaders(peer_id)) {
         return std::nullopt;
     }
 
@@ -480,25 +481,24 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
     peer_it->second.last_request_time = GetCurrentTimeMs();
     active_sync_peer_ = peer_id;
     UpdateSyncTimeout(peer_id);
-    if (probe) {
-        // #738 follow-up (audit 2026-09-14, HIGH-2): a probe has
-        // expected_headers==0, so UpdateSyncTimeout gave it the full
-        // 15-minute download budget; a connected-but-silent peer then pinned
-        // the single flight and every other probe/refresh was refused for
-        // 15 min. A probe expects an immediate reply: cap it at the probe
-        // timeout. Expiry goes through the same CheckForStall path (flight
-        // released, peer marked stalled).
+    if (mode == HeaderRequestMode::STALE_TIP_RECOVERY) {
+        // #738 follow-up (audit 2026-09-14, HIGH-2): a stale-tip probe has
+        // expected_headers==0, so UpdateSyncTimeout gave it the full 15-minute
+        // download budget. A connected-but-silent peer then pinned the single
+        // flight and blocked recovery from trying another peer. Only this
+        // deliberate recovery mode expects an immediate reply; announcement,
+        // connection and synchronization refreshes keep the normal timeout.
         peer_it->second.timeout_deadline = std::min(
             peer_it->second.timeout_deadline,
-            peer_it->second.last_request_time + probe_timeout_ms_);
+            peer_it->second.last_request_time + stale_tip_probe_timeout_ms_);
     }
     TransitionTo(HeaderSyncState::REQUESTING_HEADERS);
     return locator;
 }
 
-void HeaderSyncManager::SetProbeTimeoutMs(uint64_t timeout_ms) {
+void HeaderSyncManager::SetStaleTipProbeTimeoutMs(uint64_t timeout_ms) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    probe_timeout_ms_ = timeout_ms;  // #738 follow-up (audit 2026-09-14)
+    stale_tip_probe_timeout_ms_ = timeout_ms;
 }
 
 bool HeaderSyncManager::MarkHeadersRequestFailed(uint64_t peer_id) {

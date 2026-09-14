@@ -1,14 +1,12 @@
 // #738 follow-up (audit 2026-09-14): recovery-probe hardening for
 // HeaderSyncManager, driven with an injected clock (no sockets, no sleeps).
 //
-// HIGH-2: HeaderSyncManager grants exactly one header request flight. A probe
-// (BeginHeadersRequest(peer, probe=true) — the stale-tip recovery and the
-// inv-triggered refresh) has expected_headers==0, so its timeout was exactly
-// HEADERS_DOWNLOAD_TIMEOUT_BASE_MS = 15 min. A connected-but-silent peer that
-// won the flight therefore blocked every other probe and refresh for 15 min.
-// A probe expects an immediate `headers` reply (empty or not), so it gets a
-// short flight timeout (HEADERS_PROBE_TIMEOUT_MS = 60 s); on expiry the flight
-// is released and the peer is marked stalled exactly as for the long timeout.
+// HIGH-2: HeaderSyncManager grants exactly one header request flight. A
+// deliberate stale-tip recovery request has expected_headers==0, so it would
+// otherwise get the 15-minute download timeout and a silent peer would block
+// recovery from trying another peer. Only stale-tip recovery gets the short
+// timeout. Announcement, connection and synchronization refreshes keep the
+// normal timeout because a healthy peer may be busy on a slower machine.
 //
 // gtest EXPECT/ASSERT only (repo ratchet: no new raw assert() under tests/,
 // scripts/ci/check_test_assertions.py), unlike the older sibling binaries.
@@ -36,7 +34,7 @@ constexpr uint64_t kMin = 60 * kSec;
 
 // Production tunables this file pins. Mirrors header_sync.h; if either moves
 // the test must be revisited deliberately.
-constexpr uint64_t kProbeTimeoutMs = 60 * kSec;        // HEADERS_PROBE_TIMEOUT_MS
+constexpr uint64_t kProbeTimeoutMs = 60 * kSec;        // stale-tip recovery
 constexpr uint64_t kDownloadTimeoutMs = 15 * kMin;     // HEADERS_DOWNLOAD_TIMEOUT_BASE_MS
 
 BlockHeader MakeHeader(const uint256& prev, uint32_t time) {
@@ -79,7 +77,9 @@ struct Fixture {
     }
 
     void Advance(uint64_t ms) { now_ms += ms; }
-    bool Begin(uint64_t peer, bool probe) { return mgr.BeginHeadersRequest(peer, probe).has_value(); }
+    bool Begin(uint64_t peer, HeaderRequestMode mode) {
+        return mgr.BeginHeadersRequest(peer, mode).has_value();
+    }
 };
 
 }  // namespace
@@ -88,14 +88,15 @@ struct Fixture {
 // Sixty-one seconds later a probe to peer B must be accepted.
 TEST(HeaderSyncProbeHardening, SilentProbeReleasesFlightAfterProbeTimeout) {
     Fixture f;
-    ASSERT_TRUE(f.Begin(1, /*probe=*/true));
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY));
     EXPECT_EQ(f.mgr.GetState(), HeaderSyncState::REQUESTING_HEADERS);
-    EXPECT_FALSE(f.Begin(2, true)) << "single flight: B refused while A owns it";
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "single flight: B refused while A owns it";
 
     // Just under the probe timeout: still A's flight.
     f.Advance(kProbeTimeoutMs - kSec);
     f.mgr.Tick(f.now_ms);
-    EXPECT_FALSE(f.Begin(2, true));
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::STALE_TIP_RECOVERY));
     EXPECT_TRUE(f.switches.calls.empty());
 
     // 61 s after the probe: flight released, A marked stalled, B accepted.
@@ -104,44 +105,62 @@ TEST(HeaderSyncProbeHardening, SilentProbeReleasesFlightAfterProbeTimeout) {
     ASSERT_EQ(f.switches.calls.size(), 1U);
     EXPECT_EQ(f.switches.calls[0].first, 1U);
     EXPECT_EQ(f.switches.calls[0].second, PeerSwitchReason::STALL_TIMEOUT);
-    EXPECT_TRUE(f.Begin(2, true)) << "probe flight must be free 61 s after a silent probe";
+    EXPECT_TRUE(f.Begin(2, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "probe flight must be free 61 s after a silent probe";
     EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 2U);
-    EXPECT_FALSE(f.Begin(1, true)) << "the silent peer is stalled, as before";
+    EXPECT_FALSE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "the silent peer is stalled, as before";
 }
 
 // A reply inside the window keeps the flight healthy: an empty `headers`
 // message from A releases the flight normally and A is NOT penalised.
 TEST(HeaderSyncProbeHardening, AnsweredProbeIsNotStalled) {
     Fixture f;
-    ASSERT_TRUE(f.Begin(1, true));
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY));
     f.Advance(kProbeTimeoutMs / 2);
     const auto r = f.mgr.ProcessHeadersWithResult(1, {});
     EXPECT_TRUE(r.accepted);
     f.Advance(kProbeTimeoutMs);  // well past the probe deadline of the old flight
     f.mgr.Tick(f.now_ms);
     EXPECT_TRUE(f.switches.calls.empty()) << "an answered probe must never be reported as a stall";
-    EXPECT_TRUE(f.Begin(1, true)) << "peer A stays eligible";
+    EXPECT_TRUE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "peer A stays eligible";
 }
 
-// The short timeout is probe-specific: a real download request from a peer
-// that is ahead keeps the Bitcoin-Core 15-minute budget.
+// Equal-height refreshes are allowed to bypass the ahead-only eligibility
+// check, but they keep the normal timeout. This is the path used for block
+// announcements, peer connection and compact-block synchronization.
+TEST(HeaderSyncProbeHardening, OrdinaryRefreshKeepsLongTimeout) {
+    Fixture f;
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::REFRESH));
+
+    f.Advance(kProbeTimeoutMs + kSec);
+    f.mgr.Tick(f.now_ms);
+    EXPECT_TRUE(f.switches.calls.empty())
+        << "61 s is not a stall for an ordinary refresh";
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 1U);
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::REFRESH));
+}
+
+// A real synchronization request from a peer that is ahead also keeps the
+// Bitcoin-Core 15-minute budget.
 TEST(HeaderSyncProbeHardening, DownloadRequestKeepsLongTimeout) {
     Fixture f;
     uint256 none;
     none.SetNull();
     f.mgr.UpdatePeerBest(1, 1000, none);  // A is 1000 headers ahead
-    ASSERT_TRUE(f.Begin(1, /*probe=*/false));
+    ASSERT_TRUE(f.Begin(1, HeaderRequestMode::SYNCHRONIZATION));
 
     f.Advance(kProbeTimeoutMs + kSec);
     f.mgr.Tick(f.now_ms);
     EXPECT_TRUE(f.switches.calls.empty()) << "61 s is not a stall for a download flight";
-    EXPECT_FALSE(f.Begin(2, true));
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::STALE_TIP_RECOVERY));
 
     f.Advance(kDownloadTimeoutMs);  // now past 15 min + 1000 ms
     f.mgr.Tick(f.now_ms);
     ASSERT_EQ(f.switches.calls.size(), 1U);
     EXPECT_EQ(f.switches.calls[0].second, PeerSwitchReason::STALL_TIMEOUT);
-    EXPECT_TRUE(f.Begin(2, true));
+    EXPECT_TRUE(f.Begin(2, HeaderRequestMode::STALE_TIP_RECOVERY));
 }
 
 // ---------------------------------------------------------------------------
@@ -164,15 +183,18 @@ constexpr uint64_t kPenaltyExpiryMs = 10 * kMin;  // PEER_PENALTY_EXPIRY_MS
 TEST(HeaderSyncProbeHardening, MisbehavingFlagExpiresViaTick) {
     Fixture f;
     f.mgr.MarkPeerMisbehaving(1);
-    EXPECT_FALSE(f.Begin(1, true)) << "freshly penalised peer is skipped";
+    EXPECT_FALSE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "freshly penalised peer is skipped";
 
     f.Advance(kPenaltyExpiryMs - kSec);
     f.mgr.Tick(f.now_ms);
-    EXPECT_FALSE(f.Begin(1, true)) << "still inside the penalty window";
+    EXPECT_FALSE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "still inside the penalty window";
 
     f.Advance(2 * kSec);
     f.mgr.Tick(f.now_ms);
-    EXPECT_TRUE(f.Begin(1, true)) << "penalty expired: connected peer eligible again";
+    EXPECT_TRUE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "penalty expired: connected peer eligible again";
 }
 
 // Expiry must not depend on Tick() having run: BeginHeadersRequest itself
@@ -180,10 +202,10 @@ TEST(HeaderSyncProbeHardening, MisbehavingFlagExpiresViaTick) {
 TEST(HeaderSyncProbeHardening, StalledFlagExpiresOnRequestWithoutTick) {
     Fixture f;
     f.mgr.MarkPeerStalled(2);
-    EXPECT_FALSE(f.Begin(2, true));
+    EXPECT_FALSE(f.Begin(2, HeaderRequestMode::STALE_TIP_RECOVERY));
 
     f.Advance(kPenaltyExpiryMs + kSec);
-    EXPECT_TRUE(f.Begin(2, true));
+    EXPECT_TRUE(f.Begin(2, HeaderRequestMode::STALE_TIP_RECOVERY));
     EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 2U);
 }
 
@@ -193,14 +215,15 @@ TEST(HeaderSyncProbeHardening, PenaltyRearmsOnRepeatOffence) {
     f.mgr.MarkPeerMisbehaving(1);
     f.Advance(kPenaltyExpiryMs + kSec);
     f.mgr.Tick(f.now_ms);
-    EXPECT_TRUE(f.Begin(1, true));
+    EXPECT_TRUE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY));
     ASSERT_TRUE(f.mgr.ProcessHeadersWithResult(1, {}).accepted);  // release the flight
 
     f.mgr.MarkPeerMisbehaving(1);
     f.Advance(kPenaltyExpiryMs / 2);
     f.mgr.Tick(f.now_ms);
-    EXPECT_FALSE(f.Begin(1, true)) << "second offence must serve a fresh window";
+    EXPECT_FALSE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY))
+        << "second offence must serve a fresh window";
     f.Advance(kPenaltyExpiryMs / 2 + kSec);
     f.mgr.Tick(f.now_ms);
-    EXPECT_TRUE(f.Begin(1, true));
+    EXPECT_TRUE(f.Begin(1, HeaderRequestMode::STALE_TIP_RECOVERY));
 }

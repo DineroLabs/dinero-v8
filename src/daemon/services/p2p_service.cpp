@@ -1094,11 +1094,12 @@ void P2PService::StartSchedulerTickLoop() {
 }
 
 bool P2PService::SendHeadersRefreshNow(const std::string& peer_addr) {
-    return RequestHeaders(peer_addr, true, "announcement-refresh");
+    return RequestHeaders(peer_addr, consensus::HeaderRequestMode::REFRESH,
+                          "announcement-refresh");
 }
 
 bool P2PService::RequestHeaders(const std::string& peer_addr,
-                                bool probe,
+                                consensus::HeaderRequestMode mode,
                                 const char* reason) {
     if (!p2p_mgr_) {
         return false;
@@ -1110,7 +1111,7 @@ bool P2PService::RequestHeaders(const std::string& peer_addr,
     }
 
     const uint64_t peer_id = daemon::HeaderPeerId(peer_addr);
-    const bool sent = ctx->header_sync->RequestHeadersFromPeer(peer_id, probe);
+    const bool sent = ctx->header_sync->RequestHeadersFromPeer(peer_id, mode);
     if (logger_interface_) {
         const auto stats = ctx->header_sync->GetStats();
         const std::string why = reason ? reason : "unspecified";
@@ -1272,7 +1273,10 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
         const std::size_t start = stale_probe_cursor_++ % peers.size();
         for (std::size_t i = 0; i < peers.size(); ++i) {
             const auto& peer = peers[(start + i) % peers.size()];
-            if (RequestHeaders(peer.to_string(), true, "stale-tip-recovery")) {
+            if (RequestHeaders(
+                    peer.to_string(),
+                    consensus::HeaderRequestMode::STALE_TIP_RECOVERY,
+                    "stale-tip-recovery")) {
                 ++sent;
             }
         }
@@ -1342,7 +1346,8 @@ void P2PService::MaybeRequestHeadersForPeerTip(const std::string& peer_addr,
             daemon::HeaderPeerId(peer_addr), peer_height, peer_best_hash);
     }
 
-    const bool sent = RequestHeaders(peer_addr, false, reason);
+    const bool sent = RequestHeaders(
+        peer_addr, consensus::HeaderRequestMode::SYNCHRONIZATION, reason);
     if (sent) {
         {
             std::lock_guard<std::mutex> lock(peer_tip_getheaders_mutex_);
@@ -2144,7 +2149,8 @@ bool P2PService::Start() {
                     // cases where peer has lower height but more cumulative work
                     logger_interface_->info("[P2PService] Requesting headers from peer " + peer_addr);
 
-                    RequestHeaders(peer_addr, true, "peer-connect");
+                    RequestHeaders(peer_addr, consensus::HeaderRequestMode::REFRESH,
+                                   "peer-connect");
 
                     if (auto* ctx = DaemonContext::instance();
                         ctx && ctx->block_download && ctx->header_chain && ctx->chainstate &&

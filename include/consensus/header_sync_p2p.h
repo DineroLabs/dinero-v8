@@ -216,7 +216,9 @@ public:
      * Generates locator and sends getheaders message.
      * Public so handleHeadersMessage() can send continuation after full batches.
      */
-    bool RequestHeadersFromPeer(uint64_t peer_id, bool probe = false);
+    bool RequestHeadersFromPeer(
+        uint64_t peer_id,
+        HeaderRequestMode mode = HeaderRequestMode::SYNCHRONIZATION);
 
 private:
     // Core header sync manager
