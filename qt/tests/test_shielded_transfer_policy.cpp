@@ -10,6 +10,14 @@ private Q_SLOTS:
     void parsesDinExactly();
     void rejectsInvalidDin();
     void productionLockoutIsReadOnly();
+    void recognizesWalletLockedErrors() {
+        QVERIFY(ShieldedTransferPolicy::isWalletLockedError("wallet_locked"));
+        QVERIFY(ShieldedTransferPolicy::isWalletLockedError("Wallet is locked"));
+        QVERIFY(ShieldedTransferPolicy::isWalletLockedError("request failed: wallet_locked"));
+        QVERIFY(ShieldedTransferPolicy::isWalletLockedError("Wallet locked"));
+        QVERIFY(!ShieldedTransferPolicy::isWalletLockedError("connection lost"));
+        QVERIFY(!ShieldedTransferPolicy::isWalletLockedError("insufficient_funds"));
+    }
     void daemonCapabilityFailsClosed() {
         using ShieldedTransferPolicy::daemonAllowsSpending;
         QVERIFY(!daemonAllowsSpending({}));

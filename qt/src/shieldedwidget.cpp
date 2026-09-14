@@ -79,6 +79,7 @@ void ShieldedWidget::setupUI() {
 
     // ── Status banner ──
     statusBanner_ = new QLabel("Checking shielded pool status…");
+    statusBanner_->setObjectName("shieldedStatusBanner");
     statusBanner_->setStyleSheet(
         "QLabel { padding: 8px 12px; border-radius: 6px; background: #2f343c; "
         "color: #cfd3d8; font-weight: 600; }");
@@ -170,9 +171,11 @@ void ShieldedWidget::setupUI() {
         shieldFeeEdit_->setMaximumWidth(120);
         h->addWidget(shieldFeeEdit_);
         shieldBtn_ = new QPushButton("Shield");
+        shieldBtn_->setObjectName("shieldButton");
         connect(shieldBtn_, &QPushButton::clicked, this, &ShieldedWidget::onShieldClicked);
         h->addWidget(shieldBtn_);
         shieldResultLabel_ = new QLabel("");
+        shieldResultLabel_->setObjectName("shieldResult");
         shieldResultLabel_->setStyleSheet("color: #888;");
         h->addWidget(shieldResultLabel_, /*stretch=*/2);
     }
@@ -217,10 +220,12 @@ void ShieldedWidget::setupUI() {
         g->addWidget(transferMemoEdit_, 2, 3);
 
         transferBtn_ = new QPushButton("Send");
+        transferBtn_->setObjectName("shieldedTransferButton");
         connect(transferBtn_, &QPushButton::clicked, this, &ShieldedWidget::onTransferClicked);
         g->addWidget(transferBtn_, 2, 4);
 
         transferResultLabel_ = new QLabel("");
+        transferResultLabel_->setObjectName("shieldedTransferResult");
         transferResultLabel_->setStyleSheet("color: #888;");
         transferResultLabel_->setWordWrap(true);
         g->addWidget(transferResultLabel_, 3, 0, 1, 5);
@@ -245,9 +250,11 @@ void ShieldedWidget::setupUI() {
         unshieldFeeEdit_->setMaximumWidth(120);
         h->addWidget(unshieldFeeEdit_);
         unshieldBtn_ = new QPushButton("Unshield");
+        unshieldBtn_->setObjectName("unshieldButton");
         connect(unshieldBtn_, &QPushButton::clicked, this, &ShieldedWidget::onUnshieldClicked);
         h->addWidget(unshieldBtn_);
         unshieldResultLabel_ = new QLabel("");
+        unshieldResultLabel_->setObjectName("unshieldResult");
         unshieldResultLabel_->setStyleSheet("color: #888;");
         h->addWidget(unshieldResultLabel_, /*stretch=*/2);
         v->addLayout(h);
@@ -303,24 +310,49 @@ void ShieldedWidget::setupUI() {
 void ShieldedWidget::setActiveBanner(bool active, const QString& reason) {
     if (fundMovingSurface_) fundMovingSurface_->setVisible(true);
     shieldedActive_ = active;
-    if (active) {
+    shieldedUnavailableReason_ = reason;
+    updateFundMovingUi();
+}
+
+void ShieldedWidget::setWalletUnlocked(bool unlocked) {
+    walletUnlocked_ = unlocked;
+    updateFundMovingUi();
+}
+
+void ShieldedWidget::updateFundMovingUi() {
+    if (shieldedActive_ && walletUnlocked_) {
         statusBanner_->setText("✅ Private payments enabled by the daemon");
         statusBanner_->setStyleSheet(
             "QLabel { padding: 8px 12px; border-radius: 6px; background: #2d4a32; "
             "color: #b8e0bf; font-weight: 600; }");
+    } else if (shieldedActive_) {
+        statusBanner_->setText("🔒 Wallet is locked — unlock wallet to continue with private payments.");
+        statusBanner_->setStyleSheet(
+            "QLabel { padding: 8px 12px; border-radius: 6px; background: #4a402d; "
+            "color: #e0d2b8; font-weight: 600; }");
     } else {
         QString msg = "Private payments unavailable";
-        if (!reason.isEmpty()) msg += "  —  " + reason;
+        if (!shieldedUnavailableReason_.isEmpty()) msg += "  —  " + shieldedUnavailableReason_;
         msg += "  —  receive addresses still derive locally; shield/unshield/send await activation.";
         statusBanner_->setText(msg);
         statusBanner_->setStyleSheet(
             "QLabel { padding: 8px 12px; border-radius: 6px; background: #4a402d; "
             "color: #e0d2b8; font-weight: 600; }");
     }
-    // Disable on-chain actions when parked.
-    if (shieldBtn_)    shieldBtn_->setEnabled(active && !shieldSubmitting_);
-    if (transferBtn_)  transferBtn_->setEnabled(active && !transferSubmitting_);
-    if (unshieldBtn_)  unshieldBtn_->setEnabled(active && !unshieldSubmitting_);
+    const bool canMoveFunds = shieldedActive_ && walletUnlocked_;
+    const QString lockTip = walletUnlocked_ ? QString() : "Unlock wallet to continue";
+    if (shieldBtn_) {
+        shieldBtn_->setEnabled(canMoveFunds && !shieldSubmitting_);
+        shieldBtn_->setToolTip(lockTip);
+    }
+    if (transferBtn_) {
+        transferBtn_->setEnabled(canMoveFunds && !transferSubmitting_);
+        transferBtn_->setToolTip(lockTip);
+    }
+    if (unshieldBtn_) {
+        unshieldBtn_->setEnabled(canMoveFunds && !unshieldSubmitting_);
+        unshieldBtn_->setToolTip(lockTip);
+    }
 }
 
 void ShieldedWidget::refresh() {
@@ -370,6 +402,7 @@ void ShieldedWidget::setWalletScope(const QString& walletName) {
     loadAddressBook();
     loadTransferJournal();
     loadOperationJournals();
+    updateFundMovingUi();
 }
 
 void ShieldedWidget::onTipPoll() {
@@ -580,6 +613,19 @@ void ShieldedWidget::onShieldClicked() {
     // user hits; this is what a future refactor hits if it wires another
     // trigger to this slot.
     if (!shieldedActive_) return;
+    if (!walletUnlocked_) {
+        shieldResultLabel_->setText("Wallet is locked — unlock wallet to continue.");
+        return;
+    }
+    if (shieldJournalStage_ == "submitting") {
+        clearOperationJournal("shield");
+        shieldSubmitting_ = false;
+        shieldBtn_->setText("Shield");
+        shieldResultLabel_->setText(
+            "Previous uncertain attempt cleared — review before submitting again.");
+        updateFundMovingUi();
+        return;
+    }
     if (shieldJournalStage_ == "accepted") {
         clearOperationJournal("shield");
         shieldAmountEdit_->clear();
@@ -629,6 +675,19 @@ void ShieldedWidget::onTransferClicked() {
     // user hits; this is what a future refactor hits if it wires another
     // trigger to this slot.
     if (!shieldedActive_) return;
+    if (!walletUnlocked_) {
+        transferResultLabel_->setText("Wallet is locked — unlock wallet to continue.");
+        return;
+    }
+    if (transferJournalStage_ == "submitting") {
+        clearTransferJournal();
+        transferSubmitting_ = false;
+        transferBtn_->setText("Send");
+        transferResultLabel_->setText(
+            "Previous uncertain attempt cleared — review before submitting again.");
+        updateFundMovingUi();
+        return;
+    }
     if (transferJournalStage_ == "accepted") {
         clearTransferJournal();
         transferAddressEdit_->clear();
@@ -699,6 +758,19 @@ void ShieldedWidget::onUnshieldClicked() {
     // user hits; this is what a future refactor hits if it wires another
     // trigger to this slot.
     if (!shieldedActive_) return;
+    if (!walletUnlocked_) {
+        unshieldResultLabel_->setText("Wallet is locked — unlock wallet to continue.");
+        return;
+    }
+    if (unshieldJournalStage_ == "submitting") {
+        clearOperationJournal("unshield");
+        unshieldSubmitting_ = false;
+        unshieldBtn_->setText("Unshield");
+        unshieldResultLabel_->setText(
+            "Previous uncertain attempt cleared — review before submitting again.");
+        updateFundMovingUi();
+        return;
+    }
     if (unshieldJournalStage_ == "accepted") {
         clearOperationJournal("unshield");
         unshieldAmountEdit_->clear();
@@ -813,6 +885,13 @@ void ShieldedWidget::onRpcResult(const QString& method, const QJsonValue& result
         if (obj.contains("error") && !obj.value("error").isNull()) {
             innerError = obj.value("error").toString();
         }
+    }
+    if (!innerError.isEmpty() &&
+        (method == "wallet.transfer" || method == "wallet.shield" ||
+         method == "wallet.unshield") &&
+        ShieldedTransferPolicy::isWalletLockedError(innerError)) {
+        rejectFundMovingRequestForLockedWallet(method);
+        return;
     }
 
     if (method == "wallet.listshielded") {
@@ -945,6 +1024,12 @@ void ShieldedWidget::onRpcError(const QString& method, int code, const QString& 
         appendLog(activityLog_,
                   QString("[rpc-error] %1: code=%2 %3").arg(method).arg(code).arg(message));
     }
+    if ((method == "wallet.transfer" || method == "wallet.shield" ||
+         method == "wallet.unshield") &&
+        ShieldedTransferPolicy::isWalletLockedError(message)) {
+        rejectFundMovingRequestForLockedWallet(method);
+        return;
+    }
     if (method == "wallet.transfer") {
         // Transport-level errors are ambiguous: the daemon may have accepted
         // the transaction before the response was lost. Keep `submitting`
@@ -965,10 +1050,41 @@ void ShieldedWidget::onRpcError(const QString& method, int code, const QString& 
     }
 }
 
+void ShieldedWidget::rejectFundMovingRequestForLockedWallet(const QString& method) {
+    const QString guidance = "Wallet is locked — unlock wallet to continue.";
+    const QSettings s;
+
+    if (method == "wallet.transfer") {
+        const QString base = "shielded/transferJournal/" + settingsWalletScope();
+        setTransferSubmitting(false);
+        saveTransferJournal("rejected", s.value(base + "/address").toString(),
+                            s.value(base + "/amountUna").toLongLong(),
+                            s.value(base + "/memo").toString(), {},
+                            s.value(base + "/feeUna").toLongLong());
+        transferBtn_->setText("Review and Retry");
+        transferResultLabel_->setText(guidance);
+    } else {
+        const QString operation = method == "wallet.shield" ? "shield" : "unshield";
+        const QString base = "shielded/operationJournal/" + settingsWalletScope() + "/" + operation;
+        if (operation == "shield") setShieldSubmitting(false);
+        else setUnshieldSubmitting(false);
+        saveOperationJournal(operation, "rejected",
+                             s.value(base + "/amountUna").toLongLong(),
+                             s.value(base + "/feeUna").toLongLong());
+        QPushButton* button = operation == "shield" ? shieldBtn_ : unshieldBtn_;
+        QLabel* result = operation == "shield" ? shieldResultLabel_ : unshieldResultLabel_;
+        button->setText("Review and Retry");
+        result->setText(guidance);
+    }
+
+    walletUnlocked_ = false;
+    updateFundMovingUi();
+}
+
 void ShieldedWidget::setTransferSubmitting(bool submitting) {
     transferSubmitting_ = submitting;
     if (transferBtn_) {
-        transferBtn_->setEnabled(shieldedActive_ && !submitting);
+        transferBtn_->setEnabled(shieldedActive_ && walletUnlocked_ && !submitting);
         if (submitting) transferBtn_->setText("Proving and submitting…");
     }
 }
@@ -1010,9 +1126,11 @@ void ShieldedWidget::loadTransferJournal() {
     transferAmountUnaEdit_->setText(QString::number(s.value(base + "/amountUna").toLongLong()));
     transferMemoEdit_->setText(s.value(base + "/memo").toString());
     if (transferJournalStage_ == "submitting") {
-        setTransferSubmitting(true);
+        transferSubmitting_ = false;
+        transferBtn_->setText("Review Outcome");
         transferResultLabel_->setText(
-            "previous private-payment outcome is uncertain; no retry will be started automatically");
+            "Previous outcome is uncertain — inspect notes and transaction history, then click "
+            "Review Outcome to clear this warning. Nothing will be sent by that click.");
     } else if (transferJournalStage_ == "rejected") {
         transferBtn_->setText("Review and Retry");
         transferResultLabel_->setText("previous private payment was rejected; review before explicit retry");
@@ -1025,14 +1143,14 @@ void ShieldedWidget::loadTransferJournal() {
 void ShieldedWidget::setShieldSubmitting(bool submitting) {
     shieldSubmitting_ = submitting;
     if (!shieldBtn_) return;
-    shieldBtn_->setEnabled(shieldedActive_ && !submitting);
+    shieldBtn_->setEnabled(shieldedActive_ && walletUnlocked_ && !submitting);
     if (submitting) shieldBtn_->setText("Proving and submitting…");
 }
 
 void ShieldedWidget::setUnshieldSubmitting(bool submitting) {
     unshieldSubmitting_ = submitting;
     if (!unshieldBtn_) return;
-    unshieldBtn_->setEnabled(shieldedActive_ && !submitting);
+    unshieldBtn_->setEnabled(shieldedActive_ && walletUnlocked_ && !submitting);
     if (submitting) unshieldBtn_->setText("Proving and submitting…");
 }
 
@@ -1079,9 +1197,10 @@ void ShieldedWidget::loadOperationJournals() {
         const qint64 feeUna = s.value(base + "feeUna").toLongLong();
         if (feeEdit) feeEdit->setText(feeUna > 0 ? QString::number(feeUna) : QString());
         if (stage == "submitting") {
-            if (button) button->setEnabled(false);
+            if (button) button->setText("Review Outcome");
             if (resultLabel) resultLabel->setText(
-                "previous outcome is uncertain; no retry will be started automatically");
+                "Previous outcome is uncertain — inspect notes and transaction history, then click "
+                "Review Outcome to clear this warning. Nothing will be sent by that click.");
         } else if (stage == "rejected") {
             if (button) button->setText("Review and Retry");
             if (resultLabel) resultLabel->setText("previous operation was rejected; review before retrying");
@@ -1097,10 +1216,9 @@ void ShieldedWidget::loadOperationJournals() {
             shieldBtn_, shieldResultLabel_);
     restore("unshield", unshieldJournalStage_, unshieldAmountEdit_, unshieldFeeEdit_,
             unshieldBtn_, unshieldResultLabel_);
-    if (ShieldedTransferPolicy::uncertainAfterRestart(shieldJournalStage_)) {
-        shieldSubmitting_ = true;
-    }
-    if (ShieldedTransferPolicy::uncertainAfterRestart(unshieldJournalStage_)) {
-        unshieldSubmitting_ = true;
-    }
+    // A restarted client cannot prove the outcome, but it must not trap the
+    // operator forever. The first explicit click only clears this durable
+    // guard; a separate click and confirmation are required to submit again.
+    shieldSubmitting_ = false;
+    unshieldSubmitting_ = false;
 }

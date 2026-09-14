@@ -268,7 +268,6 @@ bool WalletService::Start() {
         const uint32_t snapshot_recovery_base = chainstate_
             ? chainstate_->GetSnapshotWalletRecoveryBaseHeight() : 0u;
         if (chainstate_ && snapshot_recovery_base > 0 && !wallets.empty()) {
-            const uint32_t base_height = snapshot_recovery_base;
             // Capture the wallet to restore as active afterward (open() below
             // overwrites the "most recently opened" marker).
             const std::string preferred_wallet = wallet_mgr_->hasActiveWallet()
@@ -276,32 +275,11 @@ bool WalletService::Start() {
             for (const auto& wname : wallets) {
                 try {
                     wallet_mgr_->open(wname);
-                    int recorded = chainstate_->RescanWalletFromSnapshotUTXOs(*wallet_mgr_, base_height);
-                    if (recorded < 0) {
-                        throw std::runtime_error("snapshot UTXO source unavailable");
-                    }
-                    if (recorded > 0) {
-                        logger_interface_->info("[WalletService] Snapshot UTXO-set rescan: wallet '"
-                            + wname + "' recorded " + std::to_string(recorded)
-                            + " owned coin(s) from base height " + std::to_string(base_height));
-                    }
-
-                    // The wallet may already claim to be at the current tip even
-                    // though the snapshot coins were absent when it originally
-                    // scanned the post-base blocks. Replaying only when the old
-                    // watermark is behind would resurrect snapshot coins spent
-                    // after the base. Always replay base+1..tip immediately for
-                    // EACH wallet after inserting its base UTXOs.
-                    if (base_height < actual_blockchain_height) {
-                        auto* chain_db = chainstate_->GetChainDB();
-                        if (!chain_db || !wallet_mgr_->rescanBlockchain(
-                                static_cast<int>(base_height + 1),
-                                /*gap_limit=*/20,
-                                chain_db,
-                                block_storage_)) {
-                            throw std::runtime_error(
-                                "post-snapshot wallet replay failed");
-                        }
+                    std::string recovery_error;
+                    if (!RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error)) {
+                        logger_interface_->warning(
+                            "[WalletService] Snapshot recovery deferred for wallet '" +
+                            wname + "': " + recovery_error);
                     }
                 } catch (const std::exception& e) {
                     logger_interface_->warning("[WalletService] Snapshot rescan failed for wallet '"
@@ -315,17 +293,25 @@ bool WalletService::Start() {
                     EnsureRuntimeWalletBindings();
                 } catch (const std::exception&) {}
             }
-            // Every wallet was synchronously replayed through the current tip
-            // above. Do not enqueue a second asynchronous pass against whichever
-            // wallet happened to be restored as active.
-            wallet_scan_height = actual_blockchain_height;
-            needs_catchup_scan = false;
+            // Re-read the restored wallet's durable watermark. A locked wallet
+            // may have been deliberately deferred, so never claim it reached
+            // the chain tip merely because the multi-wallet sweep completed.
+            if (wallet_mgr_->hasActiveWallet()) {
+                wallet_mgr_->loadBlockchainHeight();
+                wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
+                needs_catchup_scan = wallet_scan_height < actual_blockchain_height;
+            }
         }
 
         // Trigger catch-up scan if wallet is behind blockchain
         // This happens AFTER wallet is opened so rescan has an active wallet
         // We manually trigger WalletNotify for each missed block
-        if (needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_) {
+        if (needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_ &&
+            wallet_mgr_->isLocked()) {
+            logger_interface_->warning(
+                "[WalletService] Wallet catch-up deferred: encrypted wallet is locked; "
+                "unlock it once to resume recovery");
+        } else if (needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_) {
             logger_interface_->info("[WalletService] Triggering catch-up scan from height " 
                 + std::to_string(wallet_scan_height + 1) + " to " + std::to_string(actual_blockchain_height) + "...");
             
@@ -462,6 +448,74 @@ bool WalletService::EnsureRuntimeWalletBindings() {
     }
 
     return wallet_mgr_->hasActiveWallet();
+}
+
+bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) {
+    if (error) error->clear();
+    if (!wallet_mgr_ || !wallet_mgr_->hasActiveWallet() || !chainstate_) {
+        if (error) *error = "wallet or chainstate is unavailable";
+        return false;
+    }
+
+    try {
+        const uint32_t base_height = chainstate_->GetSnapshotWalletRecoveryBaseHeight();
+        if (base_height == 0) {
+            return true;  // Normal full-chain node; no snapshot recovery is needed.
+        }
+
+        static constexpr const char* kRecoveryMarker =
+            "assumeutxo_wallet_recovery_base";
+        const std::string expected_marker = std::to_string(base_height);
+        if (wallet_mgr_->getSetting(kRecoveryMarker) == expected_marker) {
+            return true;
+        }
+
+        // Shielded block replay requires viewing keys. Opening an encrypted
+        // wallet intentionally leaves those keys unavailable, so doing rescan
+        // setup here would guarantee a later failure. wallet.unlock calls this
+        // method again after the keys have been loaded.
+        if (wallet_mgr_->isLocked()) {
+            if (error) {
+                *error = "encrypted wallet is locked; unlock it once to finish recovery";
+            }
+            return false;
+        }
+
+        const int recorded =
+            chainstate_->RescanWalletFromSnapshotUTXOs(*wallet_mgr_, base_height);
+        if (recorded < 0) {
+            if (error) *error = "snapshot UTXO source unavailable";
+            return false;
+        }
+        if (recorded > 0) {
+            logger_interface_->info(
+                "[WalletService] Snapshot UTXO-set rescan recorded " +
+                std::to_string(recorded) + " owned coin(s) for wallet '" +
+                wallet_mgr_->getCurrentWalletName() + "' at base height " +
+                std::to_string(base_height));
+        }
+
+        const uint32_t tip_height = chainstate_->getBlockHeight();
+        if (base_height < tip_height) {
+            auto* chain_db = chainstate_->GetChainDB();
+            if (!chain_db || !wallet_mgr_->rescanBlockchain(
+                    static_cast<int>(base_height + 1),
+                    /*gap_limit=*/20,
+                    chain_db,
+                    block_storage_)) {
+                if (error) *error = "post-snapshot wallet replay failed";
+                return false;
+            }
+        }
+
+        // Mark completion only after both the UTXO snapshot import and every
+        // post-base block succeed. This prevents repeated startup rewrites.
+        wallet_mgr_->setSetting(kRecoveryMarker, expected_marker);
+        return true;
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
 }
 
 void WalletService::Stop() {

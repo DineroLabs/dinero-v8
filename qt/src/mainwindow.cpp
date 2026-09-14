@@ -14318,6 +14318,9 @@ void MainWindow::checkRescanStatus() {
 void MainWindow::updateWalletUIState() {
   bool hasWallet = !currentWalletName_.isEmpty();
   bool canTransact = hasWallet && walletUnlocked_ && !walletRescanning_;
+  if (shieldedWidget_) {
+    shieldedWidget_->setWalletUnlocked(hasWallet && walletUnlocked_);
+  }
   const QString sendMode = currentSendMode();
   const bool standardSendMode = isSendModePublic(sendMode);
   updateWalletSwitcherState();
