@@ -5761,6 +5761,17 @@ bool DaemonApp::Init(int argc, char** argv) {
                             chainstate_ptr->RecordHeaderAnnouncements(peer_addr, headers);
                         }
 
+                        // #738 follow-up (audit 2026-09-14, HIGH-1): feed the
+                        // stale-tip clock only when this message taught us
+                        // something. The empty/duplicate reply to our own
+                        // recovery probe must not reset it, or the probe cadence
+                        // collapses from the 60 s interval to the 600 s threshold.
+                        if (dinero::daemon::headersMessageResetsStaleClock(process_result.inserted)) {
+                            if (auto p2p_for_clock = p2p_weak.lock()) {
+                                p2p_for_clock->NotePeerHeadersLearned();
+                            }
+                        }
+
                         if (added > 0 && header_chain_ptr) {
                             // #441: copy under the selector's lock.
                             consensus::HeaderIndexEntry best_copy{};

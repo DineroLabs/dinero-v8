@@ -237,6 +237,13 @@ public:
     bool RequestHeaders(const std::string& peer_addr,
                         bool probe,
                         const char* reason);
+    // #738 follow-up (audit 2026-09-14, HIGH-1): peer evidence for the stale-tip
+    // clock. Called by the OnHeaders handler only when a `headers` message
+    // inserted new headers (headersMessageResetsStaleClock), never for the
+    // empty/duplicate reply to our own probe. Thread-safe (atomic).
+    void NotePeerHeadersLearned() {
+        peer_header_events_.fetch_add(1, std::memory_order_relaxed);
+    }
     bool ConnectToPeer(const std::string& address, uint16_t port) {
         return p2p_mgr_ ? p2p_mgr_->connect_to_peer(address, port) : false;
     }

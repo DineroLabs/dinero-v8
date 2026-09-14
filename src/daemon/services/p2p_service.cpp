@@ -2394,10 +2394,13 @@ void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessa
             }
             return;
         }
-        // #738: feed the stale-tip clock. A processed `headers` message (empty or
-        // not) is "we learned where a peer stands"; block/cmpctblock/utxoblk from
-        // a peer count too. Our own mined blocks never reach any of these paths.
-        peer_header_events_.fetch_add(1, std::memory_order_relaxed);
+        // #738 follow-up (audit 2026-09-14, HIGH-1): the stale-tip clock is NOT
+        // bumped here any more. Counting every processed `headers` message
+        // meant the empty reply to our own recovery probe reset the clock, so
+        // probes fired every threshold (600 s) instead of every interval
+        // (60 s). The OnHeaders handler calls NotePeerHeadersLearned() only
+        // when the message inserted headers (headersMessageResetsStaleClock);
+        // block/cmpctblock/utxoblk below still count as unsolicited evidence.
         OnHeaders(peer_addr, msg);
     }
     else if (msg.command == "cmpctblock" && OnCompactBlock) {

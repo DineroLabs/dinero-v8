@@ -42,9 +42,11 @@ enum class StaleTipAction : std::uint8_t {
 struct StaleTipState {
     uint32_t last_best_header_height{0};
     // #738: value of the caller's peer-header event counter at the last clock
-    // reset. The counter is bumped once per `headers` message processed from a
-    // peer (empty replies included — "nothing beyond your locator" IS learning
-    // where that peer stands). Our own mined blocks never bump it.
+    // reset. The counter is bumped when a `headers` message from a peer inserted
+    // new headers (see headersMessageResetsStaleClock — an empty reply to our
+    // own probe does NOT count; #738 follow-up, audit 2026-09-14) or when
+    // unsolicited block/cmpctblock/utxoblk traffic arrives. Our own mined
+    // blocks never bump it.
     uint64_t last_peer_header_events{0};
     std::chrono::steady_clock::time_point last_header_advance_time;
     std::chrono::steady_clock::time_point last_staleness_getheaders;
@@ -105,6 +107,20 @@ inline StaleTipAction decideStaleTipAction(
     state.last_staleness_getheaders = now;
     ++state.staleness_getheaders_count;
     return StaleTipAction::SEND_GETHEADERS;
+}
+
+// #738 follow-up (audit 2026-09-14, HIGH-1): which processed `headers` messages
+// count as peer evidence for the stall clock. Only a message that INSERTED
+// headers taught us something. An empty or all-duplicate reply — in particular
+// the reply to our OWN recovery probe — must not reset the clock: as merged in
+// #742 it did, so the attempt counter was zeroed and the next probe waited the
+// full staleness_threshold (600 s) instead of staleness_getheaders_interval
+// (60 s); with one request flight and per-attempt peer rotation a 10-peer node
+// needed ~100 min to reach the peer holding the heavier chain. Unsolicited
+// block/cmpctblock/utxoblk traffic is counted separately by P2PService (it
+// always carries a header we did not have).
+inline bool headersMessageResetsStaleClock(std::size_t inserted) {
+    return inserted > 0;
 }
 
 }  // namespace dinero::daemon
