@@ -11481,6 +11481,44 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reorg_candidate_eligibility.c
   add_test(NAME ReorgCandidateEligibilityTest COMMAND test_reorg_candidate_eligibility)
 endif()
 
+# #741: getchaintips must report every known tip (abandoned branches as
+# valid-fork, header-only / invalid tips), not only ActivateBestChain candidates.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chain_tips_snapshot.cpp)
+  add_executable(test_chain_tips_snapshot
+    tests/consensus/test_chain_tips_snapshot.cpp
+    src/common/logger.cpp
+    src/common/json_logger.cpp
+  )
+  add_dependencies(test_chain_tips_snapshot gtest gtest_main)
+  target_include_directories(test_chain_tips_snapshot BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_chain_tips_snapshot PRIVATE
+    dinero_core
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    secp256k1
+    GTest::gtest_main
+  )
+  link_zstd_if_needed(test_chain_tips_snapshot)
+  if(APPLE)
+    target_link_libraries(test_chain_tips_snapshot PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME ChainTipsSnapshotTest COMMAND test_chain_tips_snapshot)
+  set_tests_properties(ChainTipsSnapshotTest PROPERTIES
+    LABELS "consensus;rpc;unit"
+    TIMEOUT 60
+  )
+endif()
+
 # DISABLED: Requires IConsensusUTXOSet interface refactor (BlockValidator constructor changed)
 # Mining Maturity Test - End-to-End Coinbase Flow
 if(FALSE AND EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_mining_maturity.cpp)

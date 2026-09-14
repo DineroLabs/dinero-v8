@@ -1139,6 +1139,24 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_minority_tip_header_relay.sh)
     message(STATUS "  ✓ MinorityTipHeaderRelay registered")
 endif()
 
+# Issue #741: after a reorg, getchaintips must still list the abandoned branch
+# (status valid-fork, branchlen = branch length) instead of only the active tip.
+# Two-node regtest: A mines a 2-block side branch while partitioned, B mines a
+# heavier branch, heal, A reorgs; assert A's getchaintips.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_getchaintips_valid_fork.sh)
+    add_test(
+        NAME GetChainTipsValidFork
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_getchaintips_valid_fork.sh
+    )
+    set_tests_properties(GetChainTipsValidFork PROPERTIES
+        LABELS "integration;rpc;reorg"
+        TIMEOUT 600
+    )
+    message(STATUS "  ✓ GetChainTipsValidFork registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_introspection_rpc.sh)
     add_test(
         NAME ConsensusIntrospectionRpc
@@ -2190,7 +2208,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ParallelBlockDownloadTargeted LaggingPeerCatchupNoOrphans
         CrossSeedRestartReorgParity CrossSeedTeardownLifecycle
         ConnectTipRestartEquivalence
-        ConsensusIntrospectionRpc MinorityTipHeaderRelay
+        ConsensusIntrospectionRpc MinorityTipHeaderRelay GetChainTipsValidFork
         D3FullUserTxMissingUndo UndoMetadataRestamp
         ReindexChainstateUtreexoEquivalence ReindexPromotionRestartEquivalence
         InvalidityRestartSticky InvalidityCrashRestartEquivalence

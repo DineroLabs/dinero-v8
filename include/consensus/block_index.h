@@ -229,6 +229,45 @@ CBlockIndex* GetBestCandidate();
 std::vector<CBlockIndex*> GetCandidateTipsSnapshot();
 
 /**
+ * #741: read-only chain-tip enumeration for getchaintips.
+ *
+ * GetCandidateTipsSnapshot() above only holds tips that can still BECOME
+ * active (a tip leaves g_candidates when it is activated and is never
+ * re-added when a later reorg abandons it), so it cannot answer "which
+ * branches has this node seen?". This query walks the whole block index
+ * instead: a tip is any entry with no known child, plus the active tip
+ * (always reported, even while a header-only child is pending download).
+ *
+ * Status vocabulary follows Bitcoin Core:
+ *   active        the active chain tip
+ *   invalid       BLOCK_FAILED_VALID or BLOCK_FAILED_CHILD set
+ *   headers-only  no block body stored (no BLOCK_HAVE_DATA)
+ *   valid-fork    body stored and fully validated (BLOCK_VALID_SCRIPTS)
+ *   valid-headers body stored but never fully validated
+ *
+ * branchlen = tip height - fork-point height with the active chain (0 for
+ * the active tip). Work is bounded: a non-active tip is skipped when its
+ * fork point lies more than max_fork_depth blocks below the active tip, or
+ * when no fork point can be found (unlinked orphan). Purely observational —
+ * never mutates the index or the candidate set.
+ */
+enum class ChainTipStatus { Active, ValidFork, ValidHeaders, HeadersOnly, Invalid };
+const char* ChainTipStatusName(ChainTipStatus status);
+
+struct ChainTipEntry {
+    const CBlockIndex* tip{nullptr};
+    ChainTipStatus status{ChainTipStatus::HeadersOnly};
+    uint32_t branchlen{0};
+};
+
+constexpr uint32_t DEFAULT_CHAINTIPS_FORK_DEPTH = 2016;
+
+ChainTipStatus ClassifyChainTip(const CBlockIndex* tip, const CBlockIndex* active_tip);
+std::vector<ChainTipEntry> GetChainTipsSnapshot(
+    const CBlockIndex* active_tip,
+    uint32_t max_fork_depth = DEFAULT_CHAINTIPS_FORK_DEPTH);
+
+/**
  * Header-first sync functions
  */
 bool MaybeQueueOrphan(CBlockIndex* block_index);
