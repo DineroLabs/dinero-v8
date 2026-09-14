@@ -121,6 +121,12 @@ jobs:
       # what the runner happens to have installed. Hardware wallets stay ON
       # (libudev), matching the deployed fleet contract.
       - name: Configure
+        env:
+          # Keep DWARF in the intermediate binaries. The public executables
+          # are still stripped below after their matching .debug files have
+          # been extracted.
+          CFLAGS: -g
+          CXXFLAGS: -g
         run: |
           cmake -S . -B build-release -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -181,15 +187,57 @@ jobs:
         run: |
           V="${{ steps.ver.outputs.version }}"
           OUT="dinero-linux-x86_64-$V"
+          DEBUG_ARCHIVE="dinero-linux-x86_64-$V-debug-symbols"
+          DEBUG_STAGE="$DEBUG_ARCHIVE-stage"
+          DEBUG_DIR="$DEBUG_STAGE/$OUT/.debug"
           mkdir -p "$OUT"
+          mkdir -p "$DEBUG_DIR"
           cp build-release/dinerod build-release/dinero-cli "$OUT/"
-          strip "$OUT/dinerod" "$OUT/dinero-cli"
+
+          for BIN in dinerod dinero-cli; do
+            readelf --sections "$OUT/$BIN" | grep -q '\.debug_info' || {
+              echo "::error::$BIN was built without DWARF debug information"
+              exit 1
+            }
+            objcopy --only-keep-debug "$OUT/$BIN" "$DEBUG_DIR/$BIN.debug"
+            strip --strip-all "$OUT/$BIN"
+            objcopy --add-gnu-debuglink="$DEBUG_DIR/$BIN.debug" "$OUT/$BIN"
+
+            RELEASE_BUILD_ID=$(readelf -n "$OUT/$BIN" | awk '/Build ID:/{print $3; exit}')
+            DEBUG_BUILD_ID=$(readelf -n "$DEBUG_DIR/$BIN.debug" | awk '/Build ID:/{print $3; exit}')
+            test -n "$RELEASE_BUILD_ID"
+            test "$RELEASE_BUILD_ID" = "$DEBUG_BUILD_ID" || {
+              echo "::error::$BIN debug symbols do not match the packaged binary Build ID"
+              exit 1
+            }
+            readelf --string-dump=.gnu_debuglink "$OUT/$BIN" | grep -q "$BIN.debug"
+            printf '%s  %s\n' "$RELEASE_BUILD_ID" "$BIN" >> "$DEBUG_STAGE/$OUT/BUILD-IDS"
+          done
+
+          printf '%s\n' \
+            'Extract this archive beside the matching Linux release archive.' \
+            'The resulting .debug directory is discovered automatically by GDB.' \
+            'Build IDs for each executable are recorded in BUILD-IDS.' \
+            > "$DEBUG_STAGE/$OUT/README-debug-symbols.txt"
+
           tar -czf "$OUT.tar.gz" "$OUT"
+          # The symbols archive contains OUT/.debug/*.debug. Extracting both
+          # archives in the same directory therefore gives GDB its standard
+          # automatic debug-link layout without modifying the public binary.
+          tar -czf "$DEBUG_ARCHIVE.tar.gz" -C "$DEBUG_STAGE" "$OUT"
           sha256sum "$OUT.tar.gz" "$OUT/dinerod" "$OUT/dinero-cli" \
             > "SHA256SUMS-linux-x86_64-$V"
+          sha256sum "$DEBUG_ARCHIVE.tar.gz" > "SHA256SUMS-linux-x86_64-debug-symbols-$V"
+          (
+            cd "$DEBUG_STAGE"
+            sha256sum "$OUT/.debug/dinerod.debug" "$OUT/.debug/dinero-cli.debug"
+          ) >> "SHA256SUMS-linux-x86_64-debug-symbols-$V"
           cat "SHA256SUMS-linux-x86_64-$V"
+          cat "SHA256SUMS-linux-x86_64-debug-symbols-$V"
           echo "tarball=$OUT.tar.gz" >> "$GITHUB_OUTPUT"
           echo "sumfile=SHA256SUMS-linux-x86_64-$V" >> "$GITHUB_OUTPUT"
+          echo "debug_tarball=$DEBUG_ARCHIVE.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "debug_sumfile=SHA256SUMS-linux-x86_64-debug-symbols-$V" >> "$GITHUB_OUTPUT"
 
       - name: Build and verify packaged-service Debian artifact
         env:
@@ -208,6 +256,7 @@ jobs:
           cargo --version
           dpkg-buildpackage -us -uc -b
           DEB="../dinero-core_${V}-1_amd64.deb"
+          DBG_DEB="../dinero-core-dbgsym_${V}-1_amd64.ddeb"
           test "$(dpkg-deb -f "$DEB" Version)" = "$V-1"
           test "$(dpkg-deb -f "$DEB" Architecture)" = amd64
           mkdir -p deb-check
@@ -221,7 +270,21 @@ jobs:
           test "$(systemctl is-active dinero.service || true)" != active
           sudo dpkg -r dinero-core
           cp "$DEB" .
+          test -f "$DBG_DEB"
+          test "$(dpkg-deb -f "$DBG_DEB" Package)" = dinero-core-dbgsym
+          test "$(dpkg-deb -f "$DBG_DEB" Architecture)" = amd64
+          mkdir -p deb-debug-check
+          dpkg-deb -x "$DBG_DEB" deb-debug-check
+          for BIN in dinerod dinero-cli; do
+            BUILD_ID=$(readelf -n "deb-check/usr/bin/$BIN" | awk '/Build ID:/{print $3; exit}')
+            test -n "$BUILD_ID"
+            DEBUG_FILE="deb-debug-check/usr/lib/debug/.build-id/${BUILD_ID:0:2}/${BUILD_ID:2}.debug"
+            test -f "$DEBUG_FILE"
+            readelf --sections "$DEBUG_FILE" | grep -q '\.debug_info'
+          done
+          cp "$DBG_DEB" .
           sha256sum "dinero-core_${V}-1_amd64.deb" > "SHA256SUMS-dinero-core-${V}"
+          sha256sum "dinero-core-dbgsym_${V}-1_amd64.ddeb" > "SHA256SUMS-dinero-core-dbgsym-${V}"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -230,8 +293,12 @@ jobs:
           path: |
             ${{ steps.pkg.outputs.tarball }}
             ${{ steps.pkg.outputs.sumfile }}
+            ${{ steps.pkg.outputs.debug_tarball }}
+            ${{ steps.pkg.outputs.debug_sumfile }}
             dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb
             SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}
+            dinero-core-dbgsym_${{ steps.ver.outputs.version }}-1_amd64.ddeb
+            SHA256SUMS-dinero-core-dbgsym-${{ steps.ver.outputs.version }}
           if-no-files-found: error
 
       - name: Attach to release
@@ -242,6 +309,10 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             "${{ steps.pkg.outputs.tarball }}" \
             "${{ steps.pkg.outputs.sumfile }}" \
+            "${{ steps.pkg.outputs.debug_tarball }}" \
+            "${{ steps.pkg.outputs.debug_sumfile }}" \
             "dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb" \
             "SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}" \
+            "dinero-core-dbgsym_${{ steps.ver.outputs.version }}-1_amd64.ddeb" \
+            "SHA256SUMS-dinero-core-dbgsym-${{ steps.ver.outputs.version }}" \
             --clobber

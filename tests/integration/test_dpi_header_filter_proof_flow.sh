@@ -242,6 +242,29 @@ rpc_result "generatetoaddress" "[110,\"$ADDR\"]" >/dev/null
 TIP_HEIGHT="$(rpc_scalar "getblockcount" "[]" '.')"
 [ "$TIP_HEIGHT" -ge 110 ] || fail "expected height >= 110, got $TIP_HEIGHT"
 
+# Regression #737: the signed invoice amount must remain an integer una value
+# all the way through wallet.sendtoaddress. 0.29 DIN used to become 28,999,999
+# una after the second floating-point truncation, causing amount_match=false.
+info "Paying a DPI invoice through the exact una path"
+INVOICE_RESULT="$(rpc_result "dpi.createinvoice" '{"amount":0.29,"memo":"exact una regression","expiry_seconds":900}')"
+[ "$(echo "$INVOICE_RESULT" | jq -r '.amount_una')" = "29000000" ] \
+    || fail "dpi.createinvoice did not resolve 0.29 DIN to exactly 29000000 una"
+INVOICE="$(echo "$INVOICE_RESULT" | jq -r '.invoice // empty')"
+[ -n "$INVOICE" ] || fail "dpi.createinvoice returned no invoice"
+
+PAY_RESULT="$(rpc_result "dpi.payinvoice" "{\"invoice\":\"$INVOICE\",\"fee_rate\":1}")"
+[ "$(echo "$PAY_RESULT" | jq -r '.amount_una')" = "29000000" ] \
+    || fail "dpi.payinvoice did not preserve the signed una amount"
+PACKAGE="$(echo "$PAY_RESULT" | jq -r '.package // empty')"
+[ -n "$PACKAGE" ] || fail "dpi.payinvoice returned no payment package"
+
+VERIFY_RESULT="$(rpc_result "dpi.verifypackage" "{\"package\":\"$PACKAGE\",\"invoice\":\"$INVOICE\"}")"
+[ "$(echo "$VERIFY_RESULT" | jq -r '.checks.amount_match')" = "true" ] \
+    || fail "dpi.verifypackage rejected the daemon's own exact invoice amount"
+[ "$(echo "$VERIFY_RESULT" | jq -r '.tier')" = "T1" ] \
+    || fail "exact invoice payment did not reach T1"
+pass "DPI payment preserved exactly 29000000 una and verified at T1"
+
 FROM_HEIGHT=$((TIP_HEIGHT - 9))
 if [ "$FROM_HEIGHT" -lt 0 ]; then
     FROM_HEIGHT=0

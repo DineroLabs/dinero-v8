@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include "dpi/dpi_protocol.h"
 #include "crypto/hash.h"
+#include "primitives/amount.h"
+#include "rpc/amount_parser.h"
 #include "wallet/schnorr_signer.h"
 #include <cstring>
 #include <ctime>
@@ -504,6 +506,53 @@ TEST(DpiProtocol, EndToEndInvoiceAndAttestation) {
     EXPECT_EQ(decoded_pkg.invoice_id, inv.invoice_id);
     EXPECT_TRUE(VerifyAttestationSignature(
         decoded_pkg.invoice_id, fake_txid, decoded_pkg.sender_pubkey, decoded_pkg.attestation_sig));
+}
+
+// ============================================================================
+// Exact RPC amount conversion regression (#737)
+// ============================================================================
+
+TEST(DpiProtocol, NumericDinAmountDoesNotTruncateOneUna) {
+    uint64_t amount_una = 0;
+    std::string error;
+
+    // These were the smallest and the reported ordinary-payment failures in
+    // the old double -> una truncation path.
+    EXPECT_TRUE(dinero::rpc::ParseDinAmountToUna(din::Json(0.00000003), amount_una, error))
+        << error;
+    EXPECT_EQ(amount_una, 3U);
+
+    error.clear();
+    EXPECT_TRUE(dinero::rpc::ParseDinAmountToUna(din::Json(0.29), amount_una, error))
+        << error;
+    EXPECT_EQ(amount_una, 29'000'000U);
+}
+
+TEST(DpiProtocol, DecimalStringPreservesAllEightPlaces) {
+    uint64_t amount_una = 0;
+    std::string error;
+
+    EXPECT_TRUE(dinero::rpc::ParseDinAmountToUna(
+        din::Json("265428000.00000000"), amount_una, error)) << error;
+    EXPECT_EQ(amount_una, dinero::MAX_SUPPLY_UNA_CONST);
+
+    error.clear();
+    EXPECT_FALSE(dinero::rpc::ParseDinAmountToUna(
+        din::Json("0.000000009"), amount_una, error));
+    EXPECT_NE(error.find("more than 8 decimal places"), std::string::npos);
+}
+
+TEST(DpiProtocol, UnaAmountRequiresAnExactInteger) {
+    uint64_t amount_una = 0;
+    std::string error;
+
+    EXPECT_TRUE(dinero::rpc::ParseUnaAmount(
+        din::Json(static_cast<din::Json::UInt64>(29'000'000)), amount_una, error)) << error;
+    EXPECT_EQ(amount_una, 29'000'000U);
+
+    error.clear();
+    EXPECT_FALSE(dinero::rpc::ParseUnaAmount(din::Json(29'000'000.0), amount_una, error));
+    EXPECT_NE(error.find("integer"), std::string::npos);
 }
 
 int main(int argc, char** argv) {

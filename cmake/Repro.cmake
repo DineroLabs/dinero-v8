@@ -17,10 +17,12 @@ add_compile_options(
     -fdebug-prefix-map=${CMAKE_SOURCE_DIR}=.
 )
 
-# Don't embed linker build-ids on ELF (breaks byte-for-byte reproducibility)
+# Embed a deterministic content-derived Build ID on ELF. This preserves
+# byte-for-byte reproducibility while allowing GDB and Debian -dbgsym packages
+# to match split symbols to the exact release binary (issue #718).
 if(UNIX AND NOT APPLE)
-    add_link_options(-Wl,--build-id=none)
-    message(STATUS "Disabled ELF build-id for reproducible Linux builds")
+    add_link_options(-Wl,--build-id=sha1)
+    message(STATUS "Enabled deterministic SHA-1 ELF build-id")
 endif()
 
 # Deterministic archives on Unix systems

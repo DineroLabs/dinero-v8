@@ -12481,6 +12481,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/dpi/test_dpi_protocol.cpp)
   add_executable(test_dpi_protocol
     tests/dpi/test_dpi_protocol.cpp
     src/dpi/dpi_protocol.cpp
+    src/rpc/amount_parser.cpp
   )
   target_link_libraries(test_dpi_protocol PRIVATE
     dinero_crypto
@@ -12489,6 +12490,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/dpi/test_dpi_protocol.cpp)
     OpenSSL::SSL
     OpenSSL::Crypto
     GTest::gtest
+    jsoncpp_static
   )
   if(APPLE)
     target_link_libraries(test_dpi_protocol PRIVATE "-framework Security" "-framework CoreFoundation")

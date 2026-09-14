@@ -1,4 +1,5 @@
 #include "rpc/rpc_registry.h"
+#include "rpc/amount_parser.h"
 #include "dpi/dpi_protocol.h"
 #include "wallet/schnorr_signer.h"
 #include "wallet/psbt.h"
@@ -207,16 +208,25 @@ din::Json rpc_dpi_createinvoice(const ExecutionContext& ctx, const din::Json& pa
     }
 
     // Parse parameters
-    double amount_din = 0.0;
+    uint64_t amount_una = 0;
+    std::string amount_error;
     std::string memo;
     uint16_t expiry_seconds = din::dpi::DPI_DEFAULT_EXPIRY;
 
     if (params.isObject()) {
-        if (!params.isMember("amount") || !params["amount"].isNumeric()) {
-            result["error"] = "Missing required parameter: amount (in DIN)";
+        const bool has_amount = params.isMember("amount");
+        const bool has_amount_una = params.isMember("amount_una");
+        if (has_amount == has_amount_una) {
+            result["error"] = "Provide exactly one of amount (DIN) or amount_una (integer una)";
             return result;
         }
-        amount_din = params["amount"].asDouble();
+        const bool amount_ok = has_amount_una
+            ? dinero::rpc::ParseUnaAmount(params["amount_una"], amount_una, amount_error)
+            : dinero::rpc::ParseDinAmountToUna(params["amount"], amount_una, amount_error);
+        if (!amount_ok) {
+            result["error"] = "Invalid amount: " + amount_error;
+            return result;
+        }
         if (params.isMember("memo") && params["memo"].isString()) {
             memo = params["memo"].asString();
         }
@@ -224,7 +234,10 @@ din::Json rpc_dpi_createinvoice(const ExecutionContext& ctx, const din::Json& pa
             expiry_seconds = static_cast<uint16_t>(params["expiry_seconds"].asInt());
         }
     } else if (params.isArray() && params.size() >= 1) {
-        amount_din = params[0].asDouble();
+        if (!dinero::rpc::ParseDinAmountToUna(params[0], amount_una, amount_error)) {
+            result["error"] = "Invalid amount: " + amount_error;
+            return result;
+        }
         if (params.size() >= 2 && params[1].isString()) {
             memo = params[1].asString();
         }
@@ -232,16 +245,11 @@ din::Json rpc_dpi_createinvoice(const ExecutionContext& ctx, const din::Json& pa
             expiry_seconds = static_cast<uint16_t>(params[2].asInt());
         }
     } else {
-        result["error"] = "Usage: dpi.createinvoice {amount: <DIN>, memo: <string>, expiry_seconds: <int>}";
+        result["error"] = "Usage: dpi.createinvoice {amount: <DIN> | amount_una: <integer>, memo: <string>, expiry_seconds: <int>}";
         return result;
     }
 
-    if (amount_din <= 0) {
-        result["error"] = "Amount must be positive";
-        return result;
-    }
-
-    uint64_t amount_una = static_cast<uint64_t>(amount_din * 1e8);
+    const double amount_din = dinero::rpc::UnaToDin(amount_una);
 
     // Get merchant's primary taproot key (Phase 1 identity model)
     auto [merchant_priv, merchant_pub] = GetPrimaryTaprootKey(wallet_service.get());
@@ -371,11 +379,9 @@ din::Json rpc_dpi_payinvoice(const ExecutionContext& ctx, const din::Json& param
         return result;
     }
 
-    double amount_din = static_cast<double>(inv.amount) / 1e8;
-
     din::Json send_params;
     send_params["address"] = inv.destination_address;
-    send_params["amount"] = amount_din;
+    send_params["amount_una"] = static_cast<din::Json::UInt64>(inv.amount);
     if (fee_rate > 0) {
         send_params["fee_rate"] = fee_rate;
     }
@@ -449,7 +455,8 @@ din::Json rpc_dpi_payinvoice(const ExecutionContext& ctx, const din::Json& param
     result["package"] = package_b64;
     result["txid"] = txid_hex;
     result["invoice_id"] = BytesToHex(inv.invoice_id.data(), 32);
-    result["amount_din"] = amount_din;
+    result["amount_una"] = static_cast<din::Json::UInt64>(inv.amount);
+    result["amount_din"] = dinero::rpc::UnaToDin(inv.amount);
     result["destination"] = inv.destination_address;
 
     // Phase 2: Attach Utreexo inclusion proofs (if bridge node is available)
