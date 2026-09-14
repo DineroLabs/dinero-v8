@@ -1456,6 +1456,25 @@ if(BUILD_TESTING)
   target_compile_definitions(test_shielded_transfer_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME ShieldedTransferPolicy COMMAND test_shielded_transfer_policy)
 
+  add_executable(test_shielded_widget_lock
+    tests/test_shielded_widget_lock.cpp
+    src/shieldedwidget.cpp
+    src/shieldedwidget.h
+    src/shieldedtransferpolicy.h
+    src/rpcclient.cpp
+    src/rpcclient.h
+  )
+  target_link_libraries(test_shielded_widget_lock PRIVATE
+    Qt6::Widgets
+    Qt6::Network
+    Qt6::Test
+  )
+  target_include_directories(test_shielded_widget_lock PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(test_shielded_widget_lock PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME ShieldedWidgetLock COMMAND test_shielded_widget_lock)
+
   add_executable(test_pool_share
     tests/test_pool_share.cpp
     src/poolshare.h

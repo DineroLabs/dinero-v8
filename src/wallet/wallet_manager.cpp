@@ -5776,6 +5776,12 @@ bool WalletManager::rescanBlockchain(int start_height,
     WLOG_INFO("Loaded " + std::to_string(watch_scripts.size()) + " watch scripts");
 
     // ═══════════════════════════════════════════════════════════════════════
+    // Begin the transaction BEFORE reorg cleanup. A rescan can still fail
+    // after cleanup (for example, an encrypted wallet cannot inspect shielded
+    // outputs while it is locked). Keeping cleanup and replay in one
+    // transaction guarantees ROLLBACK restores the last known-good UTXO view.
+    exec(db_, "BEGIN TRANSACTION");
+
     // REORG SAFETY: Wipe UTXOs >= start_height before scanning
     // ═══════════════════════════════════════════════════════════════════════
     // The chain before start_height is canonical NOW, but might have been
@@ -5818,9 +5824,6 @@ bool WalletManager::rescanBlockchain(int start_height,
     uint32_t blocks_scanned = 0;
     uint32_t utxos_found = 0;
     uint32_t utxos_spent = 0;
-
-    // Begin transaction for batch inserts
-    exec(db_, "BEGIN TRANSACTION");
 
     // Scan blocks deterministically (no parallelism - correctness > speed)
     for (uint32_t height = static_cast<uint32_t>(start_height); height <= tip_height; ++height) {

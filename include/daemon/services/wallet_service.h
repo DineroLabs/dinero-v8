@@ -74,6 +74,10 @@ public:
     // wallet.createhd / wallet.open / wallet.restore, not only at daemon start.
     bool EnsureRuntimeWalletBindings();
 
+    // Recover the active wallet from an already-loaded AssumeUTXO snapshot.
+    // Locked encrypted wallets are deliberately deferred until wallet.unlock.
+    bool RecoverActiveWalletFromSnapshotIfNeeded(std::string* error = nullptr);
+
 private:
     std::unique_ptr<WalletManager> wallet_mgr_;
 

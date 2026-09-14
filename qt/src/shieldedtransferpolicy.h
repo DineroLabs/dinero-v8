@@ -18,6 +18,13 @@ inline bool uncertainAfterRestart(const QString& stage) {
     return stage == "submitting";
 }
 
+inline bool isWalletLockedError(const QString& message) {
+    const QString normalized = message.trimmed().toLower();
+    return normalized.contains("wallet_locked") ||
+           normalized.contains("wallet is locked") ||
+           normalized.contains("wallet locked");
+}
+
 inline bool showFundMovingControls(bool productLockout, const QString& activeHrp) {
     return !productLockout || activeHrp == "rdins";
 }

@@ -22,6 +22,7 @@ class ShieldedWidget : public QWidget {
 public:
     explicit ShieldedWidget(RpcClient* rpc, QWidget* parent = nullptr);
     void setWalletScope(const QString& walletName);
+    void setWalletUnlocked(bool unlocked);
 
 public Q_SLOTS:
     void refresh();  // re-fetch balance + receive address
@@ -67,6 +68,8 @@ private:
     void loadOperationJournals();
     void setShieldSubmitting(bool submitting);
     void setUnshieldSubmitting(bool submitting);
+    void updateFundMovingUi();
+    void rejectFundMovingRequestForLockedWallet(const QString& method);
 
     RpcClient* rpc_;
 
@@ -140,4 +143,6 @@ private:
     qint64 lastSeenTip_ = -1;
 
     bool shieldedActive_ = false;
+    bool walletUnlocked_ = false;
+    QString shieldedUnavailableReason_;
 };

@@ -30,6 +30,8 @@
 
 #include "wallet/wallet_manager.h"
 #include "consensus/chainparams.h"
+#include "storage/chain_db.h"
+#include "storage/chain_write_token.h"
 
 using dinero::WalletManager;
 
@@ -264,6 +266,61 @@ int main() {
     }
 
     fs::remove_all(dir2);
+
+    // A block replay may fail after its reorg-safety cleanup has started. This
+    // happened in production when a locked encrypted wallet reached a shielded
+    // output and could not load its viewing keys. The old code deleted every
+    // UTXO at or above start_height before BEGIN TRANSACTION, so ROLLBACK could
+    // not restore the wallet. Force an earlier missing-block failure and prove
+    // the same cleanup path is atomic.
+    std::cout << "\n--- failed replay preserves last known-good UTXOs ---" << std::endl;
+    fs::path dir3 = fs::temp_directory_path() /
+        ("rescan_atomicity_wallet_" + std::to_string(::getpid()));
+    fs::path chain_dir = fs::temp_directory_path() /
+        ("rescan_atomicity_chain_" + std::to_string(::getpid()));
+    fs::remove_all(dir3);
+    fs::remove_all(chain_dir);
+    fs::create_directories(dir3);
+    fs::create_directories(chain_dir);
+
+    try {
+        WalletManager wallet(dir3);
+        wallet.create("atomic_wallet");
+        wallet.open("atomic_wallet");
+        wallet.addWatchScript(owned_spk, "m/86'/0'/0'/0/0", false);
+
+        const std::string txid(64, '4');
+        check(wallet.addUTXO(txid, 0, static_cast<int64_t>(kAmount),
+                             "owned", "5120", 7, false),
+              "seeded a last known-good wallet UTXO");
+        const auto before = wallet.getBalance();
+        check(before.utxo_count == 1, "seed UTXO is visible before failed replay");
+
+        dinero::ChainDB chain_db;
+        check(chain_db.init(chain_dir) == dinero::Status::Ok,
+              "initialized isolated chain database");
+        const dinero::ChainWriteToken token =
+            dinero::ChainWriteToken::CreateForTesting();
+        const dinero::uint256 dummy_tip =
+            dinero::uint256::FromHexUnsafe(std::string(64, 'a'));
+        check(chain_db.setTip(token, dummy_tip, 10, dinero::arith_uint256(10)) ==
+                  dinero::Status::Ok,
+              "seeded a tip without block-height data to force replay failure");
+
+        check(!wallet.rescanBlockchain(5, 0, &chain_db, nullptr),
+              "replay reports its missing-block failure");
+        const auto after = wallet.getBalance();
+        check(after.utxo_count == before.utxo_count,
+              "failed replay rollback preserves UTXO count");
+        check(after.total == before.total,
+              "failed replay rollback preserves balance");
+    } catch (const std::exception& e) {
+        std::cerr << "  ✗ FAIL: atomicity exception: " << e.what() << std::endl;
+        ++g_failures;
+    }
+
+    fs::remove_all(dir3);
+    fs::remove_all(chain_dir);
 
     // iOS moves an app's data into a new UUID-named container during some
     // installs. The registry stores an absolute wallet path. Critically, the

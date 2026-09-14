@@ -2420,6 +2420,10 @@ din::Json rpc_context_wallet_unlock(const ExecutionContext& ctx, const din::Json
 
         wallet_service->get().unlockWallet(passphrase, timeout);
         result["success"] = true;
+        std::string recovery_error;
+        if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error)) {
+            result["recovery_warning"] = recovery_error;
+        }
         if (ctx.logger) {
             ctx.logger->info("[wallet.unlock] Wallet unlocked");
         }
