@@ -25,8 +25,12 @@ function(dinero_enable_reproducible_build)
     )
 
     if(UNIX AND NOT APPLE)
-      # GNU ld build IDs are not runtime semantics and may vary by toolchain.
-      add_link_options(-Wl,--build-id=none)
+      # A SHA-1 Build ID is derived deterministically from the linked output and
+      # is the key used by GDB and Debian's automatic -dbgsym packages to match
+      # split debug information to the exact executable. Disabling Build IDs
+      # made release binaries reproducible but impossible to diagnose with a
+      # separately published symbol file (issue #718).
+      add_link_options(-Wl,--build-id=sha1)
     endif()
   else()
     message(FATAL_ERROR
