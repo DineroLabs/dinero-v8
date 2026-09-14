@@ -27,6 +27,9 @@ namespace dinero {
 
 // Forward declarations
 class ILogger;
+namespace consensus {
+enum class HeaderRequestMode : uint8_t;
+}
 namespace daemon {
 class AddressManagerService;
 }
@@ -235,8 +238,15 @@ public:
     // continuation, recovery) reserves HeaderSyncManager's single flight and
     // therefore starts from the best-header chain rather than the active tip.
     bool RequestHeaders(const std::string& peer_addr,
-                        bool probe,
+                        consensus::HeaderRequestMode mode,
                         const char* reason);
+    // #738 follow-up (audit 2026-09-14, HIGH-1): peer evidence for the stale-tip
+    // clock. Called by the OnHeaders handler only when a `headers` message
+    // inserted new headers (headersMessageResetsStaleClock), never for the
+    // empty/duplicate reply to our own probe. Thread-safe (atomic).
+    void NotePeerHeadersLearned() {
+        peer_header_events_.fetch_add(1, std::memory_order_relaxed);
+    }
     bool ConnectToPeer(const std::string& address, uint16_t port) {
         return p2p_mgr_ ? p2p_mgr_->connect_to_peer(address, port) : false;
     }
@@ -439,6 +449,10 @@ private:
     // across attempts so a multi-peer node eventually probes every peer.
     // Scheduler-tick thread only.
     std::size_t stale_probe_cursor_{0};
+    // #738 follow-up (audit 2026-09-14, HIGH-2): rate limit (steady seconds of
+    // the last warning) for the "getheaders not sent: flight already owned"
+    // warning in RequestHeaders(). Any thread may call RequestHeaders().
+    std::atomic<int64_t> inflight_refusal_warning_last_s_{0};
     // Tunables. The threshold MUST sit several block-times above the normal
     // inter-block gap, NOT at it: TARGET_SPACING_SEC is 120s and block arrival is
     // Poisson, so ~37% of healthy gaps already exceed 120s. A 120s threshold

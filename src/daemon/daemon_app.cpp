@@ -4434,7 +4434,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                             *frontier_refresh_height = validated_height;
                         }
                         if (p2p_service_for_csn->RequestHeaders(
-                                source_peer, true, "csn-frontier")) {
+                                source_peer, consensus::HeaderRequestMode::REFRESH,
+                                "csn-frontier")) {
                             g_logger.info("[CSN] Reached known header frontier at height " +
                                           std::to_string(validated_height) + " via " + source_peer +
                                           " — requested headers refresh");
@@ -5761,6 +5762,17 @@ bool DaemonApp::Init(int argc, char** argv) {
                             chainstate_ptr->RecordHeaderAnnouncements(peer_addr, headers);
                         }
 
+                        // #738 follow-up (audit 2026-09-14, HIGH-1): feed the
+                        // stale-tip clock only when this message taught us
+                        // something. The empty/duplicate reply to our own
+                        // recovery probe must not reset it, or the probe cadence
+                        // collapses from the 60 s interval to the 600 s threshold.
+                        if (dinero::daemon::headersMessageResetsStaleClock(process_result.inserted)) {
+                            if (auto p2p_for_clock = p2p_weak.lock()) {
+                                p2p_for_clock->NotePeerHeadersLearned();
+                            }
+                        }
+
                         if (added > 0 && header_chain_ptr) {
                             // #441: copy under the selector's lock.
                             consensus::HeaderIndexEntry best_copy{};
@@ -5911,7 +5923,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                         auto p2p_locked = p2p_weak.lock();
                         if (!p2p_locked ||
                             !p2p_locked->RequestHeaders(
-                                peer_addr, true, "header-rejection-recovery")) {
+                                peer_addr, consensus::HeaderRequestMode::REFRESH,
+                                "header-rejection-recovery")) {
                             g_logger.warning("[Phase N.5] Recovery getheaders not sent for " +
                                              peer_addr +
                                              " (peer ineligible, another request owns the flight,"
@@ -6144,7 +6157,8 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                             if (should_request_headers && p2p_service &&
                                 p2p_service->RequestHeaders(
-                                    peer_addr, true, "stateless-compact-block")) {
+                                    peer_addr, consensus::HeaderRequestMode::REFRESH,
+                                    "stateless-compact-block")) {
                                 g_logger.info("[BlockRelay] Stateless cmpctblock hint from " + peer_addr +
                                               " — requested headers refresh");
                             } else {
@@ -6292,7 +6306,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                             return;
                         }
 
-                        if (command == "inv") {
+                        // #738 follow-up (audit 2026-09-14, MEDIUM-3): test msg.command, not
+                        // `command`. BlockRelayManager sends "inv_all" when no cmpctblock went
+                        // out (CT-bearing block, compact serialization failure); the rename
+                        // above maps it to "inv", but comparing the ORIGINAL name made
+                        // inv_all fall through to BroadcastMessage(), whose async outbox
+                        // drops under pressure — the one announcement path that must not.
+                        if (msg.command == "inv") {
                             int sent = 0;
                             for (const auto& peer : p2p_service->get().get_connected_peers()) {
                                 // Send inv to ALL peers — compact-ready peers already have the block
@@ -6587,7 +6607,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                     GetPeerID(peer.to_string()), advertised_height,
                     peer_best_hash, peer.is_outbound);
                 p2p_service->RequestHeaders(
-                    peer.to_string(), true, "phase-n-wiring");
+                    peer.to_string(), consensus::HeaderRequestMode::REFRESH,
+                    "phase-n-wiring");
             }
             header_sync->StartSync();
 

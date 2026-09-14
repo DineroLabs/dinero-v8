@@ -52,6 +52,8 @@ void HeaderSyncManager::Tick(uint64_t now_ms) {
     // Use provided time for testing, otherwise get system time
     uint64_t now = (now_ms > 0) ? now_ms : GetCurrentTimeMs();
 
+    ExpirePeerPenalties(now);  // #738 follow-up (audit 2026-09-14, MEDIUM-1)
+
     // Check for stalls in all states except IDLE
     if (state_ != HeaderSyncState::IDLE && state_ != HeaderSyncState::CAUGHT_UP) {
         if (CheckForStall(now)) {
@@ -174,6 +176,8 @@ void HeaderSyncManager::MarkPeerStalled(uint64_t peer_id) {
     auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
         it->second.is_stalled = true;
+        // #738 follow-up (audit 2026-09-14, MEDIUM-1): bounded, not for life.
+        it->second.penalty_expires_at_ms = GetCurrentTimeMs() + PEER_PENALTY_EXPIRY_MS;
     }
 }
 
@@ -182,6 +186,8 @@ void HeaderSyncManager::MarkPeerMisbehaving(uint64_t peer_id) {
     auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
         it->second.is_misbehaving = true;
+        // #738 follow-up (audit 2026-09-14, MEDIUM-1): bounded, not for life.
+        it->second.penalty_expires_at_ms = GetCurrentTimeMs() + PEER_PENALTY_EXPIRY_MS;
     }
 
     // If this was our active sync peer, request switch
@@ -436,8 +442,12 @@ bool HeaderSyncManager::ShouldRequestHeaders(uint64_t peer_id) const {
 }
 
 std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
-    uint64_t peer_id, bool probe) {
+    uint64_t peer_id, HeaderRequestMode mode) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
+
+    // #738 follow-up (audit 2026-09-14, MEDIUM-1): the recovery path calls this
+    // directly, so lapse penalties here too, not only on Tick().
+    ExpirePeerPenalties(GetCurrentTimeMs());
 
     const auto peer_it = peers_.find(peer_id);
     if (peer_it == peers_.end() || peer_it->second.is_stalled ||
@@ -452,7 +462,8 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
         return std::nullopt;
     }
 
-    if (!probe && !ShouldRequestHeaders(peer_id)) {
+    if (mode == HeaderRequestMode::SYNCHRONIZATION &&
+        !ShouldRequestHeaders(peer_id)) {
         return std::nullopt;
     }
 
@@ -470,8 +481,24 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
     peer_it->second.last_request_time = GetCurrentTimeMs();
     active_sync_peer_ = peer_id;
     UpdateSyncTimeout(peer_id);
+    if (mode == HeaderRequestMode::STALE_TIP_RECOVERY) {
+        // #738 follow-up (audit 2026-09-14, HIGH-2): a stale-tip probe has
+        // expected_headers==0, so UpdateSyncTimeout gave it the full 15-minute
+        // download budget. A connected-but-silent peer then pinned the single
+        // flight and blocked recovery from trying another peer. Only this
+        // deliberate recovery mode expects an immediate reply; announcement,
+        // connection and synchronization refreshes keep the normal timeout.
+        peer_it->second.timeout_deadline = std::min(
+            peer_it->second.timeout_deadline,
+            peer_it->second.last_request_time + stale_tip_probe_timeout_ms_);
+    }
     TransitionTo(HeaderSyncState::REQUESTING_HEADERS);
     return locator;
+}
+
+void HeaderSyncManager::SetStaleTipProbeTimeoutMs(uint64_t timeout_ms) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    stale_tip_probe_timeout_ms_ = timeout_ms;
 }
 
 bool HeaderSyncManager::MarkHeadersRequestFailed(uint64_t peer_id) {
@@ -514,6 +541,16 @@ HeaderSyncManager::SyncStats HeaderSyncManager::GetStats() const {
     }
 
     stats.current_sync_peer = active_sync_peer_;
+    stats.current_sync_age_ms = 0;  // #738 follow-up (audit 2026-09-14, HIGH-2)
+    if (active_sync_peer_ != 0) {
+        const auto owner = peers_.find(active_sync_peer_);
+        if (owner != peers_.end()) {
+            const uint64_t now = GetCurrentTimeMs();
+            stats.current_sync_age_ms = (now > owner->second.last_request_time)
+                                            ? now - owner->second.last_request_time
+                                            : 0;
+        }
+    }
     stats.state = state_;
 
     return stats;
@@ -637,6 +674,21 @@ bool HeaderSyncManager::CheckForStall(uint64_t now_ms) {
     }
 
     return false;
+}
+
+void HeaderSyncManager::ExpirePeerPenalties(uint64_t now_ms) {
+    // #738 follow-up (audit 2026-09-14, MEDIUM-1). Caller holds mutex_.
+    for (auto& pair : peers_) {
+        PeerHeaderInfo& info = pair.second;
+        if (!(info.is_stalled || info.is_misbehaving)) {
+            continue;
+        }
+        if (info.penalty_expires_at_ms != 0 && now_ms >= info.penalty_expires_at_ms) {
+            info.is_stalled = false;
+            info.is_misbehaving = false;
+            info.penalty_expires_at_ms = 0;
+        }
+    }
 }
 
 void HeaderSyncManager::RequestPeerSwitch(PeerSwitchReason reason) {

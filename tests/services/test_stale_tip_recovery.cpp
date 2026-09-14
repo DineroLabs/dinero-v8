@@ -29,11 +29,14 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 using std::chrono::seconds;
 using std::chrono::steady_clock;
 using dinero::daemon::decideStaleTipAction;
+using dinero::daemon::headersMessageResetsStaleClock;
 using dinero::daemon::StaleTipAction;
 using dinero::daemon::StaleTipState;
 
@@ -216,9 +219,10 @@ TEST(StaleTipRecovery, ProbeFiresAtThresholdWhileSelfMining) {
     EXPECT_EQ(st.last_staleness_getheaders, at(T));
 }
 
-// Headers learned from a peer DO reset the clock — with or without a height
-// advance. An empty `headers` reply ("nothing beyond your locator") still tells
-// us where that peer stands, so it counts.
+// Headers learned from a peer DO reset the clock — with or without a best-height
+// advance (e.g. inserted side-branch headers). The decision only sees the
+// caller's evidence counter; which `headers` messages move it is decided by
+// headersMessageResetsStaleClock (#738 follow-up: empty probe replies do not).
 TEST(StaleTipRecovery, PeerHeadersResetClock) {
     StaleTipState st;
     ASSERT_EQ(decide(100, 7, 4, at(0), st), StaleTipAction::RESET);
@@ -229,7 +233,7 @@ TEST(StaleTipRecovery, PeerHeadersResetClock) {
     EXPECT_EQ(st.last_header_advance_time, at(T / 2 + 1));
     EXPECT_EQ(st.last_peer_header_events, 8U);
 
-    // Peer headers that did NOT advance our tip (empty reply) still reset.
+    // Peer evidence that did NOT advance our best height still resets.
     EXPECT_EQ(decide(105, 9, 4, at(T / 2 + 2), st), StaleTipAction::RESET);
     EXPECT_EQ(st.last_header_advance_time, at(T / 2 + 2));
     EXPECT_EQ(st.last_best_header_height, 105U);
@@ -252,4 +256,100 @@ TEST(StaleTipRecovery, ProbeNotSpammedWhileSelfMiningAfterFire) {
     EXPECT_EQ(decide(120, 8, 4, at(T + I + 1), st), StaleTipAction::RESET);
     EXPECT_EQ(st.staleness_getheaders_count, 0);
     EXPECT_EQ(st.last_peer_header_events, 8U);
+}
+
+// ---------------------------------------------------------------------------
+// #738 follow-up (audit 2026-09-14, HIGH-1): the reply to our OWN stale-tip
+// probe must not reset the stall clock.
+//
+// As merged in #742, P2PService counted EVERY processed `headers` message as
+// peer evidence — including the empty reply to the probe it had just sent. The
+// decision then RESET, zeroed the attempt counter, and the next probe waited a
+// full threshold (600 s) instead of the 60 s interval. With the single request
+// flight and per-attempt peer rotation, a 10-peer node needed up to ~100 min to
+// reach the one peer holding the heavier chain, and the "Stale tip" log line
+// always read "attempt 1".
+//
+// The rule that decides whether a `headers` message feeds the counter is
+// headersMessageResetsStaleClock(inserted); the OnHeaders handler bumps
+// P2PService::peer_header_events_ only when it returns true. These tests drive
+// the decision through THAT rule, so a regression in the rule fails here.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct ProbeRecord {
+    int64_t t;          // seconds since kBase
+    std::size_t peer;   // peer index that won the single flight
+    int attempt;        // staleness_getheaders_count as logged
+};
+
+// Simulates MaybeRecoverStaleTip's per-attempt peer rotation plus the OnHeaders
+// bump rule: `peer_count` peers, each probe answered within the same tick by a
+// `headers` message that inserted `inserted_per_reply` headers. That reply is
+// the only `headers` traffic on the wire in this scenario.
+std::vector<ProbeRecord> simulateProbes(std::size_t peer_count,
+                                        std::size_t inserted_per_reply,
+                                        int64_t until_s,
+                                        StaleTipState& st,
+                                        uint64_t& events) {
+    std::vector<ProbeRecord> probes;
+    std::size_t cursor = 0;
+    for (int64_t t = 1; t <= until_s; ++t) {
+        if (decide(100, events, peer_count, at(t), st) != StaleTipAction::SEND_GETHEADERS) {
+            continue;
+        }
+        const std::size_t peer = cursor++ % peer_count;  // first eligible peer wins the flight
+        probes.push_back({t, peer, st.staleness_getheaders_count});
+        if (headersMessageResetsStaleClock(inserted_per_reply)) {
+            ++events;
+        }
+    }
+    return probes;
+}
+
+}  // namespace
+
+// Peers 0-8 answer every probe with empty headers (they sit on our branch or
+// behind). The probe must still reach peer 9 within threshold + 9*interval, and
+// the attempt number must count 1..10 across those probes.
+TEST(StaleTipRecovery, EmptyProbeReplyDoesNotResetClock) {
+    EXPECT_FALSE(headersMessageResetsStaleClock(0));
+    EXPECT_TRUE(headersMessageResetsStaleClock(1));
+
+    StaleTipState st;
+    uint64_t events = 7;
+    ASSERT_EQ(decide(100, events, 10, at(0), st), StaleTipAction::RESET);
+
+    const int64_t deadline = T + 9 * I;
+    const auto probes = simulateProbes(/*peer_count=*/10, /*inserted_per_reply=*/0, deadline, st, events);
+
+    ASSERT_EQ(probes.size(), 10U) << "expected one probe per interval after the threshold";
+    for (std::size_t i = 0; i < probes.size(); ++i) {
+        EXPECT_EQ(probes[i].peer, i) << "rotation must advance one peer per attempt";
+        EXPECT_EQ(probes[i].attempt, static_cast<int>(i) + 1) << "log attempt number must be real";
+        EXPECT_EQ(probes[i].t, T + static_cast<int64_t>(i) * I);
+    }
+    EXPECT_EQ(probes.back().peer, 9U);
+    EXPECT_LE(probes.back().t, deadline);
+    EXPECT_EQ(st.staleness_getheaders_count, 10);
+    EXPECT_EQ(events, 7U) << "empty probe replies are not peer evidence";
+}
+
+// A probe reply that INSERTED headers is exactly what recovery hopes for: it
+// resets the clock and clears the attempt counter, so no further probe fires
+// inside the next threshold.
+TEST(StaleTipRecovery, ProbeReplyWithNewHeadersResetsClock) {
+    StaleTipState st;
+    uint64_t events = 7;
+    ASSERT_EQ(decide(100, events, 10, at(0), st), StaleTipAction::RESET);
+
+    const auto probes = simulateProbes(10, /*inserted_per_reply=*/5, T + 9 * I, st, events);
+
+    ASSERT_EQ(probes.size(), 1U);
+    EXPECT_EQ(probes[0].t, T);
+    EXPECT_EQ(events, 8U);
+    EXPECT_EQ(st.staleness_getheaders_count, 0) << "reset must clear the attempt counter";
+    EXPECT_EQ(st.last_peer_header_events, 8U);
+    EXPECT_EQ(st.last_header_advance_time, at(T + 1));
 }
