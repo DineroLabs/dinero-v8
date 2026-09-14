@@ -256,7 +256,7 @@ jobs:
           cargo --version
           dpkg-buildpackage -us -uc -b
           DEB="../dinero-core_${V}-1_amd64.deb"
-          DBG_DEB="../dinero-core-dbgsym_${V}-1_amd64.deb"
+          DBG_DEB="../dinero-core-dbgsym_${V}-1_amd64.ddeb"
           test "$(dpkg-deb -f "$DEB" Version)" = "$V-1"
           test "$(dpkg-deb -f "$DEB" Architecture)" = amd64
           mkdir -p deb-check
@@ -271,9 +271,20 @@ jobs:
           sudo dpkg -r dinero-core
           cp "$DEB" .
           test -f "$DBG_DEB"
+          test "$(dpkg-deb -f "$DBG_DEB" Package)" = dinero-core-dbgsym
+          test "$(dpkg-deb -f "$DBG_DEB" Architecture)" = amd64
+          mkdir -p deb-debug-check
+          dpkg-deb -x "$DBG_DEB" deb-debug-check
+          for BIN in dinerod dinero-cli; do
+            BUILD_ID=$(readelf -n "deb-check/usr/bin/$BIN" | awk '/Build ID:/{print $3; exit}')
+            test -n "$BUILD_ID"
+            DEBUG_FILE="deb-debug-check/usr/lib/debug/.build-id/${BUILD_ID:0:2}/${BUILD_ID:2}.debug"
+            test -f "$DEBUG_FILE"
+            readelf --sections "$DEBUG_FILE" | grep -q '\.debug_info'
+          done
           cp "$DBG_DEB" .
           sha256sum "dinero-core_${V}-1_amd64.deb" > "SHA256SUMS-dinero-core-${V}"
-          sha256sum "dinero-core-dbgsym_${V}-1_amd64.deb" > "SHA256SUMS-dinero-core-dbgsym-${V}"
+          sha256sum "dinero-core-dbgsym_${V}-1_amd64.ddeb" > "SHA256SUMS-dinero-core-dbgsym-${V}"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -286,7 +297,7 @@ jobs:
             ${{ steps.pkg.outputs.debug_sumfile }}
             dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb
             SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}
-            dinero-core-dbgsym_${{ steps.ver.outputs.version }}-1_amd64.deb
+            dinero-core-dbgsym_${{ steps.ver.outputs.version }}-1_amd64.ddeb
             SHA256SUMS-dinero-core-dbgsym-${{ steps.ver.outputs.version }}
           if-no-files-found: error
 
@@ -302,6 +313,6 @@ jobs:
             "${{ steps.pkg.outputs.debug_sumfile }}" \
             "dinero-core_${{ steps.ver.outputs.version }}-1_amd64.deb" \
             "SHA256SUMS-dinero-core-${{ steps.ver.outputs.version }}" \
-            "dinero-core-dbgsym_${{ steps.ver.outputs.version }}-1_amd64.deb" \
+            "dinero-core-dbgsym_${{ steps.ver.outputs.version }}-1_amd64.ddeb" \
             "SHA256SUMS-dinero-core-dbgsym-${{ steps.ver.outputs.version }}" \
             --clobber
