@@ -6303,7 +6303,13 @@ bool DaemonApp::Init(int argc, char** argv) {
                             return;
                         }
 
-                        if (command == "inv") {
+                        // #738 follow-up (audit 2026-09-14, MEDIUM-3): test msg.command, not
+                        // `command`. BlockRelayManager sends "inv_all" when no cmpctblock went
+                        // out (CT-bearing block, compact serialization failure); the rename
+                        // above maps it to "inv", but comparing the ORIGINAL name made
+                        // inv_all fall through to BroadcastMessage(), whose async outbox
+                        // drops under pressure — the one announcement path that must not.
+                        if (msg.command == "inv") {
                             int sent = 0;
                             for (const auto& peer : p2p_service->get().get_connected_peers()) {
                                 // Send inv to ALL peers — compact-ready peers already have the block
