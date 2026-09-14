@@ -143,3 +143,64 @@ TEST(HeaderSyncProbeHardening, DownloadRequestKeepsLongTimeout) {
     EXPECT_EQ(f.switches.calls[0].second, PeerSwitchReason::STALL_TIMEOUT);
     EXPECT_TRUE(f.Begin(2, true));
 }
+
+// ---------------------------------------------------------------------------
+// #738 follow-up (audit 2026-09-14, MEDIUM-1): a connected peer must not be
+// blacklisted from getheaders forever.
+//
+// After kMaxRecoveryAttempts "header gap" replies daemon_app calls
+// MarkPeerMisbehaving(peer); is_misbehaving (like is_stalled) was cleared only
+// in AddPeer, i.e. on reconnect. The peer stayed connected, kept relaying
+// blocks and txs, yet BeginHeadersRequest returned nullopt for it for the life
+// of the connection — including every stale-tip recovery probe. Penalty flags
+// now expire after PEER_PENALTY_EXPIRY_MS (10 min); the peer gets another
+// getheaders and is re-penalised if it misbehaves again.
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr uint64_t kPenaltyExpiryMs = 10 * kMin;  // PEER_PENALTY_EXPIRY_MS
+}
+
+TEST(HeaderSyncProbeHardening, MisbehavingFlagExpiresViaTick) {
+    Fixture f;
+    f.mgr.MarkPeerMisbehaving(1);
+    EXPECT_FALSE(f.Begin(1, true)) << "freshly penalised peer is skipped";
+
+    f.Advance(kPenaltyExpiryMs - kSec);
+    f.mgr.Tick(f.now_ms);
+    EXPECT_FALSE(f.Begin(1, true)) << "still inside the penalty window";
+
+    f.Advance(2 * kSec);
+    f.mgr.Tick(f.now_ms);
+    EXPECT_TRUE(f.Begin(1, true)) << "penalty expired: connected peer eligible again";
+}
+
+// Expiry must not depend on Tick() having run: BeginHeadersRequest itself
+// re-evaluates the penalty (the recovery path calls it directly).
+TEST(HeaderSyncProbeHardening, StalledFlagExpiresOnRequestWithoutTick) {
+    Fixture f;
+    f.mgr.MarkPeerStalled(2);
+    EXPECT_FALSE(f.Begin(2, true));
+
+    f.Advance(kPenaltyExpiryMs + kSec);
+    EXPECT_TRUE(f.Begin(2, true));
+    EXPECT_EQ(f.mgr.GetStats().current_sync_peer, 2U);
+}
+
+// Re-offending after expiry re-arms the penalty for a full window.
+TEST(HeaderSyncProbeHardening, PenaltyRearmsOnRepeatOffence) {
+    Fixture f;
+    f.mgr.MarkPeerMisbehaving(1);
+    f.Advance(kPenaltyExpiryMs + kSec);
+    f.mgr.Tick(f.now_ms);
+    EXPECT_TRUE(f.Begin(1, true));
+    ASSERT_TRUE(f.mgr.ProcessHeadersWithResult(1, {}).accepted);  // release the flight
+
+    f.mgr.MarkPeerMisbehaving(1);
+    f.Advance(kPenaltyExpiryMs / 2);
+    f.mgr.Tick(f.now_ms);
+    EXPECT_FALSE(f.Begin(1, true)) << "second offence must serve a fresh window";
+    f.Advance(kPenaltyExpiryMs / 2 + kSec);
+    f.mgr.Tick(f.now_ms);
+    EXPECT_TRUE(f.Begin(1, true));
+}

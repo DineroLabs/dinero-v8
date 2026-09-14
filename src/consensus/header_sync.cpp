@@ -52,6 +52,8 @@ void HeaderSyncManager::Tick(uint64_t now_ms) {
     // Use provided time for testing, otherwise get system time
     uint64_t now = (now_ms > 0) ? now_ms : GetCurrentTimeMs();
 
+    ExpirePeerPenalties(now);  // #738 follow-up (audit 2026-09-14, MEDIUM-1)
+
     // Check for stalls in all states except IDLE
     if (state_ != HeaderSyncState::IDLE && state_ != HeaderSyncState::CAUGHT_UP) {
         if (CheckForStall(now)) {
@@ -174,6 +176,8 @@ void HeaderSyncManager::MarkPeerStalled(uint64_t peer_id) {
     auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
         it->second.is_stalled = true;
+        // #738 follow-up (audit 2026-09-14, MEDIUM-1): bounded, not for life.
+        it->second.penalty_expires_at_ms = GetCurrentTimeMs() + PEER_PENALTY_EXPIRY_MS;
     }
 }
 
@@ -182,6 +186,8 @@ void HeaderSyncManager::MarkPeerMisbehaving(uint64_t peer_id) {
     auto it = peers_.find(peer_id);
     if (it != peers_.end()) {
         it->second.is_misbehaving = true;
+        // #738 follow-up (audit 2026-09-14, MEDIUM-1): bounded, not for life.
+        it->second.penalty_expires_at_ms = GetCurrentTimeMs() + PEER_PENALTY_EXPIRY_MS;
     }
 
     // If this was our active sync peer, request switch
@@ -439,6 +445,10 @@ std::optional<std::vector<uint256>> HeaderSyncManager::BeginHeadersRequest(
     uint64_t peer_id, bool probe) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
 
+    // #738 follow-up (audit 2026-09-14, MEDIUM-1): the recovery path calls this
+    // directly, so lapse penalties here too, not only on Tick().
+    ExpirePeerPenalties(GetCurrentTimeMs());
+
     const auto peer_it = peers_.find(peer_id);
     if (peer_it == peers_.end() || peer_it->second.is_stalled ||
         peer_it->second.is_misbehaving) {
@@ -664,6 +674,21 @@ bool HeaderSyncManager::CheckForStall(uint64_t now_ms) {
     }
 
     return false;
+}
+
+void HeaderSyncManager::ExpirePeerPenalties(uint64_t now_ms) {
+    // #738 follow-up (audit 2026-09-14, MEDIUM-1). Caller holds mutex_.
+    for (auto& pair : peers_) {
+        PeerHeaderInfo& info = pair.second;
+        if (!(info.is_stalled || info.is_misbehaving)) {
+            continue;
+        }
+        if (info.penalty_expires_at_ms != 0 && now_ms >= info.penalty_expires_at_ms) {
+            info.is_stalled = false;
+            info.is_misbehaving = false;
+            info.penalty_expires_at_ms = 0;
+        }
+    }
 }
 
 void HeaderSyncManager::RequestPeerSwitch(PeerSwitchReason reason) {

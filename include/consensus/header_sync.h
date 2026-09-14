@@ -78,6 +78,9 @@ struct PeerHeaderInfo {
     bool is_stalled;                // True if peer stopped responding
     bool is_misbehaving;            // True if peer sent invalid headers
     bool is_outbound;               // True if outbound connection (prefer for sync)
+    // #738 follow-up (audit 2026-09-14, MEDIUM-1): when is_stalled /
+    // is_misbehaving lapse (ms, manager clock); 0 = no penalty armed.
+    uint64_t penalty_expires_at_ms;
 
     PeerHeaderInfo()
         : best_height(0)
@@ -89,6 +92,7 @@ struct PeerHeaderInfo {
         , is_stalled(false)
         , is_misbehaving(false)
         , is_outbound(false)
+        , penalty_expires_at_ms(0)
     {
         best_hash.SetNull();
     }
@@ -243,6 +247,14 @@ public:
     static constexpr uint64_t HEADERS_PROBE_TIMEOUT_MS = 60 * 1000;  // 60 seconds
     void SetProbeTimeoutMs(uint64_t timeout_ms);
 
+    // #738 follow-up (audit 2026-09-14, MEDIUM-1): how long a MarkPeerStalled /
+    // MarkPeerMisbehaving penalty excludes a still-connected peer from
+    // getheaders. Previously the flags were cleared only in AddPeer (reconnect),
+    // so a peer that hit the header-gap recovery cap stayed connected but was
+    // blacklisted from every getheaders — recovery probes included — for the
+    // life of the connection. A repeat offence re-arms a full window.
+    static constexpr uint64_t PEER_PENALTY_EXPIRY_MS = 10 * 60 * 1000;  // 10 minutes
+
     // ========================================================================
     // Peer Switch Callback
     // ========================================================================
@@ -356,6 +368,13 @@ private:
      * Returns true if peer should be marked as stalled.
      */
     bool CheckForStall(uint64_t now_ms);
+
+    /**
+     * #738 follow-up (audit 2026-09-14, MEDIUM-1): clear is_stalled /
+     * is_misbehaving on peers whose penalty window has lapsed. Caller holds
+     * mutex_. Run from Tick() and BeginHeadersRequest().
+     */
+    void ExpirePeerPenalties(uint64_t now_ms);
 
     /**
      * Request peer switch (signals to P2P layer via callback).
