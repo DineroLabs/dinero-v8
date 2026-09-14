@@ -1207,8 +1207,12 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
     // The WHEN-to-act decision is a pure state machine (unit-tested in
     // test_stale_tip_recovery.cpp). Everything below only runs when it says the
     // tip is stale enough to re-probe.
-    if (daemon::decideStaleTipAction(best_h, peer_count, now, staleness_threshold_,
-                                     staleness_getheaders_interval_, stale_tip_state_) !=
+    // #738: the clock is keyed to headers learned FROM PEERS, not to best_h;
+    // a pool extending its own minority branch must still probe on schedule.
+    const uint64_t peer_header_events = peer_header_events_.load(std::memory_order_relaxed);
+    if (daemon::decideStaleTipAction(best_h, peer_header_events, peer_count, now,
+                                     staleness_threshold_, staleness_getheaders_interval_,
+                                     stale_tip_state_) !=
         daemon::StaleTipAction::SEND_GETHEADERS) {
         return;
     }
@@ -1227,16 +1231,26 @@ void P2PService::MaybeRecoverStaleTip(std::chrono::steady_clock::time_point now)
     // the async broadcast outbox can silently drop messages under congestion,
     // and a recovery probe must actually reach peers precisely when the node is
     // wedged. Mirrors the block-getdata callback in daemon_app.cpp.
+    //
+    // #738: only the first eligible peer wins the single flight, so rotate the
+    // starting index per attempt; otherwise a multi-peer node re-asks the same
+    // peer forever and never reaches the one holding the heavier branch.
     int sent = 0;
-    for (const auto& peer : p2p_mgr_->get_connected_peers()) {
-        if (RequestHeaders(peer.to_string(), true, "stale-tip-recovery")) {
-            ++sent;
+    const auto peers = p2p_mgr_->get_connected_peers();
+    if (!peers.empty()) {
+        const std::size_t start = stale_probe_cursor_++ % peers.size();
+        for (std::size_t i = 0; i < peers.size(); ++i) {
+            const auto& peer = peers[(start + i) % peers.size()];
+            if (RequestHeaders(peer.to_string(), true, "stale-tip-recovery")) {
+                ++sent;
+            }
         }
     }
     if (logger_interface_) {
         logger_interface_->warning(
-            "[P2PService] Stale tip: best header frozen at " + std::to_string(best_h) +
-            " for " + std::to_string(stale_secs) + "s — re-issued getheaders to " +
+            "[P2PService] Stale tip: no headers learned from any peer for " +
+            std::to_string(stale_secs) + "s (best header " + std::to_string(best_h) +
+            ") — re-issued getheaders to " +
             std::to_string(sent) + "/" + std::to_string(peer_count) +
             " peers (attempt " + std::to_string(stale_tip_state_.staleness_getheaders_count) + ")");
     }
@@ -2340,6 +2354,8 @@ void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessa
     logger_interface_->info("[P2PService] HandleP2PMessage: cmd='" + msg.command + "' from " + peer_addr);
 
     if (msg.command == "block" && OnNewBlock) {
+        // #738: a full block from a peer carries its header — peer evidence.
+        peer_header_events_.fetch_add(1, std::memory_order_relaxed);
         OnNewBlock(peer_addr, msg);
     }
     else if (msg.command == "tx" && OnNewTx) {
@@ -2378,9 +2394,17 @@ void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessa
             }
             return;
         }
+        // #738: feed the stale-tip clock. A processed `headers` message (empty or
+        // not) is "we learned where a peer stands"; block/cmpctblock/utxoblk from
+        // a peer count too. Our own mined blocks never reach any of these paths.
+        peer_header_events_.fetch_add(1, std::memory_order_relaxed);
         OnHeaders(peer_addr, msg);
     }
     else if (msg.command == "cmpctblock" && OnCompactBlock) {
+        // #738: compact-block announcements are how healthy peers deliver new
+        // headers on mainnet; count them so the stale clock does not fire (and
+        // warn) every threshold on a perfectly healthy node.
+        peer_header_events_.fetch_add(1, std::memory_order_relaxed);
         OnCompactBlock(peer_addr, msg);
     }
     else if (msg.command == "getblocktxn" && OnGetBlockTxn) {
@@ -2391,6 +2415,7 @@ void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessa
     }
     // Phase P.3: Utreexo block relay (block + proof combined)
     else if (msg.command == "utxoblk" && OnUtxoBlock) {
+        peer_header_events_.fetch_add(1, std::memory_order_relaxed);  // #738
         logger_interface_->info("[P2PService] Routing utxoblk to OnUtxoBlock handler");
         OnUtxoBlock(peer_addr, msg);
     }

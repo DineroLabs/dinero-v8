@@ -11,6 +11,12 @@
 // pull what the stale connections stopped pushing; the caller does the actual
 // network I/O. Keeping the two apart is what makes the trigger logic testable
 // without reproducing the whole network.
+//
+// issue #738: the clock is keyed to "when did we last LEARN headers from a
+// peer", not to "did our best header advance". A pool node that keeps mining
+// its own minority branch advances its best header every few minutes on its
+// own, and under the old rule that kept resetting the clock, so recovery never
+// fired while directly connected peers sat on a heavier chain.
 
 #include <chrono>
 #include <cstddef>
@@ -22,11 +28,11 @@ namespace dinero::daemon {
 // network I/O; every other value is a no-op (returned so tests can assert the
 // exact branch taken, not merely "did it send").
 enum class StaleTipAction : std::uint8_t {
-    RESET,            // best header advanced (or first observation) — clock reset
+    RESET,            // headers learned from a peer (or first observation) — clock reset
     IDLE,             // no peers, or height 0 (never synced) — nothing to recover
-    NOT_STALE_YET,    // header frozen, but not for long enough to act
+    NOT_STALE_YET,    // no peer headers, but not for long enough to act
     RATE_LIMITED,     // would act, but within the getheaders rate-limit window
-    SEND_GETHEADERS,  // STALE — re-issue getheaders to all peers
+    SEND_GETHEADERS,  // STALE — re-issue getheaders to peers
 };
 
 // Mutable stall-tracking state. Lives on P2PService; passed by reference so the
@@ -35,47 +41,57 @@ enum class StaleTipAction : std::uint8_t {
 // sentinel).
 struct StaleTipState {
     uint32_t last_best_header_height{0};
+    // #738: value of the caller's peer-header event counter at the last clock
+    // reset. The counter is bumped once per `headers` message processed from a
+    // peer (empty replies included — "nothing beyond your locator" IS learning
+    // where that peer stands). Our own mined blocks never bump it.
+    uint64_t last_peer_header_events{0};
     std::chrono::steady_clock::time_point last_header_advance_time;
     std::chrono::steady_clock::time_point last_staleness_getheaders;
     int staleness_getheaders_count{0};
 };
 
-// Pure decision: given the current best-header height, peer count, and time,
-// advance `state` and return what to do. No globals, no I/O — call it with
-// synthetic timestamps to test every branch.
+// Pure decision: given the current best-header height, the peer-header event
+// counter, peer count, and time, advance `state` and return what to do. No
+// globals, no I/O — call it with synthetic timestamps to test every branch.
 //
-// Order matters and mirrors the original inline logic exactly:
-//   1. header advanced OR first observation -> reset clock                (RESET)
+// Order matters:
+//   1. peer headers learned OR first observation -> reset clock            (RESET)
 //   2. no peers OR never synced (height 0)                               (IDLE)
-//   3. frozen, but < staleness_threshold                          (NOT_STALE_YET)
+//   3. no peer headers, but < staleness_threshold                (NOT_STALE_YET)
 //   4. would fire, but < staleness_getheaders_interval since last (RATE_LIMITED)
 //   5. otherwise: record the probe and tell the caller to send (SEND_GETHEADERS)
 inline StaleTipAction decideStaleTipAction(
     uint32_t best_h,
+    uint64_t peer_header_events,
     std::size_t peer_count,
     std::chrono::steady_clock::time_point now,
     std::chrono::seconds staleness_threshold,
     std::chrono::seconds staleness_getheaders_interval,
     StaleTipState& state) {
-    // (1) Best header advanced (or first observation): reset the stall clock.
-    // A default-constructed time_point has time_since_epoch()==0, which marks the
-    // very first tick so we anchor the clock instead of treating it as stalled.
-    if (best_h > state.last_best_header_height ||
+    // (1) #738: reset ONLY when we learned headers from a peer (the caller's
+    // counter moved) or on the very first observation. A best-header advance
+    // by itself — our own mined block — deliberately does NOT reset: that is
+    // exactly the self-mining minority-tip case where recovery must still fire.
+    // A default-constructed time_point has time_since_epoch()==0, which marks
+    // the first tick so we anchor the clock instead of treating it as stalled.
+    if (peer_header_events != state.last_peer_header_events ||
         state.last_header_advance_time.time_since_epoch().count() == 0) {
         state.last_best_header_height = best_h;
+        state.last_peer_header_events = peer_header_events;
         state.last_header_advance_time = now;
         state.staleness_getheaders_count = 0;
         return StaleTipAction::RESET;
     }
 
-    // (2) Frozen header only counts as a stall with peers AND a real chain — a
+    // (2) Silence only counts as a stall with peers AND a real chain — a
     // zero-peer node is handled by reconnect logic, and height 0 means we never
     // synced in the first place.
     if (peer_count == 0 || best_h == 0) {
         return StaleTipAction::IDLE;
     }
 
-    // (3) Not frozen long enough yet.
+    // (3) Not silent long enough yet.
     if (now - state.last_header_advance_time < staleness_threshold) {
         return StaleTipAction::NOT_STALE_YET;
     }

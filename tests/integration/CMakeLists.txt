@@ -1122,6 +1122,23 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_restart_churn_boringness.sh)
     message(STATUS "  ✓ RestartChurnBoringnessGate registered")
 endif()
 
+# Issue #738: node on a minority tip never receives competing headers from a
+# directly connected peer. Two-node regtest topologies (reconnect + live-link
+# variants); fails while the defect is present.
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_minority_tip_header_relay.sh)
+    add_test(
+        NAME MinorityTipHeaderRelay
+        COMMAND ${CMAKE_COMMAND} -E env
+            "DINEROD=$<TARGET_FILE:dinerod>"
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_minority_tip_header_relay.sh
+    )
+    set_tests_properties(MinorityTipHeaderRelay PROPERTIES
+        LABELS "integration;p2p;reorg;header-sync"
+        TIMEOUT 900
+    )
+    message(STATUS "  ✓ MinorityTipHeaderRelay registered")
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_consensus_introspection_rpc.sh)
     add_test(
         NAME ConsensusIntrospectionRpc
@@ -2173,7 +2190,7 @@ if(WIN32 AND NOT MINGW AND NOT CYGWIN)
         ParallelBlockDownloadTargeted LaggingPeerCatchupNoOrphans
         CrossSeedRestartReorgParity CrossSeedTeardownLifecycle
         ConnectTipRestartEquivalence
-        ConsensusIntrospectionRpc
+        ConsensusIntrospectionRpc MinorityTipHeaderRelay
         D3FullUserTxMissingUndo UndoMetadataRestamp
         ReindexChainstateUtreexoEquivalence ReindexPromotionRestartEquivalence
         InvalidityRestartSticky InvalidityCrashRestartEquivalence
