@@ -160,13 +160,14 @@ void PoolPanel::setupUi() {
     // ---- Connect to your pool ---------------------------------------
     auto* conn_group = new QGroupBox("Your pool");
     auto* conn_layout = new QVBoxLayout(conn_group);
-    auto* conn_hint = new QLabel(
+    conn_hint_ = new QLabel(
         "Point this at your pool's read-only status endpoint. It is loopback-only on the "
         "pool host by design, so from another machine open an SSH tunnel first:"
         "<br/><code>ssh -N -L 4445:127.0.0.1:4445 you@your.host</code>");
-    conn_hint->setWordWrap(true);
-    conn_hint->setStyleSheet("color: #9fb3c8;");
-    conn_layout->addWidget(conn_hint);
+    conn_hint_->setWordWrap(true);
+    conn_hint_->setTextFormat(Qt::RichText);
+    conn_hint_->setStyleSheet("color: #9fb3c8;");
+    conn_layout->addWidget(conn_hint_);
 
     // Left-aligned with expanding fields: QFormLayout otherwise centres the
     // rows and leaves the endpoint field too narrow to show its own default.
@@ -443,6 +444,23 @@ void PoolPanel::setStatusMessage(const QString& html) {
     lbl_status_message_->setText(html);
 }
 
+void PoolPanel::setOperatorAuthenticated(bool authenticated) {
+    if (authenticated) {
+        conn_hint_->setText(QString(
+            "<b>Operator access authenticated.</b> Live status refreshes automatically every "
+            "%1 seconds. Keep the SSH tunnel open while using this panel.")
+                .arg(REFRESH_INTERVAL_MS / 1000));
+        conn_hint_->setStyleSheet("color: #7bd88f;");
+        return;
+    }
+
+    conn_hint_->setText(
+        "Point this at your pool's read-only status endpoint. It is loopback-only on the "
+        "pool host by design, so from another machine open an SSH tunnel first:"
+        "<br/><code>ssh -N -L 4445:127.0.0.1:4445 you@your.host</code>");
+    conn_hint_->setStyleSheet("color: #9fb3c8;");
+}
+
 bool PoolPanel::validateOpsUrl(const QUrl& url, QLabel* error_target) const {
     const QString scheme = url.scheme().toLower();
     const QString host = url.host().toLower();
@@ -467,6 +485,7 @@ void PoolPanel::onFetchStatusClicked() {
     const QString base = ops_url_input_->text().trimmed();
     const QString token = ops_token_input_->text().trimmed();
     if (base.isEmpty() || token.isEmpty()) {
+        setOperatorAuthenticated(false);
         setStatusMessage("<span style='color:#d8a37b;'>Endpoint and token are both required.</span>");
         return;
     }
@@ -478,6 +497,7 @@ void PoolPanel::onFetchStatusClicked() {
     }
     QUrl url(base + (base.endsWith('/') ? "status" : "/status"));
     if (!validateOpsUrl(url, lbl_status_message_)) {
+        setOperatorAuthenticated(false);
         return;
     }
     restorePayoutJournal();
@@ -716,6 +736,7 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
     status_in_flight_ = false;
     btn_fetch_status_->setEnabled(true);
     if (reply->error() != QNetworkReply::NoError && http == 0) {
+        setOperatorAuthenticated(false);
         markStatusStale(reply->errorString());
         setStatusMessage(QString("<span style='color:#e06c75;'>Could not reach the pool: %1</span>"
                                  "<br/><span style='color:#9fb3c8; font-size:11px;'>If the pool is on "
@@ -725,23 +746,27 @@ void PoolPanel::onOpsReplyFinished(QNetworkReply* reply) {
         return;
     }
     if (http == 401) {
+        setOperatorAuthenticated(false);
         markStatusStale(QStringLiteral("authentication rejected"));
         setStatusMessage("<span style='color:#e06c75;'>Rejected: wrong ops token.</span>");
         return;
     }
     if (http != 200) {
+        setOperatorAuthenticated(false);
         markStatusStale(QStringLiteral("HTTP %1").arg(http));
         setStatusMessage(QString("<span style='color:#e06c75;'>Pool returned HTTP %1.</span>").arg(http));
         return;
     }
     const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
     if (!doc.isObject()) {
+        setOperatorAuthenticated(false);
         markStatusStale(QStringLiteral("invalid JSON"));
         setStatusMessage("<span style='color:#e06c75;'>Pool returned something that isn't JSON.</span>");
         return;
     }
     QString schema_error;
     if (!validateStatus(doc.object(), &schema_error)) {
+        setOperatorAuthenticated(false);
         markStatusStale(schema_error);
         setStatusMessage(QString("<span style='color:#e06c75;'>Malformed pool status: %1</span>")
                              .arg(schema_error.toHtmlEscaped()));
@@ -889,6 +914,7 @@ void PoolPanel::updateHealth(const QJsonObject& s, bool legacy) {
 
 void PoolPanel::applyStatus(const QJsonObject& s) {
     status_group_->setVisible(true);
+    setOperatorAuthenticated(true);
     has_valid_status_ = true;
     last_valid_status_ = QDateTime::currentDateTimeUtc();
     const bool legacy = !s.contains("schema_version");

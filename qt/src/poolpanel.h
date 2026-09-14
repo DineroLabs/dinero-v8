@@ -89,6 +89,7 @@ private:
     void reconcileFeeJournal(qint64 observed);
     void setPayoutMessage(const QString& html);
     void setStatusMessage(const QString& html);
+    void setOperatorAuthenticated(bool authenticated);
     bool validateOpsUrl(const QUrl& url, QLabel* error_target) const;
     static QString formatDin(qint64 una);
 
@@ -119,6 +120,7 @@ private:
     QLineEdit* ops_url_input_;
     QLineEdit* ops_token_input_;
     QPushButton* btn_fetch_status_;
+    QLabel* conn_hint_ = nullptr;
     QLabel* lbl_status_message_;
 
     // Live status.

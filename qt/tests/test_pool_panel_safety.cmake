@@ -30,6 +30,9 @@ foreach(REQUIRED_TEXT
     "Outcome uncertain"
     "Change operator fee"
     "Bring the cockpit online."
+    "Operator access authenticated."
+    "setOperatorAuthenticated(true)"
+    "setOperatorAuthenticated(false)"
     # The earnings card reports TWO figures and they must stay
     # distinguishable. Lifetime only ever rises; unspent falls when the
     # operator moves funds out. Collapsing them, or labelling one as the
