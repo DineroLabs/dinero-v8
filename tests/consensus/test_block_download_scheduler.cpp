@@ -2922,5 +2922,183 @@ int main() {
                   << "  ceiling_stops=" << scheduler.GetDeferredCeilingStopsForTest()
                   << "  pre_base_requests=" << pre_base_requests << std::endl;
     }
+
+    {
+        std::cout << "\n20. ancestry-unresolved entries below tip are deferred, never selected "
+                     "for a doomed connect (issue #751 cold-start catch-up race)..." << std::endl;
+
+        // Reproduces the live failure. On cold start the active tip can be
+        // published quickly (near the real height) before the slower
+        // background reconstruction has linked its full pprev ancestry back
+        // to lower heights. Until that catch-up completes,
+        // get_block_hash_at_height_callback_ cannot resolve those heights and
+        // returns false. The pre-fix code treated "unresolved" the same as
+        // "genuine fork below tip" and selected the height as `want`, driving
+        // a connect attempt that can never succeed (the chainstate has long
+        // since moved past it) — TEMPORARY_FAIL forever, escalating a false
+        // "#371 storage wedge" alarm. Field: NA seed copy 2026-09-15, self-
+        // healed once background reconstruction caught up (~60s later).
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;  // index == height
+        try {
+            BuildLinearHeaders(selector, 5, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_ancestry_race_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::remove_all(storage_dir);
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "temporary block storage must initialize")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetLocalTipHeight(0);
+
+        std::vector<uint256> requested_hashes;
+        scheduler.SetSendGetDataCallback([&requested_hashes](const uint256& block_hash, uint32_t) {
+            requested_hashes.push_back(block_hash);
+        });
+
+        int connect_attempts = 0;
+        scheduler.SetConnectBlockCallback(
+            [&connect_attempts](const Block&, const std::string&) {
+                ++connect_attempts;
+                return dcs::ConnectBlockResult::CONNECTED;
+            });
+
+        bool ancestry_resolved = false;
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&ancestry_resolved, &hashes](uint32_t height, uint256& out_hash) -> bool {
+                if (!ancestry_resolved) {
+                    return false;  // simulates the pprev walk not yet reaching this height
+                }
+                out_hash = hashes[height];
+                return true;
+            });
+
+        scheduler.OnHeadersProcessed();
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                     "height 1's body must be receivable (it is durably stored, per the field log)")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        // Simulate the fast startup-load tip jump: the active tip publishes
+        // at height 5 immediately, well before ancestry back to height 1 is
+        // resolvable.
+        scheduler.SetLocalTipHeight(5);
+
+        for (int t = 0; t < 5; ++t) {
+            scheduler.Tick();
+        }
+
+        if (!Require(connect_attempts == 0,
+                     "an ancestry-unresolved height must never reach a doomed connect attempt")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+        if (!Require(scheduler.HasReceivedBlock(hashes[1]),
+                     "the deferred entry must remain queued (neither wrongly healed nor discarded)")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        // Background reconstruction catches up: ancestry now resolves.
+        ancestry_resolved = true;
+        scheduler.Tick();
+
+        if (!Require(connect_attempts == 0,
+                     "catch-up must retire the entry via the existing hash-match heal, "
+                     "not by finally attempting the doomed connect")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+        if (!Require(scheduler.IsBlockConnected(hashes[1]),
+                     "catch-up must heal the entry to CONNECTED via the hash-match branch")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        storage.close();
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ connect_attempts=0 throughout; healed once ancestry resolved" << std::endl;
+    }
+
+    {
+        std::cout << "\n21. a genuine fork below tip is still selected and connected — "
+                     "the ancestry-unresolved deferral must not swallow real reorgs..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 5, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_real_fork_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::remove_all(storage_dir);
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "temporary block storage must initialize")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetLocalTipHeight(0);
+
+        int connect_attempts = 0;
+        scheduler.SetConnectBlockCallback(
+            [&connect_attempts](const Block&, const std::string&) {
+                ++connect_attempts;
+                return dcs::ConnectBlockResult::CONNECTED;
+            });
+
+        // Ancestry always RESOLVES, but to a DIFFERENT hash than height 1's
+        // queued entry — a genuine fork below tip, not an unresolved lookup.
+        uint256 different_hash = hashes[2];
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&different_hash](uint32_t height, uint256& out_hash) -> bool {
+                if (height == 1) {
+                    out_hash = different_hash;
+                    return true;
+                }
+                return false;
+            });
+
+        scheduler.OnHeadersProcessed();
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                     "height 1's body must be receivable")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+        scheduler.SetLocalTipHeight(5);
+
+        scheduler.Tick();
+
+        if (!Require(connect_attempts == 1,
+                     "a genuine below-tip fork must still be selected and connected, "
+                     "not deferred as if it were merely ancestry-unresolved")) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        storage.close();
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ genuine fork below tip still connects: attempts=" << connect_attempts << std::endl;
+    }
+
     return 0;
 }
