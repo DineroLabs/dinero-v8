@@ -237,6 +237,9 @@ capture_consensus_state() {
     rpc_result "$port" "$datadir" utreexo.dumpforestinternal "[\"$dump\"]" >/dev/null \
         || fail "could not dump forest for $label"
     [[ -s "$dump" ]] || fail "forest dump for $label is empty"
+    # The source's disconnect can still be pending in the clean capture, while
+    # recovery intentionally runs offline. Peer count is live telemetry, not
+    # consensus state; retain every other field, including commitment and roots.
     jq -n -c \
         --argjson height "$(rpc_result "$port" "$datadir" getblockcount)" \
         --arg tip "$(rpc_result "$port" "$datadir" getbestblockhash | jq -r '.')" \
@@ -244,7 +247,8 @@ capture_consensus_state() {
         --argjson commitment "$(rpc_result "$port" "$datadir" blockchain.getutreexocommitment)" \
         --argjson roots "$(rpc_result "$port" "$datadir" blockchain.getutreexoroots)" \
         --arg forest_sha256 "$(sha256_file "$dump")" \
-        '{height:$height,tip:$tip,txoutset:$txoutset,commitment:$commitment,roots:$roots,forest_sha256:$forest_sha256}'
+        '{height:$height,tip:$tip,txoutset:$txoutset,commitment:$commitment,roots:$roots,forest_sha256:$forest_sha256}
+         | del(.commitment.bridge_peer_count)'
 }
 
 assert_same_consensus_state() {

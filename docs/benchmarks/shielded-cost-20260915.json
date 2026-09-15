@@ -1,0 +1,148 @@
+{
+  "base_commit": "06a7ff369569c3a3d95e446578aed737d256ee6e",
+  "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+  "cpu": "Apple M4 Max",
+  "build": "Release; native AppleClang; Auth spend proof 0x06; cv bound",
+  "method": "One warm-process sample per shape, serial; pure builder plus full validation, not RPC latency",
+  "rows": [
+    {
+      "shape": "shield",
+      "bytes": 46373,
+      "weight": 185483,
+      "spend_proofs": 0,
+      "output_proofs": 43185,
+      "encrypted_notes": 757,
+      "range_container": 2184,
+      "other": 247,
+      "prove_ms": 3474,
+      "verify_ms": 1068,
+      "process_peak_rss_bytes": 569622528,
+      "vsize": 46371,
+      "fee_at_1_una_per_vbyte_with_margin": 46387,
+      "spartan_percent": 93.13,
+      "range_percent": 4.71
+    },
+    {
+      "shape": "transfer_1in_2out",
+      "bytes": 167935,
+      "weight": 671734,
+      "spend_proofs": 73281,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 6390,
+      "other": 380,
+      "prove_ms": 11593,
+      "verify_ms": 3960,
+      "process_peak_rss_bytes": 802701312,
+      "vsize": 167934,
+      "fee_at_1_una_per_vbyte_with_margin": 167950,
+      "spartan_percent": 95.07,
+      "range_percent": 3.81
+    },
+    {
+      "shape": "transfer_2in_2out",
+      "bytes": 243661,
+      "weight": 974638,
+      "spend_proofs": 146562,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 8733,
+      "other": 482,
+      "prove_ms": 16634,
+      "verify_ms": 5811,
+      "process_peak_rss_bytes": 804077568,
+      "vsize": 243660,
+      "fee_at_1_una_per_vbyte_with_margin": 243676,
+      "spartan_percent": 95.6,
+      "range_percent": 3.58
+    },
+    {
+      "shape": "transfer_4in_2out",
+      "bytes": 394953,
+      "weight": 1579806,
+      "spend_proofs": 293124,
+      "output_proofs": 86370,
+      "encrypted_notes": 1514,
+      "range_container": 13259,
+      "other": 686,
+      "prove_ms": 26313,
+      "verify_ms": 9357,
+      "process_peak_rss_bytes": 804126720,
+      "vsize": 394952,
+      "fee_at_1_una_per_vbyte_with_margin": 394968,
+      "spartan_percent": 96.09,
+      "range_percent": 3.36
+    },
+    {
+      "shape": "unshield",
+      "bytes": 75714,
+      "weight": 302850,
+      "spend_proofs": 73281,
+      "output_proofs": 0,
+      "encrypted_notes": 0,
+      "range_container": 2184,
+      "other": 249,
+      "prove_ms": 4966,
+      "verify_ms": 1840,
+      "process_peak_rss_bytes": 804143104,
+      "vsize": 75713,
+      "fee_at_1_una_per_vbyte_with_margin": 75729,
+      "spartan_percent": 96.79,
+      "range_percent": 2.88
+    }
+  ],
+  "rpc_observations": [
+    {
+      "binary": "baseline",
+      "elapsed_ms": 12767,
+      "fee_una": 75761,
+      "vsize": 75745,
+      "fixture": "70,000,000-una Auth note; auto fee; wallet.unshield; local mempool admission included"
+    },
+    {
+      "binary": "optimized",
+      "elapsed_ms": 7073,
+      "fee_una": 75761,
+      "vsize": 75745,
+      "fixture": "same shape and host; peer relay and mining excluded"
+    },
+    {
+      "binary": "optimized",
+      "elapsed_ms": 6883,
+      "fee_una": 75761,
+      "vsize": 75745,
+      "fixture": "same shape; unchanged 8.1.13 peer; peer relay and mining excluded"
+    },
+    {
+      "binary": "optimized",
+      "elapsed_ms": 6871,
+      "fee_una": 75761,
+      "vsize": 75745,
+      "fixture": "completed mixed-version Auth lifecycle; unchanged 8.1.13 peer; local admission included, relay/mining excluded"
+    }
+  ],
+  "timing_caveat": "Individual observations, not a statistical guarantee. RPC calls completed successfully; later fixture-only failures are explained in the report.",
+  "binary_sha256": {
+    "baseline": "17986f9d8e4cd34bc55c74263a46fc01a6afb903904edb40bb51f65291394a92",
+    "optimized": "04042e634046c8c0bc271909c8fea21c316f939a60ff6dba41884f9e25122180"
+  },
+  "validation": {
+    "ShieldedValidation": {
+      "passed": true,
+      "cases": 48,
+      "elapsed_seconds": 70.53
+    },
+    "CSNShieldedReorgInvertibility": {
+      "passed": true,
+      "elapsed_seconds": 104.43,
+      "coverage": "legacy deterministic shielded txs; stateless reorg, double spend, durable undo, epoch reset"
+    },
+    "ShieldedAuthRelayLifecycle": {
+      "passed": true,
+      "peer": "unchanged baseline 8.1.13",
+      "unshield_txid": "85e1e32ffc95c04a1b629f8165175ef58c7edde267a3026b674209a85c6ac4a1",
+      "transparent_child_txid": "e245021dd60ff57b11af9422a2b615ceec01fa3a1a8a7497eaac844ab5418543",
+      "coverage": "Auth/DNRS enabled, relay/mining, restart/reorg, canonical forest stability, proof verification, exact root restoration, spent leaf removal"
+    }
+  }
+}

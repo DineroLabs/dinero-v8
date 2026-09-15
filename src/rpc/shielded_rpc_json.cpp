@@ -810,42 +810,31 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
         return tx;
     };
 
-    // ── Issue #273: size-aware fee when the caller didn't pass one ────
-    // Pass 1 (persist=false): throwaway build with the provisional fee to
-    // measure the final vsize — the v6 bundle counts in BASE serialization,
-    // so the spend proof alone pushes vsize into kilobytes. Then rebuild
-    // once with the size-adequate fee (the explicit-fee field is fixed
-    // 8 bytes, so the fee value cannot change the size).
-    uint64_t final_fee = fee_una;
-    bool fee_autosized = false;
-    if (!fee_explicit) {
-        dinero::Transaction probe = make_envelope(fee_una);
-        auto probe_rc = ops::AttachUnshieldInputBundle(probe, note.leaf_index,
-                                                       fee_una, *wm,
-                                                       /*persist=*/false);
-        if (probe_rc.status != ops::OpStatus::Ok) {
-            result["error"] = "attach_unshield_failed";
-            result["error_message"] = probe_rc.error;
+    // Prove the note once. Its spend proof does not depend on the transparent
+    // payout; the builder sizes the fee and signs the final payout before the
+    // runtime marks the note pending-spent.
+    const bool fee_autosized = !fee_explicit;
+    std::optional<ops::UnshieldAutoFee> auto_fee;
+    if (fee_autosized) {
+        auto_fee = ops::UnshieldAutoFee{
+            mempool_service->mempool().getMinFeeRate(), kDustThreshold};
+    }
+    dinero::Transaction tx = make_envelope(fee_una);
+    auto attach_rc = ops::AttachUnshieldInputBundle(tx, note.leaf_index,
+        fee_una, *wm, /*persist=*/true, auto_fee);
+    if (attach_rc.status != ops::OpStatus::Ok) {
+        if (attach_rc.error == "fee_too_large" || attach_rc.error == "dust_recipient") {
+            if (attach_rc.fee_una != 0 && !validate_fee(attach_rc.fee_una, true)) return result;
+            result["error"] = attach_rc.error;
+            result["error_message"] = "note too small to cover size-based fee";
             return result;
         }
-        const double min_fee_rate = mempool_service->mempool().getMinFeeRate();
-        const uint64_t required = ops::RequiredFeeForTx(probe, min_fee_rate);
-        if (required > final_fee) final_fee = required;
-        fee_autosized = true;
-        if (!validate_fee(final_fee, true)) return result;
-    }
-    const uint64_t recipient_una = note_value - final_fee;
-
-    dinero::Transaction tx = make_envelope(final_fee);
-
-    // ── Attach the bundle (one spend, zero outputs, value_balance = -note_value) ──
-    auto attach_rc = ops::AttachUnshieldInputBundle(tx, note.leaf_index,
-                                                    final_fee, *wm);
-    if (attach_rc.status != ops::OpStatus::Ok) {
         result["error"] = "attach_unshield_failed";
         result["error_message"] = attach_rc.error;
         return result;
     }
+    const uint64_t final_fee = attach_rc.fee_una;
+    const uint64_t recipient_una = note_value - final_fee;
 
     // ── Submit. No transparent input signing needed — vin is empty. ───
     auto submit = SubmitShieldedWalletTransaction(
