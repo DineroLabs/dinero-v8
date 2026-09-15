@@ -14,8 +14,11 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <limits>
+#include <stdexcept>
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -1916,6 +1919,18 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
         peak_rss *= 1024; // Linux/BSD report KiB; macOS reports bytes.
 #endif
 #endif
+        if (const char* directory = std::getenv("AUTH_RESOURCE_DUMP_DIR")) {
+            const auto dump = [&](const std::string& suffix, const std::vector<uint8_t>& bytes) {
+                std::ofstream file(std::filesystem::path(directory) / (std::string(shape) + suffix), std::ios::binary);
+                file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                if (!file) throw std::runtime_error("proof dump failed");
+            };
+            dump(".tx.bin", tx.Serialize(true));
+            for (size_t i = 0; i < bundle.spends.size(); ++i)
+                dump(".spend-" + std::to_string(i) + ".bin", bundle.spends[i].zk_proof);
+            for (size_t i = 0; i < bundle.outputs.size(); ++i)
+                dump(".output-" + std::to_string(i) + ".bin", bundle.outputs[i].zk_proof);
+        }
         std::cout << "AUTH_RESOURCE shape=" << shape
             << " bytes=" << tx.GetSize() << " weight=" << tx.GetWeight()
             << " spend_proofs=" << spend_proofs << " output_proofs=" << output_proofs
