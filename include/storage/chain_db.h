@@ -137,6 +137,9 @@ public:
     // background error through an injected Env failure — mirrors the EU1
     // incident (EBADF during an sst flush → "regular background error").
     Status flushForTesting();
+    // Explicit copied-database reclamation gate. Never scheduled by the
+    // daemon and never called implicitly by the retention pass.
+    Status compactUtreexoForTesting();
 
     // #371 loud-failure escalation: after this many CONSECUTIVE writeBatch
     // failures (Resume unable to recover), the node must fail loudly rather
@@ -339,7 +342,8 @@ public:
     Status putUtreexoCheckpointWithChecksum(const ChainWriteToken& token, int height,
                                             const std::vector<uint8_t>& serialized_forest,
                                             rocksdb::WriteBatch* wb = nullptr);
-    Status deleteUtreexoCheckpointWithChecksum(const ChainWriteToken& token, int height);
+    Status deleteUtreexoCheckpointWithChecksum(const ChainWriteToken& token, int height,
+                                              rocksdb::WriteBatch* wb = nullptr);
     StatusOr<std::vector<uint8_t>> getUtreexoChecksum(int height) const;
 
     // Utreexo metadata (version flags for upgrade tracking).
@@ -579,6 +583,9 @@ public:
     StatusOr<std::pair<int, std::vector<uint8_t>>>
     getLatestUtreexoCheckpointAtOrBelow(int height) const;
     StatusOr<std::vector<int>> listUtreexoCheckpoints() const;
+    // One seek; retention must not enumerate every multi-megabyte value just
+    // to find the oldest anchor in a dense historical checkpoint database.
+    StatusOr<std::pair<int, std::vector<uint8_t>>> getEarliestUtreexoCheckpoint() const;
 
     // Iteration helpers
     Status forEachHeaderHeight(std::function<bool(int height, const uint256& hash)> callback) const;

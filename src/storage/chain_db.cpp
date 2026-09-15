@@ -1892,8 +1892,10 @@ Status ChainDB::putUtreexoCheckpointWithChecksum(const ChainWriteToken& token, i
     return convertRocksDBStatus(status);
 }
 
-Status ChainDB::deleteUtreexoCheckpointWithChecksum(const ChainWriteToken& token, int height) {
+Status ChainDB::deleteUtreexoCheckpointWithChecksum(const ChainWriteToken& token, int height,
+                                                   rocksdb::WriteBatch* wb) {
     if (!db_) return Status::Internal;
+    if (height < 0) return Status::Invalid;
     (void)token;
 
     // Build both keys
@@ -1913,6 +1915,13 @@ Status ChainDB::deleteUtreexoCheckpointWithChecksum(const ChainWriteToken& token
     csum_key.push_back((height >> 8) & 0xFF);
     csum_key.push_back(height & 0xFF);
 
+    // Both keys must ride the same caller-owned commit during retention.
+    if (wb) {
+        wb->Delete(cf_[idx_utreexo_].get(), ckpt_key);
+        wb->Delete(cf_[idx_utreexo_].get(), csum_key);
+        return Status::Ok;
+    }
+
     // Atomic delete of both
     rocksdb::WriteBatch batch;
     batch.Delete(cf_[idx_utreexo_].get(), ckpt_key);
@@ -1920,6 +1929,39 @@ Status ChainDB::deleteUtreexoCheckpointWithChecksum(const ChainWriteToken& token
 
     auto status = db_->Write(rocksdb::WriteOptions(), &batch);
     return convertRocksDBStatus(status);
+}
+
+StatusOr<std::pair<int, std::vector<uint8_t>>> ChainDB::getEarliestUtreexoCheckpoint() const {
+    if (!db_) return Status::Internal;
+    rocksdb::ReadOptions options;
+    options.fill_cache = false;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(options, cf_[idx_utreexo_].get()));
+    const std::string start(5, '\0');
+    std::string key = start;
+    key[0] = PREFIX_UTREEXO_CHECKPOINT;
+    it->Seek(key);
+    if (!it->status().ok()) return convertRocksDBStatus(it->status());
+    if (!it->Valid() || it->key().size() != 5 || it->key()[0] != PREFIX_UTREEXO_CHECKPOINT) {
+        return Status::NotFound;
+    }
+    uint32_t height = 0;
+    for (size_t i = 1; i < 5; ++i) {
+        height = (height << 8) | static_cast<uint8_t>(it->key()[i]);
+    }
+    if (height > static_cast<uint32_t>(INT32_MAX)) return Status::Corruption;
+    const auto value = it->value();
+    return std::make_pair(static_cast<int>(height),
+                         std::vector<uint8_t>(value.data(), value.data() + value.size()));
+}
+
+Status ChainDB::compactUtreexoForTesting() {
+    if (!db_) return Status::Internal;
+    rocksdb::FlushOptions flush_options;
+    flush_options.wait = true;
+    auto status = db_->Flush(flush_options, cf_[idx_utreexo_].get());
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return convertRocksDBStatus(db_->CompactRange(
+        rocksdb::CompactRangeOptions(), cf_[idx_utreexo_].get(), nullptr, nullptr));
 }
 
 StatusOr<std::vector<uint8_t>> ChainDB::getUtreexoChecksum(int height) const {
