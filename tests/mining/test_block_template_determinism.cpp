@@ -126,6 +126,47 @@ TEST_F(BlockTemplateDeterminismTest, RemovalSetTracksDirectSpenderAndDescendants
     EXPECT_TRUE(removal.count(unrelated.GetTxid().AsUint256()) == 0);
 }
 
+// Request exclusions must remove descendants even if selection changes order,
+// and must not remove ancestors, siblings or independent zero-input bundles.
+TEST_F(BlockTemplateDeterminismTest, RequestExclusionsRemoveOnlyDescendantClosure) {
+    auto make_tx = [](int value, const dinero::Transaction* parent = nullptr) {
+        dinero::Transaction tx;
+        tx.version = dinero::Transaction::TX_VERSION_SEGWIT;
+        tx.witness_version = 0xFF;
+        if (parent) {
+            tx.vin.resize(1);
+            tx.vin[0].prevout = dinero::TxOutPoint(parent->GetTxid(), 0);
+        }
+        tx.vout.resize(1);
+        tx.vout[0].value = dinero::AmountUna::Una(value);
+        tx.vout[0].scriptPubKey = {0x51};
+        return tx;
+    };
+    const auto parent = make_tx(1000);
+    const auto child = make_tx(900, &parent);
+    const auto grandchild = make_tx(800, &child);
+    const auto sibling = make_tx(700, &parent);
+    const auto unrelated = make_tx(600);
+    const std::vector<dinero::Transaction> candidates = {grandchild, unrelated, child, sibling, parent};
+    auto filtered = dinero::FilterExcludedTemplateTransactions(candidates, {child.GetTxid().AsUint256()});
+    ASSERT_EQ(filtered.size(), 3u);
+    EXPECT_EQ(filtered[0].GetTxid(), unrelated.GetTxid());
+    EXPECT_EQ(filtered[1].GetTxid(), sibling.GetTxid());
+    EXPECT_EQ(filtered[2].GetTxid(), parent.GetTxid());
+    filtered = dinero::FilterExcludedTemplateTransactions(candidates, {parent.GetTxid().AsUint256()});
+    ASSERT_EQ(filtered.size(), 1u);
+    EXPECT_EQ(filtered[0].GetTxid(), unrelated.GetTxid());
+    // Empty and unknown exclusion lists preserve selection and order.
+    for (const auto& exclusions : std::vector<std::unordered_set<dinero::uint256>>{{}, {dinero::uint256()}}) {
+        filtered = dinero::FilterExcludedTemplateTransactions(candidates, exclusions);
+        ASSERT_EQ(filtered.size(), candidates.size());
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            EXPECT_EQ(filtered[i].GetTxid(), candidates[i].GetTxid());
+        }
+    }
+    EXPECT_TRUE(dinero::FilterExcludedTemplateTransactions({}, {parent.GetTxid().AsUint256()}).empty());
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // BT1: Same mempool state → same transaction set selected
 // ═══════════════════════════════════════════════════════════════════════════

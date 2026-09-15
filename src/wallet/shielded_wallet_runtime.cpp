@@ -997,7 +997,8 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
                                                uint64_t note_leaf_index,
                                                uint64_t fee_una,
                                                dinero::WalletManager& wallet,
-                                               bool persist) {
+                                               bool persist,
+                                               std::optional<UnshieldAutoFee> auto_fee) {
     std::lock_guard<std::mutex> lock(g_runtime_mutex);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
@@ -1064,7 +1065,7 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
     input.key_scheme  = note.key_scheme;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
-    auto built = BuildUnshieldBundleForTx(tx, input, fee_una, cv_bound);
+    auto built = BuildUnshieldBundleForTx(tx, input, fee_una, cv_bound, auto_fee);
     if (built.status != OpStatus::Ok) {
         return built;
     }

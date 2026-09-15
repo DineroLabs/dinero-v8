@@ -43,6 +43,11 @@ std::unordered_set<uint256> CollectTemplatePoisonRemovalSet(
     const OutPoint& missing_prevout,
     std::unordered_set<uint256>* direct_spenders = nullptr
 );
+// Request-local exclusion closure; preserves candidate order and mempool state.
+std::vector<Transaction> FilterExcludedTemplateTransactions(
+    const std::vector<Transaction>& candidate_txs,
+    const std::unordered_set<uint256>& excluded_txids
+);
 std::vector<Transaction> FilterChainBackedTemplateTransactions(
     const std::vector<Transaction>& candidate_txs,
     const std::function<bool(const OutPoint&)>& has_chain_utxo,
@@ -295,7 +300,9 @@ public:
      * @param coinbase_address Address to receive coinbase reward + fees
      * @return Complete block template ready for mining, or nullptr on failure
      */
-    std::unique_ptr<Block> CreateNewBlock(const std::string& coinbase_address);
+    std::unique_ptr<Block> CreateNewBlock(
+        const std::string& coinbase_address,
+        const std::unordered_set<uint256>& excluded_txids = {});
 
     /**
      * @brief Get statistics from the last CreateNewBlock() call

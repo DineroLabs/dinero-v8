@@ -2354,7 +2354,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
       COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
     set_tests_properties(ShieldedAuthRelayLifecycle PROPERTIES
       ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
-      LABELS "integration;shielded;p2p;wallet;restart;reorg;mandatory"
+      LABELS "integration;shielded;p2p;wallet;utreexo;dnrs;restart;reorg;mandatory"
       TIMEOUT 2400 RUN_SERIAL TRUE)
     message(STATUS "  ✓ ShieldedAuthRelayLifecycle registered")
 endif()
