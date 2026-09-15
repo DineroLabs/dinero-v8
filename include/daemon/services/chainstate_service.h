@@ -676,6 +676,10 @@ public:
     // Defer block download while the bootstrap is Pending (awaiting base hash)
     // OR Loading (a thread is importing the snapshot) — never connect blocks
     // concurrently with the load.
+    // See started_flag_: true once Start() completes, false after Stop().
+    // Safe to poll from any thread.
+    bool IsStarted() const { return started_flag_.load(); }
+
     bool IsSnapshotBootstrapPending() const {
         const auto s = snapshot_bootstrap_state_.load();
         return s == SnapshotBootstrapState::Pending || s == SnapshotBootstrapState::Loading;
@@ -1557,6 +1561,16 @@ private:
 
     std::string datadir_;
     bool started_ = false;
+    // Thread-safe mirror of started_ for cross-thread readiness checks
+    // (issue #751): the download scheduler's drain thread can begin ticking
+    // before this service finishes Start(), and ProcessIncomingStoredBlock's
+    // "service not started" guard returns TEMPORARY_FAIL for that entire
+    // window — escalating a false "#371 storage wedge" alarm after 50 ticks.
+    // started_ itself is plain-bool and read/written under this service's own
+    // lock discipline elsewhere; this flag exists solely so IsStarted() can be
+    // polled from a different thread without taking that lock or depending on
+    // its context.
+    std::atomic<bool> started_flag_{false};
 
     // Phase C.1 v2: P2P service for block broadcasting
     std::shared_ptr<class P2PService> p2p_service_;
