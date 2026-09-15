@@ -62,6 +62,7 @@
 #     is needed — the whole heal is unattended P2P.
 #
 set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/helpers/failure_log_capture.sh"
 
 # Resolve dinerod: honour $DINEROD when set (and require it to be
 # executable), else fall back to the in-tree build for manual runs.
@@ -105,6 +106,9 @@ fail() {
     for d in "$SRC_DIR" "$AD_DIR" "$B_DIR" "$C_DIR" "$F_DIR"; do
         for lg in "$d"/daemon*.log; do
             [[ -f "$lg" ]] || continue
+            dinero_dump_log_matches "$lg" \
+                'bind\(\)|bound to port|successfully listening|Failed to create listen socket|Handshake|handshake|Added seed node|banned peer' \
+                "$lg P2P setup" 40 >&2
             printf -- '--- tail %s ---\n' "$lg" >&2
             tail -50 "$lg" >&2 || true
         done
@@ -195,15 +199,39 @@ wait_status() {  # <rpcport> <datadir> <jq-bool-expr over snapshot_bootstrap> <t
 }
 
 connect_source() {  # <rpcport> <datadir> <node-desc> — addnode + wait for the link
-    local port="$1" datadir="$2" desc="$3" i conns=0
-    rpc "$port" "$datadir" addnode "[\"127.0.0.1:${SRC_P2P}\",\"add\"]" >/dev/null || true
-    rpc "$port" "$datadir" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null || true
+    local port="$1" datadir="$2" desc="$3" i source_net source_port endpoint peers reply action
+    # RPC readiness does not imply that --port was available. The daemon can
+    # bind a fallback port; discover its actual listener through the source's
+    # authenticated RPC instead of dialing a stale requested port forever.
+    source_net="$(rpc "$SRC_RPC" "$SRC_DIR" getnetworkinfo)" \
+        || fail "$desc could not query the source P2P listener"
+    printf '%s\n' "$source_net" > "$SRC_DIR/replay-network.json"
+    source_port="$(jq -er '
+        select(.error == null and .result.networkactive == true and .result.listen == true)
+        | .result.listen_port | numbers | select(. > 0 and . <= 65535 and . == floor)
+        ' <<<"$source_net")" || fail "source has no active P2P listener: $source_net"
+    endpoint="127.0.0.1:${source_port}"
+    info "source P2P listener: $endpoint (requested port $SRC_P2P)"
+    for action in add onetry; do
+        reply="$(rpc "$port" "$datadir" addnode "[\"$endpoint\",\"$action\"]")" \
+            || fail "$desc addnode $action RPC failed"
+        printf '%s\n' "$reply" > "$datadir/replay-addnode-$action.json"
+        jq -e '.error == null and .result.error == null' <<<"$reply" >/dev/null \
+            || fail "$desc addnode $action returned an error: $reply"
+    done
     for i in $(seq 1 30); do
-        conns="$(rpc "$port" "$datadir" getconnectioncount | jq -r '.result // 0')"
-        [[ "$conns" -ge 1 ]] && return 0
+        peers="$(rpc "$port" "$datadir" getpeerinfo)" \
+            || fail "$desc getpeerinfo RPC failed"
+        printf '%s\n' "$peers" > "$datadir/replay-peers.json"
+        if jq -e --arg endpoint "$endpoint" \
+            'any(.result[]?; .addr == $endpoint and .inbound == false and .connected == true)' \
+            <<<"$peers" >/dev/null; then
+            return 0
+        fi
         sleep 1
     done
-    fail "$desc could not connect to the source peer"
+    rpc "$port" "$datadir" getnetworkinfo > "$datadir/replay-network.json" || true
+    fail "$desc could not connect to the source peer $endpoint (last peers: $peers)"
 }
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -521,8 +549,7 @@ jq -e '.result.coins_written >= 1' <<<"$DUMP2_RES" >/dev/null || fail "second du
 # blockcount: while the lifecycle is active the #353-bug-2 hold keeps the
 # CONNECTED tip pinned at the snapshot base, but headers sync independently, so
 # the new base header still becomes known.
-rpc "$C_RPC" "$C_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"add\"]" >/dev/null || true
-rpc "$C_RPC" "$C_DIR" addnode "[\"127.0.0.1:${SRC_P2P}\",\"onetry\"]" >/dev/null || true
+connect_source "$C_RPC" "$C_DIR" "nodeC"
 NEW_TIP=$((BASE + 5))
 for i in $(seq 1 60); do
     H="$(rpc "$C_RPC" "$C_DIR" getblockchaininfo | jq -r '.result.headers // 0')"
