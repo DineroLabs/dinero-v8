@@ -12881,3 +12881,12 @@ add_test(NAME MetalBuildDefault
     -DCOMPONENTS_FILE=${CMAKE_SOURCE_DIR}/cmake/OptionalComponents.cmake
     -P ${CMAKE_SOURCE_DIR}/tests/test_metal_build_default.cmake)
 set_tests_properties(MetalBuildDefault PROPERTIES LABELS "build;miner;regression" TIMEOUT 30)
+
+# Real RPC/assembler regression: request-local exclusions, fee accounting and
+# accepted DNRS-enforced blocks. Keep in ordinary mining/consensus CI lanes.
+add_test(NAME MiningTemplateExclusions
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_template_exclusions.py)
+set_tests_properties(MiningTemplateExclusions PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "mining;consensus"
+    TIMEOUT 180)
