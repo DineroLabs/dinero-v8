@@ -140,7 +140,18 @@ ctest --test-dir build-cost -R '^CSNShieldedReorgInvertibility$' --output-on-fai
 ```
 
 Local raw logs and baseline binaries are retained in `build-cost/evidence/`.
-This patch has not been deployed; Linux qualification remains a release gate.
+This patch has not been deployed.
+
+Native Ubuntu 24.04 x86_64 qualification passed at
+`5ef4c0ba5277eab9c8e6724d3d725ce76224947b` in
+[run 34992010013](https://github.com/DineroLabs/dinero-v8/actions/runs/34992010013).
+The automatic-fee RPC observations were **24.767 seconds baseline / 14.159
+seconds optimized** (42.8% lower elapsed time), with the same **75,745 vbytes /
+75,761-una fee**. The 48-case validation suite, all four stateless reorg legs,
+and both baseline/candidate Auth lifecycles against the unchanged 8.1.13 peer
+passed. The separate readiness workflow passed 16 suites; protocol and state
+vectors passed on Linux x86_64 and arm64. These timings are individual
+observations, not performance thresholds.
 
 The `Unshield qualification` GitHub Actions workflow repeats these gates on
 native Ubuntu 24.04. It builds the candidate and pinned baseline
@@ -149,6 +160,10 @@ checks the OpenSSL pin and fleet dynamic-library allow-list, runs shielded
 validation and CSN reorg tests, then runs both baseline and optimized wallets
 against the unchanged baseline mining peer. Commit/binary identities, full
 test logs and comparative RPC observations are retained as workflow artifacts.
+The integration gate also explicitly runs `GenesisInvariants`,
+`BlockTemplateDeterminism` and `MiningTemplateExclusions` against both the
+pinned prerequisite and the candidate. A new integration head must pass these
+checks before merge.
 The workflow has read-only repository permissions and performs no release or
 deployment.
 

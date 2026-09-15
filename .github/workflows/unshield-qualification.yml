@@ -93,12 +93,22 @@ jobs:
               2>&1 | tee "evidence/configure-$variant.log"
           done
 
-      - name: Build unchanged peer
-        run: cmake --build ../baseline/build-unshield --target dinerod -j"$(nproc)" 2>&1 | tee evidence/build-baseline.log
+      - name: Build unchanged peer and invariant tests
+        run: |
+          cmake --build ../baseline/build-unshield --target dinerod test_genesis_invariants test_block_template_determinism \
+            -j"$(nproc)" 2>&1 | tee evidence/build-baseline.log
+
+      - name: Qualify prerequisite genesis and template exclusions
+        run: |
+          ctest --test-dir ../baseline/build-unshield --no-tests=error --output-on-failure \
+            -R '^(GenesisInvariants|BlockTemplateDeterminism|MiningTemplateExclusions)$' \
+            --output-junit "$PWD/evidence/baseline-ctest.xml" 2>&1 | tee evidence/baseline-ctest.log
+          cp ../baseline/build-unshield/Testing/Temporary/LastTest.log evidence/baseline-ctest-details.log
 
       - name: Build candidate and regression tests
         run: |
           cmake --build build-unshield --target dinerod test_shielded_validation shielded_tx_builder \
+            test_genesis_invariants test_block_template_determinism \
             -j"$(nproc)" 2>&1 | tee evidence/build-candidate.log
           sha256sum build-unshield/dinerod ../baseline/build-unshield/dinerod > evidence/binary-sha256.txt
           bash scripts/ci/check_openssl_version.sh build-unshield 3.5.7
@@ -112,10 +122,10 @@ jobs:
             done < evidence/needed-current.txt
           done
 
-      - name: Validate shielded fees and stateless reorg behavior
+      - name: Validate genesis, templates, shielded fees and stateless reorg behavior
         run: |
           ctest --test-dir build-unshield --no-tests=error --output-on-failure \
-            -R '^(ShieldedValidation|CSNShieldedReorgInvertibility)$' \
+            -R '^(GenesisInvariants|BlockTemplateDeterminism|MiningTemplateExclusions|ShieldedValidation|CSNShieldedReorgInvertibility)$' \
             --output-junit "$PWD/evidence/ctest.xml" 2>&1 | tee evidence/ctest.log
           cp build-unshield/Testing/Temporary/LastTest.log evidence/ctest-details.log
 
