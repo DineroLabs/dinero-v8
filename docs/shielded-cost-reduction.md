@@ -142,6 +142,16 @@ ctest --test-dir build-cost -R '^CSNShieldedReorgInvertibility$' --output-on-fai
 Local raw logs and baseline binaries are retained in `build-cost/evidence/`.
 This patch has not been deployed; Linux qualification remains a release gate.
 
+The `Unshield qualification` GitHub Actions workflow repeats these gates on
+native Ubuntu 24.04. It builds the candidate and pinned baseline
+`06a7ff369569c3a3d95e446578aed737d256ee6e` with matching headless release flags,
+checks the OpenSSL pin and fleet dynamic-library allow-list, runs shielded
+validation and CSN reorg tests, then runs both baseline and optimized wallets
+against the unchanged baseline mining peer. Commit/binary identities, full
+test logs and comparative RPC observations are retained as workflow artifacts.
+The workflow has read-only repository permissions and performs no release or
+deployment.
+
 ## Next cost work
 
 1. Use the one-pass unshield change as the first wallet optimization, then

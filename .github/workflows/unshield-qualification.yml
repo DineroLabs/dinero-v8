@@ -1,0 +1,140 @@
+name: Unshield qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/unshield-qualification.yml'
+      - 'include/wallet/shielded_wallet_ops.h'
+      - 'src/wallet/shielded_wallet_ops.cpp'
+      - 'src/wallet/shielded_wallet_runtime.cpp'
+      - 'src/rpc/shielded_rpc_json.cpp'
+      - 'src/test/shielded_validation_tests.cpp'
+      - 'tests/integration/test_shielded_auth_relay_lifecycle.sh'
+      - 'tests/integration/test_csn_shielded_reorg_invertibility.sh'
+      - 'tests/integration/CMakeLists.txt'
+      - 'tests/CMakeLists.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unshield-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux unshield and Utreexo compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: candidate
+    steps:
+      - name: Checkout candidate commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          submodules: recursive
+
+      - name: Checkout unchanged 8.1.13 peer
+        uses: actions/checkout@v4
+        with:
+          ref: 06a7ff369569c3a3d95e446578aed737d256ee6e
+          path: baseline
+          submodules: recursive
+
+      - name: Install build and regtest dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache pkg-config python3 perl \
+            curl jq lsof ripgrep libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache compiler outputs
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: unshield-qualification-linux
+          max-size: 1G
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            candidate/third_party/openssl-3.5.7
+            candidate/third_party/bulletproofs_ffi/target
+            baseline/third_party/bulletproofs_ffi/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: unshield-vendored-${{ runner.os }}-${{ hashFiles('candidate/scripts/build-openssl-vendored.sh', 'candidate/third_party/bulletproofs_ffi/Cargo.lock') }}
+
+      - name: Build pinned vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      - name: Configure both binaries with identical headless release flags
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/candidate-commit.txt
+          git -C ../baseline rev-parse HEAD > evidence/baseline-commit.txt
+          test "$(cat evidence/baseline-commit.txt)" = 06a7ff369569c3a3d95e446578aed737d256ee6e
+          for variant in baseline candidate; do
+            cmake -S "$GITHUB_WORKSPACE/$variant" -B "$GITHUB_WORKSPACE/$variant/build-unshield" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DENABLE_TESTS=ON \
+              -DDINERO_BUILD_QT=OFF -DDINERO_BUILD_MINER=OFF -DDINERO_BUILD_SEEDER=OFF \
+              -DDINERO_USE_VENDORED_DEPS=ON -DENABLE_GRPC=OFF \
+              -DENABLE_GPU_MINING=OFF -DDINERO_ENABLE_PORTMAPPING=OFF \
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+              -DDINERO_VENDORED_OPENSSL_DIR="$GITHUB_WORKSPACE/candidate/third_party/openssl-3.5.7/prebuilt/linux-x86_64" \
+              2>&1 | tee "evidence/configure-$variant.log"
+          done
+
+      - name: Build unchanged peer
+        run: cmake --build ../baseline/build-unshield --target dinerod -j"$(nproc)" 2>&1 | tee evidence/build-baseline.log
+
+      - name: Build candidate and regression tests
+        run: |
+          cmake --build build-unshield --target dinerod test_shielded_validation shielded_tx_builder \
+            -j"$(nproc)" 2>&1 | tee evidence/build-candidate.log
+          sha256sum build-unshield/dinerod ../baseline/build-unshield/dinerod > evidence/binary-sha256.txt
+          bash scripts/ci/check_openssl_version.sh build-unshield 3.5.7
+          for binary in build-unshield/dinerod ../baseline/build-unshield/dinerod; do
+            objdump -p "$binary" | awk '/NEEDED/{print $2}' > evidence/needed-current.txt
+            while read -r library; do
+              case "$library" in
+                ld-linux-x86-64.so.2|libc.so.6|libgcc_s.so.1|libm.so.6|libstdc++.so.6|libudev.so.1) ;;
+                *) echo "Unexpected dynamic dependency: $binary $library"; exit 1 ;;
+              esac
+            done < evidence/needed-current.txt
+          done
+
+      - name: Validate shielded fees and stateless reorg behavior
+        run: |
+          ctest --test-dir build-unshield --no-tests=error --output-on-failure \
+            -R '^(ShieldedValidation|CSNShieldedReorgInvertibility)$' \
+            --output-junit "$PWD/evidence/ctest.xml" 2>&1 | tee evidence/ctest.log
+          cp build-unshield/Testing/Temporary/LastTest.log evidence/ctest-details.log
+
+      - name: Baseline and optimized wallets against unchanged peer
+        run: |
+          for variant in baseline candidate; do
+            DINEROD="$GITHUB_WORKSPACE/$variant/build-unshield/dinerod" \
+            PEER_DINEROD="$GITHUB_WORKSPACE/baseline/build-unshield/dinerod" \
+              bash tests/integration/test_shielded_auth_relay_lifecycle.sh \
+              2>&1 | tee "evidence/$variant-auth-relay.log"
+          done
+          # Timings are observations, never flaky correctness thresholds.
+          rg 'UNSHIELD_RPC' evidence/*-auth-relay.log | tee evidence/rpc-timings.txt
+          cat evidence/rpc-timings.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unshield-qualification-${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate/evidence
+          if-no-files-found: error
