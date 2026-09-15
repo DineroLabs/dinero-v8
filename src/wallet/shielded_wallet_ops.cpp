@@ -21,6 +21,7 @@
 #include <openssl/crypto.h>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 
 namespace dinero::wallet::shielded_ops {
@@ -283,8 +284,15 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
 AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
                                               uint64_t fee_una,
-                                              bool cv_bound) {
+                                              bool cv_bound,
+                                              std::optional<UnshieldAutoFee> auto_fee) {
     AttachUnshieldResult out;
+    if (auto_fee && (!std::isfinite(auto_fee->min_fee_rate) || auto_fee->min_fee_rate < 0)) {
+        out.status = OpStatus::InvalidParams; out.error = "invalid_min_fee_rate"; return out;
+    }
+    if (auto_fee && (!tx.HasExplicitFee() || tx.GetExplicitFee() != fee_una)) {
+        out.status = OpStatus::InvalidParams; out.error = "unshield_explicit_fee_mismatch"; return out;
+    }
     if (note.key_scheme == NoteKeyScheme::PrivateCovenant) {
         out.status = OpStatus::InvalidParams; out.error = "private_covenant_requires_contract_spend"; return out;
     }
@@ -394,7 +402,8 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
     planned.nonce       = RandomHash();
 
     // 4. Compute transparent-envelope sighash (commits to vout, locktime,
-    //    version, explicit_fee — recipient swap or fee tweak invalidates).
+    //    version — recipient swap or payout tweak invalidates). The value
+    //    balance check separately enforces the explicit fee.
     const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
 
     // 5. Build bundle: one spend, zero outputs, value_balance = -note_value.
@@ -420,14 +429,51 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
         out.error = "bundle_serialization_failed";
         return out;
     }
-    tx.shielded_bundle_bytes = std::move(bundle_bytes);
-    if (auth_resources && !sh::CheckTxResourceEnvelope(tx, true, out.error)) {
-        tx.shielded_bundle_bytes.clear();
+    // Keep the caller's envelope untouched on failure. Only the final tx may
+    // reach persistence, txid calculation, or Utreexo output construction.
+    auto finalized = tx;
+    finalized.shielded_bundle_bytes = std::move(bundle_bytes);
+    if (auto_fee) {
+        const auto measured_vsize = finalized.GetVirtualSize();
+        const double floor_fee = std::ceil(auto_fee->min_fee_rate *
+                                          static_cast<double>(measured_vsize));
+        if (!std::isfinite(floor_fee) || floor_fee >= static_cast<double>(
+                std::numeric_limits<uint64_t>::max() - kFeeSizingMarginUna)) {
+            out.status = OpStatus::InvalidParams; out.error = "fee_too_large"; return out;
+        }
+        const uint64_t required = static_cast<uint64_t>(floor_fee) + kFeeSizingMarginUna;
+        out.fee_una = std::max(fee_una, required);
+        if (out.fee_una >= note.value_una) {
+            out.status = OpStatus::InvalidParams; out.error = "fee_too_large"; return out;
+        }
+        if (note.value_una - out.fee_una < auto_fee->minimum_recipient_una) {
+            out.status = OpStatus::InvalidParams; out.error = "dust_recipient"; return out;
+        }
+        if (out.fee_una != fee_una) {
+            finalized.vout[0].value = dinero::AmountUna::Una(note.value_una - out.fee_una);
+            finalized.SetExplicitFee(out.fee_una);
+            // Ordinary unshield: one spend, zero shielded outputs, so bsk=rcv.
+            // The spend witness, cv, range proof and value balance are unchanged.
+            // Private covenants can bind tx context and are rejected above.
+            const auto sighash = sh::ComputeBindingSighash(bundle,
+                sh::ComputeShieldedTxSighash(finalized));
+            if (sh::SignBinding(rcv, sighash, bundle.binding_sig) != sh::BindingSigResult::Ok) {
+                out.status = OpStatus::InternalError; out.error = "binding_signature_failed"; return out;
+            }
+            finalized.shielded_bundle_bytes = sh::SerializeShieldedBundle(bundle);
+            // Payout, explicit fee, and binding signature are all fixed width.
+            if (finalized.GetVirtualSize() != measured_vsize) {
+                out.status = OpStatus::InternalError; out.error = "unshield_fee_size_changed"; return out;
+            }
+        }
+    } else {
+        out.fee_una = fee_una;
+    }
+    if (auth_resources && !sh::CheckTxResourceEnvelope(finalized, true, out.error)) {
         out.status = OpStatus::InvalidParams;
         return out;
     }
-
-
+    tx = std::move(finalized);
     out.status       = OpStatus::Ok;
     out.nullifier    = spi.nullifier;
     out.anchor       = spi.anchor;

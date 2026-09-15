@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -1029,6 +1030,140 @@ TEST_F(ShieldedValidationFixture, SizeAwareFeeCoversMempoolFloorForUnshield) {
     EXPECT_GE(final_fee, mempool_floor(tx))
         << "size-aware fee still underpays: fee=" << final_fee
         << " vsize=" << tx.GetVirtualSize();
+}
+
+static wallet::shielded_ops::UnshieldNoteInput AutoFeeAuthNote(CommitmentTree& tree) {
+    std::array<uint8_t, 64> seed{};
+    seed[0] = 0x51;
+    const auto keys = wallet::shielded::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    const auto addr = wallet::shielded::DeriveDiversifiedAddress(
+        keys, 7, wallet::shielded::kHrpRegtest);
+    wallet::shielded_ops::UnshieldNoteInput note;
+    note.secret_key = wallet::shielded::DeriveDiversifiedSpendKey(keys.ask, keys.ak, addr.d).s;
+    note.nullifier_key = wallet::shielded::DeriveDiversifiedNullifierKey(keys.nvk, addr.d);
+    std::copy(addr.d.begin(), addr.d.end(), note.d.begin());
+    note.randomness = MakeHash(0xD1, 0xA5);
+    note.value_una = 100'000'000;
+    note.key_scheme = wallet::NoteKeyScheme::Auth;
+    note.leaf_index = tree.Append(NoteCommitment(note.d,
+        AuthRecipientCommitmentKey(addr.pk_d_spend, addr.nfk_commitment),
+        ValueAsHash(note.value_una), note.randomness));
+    note.anchor = tree.Root();
+    note.merkle_path = tree.GetAuthPath(note.leaf_index)->siblings;
+    return note;
+}
+
+TEST_F(ShieldedValidationFixture, UnshieldAutoFeeBindsFinalEnvelopeAndRoundtrips) {
+    namespace ops = wallet::shielded_ops;
+    auto note = AutoFeeAuthNote(tree);
+    auto tx = MakeUnshieldEnvelope(note.value_una - 1000, 1000, 0xD2);
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    const auto provisional = tx;
+    const auto built = ops::BuildUnshieldBundleForTx(tx, note, 1000, true,
+        ops::UnshieldAutoFee{1.0, 546});
+    ASSERT_EQ(built.status, ops::OpStatus::Ok) << built.error;
+    EXPECT_GT(tx.GetExplicitFee(), 1000u);
+    EXPECT_EQ(tx.GetExplicitFee(), ops::RequiredFeeForTx(tx, 1.0));
+    EXPECT_EQ(built.fee_una, tx.GetExplicitFee());
+    EXPECT_EQ(tx.vout[0].value.GetUna() + built.fee_una, note.value_una);
+    EXPECT_EQ(tx.vout[0].scriptPubKey, provisional.vout[0].scriptPubKey);
+    EXPECT_TRUE(tx.vin.empty());
+
+    ShieldedBundle bundle;
+    ASSERT_EQ(DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle), BundleDecodeError::Ok);
+    ASSERT_EQ(bundle.spends.size(), 1u);
+    EXPECT_TRUE(bundle.outputs.empty());
+    EXPECT_EQ(bundle.spends[0].zk_proof[0], 0x06);
+    EXPECT_EQ(bundle.value_balance, -static_cast<int64_t>(note.value_una));
+    auto context = BuildShieldedValidationContext(tx, &nullifier_set, &tree,
+        101, bundle.value_balance, 0, nullptr, 0, 0, 2);
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::Ok);
+
+    dinero::Transaction decoded;
+    ASSERT_TRUE(dinero::TransactionSerializer::Deserialize(decoded, tx.Serialize(true)));
+    EXPECT_EQ(decoded.GetTxid(), tx.GetTxid());
+    EXPECT_EQ(decoded.Serialize(true), tx.Serialize(true));
+    // Reusing the bundle in the provisional envelope must fail. No proof or
+    // Utreexo outpoint may be published under the provisional transaction id.
+    auto old_envelope = provisional;
+    old_envelope.shielded_bundle_bytes = tx.shielded_bundle_bytes;
+    EXPECT_EQ(old_envelope.GetVirtualSize(), tx.GetVirtualSize());
+    EXPECT_NE(old_envelope.GetTxid(), tx.GetTxid());
+    EXPECT_EQ(VerifyBinding(bundle, ComputeShieldedTxSighash(old_envelope)),
+        BindingSigResult::SignatureInvalid);
+    for (int mutation = 0; mutation < 3; ++mutation) {
+        auto tampered = tx;
+        if (mutation == 0) tampered.vout[0].scriptPubKey.back() ^= 1;
+        if (mutation == 1) tampered.vout[0].value = dinero::AmountUna::Una(tx.vout[0].value.GetUna() + 1);
+        if (mutation == 2) tampered.SetExplicitFee(built.fee_una + 1);
+        EXPECT_NE(tampered.GetTxid(), tx.GetTxid());
+        auto tampered_context = BuildShieldedValidationContext(tampered, &nullifier_set, &tree,
+            101, -static_cast<int64_t>(tampered.vout[0].value.GetUna() + tampered.GetExplicitFee()),
+            0, nullptr, 0, 0, 2);
+        EXPECT_NE(ValidateShieldedBundle(bundle, tampered_context), ShieldedValidationError::Ok);
+    }
+}
+
+TEST_F(ShieldedValidationFixture, UnshieldAutoFeeFailureLeavesEnvelopeUntouched) {
+    namespace ops = wallet::shielded_ops;
+    auto note = AutoFeeAuthNote(tree);
+    auto tx = MakeUnshieldEnvelope(note.value_una - 1000, 1000, 0xD2);
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    const auto original = tx.Serialize(true);
+    for (const auto policy : {ops::UnshieldAutoFee{1.0, note.value_una - 1000},
+                               ops::UnshieldAutoFee{100'000.0, 546},
+                               ops::UnshieldAutoFee{std::numeric_limits<double>::max(), 546}}) {
+        const auto built = ops::BuildUnshieldBundleForTx(tx, note, 1000, true, policy);
+        EXPECT_EQ(built.status, ops::OpStatus::InvalidParams);
+        EXPECT_EQ(built.error, policy.min_fee_rate == 1.0 ? "dust_recipient" : "fee_too_large");
+        EXPECT_EQ(tx.Serialize(true), original);
+    }
+}
+
+TEST_F(ShieldedValidationFixture, UnshieldAutoFeeKeepsMinimumForZeroRate) {
+    namespace ops = wallet::shielded_ops;
+    auto note = AutoFeeAuthNote(tree);
+    auto tx = MakeUnshieldEnvelope(note.value_una - 1000, 1000, 0xD2);
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    const auto built = ops::BuildUnshieldBundleForTx(tx, note, 1000, true,
+        ops::UnshieldAutoFee{0.0, 546});
+    ASSERT_EQ(built.status, ops::OpStatus::Ok) << built.error;
+    EXPECT_EQ(built.fee_una, 1000u);
+    EXPECT_EQ(tx.GetExplicitFee(), 1000u);
+    EXPECT_EQ(tx.vout[0].value.GetUna(), note.value_una - 1000);
+    ShieldedBundle bundle;
+    ASSERT_EQ(DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle), BundleDecodeError::Ok);
+    const auto context = BuildShieldedValidationContext(tx, &nullifier_set, &tree,
+        101, bundle.value_balance, 0, nullptr, 0, 0, 2);
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::Ok);
+}
+
+TEST_F(ShieldedValidationFixture, UnshieldAutoFeeRejectsInvalidRateBeforeProving) {
+    namespace ops = wallet::shielded_ops;
+    // Deliberately no valid witness: policy errors must be caught before proof generation.
+    ops::UnshieldNoteInput note;
+    note.value_una = 100'000'000;
+    for (double rate : {-1.0, std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::quiet_NaN()}) {
+        auto tx = MakeUnshieldEnvelope(note.value_una - 1000, 1000, 0xD2);
+        const auto original = tx.Serialize(true);
+        const auto built = ops::BuildUnshieldBundleForTx(tx, note, 1000, true,
+            ops::UnshieldAutoFee{rate, 546});
+        EXPECT_EQ(built.status, ops::OpStatus::InvalidParams);
+        EXPECT_EQ(built.error, "invalid_min_fee_rate");
+        EXPECT_EQ(tx.Serialize(true), original);
+    }
+    auto tx = MakeUnshieldEnvelope(note.value_una - 1000, 1001, 0xD2);
+    const auto built = ops::BuildUnshieldBundleForTx(tx, note, 1000, true,
+        ops::UnshieldAutoFee{1.0, 546});
+    EXPECT_EQ(built.status, ops::OpStatus::InvalidParams);
+    EXPECT_EQ(built.error, "unshield_explicit_fee_mismatch");
+    note.key_scheme = wallet::NoteKeyScheme::PrivateCovenant;
+    tx.SetExplicitFee(1000);
+    const auto covenant = ops::BuildUnshieldBundleForTx(tx, note, 1000, true,
+        ops::UnshieldAutoFee{1.0, 546});
+    EXPECT_EQ(covenant.status, ops::OpStatus::InvalidParams);
+    EXPECT_EQ(covenant.error, "private_covenant_requires_contract_spend");
 }
 
 TEST_F(ShieldedValidationFixture, UnshieldHelperRejectsFeeGteValue) {

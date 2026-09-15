@@ -259,7 +259,15 @@ struct AttachUnshieldResult {
     consensus::shielded::Hash nullifier{};
     consensus::shielded::Hash anchor{};
     uint64_t bundle_bytes = 0;
+    uint64_t fee_una = 0;
     std::string error;
+};
+
+/// Wallet policy only. Ordinary unshield proofs do not bind the transparent
+/// payout; the binding signature must be refreshed after sizing its fee.
+struct UnshieldAutoFee {
+    double min_fee_rate = 0;
+    uint64_t minimum_recipient_una = 546;
 };
 
 /**
@@ -281,11 +289,17 @@ struct AttachUnshieldResult {
  * The binding sig commits to that exact transparent envelope. Any
  * downstream mutation of vout (recipient swap, value tweak) breaks
  * verification.
+ *
+ * With `auto_fee`, treat fee_una as a minimum: measure the attached bundle,
+ * adjust the payout and binding signature using the same spend proof, and
+ * return the final fee. Failure leaves tx unchanged. No prepared proof or
+ * binding secret escapes this call; private covenant notes are unsupported.
  */
 AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
                                               uint64_t fee_una,
-                                              bool cv_bound = false);
+                                              bool cv_bound = false,
+                                              std::optional<UnshieldAutoFee> auto_fee = std::nullopt);
 
 /**
  * Wallet-bound wrapper around `BuildUnshieldBundleForTx`. Looks up the
@@ -305,7 +319,8 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
                                                uint64_t note_leaf_index,
                                                uint64_t fee_una,
                                                dinero::WalletManager& wallet,
-                                               bool persist = true);
+                                               bool persist = true,
+                                               std::optional<UnshieldAutoFee> auto_fee = std::nullopt);
 
 /**
  * Coin selector for unshield: returns the smallest unspent confirmed note

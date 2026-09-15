@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Outgoing-view lifecycle rehearsal (dormant on production networks).
+# Auth outgoing-view lifecycle with Utreexo and DNRS enabled on regtest.
 #
 # Drives the paired regtest spend-authority/outgoing-view cutover and proves:
 #   provisional sender recovery -> lock -> recipient discovery while locked ->
@@ -14,6 +14,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=helpers/daemon_process_cleanup.sh
 source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
 DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
+PEER_DINEROD="${PEER_DINEROD:-${DINEROD}}"
 DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dinero_outgoing_recovery.XXXXXX")"
 LOG_FILE="${DATA_DIR}.log"
 PID=""
@@ -86,6 +87,7 @@ start_node() {
         --listen=1 --utreexo=1 --connect="127.0.0.1:${PEER_P2P}" \
         --consensus-shielded-epoch-reset-height=1 \
         --consensus-shielded-spend-auth-height=2 \
+        --consensus-state-commitment-height=3 \
         >>"${LOG_FILE}" 2>&1 &
     PID=$!
     wait_rpc || fail "daemon did not reach RPC readiness"
@@ -104,10 +106,11 @@ start_peer() {
     # Both nodes connect only to each other, never the regtest default seed.
     # Other agents may be running regtest daemons on this same machine.
     mkdir -p "${PEER_DIR}"
-    "${DINEROD}" --regtest --datadir="${PEER_DIR}" \
+    "${PEER_DINEROD}" --regtest --datadir="${PEER_DIR}" \
         --rpcport="${PEER_RPC}" --port="${PEER_P2P}" --wallet-socket-port="${PEER_WALLET}" \
         --listen=1 --utreexo=1 --connect="127.0.0.1:${P2P_PORT}" \
         --consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2 \
+        --consensus-state-commitment-height=3 \
         >>"${PEER_LOG}" 2>&1 &
     PEER_PID=$!
     ( DATA_DIR="${PEER_DIR}"; RPC_PORT="${PEER_RPC}"; PID="${PEER_PID}"; wait_rpc; ) \
@@ -144,7 +147,9 @@ peer_mine_tx() {
 
 command -v curl >/dev/null || fail "curl required"
 command -v jq >/dev/null || fail "jq required"
+command -v python3 >/dev/null || fail "python3 required"
 [[ -x "${DINEROD}" ]] || fail "dinerod missing: ${DINEROD}"
+[[ -x "${PEER_DINEROD}" ]] || fail "peer dinerod missing: ${PEER_DINEROD}"
 read -r RPC_PORT P2P_PORT WALLET_PORT < <(dinero_allocate_port_triplet)
 read -r PEER_RPC PEER_P2P PEER_WALLET < <(dinero_allocate_port_triplet)
 start_peer
@@ -247,15 +252,72 @@ pass "second same-datadir restart preserved recomputed history"
 # no spend scalar. Unlocking must hydrate `s` from ask + Poseidon(ak,d), verify
 # the independently stored nfk/composite ownership, and build a real proof.
 rpc_result wallet.unlock '["outgoing-lifecycle-pass",600]' >/dev/null
-SPEND="$(rpc_result wallet.unshield '{"amount_una":60000000,"fee_una":1000000}')"
+PRE_UNSHIELD_COMMIT="$(rpc_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')"
+START_MS="$(python3 -c 'import time; print(time.monotonic_ns() // 1000000)')"
+SPEND="$(rpc_result wallet.unshield '{"amount_una":60000000}')"
+END_MS="$(python3 -c 'import time; print(time.monotonic_ns() // 1000000)')"
+jq -e '.result.fee_autosized == true and .result.fee_una >= .result.vsize and
+    .result.recipient_una + .result.fee_una == 70000000' <<<"${SPEND}" >/dev/null \
+    || fail "unshield automatic fee or value conservation failed: ${SPEND}"
+info "UNSHIELD_RPC elapsed_ms=$((END_MS - START_MS)) fee_una=$(jq -r '.result.fee_una' <<<"${SPEND}") vsize=$(jq -r '.result.vsize' <<<"${SPEND}")"
+[[ "$(rpc_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')" == "${PRE_UNSHIELD_COMMIT}" ]] \
+    || fail "pending unshield changed the canonical Utreexo forest"
 SPEND_TXID="$(jq -r '.result.txid' <<<"${SPEND}")"
 [[ -n "${SPEND_TXID}" && "${SPEND_TXID}" != null ]] \
     || fail "unlocked recipient-authorized spend returned no txid: ${SPEND}"
+# Read while in the mempool; this fixture intentionally has no full txindex.
+PAYOUT="$(rpc_result getrawtransaction "[\"${SPEND_TXID}\",true]")"
 peer_mine_tx "${SPEND_TXID}"
 POST_SPEND="$(rpc_result wallet.listshielded '[]')"
 jq -e 'any(.result.notes[]; .value_una == 70000000 and .spent == true)' \
     <<<"${POST_SPEND}" >/dev/null \
     || fail "recipient note was not marked spent after unlock/hydration: ${POST_SPEND}"
 pass "unlock hydrated recipient-only spend authority and spent the locked-discovered note"
+
+# The FINAL txid and payout must identify a real accumulator leaf on both
+# nodes. The batch verifier needs the owning wallet's UTXO metadata; compare
+# the peer's canonical commitment and prove its consensus path via the child.
+assert_unshield_proof() {
+    local proofs verify
+    proofs="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]")"
+    jq -e '.result.successful == 1 and .result.failed == 0' <<<"${proofs}" >/dev/null \
+        || fail "unshield output did not enter Utreexo: ${proofs}"
+    verify="$(rpc_result blockchain.verifyutxoproofs_batch "$(jq -c '[.result.proofs]' <<<"${proofs}")")"
+    jq -e '.result.valid == 1 and .result.invalid == 0' <<<"${verify}" >/dev/null \
+        || fail "unshield output proof verification failed: ${verify}"
+}
+assert_unshield_proof
+UNSHIELD_BLOCK="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
+POST_UNSHIELD_COMMIT="$(rpc_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')"
+[[ -n "${POST_UNSHIELD_COMMIT}" && "${POST_UNSHIELD_COMMIT}" != null && "${POST_UNSHIELD_COMMIT}" != "${PRE_UNSHIELD_COMMIT}" ]] \
+    || fail "confirmed unshield did not change the Utreexo commitment"
+[[ "$(peer_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')" == "${POST_UNSHIELD_COMMIT}" ]] \
+    || fail "peer Utreexo commitment diverged"
+rpc_result blockchain.invalidateblock "[\"${UNSHIELD_BLOCK}\"]" >/dev/null
+[[ "$(rpc_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')" == "${PRE_UNSHIELD_COMMIT}" ]] \
+    || fail "disconnect did not restore the pre-unshield forest"
+rpc_result blockchain.reconsiderblock "[\"${UNSHIELD_BLOCK}\"]" >/dev/null
+wait_same_tip
+[[ "$(rpc_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')" == "${POST_UNSHIELD_COMMIT}" ]] \
+    || fail "reconnect did not restore the unshield forest"
+assert_unshield_proof
+pass "unshield output proof verifies; peer commitments match; disconnect/reconnect restores exact Utreexo commitments"
+
+# Spend that exact transparent output through ordinary wallet signing, relay,
+# proof-backed mining and block validation. Selection cannot mask a bad leaf.
+PAYOUT_SCRIPT="$(jq -r '.result.vout[0].scriptPubKey.hex' <<<"${PAYOUT}")"
+PAYOUT_DIN="$(jq -r '.result.recipient_una / 100000000' <<<"${SPEND}")"
+CHILD_DIN="$(jq -r '(.result.recipient_una - 10000) / 100000000' <<<"${SPEND}")"
+RAW_CHILD="$(rpc_result wallet.createrawtransaction "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}],{\"${MINER}\":${CHILD_DIN}}]" | jq -r '.result.hex')"
+SIGNED_CHILD="$(rpc_result wallet.signrawtransaction "[\"${RAW_CHILD}\",[{\"txid\":\"${SPEND_TXID}\",\"vout\":0,\"scriptPubKey\":\"${PAYOUT_SCRIPT}\",\"amount\":${PAYOUT_DIN}}]]")"
+jq -e '.result.complete == true' <<<"${SIGNED_CHILD}" >/dev/null || fail "unshield child signing failed: ${SIGNED_CHILD}"
+CHILD="$(rpc_result sendrawtransaction "[\"$(jq -r '.result.hex' <<<"${SIGNED_CHILD}")\"]")"
+CHILD_TXID="$(jq -r '.result | if type == "string" then . else .txid // .result end' <<<"${CHILD}")"
+[[ "${CHILD_TXID}" =~ ^[0-9a-f]{64}$ ]] || fail "child submission returned no txid: ${CHILD}"
+peer_mine_tx "${CHILD_TXID}"
+SPENT_PROOF="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]")"
+jq -e '.result.successful == 0 and .result.failed == 1' <<<"${SPENT_PROOF}" >/dev/null \
+    || fail "spent unshield output remained provable: ${SPENT_PROOF}"
+pass "transparent child consumed the unshield Utreexo leaf and both nodes accepted the block"
 
 echo "=== SUCCESS: two-node Auth transfer/recovery lifecycle ==="
