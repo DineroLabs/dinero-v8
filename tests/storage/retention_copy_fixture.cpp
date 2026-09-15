@@ -140,8 +140,11 @@ void Create(const fs::path& root, const std::vector<HeightState>& states) {
             "put sentinel failed");
     Require(db.setTip(token, Hash(kTip), kTip, dinero::arith_uint256(kTip)) == Status::Ok,
             "put tip failed");
-    Require(db.setValidatedTip(token, Hash(kTip), kTip) == Status::Ok,
-            "put validated tip failed");
+    const dinero::ChainDB::ForestTipMarker marker{
+        static_cast<int32_t>(kTip), Hash(kTip), states.back().header.utreexo_root};
+    Require(db.putForestTipMarker(token, marker) == Status::Ok, "put forest tip marker failed");
+    Require(db.getValidatedTip().status() == Status::NotFound,
+            "synthetic fixture must match daemon shape without legacy validated tip");
     db.close();
 
     sqlite3* sqlite = nullptr;

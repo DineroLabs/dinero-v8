@@ -41,7 +41,10 @@ eventually use a different policy; this patch does not change phone storage.
 
 For two consecutive retained checkpoints A and B:
 
-1. Freeze the database tip and require its validated tip to match.
+1. Freeze the database tip. Require the forest-tip marker that ConnectTip
+   commits with chain state to match its height, hash, and header root. If a
+   legacy validated-tip marker exists, it must also agree; its presence is
+   pinned for the pass. Current nodes do not write that legacy marker.
 2. Walk header ancestry backwards from that tip. Require the persisted
    height index to agree at every relevant height; roots alone cannot
    establish ancestry. Imported histories can begin at their earliest
@@ -53,7 +56,7 @@ For two consecutive retained checkpoints A and B:
 5. Compare the resulting canonical serialized state to the independently
    restored checkpoint B. This also checks the state needed for leaf
    position lookup and proof generation.
-6. Recheck the frozen storage/validated tips and actual A/B checkpoint
+6. Recheck the frozen storage/forest tips, optional legacy marker, and actual A/B checkpoint
    bytes and checksums before each deletion batch.
 7. Delete only `U+height` and `C+height` for A < height < B, paired in a
    synced RocksDB batch. Default maximum is 128 height slots per batch.
@@ -121,51 +124,65 @@ height-slot counts; process exit alone is not a disk-savings measurement.
 
 ## Local validation
 
-The initial local run passed all 23 retention storage tests and all 9 existing
-forest restore tests. Four independent temporary mutations disabled ancestry
-index checking, validated-tip identity checking, actual legacy anchor-byte
-binding, and automatic import-anchor preservation. Each corresponding test
-failed. The correct implementation was restored, rebuilt, and all 23 retention
-tests passed again. Test and build logs are retained with the September 14
-investigation artifacts.
+The final storage run passed **29 retention tests**, **16 CLI tests**, and
+**4 subprocess tests**. All **9 existing forest restore tests** also passed.
+Six independent temporary mutations disabled ancestry-index checking,
+legacy validated-tip identity checking, actual legacy anchor-byte binding,
+automatic import-anchor preservation, production forest-tip agreement, and
+pinned forest-root checking. Each corresponding test failed. The correct
+implementation was restored, rebuilt, and all 29 retention tests passed again.
 
-The copy harness also passed 16 CLI rejection tests and a real subprocess
-gate on a synthetic database. A second process held its actual RocksDB lock;
-the harness refused to open it without replacing the lock file. After a forced
-`_Exit(86)` following the first synced three-height deletion batch, a new
-process restored all 33 historical states and every live-leaf proof
-byte-for-byte. A resumed apply and explicit compaction preserved those results.
-Source file bytes, inodes, modes, sizes, and modification times were unchanged.
-Separate subprocess cases protect the height-only wallet recovery marker and
-reject invalid or above-tip metadata. These fixtures exercise storage and
-proof reconstruction; they do not establish daemon branch activation or live
-network proof service.
+The first actual daemon run caught a fixture assumption: `getValidatedTip`
+has no current production writer, so requiring that old marker rejected a
+valid stopped database before any deletion. The final engine requires the
+production `ForestTipMarker` and validates its header commitment throughout
+the pass. An existing legacy marker must still agree. Missing production
+markers are refused, never repaired or silently created by retention.
 
-The final four-case subprocess suite also removes the delta at height 8.
-Applying retention with compaction requested exits 3, reports the skipped
-interval `[0,10]`, preserves every checkpoint in that interval, and performs
-no compaction. Later complete intervals still prune. Every historical forest
-and live-leaf proof remains reproducible, and the source fingerprint is
-unchanged. The 16 CLI tests and all 4 subprocess tests pass together.
+The real subprocess tests use synthetic RocksDB data. They verify actual
+lock contention without replacing the lock file, then force `_Exit(86)`
+after a synced three-height deletion batch. A new process restores all 33
+historical states and every live-leaf proof byte-for-byte. Resumed apply and
+explicit compaction preserve those results. Source bytes, inodes, modes,
+sizes, and modification times remain unchanged. Other cases protect the
+height-only wallet recovery marker and reject invalid metadata.
 
-## Required gates before live integration
+A missing delta at height 8 causes exit 3, reports skipped interval `[0,10]`,
+preserves every checkpoint there, and suppresses requested compaction. Later
+complete intervals still prune, with all historical states/proofs reproducible.
 
-- Storage tests: sparse/recent/import preservation, invalid replay refusal,
-  header/height identity, anchor changes with and without checksums, paired
-  atomic deletes, bounded work, and every-height state/proof equality after
-  interruption and reopen.
-- Neuter verification: temporarily remove safety conditions and confirm
-  their corresponding tests fail, then restore and rerun the suite.
-- A real process crash after a synced deletion batch, followed by recovery.
-- Restart a daemon mid-sync after processing its stopped copied data.
-- Activate a genuinely competing branch crossing a deleted checkpoint
-  region; verify resulting state, restart, and subsequent block processing.
-- Serve and verify historical bridge proofs at deleted checkpoint heights.
-- Run the first real reclamation on a copy of a seed datadir. Record
+### Actual daemon gate
+
+`CheckpointRetentionDaemon` passed in **95.18 seconds** using the locally
+built daemon, loopback regtest peers, and a stopped independent datadir copy:
+
+- Mine a real spend at 111 and extend to 150 with dense checkpoints.
+- Apply retention on the copy; explicitly prove `U110` and `C110` were deleted.
+- Restart the pruned bridge and compare its entire internal forest
+  serialization plus full UTXO summary to the original.
+- Interrupt a fresh CSN at height **21 of 150**, perform two offline restarts,
+  and resume it against the pruned bridge.
+- Require log evidence for that exact historical spend block being served
+  and its proof validated; confirm client tip, roots, and commitment match.
+- Disconnect **40 blocks** to fork height 110; compare full forest and UTXOs
+  to their original values before the spend.
+- Mine a longer **41-block competing branch** to 151, converge the CSN, and
+  restart the bridge with identical full forest/UTXO state.
+
+These are local regtest results with complete replay material. They do not
+measure old production delta coverage or a 5,000-block proof-serving latency.
+Evidence logs and binary hashes are retained with the September 14 investigation.
+
+## Remaining gates before live integration
+
+- Run the first real reclamation on an offline copy of a seed datadir. Record
   source/copy provenance, protected anchors, skipped ranges, before/after
   SST allocation, and historical proof latency after compaction.
-- Review the live maintenance synchronization and latency design separately.
+- Select the production retention spacing from those measurements. Missing
+  historical deltas may require a separate block-replay migration; this pass
+  preserves such intervals and cannot promise to reclaim all 190 GiB.
+- Design and review live maintenance synchronization and latency separately.
+  This patch exposes no live hook and does not bound wall-clock latency.
+- Obtain the owner's explicit approval before merging or touching live seeds.
 
-Passing the storage suite is not a claim that the daemon, crash, historical
-bridge, or seed-copy gates have passed. No live-seed operation is authorized
-by the mere existence of this code or its test harness.
+No real seed data was pruned or compacted during these local gates.

@@ -79,6 +79,8 @@ protected:
         return policy;
     }
 
+    virtual bool PopulateForestTipMarker() const { return true; }
+
     void SetUp() override {
         dinero::SelectParams(dinero::Chain::TESTNET);
         static std::atomic<uint64_t> sequence{0};
@@ -170,7 +172,15 @@ protected:
 
         ASSERT_EQ(db_.setTip(token_, BlockHash(kTip), kTip,
                             dinero::arith_uint256(kTip)), Status::Ok);
-        ASSERT_EQ(db_.setValidatedTip(token_, BlockHash(kTip), kTip), Status::Ok);
+        // Match the daemon's actual durable write path: ConnectTip writes
+        // ForestTipMarker; the legacy validated_tip row is normally absent.
+        if (PopulateForestTipMarker()) {
+            const auto header = db_.getHeader(BlockHash(kTip));
+            ASSERT_EQ(header.status(), Status::Ok);
+            const ChainDB::ForestTipMarker marker{
+                static_cast<int32_t>(kTip), BlockHash(kTip), header.value().utreexo_root};
+            ASSERT_EQ(db_.putForestTipMarker(token_, marker), Status::Ok);
+        }
         ASSERT_EQ(db_.putUtreexoMeta(token_, "retention-test-sentinel",
                                    "keep historical reconstruction material"),
                   Status::Ok);
@@ -297,6 +307,11 @@ protected:
     std::vector<std::vector<UtreexoHash>> live_after_;
     std::vector<std::vector<std::vector<uint8_t>>> proofs_after_;
     std::vector<std::string> sidecars_;
+};
+
+class MissingForestTipMarkerFixture : public CheckpointRetentionFixture {
+protected:
+    bool PopulateForestTipMarker() const override { return false; }
 };
 
 TEST_F(CheckpointRetentionFixture, DefaultAuditVerifiesWithoutMutating) {
@@ -512,6 +527,7 @@ TEST_F(CheckpointRetentionFixture, StorageAndValidatedTipMismatchRejectsBeforeDe
 }
 
 TEST_F(CheckpointRetentionFixture, ValidatedTipIdentityChangeAfterVerificationAbortsDeletion) {
+    ASSERT_EQ(db_.setValidatedTip(token_, BlockHash(kTip), kTip), Status::Ok);
     CheckpointRetentionPass pass(db_, Policy(), true);
     ASSERT_NO_FATAL_FAILURE(AdvanceToDelete(pass));
     ASSERT_EQ(db_.setValidatedTip(token_, BlockHash(3200), kTip), Status::Ok);
@@ -523,6 +539,97 @@ TEST_F(CheckpointRetentionFixture, ValidatedTipIdentityChangeAfterVerificationAb
     EXPECT_EQ(storage_tip.value().height, static_cast<int>(kTip));
     std::string error;
     EXPECT_EQ(pass.step(token_, error), Status::Invalid) << error;
+    EXPECT_EQ(pass.progress().deleted_height_keys, 0u);
+    ASSERT_NO_FATAL_FAILURE(ExpectHeights(AllHeights()));
+}
+
+TEST_F(CheckpointRetentionFixture, DaemonForestMarkerSufficesWithoutLegacyValidatedMarker) {
+    ASSERT_EQ(db_.getValidatedTip().status(), Status::NotFound);
+    ASSERT_EQ(db_.getForestTipMarker().status(), Status::Ok);
+    CheckpointRetentionPass pass(db_, Policy(), true);
+    ASSERT_NO_FATAL_FAILURE(Run(pass));
+    ASSERT_NO_FATAL_FAILURE(ExpectHeights(RetainedHeights()));
+    EXPECT_EQ(db_.getValidatedTip().status(), Status::NotFound);
+}
+
+TEST_F(MissingForestTipMarkerFixture, MissingForestMarkerRefusesEvenWithMatchingLegacyMarker) {
+    ASSERT_EQ(db_.getForestTipMarker().status(), Status::NotFound);
+    ASSERT_EQ(db_.setValidatedTip(token_, BlockHash(kTip), kTip), Status::Ok);
+    CheckpointRetentionPass pass(db_, Policy(), true);
+    std::string error;
+    EXPECT_NE(pass.step(token_, error), Status::Ok) << error;
+    EXPECT_EQ(pass.progress().deleted_height_keys, 0u);
+    ASSERT_NO_FATAL_FAILURE(ExpectHeights(AllHeights()));
+}
+
+TEST_F(CheckpointRetentionFixture, ForestMarkerHeightHashOrRootMismatchRejectsBeforeDeletion) {
+    const auto original = db_.getForestTipMarker();
+    ASSERT_EQ(original.status(), Status::Ok);
+    for (unsigned field = 0; field < 3; ++field) {
+        SCOPED_TRACE(field);
+        auto marker = original.value();
+        if (field == 0) --marker.height;
+        else if (field == 1) marker.block_hash = BlockHash(3200);
+        else marker.forest_root.data[0] ^= 0xFF;
+        ASSERT_EQ(db_.putForestTipMarker(token_, marker), Status::Ok);
+        CheckpointRetentionPass pass(db_, Policy(), true);
+        std::string error;
+        EXPECT_NE(pass.step(token_, error), Status::Ok) << error;
+        EXPECT_EQ(pass.progress().deleted_height_keys, 0u);
+        ASSERT_NO_FATAL_FAILURE(ExpectHeights(AllHeights()));
+    }
+}
+
+TEST_F(CheckpointRetentionFixture, ForestMarkerHeightHashOrRootChangesAfterVerificationAbortDeletion) {
+    const auto original = db_.getForestTipMarker();
+    ASSERT_EQ(original.status(), Status::Ok);
+    for (unsigned field = 0; field < 3; ++field) {
+        SCOPED_TRACE(field);
+        ASSERT_EQ(db_.putForestTipMarker(token_, original.value()), Status::Ok);
+        CheckpointRetentionPass pass(db_, Policy(), true);
+        ASSERT_NO_FATAL_FAILURE(AdvanceToDelete(pass));
+        auto marker = original.value();
+        if (field == 0) --marker.height;
+        else if (field == 1) marker.block_hash = BlockHash(3200);
+        else marker.forest_root.data[0] ^= 0xFF;
+        ASSERT_EQ(db_.putForestTipMarker(token_, marker), Status::Ok);
+        std::string error;
+        EXPECT_NE(pass.step(token_, error), Status::Ok) << error;
+        EXPECT_EQ(pass.progress().deleted_height_keys, 0u);
+        ASSERT_NO_FATAL_FAILURE(ExpectHeights(AllHeights()));
+    }
+}
+
+TEST_F(CheckpointRetentionFixture, LegacyValidatedMarkerAppearingMidPassAbortsDeletion) {
+    ASSERT_EQ(db_.getValidatedTip().status(), Status::NotFound);
+    CheckpointRetentionPass pass(db_, Policy(), true);
+    ASSERT_NO_FATAL_FAILURE(AdvanceToDelete(pass));
+    ASSERT_EQ(db_.setValidatedTip(token_, BlockHash(kTip), kTip), Status::Ok);
+    std::string error;
+    EXPECT_NE(pass.step(token_, error), Status::Ok) << error;
+    EXPECT_EQ(pass.progress().deleted_height_keys, 0u);
+    ASSERT_NO_FATAL_FAILURE(ExpectHeights(AllHeights()));
+}
+
+TEST_F(CheckpointRetentionFixture, ForestMarkerAndHeaderRootChangingTogetherStillAbortDeletion) {
+    CheckpointRetentionPass pass(db_, Policy(), true);
+    ASSERT_NO_FATAL_FAILURE(AdvanceToDelete(pass));
+    const auto marker_result = db_.getForestTipMarker();
+    const auto header_result = db_.getHeader(BlockHash(kTip));
+    ASSERT_EQ(marker_result.status(), Status::Ok);
+    ASSERT_EQ(header_result.status(), Status::Ok);
+    auto marker = marker_result.value();
+    auto header = header_result.value();
+    marker.forest_root.data[0] ^= 0xFF;
+    header.utreexo_root = marker.forest_root;
+    ASSERT_EQ(db_.putForestTipMarker(token_, marker), Status::Ok);
+    ASSERT_EQ(db_.putHeader(token_, BlockHash(kTip), header, kTip,
+                           dinero::arith_uint256(kTip)), Status::Ok);
+    // A current marker/header equality check still passes. The originally
+    // verified root itself must remain pinned across deletion batches.
+    std::string error;
+    EXPECT_EQ(pass.step(token_, error), Status::Invalid) << error;
+    EXPECT_NE(error.find("root-changed"), std::string::npos) << error;
     EXPECT_EQ(pass.progress().deleted_height_keys, 0u);
     ASSERT_NO_FATAL_FAILURE(ExpectHeights(AllHeights()));
 }

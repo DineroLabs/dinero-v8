@@ -63,6 +63,8 @@ struct CheckpointRetentionPass::State {
     Status failed = Status::Ok;
     std::string failure;
     TipInfo tip;
+    uint256 tip_forest_root;
+    bool legacy_validated_present = false;
     uint32_t first = 0, last = 0, probe = 0, delete_cursor = 0;
     int64_t walk_height = 0;
     uint256 walk_hash;
@@ -92,9 +94,38 @@ struct CheckpointRetentionPass::State {
         if (current.value().hash != tip.hash || current.value().height != tip.height) {
             return fail(Status::Invalid, "retention-tip-changed", error);
         }
+        // ConnectTip commits this marker with its canonical state batch.
+        // The older validated_tip API has no current production writer, so
+        // requiring it would reject an ordinary, correctly stopped daemon.
+        const auto marker = db.getForestTipMarker();
+        if (!marker.ok()) {
+            return fail(marker.status(), "retention-forest-tip-marker-missing-or-unreadable", error);
+        }
+        const auto header = db.getHeader(tip.hash);
+        if (!header.ok() || marker.value().height != tip.height ||
+            marker.value().block_hash != tip.hash ||
+            marker.value().forest_root != header.value().utreexo_root) {
+            return fail(Status::Invalid, "retention-storage-and-forest-tip-disagree", error);
+        }
+        if (progress.phase == CheckpointRetentionPhase::Initialize) {
+            tip_forest_root = marker.value().forest_root;
+        } else if (marker.value().forest_root != tip_forest_root) {
+            return fail(Status::Invalid, "retention-forest-tip-root-changed", error);
+        }
+
+        // Keep a legacy marker binding when one exists; do not manufacture a
+        // marker or silently ignore a disagreement in an imported database.
         const auto validated = db.getValidatedTip();
-        if (!validated.ok() || validated.value().hash != tip.hash || validated.value().height != tip.height) {
+        if (!validated.ok() && validated.status() != Status::NotFound) {
+            return fail(validated.status(), "retention-legacy-validated-tip-read-failed", error);
+        }
+        if (validated.ok() && (validated.value().hash != tip.hash || validated.value().height != tip.height)) {
             return fail(Status::Invalid, "retention-storage-and-validated-tip-disagree", error);
+        }
+        if (progress.phase == CheckpointRetentionPhase::Initialize) {
+            legacy_validated_present = validated.ok();
+        } else if (validated.ok() != legacy_validated_present) {
+            return fail(Status::Invalid, "retention-legacy-validated-tip-presence-changed", error);
         }
         return Status::Ok;
     }

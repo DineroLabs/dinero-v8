@@ -203,6 +203,19 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_reorg_state_restoration.sh)
     message(STATUS "  ✓ UtreexoLiveReorgStateRestoration registered (daemon: $<TARGET_FILE:dinerod>)")
 endif()
 
+if(TARGET utreexo_retention_copy)
+    add_test(
+        NAME CheckpointRetentionDaemon
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_checkpoint_retention_daemon.sh
+    )
+    set_tests_properties(CheckpointRetentionDaemon PROPERTIES
+        LABELS "integration;utreexo;retention;bridge;csn;reorg;restart"
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;RETENTION_COPY=$<TARGET_FILE:utreexo_retention_copy>;MUTATOR=$<TARGET_FILE:utreexo_checkpoint_mutator>"
+        TIMEOUT 900
+        RUN_SERIAL TRUE
+    )
+endif()
+
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_reorg_event_feed.sh)
     add_test(
         NAME ReorgEventFeed
