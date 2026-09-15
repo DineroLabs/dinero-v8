@@ -128,6 +128,38 @@ std::unordered_set<uint256> CollectTemplatePoisonRemovalSet(
     return removal_set;
 }
 
+std::vector<Transaction> FilterExcludedTemplateTransactions(
+    const std::vector<Transaction>& candidate_txs,
+    const std::unordered_set<uint256>& excluded_txids
+) {
+    if (excluded_txids.empty()) return candidate_txs;
+
+    // Walk the dependency graph in linear time. Do not rely on transaction
+    // order: intelligent selection or CT batching may reorder candidates.
+    std::unordered_map<uint256, std::vector<uint256>> children;
+    for (const auto& tx : candidate_txs) {
+        const auto txid = tx.GetTxid().AsUint256();
+        for (const auto& input : tx.vin) {
+            children[input.prevout.txid.AsUint256()].push_back(txid);
+        }
+    }
+    auto excluded = excluded_txids;
+    std::vector<uint256> pending(excluded.begin(), excluded.end());
+    for (size_t i = 0; i < pending.size(); ++i) {
+        const auto it = children.find(pending[i]);
+        if (it == children.end()) continue;
+        for (const auto& child : it->second) {
+            if (excluded.insert(child).second) pending.push_back(child);
+        }
+    }
+    std::vector<Transaction> filtered;
+    filtered.reserve(candidate_txs.size());
+    for (const auto& tx : candidate_txs) {
+        if (excluded.count(tx.GetTxid().AsUint256()) == 0) filtered.push_back(tx);
+    }
+    return filtered;
+}
+
 std::vector<Transaction> FilterChainBackedTemplateTransactions(
     const std::vector<Transaction>& candidate_txs,
     const std::function<bool(const OutPoint&)>& has_chain_utxo,
@@ -1271,7 +1303,10 @@ void BlockAssembler::UpdateAlgoState() {
 // v0.14.0.1: Bitcoin Core Compatible RPC Mining Interface
 // ============================================================================
 
-std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbase_address) {
+std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
+    const std::string& coinbase_address,
+    const std::unordered_set<uint256>& excluded_txids
+) {
     last_template_error_.clear();
     if (!chain_db_) {
         last_template_error_ = "CreateNewBlock: ChainDB not initialized";
@@ -1326,6 +1361,23 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(const std::string& coinbas
         total_fees,
         included_txids
     );
+
+    // Apply caller exclusions before any commitment prediction or poison
+    // quarantine. Children of an excluded parent are also request-local:
+    // treating them as missing-input poison would suppress future templates.
+    if (!excluded_txids.empty()) {
+        auto filtered = FilterExcludedTemplateTransactions(selected_txs, excluded_txids);
+        if (filtered.size() != selected_txs.size()) {
+            total_fees = 0;
+            included_txids.clear();
+            for (const auto& tx : filtered) {
+                const auto txid = tx.GetTxid().AsUint256();
+                total_fees += mempool_->getTransactionFee(txid).value_or(0);
+                included_txids.push_back(txid.GetHex());
+            }
+            selected_txs = std::move(filtered);
+        }
+    }
 
     auto build_candidate = [&](const std::vector<Transaction>& candidate_txs,
                                uint64_t candidate_total_fees,

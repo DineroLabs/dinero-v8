@@ -50,6 +50,7 @@
 #include <deque>
 #include <chrono>
 #include <algorithm>
+#include <unordered_set>
 
 using dinero::uint256;  // Phase M.0: Make uint256 available without namespace prefix
 #include <ctime>
@@ -134,7 +135,10 @@ void PopulateTemplateSafetyError(din::Json& result, const dinero::mining::Mining
  * Delegates to BlockAssembler::CreateNewBlock() for CPFP-aware transaction selection.
  *
  * Usage:
- *   getblocktemplate '{"address":"din1q..."}'
+ *   getblocktemplate '{"address":"din1q...","exclude_txids":["<64 hex txid>"]}'
+ *
+ * exclude_txids is optional (at most 10000 IDs). Exclusions and transparent
+ * descendants affect only this template; transactions remain in the mempool.
  *
  * Returns:
  *   {
@@ -211,6 +215,30 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
     if (mining_address.length() < 10) {
         result["error"] = "Invalid Dinero address (too short)";
         return result;
+    }
+
+    // This changes only this candidate. The assembler regenerates fees,
+    // DNRW/DNRF/DNRS, merkle and Utreexo commitments from the retained set.
+    std::unordered_set<uint256> excluded_txids;
+    if (params_obj.isMember("exclude_txids")) {
+        const auto& requested = params_obj["exclude_txids"];
+        constexpr size_t kMaxTemplateExclusions = 10000;
+        if (!requested.isArray() || requested.size() > kMaxTemplateExclusions) {
+            result["error"] = "exclude_txids must be an array of at most 10000 transaction IDs";
+            return result;
+        }
+        for (const auto& entry : requested) {
+            if (!entry.isString()) {
+                result["error"] = "exclude_txids entries must be 64-character hexadecimal transaction IDs";
+                return result;
+            }
+            const auto hex = entry.asString();
+            if (hex.size() != 64 || hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+                result["error"] = "exclude_txids entries must be 64-character hexadecimal transaction IDs";
+                return result;
+            }
+            excluded_txids.insert(uint256::FromHexUnsafe(hex));
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -325,7 +353,7 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
     assembler.SetBlockValidator(block_validator);
 
     // Create block template (CPFP-aware, deterministic, with Utreexo proof)
-    auto block = assembler.CreateNewBlock(mining_address);
+    auto block = assembler.CreateNewBlock(mining_address, excluded_txids);
 
     if (!block) {
         const std::string& detail = assembler.getLastTemplateError();
