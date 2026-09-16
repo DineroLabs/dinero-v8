@@ -1020,8 +1020,19 @@ void P2PService::StartSchedulerTickLoop() {
                     }
                 }
 
-                // Anchor peer auto-reconnect: ensure anchor peers stay connected
-                if (now - last_reconnect_probe_ >= reconnect_probe_interval_) {
+                // Anchor peer auto-reconnect: ensure anchor peers stay connected.
+                // 2026-09-16: must never fire in connect-only mode (-connect=<peer>)
+                // — that flag is documented to make outbound connections
+                // exclusively to the specified peer(s). Start() already skips the
+                // hardcoded/DNS-seed/peers.dat bootstrap for connect-only; this
+                // periodic probe is a separate path that was dialing the compiled-in
+                // anchor list unconditionally, silently violating that guarantee a
+                // few minutes after startup on any network with a non-empty anchor
+                // list (mainnet/testnet — regtest's anchor list is empty, which is
+                // why no existing regtest test caught this).
+                if (now - last_reconnect_probe_ >= reconnect_probe_interval_ &&
+                    dinero::daemon::shouldRunAnchorAutoReconnect(
+                        config_ ? config_->GetString("p2p.connect", "") : "")) {
                     auto anchors = dinero::config::getAnchorPeers(Params().name);
                     uint16_t anchor_port = Params().p2p_port;
                     auto connected_peers = p2p_mgr_->get_connected_peers();
