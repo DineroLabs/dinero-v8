@@ -4442,6 +4442,29 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_stale_tip_recovery.cpp)
   message(STATUS "✅ StaleTipRecovery (#214) deterministic test enabled")
 endif()
 
+# 2026-09-16 field incident: connect-only isolation gap in the periodic anchor
+# auto-reconnect probe. Pure decision logic (header-only) — links only gtest,
+# no daemon/sockets.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_anchor_reconnect_policy.cpp)
+  add_executable(test_anchor_reconnect_policy
+    tests/services/test_anchor_reconnect_policy.cpp
+  )
+  add_dependencies(test_anchor_reconnect_policy gtest gtest_main)
+  target_include_directories(test_anchor_reconnect_policy BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  target_link_libraries(test_anchor_reconnect_policy PRIVATE
+    GTest::gtest_main
+  )
+  add_test(NAME AnchorReconnectPolicy COMMAND test_anchor_reconnect_policy)
+  set_tests_properties(AnchorReconnectPolicy PROPERTIES
+    LABELS "services-boundary-smoke;daemon;p2p;connect-only;smoke"
+    TIMEOUT 15
+  )
+  message(STATUS "✅ AnchorReconnectPolicy (2026-09-16 connect-only gap) deterministic test enabled")
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_request_peer_order.cpp)
   add_executable(test_block_request_peer_order
     tests/daemon/test_block_request_peer_order.cpp
