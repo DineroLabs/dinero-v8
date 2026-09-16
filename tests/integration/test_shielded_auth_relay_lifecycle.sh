@@ -28,6 +28,8 @@ CSN_DIR="${DATA_DIR}.csn"
 CSN_LOG="${CSN_DIR}.log"
 COMPACT_EVIDENCE_DIR="${COMPACT_EVIDENCE_DIR:-${DATA_DIR}/compact-evidence}"
 COMPACT_ORACLE="${ROOT_DIR}/tests/integration/helpers/compact_regtest_oracle.py"
+# At use sites the + expansion preserves an empty argument list on macOS
+# Bash 3, whose nounset mode otherwise rejects an empty array's [@] expansion.
 COMPACT_ARGS=()
 if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
     COMPACT_ARGS+=("--consensus-shielded-compact-height=${DINERO_TEST_COMPACT_HEIGHT}")
@@ -99,7 +101,7 @@ start_node() {
         --listen=1 --utreexo=1 --connect="127.0.0.1:${PEER_P2P}" \
         --consensus-shielded-epoch-reset-height=1 \
         --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 "${COMPACT_ARGS[@]}" "$@" \
+        --consensus-state-commitment-height=3 ${COMPACT_ARGS[@]+"${COMPACT_ARGS[@]}"} "$@" \
         >>"${LOG_FILE}" 2>&1 &
     PID=$!
     wait_rpc || fail "daemon did not reach RPC readiness"
@@ -122,7 +124,7 @@ start_peer() {
         --rpcport="${PEER_RPC}" --port="${PEER_P2P}" --wallet-socket-port="${PEER_WALLET}" \
         --listen=1 --utreexo=1 --connect="127.0.0.1:${P2P_PORT}" \
         --consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 "${COMPACT_ARGS[@]}" \
+        --consensus-state-commitment-height=3 ${COMPACT_ARGS[@]+"${COMPACT_ARGS[@]}"} \
         >>"${PEER_LOG}" 2>&1 &
     PEER_PID=$!
     ( DATA_DIR="${PEER_DIR}"; RPC_PORT="${PEER_RPC}"; PID="${PEER_PID}"; wait_rpc; ) \
@@ -135,7 +137,7 @@ start_csn() {
         --rpcport="${CSN_RPC}" --port="${CSN_P2P}" --wallet-socket-port="${CSN_WALLET}" \
         --listen=1 --utreexo=1 --utreexo-stateless=1 --connect="127.0.0.1:${P2P_PORT}" \
         --consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 "${COMPACT_ARGS[@]}" >>"${CSN_LOG}" 2>&1 &
+        --consensus-state-commitment-height=3 ${COMPACT_ARGS[@]+"${COMPACT_ARGS[@]}"} >>"${CSN_LOG}" 2>&1 &
     CSN_PID=$!
     ( DATA_DIR="${CSN_DIR}"; RPC_PORT="${CSN_RPC}"; PID="${CSN_PID}"; wait_rpc; ) \
         || fail "compact stateless peer did not start"

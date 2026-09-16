@@ -2240,10 +2240,23 @@ TEST(CompactRegtestWire, RejectsNonminimalLengthsAndMissingWitnessMarker) {
     // one-byte CompactSize values in this deliberately small fixture.
     for (const size_t offset : {6u, 7u, 16u, 27u}) {
         ASSERT_LT(raw[offset], 253);
-        auto nonminimal = raw;
-        nonminimal.erase(nonminimal.begin() + offset);
-        nonminimal.insert(nonminimal.begin() + offset, {0xfd, raw[offset], 0x00});
-        EXPECT_FALSE(TransactionSerializer::Deserialize(decoded, nonminimal)) << offset;
+        for (const size_t width : {2u, 4u, 8u}) {
+            auto nonminimal = raw;
+            std::vector<uint8_t> length(width + 1, 0);
+            length[0] = width == 2 ? 0xfd : width == 4 ? 0xfe : 0xff;
+            length[1] = raw[offset];
+            nonminimal.erase(nonminimal.begin() + offset);
+            nonminimal.insert(nonminimal.begin() + offset, length.begin(), length.end());
+            EXPECT_FALSE(TransactionSerializer::Deserialize(decoded, nonminimal)) << offset << '/' << width;
+        }
+        auto oversized = raw;
+        oversized.erase(oversized.begin() + offset);
+        oversized.insert(oversized.begin() + offset, 9, 0xff); // UINT64_MAX
+        EXPECT_FALSE(TransactionSerializer::Deserialize(decoded, oversized)) << offset;
+    }
+    for (size_t end = 0; end < raw.size(); ++end) {
+        const std::vector<uint8_t> truncated(raw.begin(), raw.begin() + end);
+        EXPECT_FALSE(TransactionSerializer::Deserialize(decoded, truncated)) << end;
     }
     tx.vout.clear();
     EXPECT_FALSE(TransactionSerializer::Deserialize(decoded, tx.Serialize(false)));
