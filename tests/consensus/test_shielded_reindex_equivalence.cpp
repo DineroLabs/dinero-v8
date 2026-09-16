@@ -857,6 +857,34 @@ int main(int argc, char** argv) {
                        prefix);
         }
 
+        // Replaying the reset must remove authoritative rows from the old
+        // epoch as well as emptying the SQLite cache. Derive the expected
+        // post-reset state directly: empty tree and no spent-note records.
+        {
+            auto& params = dinero::MutableParams();
+            const auto previous_reset = params.shielded_epoch_reset_height;
+            const auto previous_binding = params.shielded_cv_binding_activation_height;
+            params.shielded_epoch_reset_height = 6;
+            params.shielded_cv_binding_activation_height = 6;
+            dinero::Block reset;
+            reset.vtx.push_back(MakeCoinbaseTx(6, 50, 0x16));
+            auto expected = FinalizeAndApplyReferenceBlock(
+                reset, 6, blocks.back().GetHash(), state);
+            expected.frontier_after = sh::CommitmentTree{}.SerializeFrontier();
+            expected.nullifier_rows.clear();
+            blocks.push_back(std::move(reset));
+            expectations.push_back(std::move(expected));
+            const fs::path reset_dir = base_dir / "epoch_reset";
+            fs::create_directories(reset_dir);
+            run_prefix(reset_dir,
+                       reset_dir / "blockchain" / "chaindb.reindex",
+                       reset_dir / "blockchain" / "shielded_frontier.reindex.bin",
+                       reset_dir / "blockchain" / "shielded_nullifiers.reindex.db",
+                       blocks.size());
+            params.shielded_epoch_reset_height = previous_reset;
+            params.shielded_cv_binding_activation_height = previous_binding;
+        }
+
         // ── Reindex failure classification ──────────────────────────────
         //
         // processBlock returns Status::Invalid for many reasons, but only a
