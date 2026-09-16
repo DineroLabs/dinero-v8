@@ -184,7 +184,7 @@ jobs:
             --no-tests=error \
             -V -j1 \
             -R '^CheckpointRetentionDaemon$' \
-            2>&1 | tee build-tests/Testing/checkpoint-retention/ctest.log
+            | tee build-tests/Testing/checkpoint-retention/ctest.log
 
       # Upload immediately: later serial lanes can take an hour, and the job
       # log is unavailable until they finish. Only harness text logs belong in
