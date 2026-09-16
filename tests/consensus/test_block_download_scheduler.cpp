@@ -562,6 +562,74 @@ int main() {
     }
 
     {
+        std::cout << "\n4b. fresh stateless receipts do not trigger a proof-request storm..." << std::endl;
+
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        BuildLinearHeaders(selector, 20, &hashes, 6'500'000);
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_fresh_receipt_" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "fresh receipt storage must initialize")) return 1;
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetStatelessMode(true);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.SetGetTipHeightCallback([]() -> uint32_t { return 0; });
+        // Hold validation pending without relying on wall-clock sleeps.
+        scheduler.SetTipRetryTimeout(std::chrono::hours(1));
+        size_t pending_count = 0;
+        scheduler.SetExternalBackpressureCallback([&]() { return pending_count; });
+        std::vector<uint256> requested;
+        scheduler.SetSendGetDataCallback([&](const uint256& hash, uint32_t) {
+            requested.push_back(hash);
+        });
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        const auto window = scheduler.GetMaxInFlight();
+        if (!Require(requested.size() == window, "fresh receipt setup must fill the window")) return 1;
+        const auto initial_requests = requested;
+        for (const auto& hash : initial_requests) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hash)),
+                         "fresh receipt setup must accept each downloaded body")) return 1;
+        }
+        pending_count = window;
+
+        // Incoming descendants, duplicate messages and header refreshes can all
+        // tick the scheduler before the ordered proof worker advances the tip.
+        // RECEIVED is not evidence of a lost proof at that point.
+        for (int i = 0; i < 100; ++i) {
+            scheduler.OnHeadersProcessed();
+            scheduler.Tick();
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                         "duplicate frontier receipt must remain acceptable")) return 1;
+        }
+        if (!Require(requested.size() == window,
+                     "fresh RECEIVED frontier must not be re-requested while validation is pending; requests=" +
+                         std::to_string(requested.size()))) return 1;
+        if (!Require(scheduler.HasReceivedBlock(hashes[1]),
+                     "waiting for validation must preserve received bookkeeping")) return 1;
+
+        // A genuinely stale receipt must still recover, exactly once. A known
+        // proof rejection must also retain the explicit immediate retry path.
+        scheduler.SetTipRetryTimeout(std::chrono::milliseconds(0));
+        scheduler.Tick();
+        if (!Require(requested.size() == window + 1 && requested.back() == hashes[1],
+                     "expired receipt must use the frontier recovery slot")) return 1;
+        scheduler.SetTipRetryTimeout(std::chrono::hours(1));
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[1])),
+                     "frontier retransmission must be received")) return 1;
+        if (!Require(scheduler.ReRequestBlock(hashes[1]),
+                     "proof failure must retain explicit retry")) return 1;
+        scheduler.Tick();
+        if (!Require(requested.size() == window + 2 && requested.back() == hashes[1],
+                     "explicit proof retry must not wait for receipt expiry")) return 1;
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ fresh receipts wait; expired or rejected proofs still retry" << std::endl;
+    }
+
+    {
         std::cout << "\n5. stateless frontier re-requests stale RECEIVED gap..." << std::endl;
 
         dcs::HeaderChainSelector selector;
@@ -614,6 +682,8 @@ int main() {
 
         pending_count = window;
         const size_t requests_before_retry = requested_hashes.size();
+        // Make this receipt explicitly stale without a timing-dependent sleep.
+        scheduler.SetTipRetryTimeout(std::chrono::milliseconds(0));
         scheduler.Tick();
 
         if (!Require(requested_hashes.size() == requests_before_retry + 1,
