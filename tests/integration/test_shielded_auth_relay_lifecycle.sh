@@ -470,4 +470,27 @@ if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
     pass "activation-crossing reorg excludes compact work below H and replays the original state"
 fi
 
+# Enabled by the candidate CTest registration. Compatibility measurements
+# against an unchanged legacy daemon keep the original lifecycle.
+if [[ "${DINERO_TEST_REINDEX:-0}" == 1 ]]; then
+    FINAL_TIP="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
+    FINAL_STATE="$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')"
+    [[ "$(peer_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${FINAL_STATE}" ]] \
+        || fail "peer state differs before reindex"
+    stop_node; start_node --reindex-chainstate
+    [[ "$(rpc_result getbestblockhash '[]' | jq -r '.result')" == "${FINAL_TIP}" ]] \
+        || fail "reindex changed the named tip"
+    [[ "$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${FINAL_STATE}" ]] \
+        || fail "reindex changed shielded/Utreexo state"
+    SPENT_PROOF="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]")"
+    jq -e '.result.successful == 0 and .result.failed == 1' <<<"${SPENT_PROOF}" >/dev/null \
+        || fail "reindex resurrected the spent unshield output"
+    stop_node; start_node
+    [[ "$(rpc_result getbestblockhash '[]' | jq -r '.result')" == "${FINAL_TIP}" ]] \
+        || fail "second restart changed the named tip"
+    [[ "$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${FINAL_STATE}" ]] \
+        || fail "second restart changed rebuilt shielded/Utreexo state"
+    pass "reindex and second restart preserve canonical state and spentness"
+fi
+
 echo "=== SUCCESS: Auth transfer/recovery lifecycle ==="
