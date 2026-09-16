@@ -171,6 +171,18 @@ jobs:
       - name: OpenSSL version assertion (policy pin 3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-tests 3.5.7
 
+      # Builds its own isolated regtest datadirs; no seed data is required.
+      # Covers restart, historical proof relay and reorgs after checkpoint
+      # retention. Its integration label excludes it from the broad sweep.
+      - name: Run checkpoint retention daemon integration
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -V -j1 \
+            -R '^CheckpointRetentionDaemon$'
+
       - name: Run ctest
         run: |
           # Initial v2 soak intentionally runs the stable full-build test subset.
