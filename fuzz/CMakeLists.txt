@@ -36,6 +36,23 @@ add_custom_target(fuzz_shielded_quick
         -max_len=200000 -timeout=5 -max_total_time=60 -print_final_stats=1
     DEPENDS fuzz_shielded_surfaces)
 
+# Experimental compact-proof decoder; both raw and valid-shape mutation modes.
+# Only this target's codec/harness are instrumented by the fuzz flags above.
+add_executable(fuzz_compact_spartan
+    fuzz_compact_spartan.cpp
+    ${CMAKE_SOURCE_DIR}/contrib/benchmarks/compact_spartan_codec.cpp)
+target_include_directories(fuzz_compact_spartan PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(fuzz_compact_spartan PRIVATE dinero_zk dinero_crypto)
+if(APPLE)
+    target_link_libraries(fuzz_compact_spartan PRIVATE "-framework Security")
+endif()
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz_corpus/compact_spartan)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/fuzz_crashes/compact_spartan)
+# ASCII 's' (115) selects spend/compact/structured and 'w' selects output.
+file(WRITE ${CMAKE_BINARY_DIR}/fuzz_corpus/compact_spartan/spend "s")
+file(WRITE ${CMAKE_BINARY_DIR}/fuzz_corpus/compact_spartan/output "w")
+
 # HTTP Parser Fuzzer
 add_executable(http_parser_fuzz http_parser_fuzz.cpp)
 target_include_directories(http_parser_fuzz PRIVATE 

@@ -10,9 +10,9 @@ configure_run() {
   cmake -S "${repo_dir}" -B "${dir}" -G Ninja -DBUILD_TESTING=ON \
     -DDINERO_BUILD_QT=OFF "$@"
   cmake --build "${dir}" --parallel "${jobs}" --target test_anchor_history \
-    test_shielded_serialization test_shielded_derivation
+    test_shielded_serialization test_shielded_derivation test_spartan_soundness
   ctest --test-dir "${dir}" --output-on-failure -R \
-    '^(AnchorHistory|ShieldedSerialization|ShieldedDerivation)$'
+    '^(AnchorHistory|ShieldedSerialization|ShieldedDerivation|SpartanSoundness)$'
 }
 
 configure_run asan -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENABLE_SANITIZERS=ON
@@ -39,7 +39,11 @@ cmake -S "${repo_dir}" -B "${fuzz_dir}" -G Ninja -DBUILD_TESTING=ON \
   -DDINERO_BUILD_QT=OFF -DENABLE_FUZZING=ON \
   -DDINERO_FUZZ_SANITIZERS="${fuzz_sanitizers}" \
   -DCMAKE_C_COMPILER="${fuzz_cc}" -DCMAKE_CXX_COMPILER="${fuzz_cxx}"
-cmake --build "${fuzz_dir}" --parallel "${jobs}" --target fuzz_shielded_surfaces
+cmake --build "${fuzz_dir}" --parallel "${jobs}" --target fuzz_shielded_surfaces fuzz_compact_spartan
 "${fuzz_dir}/fuzz/fuzz_shielded_surfaces" "${fuzz_dir}/fuzz_corpus/shielded" \
   -artifact_prefix="${fuzz_dir}/fuzz_crashes/shielded/" \
   -max_len=200000 -timeout=5 -max_total_time="${duration}" -print_final_stats=1
+
+"${fuzz_dir}/fuzz/fuzz_compact_spartan" "${fuzz_dir}/fuzz_corpus/compact_spartan" \
+  -artifact_prefix="${fuzz_dir}/fuzz_crashes/compact_spartan/" \
+  -max_len=65536 -timeout=5 -max_total_time="${duration}" -print_final_stats=1

@@ -44,6 +44,9 @@ allocating an expansion buffer, the codec checks:
 - The expected circuit structure hash, both sumcheck counts and both IPA
   counts, including legitimate zero-round sections.
 - No trailing data. Packing also requires every omitted byte to be zero.
+- Canonical retained scalar encodings (`0 <= scalar < secp256k1 order`) and
+  point encodings (33-byte identity or valid compressed curve point). No
+  modular reduction or normalization; historical decoding is unchanged.
 
 The prototype bounds each trusted circuit count at `2^22` before computing
 layout sizes. That is an experimental implementation ceiling, **not a new
@@ -111,7 +114,7 @@ additional candidate is rejected without changing the usage counters.
   verifier and original binding signature. A changed transaction version fails
   the original binding signature.
 
-Final local result: **50/50 ShieldedValidation and 13/13 SpartanSoundness**
+Initial prototype local result: **50/50 ShieldedValidation and 13/13 SpartanSoundness**
 (including ten compact-codec cases), plus six offline Python tests. UBSan passed
 all 13 codec/soundness cases with the codec and test translation units
 instrumented; existing crypto libraries were not instrumented. Local ASan did
@@ -122,6 +125,36 @@ qualification and broader parser fuzzing remain required.
 The tests extend the existing `SpartanSoundness` and `ShieldedValidation`
 CTest entries, both already selected by CI. They require no local proof files
 or production datadirs. Full native Linux evidence remains a separate gate.
+
+## Format-review follow-up
+
+The separate review branch adds canonical scalar/point rejection at every
+retained field, scalar boundary acceptance without normalization, invalid-point
+fixtures, all count-field extremes, same-shape/wrong-circuit rejection and 4,000
+deterministic malformed inputs. A raw/structured libFuzzer harness exercises
+both profile selectors with genuine toy proofs; existing wallet tests still
+exercise real shield, unshield and transfer proofs.
+
+Local review result: **50/50 ShieldedValidation and 18/18 SpartanSoundness**.
+Both new canonicality tests fail on the original prototype and pass after the
+change. Disabling either guard in an isolated binary makes its test fail.
+UBSan passes all 18 Spartan cases; a 31-second libFuzzer/UBSan run processes
+1,478,331 inputs with no finding (peak RSS 38 MiB). The codec and test/fuzzer
+translation units are instrumented; linked crypto libraries are not. The
+CMake-built fuzzer also passes a 10,000-input smoke run. These are bounded
+experiments, not exhaustive input coverage or a cryptographic audit.
+
+Homebrew LLVM 21 ASan also times out before test output on this host; no ASan
+qualification is claimed. `scripts/shielded-security-matrix.sh` now includes
+SpartanSoundness and the compact fuzzer for the scheduled/manual Linux lane.
+That lane is not automatically run by a pull request. Linux results remain
+pending, and scheduling it does not itself establish a pass.
+
+The [activation and Utreexo test plan](shielded-compact-activation-test-plan.md)
+records the format review, version-dispatch inventory, activation matrix and
+real signed-child/restart/reorg qualification oracles. Those daemon-level tests
+are **designed, not implemented** here. No new transaction version is assigned,
+accepted or enabled.
 
 ## Required follow-up before production eligibility
 
@@ -152,3 +185,16 @@ build/test_shielded_validation --gtest_filter='*CompactPrototype*'
 
 The focused wallet tests print `COMPACT_CANDIDATE` size records. Timings depend
 on the machine; no wall-clock threshold is used as a correctness assertion.
+
+To build just the optional experimental fuzzer, use the usual headless Clang
+configuration with `-DENABLE_FUZZING=ON`, then:
+
+```sh
+cmake --build build-fuzz --target fuzz_compact_spartan -j8
+build-fuzz/fuzz/fuzz_compact_spartan build-fuzz/fuzz_corpus/compact_spartan \
+  -max_len=65536 -timeout=5 -max_total_time=60 -print_final_stats=1
+```
+
+Linux defaults to `fuzzer,address,undefined`. On a Mac with the documented ASan
+startup failure, `-DDINERO_FUZZ_SANITIZERS=fuzzer,undefined` gives UBSan-only fuzz
+coverage; it must not be reported as an ASan pass.

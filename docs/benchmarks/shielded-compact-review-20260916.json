@@ -1,0 +1,68 @@
+{
+  "date": "2026-09-16",
+  "status": "research-only; no production decoder or activation",
+  "base_commit": "4a11b3c6b36bacb61050d2acd1f753ba1169b23f",
+  "platform": "macOS arm64",
+  "source_sha256": {
+    "contrib/benchmarks/compact_spartan_codec.cpp": "8abc7830f701302da24aac6289b0134121e2e75067c2c59bfc8e62092f56eac1",
+    "contrib/benchmarks/compact_spartan_codec.h": "a937b3d288eba417dfc61c4f0f6b12d256ac15e0c5e562e3994ca1bef185ee35",
+    "tests/zk/test_compact_spartan.cpp": "e5df4b5c8b308ca84d0f7d6be7d09e449488ba813adc709b78769302708dbb35",
+    "fuzz/fuzz_compact_spartan.cpp": "9f389d0e33ad3e8f045d189d29b962b59dcb9dd2c78064750237bef9579decb5",
+    "fuzz/CMakeLists.txt": "7fe8fe44cfc43f3bcbba2949432c6b19295bb12f112663a9b95cd7e129a20cc7",
+    "scripts/shielded-security-matrix.sh": "f212092f374c5731618edbed9993ce163fc5f41d14a7a609c7c785599c6e50b4"
+  },
+  "native": {
+    "ShieldedValidation": {
+      "passed": 50,
+      "seconds": 105.182
+    },
+    "SpartanSoundness": {
+      "passed": 18,
+      "seconds": 0.0927297
+    }
+  },
+  "test_first": {
+    "original_decoder": {
+      "new_tests_passed": 3,
+      "new_tests_failed": 2,
+      "failed": [
+        "EveryScalarRejectsNoncanonicalRepresentatives",
+        "EveryPointRequiresCanonicalIdentityOrCompressedCurvePoint"
+      ]
+    },
+    "isolated_negative_controls": {
+      "scalar_guard_disabled": "expected failure",
+      "point_guard_disabled": "expected failure"
+    }
+  },
+  "deterministic_malformed_inputs": 4000,
+  "ubsan": {
+    "passed": 18,
+    "instrumented": "codec and test translation units; linked crypto libraries uninstrumented",
+    "compiler": "Homebrew Clang 21.1.8"
+  },
+  "libfuzzer_ubsan": {
+    "executed_inputs": 1478331,
+    "seconds": 31,
+    "peak_rss_mib": 38,
+    "findings": 0,
+    "seed": 352615,
+    "scope": "raw inputs and structured mutations of genuine toy proofs for both profile selectors; codec and harness instrumented, linked crypto libraries uninstrumented"
+  },
+  "cmake_fuzzer_smoke": {
+    "executed_inputs": 10000,
+    "findings": 0
+  },
+  "asan": {
+    "status": "unqualified",
+    "reason": "Homebrew LLVM runtime timed out before test output (15 s); no ASan pass claimed"
+  },
+  "ci_selection": {
+    "SpartanSoundness": "tests.yml:176",
+    "ShieldedValidation": "tests.yml:176",
+    "scope": "local registered inventory evaluated against the build-tests lane; selection only"
+  },
+  "linux_sanitizers": "pending; scheduled/manual security matrix now includes native codec tests and fuzzer",
+  "activation_utreexo_matrix": "design only; daemon, pool, full-node/CSN activation and signed-child lifecycle not implemented or qualified",
+  "existing_pr_755": "unchanged at base_commit"
+}

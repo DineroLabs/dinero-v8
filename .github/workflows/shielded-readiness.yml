@@ -12,6 +12,8 @@ on:
       - 'src/test/shielded_*'
       - 'contrib/benchmarks/compact_spartan_codec.*'
       - 'tests/zk/test_compact_spartan.cpp'
+      - 'fuzz/fuzz_compact_spartan.cpp'
+      - 'fuzz/CMakeLists.txt'
       - 'scripts/shielded-*.sh'
       - 'tools/shielded_*'
       - '.github/workflows/shielded-readiness.yml'
