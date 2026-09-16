@@ -1,8 +1,11 @@
 # Compact ordinary Spartan proofs: prototype and activation proposal
 
 Status: research prototype, 2026-09-16. **No production decoder or activation.**
-The native codec is compiled only into test executables. `dinerod`, the wallet,
-the existing verifier and all current acceptance rules are unchanged.
+The native codec is compiled only into test/fuzz executables. The wallet,
+existing proof verifier and current compact-format rejection remain unchanged.
+A separately tested [batch proof RPC fix](../benchmarks/utreexo-batch-canonical-20260916.md)
+uses canonical coins instead of asynchronously updated wallet metadata; it does
+not change Utreexo commitments or enable compact transactions.
 
 ## Problem and measured result
 
