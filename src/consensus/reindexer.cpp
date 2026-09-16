@@ -2786,6 +2786,28 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     // ═══════════════════════════════════════════════════════════════════
     rocksdb::WriteBatch batch;
 
+    // Rebuild the authoritative nullifier rows in the same batch as this
+    // block's tip. SQLite is only a cache and startup discards cache-only
+    // rows; persisting its count in ShieldedTipMarker is not sufficient.
+    // A reset block is shielded-empty, so purge the previous epoch first.
+    if (shielded::IsShieldedEpochResetHeight(
+            static_cast<uint32_t>(height), Params().shielded_epoch_reset_height,
+            Params().shielded_spend_auth_epoch_reset_height)) {
+        const auto purged = chain_db_->deleteAllShieldedNullifiers(token, &batch);
+        if (!purged.ok()) {
+            return purged.status();
+        }
+    }
+    for (const auto& bundle : shielded_bundles) {
+        for (const auto& spend : bundle.spends) {
+            const auto status = chain_db_->putShieldedNullifier(
+                token, static_cast<uint32_t>(height), spend.nullifier.data(), &batch);
+            if (status != Status::Ok) {
+                return status;
+            }
+        }
+    }
+
     if (block_storage_ == nullptr) {
         auto put_status = chain_db_->putBlock(token, block_hash, block, &batch);
         if (put_status != Status::Ok) {
