@@ -87,7 +87,10 @@ jobs:
 
       - name: Build retention reproduction binaries
         id: build
-        run: cmake --build build-tests -j --target dinerod utreexo_retention_copy utreexo_checkpoint_mutator
+        run: cmake --build build-tests -j --target dinerod utreexo_retention_copy utreexo_checkpoint_mutator test_block_download_scheduler test_block_download_scheduler_restart_bootstrap test_block_download_scheduler_g6b
+
+      - name: Verify scheduler retry and recovery regressions
+        run: ctest --test-dir build-tests --no-tests=error --output-on-failure -R '^BlockDownloadScheduler'
 
       - name: Reproduce retention failure with unchanged assertions
         run: |
@@ -110,7 +113,7 @@ jobs:
           out=Path('evidence')
           out.mkdir(exist_ok=True)
           for root in Path('/tmp').glob('dinero_retention_daemon.*'):
-              for p in root.rglob('*'):
+              for p in root.iterdir():
                   if p.is_file() and not p.is_symlink() and p.suffix in ('.log','.stderr'):
                       target=out/root.name/p.relative_to(root)
                       target.parent.mkdir(parents=True,exist_ok=True)
