@@ -83,13 +83,14 @@ try:
     rpc("full", "generatetoaddress", [5, address])
     tip = rpc("full", "getbestblockhash")
     wait(lambda: rpc("csn", "getbestblockhash") == tip)
-    parent = rpc("full", "getblockhash", [4])
-    expected = rpc("full", "getblock", [parent, 1])["utreexocommitment_raw"]
     before = rpc("csn", "blockchain.getutreexocommitment")
     assert before["commitment"] == rpc("full", "blockchain.getutreexocommitment")["commitment"]
 
-    for cycle in range(2):
-        rpc("csn", "blockchain.invalidateblock", [tip])
+    for cycle, parent_height in enumerate((4, 2, 0)):
+        parent = rpc("full", "getblockhash", [parent_height])
+        invalidated = rpc("full", "getblockhash", [parent_height + 1])
+        expected = rpc("full", "getblock", [parent, 1])["utreexocommitment_raw"]
+        rpc("csn", "blockchain.invalidateblock", [invalidated])
         after = rpc("csn", "blockchain.getutreexocommitment")
         receipt = {
             "binary": binary, "cycle": cycle, "before": before, "after": after,
@@ -98,9 +99,9 @@ try:
         (root / f"receipt-{cycle}.json").write_text(json.dumps(receipt, indent=2))
         print(json.dumps(receipt), flush=True)
         assert receipt["tip"] == parent
-        assert after["verified_height"] == 4
+        assert after["verified_height"] == parent_height
         assert after["commitment"] == expected, "manual CSN rollback left accumulator ahead of tip"
-        rpc("csn", "blockchain.reconsiderblock", [tip])
+        rpc("csn", "blockchain.reconsiderblock", [invalidated])
         wait(lambda: rpc("csn", "getbestblockhash") == tip)
         assert rpc("csn", "blockchain.getutreexocommitment")["commitment"] == before["commitment"], (
             "reconsider did not replay the forest"
