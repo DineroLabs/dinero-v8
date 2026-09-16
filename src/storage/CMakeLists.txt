@@ -9,6 +9,7 @@ add_library(dinero_chainstate STATIC
   ${CMAKE_SOURCE_DIR}/src/storage/persistent_utxo_adapter.cpp  # Bridges consensus to persistence
   ${CMAKE_SOURCE_DIR}/src/storage/block_storage.cpp        # Block/undo flatfile management
   ${CMAKE_SOURCE_DIR}/src/storage/forest_restore.cpp       # Checkpoint + UD-sidecar replay (campaign phase 3)
+  ${CMAKE_SOURCE_DIR}/src/storage/checkpoint_retention.cpp # Offline, replay-verified checkpoint retention
   ${CMAKE_SOURCE_DIR}/src/storage/disk_space_monitor.cpp   # Disk space monitoring
   # Phase 39: ChainManager DELETED (header, implementation, stubs all removed)
   # All usage migrated to ChainstateService / ChainDB / BlockStorage.
