@@ -1,4 +1,4 @@
-// Research prototype only. Not linked into dinerod or any wallet/consensus library.
+// Research codec: tests/fuzzers and explicitly enabled compact-regtest builds only.
 #pragma once
 
 #include "zk/zkvm/hyrax.h"

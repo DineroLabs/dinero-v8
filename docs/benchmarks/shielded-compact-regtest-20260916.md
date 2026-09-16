@@ -41,6 +41,32 @@ Observed compact wallet RPC times include 9.402, 9.736, 13.701 and 9.651 seconds
 under differing concurrent build/test loads. These are not a controlled speed
 comparison and do not establish further proving-speed improvement.
 
+### Controlled encoding overhead comparison
+
+A local diagnostic linked the same Release libraries and alternated five pairs
+of ordinary/compact unshield construction plus one complete verification each,
+after one warm-up pair. Same note, recipient, fee rate and validation context;
+no daemon mining or wallet scanning in the timed region. Median times:
+
+| Implementation | Ordinary build / verify | Compact build / verify |
+| --- | ---: | ---: |
+| Rebuild layout for each proof | 4.913 s / 1.821 s | 6.292 s / 3.163 s |
+| Reuse immutable trusted layout | 4.938 s / 1.830 s | 4.942 s / 1.830 s |
+
+The overhead came from repeatedly constructing/hashing the fixed circuit used
+to describe the encoding. The implementation now initializes each ordinary
+profile's dimensions and structure hash once. It retains no witness, public
+assignment, transaction state or verification verdict. Every proof still gets
+canonical encoding checks and complete verification with its current inputs,
+signature and activation context. Tests vary public assignments and then alter
+nullifiers/commitments after valid verification; the altered claims fail.
+
+The first use still incurs layout initialization. Five warm pairs support
+approximately equal steady-state CPU cost, not a claim of exact equality or a
+new speedup over the optimized ordinary wallet. This smaller output-script
+fixture measures 75,713 versus 42,020 vbytes and fees 75,729 versus 42,036 una;
+the actual taproot RPC measurements above remain the relevant mined fees.
+
 ## Completed checks
 
 - Test-first compact wallet construction, height/network admission, canonical

@@ -40,6 +40,7 @@
 #include "wallet/shielded_wallet_ops.h"
 #include "../../contrib/benchmarks/compact_spartan_codec.h"
 #include "consensus/utreexo_accumulator.h"
+#include "zk/zkvm/r1cs_spartan.h"
 
 #include <algorithm>
 #include <array>
@@ -2221,6 +2222,32 @@ TEST_F(ShieldedValidationFixture, CompactPrototypeShieldAndTransferVerifyFullBun
 }
 
 #ifdef DINERO_ENABLE_COMPACT_REGTEST
+TEST(CompactRegtestLayout, PublicAssignmentsDoNotChangeOrdinaryProfileStructure) {
+    SpendPublicInputs spend;
+    spend.nullifier.fill(0x41);
+    spend.anchor.fill(0x52);
+    OutputPublicInputs output;
+    output.commitment.fill(0x63);
+    // Opposite points with G's x-coordinate use Pedersen's 0x08/0x09
+    // sign encoding. Values remain public assignments, not circuit
+    // coefficients or profile selectors.
+    spend.cv = {0x08, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac,
+                0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b, 0x07, 0x02,
+                0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2,
+                0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98};
+    output.cv = spend.cv;
+    output.cv[0] = 0x09;
+    const auto hash = [](const auto& circuit) {
+        return zk::zkvm::spartan_hash_r1cs_structure(circuit);
+    };
+    EXPECT_EQ(hash(BuildSpendCircuit(SpendWitness{}, {}, true, true)),
+              hash(BuildSpendCircuit(SpendWitness{}, spend, true, true)));
+    EXPECT_EQ(hash(BuildOutputCircuit(OutputWitness{}, {}, true)),
+              hash(BuildOutputCircuit(OutputWitness{}, output, true)));
+    EXPECT_NE(hash(BuildSpendCircuit(SpendWitness{}, {}, true, true)),
+              hash(BuildSpendCircuit(SpendWitness{}, {}, true, false)));
+}
+
 TEST(CompactRegtestWire, RejectsNonminimalLengthsAndMissingWitnessMarker) {
     Transaction tx;
     tx.version = Transaction::TX_VERSION_COMPACT_REGTEST;
@@ -2358,6 +2385,16 @@ TEST_F(ShieldedValidationFixture, CompactRegtestUnshieldUsesCompactFeesAndFinalI
     EXPECT_NE(ValidateShieldedBundle(malformed, context(101, enabled)), ShieldedValidationError::Ok);
     EXPECT_EQ(tree.Root(), root_before);
     EXPECT_FALSE(nullifier_set.Contains(spend.nullifier));
+    // A reused trusted layout must never become a reused verification verdict.
+    auto altered_public = bundle;
+    altered_public.spends[0].nullifier[0] ^= 1;
+    EXPECT_EQ(ValidateShieldedBundle(altered_public, context(101, enabled)),
+              ShieldedValidationError::ProofInvalid);
+    altered_public = bundle;
+    altered_public.spends[0].cv[0] ^= 1; // Negate the valid compressed point.
+    EXPECT_NE(ValidateShieldedBundle(altered_public, context(101, enabled)),
+              ShieldedValidationError::Ok);
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context(101, enabled)), ShieldedValidationError::Ok);
     const auto bytes = tx.Serialize(true);
     Transaction reread;
     ASSERT_TRUE(TransactionSerializer::Deserialize(reread, bytes));
