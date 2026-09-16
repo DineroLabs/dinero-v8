@@ -1,0 +1,59 @@
+{
+  "date": "2026-09-16",
+  "status": "native test-only prototype; experimental transactions rejected by current consensus",
+  "platform": "macOS arm64 Release",
+  "base": "a86caf9dab750b8791103d9d729e79e23e0bb91f",
+  "measurements": [
+    {
+      "shape": "unshield",
+      "original_bytes": 75714,
+      "candidate_bytes": 42021,
+      "proof_bytes_saved": 33689,
+      "original_vsize": 75713,
+      "candidate_vsize": 42020,
+      "transaction_bytes_saved": 33693,
+      "transaction_reduction_percent": 44.5
+    },
+    {
+      "shape": "shield",
+      "original_bytes": 46373,
+      "candidate_bytes": 27798,
+      "proof_bytes_saved": 18575,
+      "original_vsize": 46371,
+      "candidate_vsize": 27796,
+      "transaction_bytes_saved": 18575,
+      "transaction_reduction_percent": 40.06
+    },
+    {
+      "shape": "transfer_1in_2out",
+      "original_bytes": 167935,
+      "candidate_bytes": 97094,
+      "proof_bytes_saved": 70839,
+      "original_vsize": 167934,
+      "candidate_vsize": 97093,
+      "transaction_bytes_saved": 70841,
+      "transaction_reduction_percent": 42.18
+    }
+  ],
+  "validation": {
+    "ShieldedValidation": {
+      "passed": 50,
+      "failed": 0
+    },
+    "SpartanSoundness": {
+      "passed": 13,
+      "failed": 0
+    },
+    "test_first": "7/8 initial codec tests and both wallet prototype tests failed with no-op codec",
+    "negative_control": "Disabling only omitted-zero-row guard failed both targeted tests; restored before final run",
+    "production_changes": false,
+    "linux_qualification": "pending",
+    "ubsan": {
+      "passed": 13,
+      "failed": 0,
+      "scope": "codec and test translation units instrumented; existing crypto dependencies not instrumented"
+    },
+    "asan": "Not qualified locally: Apple ASan runtime stalled during initialization before main; sampled runtime reentrant initialization, terminated owned process. Linux sanitizer qualification remains required."
+  },
+  "scope": "Measured serialized experimental candidates, with existing signatures/fees held fixed. Full original bundle validation passes after exact proof expansion. Accumulator checks cover final txid/leaf, snapshot restore and deletion, not mined compact transactions or real reorgs."
+}
