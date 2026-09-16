@@ -12,6 +12,8 @@ namespace dinero::experimental {
 // Layout comes from the verifier's circuit, never from untrusted proof dimensions.
 // The version is the historical inner proof profile (0x04 output / 0x06 spend).
 // DZE1 is an experimental file tag, not a proposed/assigned consensus version.
+// Accepted fields have canonical scalar/point encodings, but callers must still
+// cryptographically verify the expanded proof. Historical decoding is untouched.
 class CompactSpartanCodec {
   public:
     CompactSpartanCodec(uint8_t version, const zk::zkvm::R1CS &circuit);

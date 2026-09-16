@@ -11,6 +11,7 @@ on:
       - 'src/rpc/shielded_rpc_json.cpp'
       - 'src/test/shielded_validation_tests.cpp'
       - 'tests/integration/test_shielded_auth_relay_lifecycle.sh'
+      - 'tests/integration/helpers/verify_lifecycle_utreexo_proof.sh'
       - 'tests/integration/test_csn_shielded_reorg_invertibility.sh'
       - 'tests/integration/CMakeLists.txt'
       - 'tests/CMakeLists.txt'
@@ -134,6 +135,9 @@ jobs:
       - name: Baseline and optimized wallets against unchanged peer
         run: |
           for variant in baseline candidate; do
+            legacy_wallet_wait=0
+            if [[ "$variant" == baseline ]]; then legacy_wallet_wait=1; fi
+            LEGACY_PROOF_WALLET_WAIT="$legacy_wallet_wait" \
             DINEROD="$GITHUB_WORKSPACE/$variant/build-unshield/dinerod" \
             PEER_DINEROD="$GITHUB_WORKSPACE/baseline/build-unshield/dinerod" \
               bash tests/integration/test_shielded_auth_relay_lifecycle.sh \

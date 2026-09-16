@@ -12,7 +12,10 @@ on:
       - 'src/test/shielded_*'
       - 'contrib/benchmarks/compact_spartan_codec.*'
       - 'tests/zk/test_compact_spartan.cpp'
+      - 'fuzz/fuzz_compact_spartan.cpp'
+      - 'fuzz/CMakeLists.txt'
       - 'scripts/shielded-*.sh'
+      - 'scripts/ci/check_shielded_sanitizer_coverage.py'
       - 'tools/shielded_*'
       - '.github/workflows/shielded-readiness.yml'
       - 'tests/vectors/**'
@@ -122,3 +125,10 @@ jobs:
         run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
       - name: ASan, UBSan, TSan, and fuzz smoke
         run: SHIELDED_FUZZ_SECONDS=600 ./scripts/shielded-security-matrix.sh
+
+      - name: Upload sanitizer and fuzz evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shielded-security-${{ github.sha }}
+          path: artifacts/shielded-security/

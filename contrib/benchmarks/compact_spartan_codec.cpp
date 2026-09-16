@@ -38,6 +38,36 @@ class Reader {
         at_ += expected.size();
         return equal;
     }
+    bool Scalars(size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            if (32 > bytes_.size() - at_)
+                return false;
+            const auto scalar = bytes_.subspan(at_, 32);
+            // Zero is a legitimate field element. The remaining canonical
+            // values are exactly the nonzero integers below the group order.
+            if (!std::all_of(scalar.begin(), scalar.end(), [](uint8_t b) { return b == 0; }) &&
+                secp256k1_ec_seckey_verify(secp256k1_context_static, scalar.data()) != 1)
+                return false;
+            at_ += 32;
+        }
+        return true;
+    }
+    bool Points(size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            if (33 > bytes_.size() - at_)
+                return false;
+            const auto point = bytes_.subspan(at_, 33);
+            if (!std::all_of(point.begin(), point.end(), [](uint8_t b) { return b == 0; })) {
+                secp256k1_pubkey decoded;
+                if ((point[0] != 2 && point[0] != 3) ||
+                    secp256k1_ec_pubkey_parse(secp256k1_context_static, &decoded, point.data(),
+                                              point.size()) != 1)
+                    return false;
+            }
+            at_ += 33;
+        }
+        return true;
+    }
     bool Done() const { return at_ == bytes_.size(); }
 
   private:
@@ -67,7 +97,9 @@ CompactSpartanCodec::CompactSpartanCodec(uint8_t version, const zk::zkvm::R1CS &
 
 bool CompactSpartanCodec::Check(std::span<const uint8_t> proof, bool compact) const {
     // Exact length, all dimensions, all round counts and circuit identity are
-    // checked before ANY buffer allocation or call to the historical parser.
+    // checked before any expansion-buffer allocation or historical parser call.
+    // Retained scalar/point encodings are canonical too; this does not verify
+    // their cryptographic claims or change historical proof acceptance.
     const size_t expected = expanded_size_ - (compact ? 33 * error_.n_rows : 0);
     if (proof.size() != expected)
         return false;
@@ -77,10 +109,11 @@ bool CompactSpartanCodec::Check(std::span<const uint8_t> proof, bool compact) co
                reader.Number(8, h.n_total);
     };
     const auto evaluation = [&](size_t rounds) {
-        return reader.Skip(32) && reader.Number(4, rounds) && reader.Skip(rounds * 66 + 64);
+        return reader.Scalars(1) && reader.Number(4, rounds) && reader.Points(2 * rounds) &&
+               reader.Scalars(2);
     };
-    if (!reader.Number(1, version_) || !dimensions(witness_) ||
-        !reader.Skip(33 * witness_.n_rows) || !dimensions(error_))
+    if (!reader.Number(1, version_) || !dimensions(witness_) || !reader.Points(witness_.n_rows) ||
+        !dimensions(error_))
         return false;
     if (!compact) {
         const auto rows = proof.subspan(error_offset_, 33 * error_.n_rows);
@@ -90,8 +123,8 @@ bool CompactSpartanCodec::Check(std::span<const uint8_t> proof, bool compact) co
             return false;
     }
     return reader.Match(circuit_hash_) && reader.Number(8, outer_rounds_) &&
-           reader.Skip(128 * outer_rounds_ + 128) && reader.Number(8, inner_rounds_) &&
-           reader.Skip(96 * inner_rounds_) && evaluation(witness_rounds_) &&
+           reader.Scalars(4 * outer_rounds_ + 4) && reader.Number(8, inner_rounds_) &&
+           reader.Scalars(3 * inner_rounds_) && evaluation(witness_rounds_) &&
            evaluation(error_rounds_) && reader.Done();
 }
 
