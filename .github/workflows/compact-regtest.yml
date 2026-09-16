@@ -1,0 +1,84 @@
+name: Compact regtest qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/compact-regtest.yml'
+      - 'CMakeLists.txt'
+      - 'include/consensus/**'
+      - 'include/primitives/**'
+      - 'src/consensus/**'
+      - 'src/daemon/**'
+      - 'src/primitives/**'
+      - 'src/rpc/shielded_rpc_json.cpp'
+      - 'src/wallet/shielded_*'
+      - 'src/test/shielded_validation_tests.cpp'
+      - 'tests/integration/CMakeLists.txt'
+      - 'tests/integration/test_shielded_auth_relay_lifecycle.sh'
+      - 'tests/integration/helpers/compact_regtest_*'
+      - 'tests/consensus/test_shielded_reindex_equivalence.cpp'
+      - 'contrib/benchmarks/compact_spartan_codec.*'
+
+permissions:
+  contents: read
+
+jobs:
+  compact-regtest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      COMPACT_EVIDENCE_DIR: ${{ github.workspace }}/evidence/compact
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build clang cmake curl perl pkg-config jq python3-yaml
+          libudev-dev libusb-1.0-0-dev
+      - name: Build pinned OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Configure both compile-time gates
+        run: |
+          cmake -S . -B build-compact-disabled -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=OFF
+          cmake -S . -B build-compact-regtest -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=ON
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/commit.txt
+      - name: Verify experimental tests have an executing lane
+        run: >-
+          python3 scripts/ci/check_mandatory_tests_execute.py
+          build-compact-regtest .github/workflows/compact-regtest.yml
+          --only-absent-from build-compact-disabled
+          --baseline scripts/ci/unexecuted_tests_baseline_compact_regtest.txt
+      - name: Build default daemon and experimental targets
+        run: |
+          cmake --build build-compact-disabled --target dinerod -j "$(nproc)"
+          cmake --build build-compact-regtest --target dinerod test_shielded_validation \
+            test_spartan_soundness test_shielded_reindex_equivalence shielded_tx_builder -j "$(nproc)"
+          sha256sum build-compact-disabled/dinerod build-compact-regtest/dinerod > evidence/binary-sha256.txt
+      - name: Run format, mining, Utreexo and recovery qualification
+        run: |
+          set -o pipefail
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
+            -R '^(ShieldedValidation|SpartanSoundness|ShieldedReindexEquivalence|CsnManualInvalidation|CSNShieldedReorgInvertibility|CompactRegtestLifecycle)$' \
+            --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
+      - name: Check network gates and default-build rejection
+        run: |
+          txid="$(jq -r '.txid' evidence/compact/shield.json)"
+          python3 tests/integration/helpers/compact_regtest_gates.py \
+            build-compact-regtest/dinerod build-compact-disabled/dinerod "evidence/compact/$txid.hex" \
+            | tee evidence/gates.log
+      - name: Retain evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compact-regtest-${{ github.sha }}
+          path: |
+            evidence/
+            build-compact-regtest/Testing/

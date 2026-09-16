@@ -2374,6 +2374,15 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
     message(STATUS "  ✓ ShieldedAuthRelayLifecycle registered")
 endif()
 
+if(DINERO_ENABLE_COMPACT_REGTEST)
+    add_test(NAME CompactRegtestLifecycle
+      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+    set_tests_properties(CompactRegtestLifecycle PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_COMPACT_HEIGHT=124"
+      LABELS "integration;compact-regtest;shielded;utreexo;restart;reorg;reindex;mandatory"
+      TIMEOUT 2400 RUN_SERIAL TRUE)
+endif()
+
 # Gate D must run in the mandatory serial lane; missing Python is a failure,
 # never a reason to silently omit the security gate from registration.
 add_test(NAME SnapshotBindingMutations

@@ -22,6 +22,15 @@ PEER_PID=""
 PEER_DIR="${DATA_DIR}.peer"
 PEER_LOG="${PEER_DIR}.log"
 KEEP_ON_FAIL=0
+CSN_PID=""
+CSN_DIR="${DATA_DIR}.csn"
+CSN_LOG="${CSN_DIR}.log"
+COMPACT_EVIDENCE_DIR="${COMPACT_EVIDENCE_DIR:-${DATA_DIR}/compact-evidence}"
+COMPACT_ORACLE="${ROOT_DIR}/tests/integration/helpers/compact_regtest_oracle.py"
+COMPACT_ARGS=()
+if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+    COMPACT_ARGS+=("--consensus-shielded-compact-height=${DINERO_TEST_COMPACT_HEIGHT}")
+fi
 
 info() { printf '[INFO] %s\n' "$*"; }
 pass() { printf '[PASS] %s\n' "$*"; }
@@ -41,6 +50,8 @@ cleanup() {
         KEEP_ON_FAIL=1
         printf '[FAIL] retained daemon artifacts: %s and %s\n' "${DATA_DIR}" "${LOG_FILE}" >&2
     fi
+    dinero_cleanup_single_daemon "${rc}" "${CSN_PID}" "${CSN_DIR}" \
+        "${KEEP_ON_FAIL}" "compact stateless peer" "${CSN_DIR}" "${CSN_LOG}"
     dinero_cleanup_single_daemon "${rc}" "${PEER_PID}" "${PEER_DIR}" \
         "${KEEP_ON_FAIL}" "shielded relay peer" "${PEER_DIR}" "${PEER_LOG}"
     dinero_cleanup_single_daemon "${rc}" "${PID}" "${DATA_DIR}" \
@@ -74,7 +85,7 @@ rpc_result() {
 }
 wait_rpc() {
     for _ in $(seq 1 120); do
-        [[ -z "${PID}" || -e "/proc/${PID}" || "$(uname)" == "Darwin" ]] || return 1
+        [[ -z "${PID}" ]] || kill -0 "${PID}" 2>/dev/null || return 1
         if rpc_call getblockcount '[]' 2>/dev/null | jq -e '.result >= 0' >/dev/null 2>&1; then return 0; fi
         sleep 1
     done
@@ -87,7 +98,7 @@ start_node() {
         --listen=1 --utreexo=1 --connect="127.0.0.1:${PEER_P2P}" \
         --consensus-shielded-epoch-reset-height=1 \
         --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 \
+        --consensus-state-commitment-height=3 "${COMPACT_ARGS[@]}" "$@" \
         >>"${LOG_FILE}" 2>&1 &
     PID=$!
     wait_rpc || fail "daemon did not reach RPC readiness"
@@ -110,18 +121,45 @@ start_peer() {
         --rpcport="${PEER_RPC}" --port="${PEER_P2P}" --wallet-socket-port="${PEER_WALLET}" \
         --listen=1 --utreexo=1 --connect="127.0.0.1:${P2P_PORT}" \
         --consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 \
+        --consensus-state-commitment-height=3 "${COMPACT_ARGS[@]}" \
         >>"${PEER_LOG}" 2>&1 &
     PEER_PID=$!
     ( DATA_DIR="${PEER_DIR}"; RPC_PORT="${PEER_RPC}"; PID="${PEER_PID}"; wait_rpc; ) \
         || fail "relay peer did not start"
+}
+csn_result() { ( DATA_DIR="${CSN_DIR}"; RPC_PORT="${CSN_RPC}"; rpc_result "$@"; ); }
+start_csn() {
+    mkdir -p "${CSN_DIR}"
+    "${DINEROD}" --regtest --datadir="${CSN_DIR}" \
+        --rpcport="${CSN_RPC}" --port="${CSN_P2P}" --wallet-socket-port="${CSN_WALLET}" \
+        --listen=1 --utreexo=1 --utreexo-stateless=1 --connect="127.0.0.1:${P2P_PORT}" \
+        --consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2 \
+        --consensus-state-commitment-height=3 "${COMPACT_ARGS[@]}" >>"${CSN_LOG}" 2>&1 &
+    CSN_PID=$!
+    ( DATA_DIR="${CSN_DIR}"; RPC_PORT="${CSN_RPC}"; PID="${CSN_PID}"; wait_rpc; ) \
+        || fail "compact stateless peer did not start"
+}
+stop_csn() {
+    csn_result stop '[]' >/dev/null
+    dinero_wait_for_process_exit "${CSN_PID}" 60 || fail "compact stateless peer did not stop"
+    CSN_PID=""
+}
+assert_same_shielded_state() {
+    local a b c
+    a="$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')"
+    b="$(peer_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')"
+    c="$(csn_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')"
+    [[ ${#a} == 64 && "$a" == "$b" && "$a" == "$c" ]] || fail "compact full/CSN state digests diverged"
 }
 wait_same_tip() {
     for _ in $(seq 1 180); do
         local a b
         a="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
         b="$(peer_result getbestblockhash '[]' | jq -r '.result')"
-        [[ "${a}" == "${b}" ]] && return 0
+        if [[ "${a}" == "${b}" ]]; then
+            if [[ -z "${CSN_PID}" ]]; then return 0; fi
+            [[ "$(csn_result getbestblockhash '[]' | jq -r '.result')" == "${a}" ]] && return 0
+        fi
         sleep 1
     done
     fail "nodes did not converge on the same tip"
@@ -141,9 +179,34 @@ peer_mine_tx() {
     block="$(peer_result getblock "[\"${hash}\",1]")"
     jq -e --arg txid "${txid}" '.result.tx | map(if type == "object" then .txid else . end) | index($txid) != null' \
         <<<"${block}" >/dev/null || fail "peer mined a block without ${txid}: ${block}"
+    if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+        assert_same_shielded_state
+        if [[ -f "${COMPACT_EVIDENCE_DIR}/${txid}.hex" ]]; then
+            peer_result getblock "[\"${hash}\",0]" | jq -r '.result' > "${COMPACT_EVIDENCE_DIR}/${txid}.block.hex"
+            python3 - "${COMPACT_EVIDENCE_DIR}/${txid}.hex" "${COMPACT_EVIDENCE_DIR}/${txid}.block.hex" <<'CHECK_BYTES'
+import sys
+from pathlib import Path
+raw = bytes.fromhex(Path(sys.argv[1]).read_text().strip())
+block = bytes.fromhex(Path(sys.argv[2]).read_text().strip())
+assert block.count(raw) == 1, 'exact compact bytes absent from persisted block'
+CHECK_BYTES
+        fi
+    fi
     pass "peer mined the relayed transaction and source accepted its block"
 }
 
+
+assert_compact_tx() {
+    [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]] || return 0
+    local raw
+    raw="$(rpc_result getrawtransaction "[\"$1\",false]" | jq -r '.result | if type == "string" then . else .hex end')"
+    [[ "${raw:0:8}" == "06000040" ]] || fail "$2 did not use experimental compact version: ${raw:0:8}"
+    mkdir -p "${COMPACT_EVIDENCE_DIR}"
+    printf '%s\n' "${raw}" > "${COMPACT_EVIDENCE_DIR}/$1.hex"
+    python3 "${COMPACT_ORACLE}" inspect "${COMPACT_EVIDENCE_DIR}/$1.hex" "$1" \
+        > "${COMPACT_EVIDENCE_DIR}/$2.json"
+    info "COMPACT_TX shape=$2 wire_bytes=$((${#raw} / 2)) txid=$1"
+}
 
 command -v curl >/dev/null || fail "curl required"
 command -v jq >/dev/null || fail "jq required"
@@ -156,8 +219,20 @@ start_peer
 start_node
 
 MINER="$(rpc_result wallet.getnewaddress '["taproot","outgoing-miner"]' | jq -r '.result.address // .result')"
-rpc_result generatetoaddress "[101,\"${MINER}\"]" >/dev/null
+FUNDING_HEIGHT=101
+if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+    # CSN legacy-leaf grace ends at height 120; give coin selection a margin.
+    (( DINERO_TEST_COMPACT_HEIGHT >= 124 )) || fail "compact CSN fixture needs height >=124"
+    FUNDING_HEIGHT=$((DINERO_TEST_COMPACT_HEIGHT - 1))
+fi
+rpc_result generatetoaddress "[${FUNDING_HEIGHT},\"${MINER}\"]" >/dev/null
 wait_same_tip
+if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+    read -r CSN_RPC CSN_P2P CSN_WALLET < <(dinero_allocate_port_triplet)
+    start_csn
+    wait_same_tip
+    assert_same_shielded_state
+fi
 RECIPIENT="$(rpc_result wallet.getshieldedaddress '{"account":1,"j":0}' | jq -r '.result.address')"
 [[ "${RECIPIENT}" == rdins1* ]] || fail "bad recipient address"
 
@@ -165,6 +240,7 @@ info "shielding an initial 100,000,000-una note"
 SHIELD="$(rpc_result wallet.shield '{"amount_una":100000000,"fee_una":1000000}')"
 SHIELD_TXID="$(jq -r '.result.txid' <<<"${SHIELD}")"
 [[ ${#SHIELD_TXID} == 64 ]] || fail "shield submission failed: ${SHIELD}"
+assert_compact_tx "${SHIELD_TXID}" shield
 peer_mine_tx "${SHIELD_TXID}"
 INITIAL_NOTES="$(rpc_result wallet.listshielded '[]')"
 jq -e 'any(.result.notes[]; .value_una == 100000000 and .confirmed == true)' \
@@ -173,6 +249,7 @@ info "transferring to account 1 with recipient and change outputs"
 SEND="$(rpc_result wallet.transfer "{\"address\":\"${RECIPIENT}\",\"amount_una\":70000000,\"fee_una\":1000000,\"memo\":\"sender recovery lifecycle\"}")"
 TXID="$(jq -r '.result.txid' <<<"${SEND}")"
 [[ ${#TXID} == 64 ]] || fail "transfer submission failed: ${SEND}"
+assert_compact_tx "${TXID}" transfer
 PROVISIONAL="$(outgoing)"
 jq -e --arg txid "${TXID}" \
     --arg address "${RECIPIENT}" \
@@ -266,6 +343,7 @@ SPEND_TXID="$(jq -r '.result.txid' <<<"${SPEND}")"
 [[ -n "${SPEND_TXID}" && "${SPEND_TXID}" != null ]] \
     || fail "unlocked recipient-authorized spend returned no txid: ${SPEND}"
 # Read while in the mempool; this fixture intentionally has no full txindex.
+assert_compact_tx "${SPEND_TXID}" unshield
 PAYOUT="$(rpc_result getrawtransaction "[\"${SPEND_TXID}\",true]")"
 peer_mine_tx "${SPEND_TXID}"
 POST_SPEND="$(rpc_result wallet.listshielded '[]')"
@@ -287,6 +365,14 @@ assert_unshield_proof() {
         || fail "unshield output proof verification failed: ${verify}"
 }
 assert_unshield_proof
+if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+    rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]" > "${COMPACT_EVIDENCE_DIR}/unshield-proof.json"
+    rpc_result blockchain.getutreexoroots '[]' > "${COMPACT_EVIDENCE_DIR}/unshield-roots.json"
+    UNSHIELD_HEIGHT="$(rpc_result getblockcount '[]' | jq -r '.result')"
+    python3 "${COMPACT_ORACLE}" prove "${COMPACT_EVIDENCE_DIR}/unshield.json" \
+        "${COMPACT_EVIDENCE_DIR}/unshield-proof.json" "${COMPACT_EVIDENCE_DIR}/unshield-roots.json" \
+        "${UNSHIELD_HEIGHT}" > "${COMPACT_EVIDENCE_DIR}/leaf-receipt.json"
+fi
 UNSHIELD_BLOCK="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
 POST_UNSHIELD_COMMIT="$(rpc_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')"
 [[ -n "${POST_UNSHIELD_COMMIT}" && "${POST_UNSHIELD_COMMIT}" != null && "${POST_UNSHIELD_COMMIT}" != "${PRE_UNSHIELD_COMMIT}" ]] \
@@ -302,6 +388,14 @@ wait_same_tip
     || fail "reconnect did not restore the unshield forest"
 assert_unshield_proof
 pass "unshield output proof verifies; peer commitments match; disconnect/reconnect restores exact Utreexo commitments"
+if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+    stop_node; start_node; wait_same_tip
+    rpc_result wallet.unlock '["outgoing-lifecycle-pass",600]' >/dev/null
+    stop_csn; start_csn; wait_same_tip
+    assert_unshield_proof
+    assert_same_shielded_state
+    pass "compact unshield outpoint and full/CSN state survive both restarts"
+fi
 
 # Spend that exact transparent output through ordinary wallet signing, relay,
 # proof-backed mining and block validation. Selection cannot mask a bad leaf.
@@ -320,4 +414,61 @@ jq -e '.result.successful == 0 and .result.failed == 1' <<<"${SPENT_PROOF}" >/de
     || fail "spent unshield output remained provable: ${SPENT_PROOF}"
 pass "transparent child consumed the unshield Utreexo leaf and both nodes accepted the block"
 
-echo "=== SUCCESS: two-node Auth transfer/recovery lifecycle ==="
+if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+    CHILD_BLOCK="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
+    CHILD_STATE="$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')"
+    # Historical proof remains valid after current spentness changes.
+    python3 "${COMPACT_ORACLE}" prove "${COMPACT_EVIDENCE_DIR}/unshield.json" \
+        "${COMPACT_EVIDENCE_DIR}/unshield-proof.json" "${COMPACT_EVIDENCE_DIR}/unshield-roots.json" \
+        "${UNSHIELD_HEIGHT}" >/dev/null
+    rpc_result blockchain.invalidateblock "[\"${CHILD_BLOCK}\"]" >/dev/null
+    assert_unshield_proof
+    [[ "$(rpc_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')" == "${POST_UNSHIELD_COMMIT}" ]] \
+        || fail "child disconnect did not restore the unshield root"
+    rpc_result blockchain.reconsiderblock "[\"${CHILD_BLOCK}\"]" >/dev/null
+    wait_same_tip
+    csn_result blockchain.invalidateblock "[\"${CHILD_BLOCK}\"]" >/dev/null
+    [[ "$(csn_result blockchain.getutreexocommitment '[]' | jq -r '.result.commitment')" == "${POST_UNSHIELD_COMMIT}" ]] \
+        || fail "CSN child disconnect did not restore the unshield root"
+    csn_result blockchain.reconsiderblock "[\"${CHILD_BLOCK}\"]" >/dev/null
+    wait_same_tip
+    assert_same_shielded_state
+    stop_csn; start_csn; wait_same_tip
+    stop_node; start_node --reindex-chainstate; wait_same_tip
+    assert_same_shielded_state
+    [[ "$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${CHILD_STATE}" ]] \
+        || fail "reindex changed compact consensus state"
+    SPENT_PROOF="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]")"
+    jq -e '.result.successful == 0 and .result.failed == 1' <<<"${SPENT_PROOF}" >/dev/null \
+        || fail "reindex resurrected the spent compact leaf"
+    stop_node; start_node; wait_same_tip
+    assert_same_shielded_state
+    pass "compact signed-child disconnect, CSN restart, full reindex and restart preserve state"
+
+    # Roll back below H: candidate H-1 must exclude the formerly valid
+    # compact shield and its descendants. Reconsider then replays the exact
+    # original chain through H and must recover the original consensus state.
+    BOUNDARY_BLOCK="$(rpc_result getblockhash "[$((DINERO_TEST_COMPACT_HEIGHT - 1))]" | jq -r '.result')"
+    rpc_result blockchain.invalidateblock "[\"${BOUNDARY_BLOCK}\"]" >/dev/null
+    [[ "$(rpc_result getblockcount '[]' | jq -r '.result')" == "$((DINERO_TEST_COMPACT_HEIGHT - 2))" ]] \
+        || fail "activation rollback did not reach H-2"
+    TEMPLATE="$(rpc_result getblocktemplate "[{\"address\":\"${MINER}\"}]")"
+    jq -e --arg shield "${SHIELD_TXID}" --arg transfer "${TXID}" --arg unshield "${SPEND_TXID}" --arg child "${CHILD_TXID}" \
+        --argjson height "$((DINERO_TEST_COMPACT_HEIGHT - 1))" \
+        '.result.height == $height and all(.result.transactions[]; .txid != $shield and .txid != $transfer and .txid != $unshield and .txid != $child)' \
+        <<<"${TEMPLATE}" >/dev/null || fail "preactivation template includes compact transaction or descendant"
+    rpc_result generatetoaddress "[1,\"${MINER}\"]" >/dev/null
+    BOUNDARY_REPLACEMENT="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
+    rpc_result getblock "[\"${BOUNDARY_REPLACEMENT}\",1]" | jq -e \
+        --arg shield "${SHIELD_TXID}" --arg transfer "${TXID}" --arg unshield "${SPEND_TXID}" --arg child "${CHILD_TXID}" \
+        '.result.tx | all(.[]; (if type == "object" then .txid else . end) as $id | $id != $shield and $id != $transfer and $id != $unshield and $id != $child)' \
+        >/dev/null || fail "preactivation replacement block includes compact transaction or descendant"
+    rpc_result blockchain.reconsiderblock "[\"${BOUNDARY_BLOCK}\"]" >/dev/null
+    wait_same_tip
+    assert_same_shielded_state
+    [[ "$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${CHILD_STATE}" ]] \
+        || fail "activation reorg changed the original consensus state"
+    pass "activation-crossing reorg excludes compact work below H and replays the original state"
+fi
+
+echo "=== SUCCESS: Auth transfer/recovery lifecycle ==="

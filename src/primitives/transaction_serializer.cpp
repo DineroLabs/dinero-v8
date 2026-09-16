@@ -152,20 +152,34 @@ public:
         return val;
     }
 
+    void RequireMinimalLengths(bool required) { minimal_lengths_ = required; }
+
     uint64_t readVarInt() {
         uint8_t first = readUint8();
         if (first < 0xfd) return first;
+        uint64_t value = 0;
         if (first == 0xfd) {
-            uint16_t lo = static_cast<uint16_t>(readUint8());
-            uint16_t hi = static_cast<uint16_t>(readUint8());
-            return static_cast<uint16_t>(lo | (hi << 8));
+            const auto lo = readUint8();
+            const auto hi = readUint8();
+            value = uint64_t(lo) | (uint64_t(hi) << 8);
+        } else if (first == 0xfe) {
+            value = readUint32();
+        } else {
+            value = readUint64();
         }
-        if (first == 0xfe) return readUint32();
-        return readUint64();
+        // New compact-regtest envelopes have exactly one length encoding.
+        // Historical v5/v6 parsing retains its existing rules.
+        if (minimal_lengths_ &&
+            ((first == 0xfd && value < 253) ||
+             (first == 0xfe && value <= 0xffff) ||
+             (first == 0xff && value <= 0xffffffff))) {
+            throw std::runtime_error("Nonminimal compact-regtest length");
+        }
+        return value;
     }
 
     std::vector<uint8_t> readBytes(size_t count) {
-        if (pos_ + count > data_.size()) throw std::runtime_error("Buffer underflow");
+        if (count > data_.size() - pos_) throw std::runtime_error("Buffer underflow");
         std::vector<uint8_t> result(data_.begin() + pos_, data_.begin() + pos_ + count);
         pos_ += count;
         return result;
@@ -179,6 +193,7 @@ public:
 private:
     const std::vector<uint8_t>& data_;
     size_t pos_;
+    bool minimal_lengths_ = false;
 };
 
 // NOTE: Most Deserialize methods are implemented in src/wallet/transaction_deserializer.cpp
@@ -199,6 +214,7 @@ bool TransactionSerializer::Deserialize(Transaction& tx, const std::vector<uint8
 
         // Read version
         tx.version = static_cast<int32_t>(reader.readUint32());
+        reader.RequireMinimalLengths(Transaction::IsCompactRegtestVersion(tx.version));
 
         // Check for SegWit marker (0x00 0x01)
         bool is_segwit = false;
@@ -210,6 +226,10 @@ bool TransactionSerializer::Deserialize(Transaction& tx, const std::vector<uint8
                 reader.readUint8();  // 0x00
                 reader.readUint8();  // 0x01
             }
+        }
+
+        if (Transaction::IsCompactRegtestVersion(tx.version) && !is_segwit) {
+            throw std::runtime_error("Compact-regtest wire format requires witness marker");
         }
 
         // Read inputs

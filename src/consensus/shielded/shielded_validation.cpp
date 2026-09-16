@@ -78,7 +78,7 @@ bool VerifyOutputProof(const ShieldedOutput& output, const ValidationContext& ct
 
 } // namespace
 
-ShieldedValidationError ValidateShieldedBundle(
+static ShieldedValidationError ValidateExpandedShieldedBundle(
     const ShieldedBundle&    bundle,
     const ValidationContext& ctx) {
 
@@ -255,6 +255,27 @@ ShieldedValidationError ValidateShieldedBundle(
     return ShieldedValidationError::Ok;
 }
 
+ShieldedValidationError ValidateShieldedBundle(const ShieldedBundle& bundle,
+                                               const ValidationContext& ctx) {
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (Transaction::IsCompactRegtestVersion(ctx.transaction_version)) {
+        if (!ctx.compact_regtest_rules.Active(ctx.block_height) ||
+            !AuthResourcesActive(ctx.block_height, ctx.shielded_spend_auth_activation_height) ||
+            ctx.block_height < ctx.shielded_input_binding_activation_height ||
+            ctx.block_height < ctx.shielded_cv_binding_activation_height) {
+            return ShieldedValidationError::NotActive;
+        }
+        ShieldedBundle expanded;
+        if (!ExpandCompactRegtestBundle(bundle, expanded))
+            return ShieldedValidationError::ProofInvalid;
+        // Only a proof-verification view. The original signed context and all
+        // transaction, outpoint, block and Utreexo identities remain unchanged.
+        return ValidateExpandedShieldedBundle(expanded, ctx);
+    }
+#endif
+    return ValidateExpandedShieldedBundle(bundle, ctx);
+}
+
 ValidationContext BuildShieldedValidationContext(
     const ::dinero::Transaction& tx,
     const NullifierSet*          nullifier_set,
@@ -266,7 +287,8 @@ ValidationContext BuildShieldedValidationContext(
     uint32_t                     shielded_input_binding_activation_height,
     uint32_t                     shielded_cv_binding_activation_height,
     uint32_t                     shielded_spend_auth_activation_height,
-    uint32_t                     shielded_private_covenant_activation_height) {
+    uint32_t                     shielded_private_covenant_activation_height,
+    CompactRegtestRules           compact_regtest_rules) {
     ValidationContext ctx(
         nullifier_set,
         commitment_tree,
@@ -282,6 +304,8 @@ ValidationContext BuildShieldedValidationContext(
     ctx.shielded_spend_auth_activation_height =
         shielded_spend_auth_activation_height;
     ctx.shielded_private_covenant_activation_height = shielded_private_covenant_activation_height;
+    ctx.transaction_version = tx.version;
+    ctx.compact_regtest_rules = compact_regtest_rules;
     ctx.private_covenant_envelope = tx.vin.empty() && tx.vout.empty() && tx.has_explicit_fee;
     return ctx;
 }

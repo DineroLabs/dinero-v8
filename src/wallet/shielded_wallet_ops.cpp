@@ -6,6 +6,7 @@
  */
 
 #include "wallet/shielded_wallet_ops.h"
+#include "consensus/shielded/compact_regtest.h"
 #include "wallet/shielded_derivation.h"
 
 #include "consensus/shielded/binding_sig.h"
@@ -260,6 +261,14 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
+        !sh::PackCompactRegtestBundle(bundle)) {
+        out.status = OpStatus::ProofError;
+        out.error = "compact-regtest-unsupported-proof";
+        return out;
+    }
+#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -297,7 +306,7 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
         out.status = OpStatus::InvalidParams; out.error = "private_covenant_requires_contract_spend"; return out;
     }
     const bool auth_resources = note.key_scheme == NoteKeyScheme::Auth;
-    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+    if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
         out.status = OpStatus::InvalidParams;
         out.error = "shielded-auth-requires-tx-v6";
         return out;
@@ -423,6 +432,14 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
+        !sh::PackCompactRegtestBundle(bundle)) {
+        out.status = OpStatus::ProofError;
+        out.error = "compact-regtest-unsupported-proof";
+        return out;
+    }
+#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -549,7 +566,7 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
         out.status = OpStatus::InvalidParams; out.error = "private_covenant_requires_contract_spend"; return out;
     }
     const bool auth_resources = note.key_scheme == NoteKeyScheme::Auth;
-    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+    if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
         out.status = OpStatus::InvalidParams;
         out.error = "shielded-auth-requires-tx-v6";
         return out;
@@ -716,6 +733,14 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
+        !sh::PackCompactRegtestBundle(bundle)) {
+        out.status = OpStatus::ProofError;
+        out.error = "compact-regtest-unsupported-proof";
+        return out;
+    }
+#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -753,7 +778,7 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     bool cv_bound) {
     AttachMultiTransferResult out;
     const bool auth_resources = std::any_of(spends.begin(), spends.end(), [](const auto& n) { return n.key_scheme == NoteKeyScheme::Auth; });
-    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+    if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
         out.status = OpStatus::InvalidParams;
         out.error = "shielded-auth-requires-tx-v6";
         return out;
@@ -959,6 +984,14 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         return out;
     }
 
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
+        !sh::PackCompactRegtestBundle(bundle)) {
+        out.status = OpStatus::ProofError;
+        out.error = "compact-regtest-unsupported-proof";
+        return out;
+    }
+#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -1197,7 +1230,7 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     const OutgoingViewEmissionContext* outgoing) {
     AttachAddressedTransferResult out;
     const bool auth_resources = spend_auth;
-    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+    if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
         out.status = OpStatus::InvalidParams;
         out.error = "shielded-auth-requires-tx-v6";
         return out;
@@ -1404,6 +1437,14 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         return out;
     }
 
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
+        !sh::PackCompactRegtestBundle(bundle)) {
+        out.status = OpStatus::ProofError;
+        out.error = "compact-regtest-unsupported-proof";
+        return out;
+    }
+#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
@@ -1456,7 +1497,7 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     const OutgoingViewEmissionContext* outgoing) {
     AttachShieldResult out;
     const bool auth_resources = spend_auth;
-    if (auth_resources && tx.version != dinero::Transaction::TX_VERSION_SHIELDED_V2) {
+    if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
         out.status = OpStatus::InvalidParams;
         out.error = "shielded-auth-requires-tx-v6";
         return out;
@@ -1520,6 +1561,14 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
         return out;
     }
 
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
+        !sh::PackCompactRegtestBundle(bundle)) {
+        out.status = OpStatus::ProofError;
+        out.error = "compact-regtest-unsupported-proof";
+        return out;
+    }
+#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
