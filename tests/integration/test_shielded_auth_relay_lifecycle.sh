@@ -13,6 +13,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=helpers/daemon_process_cleanup.sh
 source "${ROOT_DIR}/tests/integration/helpers/daemon_process_cleanup.sh"
+source "${ROOT_DIR}/tests/integration/helpers/verify_lifecycle_utreexo_proof.sh"
 DINEROD="${DINEROD:-${ROOT_DIR}/build/dinerod}"
 PEER_DINEROD="${PEER_DINEROD:-${DINEROD}}"
 DATA_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dinero_outgoing_recovery.XXXXXX")"
@@ -278,13 +279,11 @@ pass "unlock hydrated recipient-only spend authority and spent the locked-discov
 # nodes. Verification resolves canonical coin metadata independently of wallet
 # scanning; compare peer commitments and prove its consensus path via the child.
 assert_unshield_proof() {
-    local proofs verify
+    local proofs
     proofs="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]")"
     jq -e '.result.successful == 1 and .result.failed == 0' <<<"${proofs}" >/dev/null \
         || fail "unshield output did not enter Utreexo: ${proofs}"
-    verify="$(rpc_result blockchain.verifyutxoproofs_batch "$(jq -c '[.result.proofs]' <<<"${proofs}")")"
-    jq -e '.result.valid == 1 and .result.invalid == 0' <<<"${verify}" >/dev/null \
-        || fail "unshield output proof verification failed: ${verify}"
+    verify_lifecycle_utreexo_proof "${proofs}"
 }
 assert_unshield_proof
 UNSHIELD_BLOCK="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
