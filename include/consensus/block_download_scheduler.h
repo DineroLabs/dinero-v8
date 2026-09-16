@@ -74,6 +74,7 @@ struct BlockFetchState {
     FetchStatus status;
     FilePosition stored_pos;  // Set when status becomes RECEIVED
     std::chrono::steady_clock::time_point request_time;  // When REQUESTED was set
+    std::chrono::steady_clock::time_point received_time; // First receipt in this retry cycle
     uint32_t retry_count = 0;
     std::string chosen_peer;
 

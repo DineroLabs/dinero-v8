@@ -389,6 +389,82 @@ set_tests_properties(ForestRestore PROPERTIES
   LABELS "storage;utreexo;forest-checkpoint-deltas;smoke"
 )
 
+# Offline checkpoint retention must preserve historical forest/proof replay
+# across interrupted, bounded deletion batches in a real RocksDB database.
+add_executable(test_checkpoint_retention
+  tests/storage/test_checkpoint_retention.cpp
+  src/common/logger.cpp
+)
+add_dependencies(test_checkpoint_retention gtest)
+target_link_libraries(test_checkpoint_retention PRIVATE
+  dinero_chainstate
+  dinero_crypto
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  gtest
+  gtest_main
+  ${CMAKE_DL_LIBS}
+)
+link_zstd_if_needed(test_checkpoint_retention)
+target_include_directories(test_checkpoint_retention PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+add_test(NAME CheckpointRetention COMMAND test_checkpoint_retention)
+set_tests_properties(CheckpointRetention PROPERTIES
+  LABELS "storage;utreexo;forest-checkpoint-deltas;smoke"
+)
+
+# Deliberately test-only: requires an existing isolated datadir copy and is
+# never installed or called by the daemon. Audit is the default operation.
+add_executable(utreexo_retention_copy
+  tests/storage/utreexo_retention_copy.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(utreexo_retention_copy PRIVATE
+  dinero_chainstate
+  dinero_crypto
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  sqlite3
+  ${CMAKE_DL_LIBS}
+)
+link_zstd_if_needed(utreexo_retention_copy)
+target_include_directories(utreexo_retention_copy PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME CheckpointRetentionCopyCli
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/storage/test_retention_copy_cli.py
+          $<TARGET_FILE:utreexo_retention_copy>
+)
+set_tests_properties(CheckpointRetentionCopyCli PROPERTIES
+  LABELS "storage;utreexo;forest-checkpoint-deltas;smoke"
+  TIMEOUT 60
+)
+
+add_executable(retention_copy_fixture
+  tests/storage/retention_copy_fixture.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(retention_copy_fixture PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto sqlite3
+  ${CMAKE_DL_LIBS}
+)
+link_zstd_if_needed(retention_copy_fixture)
+target_include_directories(retention_copy_fixture PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+)
+add_test(NAME CheckpointRetentionCopySubprocess
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/storage/test_retention_copy_subprocess.py
+          $<TARGET_FILE:utreexo_retention_copy> $<TARGET_FILE:retention_copy_fixture>
+)
+set_tests_properties(CheckpointRetentionCopySubprocess PROPERTIES
+  LABELS "storage;utreexo;forest-checkpoint-deltas;smoke"
+  TIMEOUT 120
+)
+
 # Disk-space FULL gate must be absolute-bytes, not a percentage floor
 # (DineroTX canary finding, 2026-07-17)
 add_executable(test_disk_space_classify
@@ -4367,6 +4443,29 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_stale_tip_recovery.cpp)
     TIMEOUT 15
   )
   message(STATUS "✅ StaleTipRecovery (#214) deterministic test enabled")
+endif()
+
+# 2026-09-16 field incident: connect-only isolation gap in the periodic anchor
+# auto-reconnect probe. Pure decision logic (header-only) — links only gtest,
+# no daemon/sockets.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/services/test_anchor_reconnect_policy.cpp)
+  add_executable(test_anchor_reconnect_policy
+    tests/services/test_anchor_reconnect_policy.cpp
+  )
+  add_dependencies(test_anchor_reconnect_policy gtest gtest_main)
+  target_include_directories(test_anchor_reconnect_policy BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  target_link_libraries(test_anchor_reconnect_policy PRIVATE
+    GTest::gtest_main
+  )
+  add_test(NAME AnchorReconnectPolicy COMMAND test_anchor_reconnect_policy)
+  set_tests_properties(AnchorReconnectPolicy PROPERTIES
+    LABELS "services-boundary-smoke;daemon;p2p;connect-only;smoke"
+    TIMEOUT 15
+  )
+  message(STATUS "✅ AnchorReconnectPolicy (2026-09-16 connect-only gap) deterministic test enabled")
 endif()
 
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_request_peer_order.cpp)

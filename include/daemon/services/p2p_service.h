@@ -4,6 +4,7 @@
 #include "daemon/services/prune_service.h"
 #include "daemon/services/header_refresh_coalescer.h"
 #include "daemon/services/stale_tip_recovery.h"  // issue #214: StaleTipState + decision
+#include "daemon/services/anchor_reconnect_policy.h"  // 2026-09-16: connect-only gap fix
 #include "network/port_mapper.h"
 #include "network/stun_client.h"      // NAT traversal Phase C1 (unique_ptr<StunClient> member)
 #include "network/tor_control.h"

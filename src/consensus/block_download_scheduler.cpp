@@ -444,6 +444,10 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* s
     // Mark block as received and record its storage position
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
+            // Duplicates must not keep postponing recovery of a stalled proof.
+            if (fetch_state.status != FetchStatus::RECEIVED) {
+                fetch_state.received_time = std::chrono::steady_clock::now();
+            }
             fetch_state.status = FetchStatus::RECEIVED;
             fetch_state.stored_pos = stored_pos;
             g_logger.info("[BlockDownloadScheduler] Block marked RECEIVED: " +
@@ -711,6 +715,7 @@ void BlockDownloadScheduler::TickLocked() {
                                   std::to_string(local_tip_height_) + ") — marking RECEIVED, not "
                                   "re-requesting: " + fetch_state.block_hash.GetHex().substr(0, 16) + "...");
                     fetch_state.status = FetchStatus::RECEIVED;
+                    fetch_state.received_time = now;
                     in_flight_blocks_.erase(fetch_state.block_hash);
                     received_blocks_.insert(fetch_state.block_hash);
                     continue;
@@ -846,9 +851,17 @@ void BlockDownloadScheduler::TickLocked() {
                 retry_gap = true;
                 retry_reason = "request lost";
             } else if (gap_state.status == FetchStatus::RECEIVED &&
-                       !stateless_reorg_barrier) {
+                       !stateless_reorg_barrier &&
+                       now - gap_state.received_time >= tip_retry_timeout_) {
+                // Receipt precedes ordered proof validation. Give the worker
+                // the existing frontier retry interval before treating lack of
+                // tip progress as a lost proof. Retrying on every incoming
+                // message creates a getdata/response feedback loop that can
+                // trigger the bridge's rate limit and disconnect our peer.
+                // Explicit ReRequestBlock() still retries rejected proofs
+                // immediately; a stalled receipt still expires here.
                 retry_gap = true;
-                retry_reason = "received but active tip still behind";
+                retry_reason = "received proof deadline expired with active tip still behind";
             } else if (gap_state.status == FetchStatus::CONNECTED) {
                 bool active_chain_matches = false;
                 if (get_block_hash_at_height_callback_ && want > 0) {
@@ -1268,6 +1281,7 @@ bool BlockDownloadScheduler::AdoptStoredTipBodyLocked(
         return false;
     }
 
+    fetch_state.received_time = std::chrono::steady_clock::now();
     fetch_state.status = FetchStatus::RECEIVED;
     fetch_state.stored_pos = *stored;
     in_flight_blocks_.erase(fetch_state.block_hash);

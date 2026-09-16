@@ -10,7 +10,7 @@ namespace {
 
 void Usage(const char* argv0) {
     std::cerr
-        << "Usage: " << argv0 << " <chaindb-dir> [--source-offset-back N] [--bitflip-latest] [--inspect]\n"
+        << "Usage: " << argv0 << " <chaindb-dir> [--source-offset-back N] [--bitflip-latest] [--inspect] [--inspect-height H]\n"
         << "\n"
         << "Rewrites the latest Utreexo checkpoint bytes with an older checkpoint\n"
         << "while preserving a valid checksum. This simulates a stale/contaminated\n"
@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
     int source_offset_back = 1;
     bool bitflip_latest = false;
     bool inspect = false;
+    int inspect_height = -1;
 
     for (int i = 2; i < argc; ++i) {
         std::string arg = argv[i];
@@ -66,6 +67,12 @@ int main(int argc, char** argv) {
             bitflip_latest = true;
         } else if (arg == "--inspect") {
             inspect = true;
+        } else if (arg == "--inspect-height") {
+            if (i + 1 >= argc || !ParsePositiveInt(argv[++i], inspect_height)) {
+                std::cerr << "--inspect-height requires a positive height\n";
+                return 1;
+            }
+            inspect = true;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
             Usage(argv[0]);
@@ -78,6 +85,21 @@ int main(int argc, char** argv) {
     if (init_status != dinero::Status::Ok) {
         std::cerr << "Failed to open ChainDB at " << chain_db_dir << "\n";
         return 1;
+    }
+
+    if (inspect_height >= 0) {
+        const auto checkpoint = chain_db.getUtreexoCheckpoint(inspect_height);
+        const auto checksum = chain_db.getUtreexoChecksum(inspect_height);
+        for (auto status : {checkpoint.status(), checksum.status()}) {
+            if (status != dinero::Status::Ok && status != dinero::Status::NotFound) {
+                std::cerr << "Checkpoint inspection failed\n";
+                return 1;
+            }
+        }
+        std::cout << "mode=inspect-height\ncheckpoint_height=" << inspect_height
+                  << "\ncheckpoint_present=" << (checkpoint.status() == dinero::Status::Ok)
+                  << "\nchecksum_present=" << (checksum.status() == dinero::Status::Ok) << '\n';
+        return 0;
     }
 
     auto heights_result = chain_db.listUtreexoCheckpoints();
