@@ -1,0 +1,106 @@
+name: Compact regtest fixed vectors
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/compact-regtest*.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'include/consensus/**'
+      - 'include/primitives/**'
+      - 'src/consensus/**'
+      - 'src/primitives/**'
+      - 'src/p2p/structural_validator.cpp'
+      - 'src/zk/**'
+      - 'tests/CMakeLists.txt'
+      - 'tests/consensus/test_compact_regtest_vectors.cpp'
+      - 'tests/consensus/test_shielded_resource_limits.cpp'
+      - 'tests/vectors/compact_regtest_v1/**'
+      - 'scripts/check_compact_regtest_vectors.py'
+      - 'scripts/generate_shielded_protocol_vectors.py'
+      - 'third_party/secp256k1-zkp'
+      - 'third_party/secp256k1-zkp/**'
+  push:
+    branches: [dinero-main]
+    paths:
+      - '.github/workflows/compact-regtest*.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'include/consensus/**'
+      - 'include/primitives/**'
+      - 'src/consensus/**'
+      - 'src/primitives/**'
+      - 'src/p2p/structural_validator.cpp'
+      - 'src/zk/**'
+      - 'tests/CMakeLists.txt'
+      - 'tests/consensus/test_compact_regtest_vectors.cpp'
+      - 'tests/consensus/test_shielded_resource_limits.cpp'
+      - 'tests/vectors/compact_regtest_v1/**'
+      - 'scripts/check_compact_regtest_vectors.py'
+      - 'scripts/generate_shielded_protocol_vectors.py'
+      - 'third_party/secp256k1-zkp'
+      - 'third_party/secp256k1-zkp/**'
+
+permissions:
+  contents: read
+
+jobs:
+  vectors:
+    name: saved proofs (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build cmake curl perl pkg-config python3-yaml
+          libudev-dev libusb-1.0-0-dev
+      - name: Build pinned OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Record architecture and fixture hashes
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/commit.txt
+          uname -m > evidence/architecture.txt
+          sha256sum tests/vectors/compact_regtest_v1/* > evidence/fixture-sha256.txt
+      - name: Configure experimental and default inventories
+        run: |
+          cmake -S . -B build-compact-disabled -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=OFF
+          cmake -S . -B build-compact-regtest -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=ON
+      - name: Verify experimental tests have executing lanes
+        run: >-
+          python3 scripts/ci/check_mandatory_tests_execute.py
+          build-compact-regtest .github/workflows/compact-regtest.yml
+          .github/workflows/compact-regtest-vectors.yml
+          --only-absent-from build-compact-disabled
+          --baseline scripts/ci/unexecuted_tests_baseline_compact_regtest.txt
+      - name: Build fixed-proof consumers
+        run: >-
+          cmake --build build-compact-regtest --parallel "$(nproc)"
+          --target test_compact_regtest_vectors test_shielded_resource_limits
+      - name: Verify saved proofs, independent literals and resource boundaries
+        run: |
+          set -o pipefail
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
+            -R '^(CompactRegtestFixedVectors|CompactRegtestVectorOracle|ShieldedResourceLimits)$' \
+            --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
+      - name: Retain qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compact-fixed-vectors-${{ matrix.runner }}-${{ github.sha }}
+          path: |
+            evidence/
+            build-compact-regtest/Testing/
