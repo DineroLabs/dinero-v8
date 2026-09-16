@@ -275,8 +275,8 @@ jq -e 'any(.result.notes[]; .value_una == 70000000 and .spent == true)' \
 pass "unlock hydrated recipient-only spend authority and spent the locked-discovered note"
 
 # The FINAL txid and payout must identify a real accumulator leaf on both
-# nodes. The batch verifier needs the owning wallet's UTXO metadata; compare
-# the peer's canonical commitment and prove its consensus path via the child.
+# nodes. Verification resolves canonical coin metadata independently of wallet
+# scanning; compare peer commitments and prove its consensus path via the child.
 assert_unshield_proof() {
     local proofs verify
     proofs="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]")"
