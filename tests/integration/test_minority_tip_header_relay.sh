@@ -417,6 +417,17 @@ run_variant() {
             (( $(conns_of "${a_rpc}" "${a_dir}") >= 1 )) || setup_error "[${variant}] A<->B link dropped during the self-mining window"
             info "[${variant}] after window: A @$(height_of "${a_rpc}" "${a_dir}") headers=$(rpc "${a_rpc}" "${a_dir}" getblockchaininfo | jq -r .headers) conns=$(conns_of "${a_rpc}" "${a_dir}"), B @$(height_of "${b_rpc}" "${b_dir}"); converged=${converged}"
             b_tip="$(tip_of "${b_rpc}" "${b_dir}")"
+            # The loop above only confirms A adopted B's branch at BASE+1 — the
+            # moment that's true it breaks, but B keeps mining +2/round for the
+            # rest of the window, so B's tip captured just above can already sit
+            # ahead of what A has locally synced. check_outcome asserts an exact
+            # getchaintips(A) match against b_tip; give A the same catch-up
+            # window every other variant already gets before that strict check
+            # runs, instead of asserting against a tip A hasn't received yet.
+            if [[ "${converged}" == "1" ]]; then
+                info "[${variant}] waiting up to ${CONVERGE_WAIT}s for A to fully catch up to B's latest tip after the self-mining window…"
+                wait_for "[[ \$(tip_of ${a_rpc} ${a_dir}) == ${b_tip} ]]" "${CONVERGE_WAIT}" || converged=0
+            fi
         else
             info "[${variant}] waiting up to ${CONVERGE_WAIT}s for A to reorg over the live link…"
             wait_for "[[ \$(tip_of ${a_rpc} ${a_dir}) == ${b_tip} ]]" "${CONVERGE_WAIT}" && converged=1
