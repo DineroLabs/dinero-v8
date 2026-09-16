@@ -2576,7 +2576,18 @@ bool DaemonApp::Init(int argc, char** argv) {
     // once the snapshot loads or the bootstrap is abandoned (→ full IBD). No-op
     // for nodes without assumeutxo_snapshot (pending is never set).
     block_download->SetDeferCheck([this]() -> bool {
-        return ctx_.chainstate && ctx_.chainstate->IsSnapshotBootstrapPending();
+        if (!ctx_.chainstate) {
+            return true;
+        }
+        // issue #751: the drain thread can start ticking before this
+        // service's own Start() completes; every connect attempt in that
+        // window returns TEMPORARY_FAIL ("service not started"), escalating
+        // a false storage-wedge alarm after 50 ticks. Defer until started,
+        // same mechanism already used for a pending snapshot bootstrap.
+        if (!ctx_.chainstate->IsStarted()) {
+            return true;
+        }
+        return ctx_.chainstate->IsSnapshotBootstrapPending();
     });
 
     // AssumeUTXO body backfill: EnableBackfill consults this predicate to

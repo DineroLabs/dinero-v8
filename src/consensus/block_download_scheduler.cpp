@@ -2098,11 +2098,30 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                     // path (e.g., CSN OnUtxoBlock) — mark it CONNECTED.
                     if (get_block_hash_at_height_callback_ && fs.height > 0) {
                         uint256 chain_hash;
-                        if (get_block_hash_at_height_callback_(fs.height, chain_hash) &&
-                            chain_hash == fs.block_hash) {
+                        const bool resolved = get_block_hash_at_height_callback_(fs.height, chain_hash);
+                        if (resolved && chain_hash == fs.block_hash) {
                             fs.status = FetchStatus::CONNECTED;
                             in_flight_blocks_.erase(fs.block_hash);
                             continue;  // Already in chainstate, skip
+                        }
+                        if (!resolved) {
+                            // Ancestry not yet resolvable at this height. On a
+                            // cold start the active tip can publish near the
+                            // real height (startup-load / self-heal-realign)
+                            // before the slower background reconstruction has
+                            // linked its pprev chain back this far — the
+                            // lookup legitimately cannot answer yet, it is not
+                            // "no match" (issue #751). Treating unresolved the
+                            // same as a genuine fork below tip selected this
+                            // height as `want` and drove a connect attempt
+                            // that can never succeed (the chainstate has long
+                            // since moved past it): TEMPORARY_FAIL forever,
+                            // escalating a false "#371 storage wedge" alarm.
+                            // Defer instead — re-evaluated every tick, so this
+                            // self-heals the moment ancestry catches up (field-
+                            // measured: ~60s), with no persisted state and no
+                            // assumption about a single contiguous gap.
+                            continue;
                         }
                     }
                     want = fs.height;

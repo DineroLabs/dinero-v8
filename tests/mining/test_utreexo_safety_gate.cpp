@@ -11,6 +11,8 @@
 //   1. CreateNewBlock returns nullptr when BlockValidator is missing
 //   2. CreateNewBlock succeeds when BlockValidator is wired
 //   3. CreateJob returns nullptr when BlockValidator is missing
+//   4. A missing input is excluded before Utreexo proof construction
+//   5. A selectable input with a missing forest leaf is quarantined
 //
 // ============================================================================
 
@@ -147,7 +149,7 @@ protected:
 
         utxo_set_ = std::make_unique<SafetyGateUTXOSet>();
         validator_ = std::make_unique<BlockValidator>(utxo_set_.get());
-        mempool_ = std::make_unique<Mempool>(chain_db_.get());
+        mempool_ = std::make_unique<Mempool>(chain_db_.get(), utxo_set_.get());
     }
 
     void TearDown() override {
@@ -203,6 +205,7 @@ TEST_F(UtreexoSafetyGateTest, CreateNewBlockFailsWithoutValidator) {
     // Create assembler WITHOUT wiring BlockValidator
     BlockAssembler assembler(chain_db_.get());
     assembler.SetConsensusUTXOSet(utxo_set_.get());
+    assembler.setMempool(mempool_.get());
 
     // Attempt to create block — MUST return nullptr (not a block with null root)
     auto block = assembler.CreateNewBlock(MINING_ADDRESS);
@@ -250,13 +253,50 @@ TEST_F(UtreexoSafetyGateTest, CreateJobFailsWithoutValidator) {
 }
 
 // ============================================================================
-// Test 4: Bad relayed tx is quarantined from templates instead of poisoning mining
+// Test 4: An unavailable input is rejected before it reaches proof construction
+// ============================================================================
+
+TEST_F(UtreexoSafetyGateTest, CreateNewBlockSkipsMissingInputBeforeProofConstruction) {
+    const Transaction bad_tx = MakeUncheckedTransparentTx(/*input_seed=*/42);
+    const uint256 bad_txid = bad_tx.GetTxid().AsUint256();
+    mempool_->addUnchecked(bad_tx);
+    ASSERT_TRUE(mempool_->selectTransactionsForBlock(1'000'000, 4'000'000, 1).empty());
+
+    BlockAssembler assembler(chain_db_.get());
+    assembler.SetConsensusUTXOSet(utxo_set_.get());
+    assembler.SetBlockValidator(validator_.get());
+    assembler.SetUTXOProvider(std::shared_ptr<consensus::IUTXOProvider>(
+        utxo_set_.get(), [](auto*){}));
+    assembler.setMempool(mempool_.get());
+
+    const auto root_before = utxo_set_->GetUtreexoRoot();
+    auto block = assembler.CreateNewBlock(MINING_ADDRESS);
+    ASSERT_NE(block, nullptr);
+    EXPECT_EQ(block->vtx.size(), 1u);
+    EXPECT_FALSE(block->header.utreexo_root.IsNull());
+    EXPECT_EQ(utxo_set_->GetUtreexoRoot(), root_before);
+    EXPECT_TRUE(mempool_->hasTransaction(bad_txid));
+    EXPECT_FALSE(mempool_->isExcludedFromBlockTemplates(bad_txid));
+}
+
+// ============================================================================
+// Test 5: A later forest/proof failure still quarantines the offending tx
 // ============================================================================
 
 TEST_F(UtreexoSafetyGateTest, CreateNewBlockQuarantinesTemplatePoisoningTx) {
     Transaction bad_tx = MakeUncheckedTransparentTx(/*input_seed=*/42);
     const uint256 bad_txid = bad_tx.GetTxid().AsUint256();
+    const OutPoint input{bad_tx.vin[0].prevout.txid, bad_tx.vin[0].prevout.vout};
+    // Fault injection: the authoritative coin exists, but its forest leaf is
+    // missing. A completely absent coin is now rejected by mempool selection
+    // and cannot exercise the assembler's later quarantine/recovery path.
+    ASSERT_TRUE(utxo_set_->AddCoin(input,
+        UTXOEntry(AmountUna::Una(2000), std::vector<uint8_t>{0x51}, 0, false)));
+    ASSERT_EQ(utxo_set_->GetForest().getNumLeaves(), 0u);
     mempool_->addUnchecked(bad_tx);
+    const auto selected = mempool_->selectTransactionsForBlock(1'000'000, 4'000'000, 1);
+    ASSERT_EQ(selected.size(), 1u) << "Poison must reach the Utreexo safety gate";
+    ASSERT_EQ(selected.front().GetTxid().AsUint256(), bad_txid);
 
     BlockAssembler assembler(chain_db_.get());
     assembler.SetConsensusUTXOSet(utxo_set_.get());
@@ -277,6 +317,11 @@ TEST_F(UtreexoSafetyGateTest, CreateNewBlockQuarantinesTemplatePoisoningTx) {
     EXPECT_TRUE(mempool_->isExcludedFromBlockTemplates(bad_txid, &exclusion_reason))
         << "Offending tx should be marked as template-excluded for future retries";
     EXPECT_FALSE(exclusion_reason.empty());
+    EXPECT_NE(exclusion_reason.find("utreexo-leaf-missing-in-pure"), std::string::npos)
+        << exclusion_reason;
+    EXPECT_FALSE(block->header.utreexo_root.IsNull());
+    EXPECT_EQ(utxo_set_->GetForest().getNumLeaves(), 0u)
+        << "Template recovery must not mutate the live forest";
 
     auto block_again = assembler.CreateNewBlock(MINING_ADDRESS);
     ASSERT_NE(block_again, nullptr)

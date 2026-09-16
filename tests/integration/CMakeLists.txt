@@ -660,6 +660,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_e2e.sh)
     message(STATUS "  ✓ AssumeUtxoReplayE2E registered")
 endif()
 
+# The source can legitimately fall back to another P2P port when its requested
+# port is occupied. Exercise actual peer discovery and replay under that fault,
+# in addition to the full unmodified A/D/B/C/F lifecycle above.
+add_test(
+    NAME AssumeUtxoReplayPortFallback
+    COMMAND ${CMAKE_COMMAND} -E env
+        "DINEROD=$<TARGET_FILE:dinerod>"
+        python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_assumeutxo_replay_port_fallback.py
+)
+set_tests_properties(AssumeUtxoReplayPortFallback PROPERTIES
+    LABELS "assumeutxo;replay;e2e"
+    TIMEOUT 600
+)
+
 # issue #353 bug 2: AssumeUTXO promotion race. Source keeps mining PAST base and
 # stays connected; the consumer's slowed genesis->base replay
 # (DINERO_DEBUG_BG_VALIDATION_DELAY_MS) lets forward sync race the tip past base.
@@ -903,6 +917,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_dpi_header_filter_proof_flow.sh)
         NAME DpiHeaderFilterProofFlow
         COMMAND ${CMAKE_COMMAND} -E env
             "DINEROD=$<TARGET_FILE:dinerod>"
+            "DPI_ARTIFACT_DIR=${CMAKE_BINARY_DIR}/Testing/dpi-header-filter-proof-flow"
             ${CMAKE_CURRENT_SOURCE_DIR}/test_dpi_header_filter_proof_flow.sh
     )
     set_tests_properties(DpiHeaderFilterProofFlow PROPERTIES

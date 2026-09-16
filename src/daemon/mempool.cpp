@@ -1,4 +1,5 @@
 #include "consensus/contextual_locks.h"
+#include "consensus/coinbase_maturity.h"
 #include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
 #include "daemon/mempool.h"
@@ -2280,6 +2281,44 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     const Transaction& tx = entry.tx;
     if (next_block_height == 0) {
         return true;
+    }
+
+    // A rewind can make an admitted coinbase spend immature again. Resolve
+    // against the active chain view, not coins_view_: the mempool overlay
+    // already marks this transaction's own inputs spent. Frozen pre-base
+    // coins must still pass the live-forest resolver before auxiliary rows
+    // can be consulted. The package selector also applies this predicate to
+    // every ancestor, so an excluded spend cannot be pulled in by its child.
+    for (const auto& input : tx.vin) {
+        const OutPoint outpoint{input.prevout.txid, input.prevout.vout};
+        const auto parent = m_transactions.find(input.prevout.txid.AsUint256());
+        if (parent != m_transactions.end() &&
+            input.prevout.vout < parent->second.tx.vout.size()) {
+            continue;  // Unconfirmed transaction outputs are not coinbase.
+        }
+
+        std::optional<consensus::UTXOEntry> coin;
+        const bool frozen = prebase_coin_predicate_ && prebase_coin_predicate_(outpoint);
+        if (frozen) {
+            if (prebase_coin_resolver_) coin = prebase_coin_resolver_(outpoint);
+        } else {
+            if (chain_state_view_) {
+                const auto result = chain_state_view_->getCoin(outpoint);
+                if (result.ok()) coin = result.value();
+            }
+            if (!coin && prebase_coin_resolver_ && !prebase_coin_predicate_) {
+                coin = prebase_coin_resolver_(outpoint);
+            }
+        }
+        if (!coin) {
+            if (reason) *reason = "input unavailable at template selection: " + outpoint.ToString();
+            return false;
+        }
+        if (coin->isCoinbase &&
+            !CoinbaseMaturity::isCoinbaseMature(coin->height, next_block_height)) {
+            if (reason) *reason = "coinbase input immature at template height: " + outpoint.ToString();
+            return false;
+        }
     }
 
     // Transparent transactions are admitted under the consensus rules for

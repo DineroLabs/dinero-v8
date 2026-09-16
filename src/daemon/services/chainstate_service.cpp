@@ -4930,6 +4930,7 @@ bool ChainstateService::Start() {
     }
 
     started_ = true;
+    started_flag_.store(true);
     return true;
 }
 
@@ -4991,6 +4992,7 @@ void ChainstateService::Stop() {
 
     logger_->info("[ChainstateService] Chainstate shutdown complete");
     started_ = false;
+    started_flag_.store(false);
 }
 
 bool ChainstateService::IsHealthy() const {

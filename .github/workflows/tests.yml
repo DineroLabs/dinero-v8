@@ -563,6 +563,26 @@ jobs:
             done
           done
 
+      # Replay failures formerly preserved datadirs under /tmp but uploaded
+      # only CTest's final invocation. Capture startup and connection evidence
+      # before the runner disappears; do not upload cookies or wallet files.
+      - name: Collect AssumeUTXO replay failure evidence
+        if: always()
+        run: |
+          dest=build-tests/Testing/assumeutxo-replay
+          mkdir -p "$dest"
+          for root in /tmp/dinero_replay_e2e_*; do
+            [ -d "$root" ] || continue
+            name=$(basename "$root")
+            for f in "$root"/*/daemon*.log "$root"/*/replay-*.json; do
+              [ -f "$f" ] || continue
+              node=$(basename "$(dirname "$f")")
+              mkdir -p "$dest/$name/$node"
+              head -c 20971520 "$f" > "$dest/$name/$node/$(basename "$f").head"
+              tail -c 20971520 "$f" > "$dest/$name/$node/$(basename "$f").tail"
+            done
+          done
+
       - name: Upload ctest logs
         if: always()
         uses: actions/upload-artifact@v4
