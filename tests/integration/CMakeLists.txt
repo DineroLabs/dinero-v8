@@ -2386,3 +2386,11 @@ set_tests_properties(PrivateCovenantLifecycle PROPERTIES
   ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
   LABELS "integration;shielded;covenant;wallet;restart;reorg;mandatory"
   TIMEOUT 2400 RUN_SERIAL TRUE)
+
+# Proof RPC must not consult wallet-owned, asynchronously populated coin metadata.
+add_test(NAME UtreexoBatchProofCanonicalCoins
+  COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_utreexo_batch_canonical_coins.sh)
+set_tests_properties(UtreexoBatchProofCanonicalCoins PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "integration;rpc;utreexo;restart;reorg;mandatory"
+  TIMEOUT 300 RUN_SERIAL TRUE)

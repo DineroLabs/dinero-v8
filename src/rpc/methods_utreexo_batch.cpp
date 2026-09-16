@@ -18,6 +18,7 @@
 #include "primitives/hash_domains.h"
 #include "storage/chain_db.h"
 #include "common/status.h"
+#include "util/hex.h"
 #include "common/logger.h"
 #include <sstream>
 #include <iomanip>
@@ -405,8 +406,15 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             return result;
         }
 
-        // Phase 11a: Verification queries chainstate (UTXO set + forest), not ChainDB (storage)
-        // ChainDB is removed here - we only need chainstate for consensus queries
+        // Canonical coins are committed with the active chain in ChainDB.
+        // The legacy getUTXOIndex() accessor returns wallet-owned metadata,
+        // which is incomplete on non-owning nodes and lags connect/reorg events.
+        auto* chain_db = chainstate->GetChainDB();
+        if (!chain_db) {
+            result["error"]["code"] = -1;
+            result["error"]["message"] = "Canonical coin database not available";
+            return result;
+        }
 
         // Parse parameters
         if (params.empty() || !params[0].isArray()) {
@@ -488,37 +496,41 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             dinero::TxId txid = txid_opt.value();
             dinero::uint256 txid_uint256 = txid.AsUint256();
 
-            // Phase 11a FIX: Query chainstate (authoritative UTXO set), NOT ChainDB (storage layer)
-            // ChainDB is persistence; chainstate is consensus authority
-            auto* utxo_index = chainstate->getUTXOIndex();
-            if (!utxo_index) {
+            // Resolve value, script and creation metadata from the same
+            // canonical coin source used by getutxoproof, never from the wallet
+            // or caller-supplied metadata. A spent coin must fail even if the
+            // wallet still retains its history row.
+            auto coin_result = chain_db->getCoin(txid_uint256, vout);
+            if (!coin_result.ok()) {
                 verify_result["valid"] = false;
-                verify_result["error_code"] = "utxo-index-unavailable";
-                verify_result["error"] = "UTXO index not available";
+                const bool missing = coin_result.status() == dinero::Status::NotFound;
+                verify_result["error_code"] = missing ? "utxo-not-found" : "utxo-lookup-failed";
+                verify_result["error"] = missing
+                    ? "UTXO not found in canonical chainstate (spent or never existed)"
+                    : "Canonical UTXO lookup failed";
                 invalid_count++;
                 results_array.append(verify_result);
                 continue;
             }
 
-            std::optional<dinero::WalletUTXO> utxo_opt = utxo_index->GetUTXO(txid, vout);
-            if (!utxo_opt.has_value()) {
+            const dinero::Coin& coin = coin_result.value();
+            std::vector<uint8_t> script_pubkey;
+            if (coin.height < 0 || !util::unhex(coin.script_pubkey, script_pubkey)) {
                 verify_result["valid"] = false;
-                verify_result["error_code"] = "utxo-not-found";
-                verify_result["error"] = "UTXO not found in chainstate (spent or never existed)";
+                verify_result["error_code"] = "invalid-utxo-data";
+                verify_result["error"] = "Invalid canonical UTXO creation metadata";
                 invalid_count++;
                 results_array.append(verify_result);
                 continue;
             }
-
-            const dinero::WalletUTXO& utxo = utxo_opt.value();
 
             dinero::consensus::UtreexoHash leaf_hash = dinero::consensus::HashUTXOForCreationHeight(
                 txid_uint256,
                 vout,
-                utxo.value.GetUna(),  // AmountUna -> uint64_t
-                utxo.spk,              // scriptPubKey bytes
-                static_cast<uint32_t>(utxo.height),
-                utxo.is_coinbase
+                coin.amount,
+                script_pubkey,
+                static_cast<uint32_t>(coin.height),
+                coin.coinbase
             );
 
             // Parse proof structure
