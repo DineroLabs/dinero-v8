@@ -2407,3 +2407,10 @@ set_tests_properties(UtreexoBatchProofCanonicalCoins PROPERTIES
   ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
   LABELS "integration;rpc;utreexo;restart;reorg;mandatory"
   TIMEOUT 300 RUN_SERIAL TRUE)
+
+add_test(NAME CsnManualInvalidation
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_manual_invalidation.py)
+set_tests_properties(CsnManualInvalidation PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;csn;utreexo;reorg;mandatory"
+    TIMEOUT 300 RUN_SERIAL TRUE)
