@@ -17,8 +17,8 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 DATADIR="/tmp/dpi_header_filter_proof_flow_$$"
-PORT_RPC=23120
-PORT_P2P=23119
+PORT_RPC="${PORT_RPC:-23120}"
+PORT_P2P="${PORT_P2P:-23119}"
 DAEMON_PID=""
 KEEP_DATADIR="${KEEP_DATADIR:-0}"
 
@@ -31,6 +31,9 @@ pass() { echo -e "${GREEN}PASS:${NC} $*"; }
 fail() {
     echo -e "${RED}FAIL:${NC} $*" >&2
     if [ -f "$DATADIR/daemon.log" ]; then
+        echo "---- first block-activation errors (before background replay noise) ----" >&2
+        grep -nE 'ConnectBlock failed:|ConnectTip FAILED|Failed to connect block' \
+            "$DATADIR/daemon.log" | head -n 20 >&2 || true
         echo -e "${YELLOW}---- daemon.log tail ----${NC}" >&2
         tail -n 120 "$DATADIR/daemon.log" >&2 || true
     fi
@@ -118,7 +121,12 @@ stop_daemon() {
 }
 
 cleanup() {
+    local status=$?
     stop_daemon
+    if [ "$status" -ne 0 ] && [ -n "${DPI_ARTIFACT_DIR:-}" ]; then
+        mkdir -p "$DPI_ARTIFACT_DIR"
+        cp "$DATADIR/daemon.log" "$DPI_ARTIFACT_DIR/daemon.log" || true
+    fi
     if [ "$KEEP_DATADIR" = "1" ]; then
         info "KEEP_DATADIR=1 preserving $DATADIR"
     else
@@ -242,6 +250,18 @@ rpc_result "generatetoaddress" "[110,\"$ADDR\"]" >/dev/null
 TIP_HEIGHT="$(rpc_scalar "getblockcount" "[]" '.')"
 [ "$TIP_HEIGHT" -ge 110 ] || fail "expected height >= 110, got $TIP_HEIGHT"
 
+# Pin the payment to the youngest currently spendable coinbase. At tip 110,
+# height 11 is mature for block 111, but not for the replacement block 110
+# after the rewind below. Random wallet selection used to hide this boundary.
+BOUNDARY_HASH="$(rpc_scalar "getblockhash" '[11]' '.')"
+BOUNDARY_TXID="$(rpc_scalar "getblock" "[\"$BOUNDARY_HASH\"]" '.tx[0] | if type == "object" then .txid else . end')"
+[ "${#BOUNDARY_TXID}" -eq 64 ] || fail "missing height-11 coinbase"
+rpc_result "wallet.lockunspent" '[false,[]]' | jq -e '.success == true' >/dev/null \
+    || fail "could not lock wallet inputs"
+rpc_result "wallet.lockunspent" "[true,[{\"txid\":\"$BOUNDARY_TXID\",\"vout\":0}]]" \
+    | jq -e '.success == true' >/dev/null || fail "could not unlock boundary coinbase"
+info "Boundary coinbase: $BOUNDARY_TXID:0 at height 11"
+
 # Regression #737: the signed invoice amount must remain an integer una value
 # all the way through wallet.sendtoaddress. 0.29 DIN used to become 28,999,999
 # una after the second floating-point truncation, causing amount_match=false.
@@ -264,6 +284,13 @@ VERIFY_RESULT="$(rpc_result "dpi.verifypackage" "{\"package\":\"$PACKAGE\",\"inv
 [ "$(echo "$VERIFY_RESULT" | jq -r '.tier')" = "T1" ] \
     || fail "exact invoice payment did not reach T1"
 pass "DPI payment preserved exactly 29000000 una and verified at T1"
+PAY_TXID="$(echo "$PAY_RESULT" | jq -r '.txid // empty')"
+PAY_TX="$(rpc_result "wallet.getrawtransaction" "[\"$PAY_TXID\",true]")"
+echo "$PAY_TX" | jq -e --arg txid "$BOUNDARY_TXID" \
+    '.vin | length == 1 and .[0].txid == $txid and .[0].vout == 0' >/dev/null \
+    || fail "payment did not spend the pinned height-11 coinbase"
+rpc_result "wallet.lockunspent" '[true,[]]' | jq -e '.success == true' >/dev/null \
+    || fail "could not unlock proof-bundle inputs"
 
 FROM_HEIGHT=$((TIP_HEIGHT - 9))
 if [ "$FROM_HEIGHT" -lt 0 ]; then
@@ -331,8 +358,17 @@ ALT_ADDR="$(rpc_scalar "wallet.getnewaddress" "[]" '.address // empty')"
 [ -n "$ALT_ADDR" ] || fail "failed to get alternate mining address"
 
 info "Forcing tip reorg and refreshing proof bundle"
+info "Invalidating $OLD_TIP at height $OLD_HEIGHT; pending payment $PAY_TXID"
 rpc_result "blockchain.invalidateblock" "[\"$OLD_TIP\"]" >/dev/null
+[ "$(rpc_scalar "getblockcount" '[]' '.')" -eq 109 ] || fail "tip did not rewind to 109"
 rpc_result "generatetoaddress" "[1,\"$ALT_ADDR\"]" >/dev/null
+REPLACEMENT_HASH="$(rpc_scalar "getbestblockhash" '[]' '.')"
+rpc_result "getblock" "[\"$REPLACEMENT_HASH\"]" \
+    | jq -e --arg txid "$PAY_TXID" \
+        '[.tx[] | if type == "object" then .txid else . end] | index($txid) == null' >/dev/null \
+    || fail "replacement block included the immature payment"
+rpc_result "getrawmempool" '[]' | jq -e --arg txid "$PAY_TXID" 'index($txid) != null' >/dev/null \
+    || fail "template selection evicted the pending payment"
 
 STATUS_AFTER_REORG="$(rpc_result "wallet.proofstatus" "[\"$OLD_ROOT\"]")"
 [ "$(echo "$STATUS_AFTER_REORG" | jq -r '.stale')" = "true" ] || fail "proofstatus did not mark old bundle root stale after reorg"
@@ -344,5 +380,20 @@ assert_bundle_matches_headers "$REFRESHED_BUNDLE" "refreshed bundle"
 NEW_ROOT="$(echo "$REFRESHED_BUNDLE" | jq -r '.accumulator_root')"
 [ "$NEW_ROOT" != "$OLD_ROOT" ] || fail "refreshed bundle root did not change after tip reorg"
 pass "refreshed bundle root changed after reorg"
+
+# At height 111 the pinned coinbase has 100 blocks on top again. The same
+# pending payment must now mine successfully through normal block validation.
+rpc_result "generatetoaddress" "[1,\"$ALT_ADDR\"]" >/dev/null
+MATURE_HASH="$(rpc_scalar "getbestblockhash" '[]' '.')"
+rpc_result "getblock" "[\"$MATURE_HASH\"]" \
+    | jq -e --arg txid "$PAY_TXID" \
+        '[.tx[] | if type == "object" then .txid else . end] | index($txid) != null' >/dev/null \
+    || fail "mature payment was not mined in the following block"
+MATURE_BUNDLE="$(rpc_result "wallet.getproofbundle" '[{"min_confirmations":1,"spendable_only":true,"max_utxos":64}]')"
+assert_bundle_matches_headers "$MATURE_BUNDLE" "bundle after mature payment"
+rpc_result "blockchain.getutxoproofs_batch" "[[{\"txid\":\"$BOUNDARY_TXID\",\"vout\":0}]]" \
+    | jq -e '.successful == 0 and .failed == 1' >/dev/null \
+    || fail "spent boundary coinbase remained provable"
+pass "boundary payment deferred at height 110 and mined at height 111"
 
 echo -e "${GREEN}SUCCESS:${NC} DineroDPI header/filter/proof flow checks passed"

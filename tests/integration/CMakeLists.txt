@@ -890,6 +890,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_dpi_header_filter_proof_flow.sh)
         NAME DpiHeaderFilterProofFlow
         COMMAND ${CMAKE_COMMAND} -E env
             "DINEROD=$<TARGET_FILE:dinerod>"
+            "DPI_ARTIFACT_DIR=${CMAKE_BINARY_DIR}/Testing/dpi-header-filter-proof-flow"
             ${CMAKE_CURRENT_SOURCE_DIR}/test_dpi_header_filter_proof_flow.sh
     )
     set_tests_properties(DpiHeaderFilterProofFlow PROPERTIES
