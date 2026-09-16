@@ -1,0 +1,220 @@
+{
+  "status": "offline encoding study; no new accepted transaction format or fee change",
+  "source_commit": "5ef4c0ba5277eab9c8e6724d3d725ce76224947b",
+  "fixture_generator": "AuthResourceMeasurements with opt-in dump after full bundle and resource validation",
+  "platform": "macOS arm64, M4 Max, native Release",
+  "experimental_tag": "DZE1",
+  "transactions": [
+    {
+      "shape": "unshield",
+      "original_bytes": 75714,
+      "original_sha256": "60e0a3f36ee72cf35bd930031a40f6dbd5d7600406870c48bdc6769ca635894a",
+      "proof_count": 1,
+      "proof_payload_bytes_saved": 33689,
+      "percent_of_original_transaction": 44.5
+    },
+    {
+      "shape": "shield",
+      "original_bytes": 46373,
+      "original_sha256": "fd744de0cd5c0bc1362511fc113bda491b45c22cc99586d010950fd8656c73c0",
+      "proof_count": 1,
+      "proof_payload_bytes_saved": 18575,
+      "percent_of_original_transaction": 40.06
+    },
+    {
+      "shape": "transfer_1in_2out",
+      "original_bytes": 167935,
+      "original_sha256": "7743a44370b47f001892045619e8823c39d6f09b9922b724e713b02505e049e8",
+      "proof_count": 3,
+      "proof_payload_bytes_saved": 70839,
+      "percent_of_original_transaction": 42.18
+    }
+  ],
+  "proofs": [
+    {
+      "fixture": "unshield.spend-0.bin",
+      "bytes": 73281,
+      "encoded_bytes": 39592,
+      "saved_bytes": 33689,
+      "saved_percent": 45.97,
+      "sha256": "e19b88265b1e494ef794420909203f207e320369f546b4f95746c328da04ac37",
+      "expanded_sha256": "e19b88265b1e494ef794420909203f207e320369f546b4f95746c328da04ac37",
+      "version": 6,
+      "parts": {
+        "version": 1,
+        "witness_commitment": 33387,
+        "error_commitment": 33717,
+        "circuit_hash": 32,
+        "outer_sumcheck": 2568,
+        "claims": 128,
+        "inner_sumcheck": 1928,
+        "witness_evaluation": 760,
+        "error_evaluation": 760
+      },
+      "dimensions": {
+        "witness_commitment": {
+          "rows": 1011,
+          "columns": 1024,
+          "total": 1035264
+        },
+        "error_commitment": {
+          "rows": 1021,
+          "columns": 1024,
+          "total": 1045504
+        }
+      },
+      "error_header": 33388,
+      "error_start": 33412,
+      "error_end": 67105,
+      "error_point_bytes": 33693
+    },
+    {
+      "fixture": "shield.output-0.bin",
+      "bytes": 43185,
+      "encoded_bytes": 24610,
+      "saved_bytes": 18575,
+      "saved_percent": 43.01,
+      "sha256": "647a719b6a6afd72ce0e3a64ca3d86cd1f91819f202653e21e27095a738aa976",
+      "expanded_sha256": "647a719b6a6afd72ce0e3a64ca3d86cd1f91819f202653e21e27095a738aa976",
+      "version": 4,
+      "parts": {
+        "version": 1,
+        "witness_commitment": 18405,
+        "error_commitment": 18603,
+        "circuit_hash": 32,
+        "outer_sumcheck": 2568,
+        "claims": 128,
+        "inner_sumcheck": 1928,
+        "witness_evaluation": 760,
+        "error_evaluation": 760
+      },
+      "dimensions": {
+        "witness_commitment": {
+          "rows": 557,
+          "columns": 1024,
+          "total": 570368
+        },
+        "error_commitment": {
+          "rows": 563,
+          "columns": 1024,
+          "total": 576512
+        }
+      },
+      "error_header": 18406,
+      "error_start": 18430,
+      "error_end": 37009,
+      "error_point_bytes": 18579
+    },
+    {
+      "fixture": "transfer_1in_2out.output-0.bin",
+      "bytes": 43185,
+      "encoded_bytes": 24610,
+      "saved_bytes": 18575,
+      "saved_percent": 43.01,
+      "sha256": "edc97728c956eb0404cbe791a12f417ef21b3fcc76e03bfa0caa6d573cab01c4",
+      "expanded_sha256": "edc97728c956eb0404cbe791a12f417ef21b3fcc76e03bfa0caa6d573cab01c4",
+      "version": 4,
+      "parts": {
+        "version": 1,
+        "witness_commitment": 18405,
+        "error_commitment": 18603,
+        "circuit_hash": 32,
+        "outer_sumcheck": 2568,
+        "claims": 128,
+        "inner_sumcheck": 1928,
+        "witness_evaluation": 760,
+        "error_evaluation": 760
+      },
+      "dimensions": {
+        "witness_commitment": {
+          "rows": 557,
+          "columns": 1024,
+          "total": 570368
+        },
+        "error_commitment": {
+          "rows": 563,
+          "columns": 1024,
+          "total": 576512
+        }
+      },
+      "error_header": 18406,
+      "error_start": 18430,
+      "error_end": 37009,
+      "error_point_bytes": 18579
+    },
+    {
+      "fixture": "transfer_1in_2out.output-1.bin",
+      "bytes": 43185,
+      "encoded_bytes": 24610,
+      "saved_bytes": 18575,
+      "saved_percent": 43.01,
+      "sha256": "73547640f764a3b0a399c81ed39a4db967ecd120fcb8156cfd6f58cd0da98ead",
+      "expanded_sha256": "73547640f764a3b0a399c81ed39a4db967ecd120fcb8156cfd6f58cd0da98ead",
+      "version": 4,
+      "parts": {
+        "version": 1,
+        "witness_commitment": 18405,
+        "error_commitment": 18603,
+        "circuit_hash": 32,
+        "outer_sumcheck": 2568,
+        "claims": 128,
+        "inner_sumcheck": 1928,
+        "witness_evaluation": 760,
+        "error_evaluation": 760
+      },
+      "dimensions": {
+        "witness_commitment": {
+          "rows": 557,
+          "columns": 1024,
+          "total": 570368
+        },
+        "error_commitment": {
+          "rows": 563,
+          "columns": 1024,
+          "total": 576512
+        }
+      },
+      "error_header": 18406,
+      "error_start": 18430,
+      "error_end": 37009,
+      "error_point_bytes": 18579
+    },
+    {
+      "fixture": "transfer_1in_2out.spend-0.bin",
+      "bytes": 73281,
+      "encoded_bytes": 39592,
+      "saved_bytes": 33689,
+      "saved_percent": 45.97,
+      "sha256": "45f6e1ad5aa31c6ad5bee7b34c5286685ff5c329ef80b6495d787162cfd7263c",
+      "expanded_sha256": "45f6e1ad5aa31c6ad5bee7b34c5286685ff5c329ef80b6495d787162cfd7263c",
+      "version": 6,
+      "parts": {
+        "version": 1,
+        "witness_commitment": 33387,
+        "error_commitment": 33717,
+        "circuit_hash": 32,
+        "outer_sumcheck": 2568,
+        "claims": 128,
+        "inner_sumcheck": 1928,
+        "witness_evaluation": 760,
+        "error_evaluation": 760
+      },
+      "dimensions": {
+        "witness_commitment": {
+          "rows": 1011,
+          "columns": 1024,
+          "total": 1035264
+        },
+        "error_commitment": {
+          "rows": 1021,
+          "columns": 1024,
+          "total": 1045504
+        }
+      },
+      "error_header": 33388,
+      "error_start": 33412,
+      "error_end": 67105,
+      "error_point_bytes": 33693
+    }
+  ]
+}

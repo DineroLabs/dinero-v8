@@ -14,8 +14,11 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <limits>
+#include <stdexcept>
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -35,6 +38,8 @@
 #include "wallet/shielded_derivation.h"
 #include "external/bech32/bech32.hpp"
 #include "wallet/shielded_wallet_ops.h"
+#include "../../contrib/benchmarks/compact_spartan_codec.h"
+#include "consensus/utreexo_accumulator.h"
 
 #include <algorithm>
 #include <array>
@@ -1916,6 +1921,18 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
         peak_rss *= 1024; // Linux/BSD report KiB; macOS reports bytes.
 #endif
 #endif
+        if (const char* directory = std::getenv("AUTH_RESOURCE_DUMP_DIR")) {
+            const auto dump = [&](const std::string& suffix, const std::vector<uint8_t>& bytes) {
+                std::ofstream file(std::filesystem::path(directory) / (std::string(shape) + suffix), std::ios::binary);
+                file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                if (!file) throw std::runtime_error("proof dump failed");
+            };
+            dump(".tx.bin", tx.Serialize(true));
+            for (size_t i = 0; i < bundle.spends.size(); ++i)
+                dump(".spend-" + std::to_string(i) + ".bin", bundle.spends[i].zk_proof);
+            for (size_t i = 0; i < bundle.outputs.size(); ++i)
+                dump(".output-" + std::to_string(i) + ".bin", bundle.outputs[i].zk_proof);
+        }
         std::cout << "AUTH_RESOURCE shape=" << shape
             << " bytes=" << tx.GetSize() << " weight=" << tx.GetWeight()
             << " spend_proofs=" << spend_proofs << " output_proofs=" << output_proofs
@@ -2039,4 +2056,168 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
     }
 }
 
-}  // namespace dinero::consensus::shielded::testing
+// Test-only compact candidates. Current consensus MUST still reject DZE1.
+// Expansion is a separate verification view; it must never rewrite the txid.
+static void CheckCompactCandidate(const dinero::Transaction &original, NullifierSet &nullifiers,
+                                  CommitmentTree &tree, const char *shape) {
+    using dinero::experimental::CompactSpartanCodec;
+    ShieldedBundle bundle;
+    ASSERT_EQ(DeserializeShieldedBundle(original.shielded_bundle_bytes, &bundle),
+              BundleDecodeError::Ok);
+    auto context = BuildShieldedValidationContext(original, &nullifiers, &tree, 101,
+                                                  bundle.value_balance, 0, nullptr, 0, 0, 2);
+    ASSERT_EQ(ValidateShieldedBundle(bundle, context), ShieldedValidationError::Ok);
+    auto expanded = bundle;
+    size_t saved = 0;
+    for (size_t i = 0; i < bundle.spends.size(); ++i) {
+        auto &spend = bundle.spends[i];
+        SpendPublicInputs pub{spend.nullifier, spend.anchor, spend.cv};
+        const auto cs = BuildSpendCircuit(SpendWitness{}, pub, true, true);
+        CompactSpartanCodec codec(6, cs);
+        auto packed = codec.Pack(spend.zk_proof);
+        ASSERT_TRUE(packed);
+        auto restored = codec.Expand(*packed);
+        ASSERT_TRUE(restored);
+        EXPECT_EQ(*restored, spend.zk_proof);
+        saved += spend.zk_proof.size() - packed->size();
+        spend.zk_proof = *packed;
+        expanded.spends[i].zk_proof = *restored;
+    }
+    for (size_t i = 0; i < bundle.outputs.size(); ++i) {
+        auto &output = bundle.outputs[i];
+        OutputPublicInputs pub{output.commitment, output.cv};
+        const auto cs = BuildOutputCircuit(OutputWitness{}, pub, true);
+        CompactSpartanCodec codec(4, cs);
+        auto packed = codec.Pack(output.zk_proof);
+        ASSERT_TRUE(packed);
+        auto restored = codec.Expand(*packed);
+        ASSERT_TRUE(restored);
+        EXPECT_EQ(*restored, output.zk_proof);
+        saved += output.zk_proof.size() - packed->size();
+        output.zk_proof = *packed;
+        expanded.outputs[i].zk_proof = *restored;
+    }
+    ASSERT_GT(saved, 18000u);
+    auto compact = original;
+    compact.shielded_bundle_bytes = SerializeShieldedBundle(bundle);
+    const auto compact_bytes = compact.Serialize(true);
+    const auto compact_id = compact.GetTxid();
+    EXPECT_NE(compact_id, original.GetTxid());
+    EXPECT_LT(compact.GetVirtualSize(), original.GetVirtualSize());
+    EXPECT_EQ(SerializeShieldedBundle(expanded), original.shielded_bundle_bytes);
+    auto compact_context = BuildShieldedValidationContext(
+        compact, &nullifiers, &tree, 101, bundle.value_balance, 0, nullptr, 0, 0, 2);
+    EXPECT_NE(ValidateShieldedBundle(bundle, compact_context), ShieldedValidationError::Ok)
+        << "Experimental representation must not enter current consensus";
+    EXPECT_EQ(ValidateShieldedBundle(expanded, compact_context), ShieldedValidationError::Ok)
+        << "Existing binding, range and Spartan checks must all pass after exact reconstruction";
+    // A future format needs a separately signed transaction version: simple
+    // repacking under the SAME version preserves the binding signature while
+    // changing txid. This xor is a tamper case, NOT an assigned wire version.
+    auto wrong_version = compact;
+    wrong_version.version ^= 0x100;
+    EXPECT_EQ(VerifyBinding(expanded, ComputeShieldedTxSighash(wrong_version)),
+              BindingSigResult::SignatureInvalid);
+    EXPECT_EQ(compact.Serialize(true), compact_bytes);
+    EXPECT_EQ(compact.GetTxid(), compact_id);
+    dinero::Transaction reread;
+    ASSERT_TRUE(dinero::TransactionSerializer::Deserialize(reread, compact_bytes));
+    EXPECT_EQ(reread.Serialize(true), compact_bytes);
+    EXPECT_EQ(reread.GetTxid(), compact_id);
+    // Smaller payloads do not buy more proof slots. Shape/proof-count policy is
+    // still evaluated by the current independent resource checker.
+    size_t count = 0;
+    std::string error;
+    ASSERT_TRUE(CheckAuthTransactionResources(compact, 101, 2, count, error)) << error;
+    EXPECT_EQ(count, bundle.spends.size() + bundle.outputs.size());
+    AuthBlockResourceUsage usage;
+    usage.proofs = kAuthMaxBlockProofs - count;
+    ASSERT_TRUE(AccumulateAuthBlockResources(compact, 101, 2, usage, error)) << error;
+    EXPECT_EQ(usage.proofs, kAuthMaxBlockProofs);
+    const auto accepted_bytes = usage.shielded_bytes;
+    EXPECT_FALSE(AccumulateAuthBlockResources(compact, 101, 2, usage, error));
+    EXPECT_EQ(error, "shielded-block-proof-limit");
+    EXPECT_EQ(usage.proofs, kAuthMaxBlockProofs);
+    EXPECT_EQ(usage.shielded_bytes, accepted_bytes);
+    if (!compact.vout.empty()) {
+        const auto leaf_for = [&](const dinero::Transaction &tx) {
+            return dinero::consensus::HashUTXOV2(tx.GetTxid().AsUint256(), 0,
+                                                 tx.vout[0].value.GetUna(), tx.vout[0].scriptPubKey,
+                                                 120000, false);
+        };
+        const auto leaf = leaf_for(compact);
+        EXPECT_NE(leaf, leaf_for(original));
+        EXPECT_EQ(leaf, leaf_for(reread));
+        dinero::consensus::UtreexoForest forest;
+        const auto position = forest.add(leaf);
+        auto proof = forest.prove(position);
+        ASSERT_TRUE(proof);
+        EXPECT_TRUE(proof->verify(leaf, forest.getRoots()));
+        EXPECT_FALSE(proof->verify(leaf_for(original), forest.getRoots()));
+        const auto before = forest.serialize();
+        auto restarted = dinero::consensus::UtreexoForest::deserialize(before);
+        ASSERT_TRUE(restarted.prove(position));
+        EXPECT_EQ(restarted.getCommitment(), forest.getCommitment());
+        dinero::Transaction child;
+        dinero::TxInput input;
+        input.prevout.txid = compact_id;
+        input.prevout.vout = 0;
+        child.vin.push_back(input);
+        EXPECT_EQ(child.vin[0].prevout.txid, reread.GetTxid());
+        ASSERT_TRUE(restarted.remove(leaf, *proof));
+        EXPECT_FALSE(restarted.prove(position));
+        auto restored = dinero::consensus::UtreexoForest::deserialize(before);
+        EXPECT_EQ(restored.serialize(), before);
+        ASSERT_TRUE(restored.prove(position));
+        EXPECT_TRUE(restored.prove(position)->verify(leaf, restored.getRoots()));
+    }
+    std::cout << "COMPACT_CANDIDATE shape=" << shape << " original_bytes=" << original.GetSize()
+              << " candidate_bytes=" << compact.GetSize() << " proof_bytes_saved=" << saved
+              << " original_vsize=" << original.GetVirtualSize()
+              << " candidate_vsize=" << compact.GetVirtualSize() << std::endl;
+}
+
+TEST_F(ShieldedValidationFixture, CompactPrototypeUnshieldKeepsFinalOutpoint) {
+    auto note = AutoFeeAuthNote(tree);
+    auto tx = MakeUnshieldEnvelope(note.value_una - 1000000, 1000000, 0xD2);
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    const auto built = sops::BuildUnshieldBundleForTx(tx, note, 1000000, true);
+    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+    CheckCompactCandidate(tx, nullifier_set, tree, "unshield");
+}
+
+TEST_F(ShieldedValidationFixture, CompactPrototypeShieldAndTransferVerifyFullBundles) {
+    auto seed = RoundtripSeed();
+    auto keys = shdrv::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+    auto addr = shdrv::DeriveDiversifiedAddress(keys, 0, shdrv::kHrpRegtest);
+    sops::AddressedRecipient recipient;
+    recipient.d = addr.d;
+    recipient.pk_d = addr.pk_d;
+    recipient.pk_d_spend = addr.pk_d_spend;
+    recipient.nfk_commitment = addr.nfk_commitment;
+    recipient.value_una = 70000000;
+    sops::OutgoingViewEmissionContext outgoing;
+    outgoing.ovk = keys.ovk;
+    outgoing.current_tip_height = 100;
+    outgoing.spend_auth_activation_height = 2;
+    outgoing.outgoing_activation_height = 2;
+    auto tx = MakeShieldToRecipientEnvelope(1000000);
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    auto built =
+        sops::BuildAddressedShieldBundleForTx(tx, recipient, nullptr, true, true, &outgoing);
+    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+    CheckCompactCandidate(tx, nullifier_set, tree, "shield");
+    auto note = AutoFeeAuthNote(tree);
+    dinero::Transaction transfer;
+    transfer.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+    transfer.SetExplicitFee(1000000);
+    auto change = recipient;
+    change.value_una = 29000000;
+    const auto transfer_built =
+        sops::BuildAddressedTransferBundleForTx(transfer, {note}, recipient, change.value_una,
+                                                1000000, nullptr, true, true, &change, &outgoing);
+    ASSERT_EQ(transfer_built.status, sops::OpStatus::Ok) << transfer_built.error;
+    CheckCompactCandidate(transfer, nullifier_set, tree, "transfer_1in_2out");
+}
+
+} // namespace dinero::consensus::shielded::testing
