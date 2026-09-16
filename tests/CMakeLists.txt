@@ -2376,6 +2376,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   add_executable(test_shielded_validation
     src/test/shielded_validation_tests.cpp
+    contrib/benchmarks/compact_spartan_codec.cpp
     tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_validation gtest dinero_shielded)
@@ -2442,6 +2443,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/zk/test_spartan_soundness.cpp)
     add_executable(test_spartan_soundness
       tests/zk/test_spartan_soundness.cpp
+      tests/zk/test_compact_spartan.cpp
+      contrib/benchmarks/compact_spartan_codec.cpp
     )
     add_dependencies(test_spartan_soundness gtest dinero_zk)
     target_link_libraries(test_spartan_soundness PRIVATE

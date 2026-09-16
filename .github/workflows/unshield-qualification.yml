@@ -14,6 +14,8 @@ on:
       - 'tests/integration/test_csn_shielded_reorg_invertibility.sh'
       - 'tests/integration/CMakeLists.txt'
       - 'tests/CMakeLists.txt'
+      - 'contrib/benchmarks/compact_spartan_codec.*'
+      - 'tests/zk/test_compact_spartan.cpp'
 
 permissions:
   contents: read
@@ -108,7 +110,7 @@ jobs:
       - name: Build candidate and regression tests
         run: |
           cmake --build build-unshield --target dinerod test_shielded_validation shielded_tx_builder \
-            test_genesis_invariants test_block_template_determinism \
+            test_genesis_invariants test_block_template_determinism test_spartan_soundness \
             -j"$(nproc)" 2>&1 | tee evidence/build-candidate.log
           sha256sum build-unshield/dinerod ../baseline/build-unshield/dinerod > evidence/binary-sha256.txt
           bash scripts/ci/check_openssl_version.sh build-unshield 3.5.7
@@ -125,7 +127,7 @@ jobs:
       - name: Validate genesis, templates, shielded fees and stateless reorg behavior
         run: |
           ctest --test-dir build-unshield --no-tests=error --output-on-failure \
-            -R '^(GenesisInvariants|BlockTemplateDeterminism|MiningTemplateExclusions|ShieldedValidation|CSNShieldedReorgInvertibility)$' \
+            -R '^(GenesisInvariants|BlockTemplateDeterminism|MiningTemplateExclusions|ShieldedValidation|SpartanSoundness|CSNShieldedReorgInvertibility)$' \
             --output-junit "$PWD/evidence/ctest.xml" 2>&1 | tee evidence/ctest.log
           cp build-unshield/Testing/Temporary/LastTest.log evidence/ctest-details.log
 

@@ -1,8 +1,11 @@
 # Lossless encoding study for ordinary Spartan proofs
 
-Status: local experiment, 2026-09-15. No daemon, wallet, consensus, network format,
-activation, fee policy or Utreexo implementation changes. The completed one-pass
-unshield optimization remains separate in draft PR #748.
+Status: offline experiment, 2026-09-15. No daemon, wallet, consensus, network format,
+activation, fee policy or Utreexo implementation changes. The separate one-pass
+unshield optimization has since merged as PR #748. The follow-up
+[native prototype and activation proposal](specs/shielded-compact-spartan-proposal.md)
+adds bounded C++ decoding, real bundle verification and transaction-identity tests;
+it still does not activate an accepted compact format.
 
 ## Result
 
