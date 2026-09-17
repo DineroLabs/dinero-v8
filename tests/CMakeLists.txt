@@ -22,6 +22,47 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+add_executable(test_p2p_header_parser tests/daemon/test_p2p_header_parser.cpp)
+target_link_libraries(test_p2p_header_parser PRIVATE dinero_core)
+add_test(NAME P2PHeaderParserAlignment COMMAND test_p2p_header_parser)
+set_tests_properties(P2PHeaderParserAlignment PROPERTIES
+  LABELS "unit;p2p;serialization;utreexo;mandatory" TIMEOUT 10)
+
+# Exercise the real daemon lifecycle with weak ownership observations, so
+# cycles fail ordinary builds as well as LeakSanitizer. Reuse the daemon's
+# platform sources and link settings; only its process entry point is replaced.
+if(NOT WIN32)
+  get_target_property(_release_sources dinerod SOURCES)
+  list(FILTER _release_sources EXCLUDE REGEX "/src/daemon/main\\.cpp$")
+  add_executable(test_daemon_service_release
+    tests/daemon/test_daemon_service_release.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_release_property dinerod ${_property})
+    if(_release_property)
+      set_property(TARGET test_daemon_service_release PROPERTY ${_property} "${_release_property}")
+    endif()
+  endforeach()
+  add_test(NAME DaemonServiceRelease COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_daemon_service_release.py
+    $<TARGET_FILE:test_daemon_service_release>)
+  set_tests_properties(DaemonServiceRelease PROPERTIES
+    LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
+add_executable(test_packed_header_alignment
+  tests/consensus/test_packed_header_alignment.cpp)
+target_include_directories(test_packed_header_alignment PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME PackedHeaderAlignment COMMAND test_packed_header_alignment)
+set_tests_properties(PackedHeaderAlignment PROPERTIES
+  LABELS "unit;serialization;utreexo;mandatory" TIMEOUT 10)
+
+add_executable(test_serialization_empty_buffers
+  tests/consensus/test_serialization_empty_buffers.cpp)
+target_include_directories(test_serialization_empty_buffers PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME SerializationEmptyBuffers COMMAND test_serialization_empty_buffers)
+set_tests_properties(SerializationEmptyBuffers PROPERTIES
+  LABELS "unit;serialization;mandatory" TIMEOUT 10)
+
 add_executable(test_assertions_enabled
   tests/test_assertions_enabled.cpp
 )

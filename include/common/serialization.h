@@ -46,6 +46,8 @@ public:
     VectorWriter() = default;
     
     void write(const void* data, size_t size) {
+        // Empty byte fields may have a null data pointer. They emit no payload.
+        if (size == 0) return;
         const uint8_t* bytes = static_cast<const uint8_t*>(data);
         buffer_.insert(buffer_.end(), bytes, bytes + size);
     }
@@ -99,6 +101,9 @@ public:
         if (pos_ + size > data_.size()) {
             throw std::runtime_error("Reader: insufficient data");
         }
+        // memcpy requires non-null pointers even for a zero-length copy.
+        // Keep the bounds check above so an invalid cursor still fails.
+        if (size == 0) return;
         std::memcpy(dest, data_.data() + pos_, size);
         pos_ += size;
     }
@@ -230,13 +235,21 @@ template<typename S>
 void Serialize(S& s, const BlockHeader& h) {
     // CRITICAL: Field order must match SerializeForHash() in block.cpp (128-byte format)
     // Layout: version(4) | prev_hash(32) | merkle(32) | utreexo(32) | timestamp(8) | difficulty(4) | nonce(4) | reserved(12)
-    s.write(h.version);
+    // BlockHeader has alignment 1. In particular, timestamp is at offset 100,
+    // so passing it to write(const T&) binds an illegally aligned reference
+    // even when the header itself starts on an 8-byte boundary. Load packed
+    // scalars by value first; keep their types, bytes and field order intact.
+    const uint32_t version = h.version;
+    const uint64_t timestamp = h.timestamp;
+    const uint32_t difficulty = h.difficulty;
+    const uint32_t nonce = h.nonce;
+    s.write(version);
     s.write(h.prev_block_hash);      // Phase M.1: Binary uint256
     s.write(h.merkle_root);          // Phase M.1: Binary uint256
     s.write(h.utreexo_root);         // Phase M.1: Binary uint256 - MUST come before timestamp!
-    s.write(h.timestamp);
-    s.write(h.difficulty);           // Phase 2: Renamed from 'bits'
-    s.write(h.nonce);
+    s.write(timestamp);
+    s.write(difficulty);           // Phase 2: Renamed from 'bits'
+    s.write(nonce);
     // Write reserved[12] from the header struct
     s.write(h.reserved, 12);
 }
