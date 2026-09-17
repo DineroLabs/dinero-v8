@@ -12968,6 +12968,11 @@ add_test(NAME ShieldedResourceLimits COMMAND test_shielded_resource_limits)
 set_tests_properties(ShieldedResourceLimits PROPERTIES LABELS "shielded;consensus;p2p;mandatory" TIMEOUT 30)
 
 if(DINERO_ENABLE_COMPACT_REGTEST)
+  add_executable(compact_package_builder
+    tests/integration/compact_package_builder.cpp tests/stubs/mempool_test_stubs.cpp)
+  target_link_libraries(compact_package_builder PRIVATE
+    dinero_shielded dinero_wallet wallet_test_deps jsoncpp_static sqlite3)
+  target_include_directories(compact_package_builder PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
   add_executable(test_compact_regtest_vectors tests/consensus/test_compact_regtest_vectors.cpp)
   target_link_libraries(test_compact_regtest_vectors PRIVATE
     GTest::gtest_main dinero_core dinero_shielded jsoncpp_static sqlite3)

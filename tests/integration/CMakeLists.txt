@@ -2375,6 +2375,12 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
 endif()
 
 if(DINERO_ENABLE_COMPACT_REGTEST)
+    add_test(NAME CompactPackageBoundaries
+      COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_compact_package_boundaries.py)
+    set_tests_properties(CompactPackageBoundaries PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;COMPACT_PACKAGE_BUILDER=$<TARGET_FILE:compact_package_builder>"
+      LABELS "integration;compact-regtest;shielded;mempool;utreexo;mandatory"
+      TIMEOUT 600 RUN_SERIAL TRUE)
     add_test(NAME CompactRegtestLifecycle
       COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
     set_tests_properties(CompactRegtestLifecycle PROPERTIES

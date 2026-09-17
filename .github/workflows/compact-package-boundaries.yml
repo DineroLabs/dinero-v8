@@ -1,0 +1,82 @@
+name: Compact package admission
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/compact-package-boundaries.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'tests/integration/test_compact_package_boundaries.py'
+      - 'tests/integration/compact_package_builder.cpp'
+      - 'tests/integration/CMakeLists.txt'
+      - 'tests/CMakeLists.txt'
+      - 'src/daemon/mempool.cpp'
+      - 'src/daemon/mempool_utxo_view.cpp'
+      - 'include/daemon/mempool*'
+      - 'src/consensus/**'
+      - 'include/consensus/**'
+      - 'src/primitives/**'
+      - 'include/primitives/**'
+      - 'src/zk/**'
+      - 'src/wallet/shielded_*'
+      - 'src/rpc/shielded_rpc_json.cpp'
+      - 'src/rpc/methods_mempool_context.cpp'
+      - 'src/rpc/methods_wallet_context.cpp'
+      - 'src/policy/**'
+      - 'third_party/secp256k1-zkp'
+      - 'third_party/secp256k1-zkp/**'
+
+permissions:
+  contents: read
+
+jobs:
+  package-admission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      COMPACT_PACKAGE_EVIDENCE_DIR: ${{ github.workspace }}/evidence/packages
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build cmake curl perl pkg-config python3-yaml
+          libudev-dev libusb-1.0-0-dev
+      - name: Build pinned OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Configure experimental and default inventories
+        run: |
+          cmake -S . -B build-compact-disabled -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=OFF
+          cmake -S . -B build-compact-regtest -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=ON
+      - name: Verify every experimental test has an executing lane
+        run: >-
+          python3 scripts/ci/check_mandatory_tests_execute.py build-compact-regtest
+          .github/workflows/compact-regtest.yml .github/workflows/compact-regtest-vectors.yml
+          .github/workflows/compact-package-boundaries.yml
+          --only-absent-from build-compact-disabled
+          --baseline scripts/ci/unexecuted_tests_baseline_compact_regtest.txt
+      - name: Build real daemon and proof fixture producer
+        run: cmake --build build-compact-regtest --target dinerod compact_package_builder -j "$(nproc)"
+      - name: Exercise canonical package admission
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/commit.txt
+          sha256sum build-compact-regtest/dinerod build-compact-regtest/compact_package_builder > evidence/binary-sha256.txt
+          set -o pipefail
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
+            -R '^CompactPackageBoundaries$' --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
+      - name: Retain qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compact-package-boundaries-${{ github.sha }}
+          path: |
+            evidence/
+            build-compact-regtest/Testing/
