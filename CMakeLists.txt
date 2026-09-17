@@ -987,6 +987,7 @@ add_library(dinero_core STATIC
   src/contracts/contract_signing_package.cpp
   # Daemon context (dependency injection container access)
   src/daemon/daemon_context.cpp
+  src/daemon/p2p_header_parser.cpp
   ${DINERO_CORE_WEBSOCKET_SOURCES}
 
   # Phase 3a of the shielded reorg invertibility plan

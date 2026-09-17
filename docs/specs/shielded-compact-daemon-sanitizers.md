@@ -5,7 +5,9 @@ wallet, full/CSN Utreexo paths and recovery. It extends the earlier codec/native
 sanitizer qualification; that earlier success did not qualify these daemon
 paths. Activation settings and proof rules remain unchanged. The first Linux
 run exposed the packed-header serializer defect documented below. The next run
-passed that regression and exposed an empty-field storage-reader defect.
+passed that regression and exposed an empty-field storage-reader defect. A third
+run passed both serializer regressions and reached P2P parsing and shutdown
+ownership defects.
 
 ## Command and scope
 
@@ -24,12 +26,14 @@ instrumented binary; it does not waive any audit or evidence check.
 The `Compact daemon sanitizers` workflow runs the same command on Linux x86-64.
 It compiles first-party code with AddressSanitizer and UndefinedBehaviorSanitizer,
 frame pointers and no recovery from reported undefined behavior. A compile-command
-audit checks 30 required source files across the daemon, wallet, parsing, proof
+audit checks 35 required source files across the daemon, wallet, parsing, proof
 verification, ChainDB, Utreexo and test drivers. A linked-symbol audit additionally
 checks the actual daemon binary and records its hash and source provenance.
 
 The selected CTest entries are exactly:
 
+- `P2PHeaderParserAlignment`
+- `DaemonServiceRelease`
 - `PackedHeaderAlignment`
 - `SerializationEmptyBuffers`
 - `ShieldedResourceLimits`
@@ -56,7 +60,7 @@ These intentional reports live separately from actual qualification reports.
 
 For the actual tests, sanitizer reports go outside temporary daemon data
 directories, so harness cleanup cannot erase them. The final evidence gate
-requires a successful CTest exit, exactly the ten expected executed tests,
+requires a successful CTest exit, exactly the twelve expected executed tests,
 no failed/skipped/disabled results, complete instrumentation coverage and no
 runtime reports. This catches a report during shutdown even if a shell helper
 waits for a child process without propagating its exit status.
@@ -69,8 +73,9 @@ original guard restores green.
 
 ## Current evidence and limits
 
-Local macOS ARM64 built all five required instrumented binaries. The audit found
-all 30 source files instrumented (99 compile-command entries). The evidence-gate
+The initial local macOS ARM64 run built the five binaries required at that time.
+Its audit found all 30 then-required source files instrumented (99 compile-command
+entries); the current expanded inventory above requires 35. The evidence-gate
 self-tests pass. Actual local ASan daemon tests are **not qualified**: Apple
 Clang 17's ASan runtime deadlocks during startup on this host, before `main`.
 A standalone tiny probe reproduces it; a process sample shows reentrant ASan
@@ -154,3 +159,59 @@ Independent format/consensus review, pool-protocol qualification and reviewed
 production activation remain separate gates. The package-admission gate passed
 separately in run `35169304739`; it does not substitute for daemon sanitizer
 qualification. This work does not authorize a deployment or activation.
+
+
+## Third Linux finding: P2P parsing and retained shutdown services
+
+Run `35173927405` passed six of ten tests, including both serializer regressions,
+reindex equivalence, resources and fixed proofs. Five UBSan reports identified
+an unaligned `uint32_t` load in `ParseHeadersFromP2PMessage` at
+`daemon_app.cpp:605`; the four network lifecycle tests failed after peer aborts.
+The count prefix puts the first 128-byte header at offset one, and later headers
+also have arbitrary alignment. The code cast network bytes to integer pointers.
+
+The actual parser is now an independently testable core component and delegates
+header decoding to the existing byte-wise, little-endian
+`BlockHeader::Deserialize`. Counts, framing, partial-batch behavior and downstream
+consensus validation are preserved. `P2PHeaderParserAlignment` reproduced the
+original UBSan diagnostic, then passed with the fix. It tests all eight header
+alignments, an independent literal header including its Utreexo root, the
+2000-header cap and truncated payload behavior.
+
+Three other reports are LeakSanitizer findings at shutdown (approximately
+1.05–1.16 MB retained in these small fixtures). P2P callbacks and service
+references form ownership cycles: P2P owns handlers that retain relay/sync
+objects with callbacks back to P2P, while chainstate and mempool retain services
+whose callbacks retain them. Calling Stop and dropping the daemon context alone
+does not destroy that graph.
+
+The fix releases P2P handlers/dependencies after scheduler and network workers
+join. Chainstate drops its reverse links to P2P, relay, proof gossip and the CSN
+object after its background worker joins and its existing final-state work.
+Mempool drops its relay/P2P/chainstate references after clearing its stopped pool.
+No live validation or Utreexo update logic changes.
+
+`DaemonServiceRelease` runs the real daemon lifecycle in isolated offline full
+and CSN modes, observes services only through weak pointers, calls Stop twice,
+and requires every observed service to expire after destruction. It reproduced
+15 retained services under local UBSan and passed in both modes after the fix.
+Removing only the P2P cleanup invocations made it fail again; restoring them
+restored green. This makes ownership regressions visible without requiring
+LeakSanitizer.
+The executable reuses the daemon's actual platform sources and libraries, with
+only the process entry point replaced. Both new tests are registered in default
+CI and the full daemon sanitizer gate; the instrumentation inventory includes
+the extracted parser, affected services and new test drivers.
+
+Final local macOS ARM64 Release/UBSan validation passed 8/8 tests in 305.80 s:
+the two new regressions, both serializer regressions, reindex equivalence,
+full/CSN shielded reorg invertibility (104.07 s), ordinary Auth relay/restart/
+reindex (173.23 s) and manual CSN invalidation (13.42 s). The compact build
+option was OFF in this local build; compact lifecycle and leak-free Linux
+operation are not established by it. The complete Linux ASan/UBSan/LeakSanitizer
+gate with all twelve selected tests remains required after this repair.
+
+Both new default tests are selected by the execution inventory: the parser in
+the broad lane and the real-daemon release test in the serial integration lane.
+The ten evidence-gate negative controls also pass. No tests were exempted, no
+reports suppressed, and no existing timeouts or validation rules relaxed.

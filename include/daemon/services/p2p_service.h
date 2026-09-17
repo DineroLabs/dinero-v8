@@ -314,6 +314,9 @@ public:
     static std::string GetUserAgent() { return DineroUserAgent(); }
 
 private:
+    // Only after scheduler/network workers have joined. Break callback and
+    // dependency cycles so a stopped service graph can actually be destroyed.
+    void ReleaseStoppedDependencies();
     std::unique_ptr<::P2PManager> p2p_mgr_;
 
     // Logger dependencies (dual pattern during migration):
