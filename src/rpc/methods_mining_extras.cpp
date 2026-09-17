@@ -8,6 +8,8 @@
 #include "consensus/consensus.hpp"
 #include "consensus/block_filter.h"
 #include "consensus/filter_commitment.h"
+#include "consensus/witness_commitment.h"
+#include "consensus/utreexo_activation.h"
 #include "consensus/outpoint.h"
 #include "consensus/subsidy.h"  // Canonical monetary policy
 #include "consensus/utreexo_accumulator.h"  // For UtreexoForest
@@ -565,7 +567,7 @@ din::Json handle_generatetoaddress(
 
                     dinero::Transaction candidate_coinbase = coinbase;
                     dinero::TxOutput output;
-                    dinero::AmountUna subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height);
+                    dinero::AmountUna subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height);
                     dinero::AmountUna fees_amount = dinero::AmountUna::Una(selected_total_fees);
                     output.value = subsidy.Add(fees_amount).value_or(subsidy);
 
@@ -582,6 +584,23 @@ din::Json handle_generatetoaddress(
                     block.vtx.push_back(candidate_coinbase);
                     for (const auto& mtx : selected_mempool_txs) {
                         block.vtx.push_back(mtx);
+                    }
+
+                    // Match both BlockAssembler paths. This RPC builds its own
+                    // coinbase, whose witness marker requires DNRW once witness
+                    // commitments become mandatory. Commit the final transaction
+                    // set before computing the coinbase txid and Utreexo leaves.
+                    if (dinero::consensus::FullRulesActive(height) &&
+                        std::any_of(block.vtx.begin(), block.vtx.end(),
+                                    [](const dinero::Transaction& tx) { return tx.HasWitness(); })) {
+                        dinero::TxOutput witness_output;
+                        witness_output.value = dinero::AmountUna::Zero();
+                        witness_output.scriptPubKey =
+                            dinero::consensus::BuildWitnessCommitment(block.vtx);
+                        if (witness_output.scriptPubKey.empty()) {
+                            throw std::runtime_error("generatetoaddress: witness commitment construction failed");
+                        }
+                        block.vtx[0].vout.push_back(std::move(witness_output));
                     }
 
                     MaybeAddFilterCommitment(block, selected_mempool_txs, chain_db, height);
@@ -1180,7 +1199,7 @@ din::Json handle_getblocktemplate(
     // Calculate block subsidy (coinbase reward)
     uint32_t next_height = height + 1;
     // Phase M.6.2: Extract raw value from AmountUna for RPC boundary
-    uint64_t subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height).GetUna();
+    uint64_t subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height, dinero::Params().sixty_second_activation_height).GetUna();
 
     // ========== CANONICAL DIFFICULTY SELECTOR ==========
     // ALWAYS route through GetNextWorkRequired - never compute in RPC.

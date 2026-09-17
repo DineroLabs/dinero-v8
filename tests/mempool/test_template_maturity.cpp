@@ -117,4 +117,32 @@ TEST_F(TemplateMaturityTest, FrozenCoinUsesLiveForestAuthorizationAndOriginalHei
     authorized = false;
     EXPECT_TRUE(pool.selectTransactionsForBlock(1'000'000, 4'000'000, 111).empty());
 }
+
+TEST_F(TemplateMaturityTest, ChainstateGuardPrecedesMempoolLockAndCoversCoinLookup) {
+    Mempool pool(&db_);
+    const auto out = PutCoin(6, 1, false);
+    pool.addUnchecked(Spend(out));
+    bool held = false;
+    unsigned acquisitions = 0;
+    struct Guard final : Mempool::ChainstateReadGuard {
+        bool& held;
+        explicit Guard(bool& flag) : held(flag) { held = true; }
+        ~Guard() override { held = false; }
+    };
+    pool.setChainstateReadGuardFactory([&]() {
+        ++acquisitions;
+        // A chainstate writer can notify the mempool before releasing its
+        // lock. This must complete before selection owns m_mutex.
+        Block empty;
+        pool.onBlockConnected(empty, 110, {});
+        return std::make_unique<Guard>(held);
+    });
+    pool.setPreBaseCoinPredicate([&](const OutPoint&) {
+        EXPECT_TRUE(held);
+        return false;
+    });
+    EXPECT_EQ(pool.selectTransactionsForBlock(1'000'000, 4'000'000, 111).size(), 1U);
+    EXPECT_EQ(acquisitions, 1U);
+    EXPECT_FALSE(held);
+}
 } // namespace

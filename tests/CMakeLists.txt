@@ -22,6 +22,71 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+add_executable(test_p2p_header_parser tests/daemon/test_p2p_header_parser.cpp)
+target_link_libraries(test_p2p_header_parser PRIVATE dinero_core)
+add_test(NAME P2PHeaderParserAlignment COMMAND test_p2p_header_parser)
+set_tests_properties(P2PHeaderParserAlignment PROPERTIES
+  LABELS "unit;p2p;serialization;utreexo;mandatory" TIMEOUT 10)
+
+# Exercise the real daemon lifecycle with weak ownership observations, so
+# cycles fail ordinary builds as well as LeakSanitizer. Reuse the daemon's
+# platform sources and link settings; only its process entry point is replaced.
+if(NOT WIN32)
+  get_target_property(_release_sources dinerod SOURCES)
+  list(FILTER _release_sources EXCLUDE REGEX "/src/daemon/main\\.cpp$")
+  add_executable(test_daemon_service_release
+    tests/daemon/test_daemon_service_release.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_release_property dinerod ${_property})
+    if(_release_property)
+      set_property(TARGET test_daemon_service_release PROPERTY ${_property} "${_release_property}")
+    endif()
+  endforeach()
+  add_test(NAME DaemonServiceRelease COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_daemon_service_release.py
+    $<TARGET_FILE:test_daemon_service_release>)
+  set_tests_properties(DaemonServiceRelease PROPERTIES
+    LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
+add_executable(test_packed_header_alignment
+  tests/consensus/test_packed_header_alignment.cpp)
+target_include_directories(test_packed_header_alignment PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME PackedHeaderAlignment COMMAND test_packed_header_alignment)
+set_tests_properties(PackedHeaderAlignment PROPERTIES
+  LABELS "unit;serialization;utreexo;mandatory" TIMEOUT 10)
+
+add_executable(test_serialization_empty_buffers
+  tests/consensus/test_serialization_empty_buffers.cpp)
+target_include_directories(test_serialization_empty_buffers PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME SerializationEmptyBuffers COMMAND test_serialization_empty_buffers)
+set_tests_properties(SerializationEmptyBuffers PROPERTIES
+  LABELS "unit;serialization;mandatory" TIMEOUT 10)
+
+add_executable(test_sixty_second_consensus
+  tests/consensus/test_sixty_second_consensus.cpp src/consensus/chainwork.cpp)
+target_include_directories(test_sixty_second_consensus PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME SixtySecondConsensus COMMAND test_sixty_second_consensus)
+set_tests_properties(SixtySecondConsensus PROPERTIES
+  LABELS "consensus;monetary;unit;mandatory" TIMEOUT 30)
+
+add_executable(sixty_second_asert_probe
+  tests/consensus/sixty_second_asert_probe.cpp src/consensus/chainwork.cpp)
+target_include_directories(sixty_second_asert_probe PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME SixtySecondAsertOracle
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/consensus/test_sixty_second_asert_oracle.py
+    $<TARGET_FILE:sixty_second_asert_probe>)
+set_tests_properties(SixtySecondAsertOracle PROPERTIES
+  LABELS "consensus;difficulty;unit;mandatory" TIMEOUT 30)
+add_test(NAME SixtySecondAsertTransitionModel
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/benchmarks/sixty_second_asert_transition.py
+    $<TARGET_FILE:sixty_second_asert_probe>)
+set_tests_properties(SixtySecondAsertTransitionModel PROPERTIES
+  LABELS "consensus;difficulty;unit;mandatory" TIMEOUT 30)
+
+
 add_executable(test_assertions_enabled
   tests/test_assertions_enabled.cpp
 )
@@ -12970,6 +13035,34 @@ target_include_directories(test_shielded_resource_limits PRIVATE
   ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME ShieldedResourceLimits COMMAND test_shielded_resource_limits)
 set_tests_properties(ShieldedResourceLimits PROPERTIES LABELS "shielded;consensus;p2p;mandatory" TIMEOUT 30)
+
+if(DINERO_ENABLE_COMPACT_REGTEST)
+  add_executable(compact_package_builder
+    tests/integration/compact_package_builder.cpp tests/stubs/mempool_test_stubs.cpp)
+  target_link_libraries(compact_package_builder PRIVATE
+    dinero_shielded dinero_wallet wallet_test_deps jsoncpp_static sqlite3)
+  target_include_directories(compact_package_builder PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  add_executable(test_compact_regtest_vectors tests/consensus/test_compact_regtest_vectors.cpp)
+  target_link_libraries(test_compact_regtest_vectors PRIVATE
+    GTest::gtest_main dinero_core dinero_shielded jsoncpp_static sqlite3)
+  target_include_directories(test_compact_regtest_vectors PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  target_compile_definitions(test_compact_regtest_vectors PRIVATE
+    COMPACT_REGTEST_VECTOR_DIRECTORY="${CMAKE_SOURCE_DIR}/tests/vectors/compact_regtest_v1")
+  add_test(NAME CompactRegtestFixedVectors COMMAND test_compact_regtest_vectors)
+  set_tests_properties(CompactRegtestFixedVectors PROPERTIES
+    LABELS "compact-regtest;shielded;consensus;utreexo;mandatory" TIMEOUT 300)
+  add_test(NAME CompactRegtestVectorOracle COMMAND python3
+    ${CMAKE_SOURCE_DIR}/scripts/check_compact_regtest_vectors.py --self-test)
+  set_tests_properties(CompactRegtestVectorOracle PROPERTIES
+    LABELS "compact-regtest;shielded;serialization;mandatory" TIMEOUT 60)
+
+  add_executable(capture_compact_regtest_maximum EXCLUDE_FROM_ALL
+    tools/capture_compact_regtest_maximum.cpp tests/stubs/mempool_test_stubs.cpp)
+  target_link_libraries(capture_compact_regtest_maximum PRIVATE
+    dinero_shielded dinero_wallet wallet_test_deps jsoncpp_static sqlite3)
+  target_include_directories(capture_compact_regtest_maximum PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+endif()
 
 add_executable(test_snapshot_binding
   tests/consensus/test_snapshot_binding.cpp

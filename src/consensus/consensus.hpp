@@ -27,7 +27,8 @@ struct Consensus {
     uint32_t genesisBits         = 0x1d31ffce;
 
     // Target block spacing (2 minutes)
-    uint32_t targetSpacingSec    = 120;
+    uint32_t targetSpacingSec    = 120; // Legacy interval; retain historical timing.
+    uint32_t sixtySecondActivationHeight = UINT32_MAX;
 
     // PoW limit floor (can never go easier than genesis)
     uint32_t powLimitBits        = 0x1d31ffce;

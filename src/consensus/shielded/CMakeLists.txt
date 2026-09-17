@@ -62,3 +62,11 @@ set_target_properties(dinero_shielded PROPERTIES
     CXX_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
 )
+
+if(DINERO_ENABLE_COMPACT_REGTEST)
+    target_sources(dinero_shielded PRIVATE
+        compact_regtest.cpp
+        ${CMAKE_SOURCE_DIR}/contrib/benchmarks/compact_spartan_codec.cpp)
+    target_include_directories(dinero_shielded PRIVATE ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include)
+endif()

@@ -10,6 +10,12 @@ project(dinero VERSION 8.1.13 LANGUAGES C CXX)
 # retain a local fallback in their own CMakeLists.txt.
 set(DINERO_MONOREPO_VERSION "${PROJECT_VERSION}")
 
+# Isolated format experiment. Ordinary builds do not recognize its wire version.
+option(DINERO_ENABLE_COMPACT_REGTEST "Build experimental regtest-only compact shielded format" OFF)
+if(DINERO_ENABLE_COMPACT_REGTEST)
+  add_compile_definitions(DINERO_ENABLE_COMPACT_REGTEST=1)
+endif()
+
 # Enable Objective-C++ at the root scope on Apple platforms so that
 # qt/ (which has .mm sources via Qt6 + macOS native frameworks like
 # CoreImage / AppKit) can rely on CMAKE_OBJCXX_COMPILE_OBJECT being
@@ -981,6 +987,7 @@ add_library(dinero_core STATIC
   src/contracts/contract_signing_package.cpp
   # Daemon context (dependency injection container access)
   src/daemon/daemon_context.cpp
+  src/daemon/p2p_header_parser.cpp
   ${DINERO_CORE_WEBSOCKET_SOURCES}
 
   # Phase 3a of the shielded reorg invertibility plan

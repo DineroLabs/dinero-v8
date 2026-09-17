@@ -16,6 +16,7 @@
 #include "consensus/chainparams.h"
 #include "consensus/utxo_snapshot_state.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/outpoint.h"
 #include "consensus/utxo_entry.h"
 #include "primitives/block.h"
@@ -26,6 +27,7 @@
 #include <iostream>
 #include <random>
 #include <ctime>
+#include <tuple>
 
 using namespace dinero;
 using namespace dinero::consensus;
@@ -425,6 +427,44 @@ bool TestVerifyResultPOD() {
 // =============================================================================
 // Main
 // =============================================================================
+bool TestSixtySecondTailValidation() {
+    Block block;
+    Transaction coinbase;
+    coinbase.version = 2;
+    TxInput input;
+    input.prevout.txid = TxId();
+    input.prevout.vout = 0xffffffff;
+    input.sequence = 0xffffffff;
+    coinbase.vin.push_back(input);
+    TxOutput output;
+    output.scriptPubKey = {0x51};
+    coinbase.vout.push_back(output);
+    block.vtx.push_back(coinbase);
+    StatelessContext ctx{};
+    ctx.height = 10'512'001;
+    ctx.sixty_second_activation_height = ctx.height;
+    BlockUtreexoProof proof;
+    for (const auto [height, amount, valid] : {
+             std::tuple{10'512'000u, 100'000'000ULL, true},
+             {10'512'001u, 50'000'000ULL, true},
+             {10'512'001u, 50'000'001ULL, false},
+             {10'512'001u, 100'000'000ULL, false},
+             {10'512'000u, 100'000'000ULL, true}}) {
+        ctx.height = height;
+        proof.format_version = GetUtreexoProofFormatVersion(height);
+        block.vtx[0].vout[0].value = AmountUna::Una(amount);
+        if (VerifyBlockStateless(block, ctx, proof).valid() != valid) {
+            std::cerr << "FAIL: stateless tail validation at " << height << " amount " << amount << '\n';
+            return false;
+        }
+    }
+    ctx.sixty_second_activation_height = UINT32_MAX;
+    ctx.height = 10'512'001;
+    if (!VerifyBlockStateless(block, ctx, proof).valid()) return false;
+    std::cout << "PASS: stateless tail activation, one-una overclaim, rollback and disabled rule\n";
+    return true;
+}
+
 int main() {
     SelectParams(Chain::MAINNET);
 
@@ -438,6 +478,7 @@ int main() {
     int failed = 0;
 
     if (TestGetBlockSubsidy()) passed++; else failed++;
+    if (TestSixtySecondTailValidation()) passed++; else failed++;
     if (TestValidBlockVerification()) passed++; else failed++;
     if (TestDoubleSpendDetection()) passed++; else failed++;
     if (TestInvalidAmountDetection()) passed++; else failed++;

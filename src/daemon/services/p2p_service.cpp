@@ -2333,6 +2333,29 @@ bool P2PService::Start() {
     }
 }
 
+void P2PService::ReleaseStoppedDependencies() {
+    OnNewBlock = {};
+    OnNewTx = {};
+    OnInv = {};
+    OnGetData = {};
+    OnGetHeaders = {};
+    OnHeaders = {};
+    OnCompactBlock = {};
+    OnGetBlockTxn = {};
+    OnBlockTxn = {};
+    OnUtxoBlock = {};
+    OnUtxoTx = {};
+    OnGetUtreexoProof = {};
+    OnGetUtreexoHeaders = {};
+    OnInvProof = {};
+    OnGetProof = {};
+    OnProofData = {};
+    chainstate_.reset();
+    mempool_.reset();
+    prune_.reset();
+    address_manager_.reset();
+}
+
 void P2PService::Stop() {
     StopSchedulerTickLoop();
 
@@ -2340,6 +2363,7 @@ void P2PService::Stop() {
         if (logger_interface_) {
             logger_interface_->info("[P2PService] Already stopped");
         }
+        ReleaseStoppedDependencies();
         return;
     }
 
@@ -2394,6 +2418,10 @@ void P2PService::Stop() {
         // Still reset to avoid dangling pointer
         p2p_mgr_.reset();
     }
+    // P2P handlers capture relay/sync services whose callbacks retain P2P.
+    // Their workers have joined above; clearing them while dispatch was live
+    // would race std::function invocation.
+    ReleaseStoppedDependencies();
 }
 
 void P2PService::HandleP2PMessage(const std::string& peer_addr, const ::P2PMessage& msg) {

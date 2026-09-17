@@ -379,6 +379,7 @@ void print_usage(const char* program_name) {
     std::cout << "Options:\n";
     std::cout << "  --help              Show this help message\n";
     std::cout << "  --version           Show version information\n";
+    std::cout << "  --consensus-sixty-second-height=<height>  REGTEST-only timing/tail activation\n";
     std::cout << "  --datadir=<dir>     Specify data directory\n";
     std::cout << "  --rpcport=<port>           RPC server port (default: 20998)\n";
     std::cout << "  --p2pport=<port>           P2P network port (default: 20999)\n";
@@ -450,8 +451,10 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     uint16_t wallet_socket_port = 0;  // 0 = use default (will be set from env or default)
     long shielded_epoch_reset_override = -1;  // <0 = unset; REGTEST test-only fork activation
     long shielded_spend_auth_override = -1;
+    int64_t compact_regtest_override = -1;
     int64_t private_covenant_override = -1;   // paired auth activation/reset; REGTEST only
     int64_t contextual_locks_height_override = -1;
+    int64_t sixty_second_height_override = -1;
     long state_commitment_height_override = -1;   // <0 = unset; REGTEST only (UINT32_MAX = dormant)
     long state_commitment_burial_override = -1;   // <0 = unset; REGTEST only
 
@@ -485,6 +488,16 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
                           << val << "\n";
                 return 1;
             }
+        } else if (arg.find("--consensus-sixty-second-height=") == 0) {
+            const auto value = arg.substr(std::string("--consensus-sixty-second-height=").size());
+            try {
+                size_t parsed = 0;
+                const auto height = std::stoull(value, &parsed);
+                if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos ||
+                    parsed != value.size() || height == 0 || height > UINT32_MAX)
+                    throw std::invalid_argument("height");
+                sixty_second_height_override = static_cast<int64_t>(height);
+            } catch (...) { std::cerr << "Invalid sixty-second activation height\n"; return 1; }
         } else if (arg.find("--consensus-contextual-locks-height=") == 0) {
             const auto value = arg.substr(std::string("--consensus-contextual-locks-height=").size());
             try {
@@ -526,6 +539,21 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
                 if (used != value.size() || private_covenant_override < 0 || private_covenant_override >= UINT32_MAX)
                     throw std::invalid_argument("height out of range");
             } catch (const std::exception&) { std::cerr << "Invalid private covenant height\n"; return 1; }
+        } else if (arg.find("--consensus-shielded-compact-height=") == 0) {
+#ifndef DINERO_ENABLE_COMPACT_REGTEST
+            std::cerr << "Compact regtest support is not compiled into this build\n";
+            return 1;
+#else
+            try {
+                const auto value = arg.substr(std::string("--consensus-shielded-compact-height=").size());
+                size_t used = 0;
+                compact_regtest_override = std::stoll(value, &used);
+                if (used != value.size() || compact_regtest_override < 0 || compact_regtest_override >= UINT32_MAX)
+                    throw std::invalid_argument("height out of range");
+            } catch (const std::exception&) {
+                std::cerr << "Invalid compact regtest height\n"; return 1;
+            }
+#endif
         } else if (arg.find("--consensus-shielded-spend-auth-height=") == 0) {
             const std::string val = arg.substr(
                 std::string("--consensus-shielded-spend-auth-height=").size());
@@ -843,6 +871,18 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
                      "+ outgoing recovery forced at height " << h
                   << " (test-only)\n";
     }
+    if (compact_regtest_override >= 0) {
+        auto& mp = dinero::MutableParams();
+        if (chain != dinero::Chain::REGTEST ||
+            mp.shielded_spend_auth_activation_height == UINT32_MAX ||
+            compact_regtest_override <= mp.shielded_spend_auth_activation_height) {
+            std::cerr << "Compact override requires REGTEST and a height after the Auth reset\n";
+            return 1;
+        }
+        mp.shielded_compact_regtest_activation_height = static_cast<uint32_t>(compact_regtest_override);
+        std::cout << "[Network] EXPERIMENTAL REGTEST compact proofs at height "
+                  << compact_regtest_override << "\n";
+    }
     if (private_covenant_override >= 0) {
         auto& mp = dinero::MutableParams();
         if (chain != dinero::Chain::REGTEST || mp.shielded_spend_auth_activation_height == UINT32_MAX ||
@@ -858,6 +898,14 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     // activation moves only through chainparams + the recorded governance
     // order (burial policy, fail-closed wiring, forged-snapshot rejection,
     // human review, THEN height selection).
+    if (sixty_second_height_override >= 0) {
+        if (chain != dinero::Chain::REGTEST) {
+            std::cerr << "--consensus-sixty-second-height is REGTEST-only\n";
+            return 1;
+        }
+        dinero::MutableParams().sixty_second_activation_height =
+            static_cast<uint32_t>(sixty_second_height_override);
+    }
     if (contextual_locks_height_override >= 0) {
         if (chain != dinero::Chain::REGTEST) {
             std::cerr << "--consensus-contextual-locks-height is REGTEST-only\n"; return 1;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "consensus/limits.h"
+#include "consensus/shielded/compact_regtest.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "primitives/transaction.h"
 #include <cstdint>
@@ -40,16 +41,16 @@ inline size_t WireTxByteLimit(const std::vector<uint8_t>& raw) {
     if (raw.size() < 4) return MAX_TX_SIZE;
     const uint32_t version = uint32_t(raw[0]) | (uint32_t(raw[1]) << 8) |
         (uint32_t(raw[2]) << 16) | (uint32_t(raw[3]) << 24);
-    return version == static_cast<uint32_t>(Transaction::TX_VERSION_SHIELDED_V2)
+    return Transaction::IsShieldedAuthVersion(static_cast<int32_t>(version))
         ? kAuthMaxTxBytes : MAX_TX_SIZE;
 }
 inline size_t TxByteLimit(const Transaction& tx, bool auth_active) {
-    return auth_active && tx.version == Transaction::TX_VERSION_SHIELDED_V2 &&
+    return auth_active && Transaction::IsShieldedAuthVersion(tx.version) &&
             HasShieldedResources(tx)
         ? kAuthMaxTxBytes : MAX_TX_SIZE;
 }
 inline size_t TxWeightLimit(const Transaction& tx, bool auth_active) {
-    return auth_active && tx.version == Transaction::TX_VERSION_SHIELDED_V2 &&
+    return auth_active && Transaction::IsShieldedAuthVersion(tx.version) &&
             HasShieldedResources(tx)
         ? kAuthMaxTxWeight : MAX_TX_WEIGHT;
 }
@@ -71,13 +72,21 @@ inline bool CheckAuthBundleCounts(size_t spends, size_t outputs) {
 // Auth height is supplied by the caller, never inferred from a proof/version.
 inline bool CheckAuthTransactionResources(const Transaction& tx, uint64_t height,
                                          uint32_t activation, size_t& proofs,
-                                         std::string& error) {
+                                         std::string& error, CompactRegtestRules compact_rules = {}) {
     proofs = 0;
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (Transaction::IsCompactRegtestVersion(tx.version) &&
+        (!compact_rules.Active(height) || !AuthResourcesActive(height, activation) ||
+         !HasShieldedResources(tx) || !tx.has_explicit_fee)) {
+        error = "compact-regtest-not-active-or-malformed";
+        return false;
+    }
+#endif
     if (!AuthResourcesActive(height, activation) || !HasShieldedResources(tx)) return true;
     // Auth bundles must commit to their bytes through txid. Legacy v5 carries
     // the bundle only in witness serialization, so granting it the larger
     // resource profile would preserve its mempool-identity ambiguity.
-    if (tx.version != Transaction::TX_VERSION_SHIELDED_V2) {
+    if (!Transaction::IsShieldedAuthVersion(tx.version)) {
         error = "shielded-auth-requires-tx-v6";
         return false;
     }
@@ -102,9 +111,9 @@ struct AuthBlockResourceUsage {
 inline bool AccumulateAuthBlockResources(const Transaction& tx, uint64_t height,
                                          uint32_t activation,
                                          AuthBlockResourceUsage& usage,
-                                         std::string& error) {
+                                         std::string& error, CompactRegtestRules compact_rules = {}) {
     size_t proofs = 0;
-    if (!CheckAuthTransactionResources(tx, height, activation, proofs, error)) {
+    if (!CheckAuthTransactionResources(tx, height, activation, proofs, error, compact_rules)) {
         return false;
     }
     if (!AuthResourcesActive(height, activation)) return true;
@@ -126,11 +135,14 @@ inline bool AccumulateAuthBlockResources(const Transaction& tx, uint64_t height,
 }
 template <typename Transactions>
 inline bool CheckAuthBlockResources(const Transactions& transactions, uint64_t height,
-                                   uint32_t activation, std::string& error) {
+                                   uint32_t activation, std::string& error,
+                                   CompactRegtestRules compact_rules = {}) {
+#ifndef DINERO_ENABLE_COMPACT_REGTEST
     if (!AuthResourcesActive(height, activation)) return true;
+#endif
     AuthBlockResourceUsage usage;
     for (const auto& tx : transactions) {
-        if (!AccumulateAuthBlockResources(tx, height, activation, usage, error))
+        if (!AccumulateAuthBlockResources(tx, height, activation, usage, error, compact_rules))
             return false;
     }
     return true;

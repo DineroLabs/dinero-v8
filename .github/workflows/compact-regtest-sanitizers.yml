@@ -1,0 +1,85 @@
+name: Compact daemon sanitizers
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/compact-regtest-sanitizers.yml'
+      - 'scripts/compact-regtest-sanitizers.sh'
+      - 'scripts/ci/check_compact_sanitizer_evidence.py'
+      - 'scripts/ci/test_check_compact_sanitizer_evidence.py'
+      - 'scripts/ci/verify_compact_sanitizer_runtime.py'
+      - 'scripts/ci/check_shielded_sanitizer_coverage.py'
+      - 'include/common/serialization.h'
+      - 'src/daemon/p2p_header_parser.cpp'
+      - 'include/daemon/p2p_header_parser.h'
+      - 'src/daemon/services/p2p_service.cpp'
+      - 'include/daemon/services/p2p_service.h'
+      - 'src/daemon/services/mempool_service.cpp'
+      - 'tests/daemon/test_p2p_header_parser.cpp'
+      - 'tests/daemon/test_daemon_service_release.cpp'
+      - 'tests/integration/test_daemon_service_release.py'
+      - 'include/primitives/block.h'
+      - 'tests/CMakeLists.txt'
+      - 'tests/consensus/test_packed_header_alignment.cpp'
+      - 'tests/consensus/test_serialization_empty_buffers.cpp'
+      - 'include/consensus/shielded/**'
+      - 'src/consensus/shielded/**'
+      - 'src/consensus/utreexo*'
+      - 'src/consensus/block_validation.cpp'
+      - 'src/daemon/mempool.cpp'
+      - 'src/daemon/services/chainstate_service.cpp'
+      - 'src/wallet/shielded_*'
+      - 'src/primitives/transaction*'
+      - 'src/storage/chain_db.cpp'
+      - 'src/zk/**'
+      - 'tests/integration/test_shielded_auth_relay_lifecycle.sh'
+      - 'tests/integration/helpers/compact_regtest_*'
+      - 'tests/consensus/test_compact_regtest_vectors.cpp'
+      - 'tests/vectors/compact_regtest_v1/**'
+
+permissions:
+  contents: read
+
+jobs:
+  daemon-asan-ubsan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      COMPACT_SANITIZER_JOBS: 2
+      COMPACT_SANITIZER_EVIDENCE_DIR: ${{ github.workspace }}/artifacts/compact-sanitizers
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install security toolchain
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build clang llvm cmake curl perl pkg-config jq
+          libudev-dev libusb-1.0-0-dev
+      - name: Verify evidence-gate negative controls
+        run: python3 scripts/ci/test_check_compact_sanitizer_evidence.py
+      - name: Check serializers before the full build
+        run: |
+          mkdir -p artifacts/serialization
+          set -o pipefail
+          for test in packed_header_alignment serialization_empty_buffers; do
+            clang++ -std=c++20 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
+              -I include "tests/consensus/test_${test}.cpp" \
+              -o "artifacts/serialization/${test}"
+            UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 "artifacts/serialization/${test}" \
+              2>&1 | tee "artifacts/serialization/${test}.log"
+          done
+      - name: Build pinned OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Instrument and exercise daemon wallet and Utreexo lifecycle
+        run: bash scripts/compact-regtest-sanitizers.sh
+      - name: Retain sanitizer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compact-daemon-sanitizers-${{ github.sha }}
+          path: |
+            artifacts/serialization/*.log
+            artifacts/compact-sanitizers/
+            build-compact-sanitizers/Testing/

@@ -19,6 +19,7 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include "consensus/chainwork.h"
+#include "consensus/asert.h"
 #include <memory>
 #include <map>
 #include <set>
@@ -127,6 +128,7 @@ struct HeaderAsertContext {
     uint32_t parent_height{0};
     int64_t parent_mtp{0};
     int64_t block1_time{0};
+    std::optional<dinero::AsertAnchor> timing_anchor;
 };
 
 /**
@@ -337,7 +339,8 @@ public:
      * block1_time is zero only when the parent is genesis (target height 1).
      */
     bool GetAsertContextByHash(const uint256& parent_hash,
-                               HeaderAsertContext& out) const;
+                               HeaderAsertContext& out,
+                               std::optional<uint32_t> timing_anchor_height = std::nullopt) const;
 
     /**
      * @brief Atomically resolve an anchor by hash and copy its ancestor

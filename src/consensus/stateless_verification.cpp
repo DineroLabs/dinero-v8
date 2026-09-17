@@ -177,7 +177,7 @@ VerifyResult VerifyBlockStateless(
     }
 
     // Verify value balance
-    uint64_t subsidy = GetBlockSubsidy(ctx.height);
+    uint64_t subsidy = GetBlockSubsidy(ctx.height, ctx.sixty_second_activation_height);
     uint64_t allowed_output = total_input_value + subsidy;
 
     if (total_output_value > allowed_output) {
@@ -212,7 +212,8 @@ VerifyResult VerifyBlockStateless(
 VerifyResult VerifyBlockWithSnapshot(
     const Block& block,
     const UTXOSnapshot& snapshot,
-    const BlockUtreexoProof& proof) {
+    const BlockUtreexoProof& proof,
+    uint32_t sixty_second_activation_height) {
 
     // Build spent outputs array from block inputs
     std::vector<SpentOutputData> spent_outputs;
@@ -247,6 +248,7 @@ VerifyResult VerifyBlockWithSnapshot(
     ctx.num_roots = static_cast<uint8_t>(roots.size());
     ctx.num_leaves = snapshot.utreexo_num_leaves;
 
+    ctx.sixty_second_activation_height = sixty_second_activation_height;
     ctx.height = snapshot.height + 1;  // Block being verified is at snapshot.height + 1
 
     return VerifyBlockStateless(block, ctx, proof);

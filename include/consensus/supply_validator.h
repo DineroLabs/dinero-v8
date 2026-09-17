@@ -26,10 +26,10 @@ public:
      * @param height2 Later height
      * @return true if supply at height2 >= supply at height1
      */
-    static bool VerifyMonotonicSupply(uint32_t height1, uint32_t height2) {
+    static bool VerifyMonotonicSupply(uint32_t height1, uint32_t height2, uint32_t activation = UINT32_MAX) {
         if (height2 < height1) return false;
-        uint64_t supply1 = ConsensusSubsidy::GetTotalIssuedAtHeight(height1);
-        uint64_t supply2 = ConsensusSubsidy::GetTotalIssuedAtHeight(height2);
+        uint64_t supply1 = ConsensusSubsidy::GetTotalIssuedAtHeight(height1, activation);
+        uint64_t supply2 = ConsensusSubsidy::GetTotalIssuedAtHeight(height2, activation);
         return supply2 >= supply1;
     }
 
@@ -37,12 +37,12 @@ public:
      * Verify tail emission floor is enforced
      *
      * @param height Block height (>= 1)
-     * @return true if subsidy >= 1 DIN
+     * @return true if subsidy >= the floor at the candidate height
      */
-    static bool VerifyTailEmissionFloor(uint32_t height) {
+    static bool VerifyTailEmissionFloor(uint32_t height, uint32_t activation = UINT32_MAX) {
         if (height == 0) return true;  // Genesis has no subsidy
-        AmountUna subsidy = ConsensusSubsidy::GetBlockSubsidy(height);
-        return subsidy.GetUna() >= ConsensusSubsidy::TAIL_EMISSION_UNA;
+        AmountUna subsidy = ConsensusSubsidy::GetBlockSubsidy(height, activation);
+        return subsidy.GetUna() >= ConsensusSubsidy::TailEmissionAtHeight(height, activation);
     }
 
     /**
@@ -57,24 +57,24 @@ public:
      *
      * @return true if all invariants hold
      */
-    static bool VerifyAllCriticalHeights() {
+    static bool VerifyAllCriticalHeights(uint32_t activation = UINT32_MAX) {
         // Genesis: 0 DIN
-        if (ConsensusSubsidy::GetBlockSubsidy(0) != AmountUna::Zero()) return false;
+        if (ConsensusSubsidy::GetBlockSubsidy(0, activation) != AmountUna::Zero()) return false;
 
         // Height 1: 100 DIN (first PoW block)
-        if (ConsensusSubsidy::GetBlockSubsidy(1).GetUna() != ConsensusSubsidy::INITIAL_SUBSIDY) return false;
+        if (ConsensusSubsidy::GetBlockSubsidy(1, activation).GetUna() != ConsensusSubsidy::INITIAL_SUBSIDY) return false;
 
         // All halving boundaries
         for (uint32_t epoch = 0; epoch < 10; epoch++) {
             uint32_t halving_height = 1 + (epoch * ConsensusSubsidy::HALVING_INTERVAL);
-            if (!VerifyTailEmissionFloor(halving_height)) return false;
-            if (!VerifyMonotonicSupply(0, halving_height)) return false;
+            if (!VerifyTailEmissionFloor(halving_height, activation)) return false;
+            if (!VerifyMonotonicSupply(0, halving_height, activation)) return false;
         }
 
-        // Tail emission: at deep heights, subsidy should be exactly 1 DIN
-        uint32_t deep_tail_height = 1 + (7 * ConsensusSubsidy::HALVING_INTERVAL) + 1000;
-        AmountUna deep_subsidy = ConsensusSubsidy::GetBlockSubsidy(deep_tail_height);
-        if (deep_subsidy.GetUna() != ConsensusSubsidy::TAIL_EMISSION_UNA) return false;
+        // At deep heights, subsidy should equal the applicable tail floor
+        uint32_t deep_tail_height = 1 + (8 * ConsensusSubsidy::HALVING_INTERVAL) + 1000;
+        AmountUna deep_subsidy = ConsensusSubsidy::GetBlockSubsidy(deep_tail_height, activation);
+        if (deep_subsidy.GetUna() != ConsensusSubsidy::TailEmissionAtHeight(deep_tail_height, activation)) return false;
 
         return true;
     }
@@ -85,9 +85,9 @@ public:
      * @param height Block height
      * @return String describing supply state
      */
-    static std::string GetSupplySummary(uint32_t height) {
-        uint64_t issued = ConsensusSubsidy::GetTotalIssuedAtHeight(height);
-        AmountUna subsidy = ConsensusSubsidy::GetBlockSubsidy(height);
+    static std::string GetSupplySummary(uint32_t height, uint32_t activation = UINT32_MAX) {
+        uint64_t issued = ConsensusSubsidy::GetTotalIssuedAtHeight(height, activation);
+        AmountUna subsidy = ConsensusSubsidy::GetBlockSubsidy(height, activation);
 
         char buffer[256];
         snprintf(buffer, sizeof(buffer),

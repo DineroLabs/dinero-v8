@@ -5,6 +5,44 @@ import json
 import shlex
 from pathlib import Path
 
+COMPACT_DAEMON_SOURCES = [
+    'src/daemon/p2p_header_parser.cpp',
+    'src/daemon/services/p2p_service.cpp',
+    'src/daemon/services/mempool_service.cpp',
+    'tests/daemon/test_p2p_header_parser.cpp',
+    'tests/daemon/test_daemon_service_release.cpp',
+    'src/daemon/main.cpp',
+    'src/daemon/block_acceptor.cpp',
+    'src/daemon/mempool.cpp',
+    'src/daemon/services/chainstate_service.cpp',
+    'src/consensus/block_validation.cpp',
+    'src/consensus/utreexo_accumulator.cpp',
+    'src/storage/chain_db.cpp',
+    'src/primitives/transaction.cpp',
+    'src/primitives/transaction_serializer.cpp',
+    'src/p2p/structural_validator.cpp',
+    'src/rpc/shielded_rpc_json.cpp',
+    'src/wallet/wallet_manager.cpp',
+    'src/wallet/shielded_wallet_ops.cpp',
+    'src/wallet/shielded_wallet_runtime.cpp',
+    'src/wallet/shielded_note_store.cpp',
+    'src/wallet/shielded_derivation.cpp',
+    'src/consensus/shielded/compact_regtest.cpp',
+    'src/consensus/shielded/shielded_validation.cpp',
+    'src/consensus/shielded/shielded_serialization.cpp',
+    'src/consensus/shielded/commitment_tree.cpp',
+    'src/consensus/shielded/nullifier_set.cpp',
+    'src/consensus/shielded/shielded_circuit.cpp',
+    'src/consensus/shielded/binding_sig.cpp',
+    'src/consensus/shielded/range_proof.cpp',
+    'src/zk/zkvm/scalar.cpp',
+    'src/zk/zkvm/r1cs_spartan.cpp',
+    'tests/consensus/test_compact_regtest_vectors.cpp',
+    'tests/consensus/test_shielded_resource_limits.cpp',
+    'tests/consensus/test_shielded_reindex_equivalence.cpp',
+    'tests/integration/shielded_tx_builder.cpp',
+]
+
 
 def enabled_sanitizers(arguments):
     enabled = set()
@@ -25,6 +63,8 @@ def main():
     parser.add_argument('build_dir', type=Path)
     parser.add_argument('sanitizers', help='Required comma-separated sanitizer flags')
     parser.add_argument('--fuzz', action='store_true')
+    parser.add_argument('--compact-daemon', action='store_true',
+                        help='Audit full compact daemon/wallet qualification sources')
     args = parser.parse_args()
     sources = [
         'contrib/benchmarks/compact_spartan_codec.cpp',
@@ -36,6 +76,10 @@ def main():
     sources += (['fuzz/fuzz_compact_spartan.cpp', 'fuzz/fuzz_shielded_surfaces.cpp']
                 if args.fuzz else ['tests/zk/test_compact_spartan.cpp',
                                       'tests/zk/test_spartan_soundness.cpp'])
+    if args.compact_daemon:
+        if args.fuzz:
+            parser.error('--fuzz and --compact-daemon are separate qualification scopes')
+        sources = COMPACT_DAEMON_SOURCES
     entries = json.loads((args.build_dir / 'compile_commands.json').read_text())
     required = set(args.sanitizers.split(','))
     failures, checked = [], []

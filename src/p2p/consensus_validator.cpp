@@ -16,9 +16,8 @@ namespace p2p {
 //=============================================================================
 
 uint64_t GetBlockSubsidy(uint32_t height, const ConsensusParams& params) {
-    (void)params;  // Unused - subsidy is constant per height
     // Phase M.6.3: Extract raw value for boundary type (uint64_t return)
-    return ConsensusSubsidy::GetBlockSubsidy(height).GetUna();
+    return ConsensusSubsidy::GetBlockSubsidy(height, params.sixty_second_activation_height).GetUna();
 }
 
 //=============================================================================

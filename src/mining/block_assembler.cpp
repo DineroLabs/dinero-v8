@@ -514,7 +514,7 @@ std::shared_ptr<MiningJob> BlockAssembler::CreateJob(const uint256* explicit_tip
     // Single source of truth: GetBlockSubsidy()
     // No special cases, no injection logic, pure consensus law
     // Phase M.6.2: Extract raw value from AmountUna
-    job->block_reward = dinero::ConsensusSubsidy::GetBlockSubsidy(job->height).GetUna();
+    job->block_reward = dinero::ConsensusSubsidy::GetBlockSubsidy(job->height, dinero::Params().sixty_second_activation_height).GetUna();
 
     // Log warning if subsidy reaches 0 (after all halvings complete)
     if (job->block_reward == 0 && job->height > 0) {
@@ -1351,7 +1351,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
         currentTime,
         consensus,
         chain_db_);
-    uint64_t block_subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height).GetUna();
+    uint64_t block_subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height).GetUna();
 
     uint64_t total_fees = 0;
     std::vector<std::string> included_txids;

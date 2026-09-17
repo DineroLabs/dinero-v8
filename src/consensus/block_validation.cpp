@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 #include "consensus/contextual_locks.h"
 #include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
@@ -210,7 +211,8 @@ bool ValidateShieldedTransactionBundle(
         Params().shielded_input_binding_activation_height,
         Params().shielded_cv_binding_activation_height,
         Params().shielded_spend_auth_activation_height,
-        Params().shielded_private_covenant_activation_height);
+        Params().shielded_private_covenant_activation_height,
+        shielded::CompactRulesFor(dinero::Params()));
     const auto validation = shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != shielded::ShieldedValidationError::Ok) {
         error = "Shielded validation failed: " +
@@ -314,7 +316,8 @@ bool BlockValidator::ComputeUtreexoRootPure(const Block& block, uint32_t height,
                                             uint256& computed_utreexo_root,
                                             std::string& error) {
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
-            Params().shielded_spend_auth_activation_height, error)) return false;
+            Params().shielded_spend_auth_activation_height, error,
+            shielded::CompactRulesFor(Params()))) return false;
 
     std::cout << "\n🔍 [ComputeUtreexoRootPure] ENTRY" << std::endl;
     std::cout << "   height=" << height << std::endl;
@@ -555,7 +558,8 @@ bool BlockValidator::ComputeUtreexoRootPureFromForest(
     uint256& computed_utreexo_root,
     std::string& error) {
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
-            Params().shielded_spend_auth_activation_height, error)) return false;
+            Params().shielded_spend_auth_activation_height, error,
+            shielded::CompactRulesFor(Params()))) return false;
 
     if (!IsUtreexoActive(height)) {
         computed_utreexo_root.SetNull();
@@ -685,7 +689,8 @@ bool BlockValidator::ApplyBlockShieldedSection(
     const std::vector<int64_t>& pending_shielded_deltas,
     BlockUndo& undo, std::string& error) {
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
-            Params().shielded_spend_auth_activation_height, error)) return false;
+            Params().shielded_spend_auth_activation_height, error,
+            shielded::CompactRulesFor(Params()))) return false;
 
     if (!(shielded_tree_ && shielded_nullifiers_)) {
         // Shielded state not wired — nothing to apply. Under state-commitment
@@ -838,7 +843,8 @@ bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
     std::vector<int64_t>& deltas_out, std::string& error,
     const std::vector<SpentOutputData>* fallback_spent_outputs) {
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
-            Params().shielded_spend_auth_activation_height, error)) return false;
+            Params().shielded_spend_auth_activation_height, error,
+            shielded::CompactRulesFor(Params()))) return false;
 
     deltas_out.clear();
 
@@ -980,7 +986,8 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
     // a height/hash-consistent container and rollback can capture genesis-state snapshots.
     undo = BlockUndo(height, block_hash);
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
-            Params().shielded_spend_auth_activation_height, error)) return false;
+            Params().shielded_spend_auth_activation_height, error,
+            shielded::CompactRulesFor(Params()))) return false;
 
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -3010,7 +3017,8 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
     total_input_value = 0;
     size_t resource_proofs = 0;
     if (!shielded::CheckAuthTransactionResources(tx, height,
-            Params().shielded_spend_auth_activation_height, resource_proofs, error)) return false;
+            Params().shielded_spend_auth_activation_height, resource_proofs, error,
+            shielded::CompactRulesFor(Params()))) return false;
     const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
     
     // NOTE: this branch is currently UNREACHABLE — both call sites (the per-tx
@@ -3217,9 +3225,9 @@ uint64_t BlockValidator::GetBlockSubsidy(uint32_t height) {
     // Dinero monetary policy: subsidy is purely height-based
     // Height 0: 0 (genesis unspendable)
     // Height 1: 100 DIN (first PoW block)
-    // Height 1+: 100 DIN initial, halving every 1,314,000 blocks, 1 DIN tail floor
+    // Height 1+: 100 DIN initial, fixed halving heights, height-selected tail floor
     // Phase M.6.2: Extract raw value from AmountUna
-    return dinero::ConsensusSubsidy::GetBlockSubsidy(height).GetUna();
+    return dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height).GetUna();
 }
 
 uint64_t BlockValidator::SumOutputs(const Transaction& tx) const {

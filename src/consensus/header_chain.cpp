@@ -373,7 +373,8 @@ bool HeaderChainSelector::GetMedianTimePastByHash(const uint256& hash,
 
 bool HeaderChainSelector::GetAsertContextByHash(
         const uint256& parent_hash,
-        HeaderAsertContext& out) const {
+        HeaderAsertContext& out,
+        std::optional<uint32_t> timing_anchor_height) const {
     std::lock_guard<std::mutex> lock(mutex_);
     out = HeaderAsertContext{};
 
@@ -385,13 +386,19 @@ bool HeaderChainSelector::GetAsertContextByHash(
     const HeaderIndexEntry* parent = it->second.get();
     out.parent_height = parent->height;
     out.parent_mtp = static_cast<int64_t>(parent->GetMedianTimePast());
+    if (timing_anchor_height) {
+        const auto* boundary = parent->GetAncestor(*timing_anchor_height);
+        if (!boundary) { out = HeaderAsertContext{}; return false; }
+        out.timing_anchor = dinero::AsertAnchor{static_cast<int32_t>(boundary->height),
+            static_cast<int64_t>(boundary->header.timestamp), boundary->header.difficulty};
+    }
     if (parent->height >= 1) {
         const HeaderIndexEntry* block1 = parent->GetAncestor(1);
-        if (!block1) {
+        if (!block1 && !out.timing_anchor) {
             out = HeaderAsertContext{};
             return false;
         }
-        out.block1_time = static_cast<int64_t>(block1->header.timestamp);
+        if (block1) out.block1_time = static_cast<int64_t>(block1->header.timestamp);
     }
     return true;
 }

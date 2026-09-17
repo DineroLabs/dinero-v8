@@ -2374,6 +2374,35 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
     message(STATUS "  ✓ ShieldedAuthRelayLifecycle registered")
 endif()
 
+if(DINERO_ENABLE_COMPACT_REGTEST)
+    add_test(NAME CompactPackageBoundaries
+      COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_compact_package_boundaries.py)
+    set_tests_properties(CompactPackageBoundaries PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;COMPACT_PACKAGE_BUILDER=$<TARGET_FILE:compact_package_builder>"
+      LABELS "integration;compact-regtest;shielded;mempool;utreexo;mandatory"
+      TIMEOUT 600 RUN_SERIAL TRUE)
+    add_test(NAME CompactRegtestLifecycle
+      COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+    set_tests_properties(CompactRegtestLifecycle PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_COMPACT_HEIGHT=124"
+      LABELS "integration;compact-regtest;shielded;utreexo;restart;reorg;reindex;mandatory"
+      TIMEOUT 2400 RUN_SERIAL TRUE)
+    foreach(timing_height IN ITEMS 123 124 125)
+      add_test(NAME CompactTimingLifecycle${timing_height}
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+      set_tests_properties(CompactTimingLifecycle${timing_height} PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_COMPACT_HEIGHT=124;SIXTY_SECOND_HEIGHT=${timing_height}"
+        LABELS "integration;compact-regtest;consensus;shielded;utreexo;restart;reorg;reindex;mandatory"
+        TIMEOUT 2400 RUN_SERIAL TRUE)
+    endforeach()
+    add_test(NAME CompactTimingExternalMining
+      COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_state_commitment_mining.py)
+    set_tests_properties(CompactTimingExternalMining PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_COMPACT_TIMING=1"
+      LABELS "integration;compact-regtest;consensus;mining;shielded;utreexo;mandatory"
+      TIMEOUT 600 RUN_SERIAL TRUE)
+endif()
+
 # Gate D must run in the mandatory serial lane; missing Python is a failure,
 # never a reason to silently omit the security gate from registration.
 add_test(NAME SnapshotBindingMutations
@@ -2414,3 +2443,17 @@ set_tests_properties(CsnManualInvalidation PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;csn;utreexo;reorg;mandatory"
     TIMEOUT 300 RUN_SERIAL TRUE)
+
+# Timing upgrade qualification is always registered and executed in the serial lane.
+add_test(NAME SixtySecondActivation
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_sixty_second_activation.py)
+set_tests_properties(SixtySecondActivation PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+add_test(NAME SixtySecondShieldedLifecycle
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+set_tests_properties(SixtySecondShieldedLifecycle PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_REINDEX=1;SIXTY_SECOND_HEIGHT=103"
+    LABELS "integration;consensus;shielded;utreexo;dnrs;restart;reorg;mandatory"
+    TIMEOUT 2400 RUN_SERIAL TRUE)

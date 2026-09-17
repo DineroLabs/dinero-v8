@@ -1616,7 +1616,7 @@ din::Json rpc_context_getmininginfo(const ExecutionContext& ctx, const din::Json
         const auto& chainparams = dinero::Params();
         const double difficulty = dinero::storage::GetDifficulty(chain_db, next_height);
         const double target_spacing =
-            chainparams.target_spacing > 0 ? static_cast<double>(chainparams.target_spacing) : 300.0;
+            static_cast<double>(chainparams.TargetSpacing(next_height));
         const double network_hashrate = std::max(0.0, difficulty * 4294967296.0 / target_spacing);
 
         result["blocks"] = static_cast<int>(height);
@@ -1632,7 +1632,7 @@ din::Json rpc_context_getmininginfo(const ExecutionContext& ctx, const din::Json
         result["hashespersec"] = network_hashrate;
 
         // Phase M.6.2: Extract raw value from AmountUna
-        uint64_t reward = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height).GetUna();
+        uint64_t reward = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height, dinero::Params().sixty_second_activation_height).GetUna();
         result["blocksubsidy"] = formatDIN(reward);
 
     } catch (const std::exception& e) {
@@ -2841,7 +2841,7 @@ din::Json rpc_context_generate(const ExecutionContext& ctx, const din::Json& par
 
             // Coinbase output
             dinero::TxOutput output;
-            output.value = dinero::ConsensusSubsidy::GetBlockSubsidy(height);
+            output.value = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height);
 
             // Phase W.1.1: Create scriptPubKey from wallet address
             // Use BuildScriptPubKeyFromAddress to decode the bech32m address

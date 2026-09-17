@@ -73,7 +73,7 @@ din::Json rpc_context_economics_getsupply(const ExecutionContext& ctx, const din
         uint32_t h = chainstate->getBlockHeight();
 
         // Calculate total issued via consensus function (no premine, pure PoW + tail emission)
-        uint64_t total_issued = dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(h);
+        uint64_t total_issued = dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(h, dinero::Params().sixty_second_activation_height);
 
         // Basic info
         result["algorithm"] = "Dinero";
@@ -83,7 +83,7 @@ din::Json rpc_context_economics_getsupply(const ExecutionContext& ctx, const din
         result["monetary_policy"] = "PoW mining with tail emission, no premine";
 
         // Current block reward
-        uint64_t current_reward = dinero::ConsensusSubsidy::GetBlockSubsidy(h > 0 ? h : 1).GetUna();
+        uint64_t current_reward = dinero::ConsensusSubsidy::GetBlockSubsidy(h > 0 ? h : 1, dinero::Params().sixty_second_activation_height).GetUna();
         result["current_block_reward_una"] = static_cast<int64_t>(current_reward);
         result["current_block_reward_din"] = formatDIN(current_reward);
 
@@ -108,6 +108,10 @@ din::Json rpc_context_economics_getsupply(const ExecutionContext& ctx, const din
  */
 din::Json rpc_context_economics_getinfo(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
+    const uint32_t current_height = ctx.daemon && ctx.daemon->chainstate
+        ? ctx.daemon->chainstate->getBlockHeight() : 0;
+    const uint32_t next_height = current_height == UINT32_MAX ? UINT32_MAX : current_height + 1;
+    const auto& network = dinero::Params();
 
     // Dinero mainnet monetary policy
     result["algorithm"] = "Dinero";
@@ -116,17 +120,20 @@ din::Json rpc_context_economics_getinfo(const ExecutionContext& ctx, const din::
 
     // Monetary policy: no premine, no hard cap (tail emission)
     result["monetary_policy"] = "PoW mining with tail emission, no premine";
-    result["tail_emission_una"] = static_cast<int64_t>(dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
+    result["tail_emission_una"] = static_cast<int64_t>(dinero::ConsensusSubsidy::TailEmissionAtHeight(
+        next_height, network.sixty_second_activation_height));
 
     // Halving schedule
     result["initial_reward_din"] = formatDIN(dinero::ConsensusSubsidy::INITIAL_SUBSIDY);
     result["halving_interval"] = static_cast<int>(dinero::ConsensusSubsidy::HALVING_INTERVAL);
     result["halving_count"] = 33;
     // Derive from consensus (chainparams target_spacing) instead of hardcoding —
-    // mainnet is 120s (2 min). A hardcoded 180 was wrong and also contradicted
+    // legacy mainnet is 120s; activated blocks target 60s. A hardcoded 180 contradicted
     // target_spacing_seconds reported by the getconsensusinfo handler.
-    const int block_time_seconds = static_cast<int>(dinero::Params().target_spacing);
+    const int block_time_seconds = static_cast<int>(network.TargetSpacing(next_height));
     result["block_time_seconds"] = block_time_seconds;
+    result["target_spacing_height"] = static_cast<int64_t>(next_height);
+    result["sixty_second_activation_height"] = static_cast<int64_t>(network.sixty_second_activation_height);
     // Halving horizon derived from the real block time so it cannot drift again:
     //   HALVING_INTERVAL blocks x target_spacing / seconds-per-year.
     const double halving_years = static_cast<double>(dinero::ConsensusSubsidy::HALVING_INTERVAL) *
@@ -139,10 +146,8 @@ din::Json rpc_context_economics_getinfo(const ExecutionContext& ctx, const din::
     if (ctx.daemon && ctx.daemon->chainstate) {
         auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
         if (chainstate) {
-            uint32_t current_height = chainstate->getBlockHeight();
-            uint32_t next_height = current_height + 1;
-            uint64_t total_issued = dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(current_height);
-            uint64_t next_reward = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height).GetUna();
+            uint64_t total_issued = dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(current_height, dinero::Params().sixty_second_activation_height);
+            uint64_t next_reward = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height, dinero::Params().sixty_second_activation_height).GetUna();
 
             result["current_height"] = static_cast<int>(current_height);
             result["current_supply_din"] = formatDIN(total_issued);
@@ -155,8 +160,8 @@ din::Json rpc_context_economics_getinfo(const ExecutionContext& ctx, const din::
             }
 
             // Halving epoch info
-            uint32_t current_epoch = next_height / dinero::ConsensusSubsidy::HALVING_INTERVAL;
-            uint32_t blocks_until_halving = dinero::ConsensusSubsidy::HALVING_INTERVAL - (next_height % dinero::ConsensusSubsidy::HALVING_INTERVAL);
+            uint32_t current_epoch = (next_height - 1) / dinero::ConsensusSubsidy::HALVING_INTERVAL;
+            uint32_t blocks_until_halving = dinero::ConsensusSubsidy::HALVING_INTERVAL - ((next_height - 1) % dinero::ConsensusSubsidy::HALVING_INTERVAL);
             result["current_halving_epoch"] = static_cast<int>(current_epoch);
             result["blocks_until_next_halving"] = static_cast<int>(blocks_until_halving);
         }
@@ -414,7 +419,11 @@ din::Json rpc_context_getconsensusinfo(const ExecutionContext& ctx, const din::J
         std::ostringstream pow_hex;
         pow_hex << "0x" << std::hex << std::setw(8) << std::setfill('0') << chainparams.pow_limit_bits;
         result["pow_limit_bits"] = pow_hex.str();
-        result["target_spacing_seconds"] = static_cast<int>(chainparams.target_spacing);
+        const uint64_t spacing_height = ctx.daemon && ctx.daemon->chainstate
+            ? uint64_t(ctx.daemon->chainstate->getBlockHeight()) + 1 : 0;
+        result["target_spacing_height"] = static_cast<int64_t>(spacing_height);
+        result["target_spacing_seconds"] = static_cast<int>(chainparams.TargetSpacing(spacing_height));
+        result["sixty_second_activation_height"] = static_cast<int64_t>(chainparams.sixty_second_activation_height);
 
         // Current chain state
         if (ctx.daemon && ctx.daemon->chainstate) {
@@ -449,7 +458,9 @@ din::Json rpc_context_getconsensusinfo(const ExecutionContext& ctx, const din::J
         // Economics fingerprint (no premine, tail emission)
         result["initial_subsidy_din"] = formatDIN(dinero::ConsensusSubsidy::INITIAL_SUBSIDY);
         result["halving_interval"] = static_cast<int>(dinero::ConsensusSubsidy::HALVING_INTERVAL);
-        result["tail_emission_una"] = static_cast<int64_t>(dinero::ConsensusSubsidy::TAIL_EMISSION_UNA);
+        result["tail_emission_una"] = static_cast<int64_t>(dinero::ConsensusSubsidy::TailEmissionAtHeight(
+            static_cast<uint32_t>(std::min<uint64_t>(spacing_height, UINT32_MAX)),
+            chainparams.sixty_second_activation_height));
 
         // Consensus checksum (SHA256 of critical params)
         result["consensus_checksum"] = dinero::ConsensusChecksum(chainparams);

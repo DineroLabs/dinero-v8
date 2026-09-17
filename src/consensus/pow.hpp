@@ -61,6 +61,12 @@ inline uint32_t GetNextWorkRequired(
         return c.genesisBits;
     }
 
+    // This legacy wrapper has no ancestry from which to recover the boundary
+    // header. An explicit caller must supply the new anchor; never fall back
+    // to the genesis anchor after activation when a ChainDB is unavailable.
+    if (consensus::SixtySecondActive(height, c.sixtySecondActivationHeight) &&
+        c.asertAnchorHeight != c.sixtySecondActivationHeight - 1) return 0;
+
     return ComputeAsertBits(AsertInput{
         static_cast<int32_t>(height),
         currentMTP,

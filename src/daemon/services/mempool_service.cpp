@@ -54,6 +54,20 @@ bool MempoolService::Init(DaemonContext& ctx) {
             GetConfig().utreexo_stateless);
         mempool_->setLogger(logger_interface_);  // Inject logger for dependency injection
         std::weak_ptr<ChainstateService> weak_chainstate = chainstate_;
+        mempool_->setChainstateReadGuardFactory([weak_chainstate]()
+            -> std::unique_ptr<Mempool::ChainstateReadGuard> {
+            const auto chainstate = weak_chainstate.lock();
+            if (!chainstate) return nullptr;
+            struct Guard final : Mempool::ChainstateReadGuard {
+                // Own the service for precisely the lock's lifetime. The
+                // stored factory stays weak, avoiding a service-owner cycle.
+                std::shared_ptr<ChainstateService> owner;
+                std::unique_lock<AnnotatedRecursiveMutex> lock;
+                explicit Guard(std::shared_ptr<ChainstateService> service)
+                    : owner(std::move(service)), lock(owner->AcquireBlockIngressActivationLock()) {}
+            };
+            return std::make_unique<Guard>(chainstate);
+        });
         mempool_->setPreBaseCoinResolver(
             [weak_chainstate](const OutPoint& outpoint)
                 -> std::optional<consensus::UTXOEntry> {
@@ -150,6 +164,12 @@ void MempoolService::Stop() {
 
     // Reset instance
     mempool_.reset();
+
+    // Ingress and P2P have stopped. Relay callbacks retain this service;
+    // release the reverse links so those ownership cycles cannot survive.
+    tx_relay_manager_.reset();
+    p2p_service_.reset();
+    chainstate_.reset();
 
     logger_interface_->info("[MempoolService] Mempool shutdown complete");
     started_ = false;

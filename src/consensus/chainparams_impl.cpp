@@ -480,6 +480,7 @@ std::string ConsensusChecksum(const ChainParams& params) {
     // must be represented explicitly.
     ss << "consensus-checksum-v2\n"
        << "target_spacing=" << params.target_spacing << '\n'
+       << "sixty_second_activation_height=" << params.sixty_second_activation_height << '\n'
        << "retarget_interval=" << params.retarget_interval << '\n'
        << "pow_limit_bits=" << params.pow_limit_bits << '\n'
        << "genesis_time=" << params.genesis.nTime << '\n'

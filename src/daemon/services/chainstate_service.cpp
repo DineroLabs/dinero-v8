@@ -4990,6 +4990,14 @@ void ChainstateService::Stop() {
     // Reset instances (ONE DB: chain_manager and chain_db owned globally, not here)
     utxo_index_.reset();
 
+    // P2P and validation workers are stopped before this service. Relay,
+    // proof-provider and CSN callbacks retain chainstate, so release the
+    // reverse owning links after the final state flush and worker join.
+    p2p_service_.reset();
+    block_relay_manager_.reset();
+    proof_gossip_manager_.reset();
+    stateless_node_.reset();
+
     logger_->info("[ChainstateService] Chainstate shutdown complete");
     started_ = false;
     started_flag_.store(false);

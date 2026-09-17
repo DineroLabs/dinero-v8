@@ -1,5 +1,6 @@
 #pragma once
 
+#include "consensus/block_timing.h"
 #include <string>
 #include <cstdint>
 #include <vector>
@@ -265,6 +266,9 @@ struct ChainParams {
     // Fleet coordination is required before shipping a scheduled fork.
     // ===========================================================================
     uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
+    // Off by default, including in experimental builds. The CLI can set this
+    // only on regtest; consensus independently checks the network as well.
+    uint32_t shielded_compact_regtest_activation_height = UINT32_MAX;
     // Independent fork gate: policy-bound private-note spends (proof 0x07).
     // Mainnet selects 110000; other networks remain dormant unless explicitly
     // configured for rehearsal. Wallet support must accompany this fork.
@@ -349,6 +353,14 @@ struct ChainParams {
     // Contextual absolute and relative transaction locks. Preserve pre-cutover
     // history; selected separately from the shielded Auth activation.
     uint32_t contextual_locks_activation_height = UINT32_MAX;
+
+    // 60-second target and 0.5 DIN tail. Dormant until a reviewed network
+    // height is assigned; regtest may override before any service starts.
+    uint32_t sixty_second_activation_height = UINT32_MAX;
+    uint32_t TargetSpacing(uint64_t height) const {
+        return consensus::TargetSpacingAtHeight(height, sixty_second_activation_height, target_spacing);
+    }
+
 
     // ===========================================================================
     // POLICY: state-commitment burial depth (blocks).
