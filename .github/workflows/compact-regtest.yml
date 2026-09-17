@@ -16,6 +16,7 @@ on:
       - 'src/test/shielded_validation_tests.cpp'
       - 'tests/integration/CMakeLists.txt'
       - 'tests/integration/test_shielded_auth_relay_lifecycle.sh'
+      - 'tests/integration/test_state_commitment_mining.py'
       - 'tests/integration/helpers/compact_regtest_*'
       - 'tests/consensus/test_shielded_reindex_equivalence.cpp'
       - 'contrib/benchmarks/compact_spartan_codec.*'
@@ -68,7 +69,7 @@ jobs:
         run: |
           set -o pipefail
           ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
-            -R '^(ShieldedValidation|SpartanSoundness|ShieldedReindexEquivalence|CsnManualInvalidation|CSNShieldedReorgInvertibility|CompactRegtestLifecycle)$' \
+            -R '^(ShieldedValidation|SpartanSoundness|ShieldedReindexEquivalence|CsnManualInvalidation|CSNShieldedReorgInvertibility|CompactRegtestLifecycle|CompactTimingLifecycle123|CompactTimingLifecycle124|CompactTimingLifecycle125|CompactTimingExternalMining)$' \
             --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
       - name: Check network gates and default-build rejection
         run: |

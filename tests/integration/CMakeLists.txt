@@ -2387,6 +2387,20 @@ if(DINERO_ENABLE_COMPACT_REGTEST)
       ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_COMPACT_HEIGHT=124"
       LABELS "integration;compact-regtest;shielded;utreexo;restart;reorg;reindex;mandatory"
       TIMEOUT 2400 RUN_SERIAL TRUE)
+    foreach(timing_height IN ITEMS 123 124 125)
+      add_test(NAME CompactTimingLifecycle${timing_height}
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+      set_tests_properties(CompactTimingLifecycle${timing_height} PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_COMPACT_HEIGHT=124;SIXTY_SECOND_HEIGHT=${timing_height}"
+        LABELS "integration;compact-regtest;consensus;shielded;utreexo;restart;reorg;reindex;mandatory"
+        TIMEOUT 2400 RUN_SERIAL TRUE)
+    endforeach()
+    add_test(NAME CompactTimingExternalMining
+      COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_state_commitment_mining.py)
+    set_tests_properties(CompactTimingExternalMining PROPERTIES
+      ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_COMPACT_TIMING=1"
+      LABELS "integration;compact-regtest;consensus;mining;shielded;utreexo;mandatory"
+      TIMEOUT 600 RUN_SERIAL TRUE)
 endif()
 
 # Gate D must run in the mandatory serial lane; missing Python is a failure,

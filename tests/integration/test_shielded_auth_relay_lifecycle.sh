@@ -241,10 +241,12 @@ if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
     assert_same_shielded_state
 fi
 if [[ -n "${SIXTY_SECOND_HEIGHT:-}" ]]; then
+    EXPECTED_INITIAL_SPACING=120
+    if (( FUNDING_HEIGHT + 1 >= SIXTY_SECOND_HEIGHT )); then EXPECTED_INITIAL_SPACING=60; fi
     for result in "$(rpc_result getconsensusinfo '[]')" "$(peer_result getconsensusinfo '[]')"; do
-        jq -e --argjson height "${SIXTY_SECOND_HEIGHT}" \
-            '.result.sixty_second_activation_height == $height and .result.target_spacing_seconds == 120' \
-            <<<"${result}" >/dev/null || fail "timing fixture did not start before activation: ${result}"
+        jq -e --argjson height "${SIXTY_SECOND_HEIGHT}" --argjson spacing "${EXPECTED_INITIAL_SPACING}" \
+            '.result.sixty_second_activation_height == $height and .result.target_spacing_seconds == $spacing' \
+            <<<"${result}" >/dev/null || fail "wrong timing rules at fixture start: ${result}"
     done
 fi
 RECIPIENT="$(rpc_result wallet.getshieldedaddress '{"account":1,"j":0}' | jq -r '.result.address')"
@@ -288,7 +290,13 @@ jq -e --arg txid "${TXID}" --argjson height "${TIP}" \
     <<<"${CONFIRMED}" >/dev/null || fail "confirmation did not promote outgoing record: ${CONFIRMED}"
 pass "confirmed outgoing record promoted at height ${TIP}"
 if [[ -n "${SIXTY_SECOND_HEIGHT:-}" ]]; then
-    [[ "${TIP}" == "${SIXTY_SECOND_HEIGHT}" ]] || fail "transfer missed timing activation boundary"
+    if [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]]; then
+        # The combined matrix places timing immediately before, at and after
+        # compact activation. The transfer is post-activation in all cases.
+        (( TIP >= SIXTY_SECOND_HEIGHT )) || fail "transfer preceded timing activation"
+    else
+        [[ "${TIP}" == "${SIXTY_SECOND_HEIGHT}" ]] || fail "transfer missed timing activation boundary"
+    fi
     for result in "$(rpc_result getconsensusinfo '[]')" "$(peer_result getconsensusinfo '[]')"; do
         jq -e '.result.target_spacing_seconds == 60 and .result.tail_emission_una == 50000000' \
             <<<"${result}" >/dev/null || fail "timing activation absent: ${result}"

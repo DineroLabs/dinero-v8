@@ -20,6 +20,7 @@ WORK = Path(tempfile.mkdtemp(prefix="dinero_mining_dnrs_"))
 NODES = []
 RESULTS = []
 SUCCESS = False
+COMPACT_TIMING = os.environ.get("DINERO_TEST_COMPACT_TIMING") == "1"
 
 def require(ok, message):
     if not ok:
@@ -43,6 +44,11 @@ class Node:
             shutil.copytree(headers, self.path / "headers")
         self.rpc_port, self.p2p, self.wallet = ports()
         self.extra = ["--consensus-state-commitment-height=4294967295"] if dormant else []
+        if COMPACT_TIMING and not dormant:
+            self.extra += ["--consensus-shielded-epoch-reset-height=1",
+                           "--consensus-shielded-spend-auth-height=2",
+                           "--consensus-shielded-compact-height=124",
+                           "--consensus-sixty-second-height=125"]
         self.process = None
         NODES.append(self)
         self.start()
@@ -102,15 +108,28 @@ try:
     node = Node("active")
     denied = node.raw("blockchain.debugclearundoflag", ["00"*32])
     require(denied.get("error", {}).get("code") == -32099, "development RPC must be disabled by default")
-    node.call("generate", [3])
+    node.call("generate", [123 if COMPACT_TIMING else 3])
     # Generate establishes a wallet without assuming asynchronous startup timing.
     address = node.call("wallet.getnewaddress")["address"]
     miner = DineroCoinMiner(f"http://127.0.0.1:{node.rpc_port}", str(node.path / ".cookie"), address)
     require(miner.load_cookie_auth(), "cookie")
-    for _ in range(2):
+    for index in range(2):
+        expected_tx = None
+        if COMPACT_TIMING:
+            method = "wallet.shield" if index == 0 else "wallet.unshield"
+            expected_tx = node.call(method, {"amount_una":100000000 if index == 0 else 50000000,
+                                             "fee_una":1000000})["txid"]
         template = miner.get_block_template()
         require(template and template.coinbase_tx_hex, "canonical coinbase absent")
         metadata = node.call("getblocktemplate", [{"address":address}])
+        if COMPACT_TIMING:
+            selected = [tx for tx in metadata["transactions"] if tx["txid"] == expected_tx]
+            require(len(selected) == 1 and bytes.fromhex(selected[0]["data"])[:4] == b"\x06\x00\x00\x40",
+                    "external fixture did not select compact transaction")
+            require(node.call("getconsensusinfo")["target_spacing_seconds"] == (120 if index == 0 else 60),
+                    "external miner did not cross timing boundary")
+            require(metadata["coinbasevalue"] == 10000000000 + sum(tx["fee"] for tx in metadata["transactions"]),
+                    "external template lost fees or changed the initial reward")
         require("statecommitment" in metadata["rules"], "missing active rule")
         require(metadata["mutable"] == [], "unsafe mutation advertised")
         binding = metadata["statecommitment"]
@@ -132,8 +151,17 @@ try:
         root = node.call("daemon.shieldedroot")["shielded_root"]
         require(root == bytes.fromhex(own_script[0][14:])[::-1].hex(), "external mined post-root mismatch")
         require(node.call("getblockcount") == template.height, "external block not connected")
+        if expected_tx:
+            mined = node.call("getblock", [node.call("getbestblockhash"), 1])
+            require(expected_tx in mined["tx"], "external miner dropped compact transaction")
+            raw_block = bytes.fromhex(node.call("getblock", [node.call("getbestblockhash"), 0]))
+            require(raw_block.count(bytes.fromhex(selected[0]["data"])) == 1,
+                    "external miner changed compact bytes in persisted block")
         print("PASS getblocktemplate", template.height, root, flush=True)
 
+    coordinator_tx = None
+    if COMPACT_TIMING:
+        coordinator_tx = node.call("wallet.shield", {"amount_una":10000000,"fee_una":1000000})["txid"]
     job = node.call("mining.getjob", [{"address":address}])
     require(not job.get("error"), f"coordinator job: {job}")
     header = bytearray.fromhex(job["header_hex"])
@@ -148,6 +176,9 @@ try:
     require(node.call("mining.submit", [{"job_id":job["job_id"], "nonce":nonce}]) in (None, {}), "coordinator rejected")
     require(node.call("getbestblockhash") == digest.hex(), "coordinator submitted a different block")
     require(node.call("getblockcount") == job["height"], "coordinator did not connect")
+    if coordinator_tx:
+        mined = node.call("getblock", [node.call("getbestblockhash"), 1])
+        require(coordinator_tx in mined["tx"], "coordinator dropped compact transaction")
     committed = node.call("daemon.shieldedroot")["shielded_root"]
     node.stop(); node.start()
     require(node.call("daemon.shieldedroot")["shielded_root"] == committed, "coordinator root not persisted")
