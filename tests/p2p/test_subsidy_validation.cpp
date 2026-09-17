@@ -34,6 +34,7 @@
 #include <iostream>
 #include <cassert>
 #include <vector>
+#include <stdexcept>
 
 using namespace dinero::p2p;
 using dinero::OutPoint;
@@ -525,8 +526,12 @@ void test_sixty_second_tail_activation() {
         const uint64_t reward = height < 10'512'001 ? 100'000'000 : 50'000'000;
         const auto valid = validator.validateBlock(createBlock(createCoinbase(reward, height), {}), height, utxos, params);
         const auto overpaid = validator.validateBlock(createBlock(createCoinbase(reward + 1, height), {}), height, utxos, params);
-        assert(valid.ok && valid.subsidy == reward);
-        assert(!overpaid.ok && "One-una tail overclaim must fail");
+        if (!valid.ok || valid.subsidy != reward) {
+            throw std::runtime_error("Incorrect tail subsidy at height " + std::to_string(height));
+        }
+        if (overpaid.ok) {
+            throw std::runtime_error("One-una tail overclaim accepted at height " + std::to_string(height));
+        }
     }
     std::cout << "[PASS] Network-selected tail activation and rollback\n";
 }
