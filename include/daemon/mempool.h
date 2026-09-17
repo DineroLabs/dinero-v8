@@ -465,6 +465,14 @@ public:
     using PreBaseCoinResolver =
         std::function<std::optional<consensus::UTXOEntry>(const OutPoint&)>;
     using PreBaseCoinPredicate = std::function<bool(const OutPoint&)>;
+    // Production selection reads chainstate through the pre-base callbacks.
+    // Acquire this lifetime guard BEFORE m_mutex, matching block connection's
+    // chainstate -> mempool lock order. Set only during service initialization.
+    struct ChainstateReadGuard { virtual ~ChainstateReadGuard() = default; };
+    using ChainstateReadGuardFactory = std::function<std::unique_ptr<ChainstateReadGuard>()>;
+    void setChainstateReadGuardFactory(ChainstateReadGuardFactory factory) {
+        chainstate_read_guard_factory_ = std::move(factory);
+    }
     void setPreBaseCoinResolver(PreBaseCoinResolver resolver) {
         prebase_coin_resolver_ = std::move(resolver);
     }
@@ -501,6 +509,7 @@ private:
     std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(const OutPoint& outpoint) const;
     PreBaseCoinResolver prebase_coin_resolver_;
     PreBaseCoinPredicate prebase_coin_predicate_;
+    ChainstateReadGuardFactory chainstate_read_guard_factory_;
     void updateDependencies(const uint256& txid);
     void recalcAncestorMetrics(MempoolEntry& entry);
     void evictTransactions();

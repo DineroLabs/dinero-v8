@@ -564,6 +564,10 @@ TxAcceptResult Mempool::submitTransactionInternal(
     const std::string& source,
     bool relay,
     bool test_only) {
+    auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
+    if (chainstate_read_guard_factory_ && !chainstate_guard) {
+        return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, "chainstate unavailable");
+    }
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 
     // Phase M.0: GetTxid() returns TxId, use directly
@@ -1913,6 +1917,8 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
     size_t max_block_size, uint64_t max_block_weight,
     uint32_t next_block_height) const {
 
+    auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
+    if (chainstate_read_guard_factory_ && !chainstate_guard) return {};
     std::shared_lock<std::shared_mutex> lock(m_mutex);
 
     // Re-validate height-gated proof rules at template-selection time.
