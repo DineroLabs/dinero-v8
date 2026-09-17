@@ -3400,6 +3400,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
     src/daemon/secure_random.cpp  # Required for SecureRandom::GetUInt64()
   )
 
+  # Needed for test_peer_socket_fd (InboundAcceptedSocketHasKeepaliveEnabled)
+  # — the test-only accessors on P2PManager are compiled out otherwise.
+  target_compile_definitions(test_p2p_manager_ts1_integration PRIVATE DINERO_TEST_BUILD)
+
   if(APPLE)
     target_link_libraries(test_p2p_manager_ts1_integration PRIVATE
       GTest::gtest

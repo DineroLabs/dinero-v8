@@ -28,6 +28,13 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#ifdef __linux__
+#include <netinet/tcp.h>
+#endif
 
 namespace dinero::p2p::integration::test {
 
@@ -338,6 +345,85 @@ TEST(P2PManager_TS1_Integration, DestructorSafety) {
 
     // TS1 EXPECTATION: No crash when manager goes out of scope
     SUCCEED();
+}
+
+/// Field bug: an inbound peer connection that goes silently dead (no FIN/RST
+/// — network drop, sleep/wake, crash) relied entirely on the OS's default TCP
+/// keepalive to be noticed, since handle_incoming_connection() never enabled
+/// SO_KEEPALIVE on the accepted socket (unlike create_client_socket, which
+/// does this correctly for outbound connections). On Linux that default is
+/// ~2+ hours — and if the dead peer happened to own HeaderSync's single
+/// in-flight request, header sync stayed wedged for the entire window.
+/// Verifies the accepted socket for an INBOUND connection gets the same
+/// aggressive keepalive timing (60s idle / 30s interval / 3 probes) as an
+/// outbound one.
+TEST(P2PManager_TS1_Integration, InboundAcceptedSocketHasKeepaliveEnabled) {
+    constexpr uint16_t kListenPort = 30100;
+    constexpr uint16_t kClientLocalPort = 30101;
+
+    P2PManager manager(kListenPort);
+    ASSERT_TRUE(manager.start());
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    // Raw TCP connect, bound to a known local port — this is enough to
+    // reach handle_incoming_connection() and register the peer under a
+    // predictable key, without needing a full P2P handshake.
+    int client_fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(client_fd, 0);
+    int reuse = 1;
+    setsockopt(client_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    sockaddr_in local_addr{};
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(kClientLocalPort);
+    local_addr.sin_addr.s_addr = INADDR_ANY;
+    ASSERT_EQ(bind(client_fd, reinterpret_cast<sockaddr*>(&local_addr), sizeof(local_addr)), 0);
+
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(kListenPort);
+    ASSERT_EQ(inet_pton(AF_INET, "127.0.0.1", &server_addr.sin_addr), 1);
+    ASSERT_EQ(connect(client_fd, reinterpret_cast<sockaddr*>(&server_addr), sizeof(server_addr)), 0);
+
+    // Give the accept loop time to run handle_incoming_connection().
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    const std::string peer_key = "127.0.0.1:" + std::to_string(kClientLocalPort);
+    const int server_side_fd = manager.test_peer_socket_fd(peer_key);
+    ASSERT_GE(server_side_fd, 0) << "accepted inbound peer was not registered under " << peer_key;
+
+    // SO_KEEPALIVE is a best-effort check only: BSD-derived accept()
+    // implementations (macOS included) can inherit this boolean flag from
+    // the LISTENING socket regardless of whether handle_incoming_connection
+    // sets it on the accepted socket itself, so it does not reliably
+    // discriminate fixed vs. buggy code on every platform.
+    int keepalive_value = 0;
+    socklen_t len = sizeof(keepalive_value);
+    ASSERT_EQ(getsockopt(server_side_fd, SOL_SOCKET, SO_KEEPALIVE, &keepalive_value, &len), 0);
+    EXPECT_NE(keepalive_value, 0)
+        << "accepted inbound socket must have SO_KEEPALIVE enabled, "
+           "or a dead peer holding HeaderSync's flight is invisible for hours";
+
+#ifdef __linux__
+    // The actually-discriminating check for this bug: these per-connection
+    // TCP-stack tunables are never applied merely by inheriting a listening
+    // socket's options, so pre-fix they hold the kernel's own defaults
+    // (typically 7200s idle / 75s interval / 9 probes — hours to detect a
+    // dead peer) rather than the aggressive values set explicitly by
+    // set_socket_keepalive(). This is what actually wedged HeaderSync on SJ
+    // for ~2h6m-2h11m per dead connection.
+    int keepidle = 0, keepintvl = 0, keepcnt = 0;
+    socklen_t idle_len = sizeof(keepidle), intvl_len = sizeof(keepintvl), cnt_len = sizeof(keepcnt);
+    ASSERT_EQ(getsockopt(server_side_fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, &idle_len), 0);
+    ASSERT_EQ(getsockopt(server_side_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, &intvl_len), 0);
+    ASSERT_EQ(getsockopt(server_side_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, &cnt_len), 0);
+    EXPECT_EQ(keepidle, 60) << "accepted inbound socket must use the fast keepalive idle time, not the kernel default";
+    EXPECT_EQ(keepintvl, 30) << "accepted inbound socket must use the fast keepalive probe interval, not the kernel default";
+    EXPECT_EQ(keepcnt, 3) << "accepted inbound socket must use the fast keepalive probe count, not the kernel default";
+#endif
+
+    close(client_fd);
+    manager.stop();
 }
 
 // ============================================================================
