@@ -1251,6 +1251,7 @@ private:
     void close_socket(int socket_fd);
     void set_socket_nonblocking(int socket_fd);
     void set_socket_send_timeout(int socket_fd, int seconds);
+    void set_socket_keepalive(int socket_fd);
     std::shared_ptr<std::mutex> get_socket_send_mutex(int socket_fd);
     void erase_socket_send_mutex(int socket_fd);
     std::string get_peer_address(int socket_fd);

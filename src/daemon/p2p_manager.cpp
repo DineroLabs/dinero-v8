@@ -5149,6 +5149,15 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
     // Set send timeout as safety measure
     set_socket_send_timeout(client_socket, SEND_TIMEOUT_SEC);
 
+    // ✅ TCP KEEPALIVE: without this, an inbound peer whose connection goes
+    // silently dead (no FIN/RST) is invisible until the OS's own default
+    // keepalive interval elapses — hours, not the ~150s this configures. If
+    // that peer happened to own HeaderSync's single in-flight request, header
+    // sync stays wedged for the entire window. create_client_socket already
+    // does this for outbound connections; this accepted socket needs its own
+    // call — keepalive set on the listening socket does not inherit to it.
+    set_socket_keepalive(client_socket);
+
     // Extract actual source port from socket (fixes peer key collision bug)
     struct sockaddr_in peer_addr;
     socklen_t addr_len = sizeof(peer_addr);
@@ -6755,20 +6764,12 @@ int P2PManager::create_listen_socket() {
     // a valid TCP connect followed by a handshake with the wrong node.
 
     // ✅ TCP KEEPALIVE: Keep sockets alive through NAT/firewalls
-    int keepalive = 1;
-    if (setsockopt(socket_fd, SOL_SOCKET, SO_KEEPALIVE, (char*)&keepalive, sizeof(keepalive)) < 0) {
-        std::cerr << "setsockopt(SO_KEEPALIVE) failed: " << strerror(errno) << std::endl;
-    }
-#ifdef __linux__
-    // Linux-specific: Send keepalive probes after 60s idle, every 30s, 3 probes max
-    int keepidle = 60;
-    int keepintvl = 30;
-    int keepcnt = 3;
-    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
-    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
-    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
-#endif
-    
+    // NOTE: options set on a LISTENING socket are NOT inherited by sockets
+    // returned from accept() — this only affects the listen_socket itself,
+    // never the accepted per-peer connections. See handle_incoming_connection
+    // for the call that actually matters for inbound peers.
+    set_socket_keepalive(socket_fd);
+
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
@@ -6845,19 +6846,7 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
     compat_set_cloexec(socket_fd);
 
     // ✅ TCP KEEPALIVE: Keep sockets alive through NAT/firewalls
-    int keepalive = 1;
-    if (setsockopt(socket_fd, SOL_SOCKET, SO_KEEPALIVE, (char*)&keepalive, sizeof(keepalive)) < 0) {
-        std::cerr << "setsockopt(SO_KEEPALIVE) failed: " << strerror(errno) << std::endl;
-    }
-#ifdef __linux__
-    // Linux-specific: Send keepalive probes after 60s idle, every 30s, 3 probes max
-    int keepidle = 60;
-    int keepintvl = 30;
-    int keepcnt = 3;
-    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
-    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
-    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
-#endif
+    set_socket_keepalive(socket_fd);
 
     // Set socket to non-blocking for timeout control
     #ifdef _WIN32
@@ -7058,6 +7047,30 @@ void P2PManager::set_socket_send_timeout(int socket_fd, int seconds) {
     timeout.tv_sec = seconds;
     timeout.tv_usec = 0;
     setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+}
+
+// A peer connection with no application-level idle-timeout of its own relies
+// entirely on TCP keepalive to notice a silently-dead remote (network drop,
+// sleep/wake, crash without FIN/RST) — receive_message()'s select() loop just
+// keeps timing out and retrying forever otherwise. Without this, a dead
+// connection is only reaped once the OS's own default keepalive interval
+// elapses (~2+ hours on Linux), and if that peer happened to own the single
+// HeaderSync in-flight request, header sync stays wedged for the whole
+// window. Aggressive custom timing here bounds detection to ~150s instead.
+void P2PManager::set_socket_keepalive(int socket_fd) {
+    int keepalive = 1;
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_KEEPALIVE, (char*)&keepalive, sizeof(keepalive)) < 0) {
+        std::cerr << "setsockopt(SO_KEEPALIVE) failed: " << strerror(errno) << std::endl;
+    }
+#ifdef __linux__
+    // Send keepalive probes after 60s idle, every 30s, 3 probes max.
+    int keepidle = 60;
+    int keepintvl = 30;
+    int keepcnt = 3;
+    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    setsockopt(socket_fd, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 #endif
 }
 
