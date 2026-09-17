@@ -78,6 +78,21 @@ claim applies to a binding floor.
 
 ## CI coverage and remaining gates
 
+The initial Covenant readiness run
+[35186488678](https://github.com/DineroLabs/dinero-v8/actions/runs/35186488678)
+passed 17/18 CTests and failed the pinned mainnet configuration checksum in
+`CovenantActivation`. The checksum intentionally gained
+`sixty_second_activation_height=4294967295` (disabled); the old test vector had
+not been updated. The failure was reproduced locally. Independent Python SHA-256
+over the literal mainnet parameters reproduced both the old `47202b4f…` digest
+and the new `3f288229…` digest, with only that added field.
+
+The corrected test keeps the pinned digest, explicitly checks that mainnet's
+activation remains disabled, and verifies that changing the new field changes
+the checksum. CovenantActivation, ChainParamsSelection and SixtySecondConsensus
+then passed locally (3/3 CTests). This correction changes tests only; the full
+Linux Covenant readiness gate still needs to pass on the updated commit.
+
 All five new CTests have execution lanes: the arithmetic, oracle and model in
 normal Tests; activation and shielded lifecycle in the serial daemon lane.
 The local coverage-map check assigns all five. The full inventory gate is
