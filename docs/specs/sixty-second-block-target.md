@@ -1,7 +1,7 @@
 # 60-second block target: implementation contract and qualification plan
 
-Status: target selected by the owner on 2026-09-17; design candidate, not an
-activated consensus change. The first target is **60 seconds**. A 30-second
+Status: timing and economic direction selected by the owner on 2026-09-17;
+design candidate, not an activated consensus change. The first target is **60 seconds**. A 30-second
 target is future research, outside this change.
 
 Source reviewed: main commit `7287d77864fa328521847519559b9ed1d7240c16`.
@@ -12,9 +12,11 @@ not assign an activation height or change a production parameter.
 
 - Reduce the target interval from 120 to 60 seconds through a coordinated,
   height-activated consensus upgrade. Block arrival remains probabilistic.
-- Working economic policy: preserve expected issuance over elapsed target time,
-  including the halving schedule and tail issuance. This follows the prior
-  recommendation; the owner has separately been asked to confirm this policy.
+- Selected economic policy: retain the 100 DIN initial reward and the
+  1,314,000-block halving interval, so complete post-upgrade epochs target about
+  2.5 years. Lower the tail floor from 1 DIN to 0.5 DIN at the upgrade. This
+  deliberately accelerates early issuance while preserving the tail issuance
+  rate per unit time. The owner selected this after the economic comparison.
 - Preserve all historical block verdicts, already-issued rewards, transaction
   bytes, Utreexo leaf formats and historical proof verification.
 - Keep existing per-block byte, weight and proof-count limits in the initial
@@ -30,54 +32,67 @@ not assign an activation height or change a production parameter.
 | Property | 120-second target | 60-second target |
 | --- | ---: | ---: |
 | Expected blocks per day | 720 | 1,440 |
-| Initial-epoch reward, preserving issuance | 100 DIN | 50 DIN |
-| Initial-epoch expected issuance/day | 72,000 DIN | 72,000 DIN |
-| Tail reward, preserving issuance | 1 DIN | 0.5 DIN |
+| Initial-epoch reward | 100 DIN | 100 DIN |
+| Initial-epoch expected issuance/day | 72,000 DIN | 144,000 DIN |
+| Tail reward | 1 DIN | 0.5 DIN |
 | Tail expected issuance/day | 720 DIN | 720 DIN |
-| Full halving epoch in blocks | 1,314,000 | 2,628,000 |
+| Full halving epoch in blocks | 1,314,000 | 1,314,000 |
+| Full halving epoch at target rate | about 5 years | about 2.5 years |
 | Wall time represented by 100 blocks | about 200 minutes | about 100 minutes |
 
 These are target-rate calculations, not a promise of wall-clock block production
 or a statement of the currently circulating supply. Historical rewards stay
-unchanged. The epoch that spans activation needs proportional accounting, not
-simply a global replacement of the old halving constant.
+unchanged. Halving heights stay fixed: activation does not reset the epoch or
+start a fresh 2.5-year countdown. The remaining blocks in the activation epoch
+are produced at the new cadence; only a complete subsequent epoch takes about
+2.5 years. No future epoch is doubled to 2,628,000 blocks under this decision.
 
 ## Monetary transition reference model
 
 Let `A >= 1` be the first block under the new target, `L = 1,314,000`, and
-`h >= 1` the candidate height. Treat one old block as two progress units and one
-new block as one unit. Progress completed *before* the candidate is:
+`h >= 1` the candidate height:
 
 ```
-u(h) = 2 * min(h - 1, A - 1) + max(h - A, 0)
-epoch(h) = floor(u(h) / (2 * L))
-old_epoch_reward(h) = max(100 * UNA_PER_DIN >> epoch(h), UNA_PER_DIN)
-reward(h) = old_epoch_reward(h)       when h < A
-            old_epoch_reward(h) / 2  when h >= A
+epoch(h) = floor((h - 1) / L)
+base_reward(h) = 100 * UNA_PER_DIN >> epoch(h)
+tail_floor(h) = 1 * UNA_PER_DIN      when h < A
+                UNA_PER_DIN / 2    when h >= A
+reward(h) = max(base_reward(h), tail_floor(h))
 ```
 
-Genesis keeps its historical treatment. Use bounded integer arithmetic and the
-existing guard for large shift counts. The current non-tail epoch rewards and
-the tail floor are divisible by two in una, so this schedule needs no rounding
-policy. Helpers must handle the disabled activation sentinel explicitly, before
-arithmetic. Cumulative issuance must integrate the two eras without rewriting
-pre-activation history.
+Genesis keeps its historical treatment. Preserve the existing guard that
+returns a zero base reward instead of shifting by 64 or more. An unset/disabled
+activation retains the old target and old floor at every height. Resolve the
+rule from the candidate height and network, including reorg and replay paths.
 
-For a halving threshold at old completed-block count `K * L > A - 1`, the
-first block of that new reward epoch becomes:
+There is no extra reward halving at A. In the initial epoch the reward remains
+100 DIN; if activation occurs in a later epoch, retain that epoch's applicable
+base reward rather than resetting it to 100 DIN. The lower floor first affects
+heights where the old 1 DIN minimum would otherwise have applied.
+
+The selected sequence is:
 
 ```
-A + 2 * (K * L - (A - 1))
+100 -> 50 -> 25 -> 12.5 -> 6.25 -> 3.125 -> 1.5625 -> 0.78125 -> 0.5 forever
 ```
 
-This preserves progress already earned toward the next halving. An activation
-at an existing halving boundary must apply both the scheduled halving and the
-interval adjustment exactly once.
+The unchanged first blocks of reward epochs are `K * L + 1`. If A precedes the
+first affected floor height, the 0.78125 DIN stage starts at height 9,198,001,
+and the 0.5 DIN tail at 10,512,001. In that case pre-tail mining issuance totals
+261,773,437.5 DIN, excluding genesis, compared with 260,746,875 DIN before the
+old tail. These totals are not an equal-date supply comparison: early issuance
+and the start of the tail occur sooner in wall time. If activation were delayed
+past those heights, cumulative accounting must include the actual old-floor
+rewards already issued; never recompute history with the new floor.
 
-Independent tests must prove that pairs of new blocks pay precisely one
-corresponding old block's subsidy, including activation adjacent to a halving,
-the tail transition, large heights and cumulative totals. A literal reference
-vector must reject both a global `2 * L` replacement and a reward-only change.
+Cumulative issuance is the old schedule through A-1 plus the applicable new
+schedule from A onward. Existing balances and previously mined rewards are not
+rescaled. Independent tests must pin every halving edge, A-1/A/A+1, activation
+at a halving, both floor transitions, disabled activation, large shifts/heights,
+and late hypothetical activation. Stateful validators, stateless validators,
+miners and supply RPCs must agree on exact una amounts. Negative controls must
+catch an accidental 50 DIN reward at A, a doubled halving interval, and applying
+the new floor retroactively to pre-activation blocks.
 
 ## Difficulty transition
 
@@ -193,7 +208,8 @@ are the source of the reviewed 120-second baseline.
 
 ## Delivery order and activation gates
 
-1. Review the economic model and block-window dispositions; specify ASERT
+1. Review the implementation of the selected economic model and block-window
+   dispositions; specify ASERT
    transition and literal independent boundary vectors.
 2. Add failing subsidy/difficulty/full-CSN agreement tests before production
    changes; implement shared height-aware helpers with activation disabled on
