@@ -2557,6 +2557,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   add_executable(test_shielded_cv_binding
     tests/consensus/test_shielded_cv_binding.cpp
+    tests/consensus/test_shielded_proof_cache.cpp
     tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_cv_binding gtest dinero_shielded)

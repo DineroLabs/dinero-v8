@@ -176,6 +176,18 @@ TEST(CompactFixedVectors, SavedProofsVerifyAndFalseClaimsLeaveStateUnchanged) {
             height, fixture["expected"]["value_balance"].asInt64(), 0, nullptr,
             0, 0, 2, UINT32_MAX, {true, 124});
         EXPECT_EQ(sh::ValidateShieldedBundle(bundle, ctx), sh::ShieldedValidationError::Ok);
+        // Repeated proof verification must not cache the chain-state decision.
+        EXPECT_EQ(sh::ValidateShieldedBundle(bundle, ctx), sh::ShieldedValidationError::Ok);
+        if (!bundle.spends.empty()) {
+            sh::NullifierSet spent;
+            ASSERT_EQ(spent.Open(":memory:"), sh::NullifierSet::OpenResult::Ok);
+            ASSERT_TRUE(spent.Insert(bundle.spends[0].nullifier, height));
+            auto spent_ctx = ctx; spent_ctx.nullifier_set = &spent;
+            EXPECT_EQ(sh::ValidateShieldedBundle(bundle, spent_ctx), sh::ShieldedValidationError::NullifierDuplicate);
+            sh::CommitmentTree wrong_tree;
+            auto wrong_ctx = ctx; wrong_ctx.commitment_tree = &wrong_tree;
+            EXPECT_EQ(sh::ValidateShieldedBundle(bundle, wrong_ctx), sh::ShieldedValidationError::AnchorInvalid);
+        }
         auto wrong = bundle;
         if (!wrong.spends.empty()) wrong.spends[0].nullifier[0] ^= 1;
         else wrong.outputs[0].commitment[0] ^= 1;
@@ -186,6 +198,49 @@ TEST(CompactFixedVectors, SavedProofsVerifyAndFalseClaimsLeaveStateUnchanged) {
         ASSERT_TRUE(sh::ApplyShieldedBundle(bundle, &tree, &nullifiers, height));
         EXPECT_EQ(Hex(tree.Root()), fixture["expected"]["root_after"].asString());
         EXPECT_EQ(nullifiers.Size(), count_before + bundle.spends.size());
+    }
+}
+
+TEST(CompactFixedVectors, WarmProofsRejectChangedBytesInputsAndProfiles) {
+    for (const auto& fixture : Manifest()["cases"]) {
+        const auto name = fixture["name"].asString();
+        if (name != "shield" && name != "unshield") continue;
+        SCOPED_TRACE(name);
+        sh::ShieldedBundle expanded;
+        ASSERT_TRUE(sh::ExpandCompactRegtestBundle(Bundle(Decode(fixture)), expanded));
+        if (!expanded.outputs.empty()) {
+            const auto& out = expanded.outputs[0];
+            const sh::OutputPublicInputs pub{out.commitment, out.cv};
+            ASSERT_TRUE(sh::VerifyOutput(out.zk_proof, pub, nullptr, true, true));
+            ASSERT_TRUE(sh::VerifyOutput(out.zk_proof, pub, nullptr, true, true));
+            auto wrong = pub; wrong.commitment[0] ^= 1;
+            EXPECT_FALSE(sh::VerifyOutput(out.zk_proof, wrong, nullptr, true, true));
+            wrong = pub; wrong.cv[0] ^= 1;
+            EXPECT_FALSE(sh::VerifyOutput(out.zk_proof, wrong, nullptr, true, true));
+            EXPECT_FALSE(sh::VerifyOutput(out.zk_proof, pub, nullptr, true, false));
+            auto bytes = out.zk_proof; bytes.back() ^= 1;
+            EXPECT_FALSE(sh::VerifyOutput(bytes, pub, nullptr, true, true));
+            bytes = out.zk_proof; bytes.pop_back();
+            EXPECT_FALSE(sh::VerifyOutput(bytes, pub, nullptr, true, true));
+        } else {
+            ASSERT_EQ(expanded.spends.size(), 1u);
+            const auto& spend = expanded.spends[0];
+            const sh::SpendPublicInputs pub{spend.nullifier, spend.anchor, spend.cv};
+            ASSERT_TRUE(sh::VerifySpend(spend.zk_proof, pub, nullptr, true, true, true));
+            ASSERT_TRUE(sh::VerifySpend(spend.zk_proof, pub, nullptr, true, true, true));
+            auto wrong = pub; wrong.nullifier[0] ^= 1;
+            EXPECT_FALSE(sh::VerifySpend(spend.zk_proof, wrong, nullptr, true, true, true));
+            wrong = pub; wrong.anchor[0] ^= 1;
+            EXPECT_FALSE(sh::VerifySpend(spend.zk_proof, wrong, nullptr, true, true, true));
+            wrong = pub; wrong.cv[0] ^= 1;
+            EXPECT_FALSE(sh::VerifySpend(spend.zk_proof, wrong, nullptr, true, true, true));
+            EXPECT_FALSE(sh::VerifySpend(spend.zk_proof, pub, nullptr, true, true, false));
+            EXPECT_FALSE(sh::VerifySpend(spend.zk_proof, pub, nullptr, true, true, true, true));
+            auto bytes = spend.zk_proof; bytes.back() ^= 1;
+            EXPECT_FALSE(sh::VerifySpend(bytes, pub, nullptr, true, true, true));
+            bytes = spend.zk_proof; bytes.pop_back();
+            EXPECT_FALSE(sh::VerifySpend(bytes, pub, nullptr, true, true, true));
+        }
     }
 }
 } // namespace
