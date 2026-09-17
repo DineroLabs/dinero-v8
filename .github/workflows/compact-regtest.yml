@@ -55,6 +55,7 @@ jobs:
           python3 scripts/ci/check_mandatory_tests_execute.py
           build-compact-regtest .github/workflows/compact-regtest.yml
           .github/workflows/compact-regtest-vectors.yml
+          .github/workflows/compact-package-boundaries.yml
           --only-absent-from build-compact-disabled
           --baseline scripts/ci/unexecuted_tests_baseline_compact_regtest.txt
       - name: Build default daemon and experimental targets
