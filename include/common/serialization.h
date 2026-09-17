@@ -46,6 +46,8 @@ public:
     VectorWriter() = default;
     
     void write(const void* data, size_t size) {
+        // Empty byte fields may have a null data pointer. They emit no payload.
+        if (size == 0) return;
         const uint8_t* bytes = static_cast<const uint8_t*>(data);
         buffer_.insert(buffer_.end(), bytes, bytes + size);
     }
@@ -99,6 +101,9 @@ public:
         if (pos_ + size > data_.size()) {
             throw std::runtime_error("Reader: insufficient data");
         }
+        // memcpy requires non-null pointers even for a zero-length copy.
+        // Keep the bounds check above so an invalid cursor still fails.
+        if (size == 0) return;
         std::memcpy(dest, data_.data() + pos_, size);
         pos_ += size;
     }

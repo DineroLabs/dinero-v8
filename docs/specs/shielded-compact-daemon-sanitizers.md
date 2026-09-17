@@ -4,7 +4,8 @@ This gate exercises the experimental compact format through the real daemon,
 wallet, full/CSN Utreexo paths and recovery. It extends the earlier codec/native
 sanitizer qualification; that earlier success did not qualify these daemon
 paths. Activation settings and proof rules remain unchanged. The first Linux
-run exposed the packed-header serializer defect documented below.
+run exposed the packed-header serializer defect documented below. The next run
+passed that regression and exposed an empty-field storage-reader defect.
 
 ## Command and scope
 
@@ -30,6 +31,7 @@ checks the actual daemon binary and records its hash and source provenance.
 The selected CTest entries are exactly:
 
 - `PackedHeaderAlignment`
+- `SerializationEmptyBuffers`
 - `ShieldedResourceLimits`
 - `CompactRegtestFixedVectors`
 - `CompactRegtestVectorOracle`
@@ -54,7 +56,7 @@ These intentional reports live separately from actual qualification reports.
 
 For the actual tests, sanitizer reports go outside temporary daemon data
 directories, so harness cleanup cannot erase them. The final evidence gate
-requires a successful CTest exit, exactly the nine expected executed tests,
+requires a successful CTest exit, exactly the ten expected executed tests,
 no failed/skipped/disabled results, complete instrumentation coverage and no
 runtime reports. This catches a report during shutdown even if a shell helper
 waits for a child process without propagating its exit status.
@@ -113,10 +115,42 @@ The workflow also runs it under UBSan before the expensive full build.
 
 On macOS ARM64, UBSan alone reproduces the original failure, passes after the
 fix, and fails again against a temporary copy of the old serializer. This is
-separate from the unavailable local ASan runtime. A new full Linux ASan/UBSan
-run is still required: fixing the first startup defect does not qualify the
-later lifecycle paths or establish that no further findings exist.
+separate from the unavailable local ASan runtime. Linux run `35169782354`
+passed the early UBSan regression and the registered packed-header test. Four
+of nine selected tests passed; the other five encountered the next defect.
 
-Independent format/consensus review, remaining package-admission boundaries,
-pool-protocol qualification and reviewed production activation remain separate
-gates. This work does not authorize a deployment or activation.
+## Second Linux finding: empty serialized fields
+
+All eight runtime reports from `35169782354` identify
+`Reader::read` calling `memcpy` with a null destination. `readBytes()` allocates
+an empty vector for a valid zero-length field, whose `data()` may be null.
+The C library requires non-null pointers even when the copy count is zero.
+Reindex reaches this through `ChainDB::getCoin`; daemon startup reaches it
+through `ChainDB::forEachUTXO` while loading the initial UTXO state. These aborts
+cause the dependent lifecycle failures and readiness timeouts. The reader
+predates the compact work.
+
+The fix makes a zero-length raw read a no-op after the existing bounds check.
+The writer also returns before forming a payload range for an empty raw write.
+Length prefixes and nonempty payloads are unchanged. The fix changes no
+transaction/proof format, validation rule, Utreexo leaf or commitment.
+
+`SerializationEmptyBuffers` covers a literal sequence of empty and nonempty
+fields, raw null/zero reads and writes, cursor position, destination preservation,
+missing lengths, truncated payloads and rejection of an invalid cursor. It is
+registered in the default CI inventory and required by this daemon gate; both
+serializer regressions also run under UBSan before the expensive full build.
+
+A local Linux ARM64 container with GCC 12 reproduced the exact null-pointer
+diagnostic before the fix. Both serializer regressions passed with ASan/UBSan
+after the fix; removing only the zero-length guards in a temporary source copy
+reproduced the failure. The registered macOS UBSan tests also passed, but the
+Apple libc declaration did not reproduce this particular diagnostic before the
+fix, so the Linux control supplies the regression evidence. These focused
+results do not qualify the full daemon: a fresh full Linux run is required and
+may expose further findings.
+
+Independent format/consensus review, pool-protocol qualification and reviewed
+production activation remain separate gates. The package-admission gate passed
+separately in run `35169304739`; it does not substitute for daemon sanitizer
+qualification. This work does not authorize a deployment or activation.
