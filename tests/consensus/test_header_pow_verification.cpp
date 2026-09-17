@@ -28,7 +28,16 @@
 #include "primitives/block.h"
 #include "primitives/uint256.h"
 #include <iostream>
-#include <cassert>
+#include <cstdlib>
+
+// Consensus checks must run even when an ad-hoc Release build defines NDEBUG.
+#define CHECK(condition) do { \
+    if (!(condition)) { \
+        std::cerr << "CHECK failed at " << __FILE__ << ":" << __LINE__ \
+                  << ": " #condition << std::endl; \
+        std::exit(EXIT_FAILURE); \
+    } \
+} while (false)
 
 using namespace dinero;
 using namespace dinero::consensus;
@@ -47,11 +56,11 @@ int main() {
     // ------------------------------------------------------------------
     BlockHeader genesis = BuildCanonicalGenesis(Params()).header;
     bool genesis_ok = selector.AddHeader(genesis);
-    assert(genesis_ok && "real genesis (valid PoW) must be accepted");
+    CHECK(genesis_ok && "real genesis (valid PoW) must be accepted");
     std::cout << "  [1] real genesis accepted: OK" << std::endl;
 
     const auto best_after_genesis = selector.GetBestHeaderValue();
-    assert(best_after_genesis.has_value() &&
+    CHECK(best_after_genesis.has_value() &&
            best_after_genesis->hash == genesis.GetHash());
 
     // ------------------------------------------------------------------
@@ -69,7 +78,7 @@ int main() {
     forged.nonce = 1;                            // not mined → hash won't meet target
 
     bool forged_added = selector.AddHeader(forged);
-    assert(!forged_added &&
+    CHECK(!forged_added &&
            "forged hard-difficulty header with no PoW must be rejected");
     std::cout << "  [2] forged no-PoW child rejected: OK" << std::endl;
 
@@ -78,7 +87,7 @@ int main() {
     //    huge chainwork) did NOT win fork-choice.
     // ------------------------------------------------------------------
     const auto best_after_forge = selector.GetBestHeaderValue();
-    assert(best_after_forge.has_value() &&
+    CHECK(best_after_forge.has_value() &&
            best_after_forge->hash == genesis.GetHash() &&
            "forged header must not become best (no forged-chainwork takeover)");
     std::cout << "  [3] best header unchanged (no forged-chainwork takeover): OK"
@@ -89,13 +98,13 @@ int main() {
     SelectParams(Chain::REGTEST);
     const auto original = Params();
     const auto original_checksum = ConsensusChecksum(Params());
-    assert(Params().SkipProofOfWork());
+    CHECK(Params().SkipProofOfWork());
     MutableParams().regtest_enforce_pow = true;
     MutableParams().sixty_second_activation_height = 4;
-    assert(!Params().SkipProofOfWork());
-    assert(ConsensusChecksum(Params()) != original_checksum);
+    CHECK(!Params().SkipProofOfWork());
+    CHECK(ConsensusChecksum(Params()) != original_checksum);
     HeaderChainSelector enforced;
-    assert(enforced.AddHeader(BuildCanonicalGenesis(Params()).header));
+    CHECK(enforced.AddHeader(BuildCanonicalGenesis(Params()).header));
     const auto consensus = GetConsensusForCurrentNetwork();
     std::vector<std::unique_ptr<HeaderIndexEntry>> ancestry;
     ancestry.push_back(std::make_unique<HeaderIndexEntry>(genesis, nullptr));
@@ -108,7 +117,7 @@ int main() {
     };
     for (uint32_t height = 1; height <= 6; ++height) {
         const auto* parent = ancestry.back().get();
-        assert(enforced.GetBestHeaderValue()->hash == parent->hash);
+        CHECK(enforced.GetBestHeaderValue()->hash == parent->hash);
         BlockHeader child{};
         child.version = 1;
         child.prev_block_hash = parent->hash;
@@ -116,15 +125,15 @@ int main() {
         child.difficulty = GetNextWorkRequiredForCandidate(
             height, child.timestamp, consensus, nullptr, parent,
             static_cast<NoChainDb*>(nullptr));
-        assert(child.difficulty != 0);
-        assert(!enforced.AddHeader(solve(child, false)));
+        CHECK(child.difficulty != 0);
+        CHECK(!enforced.AddHeader(solve(child, false)));
         auto wrong = child;
         wrong.difficulty = child.difficulty == 0x207fffff ? 0x203fffff : 0x207fffff;
-        assert(!enforced.AddHeader(solve(wrong, true)));
-        assert(enforced.GetBestHeaderValue()->hash == parent->hash);
+        CHECK(!enforced.AddHeader(solve(wrong, true)));
+        CHECK(enforced.GetBestHeaderValue()->hash == parent->hash);
         child = solve(child, true);
-        assert(enforced.AddHeader(child));
-        assert(enforced.GetBestHeaderValue()->hash == child.GetHash());
+        CHECK(enforced.AddHeader(child));
+        CHECK(enforced.GetBestHeaderValue()->hash == child.GetHash());
         ancestry.push_back(std::make_unique<HeaderIndexEntry>(child, parent));
     }
     // A competing branch has its own A-1 time AND bits. Validate it against
@@ -134,7 +143,7 @@ int main() {
     fork.difficulty = GetNextWorkRequiredForCandidate(3, fork.timestamp, consensus,
         nullptr, ancestry[2].get(), static_cast<NoChainDb*>(nullptr));
     fork = solve(fork, true);
-    assert(enforced.AddHeader(fork));
+    CHECK(enforced.AddHeader(fork));
     HeaderIndexEntry fork_parent(fork, ancestry[2].get());
     BlockHeader fork_child{};
     fork_child.version = 1;
@@ -145,11 +154,11 @@ int main() {
     auto wrong_anchor = fork_child;
     wrong_anchor.difficulty = GetNextWorkRequiredForCandidate(4, fork_child.timestamp,
         consensus, nullptr, ancestry[3].get(), static_cast<NoChainDb*>(nullptr));
-    assert(wrong_anchor.difficulty != fork_child.difficulty);
-    assert(!enforced.AddHeader(solve(wrong_anchor, true)));
+    CHECK(wrong_anchor.difficulty != fork_child.difficulty);
+    CHECK(!enforced.AddHeader(solve(wrong_anchor, true)));
     fork_child = solve(fork_child, true);
-    assert(enforced.AddHeader(fork_child));
-    assert(enforced.GetHeaderValue(fork_child.GetHash()).has_value());
+    CHECK(enforced.AddHeader(fork_child));
+    CHECK(enforced.GetHeaderValue(fork_child.GetHash()).has_value());
 
     // Profile state cannot be silently reused with different parameters or
     // ordinary regtest. Malformed markers fail closed; old datadirs are refused.
@@ -159,7 +168,7 @@ int main() {
     const auto must_throw = [](auto function) {
         bool rejected = false;
         try { function(); } catch (const std::runtime_error&) { rejected = true; }
-        assert(rejected);
+        CHECK(rejected);
     };
     dinero::daemon::CheckRegtestPowDatadir(directory, true);
     const auto profile = ConsensusChecksum(Params());
@@ -174,8 +183,8 @@ int main() {
     must_throw([&] { dinero::daemon::CheckRegtestPowDatadir(directory, true); });
     std::filesystem::remove_all(directory);
     MutableParams() = original;
-    assert(Params().SkipProofOfWork());
-    assert(ConsensusChecksum(Params()) == original_checksum);
+    CHECK(Params().SkipProofOfWork());
+    CHECK(ConsensusChecksum(Params()) == original_checksum);
 
     std::cout << "✅ Header PoW verification enforced" << std::endl;
     return 0;
