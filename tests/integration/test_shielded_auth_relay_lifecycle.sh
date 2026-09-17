@@ -75,7 +75,7 @@ rpc_result() {
 }
 wait_rpc() {
     for _ in $(seq 1 120); do
-        [[ -z "${PID}" || -e "/proc/${PID}" || "$(uname)" == "Darwin" ]] || return 1
+        [[ -z "${PID}" ]] || kill -0 "${PID}" 2>/dev/null || return 1
         if rpc_call getblockcount '[]' 2>/dev/null | jq -e '.result >= 0' >/dev/null 2>&1; then return 0; fi
         sleep 1
     done
@@ -88,7 +88,7 @@ start_node() {
         --listen=1 --utreexo=1 --connect="127.0.0.1:${PEER_P2P}" \
         --consensus-shielded-epoch-reset-height=1 \
         --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 \
+        --consensus-state-commitment-height=3 "$@" \
         >>"${LOG_FILE}" 2>&1 &
     PID=$!
     wait_rpc || fail "daemon did not reach RPC readiness"
@@ -111,7 +111,7 @@ start_peer() {
         --rpcport="${PEER_RPC}" --port="${PEER_P2P}" --wallet-socket-port="${PEER_WALLET}" \
         --listen=1 --utreexo=1 --connect="127.0.0.1:${P2P_PORT}" \
         --consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 \
+        --consensus-state-commitment-height=3 "$@" \
         >>"${PEER_LOG}" 2>&1 &
     PEER_PID=$!
     ( DATA_DIR="${PEER_DIR}"; RPC_PORT="${PEER_RPC}"; PID="${PEER_PID}"; wait_rpc; ) \
@@ -318,5 +318,28 @@ SPENT_PROOF="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_
 jq -e '.result.successful == 0 and .result.failed == 1' <<<"${SPENT_PROOF}" >/dev/null \
     || fail "spent unshield output remained provable: ${SPENT_PROOF}"
 pass "transparent child consumed the unshield Utreexo leaf and both nodes accepted the block"
+
+# Enabled by the candidate CTest registration. Compatibility measurements
+# against an unchanged legacy daemon keep the original lifecycle.
+if [[ "${DINERO_TEST_REINDEX:-0}" == 1 ]]; then
+    FINAL_TIP="$(rpc_result getbestblockhash '[]' | jq -r '.result')"
+    FINAL_STATE="$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')"
+    [[ "$(peer_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${FINAL_STATE}" ]] \
+        || fail "peer state differs before reindex"
+    stop_node; start_node --reindex-chainstate
+    [[ "$(rpc_result getbestblockhash '[]' | jq -r '.result')" == "${FINAL_TIP}" ]] \
+        || fail "reindex changed the named tip"
+    [[ "$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${FINAL_STATE}" ]] \
+        || fail "reindex changed shielded/Utreexo state"
+    SPENT_PROOF="$(rpc_result blockchain.getutxoproofs_batch "[[{\"txid\":\"${SPEND_TXID}\",\"vout\":0}]]")"
+    jq -e '.result.successful == 0 and .result.failed == 1' <<<"${SPENT_PROOF}" >/dev/null \
+        || fail "reindex resurrected the spent unshield output"
+    stop_node; start_node
+    [[ "$(rpc_result getbestblockhash '[]' | jq -r '.result')" == "${FINAL_TIP}" ]] \
+        || fail "second restart changed the named tip"
+    [[ "$(rpc_result daemon.shieldedstatehash '[]' | jq -r '.result.state_hash')" == "${FINAL_STATE}" ]] \
+        || fail "second restart changed rebuilt shielded/Utreexo state"
+    pass "reindex and second restart preserve canonical state and spentness"
+fi
 
 echo "=== SUCCESS: two-node Auth transfer/recovery lifecycle ==="

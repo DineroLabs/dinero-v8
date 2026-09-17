@@ -781,6 +781,26 @@ int main(int argc, char** argv) {
             Require(nullifier_rows == expected.nullifier_rows,
                     "shielded nullifier rows mismatch at prefix " + std::to_string(prefix));
 
+            // Startup treats SQLite as a cache. The rebuilt ChainDB must
+            // contain the same nullifiers and heights, not just a marker
+            // claiming they exist in the disposable cache.
+            std::vector<std::pair<std::string, uint32_t>> canonical_rows;
+            const auto enumerate_status = chain_db.forEachShieldedNullifier(
+                [&](uint32_t height, const uint8_t* bytes) {
+                    sh::Hash nf{};
+                    std::memcpy(nf.data(), bytes, nf.size());
+                    canonical_rows.emplace_back(HashToHexUpper(nf), height);
+                    return true;
+                });
+            Require(enumerate_status == dinero::Status::Ok,
+                    "failed to enumerate canonical nullifiers");
+            std::sort(canonical_rows.begin(), canonical_rows.end());
+            Require(canonical_rows == expected.nullifier_rows,
+                    "ChainDB nullifier rows mismatch at prefix " + std::to_string(prefix));
+            const auto marker = chain_db.getShieldedTipMarker();
+            Require(marker.ok() && marker.value().nullifier_count == canonical_rows.size(),
+                    "shielded marker count differs from canonical nullifiers");
+
             auto undo_result = dinero::storage::ReadArchivalUndo(
                 chain_db, &block_storage, expected.block_hash,
                 dinero::storage::ArchivalReadMode::RequireFlatfiles);
@@ -835,6 +855,34 @@ int main(int argc, char** argv) {
                        prefix_dir / "blockchain" / "shielded_frontier.reindex.bin",
                        prefix_dir / "blockchain" / "shielded_nullifiers.reindex.db",
                        prefix);
+        }
+
+        // Replaying the reset must remove authoritative rows from the old
+        // epoch as well as emptying the SQLite cache. Derive the expected
+        // post-reset state directly: empty tree and no spent-note records.
+        {
+            auto& params = dinero::MutableParams();
+            const auto previous_reset = params.shielded_epoch_reset_height;
+            const auto previous_binding = params.shielded_cv_binding_activation_height;
+            params.shielded_epoch_reset_height = 6;
+            params.shielded_cv_binding_activation_height = 6;
+            dinero::Block reset;
+            reset.vtx.push_back(MakeCoinbaseTx(6, 50, 0x16));
+            auto expected = FinalizeAndApplyReferenceBlock(
+                reset, 6, blocks.back().GetHash(), state);
+            expected.frontier_after = sh::CommitmentTree{}.SerializeFrontier();
+            expected.nullifier_rows.clear();
+            blocks.push_back(std::move(reset));
+            expectations.push_back(std::move(expected));
+            const fs::path reset_dir = base_dir / "epoch_reset";
+            fs::create_directories(reset_dir);
+            run_prefix(reset_dir,
+                       reset_dir / "blockchain" / "chaindb.reindex",
+                       reset_dir / "blockchain" / "shielded_frontier.reindex.bin",
+                       reset_dir / "blockchain" / "shielded_nullifiers.reindex.db",
+                       blocks.size());
+            params.shielded_epoch_reset_height = previous_reset;
+            params.shielded_cv_binding_activation_height = previous_binding;
         }
 
         // ── Reindex failure classification ──────────────────────────────
