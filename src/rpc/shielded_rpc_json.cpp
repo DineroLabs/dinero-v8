@@ -23,6 +23,7 @@
 #include "dinero/daemon/execution_context.h"
 #include "consensus/chainparams.h"
 #include "consensus/shielded/wallet_activation.h"
+#include "consensus/shielded/compact_regtest.h"
 #include "consensus/pq/p2mr_consensus.h"
 #include "primitives/transaction.h"
 #include "wallet/canonical_wallet_utxo.h"
@@ -56,6 +57,19 @@ namespace shielded_wallet = ::dinero::wallet::shielded;
 using din::Json;
 
 const char* HrpForActiveChain();
+
+int32_t OrdinaryShieldedWalletVersion(const ExecutionContext& ctx) {
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+    if (ctx.daemon && ctx.daemon->chainstate) {
+        const auto cs = std::dynamic_pointer_cast<ChainstateService>(ctx.daemon->chainstate);
+        if (cs && consensus::shielded::CompactRulesFor(Params()).Active(
+                      static_cast<uint64_t>(cs->getBlockHeight()) + 1))
+            return Transaction::TX_VERSION_COMPACT_REGTEST;
+    }
+#endif
+    return Transaction::TX_VERSION_SHIELDED_V2;
+}
+
 
 TxAcceptResult SubmitShieldedWalletTransaction(Mempool& mempool,
                                                const Transaction& tx,
@@ -186,6 +200,8 @@ bool RejectIfShieldedNotActive(Json& err) {
 
 // Forward decl (defined later in this TU): active-chain shielded HRP.
 const char* HrpForActiveChain();
+
+
 
 // Hex helper.
 std::string HashToHex(const consensus::shielded::Hash& h) {
@@ -427,7 +443,7 @@ Json RpcWalletShieldWithCovenant(const ExecutionContext& ctx, const Json& params
         }
 
         dinero::Transaction tx;
-        tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.version         = OrdinaryShieldedWalletVersion(ctx);
         tx.witness_version = 0;  // SegWit — TransactionSigner emits witness data
         tx.lockTime        = 0;
         for (const auto& c : canon_utxos) {
@@ -799,7 +815,7 @@ Json rpc_wallet_unshield(const ExecutionContext& ctx, const Json& params) {
     // stacks (one per input → none).
     auto make_envelope = [&](uint64_t fee) -> dinero::Transaction {
         dinero::Transaction tx;
-        tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.version         = OrdinaryShieldedWalletVersion(ctx);
         tx.witness_version = 0;
         tx.lockTime        = 0;
         dinero::TxOutput recipient_out;
@@ -958,9 +974,9 @@ Json RpcWalletTransferWithCovenant(const ExecutionContext& ctx, const Json& para
     // serializer doesn't ambiguity-collide vin_count=0x00 with the
     // BIP141 0x00 0x01 marker. With marker present, parse is
     // unambiguous regardless of vin/vout cardinality.
-    auto make_envelope = [](uint64_t fee) -> dinero::Transaction {
+    auto make_envelope = [&](uint64_t fee) -> dinero::Transaction {
         dinero::Transaction tx;
-        tx.version         = dinero::Transaction::TX_VERSION_SHIELDED_V2;
+        tx.version         = OrdinaryShieldedWalletVersion(ctx);
         tx.witness_version = 0;
         tx.lockTime        = 0;
         tx.SetExplicitFee(fee);

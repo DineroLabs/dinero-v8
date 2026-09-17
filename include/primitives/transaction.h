@@ -166,9 +166,23 @@ struct Transaction {
     // bundle commits into txid so shielded-only spends cannot collide.
     static constexpr int32_t TX_VERSION_SHIELDED_V2  = 6;
 
+    // Experimental regtest version. Not recognized by ordinary builds and not
+    // assigned for any production network. The owner signs this version.
+    static constexpr int32_t TX_VERSION_COMPACT_REGTEST = 0x40000006;
+    static constexpr bool IsCompactRegtestVersion(int32_t tx_version) {
+#ifdef DINERO_ENABLE_COMPACT_REGTEST
+        return tx_version == TX_VERSION_COMPACT_REGTEST;
+#else
+        return false;
+#endif
+    }
+    static constexpr bool IsShieldedAuthVersion(int32_t tx_version) {
+        return tx_version == TX_VERSION_SHIELDED_V2 || IsCompactRegtestVersion(tx_version);
+    }
+
     static constexpr bool IsShieldedVersion(int32_t tx_version) {
         return tx_version == TX_VERSION_SHIELDED ||
-               tx_version == TX_VERSION_SHIELDED_V2;
+               IsShieldedAuthVersion(tx_version);
     }
 
     int32_t version;
@@ -197,7 +211,7 @@ struct Transaction {
         return IsShieldedVersion(version) && !shielded_bundle_bytes.empty();
     }
     bool ShieldedBundleCommitsToTxid() const {
-        return version == TX_VERSION_SHIELDED_V2 && !shielded_bundle_bytes.empty();
+        return IsShieldedAuthVersion(version) && !shielded_bundle_bytes.empty();
     }
 
     Transaction() : version(2), lockTime(0), witness_version(0), explicit_fee(AmountUna::Zero()), has_explicit_fee(false) {}  // Default to SegWit v0

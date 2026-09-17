@@ -265,6 +265,9 @@ struct ChainParams {
     // Fleet coordination is required before shipping a scheduled fork.
     // ===========================================================================
     uint32_t shielded_spend_auth_activation_height = UINT32_MAX;
+    // Off by default, including in experimental builds. The CLI can set this
+    // only on regtest; consensus independently checks the network as well.
+    uint32_t shielded_compact_regtest_activation_height = UINT32_MAX;
     // Independent fork gate: policy-bound private-note spends (proof 0x07).
     // Mainnet selects 110000; other networks remain dormant unless explicitly
     // configured for rehearsal. Wallet support must accompany this fork.

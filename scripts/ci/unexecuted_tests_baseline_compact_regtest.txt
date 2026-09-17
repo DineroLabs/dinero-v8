@@ -1,0 +1,1 @@
+# No exemptions: every compact-regtest-only CTest must execute in CI.

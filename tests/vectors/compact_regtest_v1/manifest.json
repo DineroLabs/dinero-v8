@@ -1,0 +1,295 @@
+{
+  "cases": [
+    {
+      "expanded_bundle_file": "shield.expanded-bundle.hex",
+      "expected": {
+        "base_bytes": 27838,
+        "binding_sighash": "8615974656113305dfee455ad6a42f41b265fd4033fc2b5de94a943cbb86ce9e",
+        "binding_sighash_preimage": "44494e2f76372f736869656c6465642f62696e64696e672f763100e1f50500000000c13d40c3835ceadb5eecea95a288cd75bd71802ec055357cff84e6d217e7665d0000000000000000010000000000000008f6f9abc5842bbed210a27038a5005aae28ac80dd48f92b68ca57b57bbf681ff7",
+        "commitments": [
+          "c493039be8936bf7b5ca628506929616da49a0ddcd6a18e946fe5e1be3ba68ac"
+        ],
+        "expanded_bundle_sha256": "e426606af484c71033ce41d40e6c3ef09cfa6ba3f35fbbf94029d8090bc22256",
+        "expanded_view_txid": "f3d500df014baca948d0584e22be0a7f03c17740889dababdd471d0678bd68d4",
+        "fee_una": 1000000,
+        "nullifiers": [],
+        "outputs": 1,
+        "proofs": [
+          {
+            "circuit_hash": "e6ff2a5c44171cd1065bf06b6ce35f1ca51a92dad2bef1c3d3d9bd227bbeec0c",
+            "compact_bytes": 24610,
+            "compact_sha256": "032bbaaeda8be21c67145be53378d4ea847c34bdb5ff479a23275e9dc2b89353",
+            "expanded_bytes": 43185,
+            "expanded_sha256": "1237db685ba4d5675d7a19f2ecbc649ae5e57a0fa2d69a239d24bea9f0722d9b",
+            "index": 0,
+            "profile": 4
+          }
+        ],
+        "root_after": "c79e84216021f4591588ccdf240b7891ab59ea187a746f168c10de1b3a06b052",
+        "root_before": "4be83d5151684c82f8cc5925abf7b7fc8b066906cf284d74456bf46e51a1305f",
+        "spends": 0,
+        "tx_sighash": "c13d40c3835ceadb5eecea95a288cd75bd71802ec055357cff84e6d217e7665d",
+        "tx_sighash_preimage": "44494e2f76372f736869656c6465642f74782d736967686173682f763106000040010000006d0272bf84967be6309a5fe3bc235af540d518e1b541842127224f8c0d0ecca500000000feffffff01000000c0c0064e02000000220000005120d5d591a247690dedc61487d5b7353fe5a3ea2cfeac8f244f1ac57b0b79e661a500000000",
+        "txid": "a675442bb7016bb8e88b82bc61cb86ee76ce8db5a8cbe04daafc07c108e47161",
+        "utreexo_leaves": [
+          "89e13d95f099b5abcca07b2dbc2e04a7953027b2902d3dd59b44ccb8e26ec12d"
+        ],
+        "value_balance": 100000000,
+        "vsize": 27855,
+        "weight": 111420,
+        "wire_bytes": 27906,
+        "wire_sha256": "e91747fd42f3a9b30a36891d7702cd32466103528b3b60a771147fc18d01b917",
+        "wtxid": "c200cd4341f4a5df82c072b32478ea7acdf154fae62c89a26c3bbe8cd3b6571f"
+      },
+      "height": 124,
+      "initial_commitments": [],
+      "initial_nullifiers": [],
+      "name": "shield",
+      "provenance": "Mined in the three-node compact regtest lifecycle at source_commit.",
+      "wire_file": "shield.tx.hex"
+    },
+    {
+      "expanded_bundle_file": "transfer.expanded-bundle.hex",
+      "expected": {
+        "base_bytes": 97092,
+        "binding_sighash": "bee164df340e2194f8bae6f34667da93f710642cf6f0463d3211190de1f7bb82",
+        "binding_sighash_preimage": "44494e2f76372f736869656c6465642f62696e64696e672f7631c0bdf0fffffffffff70456b05b29eebbac04901fad6649b039b9e433c3998cc33fa6917e6099c8c70100000000000000099cdc96793d5e83d0cc68f31f983d3f89d52a0cc3339f80dbb8ae1df75571fe1c0200000000000000097676110889b8053b37dba01eeefe453e5c66f5ddbd1ce202b3a9a11c84b1165809db41e54b20d1bb4ca4042d22f97b4b3e7184c6ac984187c0379404151c8ff792",
+        "commitments": [
+          "787b89a5bd3f1af69a36437813417145094e65ba759fe3d94b308f88bc76e54c",
+          "ebef7eb1b8a6180301083b0f3db2ae859745c1709e77917d056f08028b14f4f4"
+        ],
+        "expanded_bundle_sha256": "fb8ec4376080896b13ebe408e3c93fcd28a0abe2252890cf633c8e391dbf54a1",
+        "expanded_view_txid": "a33a2459cb1f8fc606b473cc66b150dca9d1a4512a387455315f89049d9003ec",
+        "fee_una": 1000000,
+        "nullifiers": [
+          "85ab848529705c9397318581d2d5f1cb283bafc685b9d8d239cf7a9ace1a192e"
+        ],
+        "outputs": 2,
+        "proofs": [
+          {
+            "circuit_hash": "a0a6b973fd134cdcb844fa8929ed1f4a6135c9ba8417cd2976055905b99c54c1",
+            "compact_bytes": 39592,
+            "compact_sha256": "7999dfab896e6daf1e4ed0fb15939f17986c03f69bd48c20308e5cdb269d5887",
+            "expanded_bytes": 73281,
+            "expanded_sha256": "6f67cacb77d5b6b483f4b9e0975d030c9e0cd4d56321e46b3d05f3349c10b6cc",
+            "index": 0,
+            "profile": 6
+          },
+          {
+            "circuit_hash": "e6ff2a5c44171cd1065bf06b6ce35f1ca51a92dad2bef1c3d3d9bd227bbeec0c",
+            "compact_bytes": 24610,
+            "compact_sha256": "00ef308f8e2cc43b9dd5f99f70b970ebe64a1901ca785275b92f7a62e664a5ea",
+            "expanded_bytes": 43185,
+            "expanded_sha256": "45324f071311a1343e759bd10d28090a86a46ad2903725848b8d404906a18f62",
+            "index": 0,
+            "profile": 4
+          },
+          {
+            "circuit_hash": "e6ff2a5c44171cd1065bf06b6ce35f1ca51a92dad2bef1c3d3d9bd227bbeec0c",
+            "compact_bytes": 24610,
+            "compact_sha256": "c7554f009e918138cc55c0b189df8ec71bd94beb11dbc75f504a1b46280b1018",
+            "expanded_bytes": 43185,
+            "expanded_sha256": "f78f3448c7c4e31d6a041b1e99cac9cfc3741d9d25ee8b2da7fe9478817f032d",
+            "index": 1,
+            "profile": 4
+          }
+        ],
+        "root_after": "c3c835250c258693568d8e97d46eb02219d6ccdc6e720a5573691a1075253a10",
+        "root_before": "c79e84216021f4591588ccdf240b7891ab59ea187a746f168c10de1b3a06b052",
+        "spends": 1,
+        "tx_sighash": "f70456b05b29eebbac04901fad6649b039b9e433c3998cc33fa6917e6099c8c7",
+        "tx_sighash_preimage": "44494e2f76372f736869656c6465642f74782d736967686173682f763106000040000000000000000000000000",
+        "txid": "3ef5f3ab5f6b56ea0a43f09fd4cf0e8ef6b707af171a9b73d2c2a9b0fb0d7960",
+        "utreexo_leaves": [],
+        "value_balance": -1000000,
+        "vsize": 97093,
+        "weight": 388370,
+        "wire_bytes": 97094,
+        "wire_sha256": "8ea07977732a375baed10180e0a12dfc4fc56d57b8ed216056ef79ae4bb37596",
+        "wtxid": "307d3003293ec88ddb526e2489f9ca5421abc22ebfa0dbb34d70def166db0851"
+      },
+      "height": 125,
+      "initial_commitments": [
+        "c493039be8936bf7b5ca628506929616da49a0ddcd6a18e946fe5e1be3ba68ac"
+      ],
+      "initial_nullifiers": [],
+      "name": "transfer",
+      "provenance": "Mined in the three-node compact regtest lifecycle at source_commit.",
+      "wire_file": "transfer.tx.hex"
+    },
+    {
+      "expanded_bundle_file": "unshield.expanded-bundle.hex",
+      "expected": {
+        "base_bytes": 42051,
+        "binding_sighash": "5c726c535ad22959f8646e3c94d9b008007b03e0f34c07121497c58329b7bb80",
+        "binding_sighash_preimage": "44494e2f76372f736869656c6465642f62696e64696e672f763180e2d3fbffffffff975b6fd990ab588fecdea8e87af7aed83921ad7621a72f0bb003ae2bf9cd29690100000000000000083fb5ddd09ff84a071508e85e8586d3926a13e76c17717867382d20c293e1d87f0000000000000000",
+        "commitments": [],
+        "expanded_bundle_sha256": "8364a9d59a70ab7a8ceee7a27b0df510b5ea72ba7f4432f9c53a05216ceaece4",
+        "expanded_view_txid": "5fd9b67c5ffc9f41b0489910ae2fc97a23212b2df6cfbe736fefe758904c1944",
+        "fee_una": 42068,
+        "nullifiers": [
+          "e70bba57621da6cd1e9df833c6be14168dc9dc71144c8727bbeafab26db2519c"
+        ],
+        "outputs": 0,
+        "proofs": [
+          {
+            "circuit_hash": "a0a6b973fd134cdcb844fa8929ed1f4a6135c9ba8417cd2976055905b99c54c1",
+            "compact_bytes": 39592,
+            "compact_sha256": "34b9a85372ef8a7cff9eff946e280c87448eaa075cac48cb1cea5f0614e5231a",
+            "expanded_bytes": 73281,
+            "expanded_sha256": "997adbf96e986db833ff77cbedd4a3902fdcc981ed6327c1f89eb17f2dd79e33",
+            "index": 0,
+            "profile": 6
+          }
+        ],
+        "root_after": "c3c835250c258693568d8e97d46eb02219d6ccdc6e720a5573691a1075253a10",
+        "root_before": "c3c835250c258693568d8e97d46eb02219d6ccdc6e720a5573691a1075253a10",
+        "spends": 1,
+        "tx_sighash": "975b6fd990ab588fecdea8e87af7aed83921ad7621a72f0bb003ae2bf9cd2969",
+        "tx_sighash_preimage": "44494e2f76372f736869656c6465642f74782d736967686173682f76310600004000000000010000002c792b0400000000220000005120532f9864e6ab104a4e2ea10db71f37445bd899ab0af439ada7a95ba65fb7e1d200000000",
+        "txid": "2b03b16b870e2c3a77f59c8daf51078a540aec1c4f17d40ba5f0dd4d355d46a2",
+        "utreexo_leaves": [
+          "b286efdd8e3232807514f0de593444866840bc6068dd40dbae399c15ff7a6479"
+        ],
+        "value_balance": -70000000,
+        "vsize": 42052,
+        "weight": 168206,
+        "wire_bytes": 42053,
+        "wire_sha256": "1af5ca502a4938092515baf7585fabf564b89c57ff1c0fd504c87826fa2ab2d2",
+        "wtxid": "3241135866c215e7b2da06bcf0c2db97a1eb4e4fc81f24589ab43e07bf130bd9"
+      },
+      "height": 126,
+      "initial_commitments": [
+        "c493039be8936bf7b5ca628506929616da49a0ddcd6a18e946fe5e1be3ba68ac",
+        "787b89a5bd3f1af69a36437813417145094e65ba759fe3d94b308f88bc76e54c",
+        "ebef7eb1b8a6180301083b0f3db2ae859745c1709e77917d056f08028b14f4f4"
+      ],
+      "initial_nullifiers": [
+        "85ab848529705c9397318581d2d5f1cb283bafc685b9d8d239cf7a9ace1a192e"
+      ],
+      "name": "unshield",
+      "provenance": "Mined in the three-node compact regtest lifecycle at source_commit.",
+      "utreexo_proof": {
+        "num_leaves": 378,
+        "position": 377,
+        "siblings": [
+          "05b8baa9a30f24011042a7904a4c1418eebbb9bc45d29b5d034b4a4f0fcab2f3"
+        ]
+      },
+      "utreexo_roots": [
+        "dd808aa4bcb07aad7193ad11a675f0017aefdc6dc497b1c54ea2468018161c40",
+        "b74394a6191e9aed21c6ce18c69ec78b4d9fbe0581f9e717e3882887a611712f",
+        "a69c865cb3f7c926d477a84919b7671b25e307a39b94fabf3a50300ac6d1a375",
+        "1fc2e9cbe9f13b51ac29b42233e654de7ce6c033bcdd28e9f27b7c0ecf1b4b5f",
+        "ea8a7c9e196e4e3ceb38e4bd58ab53a226a9dd2af2baccfecc8514dc59abc854",
+        "b2dde5fdf9fc9dc325f7d21de82619998da5c36769f1da756ba9eb58c0bdfb2d"
+      ],
+      "wire_file": "unshield.tx.hex"
+    },
+    {
+      "expanded_bundle_file": "maximum.expanded-bundle.hex",
+      "expected": {
+        "base_bytes": 222745,
+        "binding_sighash": "4e88107bb2d8c2c416aca2b8c498b8dc45a8dd28277f5f43d6d8ebe4055713bf",
+        "binding_sighash_preimage": "44494e2f76372f736869656c6465642f62696e64696e672f7631c0bdf0fffffffffff70456b05b29eebbac04901fad6649b039b9e433c3998cc33fa6917e6099c8c70400000000000000080b5f76e6cef320fd1ca771404c2263792c00bef01d17249e65277cb8965ff007094397277efed13207854cff51447840579a88bc9492bfe4967c89610595a49c39095ad2ae311207ee1295e2ba042541ebc6a47f8af46efb041a0edfbbb2c58f8f8409fb69e47b91b0dca977b88fa3dabf0313cf639947e591c02da44fca12cd8efe2b020000000000000008c9f2a90ff2be0db54ae64352b522b9f0abc6e9838b5a6cc2dc9aa2ad2a6e891a09f0b7cd426a73bf8eaeb1faf1bc37e3d2d98e57ef53ee72c6d97a9c643d27cf5f",
+        "commitments": [
+          "52cbeaf44701c25a5946f8b5a761ccda0b9b8aa69e85269a9273707ff9b04d95",
+          "cfb63f4bb2da8c2c1176d8ab5e4e739ae9661edfb87938652d257d379d26d8bd"
+        ],
+        "expanded_bundle_sha256": "0e9cfed922682fd82a29e981eb45fbe692825371bcfd7d14204568564f4e787d",
+        "expanded_view_txid": "90ad5c22cfdf2a8fea1c5ae8f2fe04a665cc4030c8f14cb21fc64fdca889ad09",
+        "fee_una": 1000000,
+        "nullifiers": [
+          "083a20cae1e4ff5732abcca98e55fabc6c12571d6d705e934a969c2ee428aa0f",
+          "6210daec2626a3e192c73d56886dc9582426f87bc9c9c08a558b886aa75e44fc",
+          "674276ed2ac403af15eea5e15ac596e08c6555ed7fce4171a5dc69e894e533c9",
+          "f42965448c455ae6c34735a32cd18cf78e33157f37ca99e90e93d31167ed8c02"
+        ],
+        "outputs": 2,
+        "proofs": [
+          {
+            "circuit_hash": "a0a6b973fd134cdcb844fa8929ed1f4a6135c9ba8417cd2976055905b99c54c1",
+            "compact_bytes": 39592,
+            "compact_sha256": "b8291fc5b93776824e7485d50f245e9b5fb686fac861006b7c32b9032f30878a",
+            "expanded_bytes": 73281,
+            "expanded_sha256": "1fa7e4175fae9aa7781831fc6e6ac2c97bdbca193a610672212eb8b7362a0fe5",
+            "index": 0,
+            "profile": 6
+          },
+          {
+            "circuit_hash": "a0a6b973fd134cdcb844fa8929ed1f4a6135c9ba8417cd2976055905b99c54c1",
+            "compact_bytes": 39592,
+            "compact_sha256": "e82ded0d2cfca53317b176ac422811b5aa209b40e7bef14c431e04ade3133205",
+            "expanded_bytes": 73281,
+            "expanded_sha256": "0fb3b837c930349a25504b4710d6b628845b165c48bc445ab280542b3b20de1f",
+            "index": 1,
+            "profile": 6
+          },
+          {
+            "circuit_hash": "a0a6b973fd134cdcb844fa8929ed1f4a6135c9ba8417cd2976055905b99c54c1",
+            "compact_bytes": 39592,
+            "compact_sha256": "6d8e36766ebdb1fa58c437650e91c6e2c5129373fdbebf0c64f41495ffd967ad",
+            "expanded_bytes": 73281,
+            "expanded_sha256": "f0fb2e7cae7125b9880d7beedc71c7f046e829e7c8b50410697b98dbfbf5447e",
+            "index": 2,
+            "profile": 6
+          },
+          {
+            "circuit_hash": "a0a6b973fd134cdcb844fa8929ed1f4a6135c9ba8417cd2976055905b99c54c1",
+            "compact_bytes": 39592,
+            "compact_sha256": "ce4ff1617b45dfc512d4c69c3a1d15fa8480a7e7550d2f6248b219d0a5fa9d7d",
+            "expanded_bytes": 73281,
+            "expanded_sha256": "ea998808d6dc5403375e791094ccb4de92f7af4c3e0b2e9609d8d1bb33f49d54",
+            "index": 3,
+            "profile": 6
+          },
+          {
+            "circuit_hash": "e6ff2a5c44171cd1065bf06b6ce35f1ca51a92dad2bef1c3d3d9bd227bbeec0c",
+            "compact_bytes": 24610,
+            "compact_sha256": "f480762fa9f663638cc910a72d4ad8b1c972c5360be8d306ec7a06380558eb39",
+            "expanded_bytes": 43185,
+            "expanded_sha256": "80c43f5d99625e12af34d5a3fe29ab03ea353820073ccd28cb003e5a8182a24f",
+            "index": 0,
+            "profile": 4
+          },
+          {
+            "circuit_hash": "e6ff2a5c44171cd1065bf06b6ce35f1ca51a92dad2bef1c3d3d9bd227bbeec0c",
+            "compact_bytes": 24610,
+            "compact_sha256": "53d78279f28309040fa309289d20036d99a8895b6b52fdbb5bab038c7583bd07",
+            "expanded_bytes": 43185,
+            "expanded_sha256": "1bb926d4c4d1377082e64c7b19ef35d2852ab64b564d7de3466700c78858145e",
+            "index": 1,
+            "profile": 4
+          }
+        ],
+        "root_after": "1c3f85c2b6db0ccf77be3b4a87e30391f03676152c341b652f9fb6982fa26e31",
+        "root_before": "65a87bf57d4c0f9d4299a0cb3c83e6057aada124f276fd97a05f53f923693059",
+        "spends": 4,
+        "tx_sighash": "f70456b05b29eebbac04901fad6649b039b9e433c3998cc33fa6917e6099c8c7",
+        "tx_sighash_preimage": "44494e2f76372f736869656c6465642f74782d736967686173682f763106000040000000000000000000000000",
+        "txid": "ee6f107bb97d05df4c89d2ea3ceee118b41c4454537ed1c124d8bdaff5aae915",
+        "utreexo_leaves": [],
+        "value_balance": -1000000,
+        "vsize": 222746,
+        "weight": 890982,
+        "wire_bytes": 222747,
+        "wire_sha256": "3b7d7f772206d4b4cc9e0880db4579dad92124f2b1567372914ca7de555759a5",
+        "wtxid": "3182b3b4998bc4b18dc71e131a3677aa9486a61d34b9cdeca4f753c997e9ca34"
+      },
+      "height": 127,
+      "initial_commitments": [
+        "27ae7f1aaac3fb5417f5307447134f50dd37508bb3c418ea653f1bd267bb6ed4",
+        "3d40389976f80154174c54032613b3dbc17cefeae21c5a9a33b8ecf2106d85e0",
+        "007e82f4c5a8acbe17064b4e865d6ab0bf1e8a2a38f6aa1d9554d4959c9b9919",
+        "5741c2c96742ab4ac26fb5b3ccf402c8dffda4e600ccfc9e94be3a3828b24b96"
+      ],
+      "initial_nullifiers": [],
+      "name": "maximum",
+      "provenance": "Generated and fully verified with capture_compact_regtest_maximum; separate synthetic prestate, not a mined block.",
+      "wire_file": "maximum.tx.hex"
+    }
+  ],
+  "format": "dinero-compact-regtest-fixed-v1",
+  "scope": "Regtest-only randomized proofs captured once; CI verifies committed bytes without proving. Independent Python checks encoding and state/hash literals, not Spartan validity. Production C++ verifies the cryptographic proofs.",
+  "source_commit": "f18ac667ad0b4e7ebfdbdb59db297f8a33b24318"
+}

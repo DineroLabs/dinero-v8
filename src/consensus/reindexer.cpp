@@ -2197,7 +2197,8 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     last_failure_was_forest_root_mismatch_ = false;
     std::string resource_error;
     if (!shielded::CheckAuthBlockResources(block.vtx, height,
-            Params().shielded_spend_auth_activation_height, resource_error)) {
+            Params().shielded_spend_auth_activation_height, resource_error,
+            shielded::CompactRulesFor(Params()))) {
         g_logger.error("[reindex] " + resource_error);
         return Status::Invalid;
     }
@@ -2462,7 +2463,8 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
                 Params().shielded_input_binding_activation_height,
                 Params().shielded_cv_binding_activation_height,
                 Params().shielded_spend_auth_activation_height,
-                Params().shielded_private_covenant_activation_height);
+                Params().shielded_private_covenant_activation_height,
+                shielded::CompactRulesFor(Params()));
             const auto validation = shielded::ValidateShieldedBundle(bundle, ctx);
             if (validation != shielded::ShieldedValidationError::Ok) {
                 g_logger.error("[reindex] Shielded validation failed at height " +

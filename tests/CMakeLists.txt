@@ -12971,6 +12971,34 @@ target_include_directories(test_shielded_resource_limits PRIVATE
 add_test(NAME ShieldedResourceLimits COMMAND test_shielded_resource_limits)
 set_tests_properties(ShieldedResourceLimits PROPERTIES LABELS "shielded;consensus;p2p;mandatory" TIMEOUT 30)
 
+if(DINERO_ENABLE_COMPACT_REGTEST)
+  add_executable(compact_package_builder
+    tests/integration/compact_package_builder.cpp tests/stubs/mempool_test_stubs.cpp)
+  target_link_libraries(compact_package_builder PRIVATE
+    dinero_shielded dinero_wallet wallet_test_deps jsoncpp_static sqlite3)
+  target_include_directories(compact_package_builder PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  add_executable(test_compact_regtest_vectors tests/consensus/test_compact_regtest_vectors.cpp)
+  target_link_libraries(test_compact_regtest_vectors PRIVATE
+    GTest::gtest_main dinero_core dinero_shielded jsoncpp_static sqlite3)
+  target_include_directories(test_compact_regtest_vectors PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  target_compile_definitions(test_compact_regtest_vectors PRIVATE
+    COMPACT_REGTEST_VECTOR_DIRECTORY="${CMAKE_SOURCE_DIR}/tests/vectors/compact_regtest_v1")
+  add_test(NAME CompactRegtestFixedVectors COMMAND test_compact_regtest_vectors)
+  set_tests_properties(CompactRegtestFixedVectors PROPERTIES
+    LABELS "compact-regtest;shielded;consensus;utreexo;mandatory" TIMEOUT 300)
+  add_test(NAME CompactRegtestVectorOracle COMMAND python3
+    ${CMAKE_SOURCE_DIR}/scripts/check_compact_regtest_vectors.py --self-test)
+  set_tests_properties(CompactRegtestVectorOracle PROPERTIES
+    LABELS "compact-regtest;shielded;serialization;mandatory" TIMEOUT 60)
+
+  add_executable(capture_compact_regtest_maximum EXCLUDE_FROM_ALL
+    tools/capture_compact_regtest_maximum.cpp tests/stubs/mempool_test_stubs.cpp)
+  target_link_libraries(capture_compact_regtest_maximum PRIVATE
+    dinero_shielded dinero_wallet wallet_test_deps jsoncpp_static sqlite3)
+  target_include_directories(capture_compact_regtest_maximum PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+endif()
+
 add_executable(test_snapshot_binding
   tests/consensus/test_snapshot_binding.cpp
   src/consensus/snapshot_binding.cpp

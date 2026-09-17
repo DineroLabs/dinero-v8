@@ -2214,7 +2214,8 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
             if (!consensus::shielded::AccumulateAuthBlockResources(
                     candidate, next_block_height,
                     dinero::Params().shielded_spend_auth_activation_height,
-                    candidate_auth_resources, resource_error)) {
+                    candidate_auth_resources, resource_error,
+                    consensus::shielded::CompactRulesFor(dinero::Params()))) {
                 auth_resources_ok = false;
             }
         };
@@ -2367,7 +2368,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     if (!consensus::shielded::CheckTxResourceEnvelope(tx,
             consensus::shielded::AuthResourcesActive(next_block_height, auth_height), resource_error) ||
         !consensus::shielded::CheckAuthTransactionResources(tx, next_block_height,
-            auth_height, proofs, resource_error)) {
+            auth_height, proofs, resource_error,
+            consensus::shielded::CompactRulesFor(dinero::Params()))) {
         if (reason) *reason = resource_error;
         return false;
     }
@@ -2493,7 +2495,8 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         binding_activation,
         dinero::Params().shielded_cv_binding_activation_height,
         dinero::Params().shielded_spend_auth_activation_height,
-        dinero::Params().shielded_private_covenant_activation_height);
+        dinero::Params().shielded_private_covenant_activation_height,
+        consensus::shielded::CompactRulesFor(dinero::Params()));
     const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
     if (validation != consensus::shielded::ShieldedValidationError::Ok) {
         set_reason("shielded validation failed: " +
@@ -3035,7 +3038,8 @@ bool Mempool::validateTransaction(
             consensus::shielded::AuthResourcesActive(resource_height, activation), error)) return false;
     size_t proof_count = 0;
     if (!consensus::shielded::CheckAuthTransactionResources(tx, resource_height,
-            activation, proof_count, error)) return false;
+            activation, proof_count, error,
+            consensus::shielded::CompactRulesFor(dinero::Params()))) return false;
 
     if (tx.HasConfidentialOutputs()) {
         error = "legacy private lane removed";
@@ -3350,7 +3354,8 @@ bool Mempool::validateTransaction(
             dinero::Params().shielded_input_binding_activation_height,
             dinero::Params().shielded_cv_binding_activation_height,
             dinero::Params().shielded_spend_auth_activation_height,
-        dinero::Params().shielded_private_covenant_activation_height);
+            dinero::Params().shielded_private_covenant_activation_height,
+            consensus::shielded::CompactRulesFor(dinero::Params()));
         const auto validation = consensus::shielded::ValidateShieldedBundle(bundle, ctx);
         if (validation != consensus::shielded::ShieldedValidationError::Ok) {
             error = "Shielded validation failed: " +

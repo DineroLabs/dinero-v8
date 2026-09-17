@@ -127,7 +127,7 @@ std::vector<uint8_t> Transaction::Serialize(bool include_witness) const {
     const bool write_shielded_bundle =
         Transaction::IsShieldedVersion(version) &&
         !shielded_bundle_bytes.empty() &&
-        (include_witness || version == TX_VERSION_SHIELDED_V2);
+        (include_witness || IsShieldedAuthVersion(version));
     if (write_shielded_bundle) {
         TransactionSerializer::WriteBytes(result, shielded_bundle_bytes);
     }
