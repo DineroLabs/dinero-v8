@@ -565,7 +565,7 @@ din::Json handle_generatetoaddress(
 
                     dinero::Transaction candidate_coinbase = coinbase;
                     dinero::TxOutput output;
-                    dinero::AmountUna subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height);
+                    dinero::AmountUna subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height);
                     dinero::AmountUna fees_amount = dinero::AmountUna::Una(selected_total_fees);
                     output.value = subsidy.Add(fees_amount).value_or(subsidy);
 
@@ -1180,7 +1180,7 @@ din::Json handle_getblocktemplate(
     // Calculate block subsidy (coinbase reward)
     uint32_t next_height = height + 1;
     // Phase M.6.2: Extract raw value from AmountUna for RPC boundary
-    uint64_t subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height).GetUna();
+    uint64_t subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(next_height, dinero::Params().sixty_second_activation_height).GetUna();
 
     // ========== CANONICAL DIFFICULTY SELECTOR ==========
     // ALWAYS route through GetNextWorkRequired - never compute in RPC.

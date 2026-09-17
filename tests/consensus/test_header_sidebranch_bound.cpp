@@ -452,6 +452,14 @@ void TestCopiedAncestryAndBranchSnapshots() {
     assert(asert_context.block1_time ==
            static_cast<int64_t>(block1->header.timestamp));
 
+    assert(sel.GetAsertContextByHash(fork_tip, asert_context, 3));
+    assert(asert_context.timing_anchor.has_value());
+    assert(asert_context.timing_anchor->height == 3);
+    assert(asert_context.timing_anchor->time == static_cast<int64_t>(branch[3].header.timestamp));
+    assert(asert_context.timing_anchor->bits == branch[3].header.difficulty);
+    assert(!sel.GetAsertContextByHash(fork_tip, asert_context, 7));
+    assert(!asert_context.timing_anchor.has_value());
+
     asert_context = HeaderAsertContext{99, 99, 99};
     assert(!sel.GetAsertContextByHash(unknown, asert_context));
     assert(asert_context.parent_height == 0);

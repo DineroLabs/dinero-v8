@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 /**
  * Pool Manager Implementation
  *
@@ -233,7 +234,7 @@ PoolManager::ShareSubmitResult PoolManager::onShareSubmit(const std::string& wor
         }
 
         if (share.status == ShareStatus::BLOCK) {
-            const uint64_t consensus_subsidy = ConsensusSubsidy::GetBlockSubsidy(block_height).GetUna();
+            const uint64_t consensus_subsidy = ConsensusSubsidy::GetBlockSubsidy(block_height, dinero::Params().sixty_second_activation_height).GetUna();
             uint64_t block_reward_component = block_reward;
             uint64_t block_fee_component = 0;
             if (block_reward >= consensus_subsidy) {

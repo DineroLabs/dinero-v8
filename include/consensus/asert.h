@@ -1,6 +1,8 @@
 #pragma once
 
 #include "consensus/chainwork.h"
+#include "consensus/block_timing.h"
+#include "consensus/pow_compact.h"
 #include "dinero/compat/int128.hpp"
 #include <cstdint>
 #include <iomanip>
@@ -19,6 +21,7 @@ struct AsertParams {
     int64_t target_spacing_secs{0};
     int64_t half_life_secs{0};
     arith_uint256 pow_limit{};
+    uint32_t sixty_second_activation_height{UINT32_MAX};
 };
 
 struct AsertInput {
@@ -67,6 +70,33 @@ inline uint64_t mul64_rshift(uint64_t a, uint64_t b, unsigned shift) {
         dinero::compat::mul_u64(a, b) >> shift);
 }
 
+// Post-upgrade encoding is byte-normalized and rounds down. GetCompact's
+// historical bit-normalization remains untouched for replay below activation.
+inline uint32_t EncodeTimingUpgradeTarget(const arith_uint256& target) {
+    std::array<uint8_t, 32> bytes{};
+    for (int i = 0; i < 32; ++i)
+        bytes[31 - i] = static_cast<uint8_t>(target.GetWord(i / 8) >> (8 * (i % 8)));
+    return BitsFromTargetBE(bytes);
+}
+
+// Keep the carry above bit 255 until after the fixed-point division. Throwing
+// it away before >>16 can wrap a large valid target into arbitrarily hard work.
+inline void MultiplyFixedPointSaturating(arith_uint256& target, uint64_t factor,
+                                        const arith_uint256& limit) {
+    uint64_t carry = 0;
+    for (int i = 0; i < 4; ++i) {
+        const auto product = dinero::compat::mul_u64(target.GetWord(i), factor) + carry;
+        target.SetWord(i, dinero::compat::lo64(product));
+        carry = dinero::compat::hi64(product);
+    }
+    if (carry >= 65536) {
+        target = limit;
+        return;
+    }
+    target >>= 16;
+    target.SetWord(3, target.GetWord(3) | (carry << 48));
+}
+
 } // namespace asert_detail
 
 inline uint32_t ComputeAsertBits(const AsertInput& in, ComputedAsertDebug* dbg_out = nullptr) {
@@ -97,13 +127,15 @@ inline uint32_t ComputeAsertBits(const AsertInput& in, ComputedAsertDebug* dbg_o
         dbg_out->anchor_target = target;
     }
 
-    const int64_t height_delta =
-        static_cast<int64_t>(in.target_height) - static_cast<int64_t>(in.anchor.height);
     const int64_t time_delta = in.reference_time - in.anchor.time;
-    const int64_t ideal_time = height_delta * in.params.target_spacing_secs;
+    const int64_t ideal_time = consensus::ExpectedBlockElapsed(
+        in.anchor.height, in.target_height, in.params.target_spacing_secs,
+        in.params.sixty_second_activation_height);
     const int64_t excess_time = time_delta - ideal_time;
+    const bool timing_upgrade = in.target_height >= 0 && consensus::SixtySecondActive(
+        static_cast<uint32_t>(in.target_height), in.params.sixty_second_activation_height);
 
-    if (excess_time == 0) {
+    if (excess_time == 0 && !timing_upgrade) {
         if (dbg_out) {
             dbg_out->raw_target = target;
             dbg_out->clamped_target = target;
@@ -123,13 +155,23 @@ inline uint32_t ComputeAsertBits(const AsertInput& in, ComputedAsertDebug* dbg_o
         if (k > 32) k = 32;
         if (k < -32) k = -32;
 
+        bool saturated = false;
         if (k > 0) {
-            target <<= static_cast<unsigned int>(k);
+            auto shift_limit = in.params.pow_limit;
+            shift_limit >>= static_cast<unsigned int>(k);
+            if (timing_upgrade && target > shift_limit) {
+                // The fractional factor is >= 1, so this cap is final. Check
+                // before shifting: a 256-bit overflow cannot be capped later.
+                target = in.params.pow_limit;
+                saturated = true;
+            } else {
+                target <<= static_cast<unsigned int>(k);
+            }
         } else if (k < 0) {
             target >>= static_cast<unsigned int>(-k);
         }
 
-        if (r != 0) {
+        if (r != 0 && !saturated) {
             const uint64_t kRadix16 = 65536;
             const uint64_t kCoeff1 = 195766423245049ull;
             const uint64_t kCoeff2 = 971821376ull;
@@ -139,8 +181,13 @@ inline uint32_t ComputeAsertBits(const AsertInput& in, ComputedAsertDebug* dbg_o
             const uint64_t frac = static_cast<uint64_t>(
                 (r * static_cast<int64_t>(kRadix16)) / in.params.half_life_secs
             );
-            const uint64_t frac_squared = asert_detail::mul64_rshift(frac, frac, 16);
-            const uint64_t frac_cubed = asert_detail::mul64_rshift(frac_squared, frac, 16);
+            // These coefficients multiply the full Q16 integer powers. The
+            // legacy extra >>16 on each power made the curve discontinuous
+            // at whole half-lives; preserve it only for historical blocks.
+            const uint64_t frac_squared = timing_upgrade
+                ? frac * frac : asert_detail::mul64_rshift(frac, frac, 16);
+            const uint64_t frac_cubed = timing_upgrade
+                ? frac_squared * frac : asert_detail::mul64_rshift(frac_squared, frac, 16);
             const uint64_t polynomial_sum =
                 (kCoeff1 * frac) +
                 (kCoeff2 * frac_squared) +
@@ -148,8 +195,12 @@ inline uint32_t ComputeAsertBits(const AsertInput& in, ComputedAsertDebug* dbg_o
                 kRounding;
             const uint64_t factor = kRadix16 + (polynomial_sum >> 48);
 
-            target *= factor;
-            target >>= 16;
+            if (timing_upgrade) {
+                asert_detail::MultiplyFixedPointSaturating(target, factor, in.params.pow_limit);
+            } else {
+                target *= factor;
+                target >>= 16;
+            }
         }
     }
 
@@ -164,7 +215,8 @@ inline uint32_t ComputeAsertBits(const AsertInput& in, ComputedAsertDebug* dbg_o
         target = arith_uint256::One();
     }
 
-    const uint32_t result = target.GetCompact();
+    const uint32_t result = timing_upgrade
+        ? asert_detail::EncodeTimingUpgradeTarget(target) : target.GetCompact();
 
     if (dbg_out) {
         dbg_out->clamped_target = target;

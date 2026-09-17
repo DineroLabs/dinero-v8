@@ -1,0 +1,44 @@
+{
+  "model": "single-template Poisson arrivals; constant hash power; no propagation or validation load",
+  "seed": 6017,
+  "rows_checked_against_production": 80000,
+  "production_qualified": false,
+  "scenarios": [
+    {
+      "hash_factor": 1,
+      "expected_mean_at_limit_seconds": 120.0,
+      "pre_mean_seconds": 63.14674125405997,
+      "first_100_new_blocks_mean_seconds": 108.08377990224842,
+      "late_mean_seconds": 117.64712346149771,
+      "boundary_work_ratio": 2.914028839551385,
+      "maximum_first_100_gap_seconds": 618.2523172882672
+    },
+    {
+      "hash_factor": 16,
+      "expected_mean_at_limit_seconds": 7.5,
+      "pre_mean_seconds": 120.04570185391414,
+      "first_100_new_blocks_mean_seconds": 280.2074608562707,
+      "late_mean_seconds": 59.702099149446646,
+      "boundary_work_ratio": 0.9960768809683109,
+      "maximum_first_100_gap_seconds": 1418.7636428459684
+    },
+    {
+      "hash_factor": 64,
+      "expected_mean_at_limit_seconds": 1.875,
+      "pre_mean_seconds": 119.81437438733039,
+      "first_100_new_blocks_mean_seconds": 103.43773779246938,
+      "late_mean_seconds": 59.66806879820243,
+      "boundary_work_ratio": 0.9994181761762538,
+      "maximum_first_100_gap_seconds": 580.7227496062303
+    },
+    {
+      "hash_factor": 256,
+      "expected_mean_at_limit_seconds": 0.46875,
+      "pre_mean_seconds": 121.22397015709659,
+      "first_100_new_blocks_mean_seconds": 39.01836545537278,
+      "late_mean_seconds": 59.579210920527096,
+      "boundary_work_ratio": 1.0004445926419918,
+      "maximum_first_100_gap_seconds": 227.34741751563146
+    }
+  ]
+}

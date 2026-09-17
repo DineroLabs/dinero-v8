@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <type_traits>
 #include "consensus/chain_identity.h"
+#include "consensus/block_timing.h"
 #include "primitives/amount.h"
 
 namespace dinero {
@@ -11,7 +12,7 @@ namespace dinero {
 /**
  * Dinero Monetary Policy — Fair Launch v3
  *
- * No premine. No hard cap. Perpetual 1 DIN/block tail emission.
+ * No premine. No hard cap. Legacy tail: 1 DIN/block; activated tail: 0.5 DIN/block.
  *
  * Genesis (height 0): 100 DIN burned via OP_RETURN (unspendable, symbolic)
  * PoW (height 1+): 100 DIN initial, halving every 1,314,000 blocks (~5 years)
@@ -19,7 +20,11 @@ namespace dinero {
  *
  * Decimals: 1 DIN = 100,000,000 una (Bitcoin standard)
  *
- * Supply curve (no hard cap — disinflationary). Figures below are computed
+ * The 60-second upgrade retains the epoch heights and initial reward, and
+ * changes the floor only for blocks at/above its network activation height.
+ * Pure callers pass that height explicitly; omission preserves the legacy rule.
+ *
+ * Legacy supply curve (no hard cap — disinflationary). Figures below are computed
  * from the constants in this file at the 120-second target spacing
  * (262,980 blocks/year, so one 1,314,000-block epoch is 5.00 years):
  *   Epochs 0-6: 260.747M DIN from halvings (through height 9,198,000)
@@ -65,7 +70,7 @@ struct ConsensusSubsidy {
     static constexpr uint64_t UNA_PER_DIN = 100000000ULL;               // 8 decimals
     static constexpr uint64_t INITIAL_SUBSIDY = 100ULL * UNA_PER_DIN;   // 100 DIN per block
     static constexpr uint32_t HALVING_INTERVAL = 1314000;                 // ~5 years @ 2 min blocks
-    static constexpr uint64_t TAIL_EMISSION_UNA = 1ULL * UNA_PER_DIN;  // 1 DIN/block forever
+    static constexpr uint64_t TAIL_EMISSION_UNA = 1ULL * UNA_PER_DIN;  // Legacy floor; activated floor is selected by height
 
     // Genesis unspendable (symbolic OP_RETURN burn)
     static constexpr uint64_t GENESIS_UNSPENDABLE_DIN  = 100ULL;
@@ -80,9 +85,13 @@ struct ConsensusSubsidy {
      * SINGLE SOURCE OF TRUTH for all value creation.
      *
      * Height 0: Genesis (no spendable subsidy — OP_RETURN)
-     * Height 1+: PoW emission with halvings, floored at TAIL_EMISSION (1 DIN)
+     * Height 1+: PoW emission with halvings and the height-selected tail floor
      */
-    static AmountUna GetBlockSubsidy(uint32_t height) {
+    static constexpr uint64_t TailEmissionAtHeight(uint32_t height, uint32_t activation = UINT32_MAX) {
+        return consensus::SixtySecondActive(height, activation) ? UNA_PER_DIN / 2 : TAIL_EMISSION_UNA;
+    }
+
+    static constexpr AmountUna GetBlockSubsidy(uint32_t height, uint32_t sixty_second_activation_height = UINT32_MAX) {
         // Genesis: unspendable OP_RETURN output
         if (height == 0) {
             return AmountUna::Zero();
@@ -95,54 +104,47 @@ struct ConsensusSubsidy {
         // Compute halving subsidy (shifts to 0 after 64 halvings)
         uint64_t subsidy = (halvings >= 64) ? 0 : (INITIAL_SUBSIDY >> halvings);
 
-        // Tail emission floor: never pay less than 1 DIN
-        return AmountUna::Una(std::max(subsidy, TAIL_EMISSION_UNA));
+        // Height-selected floor: preserve the historical 1 DIN era; 0.5 DIN after activation.
+        return AmountUna::Una(std::max(subsidy, TailEmissionAtHeight(height, sixty_second_activation_height)));
     }
 
     /**
      * Get total PoW coins issued from height 1 to height (inclusive).
      * Accounts for tail emission floor.
      */
-    static uint64_t GetPoWIssuedAtHeight(uint32_t height) {
-        if (height == 0) {
-            return 0;
-        }
-
-        uint64_t total = 0;
-        uint32_t pow_blocks = height;  // blocks 1..height (height count)
-        uint32_t remaining = pow_blocks;
-        uint32_t epoch = 0;
-
-        while (remaining > 0) {
-            uint64_t subsidy = (epoch >= 64) ? 0 : (INITIAL_SUBSIDY >> epoch);
-            subsidy = std::max(subsidy, TAIL_EMISSION_UNA);  // Apply tail floor
-
-            uint32_t epoch_size = HALVING_INTERVAL;
-            uint32_t blocks = std::min(remaining, epoch_size);
-            total += static_cast<uint64_t>(blocks) * subsidy;
-            remaining -= blocks;
-            epoch++;
-
-            // Once we're in pure tail emission, all remaining blocks are 1 DIN
-            if (epoch >= 64 || (INITIAL_SUBSIDY >> epoch) < TAIL_EMISSION_UNA) {
-                // Check if current epoch is already tail
-                uint64_t next_subsidy = (epoch >= 64) ? 0 : (INITIAL_SUBSIDY >> epoch);
-                if (std::max(next_subsidy, TAIL_EMISSION_UNA) == TAIL_EMISSION_UNA) {
-                    total += static_cast<uint64_t>(remaining) * TAIL_EMISSION_UNA;
-                    break;
-                }
+    static uint64_t GetPoWIssuedAtHeight(uint32_t height, uint32_t sixty_second_activation_height = UINT32_MAX) {
+        // Sum each era separately. A late activation must not recompute old
+        // tail rewards at the new floor. uint64 arithmetic also covers height
+        // UINT32_MAX without wrapping epoch boundaries or the genesis burn.
+        const auto sum_to = [](uint32_t end, uint64_t floor) {
+            uint64_t remaining = end;
+            uint64_t total = 0;
+            uint32_t epoch = 0;
+            while (remaining != 0) {
+                const uint64_t base = epoch >= 64 ? 0 : INITIAL_SUBSIDY >> epoch;
+                if (base <= floor) return total + remaining * floor;
+                const uint64_t blocks = std::min<uint64_t>(remaining, HALVING_INTERVAL);
+                total += blocks * base;
+                remaining -= blocks;
+                ++epoch;
             }
-        }
-        return total;
+            return total;
+        };
+        if (!consensus::SixtySecondActive(height, sixty_second_activation_height))
+            return sum_to(height, TAIL_EMISSION_UNA);
+        const uint32_t prefix = sixty_second_activation_height > 0
+            ? sixty_second_activation_height - 1 : 0;
+        return sum_to(prefix, TAIL_EMISSION_UNA) + sum_to(height, UNA_PER_DIN / 2) -
+               sum_to(prefix, UNA_PER_DIN / 2);
     }
 
     /**
      * Get total coins issued at a given height.
      * Includes: genesis (unspendable) + PoW (with tail emission)
      */
-    static uint64_t GetTotalIssuedAtHeight(uint32_t height) {
+    static uint64_t GetTotalIssuedAtHeight(uint32_t height, uint32_t sixty_second_activation_height = UINT32_MAX) {
         uint64_t genesis = (height >= GENESIS_HEIGHT) ? GENESIS_UNSPENDABLE_UNA : 0ULL;
-        return genesis + GetPoWIssuedAtHeight(height);
+        return genesis + GetPoWIssuedAtHeight(height, sixty_second_activation_height);
     }
 
     // ========================================================================

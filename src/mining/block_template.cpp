@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 #include "mining/block_template.h"
 
 #include "common/logger.h"
@@ -17,7 +18,7 @@ namespace dinero {
 namespace mining {
 
 uint64_t BlockTemplateBuilder::getBlockSubsidy(uint32_t height) {
-    return dinero::ConsensusSubsidy::GetBlockSubsidy(height).GetUna();
+    return dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height).GetUna();
 }
 
 std::string BlockTemplateBuilder::calculateMerkleRoot(const std::vector<Transaction>& transactions) {

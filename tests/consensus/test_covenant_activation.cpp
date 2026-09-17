@@ -217,10 +217,12 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     SelectParams(Chain::MAINNET);
     // Pin Auth/private covenants at 110000; DNRS and contextual locks at 111000.
     EXPECT_EQ(Params().contextual_locks_activation_height, 111000U);
+    EXPECT_EQ(Params().sixty_second_activation_height, UINT32_MAX);
     // This is operator drift telemetry, not a block or peer protocol change.
+    // Includes the dormant sixty-second activation height (UINT32_MAX).
     EXPECT_EQ(
         ConsensusChecksum(Params()),
-        "47202b4fc9d830d55efa08bbf9adce93186677ec40f68435743ce3bf19b1ee82");
+        "3f288229f948021a52652574e9c1a0f173de0ff2782ab1b6139ebafe2c3e3de4");
 
     ChainParams baseline{};
     const std::string checksum = ConsensusChecksum(baseline);
@@ -249,6 +251,7 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     // state_commitment_v1 joined the checksum with its dormant wiring.
     expect_committed(&ChainParams::state_commitment_activation_height);
     expect_committed(&ChainParams::contextual_locks_activation_height);
+    expect_committed(&ChainParams::sixty_second_activation_height);
 }
 
 TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {

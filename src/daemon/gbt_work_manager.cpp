@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 #include "daemon/gbt_work_manager.h"
 #include "daemon/mining_engine.h"
 #include "daemon/mempool.h"
@@ -305,7 +306,7 @@ GBTWorkManager::BlockCandidate GBTWorkManager::BuildBlockCandidate() {
 
     // Calculate coinbase value (base reward + fees)
     // Phase M.5.3: Query consensus for block subsidy (100 DIN at height 2+, halves every 1,314,000 blocks)
-    uint64_t blockSubsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(candidate.height).GetUna();
+    uint64_t blockSubsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(candidate.height, dinero::Params().sixty_second_activation_height).GetUna();
     auto coinbase_value = dinero::CheckedAddUna(blockSubsidy, candidate.totalFees);
     if (!coinbase_value) {
         throw std::runtime_error("Coinbase value overflow while building GBT candidate");

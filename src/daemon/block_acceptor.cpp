@@ -1076,19 +1076,26 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
             auto* parent_index = chainstate ? chainstate->FindBlockIndex(pow_parent_hash) : nullptr;
             int64_t known_parent_mtp = 0;
             int64_t known_block1_time = 0;
+            const auto timing_anchor_height = dinero::TimingUpgradeAnchorHeight(nextHeight, consensus);
+            std::optional<dinero::AsertAnchor> known_timing_anchor;
             if (parent_index) {
                 known_parent_mtp = static_cast<int64_t>(parent_index->GetMedianTimePast());
                 known_block1_time = dinero::GetKnownAncestryTimestamp(
                     parent_index,
                     /*parent_entry=*/nullptr,
                     1);
-            } else if (daemon_ctx && daemon_ctx->header_chain) {
+                if (timing_anchor_height)
+                    known_timing_anchor = dinero::GetKnownAncestryTimingAnchor(
+                        parent_index, nullptr, *timing_anchor_height);
+            }
+            if ((!parent_index || (timing_anchor_height && !known_timing_anchor)) &&
+                daemon_ctx && daemon_ctx->header_chain) {
                 // #441: derive both ancestry-dependent values inside the
                 // selector lock. A raw HeaderIndexEntry pointer here could be
                 // freed by side-branch eviction during the MTP/anchor walk.
                 dinero::consensus::HeaderAsertContext header_context;
                 if (daemon_ctx->header_chain->GetAsertContextByHash(
-                        pow_parent_hash, header_context)) {
+                        pow_parent_hash, header_context, timing_anchor_height)) {
                     if (header_context.parent_height + 1 != nextHeight) {
                         error = "bad-diffbits: header parent height " +
                             std::to_string(header_context.parent_height) +
@@ -1099,6 +1106,7 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
                     }
                     known_parent_mtp = header_context.parent_mtp;
                     known_block1_time = header_context.block1_time;
+                    known_timing_anchor = header_context.timing_anchor;
                 }
             }
 
@@ -1108,7 +1116,8 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
                 chain_db,
                 nextHeight,
                 static_cast<int64_t>(block.timestamp),
-                consensus);
+                consensus,
+                known_timing_anchor);
 
             if (asert_input.has_value()) {
                 LOG_INFO("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -1663,7 +1672,7 @@ bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t exp
         expected_subsidy = dinero::ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA;
     } else {
         // PoW blocks (height 1+): Standard subsidy with halving + tail emission
-        expected_subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(static_cast<uint32_t>(expectedHeight)).GetUna();
+        expected_subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(static_cast<uint32_t>(expectedHeight), dinero::Params().sixty_second_activation_height).GetUna();
     }
 
     // Validate: coinbase output must not exceed subsidy + block fees.

@@ -28,6 +28,7 @@
 #include "consensus/utxo_snapshot_state.h"
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/outpoint.h"
+#include "consensus/subsidy.h"
 #include "consensus/utxo_entry.h"
 #include "primitives/block.h"
 #include "primitives/uint256.h"
@@ -104,6 +105,8 @@ struct StatelessContext {
 
     // Chain state
     uint32_t height;
+    // Caller supplies the trusted network schedule, never data from a peer.
+    uint32_t sixty_second_activation_height = UINT32_MAX;
 
     // Constants
     static constexpr uint32_t COINBASE_MATURITY = 100;
@@ -169,7 +172,8 @@ VerifyResult VerifyBlockStateless(
 VerifyResult VerifyBlockWithSnapshot(
     const Block& block,
     const UTXOSnapshot& snapshot,
-    const BlockUtreexoProof& proof);
+    const BlockUtreexoProof& proof,
+    uint32_t sixty_second_activation_height = UINT32_MAX);
 
 // ============================================================================
 // Helper: Verify Utreexo proof only
@@ -239,23 +243,8 @@ UtreexoHash ComputeUTXOLeafHashV2(
  * Pure function, no allocations.
  */
 [[nodiscard]]
-constexpr uint64_t GetBlockSubsidy(uint32_t height) noexcept {
-    constexpr uint64_t UNA_PER_DIN = 100'000'000ULL;
-    constexpr uint64_t INITIAL_SUBSIDY = 100ULL * UNA_PER_DIN;
-    constexpr uint32_t HALVING_INTERVAL = 1'314'000;
-    constexpr uint64_t TAIL_EMISSION_UNA = 1ULL * UNA_PER_DIN;
-
-    if (height == 0) return 0;
-
-    // PoW emission starts at height 1
-    uint32_t pow_blocks = height - 1;
-    uint32_t halvings = pow_blocks / HALVING_INTERVAL;
-
-    // Compute halving subsidy (shifts to 0 after 64 halvings)
-    uint64_t subsidy = (halvings >= 64) ? 0 : (INITIAL_SUBSIDY >> halvings);
-
-    // Tail emission floor: never pay less than 1 DIN
-    return (subsidy > TAIL_EMISSION_UNA) ? subsidy : TAIL_EMISSION_UNA;
+constexpr uint64_t GetBlockSubsidy(uint32_t height, uint32_t sixty_second_activation_height = UINT32_MAX) noexcept {
+    return ConsensusSubsidy::GetBlockSubsidy(height, sixty_second_activation_height).GetUna();
 }
 
 } // namespace consensus

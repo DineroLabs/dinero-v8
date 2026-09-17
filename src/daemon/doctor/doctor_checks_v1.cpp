@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 // doctor_checks_v1.cpp - v1 health check implementations
 // Phase 2: 10 checks across storage, db, mempool, p2p, invariants
 #include "daemon/doctor/doctor_registry.h"
@@ -857,12 +858,15 @@ static DoctorCheckResult CheckSupplyBounds(const DoctorContext& ctx) {
     // Verify compile-time constants (Fair Launch v3 — no premine)
     result.evidence["halving_interval"] = std::to_string(ConsensusSubsidy::HALVING_INTERVAL);
     result.evidence["initial_reward_din"] = std::to_string(ConsensusSubsidy::INITIAL_SUBSIDY / ConsensusSubsidy::UNA_PER_DIN);
-    result.evidence["tail_emission_din"] = std::to_string(ConsensusSubsidy::TAIL_EMISSION_UNA / ConsensusSubsidy::UNA_PER_DIN);
+    result.evidence["legacy_tail_emission_din"] = "1";
+    result.evidence["activated_tail_emission_din"] = "0.5";
+    result.evidence["sixty_second_activation_height"] =
+        std::to_string(dinero::Params().sixty_second_activation_height);
 
     // Verify subsidy at known heights
-    auto genesis_sub = ConsensusSubsidy::GetBlockSubsidy(0);
-    auto height1_sub = ConsensusSubsidy::GetBlockSubsidy(1);
-    auto height2_sub = ConsensusSubsidy::GetBlockSubsidy(2);
+    auto genesis_sub = ConsensusSubsidy::GetBlockSubsidy(0, dinero::Params().sixty_second_activation_height);
+    auto height1_sub = ConsensusSubsidy::GetBlockSubsidy(1, dinero::Params().sixty_second_activation_height);
+    auto height2_sub = ConsensusSubsidy::GetBlockSubsidy(2, dinero::Params().sixty_second_activation_height);
 
     if (genesis_sub.IsZero() == false) {
         result.status = CheckStatus::CRIT;
@@ -883,7 +887,7 @@ static DoctorCheckResult CheckSupplyBounds(const DoctorContext& ctx) {
     }
 
     // Verify halving works correctly (first halving at height 1 + HALVING_INTERVAL)
-    auto first_halving = ConsensusSubsidy::GetBlockSubsidy(1 + ConsensusSubsidy::HALVING_INTERVAL);
+    auto first_halving = ConsensusSubsidy::GetBlockSubsidy(1 + ConsensusSubsidy::HALVING_INTERVAL, dinero::Params().sixty_second_activation_height);
     if (first_halving.GetUna() != ConsensusSubsidy::INITIAL_SUBSIDY / 2) {
         result.status = CheckStatus::CRIT;
         result.message = "First halving subsidy incorrect";
@@ -891,18 +895,19 @@ static DoctorCheckResult CheckSupplyBounds(const DoctorContext& ctx) {
     }
 
     // Verify tail emission floor (after many halvings, subsidy = 1 DIN, not 0)
-    auto post_many_halvings = ConsensusSubsidy::GetBlockSubsidy(1 + 33 * ConsensusSubsidy::HALVING_INTERVAL);
-    if (post_many_halvings.GetUna() != ConsensusSubsidy::TAIL_EMISSION_UNA) {
+    auto post_many_halvings = ConsensusSubsidy::GetBlockSubsidy(1 + 33 * ConsensusSubsidy::HALVING_INTERVAL, dinero::Params().sixty_second_activation_height);
+    if (post_many_halvings.GetUna() != ConsensusSubsidy::TailEmissionAtHeight(
+            1 + 33 * ConsensusSubsidy::HALVING_INTERVAL, dinero::Params().sixty_second_activation_height)) {
         result.status = CheckStatus::CRIT;
-        result.message = "Tail emission floor violated: subsidy should be 1 DIN after 33 halvings";
+        result.message = "Tail emission floor violated for the configured activation schedule";
         return result;
     }
 
     result.status = CheckStatus::PASS;
     result.message = "Supply invariants verified (no premine, " +
                      std::to_string(ConsensusSubsidy::HALVING_INTERVAL) + "-block halvings, " +
-                     std::to_string(ConsensusSubsidy::TAIL_EMISSION_UNA / ConsensusSubsidy::UNA_PER_DIN) +
-                     " DIN tail emission)";
+                     std::to_string(double(post_many_halvings.GetUna()) / ConsensusSubsidy::UNA_PER_DIN) +
+                     " DIN tail at the tested height)";
 
     return result;
 }

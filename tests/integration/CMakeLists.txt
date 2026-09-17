@@ -2429,3 +2429,17 @@ set_tests_properties(CsnManualInvalidation PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;csn;utreexo;reorg;mandatory"
     TIMEOUT 300 RUN_SERIAL TRUE)
+
+# Timing upgrade qualification is always registered and executed in the serial lane.
+add_test(NAME SixtySecondActivation
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_sixty_second_activation.py)
+set_tests_properties(SixtySecondActivation PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+add_test(NAME SixtySecondShieldedLifecycle
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_auth_relay_lifecycle.sh)
+set_tests_properties(SixtySecondShieldedLifecycle PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_REINDEX=1;SIXTY_SECOND_HEIGHT=103"
+    LABELS "integration;consensus;shielded;utreexo;dnrs;restart;reorg;mandatory"
+    TIMEOUT 2400 RUN_SERIAL TRUE)

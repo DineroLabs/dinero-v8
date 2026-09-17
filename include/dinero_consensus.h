@@ -129,8 +129,8 @@ inline void RestoreSnapshot(ConsensusUTXOSet& utxo_set, const UTXOSnapshot& snap
  * @param height Block height
  * @return Block reward in una
  */
-inline AmountUna GetBlockSubsidy(uint32_t height) {
-    return ConsensusSubsidy::GetBlockSubsidy(height);
+inline AmountUna GetBlockSubsidy(uint32_t height, uint32_t activation = UINT32_MAX) {
+    return ConsensusSubsidy::GetBlockSubsidy(height, activation);
 }
 
 /**
@@ -139,8 +139,8 @@ inline AmountUna GetBlockSubsidy(uint32_t height) {
  * @param height Block height
  * @return Maximum supply in una
  */
-inline uint64_t GetMaxSupplyAtHeight(uint32_t height) {
-    return ConsensusSubsidy::GetTotalIssuedAtHeight(height);
+inline uint64_t GetMaxSupplyAtHeight(uint32_t height, uint32_t activation = UINT32_MAX) {
+    return ConsensusSubsidy::GetTotalIssuedAtHeight(height, activation);
 }
 
 } // namespace consensus

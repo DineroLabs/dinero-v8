@@ -327,6 +327,70 @@ TEST(ASERTDAA, CrossPathInvariantValidationMiningRpcAgree) {
     EXPECT_EQ(validation_bits, value_context_bits);
 }
 
+TEST(ASERTDAA, SixtySecondActivationAllDifficultyPathsAndRollback) {
+    Consensus c;
+    c.asertAnchorBits = 0x1c100000;
+    c.sixtySecondActivationHeight = 20;
+    const int64_t anchor_time = 1772496000;
+    FakeChainDBForAsert db;
+    std::vector<dinero::consensus::HeaderIndexEntry> entries(739);
+    for (uint32_t h = 0; h < entries.size(); ++h) {
+        // Block one supplies the deployed canonical anchor timestamp. Keep
+        // parent MTP below every candidate timestamp exercised below.
+        entries[h].header = MakeHeader(anchor_time + (int64_t(h) - 1) * 60, c.asertAnchorBits);
+        entries[h].height = h;
+        entries[h].parent = h ? &entries[h - 1] : nullptr;
+        db.Add(h, entries[h].header);
+    }
+    entries[19].header.difficulty = 0x1c123456;
+    db.Add(19, entries[19].header);
+    // Literal clock vectors include returning to the pre-activation branch.
+    for (const auto [h, elapsed] : {std::pair{19, 2280}, {20, 2340},
+                                    {21, 2400}, {739, 45480}, {19, 2280}}) {
+        const auto* parent = &entries[h - 1];
+        const int64_t candidate = h < 20 ? anchor_time + elapsed
+            : int64_t(entries[19].header.timestamp) + (h - 19) * 60;
+        const uint32_t expected = h < 20 ? 0x1c100000 : 0x1c123456;
+        const auto input = BuildAsertInputForCandidateTimes(
+            parent->GetMedianTimePast(), anchor_time, &db, h, candidate, c,
+            AsertAnchor{19, static_cast<int64_t>(entries[19].header.timestamp), 0x1c123456});
+        ASSERT_TRUE(input.has_value());
+        EXPECT_EQ(input->params.sixty_second_activation_height, 20u);
+        EXPECT_EQ(ComputeAsertBits(*input), expected);
+        EXPECT_EQ(GetNextWorkRequiredForCandidate(h, candidate, c, nullptr, parent, &db), expected);
+        EXPECT_EQ(GetNextWorkRequiredForCandidate(h, candidate, c, nullptr, parent,
+                  static_cast<FakeChainDBForAsert*>(nullptr)), expected);
+        EXPECT_EQ(GetNextWorkRequiredWithChainDB(h, candidate, c, &db), expected);
+        if (h == 739) {
+            auto legacy_input = *input;
+            legacy_input.params.sixty_second_activation_height = UINT32_MAX;
+            EXPECT_NE(ComputeAsertBits(legacy_input), expected)
+                << "Legacy peers must disagree once the new timing rule affects nBits";
+        }
+    }
+    const auto& boundary = entries[19];
+    EXPECT_FALSE(BuildAsertInputForCandidateTimes(boundary.GetMedianTimePast(), anchor_time,
+        &db, 20, boundary.header.timestamp + 60, c).has_value());
+    EXPECT_FALSE(BuildAsertInputForCandidateTimes(boundary.GetMedianTimePast(), anchor_time,
+        &db, 20, boundary.header.timestamp + 60, c, AsertAnchor{18, anchor_time, 0x1c100000}).has_value());
+    FakeChainDBForAsert empty;
+    EXPECT_EQ(GetNextWorkRequiredWithChainDB(20, boundary.header.timestamp + 60, c, &empty), 0u);
+
+    // A fork crossing A selects its own boundary, even with the active DB
+    // passed alongside it. Missing ancestry cannot borrow the active boundary.
+    auto fork = boundary;
+    fork.header.timestamp += 7200;
+    fork.header.difficulty = 0x1c080000;
+    EXPECT_EQ(GetNextWorkRequiredForCandidate(20, fork.header.timestamp + 60, c,
+        nullptr, &fork, &db), 0x1c080000u);
+    CBlockIndex full_boundary;
+    full_boundary.height = 19;
+    full_boundary.timestamp = fork.header.timestamp;
+    full_boundary.bits = fork.header.difficulty;
+    EXPECT_EQ(GetNextWorkRequiredForCandidate(20, fork.header.timestamp + 60, c,
+        &full_boundary, nullptr, &db), 0x1c080000u);
+}
+
 TEST(ASERTDAA, DebugSnapshotIncludesConsensusFields) {
     Consensus c;
     ComputedAsertDebug dbg;
