@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 #include "consensus/contextual_locks.h"
 #include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
@@ -3217,9 +3218,9 @@ uint64_t BlockValidator::GetBlockSubsidy(uint32_t height) {
     // Dinero monetary policy: subsidy is purely height-based
     // Height 0: 0 (genesis unspendable)
     // Height 1: 100 DIN (first PoW block)
-    // Height 1+: 100 DIN initial, halving every 1,314,000 blocks, 1 DIN tail floor
+    // Height 1+: 100 DIN initial, fixed halving heights, height-selected tail floor
     // Phase M.6.2: Extract raw value from AmountUna
-    return dinero::ConsensusSubsidy::GetBlockSubsidy(height).GetUna();
+    return dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height).GetUna();
 }
 
 uint64_t BlockValidator::SumOutputs(const Transaction& tx) const {

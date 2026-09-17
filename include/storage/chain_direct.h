@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 #pragma once
 
 #include "storage/chain_db.h"
@@ -57,7 +58,7 @@ inline uint64_t GetTotalCoinsMined(ChainDB* db) {
     if (!db) return 0;
     uint32_t height = GetChainHeight(db);
     // Use proper total issued calculation (all PoW rewards from genesis)
-    return dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(height);
+    return dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(height, dinero::Params().sixty_second_activation_height);
 }
 
 /**
@@ -147,7 +148,7 @@ inline uint64_t GetBlockReward(ChainDB* db, uint32_t height) {
     if (!db) return 0;
     // New simplified API: subsidy only depends on height (halving schedule)
     // Phase M.6.2: Extract raw value from AmountUna
-    return dinero::ConsensusSubsidy::GetBlockSubsidy(height).GetUna();
+    return dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height).GetUna();
 }
 
 /**

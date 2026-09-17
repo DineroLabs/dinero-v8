@@ -1,3 +1,4 @@
+#include "consensus/chainparams.h"
 #include "blockchain/enhanced_block_explorer.h"
 #include "daemon/mempool.h"
 #include "daemon/main.h"
@@ -623,8 +624,8 @@ QJsonObject EnhancedBlockExplorer::getSupplyStats() {
 
     try {
         const uint32_t height = static_cast<uint32_t>(blockchain_->getBlockHeight());
-        const uint64_t totalIssued = dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(height);
-        const uint64_t spendableIssued = dinero::ConsensusSubsidy::GetPoWIssuedAtHeight(height);
+        const uint64_t totalIssued = dinero::ConsensusSubsidy::GetTotalIssuedAtHeight(height, dinero::Params().sixty_second_activation_height);
+        const uint64_t spendableIssued = dinero::ConsensusSubsidy::GetPoWIssuedAtHeight(height, dinero::Params().sixty_second_activation_height);
 
         QJsonObject supply;
         supply["height"] = static_cast<int>(height);

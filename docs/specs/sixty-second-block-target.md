@@ -1,7 +1,7 @@
 # 60-second block target: implementation contract and qualification plan
 
 Status: timing and economic direction selected by the owner on 2026-09-17;
-design candidate, not an activated consensus change. The first target is **60 seconds**. A 30-second
+implemented as a dormant qualification candidate, not an activated consensus change. The first target is **60 seconds**. A 30-second
 target is future research, outside this change.
 
 Source reviewed: main commit `7287d77864fa328521847519559b9ed1d7240c16`.
@@ -24,8 +24,8 @@ not assign an activation height or change a production parameter.
   fresh resource qualification; it is not a claim that every node can sustain it.
 - Use a separate activation setting from compact proofs. A shared future release
   or activation date requires both changes to pass separately and in combination.
-- Mainnet activation height, exact ASERT transition algorithm, confirmation
-  policies and treatment of time-sensitive block windows remain review items.
+- Mainnet activation height, independent review of the ASERT transition,
+  confirmation policies and resource/network qualification remain open gates.
 
 ## Expected effects at steady hash power
 
@@ -96,30 +96,63 @@ the new floor retroactively to pre-activation blocks.
 
 ## Difficulty transition
 
-The production ASERT path uses genesis as its anchor and a 43,200-second
-half-life. Its expected elapsed time currently multiplies all height progress
-from that anchor by one spacing value. Replacing 120 with 60 globally would
-reinterpret old history and can produce a large unintended difficulty change.
+The old rule remains byte-for-byte below A, including its historical anchor
+height zero and block-one timestamp derivation. At/above A, resolve the header
+at height **A-1 on the candidate's own branch** and use this tuple:
 
-Required properties of the new transition:
+```
+anchor.height = A-1
+anchor.time   = header[A-1].timestamp
+anchor.bits   = header[A-1].difficulty
+expected_elapsed(h) = (h - (A-1)) * 60
+excess = max(parent_MTP + 1, candidate_time) - anchor.time - expected_elapsed
+```
 
-1. For every height below A, preserve exact historical expected bits.
-2. At and above A, use an explicitly specified schedule/anchor and integer
-   rounding rules. The transition must account for the old 120-second era.
-3. Define whether difficulty scales immediately or converges through ASERT.
-   Simulate both before choosing; do not silently inherit either behavior.
-4. Keep the existing 12-hour half-life and PoW limit for the initial study;
-   assess floor saturation and timestamp manipulation. Any change to either
-   is a separate explicit decision. A spacing target cannot overcome a binding
-   minimum-difficulty limit at insufficient hash power.
-5. Derive results from the candidate branch, never mutable global active-tip
-   state. Header-only, full-node, CSN, mining and reindex paths must agree.
-6. Reorgs across A must restore the old rule and produce identical expected bits
-   to a fresh node on that branch, including restart mid-reorg.
+There is no automatic factor-two target reset. ASERT adjusts toward 60 seconds
+with the existing 43,200-second half-life. The new reference starts from the
+recorded difficulty at the boundary; old elapsed time is never retrospectively
+reinterpreted at 60 seconds. Activation at height one uses the genesis header.
 
-Do not implement a guessed new anchor. A piecewise expected-time schedule and
-an explicitly normalized activation anchor are candidates requiring independent
-vectors and hash-rate/timestamp simulations first.
+Qualification found three defects in the deployed arithmetic. Corrections apply
+only at/above A; changing the historical path would reject existing blocks:
+
+- The old compact encoder normalizes by leading bit rather than byte. It can
+  increase the encoded target beyond the nominal configured cap. The new path
+  uses byte normalization and rounds down.
+- The old fractional polynomial shifts the squared and cubed Q16 terms down
+  before multiplying their coefficients, producing a discontinuity at whole
+  half-lives. The new path uses the full integer powers with the same cubic
+  coefficients. The 64-bit polynomial sum remains bounded.
+- The old target arithmetic can discard overflow before applying its cap. The
+  new path caps before an overflowing left shift and retains the multiplication
+  carry until after fixed-point division.
+
+Historical PoW verification intentionally accepts the exact ASERT-required bits,
+including outputs above the nominal cap; this is documented in
+`src/consensus/header_chain.cpp`. The new arithmetic consistently caps at the
+configured target. If the boundary's old target exceeds that cap, the cap can
+increase required work at activation. This and insufficient hash power at the
+floor are explicit rollout gates, not conditions under which 60-second arrivals
+can be promised.
+
+Retaining the old genesis reference while correcting its encoding produced a
+roughly 128-fold boundary work jump in two exploratory timing scenarios. The
+branch-specific A-1 anchor removes that encoding-induced jump in those scenarios.
+The same model still shows different initial adjustment periods, so production
+transition and timestamp-manipulation qualification remain required.
+
+Header validation reads the boundary from its own ancestry. Block acceptance
+copies it under the selector lock when using the header-only path. Mining/RPC
+read it from the active ChainDB. Missing boundary data fails closed instead of
+borrowing another branch's anchor or guessing a timestamp. Snapshot-import
+and header-backfill availability need explicit operational qualification.
+
+Independent tests cover historical/activated arithmetic, overflow, rounding,
+header-only/full/value-context/mining agreement, distinct fork boundaries,
+missing context, rollback, and portable 128-bit arithmetic. The old
+`pow_asert.hpp` helper is used only by its legacy signed-shift test; the unused
+`asert_canonical.cpp` implementation contains placeholders and is not an
+alternative production path.
 
 ## Block-count windows and existing contracts
 
@@ -128,7 +161,7 @@ wall time, and some are already committed in signed transactions or state.
 
 | Area | Existing semantics | Required disposition |
 | --- | --- | --- |
-| Coinbase maturity | 100 blocks in full and stateless paths | Decide explicitly whether to retain depth or preserve time; test outputs created on both sides of A |
+| Coinbase maturity | 100 blocks in full and stateless paths | Prototype retains 100; tests pin 99-block rejection and 100-block acceptance on both sides of A |
 | Shielded anchor history | 100 recent roots; committed by SHR1/DNRS | Initial prototype retains depth; changing to 200 requires its own state/undo transition and vectors |
 | Height-based absolute/relative locks | Signed or consensus-enforced block heights | Existing bytes keep their meaning; inventory accelerated wall-time deadlines, especially contract/channel safety margins |
 | Time-based locks and median-time rules | Time units and timestamp history | Preserve time-unit rules; review the shorter real-time span of median-block windows |
@@ -184,7 +217,8 @@ do not reuse the old 30-second proof budget as proof of adequate new headroom.
 
 ## Implementation inventory
 
-This is an initial inventory, not a completed transitive call-site audit.
+Production subsidy call sites use the network activation height explicitly.
+Pure/reference APIs take it as a value; omitting it preserves legacy behavior.
 
 | Boundary | Source paths to cover |
 | --- | --- |
@@ -197,10 +231,10 @@ This is an initial inventory, not a completed transitive call-site audit.
 | Anchor commitments and undo | `include/consensus/shielded/anchor_history.h`, shielded state persistence, connect/disconnect/reindex |
 | Operational timing | Wallet estimates, mobile sync, proof freshness, checkpoints, monitoring and separate `dinero-sv2-pool` repository |
 
-The stateless subsidy helper currently duplicates the monetary constants; it
-must not remain on the old schedule while the full validator changes. Likewise,
-editing ChainParams::target_spacing alone does not update the separate
-Consensus::targetSpacingSec used by the shared difficulty path.
+The reference stateless helper now delegates to the same subsidy implementation.
+The actual daemon validation and mining paths also pass the network activation
+height. ChainParams carries that height into the shared difficulty context;
+its legacy target-spacing field stays 120 so old blocks retain their rules.
 
 `docs/block-time-economics-lockin.md` describes an obsolete 520-second economic
 model and is not authority for this change. Runtime code and verified vectors
@@ -226,3 +260,19 @@ are the source of the reviewed 120-second baseline.
 A decision to target 60 seconds authorizes the design and implementation work.
 It does not by itself assign A, deploy a binary, enable compact proofs, or make
 30-second blocks an approved future activation.
+
+## Running the dormant implementation
+
+All three compiled networks default to `UINT32_MAX` (disabled). Only regtest
+accepts `--consensus-sixty-second-height=<A>`, with `1 <= A < UINT32_MAX`;
+`UINT32_MAX` explicitly disables it. Mainnet/testnet overrides and malformed
+values are rejected. No production activation height is included in this PR.
+
+The CTest gates `SixtySecondConsensus`, `SixtySecondAsertOracle` and
+`SixtySecondAsertTransitionModel` run in the normal Linux test lane.
+`SixtySecondActivation` and `SixtySecondShieldedLifecycle` run in the mandatory
+serial daemon lane. None is exempted from execution coverage.
+
+Regtest mines instantly and bypasses difficulty. Its passing lifecycle tests
+prove state transitions, not a sustainable live 60-second cadence. See the
+qualification report for exact results and remaining gates.

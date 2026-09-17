@@ -174,6 +174,8 @@ struct ConsensusParams {
     // Consensus limits
     uint64_t max_money = 21000000ULL * 100000000ULL; // 21M coins
 
+    uint32_t sixty_second_activation_height = UINT32_MAX;
+
     ConsensusParams() = default;
 };
 

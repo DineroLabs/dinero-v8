@@ -16,6 +16,8 @@ namespace dinero {
 
 inline Consensus GetConsensusForCurrentNetwork() {
     Consensus consensus;
+    consensus.targetSpacingSec = dinero::Params().target_spacing;
+    consensus.sixtySecondActivationHeight = dinero::Params().sixty_second_activation_height;
     if (dinero::Params().name != "mainnet") {
         const uint32_t network_pow_limit = dinero::Params().pow_limit_bits;
         consensus.genesisBits = network_pow_limit;
@@ -55,6 +57,7 @@ inline AsertParams GetAsertParams(const Consensus& consensus) {
     AsertParams params;
     params.target_spacing_secs = consensus.targetSpacingSec;
     params.half_life_secs = consensus.asertHalfLifeSec;
+    params.sixty_second_activation_height = consensus.sixtySecondActivationHeight;
     params.pow_limit.SetCompact(consensus.powLimitBits);
     return params;
 }
@@ -194,6 +197,42 @@ inline const CBlockIndex* GetBlockIndexAncestor(const CBlockIndex* tip, uint32_t
     return nullptr;
 }
 
+inline std::optional<uint32_t> TimingUpgradeAnchorHeight(int32_t target_height,
+                                                        const Consensus& c) {
+    if (target_height < 0 || c.sixtySecondActivationHeight == 0 ||
+        !consensus::SixtySecondActive(static_cast<uint32_t>(target_height),
+                                     c.sixtySecondActivationHeight)) return std::nullopt;
+    return c.sixtySecondActivationHeight - 1;
+}
+
+inline std::optional<AsertAnchor> GetKnownAncestryTimingAnchor(
+    const CBlockIndex* parent_index, const consensus::HeaderIndexEntry* parent_entry,
+    uint32_t height) {
+    if (parent_index) {
+        if (const auto* block = GetBlockIndexAncestor(parent_index, height))
+            return AsertAnchor{static_cast<int32_t>(height), static_cast<int64_t>(block->timestamp), block->bits};
+    }
+    if (parent_entry) {
+        if (const auto* block = parent_entry->GetAncestor(height))
+            return AsertAnchor{static_cast<int32_t>(height), static_cast<int64_t>(block->header.timestamp),
+                               block->header.difficulty};
+    }
+    return std::nullopt;
+}
+
+// Active-chain mining only. Candidate/fork validation must use its own
+// ancestry, never this height index. Missing boundary context fails closed.
+template <typename ChainDBType>
+inline std::optional<AsertAnchor> GetTimingAnchorOnChainDB(ChainDBType* chain_db, uint32_t height) {
+    if (!chain_db) return std::nullopt;
+    const auto hash = chain_db->getBlockHashByHeight(height);
+    if (hash.status() != Status::Ok) return std::nullopt;
+    const auto header = chain_db->getHeader(hash.value());
+    if (header.status() != Status::Ok) return std::nullopt;
+    return AsertAnchor{static_cast<int32_t>(height), static_cast<int64_t>(header.value().timestamp),
+                       header.value().difficulty};
+}
+
 inline int64_t GetKnownAncestryTimestamp(
     const CBlockIndex* parent_index,
     const dinero::consensus::HeaderIndexEntry* parent_entry,
@@ -290,6 +329,11 @@ inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
         consensus,
         GetCanonicalAsertAnchorTime(chain_db, target_height));
     input.params = GetAsertParams(consensus);
+    if (const auto height = TimingUpgradeAnchorHeight(target_height, consensus)) {
+        const auto anchor = GetTimingAnchorOnChainDB(chain_db, *height);
+        if (!anchor) return std::nullopt;
+        input.anchor = *anchor;
+    }
     return input;
 }
 
@@ -322,6 +366,11 @@ inline std::optional<AsertInput> BuildAsertInputForNextBlockOnChainDB(
         consensus,
         GetCanonicalAsertAnchorTime(chain_db, block_storage, target_height));
     input.params = GetAsertParams(consensus);
+    if (const auto height = TimingUpgradeAnchorHeight(target_height, consensus)) {
+        const auto anchor = GetTimingAnchorOnChainDB(chain_db, *height);
+        if (!anchor) return std::nullopt;
+        input.anchor = *anchor;
+    }
     return input;
 }
 
@@ -332,7 +381,8 @@ inline std::optional<AsertInput> BuildAsertInputForCandidateTimes(
     ChainDBType* chain_db,
     int32_t target_height,
     int64_t candidate_timestamp,
-    const Consensus& consensus)
+    const Consensus& consensus,
+    std::optional<AsertAnchor> known_timing_anchor = std::nullopt)
 {
     if (!IsAsertActive(target_height, consensus)) {
         return std::nullopt;
@@ -363,6 +413,11 @@ inline std::optional<AsertInput> BuildAsertInputForCandidateTimes(
         consensus,
         anchor_time);
     input.params = GetAsertParams(consensus);
+    if (const auto height = TimingUpgradeAnchorHeight(target_height, consensus)) {
+        if (!known_timing_anchor || known_timing_anchor->height != static_cast<int32_t>(*height))
+            return std::nullopt;
+        input.anchor = *known_timing_anchor;
+    }
     return input;
 }
 
@@ -386,13 +441,17 @@ inline std::optional<AsertInput> BuildAsertInputForCandidate(
     }
     const int64_t known_block1_time =
         GetKnownAncestryTimestamp(parent_index, parent_entry, 1);
+    std::optional<AsertAnchor> timing_anchor;
+    if (const auto height = TimingUpgradeAnchorHeight(target_height, consensus))
+        timing_anchor = GetKnownAncestryTimingAnchor(parent_index, parent_entry, *height);
     return BuildAsertInputForCandidateTimes(
         known_parent_mtp,
         known_block1_time,
         chain_db,
         target_height,
         candidate_timestamp,
-        consensus);
+        consensus,
+        timing_anchor);
 }
 
 } // namespace dinero

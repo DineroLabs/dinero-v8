@@ -193,7 +193,7 @@ static std::string generateDeterministicBlock(const std::string& address, dinero
 
         // Coinbase output (pay to mining address)
         dinero::TxOutput output;
-        output.value = dinero::ConsensusSubsidy::GetBlockSubsidy(height);
+        output.value = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height);
 
         // Create proper scriptPubKey for the address
         std::string scriptHex = createScriptForAddress(address);
@@ -346,7 +346,7 @@ static std::string generateRealBlock(const std::string& address, dinero::ChainDB
         // Coinbase output (pay to mining address)
         dinero::TxOutput output;
         // Calculate proper block subsidy for this height
-        output.value = dinero::ConsensusSubsidy::GetBlockSubsidy(height);
+        output.value = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height);
 
         // Create proper P2WPKH script for the address
         std::string scriptHex = createScriptForAddress(address);

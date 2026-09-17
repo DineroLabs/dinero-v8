@@ -22,6 +22,30 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+add_executable(test_sixty_second_consensus
+  tests/consensus/test_sixty_second_consensus.cpp src/consensus/chainwork.cpp)
+target_include_directories(test_sixty_second_consensus PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME SixtySecondConsensus COMMAND test_sixty_second_consensus)
+set_tests_properties(SixtySecondConsensus PROPERTIES
+  LABELS "consensus;monetary;unit;mandatory" TIMEOUT 30)
+
+add_executable(sixty_second_asert_probe
+  tests/consensus/sixty_second_asert_probe.cpp src/consensus/chainwork.cpp)
+target_include_directories(sixty_second_asert_probe PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME SixtySecondAsertOracle
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/consensus/test_sixty_second_asert_oracle.py
+    $<TARGET_FILE:sixty_second_asert_probe>)
+set_tests_properties(SixtySecondAsertOracle PROPERTIES
+  LABELS "consensus;difficulty;unit;mandatory" TIMEOUT 30)
+add_test(NAME SixtySecondAsertTransitionModel
+  COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/benchmarks/sixty_second_asert_transition.py
+    $<TARGET_FILE:sixty_second_asert_probe>)
+set_tests_properties(SixtySecondAsertTransitionModel PROPERTIES
+  LABELS "consensus;difficulty;unit;mandatory" TIMEOUT 30)
+
+
 add_executable(test_assertions_enabled
   tests/test_assertions_enabled.cpp
 )

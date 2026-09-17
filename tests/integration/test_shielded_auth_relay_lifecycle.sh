@@ -23,6 +23,10 @@ PEER_PID=""
 PEER_DIR="${DATA_DIR}.peer"
 PEER_LOG="${PEER_DIR}.log"
 KEEP_ON_FAIL=0
+TIMING_ARGS=()
+if [[ -n "${SIXTY_SECOND_HEIGHT:-}" ]]; then
+    TIMING_ARGS+=("--consensus-sixty-second-height=${SIXTY_SECOND_HEIGHT}")
+fi
 
 info() { printf '[INFO] %s\n' "$*"; }
 pass() { printf '[PASS] %s\n' "$*"; }
@@ -88,7 +92,7 @@ start_node() {
         --listen=1 --utreexo=1 --connect="127.0.0.1:${PEER_P2P}" \
         --consensus-shielded-epoch-reset-height=1 \
         --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 "$@" \
+        --consensus-state-commitment-height=3 "${TIMING_ARGS[@]}" "$@" \
         >>"${LOG_FILE}" 2>&1 &
     PID=$!
     wait_rpc || fail "daemon did not reach RPC readiness"
@@ -111,7 +115,7 @@ start_peer() {
         --rpcport="${PEER_RPC}" --port="${PEER_P2P}" --wallet-socket-port="${PEER_WALLET}" \
         --listen=1 --utreexo=1 --connect="127.0.0.1:${P2P_PORT}" \
         --consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2 \
-        --consensus-state-commitment-height=3 "$@" \
+        --consensus-state-commitment-height=3 "${TIMING_ARGS[@]}" "$@" \
         >>"${PEER_LOG}" 2>&1 &
     PEER_PID=$!
     ( DATA_DIR="${PEER_DIR}"; RPC_PORT="${PEER_RPC}"; PID="${PEER_PID}"; wait_rpc; ) \
@@ -159,6 +163,13 @@ start_node
 MINER="$(rpc_result wallet.getnewaddress '["taproot","outgoing-miner"]' | jq -r '.result.address // .result')"
 rpc_result generatetoaddress "[101,\"${MINER}\"]" >/dev/null
 wait_same_tip
+if [[ -n "${SIXTY_SECOND_HEIGHT:-}" ]]; then
+    for result in "$(rpc_result getconsensusinfo '[]')" "$(peer_result getconsensusinfo '[]')"; do
+        jq -e --argjson height "${SIXTY_SECOND_HEIGHT}" \
+            '.result.sixty_second_activation_height == $height and .result.target_spacing_seconds == 120' \
+            <<<"${result}" >/dev/null || fail "timing fixture did not start before activation: ${result}"
+    done
+fi
 RECIPIENT="$(rpc_result wallet.getshieldedaddress '{"account":1,"j":0}' | jq -r '.result.address')"
 [[ "${RECIPIENT}" == rdins1* ]] || fail "bad recipient address"
 
@@ -197,6 +208,13 @@ jq -e --arg txid "${TXID}" --argjson height "${TIP}" \
     '.result.count >= 1 and any(.result.outputs[]; .txid == $txid and .confirmed == true and .confirmed_height == $height)' \
     <<<"${CONFIRMED}" >/dev/null || fail "confirmation did not promote outgoing record: ${CONFIRMED}"
 pass "confirmed outgoing record promoted at height ${TIP}"
+if [[ -n "${SIXTY_SECOND_HEIGHT:-}" ]]; then
+    [[ "${TIP}" == "${SIXTY_SECOND_HEIGHT}" ]] || fail "transfer missed timing activation boundary"
+    for result in "$(rpc_result getconsensusinfo '[]')" "$(peer_result getconsensusinfo '[]')"; do
+        jq -e '.result.target_spacing_seconds == 60 and .result.tail_emission_una == 50000000' \
+            <<<"${result}" >/dev/null || fail "timing activation absent: ${result}"
+    done
+fi
 
 LOCKED_INCOMING="$(rpc_result wallet.listshielded '[]')"
 jq -e --argjson height "${TIP}" \

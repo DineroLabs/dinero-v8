@@ -39,6 +39,8 @@
 
 #include "consensus/chainparams.h"
 #include "consensus/shielded/wallet_activation.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
+#include "consensus/utxo_entry.h"
 
 #include <gtest/gtest.h>
 
@@ -99,6 +101,42 @@ TEST(ChainParamsSelection, EpochResetMustEqualCvBindingActivation) {
     regtest->shielded_epoch_reset_height =
         regtest->shielded_cv_binding_activation_height - 1;
     EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+}
+
+TEST(ChainParamsSelection, SixtySecondRuleIsDormantAndChecksumCommitsActivation) {
+    const auto original = dinero::GetActiveChain();
+    for (auto chain : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
+        SelectParams(chain);
+        const auto baseline = Params();
+        EXPECT_EQ(baseline.sixty_second_activation_height, UINT32_MAX);
+        EXPECT_EQ(baseline.TargetSpacing(UINT32_MAX), 120u);
+        auto activated = baseline;
+        activated.sixty_second_activation_height = 1000;
+        EXPECT_EQ(activated.TargetSpacing(999), 120u);
+        EXPECT_EQ(activated.TargetSpacing(1000), 60u);
+        EXPECT_NE(dinero::ConsensusChecksum(baseline), dinero::ConsensusChecksum(activated));
+    }
+    SelectParams(original);
+}
+
+TEST(ChainParamsSelection, SixtySecondRuleKeepsCoinbaseMaturityAcrossActivation) {
+    const auto original = dinero::GetActiveChain();
+    SelectParams(Chain::MAINNET);
+    auto& params = dinero::MutableParams();
+    const auto saved = params.sixty_second_activation_height;
+    params.sixty_second_activation_height = 100'000;
+    for (const uint32_t created : {99'999u, 100'000u, 100'001u}) {
+        dinero::consensus::UTXOEntry coin(dinero::AmountUna::Una(100'000'000), {0x51}, created, true);
+        EXPECT_FALSE(coin.isMature(created + 99));
+        EXPECT_TRUE(coin.isMature(created + 100));
+        using namespace dinero::consensus;
+        EXPECT_EQ(EvaluateUtreexoStatelessMaturity(created + 99, created, true),
+                  UtreexoStatelessMaturityStatus::IMMATURE_COINBASE);
+        EXPECT_EQ(EvaluateUtreexoStatelessMaturity(created + 100, created, true),
+                  UtreexoStatelessMaturityStatus::SPENDABLE);
+    }
+    params.sixty_second_activation_height = saved;
+    SelectParams(original);
 }
 
 TEST(ChainParamsSelection, CvBindingMustNotPrecedeInputBinding) {
