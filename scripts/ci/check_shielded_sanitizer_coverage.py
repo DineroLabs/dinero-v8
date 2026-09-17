@@ -6,6 +6,11 @@ import shlex
 from pathlib import Path
 
 COMPACT_DAEMON_SOURCES = [
+    'src/daemon/p2p_header_parser.cpp',
+    'src/daemon/services/p2p_service.cpp',
+    'src/daemon/services/mempool_service.cpp',
+    'tests/daemon/test_p2p_header_parser.cpp',
+    'tests/daemon/test_daemon_service_release.cpp',
     'src/daemon/main.cpp',
     'src/daemon/block_acceptor.cpp',
     'src/daemon/mempool.cpp',

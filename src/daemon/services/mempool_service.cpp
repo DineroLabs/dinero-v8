@@ -151,6 +151,12 @@ void MempoolService::Stop() {
     // Reset instance
     mempool_.reset();
 
+    // Ingress and P2P have stopped. Relay callbacks retain this service;
+    // release the reverse links so those ownership cycles cannot survive.
+    tx_relay_manager_.reset();
+    p2p_service_.reset();
+    chainstate_.reset();
+
     logger_interface_->info("[MempoolService] Mempool shutdown complete");
     started_ = false;
 }

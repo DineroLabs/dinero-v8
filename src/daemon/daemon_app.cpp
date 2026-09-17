@@ -5,6 +5,7 @@
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/header_seed_resolver.h"
 #include "daemon/header_peer_id.h"
+#include "daemon/p2p_header_parser.h"
 #include "daemon/header_metadata_recovery.h"
 #include "daemon/block_request_peer_order.h"
 #include "daemon/undo_rebuild_orchestrator.h"  // Commit #5: --rebuild-undo-range
@@ -527,114 +528,6 @@ bool QuarantineHeaderStoreDirectory(const std::filesystem::path& headers_path,
 
     detail = "copied recursively after rename failed (" + rename_error + ")";
     return true;
-}
-
-// Helper: Parse headers from P2P message
-// P2P sync fix: Parse pipe-separated hex format from create_headers()
-// BlockHeader v1 is 128 bytes (see include/primitives/block.h):
-//   0x00: version (4 bytes)
-//   0x04: prev_block_hash (32 bytes)
-//   0x24: merkle_root (32 bytes)
-//   0x44: utreexo_root (32 bytes)
-//   0x64: timestamp (8 bytes)
-//   0x6C: difficulty (4 bytes)
-//   0x70: nonce (4 bytes)
-//   0x74: reserved (12 bytes)
-std::vector<BlockHeader> ParseHeadersFromP2PMessage(const ::P2PMessage& msg) {
-    std::vector<BlockHeader> headers;
-    const auto& payload = msg.payload;
-
-    // Bitcoin wire format: varint(count) + (header_bytes + varint(tx_count))*N
-    // Dinero headers are 128 bytes (not Bitcoin's 80 bytes)
-    // tx_count is always 0 for headers message
-
-    if (payload.size() < 1) {
-        g_logger.warning("[ParseHeaders] Empty headers payload");
-        return headers;
-    }
-
-    size_t offset = 0;
-
-    // Read varint for header count
-    auto read_varint = [&]() -> uint64_t {
-        if (offset >= payload.size()) return 0;
-        uint8_t first = payload[offset++];
-        if (first < 0xFD) {
-            return first;
-        } else if (first == 0xFD) {
-            if (offset + 2 > payload.size()) return 0;
-            uint64_t val = payload[offset] | (static_cast<uint64_t>(payload[offset + 1]) << 8);
-            offset += 2;
-            return val;
-        } else if (first == 0xFE) {
-            if (offset + 4 > payload.size()) return 0;
-            uint64_t val = 0;
-            for (int i = 0; i < 4; i++) val |= static_cast<uint64_t>(payload[offset + i]) << (i * 8);
-            offset += 4;
-            return val;
-        } else {
-            if (offset + 8 > payload.size()) return 0;
-            uint64_t val = 0;
-            for (int i = 0; i < 8; i++) val |= static_cast<uint64_t>(payload[offset + i]) << (i * 8);
-            offset += 8;
-            return val;
-        }
-    };
-
-    uint64_t count = read_varint();
-    if (count == 0) {
-        // Zero headers is a valid "nothing new" response (peer at same tip).
-        return headers;
-    }
-    if (count > 2000) {
-        g_logger.warning("[ParseHeaders] Invalid header count: " + std::to_string(count));
-        return headers;
-    }
-
-    // Parse each header (128 bytes) + tx_count varint (should be 0)
-    for (uint64_t i = 0; i < count; i++) {
-        // Check we have enough bytes for 128-byte header
-        if (offset + 128 > payload.size()) {
-            g_logger.warning("[ParseHeaders] Header too short: " + std::to_string(payload.size() - offset) +
-                           " bytes remaining (expected 128)");
-            break;
-        }
-
-        // Parse the 128-byte header (little-endian Dinero format)
-        BlockHeader header;
-        header.version = *reinterpret_cast<const uint32_t*>(&payload[offset + 0x00]);
-
-        // prev_block_hash (32 bytes at offset 0x04)
-        std::memcpy(header.prev_block_hash.data, &payload[offset + 0x04], 32);
-
-        // merkle_root (32 bytes at offset 0x24)
-        std::memcpy(header.merkle_root.data, &payload[offset + 0x24], 32);
-
-        // utreexo_root (32 bytes at offset 0x44)
-        std::memcpy(header.utreexo_root.data, &payload[offset + 0x44], 32);
-
-        // timestamp (8 bytes at offset 0x64)
-        header.timestamp = *reinterpret_cast<const uint64_t*>(&payload[offset + 0x64]);
-
-        // difficulty (4 bytes at offset 0x6C)
-        header.difficulty = *reinterpret_cast<const uint32_t*>(&payload[offset + 0x6C]);
-
-        // nonce (4 bytes at offset 0x70)
-        header.nonce = *reinterpret_cast<const uint32_t*>(&payload[offset + 0x70]);
-
-        // reserved (12 bytes at offset 0x74) - must be zero, stored in struct
-        std::memcpy(header.reserved, &payload[offset + 0x74], 12);
-
-        offset += 128;  // Move past header
-
-        // Read tx_count varint (should be 0)
-        read_varint();
-
-        headers.push_back(header);
-    }
-
-    g_logger.info("[ParseHeaders] Parsed " + std::to_string(headers.size()) + " headers from P2P message");
-    return headers;
 }
 
 // Helper: Deserialize block from P2P message
@@ -5722,7 +5615,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             ) {
                 try {
                     // Parse headers from P2P message
-                    std::vector<BlockHeader> headers = ParseHeadersFromP2PMessage(msg);
+                    std::vector<BlockHeader> headers = daemon::ParseHeadersPayload(msg.payload);
 
                     if (headers.empty()) {
                         header_sync->ProcessHeaders(GetPeerID(peer_addr), headers);
