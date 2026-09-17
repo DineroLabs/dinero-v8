@@ -32,6 +32,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <netinet/tcp.h>
+#endif
 
 namespace dinero::p2p::integration::test {
 
