@@ -357,6 +357,12 @@ struct ChainParams {
     // 60-second target and 0.5 DIN tail. Dormant until a reviewed network
     // height is assigned; regtest may override before any service starts.
     uint32_t sixty_second_activation_height = UINT32_MAX;
+    // Explicit isolated-regtest qualification mode. Never enabled by network
+    // defaults; mainnet/testnet always enforce PoW independently of this flag.
+    bool regtest_enforce_pow = false;
+    bool SkipProofOfWork() const {
+        return name == "regtest" && !regtest_enforce_pow;
+    }
     uint32_t TargetSpacing(uint64_t height) const {
         return consensus::TargetSpacingAtHeight(height, sixty_second_activation_height, target_spacing);
     }

@@ -2457,3 +2457,11 @@ set_tests_properties(SixtySecondShieldedLifecycle PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;DINERO_TEST_REINDEX=1;SIXTY_SECOND_HEIGHT=103"
     LABELS "integration;consensus;shielded;utreexo;dnrs;restart;reorg;mandatory"
     TIMEOUT 2400 RUN_SERIAL TRUE)
+
+# Always executed in the normal serial lane, including compact-disabled builds.
+add_test(NAME PowEnforcedRegtest
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_pow_enforced_regtest.py)
+set_tests_properties(PowEnforcedRegtest PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)

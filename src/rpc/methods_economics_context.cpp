@@ -424,6 +424,7 @@ din::Json rpc_context_getconsensusinfo(const ExecutionContext& ctx, const din::J
         result["target_spacing_height"] = static_cast<int64_t>(spacing_height);
         result["target_spacing_seconds"] = static_cast<int>(chainparams.TargetSpacing(spacing_height));
         result["sixty_second_activation_height"] = static_cast<int64_t>(chainparams.sixty_second_activation_height);
+        result["regtest_pow_enforced"] = chainparams.regtest_enforce_pow;
 
         // Current chain state
         if (ctx.daemon && ctx.daemon->chainstate) {

@@ -516,6 +516,13 @@ std::string ConsensusChecksum(const ChainParams& params) {
        << "witness_commitment_height="
        << params.witness_commitment_enforcement_height << '\n';
 
+    // Preserve all existing network fingerprints when the mode is disabled.
+    // Include compact activation and maturity in the isolated profile identity.
+    if (params.regtest_enforce_pow) {
+        ss << "regtest-pow-profile-v1\n"
+           << "compact_height=" << params.shielded_compact_regtest_activation_height << '\n'
+           << "coinbase_maturity=" << params.coinbase_maturity << '\n';
+    }
     auto str = ss.str();
     std::vector<uint8_t> data(str.begin(), str.end());
 

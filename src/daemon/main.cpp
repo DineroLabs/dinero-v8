@@ -1,6 +1,7 @@
 // Dinero Daemon - Clean Service Architecture
 // Week 1 Migration: Using DaemonApp with dependency injection
 
+#include "daemon/regtest_pow_profile.h"
 #include "daemon/daemon_app.h"
 #include "common/logger.h"  // issue #224: requestLogReopen() for SIGHUP
 #include "daemon/db_repair.h"  // Database repair utility
@@ -392,6 +393,7 @@ void print_usage(const char* program_name) {
     std::cout << "  --externalip=<host[:port]> Advertise a reachable clearnet or onion endpoint\n";
     std::cout << "  --wallet-socket-port=<port> Wallet socket server port (default: 50051)\n";
     std::cout << "  --regtest                  Use regression test network\n";
+    std::cout << "  --regtest-enforce-pow      Enforce PoW/ASERT in an isolated fresh regtest datadir\n";
     std::cout << "  --testnet           Use test network\n";
     std::cout << "  -daemon             Run in background (Unix only)\n";
 #ifdef _WIN32
@@ -441,6 +443,8 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     bool show_version = false;
     bool use_testnet = false;
     bool use_regtest = false;
+    bool regtest_enforce_pow = false;
+    bool explicit_datadir = false;
     bool run_as_daemon = false;
     bool do_reindex = false;
     bool do_reindex_chainstate = false;
@@ -460,7 +464,13 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--help" || arg == "-h") {
+        if (arg.rfind("--datadir=", 0) == 0 || arg.rfind("-datadir=", 0) == 0 ||
+            arg == "--datadir" || arg == "-datadir") explicit_datadir = true;
+        if (arg == "--regtest-enforce-pow") {
+            regtest_enforce_pow = true;
+        } else if (arg.rfind("--regtest-enforce-pow=", 0) == 0) {
+            std::cerr << "Use --regtest-enforce-pow without a value\n"; return 1;
+        } else if (arg == "--help" || arg == "-h") {
             show_help = true;
         } else if (arg == "--version" || arg == "-v") {
             show_version = true;
@@ -731,6 +741,12 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     }
 #endif
 
+    if (regtest_enforce_pow && (!use_regtest || use_testnet)) {
+        std::cerr << "--regtest-enforce-pow is REGTEST-only\n"; return 1;
+    }
+    if (regtest_enforce_pow && !explicit_datadir) {
+        std::cerr << "PoW profile requires an explicit fresh datadir\n"; return 1;
+    }
     const std::string startup_datadir = ResolveStartupDataDir(argc, argv, use_testnet, use_regtest);
 
     dinero::daemon::DatadirGuard datadir_guard;
@@ -740,6 +756,15 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             std::cerr << "[FATAL] " << datadir_guard_error << "\n";
             return 1;
         }
+    }
+
+    try {
+        if (regtest_enforce_pow && startup_datadir.empty())
+            throw std::runtime_error("PoW profile requires a fresh datadir");
+        if (!startup_datadir.empty())
+            dinero::daemon::CheckRegtestPowDatadir(startup_datadir, regtest_enforce_pow);
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << "\n"; return 1;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -936,6 +961,26 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             static_cast<uint32_t>(state_commitment_burial_override);
         std::cout << "[Network] REGTEST: state commitment burial depth forced to "
                   << state_commitment_burial_override << " (test-only)\n";
+    }
+
+    if (regtest_enforce_pow) {
+        auto& params = dinero::MutableParams();
+        params.regtest_enforce_pow = true;
+        const auto profile = dinero::ConsensusChecksum(params);
+        // Separate profile-specific P2P framing from normal regtest and other
+        // profiles. The persisted identity retains the complete SHA256.
+        params.magic = static_cast<uint32_t>(std::stoul(profile.substr(0, 8), nullptr, 16));
+        if (params.magic == 0 || params.magic == 0xFABFB5DAu ||
+            params.magic == 0xD1A0C0DEu || params.magic == 0xDAB5BFFAu) {
+            std::cerr << "PoW profile network magic collision; choose different test parameters\n";
+            return 1;
+        }
+        try {
+            dinero::daemon::BindRegtestPowProfile(startup_datadir, profile);
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << "\n"; return 1;
+        }
+        std::cout << "[Network] REGTEST PoW/ASERT enforced; profile " << profile << "\n";
     }
 
     // Consensus crypto precondition. Shielded validation fails closed when the

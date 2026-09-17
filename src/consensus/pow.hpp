@@ -49,7 +49,7 @@ inline uint32_t GetNextWorkRequired(
     // Regtest: easy difficulty from block 1+
     try {
         const auto& params = dinero::Params();
-        if (params.name == "regtest" && height >= 1) {
+        if (params.SkipProofOfWork() && height >= 1) {
             return c.powLimitBits;
         }
     } catch (...) {
@@ -104,7 +104,7 @@ inline uint32_t GetNextWorkRequiredWithChainDB(
 {
     try {
         const auto& params = dinero::Params();
-        if (params.name == "regtest" && height >= 1) {
+        if (params.SkipProofOfWork() && height >= 1) {
             return c.powLimitBits;
         }
     } catch (...) {
@@ -134,7 +134,7 @@ inline uint32_t GetNextWorkRequiredWithChainDB(
 {
     try {
         const auto& params = dinero::Params();
-        if (params.name == "regtest" && height >= 1) {
+        if (params.SkipProofOfWork() && height >= 1) {
             return c.powLimitBits;
         }
     } catch (...) {
@@ -221,7 +221,7 @@ inline uint32_t GetNextWorkRequiredForCandidate(
     // is allowed here.
     try {
         const auto& params = dinero::Params();
-        if (params.name == "regtest" && target_height >= 1) {
+        if (params.SkipProofOfWork() && target_height >= 1) {
             return c.powLimitBits;
         }
     } catch (...) {
