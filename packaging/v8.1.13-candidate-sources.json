@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "target_release": "v8.1.13",
+  "status": "qualification-only",
+  "daemon": {
+    "repository": "DineroLabs/dinero-v8",
+    "source_commit": "a254efd314f364fd9d5fedee2c8b3fec3d84b557",
+    "version": "8.1.13"
+  },
+  "mining": {
+    "repository": "DineroLabs/dinero-sv2",
+    "source_commit": "5f3054367646d4abc667d501e01669ff24979e14",
+    "pool_version": "0.1.9",
+    "cpu_version": "0.2.13",
+    "gpu_version": "0.2.13"
+  },
+  "activation": {
+    "sixty_second_height": null,
+    "compact_production_format": false
+  },
+  "artifact_hashes_status": "Record final built/signed artifact hashes; source pins alone do not qualify a release."
+}

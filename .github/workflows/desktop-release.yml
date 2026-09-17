@@ -10,6 +10,8 @@ on:
     branches: [dinero-main]
     paths:
       - '.github/workflows/desktop-release.yml'
+      - '.github/workflows/windows-release.yml'
+      - 'packaging/v8.1.13-candidate-sources.json'
       - 'packaging/linux/build-qt-deb.sh'
       - 'packaging/linux/build-qt-tarball.sh'
       - 'packaging/mac/assert-v8-release-lane.sh'
@@ -39,7 +41,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SV2_REF: e63428da54cf73c2c6d74310cea1b67c4790877b
+  SV2_REF: 5f3054367646d4abc667d501e01669ff24979e14
   LINUXDEPLOY_TAG: 1-alpha-20251107-1
   LINUXDEPLOY_SHA256: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
   LINUXDEPLOY_QT_TAG: 1-alpha-20250213-1
@@ -77,6 +79,22 @@ jobs:
           grep -Fq 'Developer ID Application: DineroLabs LLC (JXJS6ZA5FJ)' \
             packaging/mac/sign-notarize-release.sh
           grep -Fq 'expected-repo-head' packaging/mac/assert-v8-release-lane.sh
+
+      - name: Check candidate mining source pins
+        run: |
+          python3 - <<'PY_PINS'
+          import json, pathlib, re
+          pins = json.loads(pathlib.Path('packaging/v8.1.13-candidate-sources.json').read_text())
+          expected = pins['mining']['source_commit']
+          if not re.fullmatch('[0-9a-f]{40}', expected):
+              raise SystemExit('Candidate mining source must be a full commit SHA')
+          for name in ('desktop-release.yml', 'windows-release.yml'):
+              content = pathlib.Path('.github/workflows', name).read_text()
+              actual = re.findall(r'^  SV2_REF: ([0-9a-f]{40})$', content, re.MULTILINE)
+              if actual != [expected]:
+                  raise SystemExit(f'{name}: source pin {actual} differs from candidate {expected}')
+          print('Desktop and Windows mining source pins match the candidate record')
+          PY_PINS
 
   linux-desktop:
     name: Linux x86_64 — Qt desktop packages
