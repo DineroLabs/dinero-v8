@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from check_shielded_sanitizer_coverage import COMPACT_DAEMON_SOURCES
 
 EXPECTED_TESTS = (
+    'PackedHeaderAlignment',
     'CompactRegtestFixedVectors', 'CompactRegtestVectorOracle', 'ShieldedResourceLimits',
     'ShieldedReindexEquivalence', 'ShieldedAuthRelayLifecycle', 'CompactRegtestLifecycle',
     'CsnManualInvalidation', 'CSNShieldedReorgInvertibility',

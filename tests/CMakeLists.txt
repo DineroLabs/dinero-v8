@@ -22,6 +22,13 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+add_executable(test_packed_header_alignment
+  tests/consensus/test_packed_header_alignment.cpp)
+target_include_directories(test_packed_header_alignment PRIVATE ${CMAKE_SOURCE_DIR}/include)
+add_test(NAME PackedHeaderAlignment COMMAND test_packed_header_alignment)
+set_tests_properties(PackedHeaderAlignment PROPERTIES
+  LABELS "unit;serialization;utreexo;mandatory" TIMEOUT 10)
+
 add_executable(test_assertions_enabled
   tests/test_assertions_enabled.cpp
 )

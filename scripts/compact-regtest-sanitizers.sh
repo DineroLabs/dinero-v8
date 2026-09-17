@@ -38,7 +38,7 @@ python3 "${repo_dir}/scripts/ci/test_check_compact_sanitizer_evidence.py" \
 if [[ "${mode}" == all ]]; then
     cmake --build "${build_dir}" --parallel "${jobs}" --target dinerod \
         test_compact_regtest_vectors test_shielded_resource_limits \
-        test_shielded_reindex_equivalence shielded_tx_builder \
+        test_shielded_reindex_equivalence shielded_tx_builder test_packed_header_alignment \
         2>&1 | tee "${evidence_dir}/build.log"
 fi
 # Audit the linked daemon too; configured flags alone do not prove which binary ran.
@@ -68,7 +68,7 @@ printf 'ASAN_OPTIONS=%s\nUBSAN_OPTIONS=%s\n' "${ASAN_OPTIONS}" "${UBSAN_OPTIONS}
 # spend, full/CSN Utreexo state equality, activation reorg and reindex/restart.
 set +e
 ctest --test-dir "${build_dir}" --no-tests=error --output-on-failure -j 1 \
-    -R '^(CompactRegtestFixedVectors|CompactRegtestVectorOracle|ShieldedResourceLimits|ShieldedReindexEquivalence|ShieldedAuthRelayLifecycle|CompactRegtestLifecycle|CsnManualInvalidation|CSNShieldedReorgInvertibility)$' \
+    -R '^(PackedHeaderAlignment|CompactRegtestFixedVectors|CompactRegtestVectorOracle|ShieldedResourceLimits|ShieldedReindexEquivalence|ShieldedAuthRelayLifecycle|CompactRegtestLifecycle|CsnManualInvalidation|CSNShieldedReorgInvertibility)$' \
     --output-junit "${evidence_dir}/ctest.xml" 2>&1 | tee "${evidence_dir}/ctest.log"
 ctest_rc=${PIPESTATUS[0]}
 printf '%s\n' "${ctest_rc}" > "${evidence_dir}/ctest.exit"

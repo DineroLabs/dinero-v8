@@ -10,6 +10,10 @@ on:
       - 'scripts/ci/test_check_compact_sanitizer_evidence.py'
       - 'scripts/ci/verify_compact_sanitizer_runtime.py'
       - 'scripts/ci/check_shielded_sanitizer_coverage.py'
+      - 'include/common/serialization.h'
+      - 'include/primitives/block.h'
+      - 'tests/CMakeLists.txt'
+      - 'tests/consensus/test_packed_header_alignment.cpp'
       - 'include/consensus/shielded/**'
       - 'src/consensus/shielded/**'
       - 'src/consensus/utreexo*'
@@ -46,6 +50,15 @@ jobs:
           libudev-dev libusb-1.0-0-dev
       - name: Verify evidence-gate negative controls
         run: python3 scripts/ci/test_check_compact_sanitizer_evidence.py
+      - name: Check packed header alignment before the full build
+        run: |
+          mkdir -p artifacts/header-alignment
+          clang++ -std=c++17 -O1 -g -fsanitize=undefined -fno-sanitize-recover=all \
+            -I include tests/consensus/test_packed_header_alignment.cpp \
+            -o artifacts/header-alignment/check
+          set -o pipefail
+          UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 artifacts/header-alignment/check \
+            2>&1 | tee artifacts/header-alignment/check.log
       - name: Build pinned OpenSSL
         run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
       - name: Instrument and exercise daemon wallet and Utreexo lifecycle
@@ -56,5 +69,6 @@ jobs:
         with:
           name: compact-daemon-sanitizers-${{ github.sha }}
           path: |
+            artifacts/header-alignment/check.log
             artifacts/compact-sanitizers/
             build-compact-sanitizers/Testing/

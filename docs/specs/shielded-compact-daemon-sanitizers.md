@@ -3,7 +3,8 @@
 This gate exercises the experimental compact format through the real daemon,
 wallet, full/CSN Utreexo paths and recovery. It extends the earlier codec/native
 sanitizer qualification; that earlier success did not qualify these daemon
-paths. No production implementation, activation setting or proof rule changes.
+paths. Activation settings and proof rules remain unchanged. The first Linux
+run exposed the packed-header serializer defect documented below.
 
 ## Command and scope
 
@@ -28,6 +29,7 @@ checks the actual daemon binary and records its hash and source provenance.
 
 The selected CTest entries are exactly:
 
+- `PackedHeaderAlignment`
 - `ShieldedResourceLimits`
 - `CompactRegtestFixedVectors`
 - `CompactRegtestVectorOracle`
@@ -52,7 +54,7 @@ These intentional reports live separately from actual qualification reports.
 
 For the actual tests, sanitizer reports go outside temporary daemon data
 directories, so harness cleanup cannot erase them. The final evidence gate
-requires a successful CTest exit, exactly the eight expected executed tests,
+requires a successful CTest exit, exactly the nine expected executed tests,
 no failed/skipped/disabled results, complete instrumentation coverage and no
 runtime reports. This catches a report during shutdown even if a shell helper
 waits for a child process without propagating its exit status.
@@ -87,7 +89,34 @@ CTest entries with no skips/failures. GitHub tested merge commit
 `95f235998f65324d937300b622bf501d72298642`. Those results establish fixed-byte
 cross-architecture agreement, not sanitizer success.
 
-The Linux daemon sanitizer result must be recorded separately when completed.
+## First Linux finding: packed block-header alignment
+
+Run `35166249675` failed: three of eight tests passed, and eight UBSan reports
+identified the same reference-binding error at
+`include/common/serialization.h:237`. A packed `BlockHeader` has alignment one;
+its 64-bit timestamp sits at offset 100. Passing that member directly to
+`VectorWriter::write(const T&)` binds an incorrectly aligned reference. The
+daemon's existing startup self-check reaches it before RPC readiness, and the
+reindex test reaches it while storing the genesis header. Those early aborts
+explain the dependent lifecycle failures and readiness timeouts.
+
+The fix loads the four integer fields into naturally aligned local values
+before passing references to the writer. It retains the packed struct, field
+types/order, reserved bytes, 128-byte layout and Utreexo commitment bytes.
+There is no sanitizer suppression or increased readiness timeout.
+
+`PackedHeaderAlignment` constructs headers at all eight byte placements and
+compares serialization/deserialization with an independent literal 128-byte
+vector, including distinct Utreexo-root bytes and high timestamp bits. It is
+registered in the default test inventory and added to this sanitizer gate.
+The workflow also runs it under UBSan before the expensive full build.
+
+On macOS ARM64, UBSan alone reproduces the original failure, passes after the
+fix, and fails again against a temporary copy of the old serializer. This is
+separate from the unavailable local ASan runtime. A new full Linux ASan/UBSan
+run is still required: fixing the first startup defect does not qualify the
+later lifecycle paths or establish that no further findings exist.
+
 Independent format/consensus review, remaining package-admission boundaries,
 pool-protocol qualification and reviewed production activation remain separate
 gates. This work does not authorize a deployment or activation.
