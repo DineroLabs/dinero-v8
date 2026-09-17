@@ -109,6 +109,14 @@ try:
     denied = node.raw("blockchain.debugclearundoflag", ["00"*32])
     require(denied.get("error", {}).get("code") == -32099, "development RPC must be disabled by default")
     node.call("generate", [123 if COMPACT_TIMING else 3])
+    # generate delegates to generatetoaddress's independent coinbase builder.
+    # Bind this third assembly path too: for a coinbase-only block the witness
+    # root and default nonce are both zero. The same script is mandatory once
+    # witness enforcement activates; checking it here keeps this regression fast.
+    generated = bytes.fromhex(node.call("getblock", [node.call("getbestblockhash"), 0]))
+    witness_script = bytes.fromhex("6a25444e525701") + hashlib.sha256(
+        hashlib.sha256(bytes(64)).digest()).digest()
+    require(generated.count(witness_script) == 1, "generate omitted canonical witness commitment")
     # Generate establishes a wallet without assuming asynchronous startup timing.
     address = node.call("wallet.getnewaddress")["address"]
     miner = DineroCoinMiner(f"http://127.0.0.1:{node.rpc_port}", str(node.path / ".cookie"), address)

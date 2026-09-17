@@ -8,6 +8,8 @@
 #include "consensus/consensus.hpp"
 #include "consensus/block_filter.h"
 #include "consensus/filter_commitment.h"
+#include "consensus/witness_commitment.h"
+#include "consensus/utreexo_activation.h"
 #include "consensus/outpoint.h"
 #include "consensus/subsidy.h"  // Canonical monetary policy
 #include "consensus/utreexo_accumulator.h"  // For UtreexoForest
@@ -582,6 +584,23 @@ din::Json handle_generatetoaddress(
                     block.vtx.push_back(candidate_coinbase);
                     for (const auto& mtx : selected_mempool_txs) {
                         block.vtx.push_back(mtx);
+                    }
+
+                    // Match both BlockAssembler paths. This RPC builds its own
+                    // coinbase, whose witness marker requires DNRW once witness
+                    // commitments become mandatory. Commit the final transaction
+                    // set before computing the coinbase txid and Utreexo leaves.
+                    if (dinero::consensus::FullRulesActive(height) &&
+                        std::any_of(block.vtx.begin(), block.vtx.end(),
+                                    [](const dinero::Transaction& tx) { return tx.HasWitness(); })) {
+                        dinero::TxOutput witness_output;
+                        witness_output.value = dinero::AmountUna::Zero();
+                        witness_output.scriptPubKey =
+                            dinero::consensus::BuildWitnessCommitment(block.vtx);
+                        if (witness_output.scriptPubKey.empty()) {
+                            throw std::runtime_error("generatetoaddress: witness commitment construction failed");
+                        }
+                        block.vtx[0].vout.push_back(std::move(witness_output));
                     }
 
                     MaybeAddFilterCommitment(block, selected_mempool_txs, chain_db, height);
