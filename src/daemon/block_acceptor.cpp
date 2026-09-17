@@ -1029,12 +1029,11 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
         // ═══════════════════════════════════════════════════════════════════════════
         // PATH A: Regtest PoW Skip (Phase W.1.1)
         // ═══════════════════════════════════════════════════════════════════════════
-        // In regtest mode, blocks are mined deterministically (nonce=0, instant).
-        // Skip PoW validation entirely to allow instant block generation for testing.
-        // This matches Bitcoin Core's regtest behavior where PoW is not enforced.
+        // Preserve ordinary regtest's historical bypass. The explicit isolated
+        // qualification mode must use the same PoW/ASERT gate as other chains.
         // ═══════════════════════════════════════════════════════════════════════════
         const auto& chain_params = dinero::Params();
-        if (chain_params.name == "regtest") {
+        if (chain_params.SkipProofOfWork()) {
             LOG_INFO("✅ [PATH A] Skipping PoW validation for regtest block");
             return true;  // Accept without PoW check
         }
@@ -1044,17 +1043,8 @@ bool BlockAcceptor::ValidateProofOfWork(const ParsedBlock& block, uint32_t block
         uint32_t nextHeight = blockHeight;
         std::cout << "[POW-DEBUG] Validating PoW for block at height " << nextHeight << std::endl;
 
-        // Create consensus parameters
-        Consensus consensus;
-
-        // ✅ CRITICAL FIX: Apply regtest override (must match GBT in block_assembler.cpp)
-        // This ensures validator uses same params as block template generator
-        if (dinero::Params().name != "mainnet") {
-            uint32_t network_pow_limit = dinero::Params().pow_limit_bits;  // 0x207fffff for regtest
-            consensus.genesisBits = network_pow_limit;
-            consensus.asertAnchorBits = network_pow_limit;
-            consensus.powLimitBits = network_pow_limit;
-        }
+        // Share the template/header path's network and activation parameters.
+        const Consensus consensus = dinero::GetConsensusForCurrentNetwork();
 
         uint32_t requiredBits = 0;
 

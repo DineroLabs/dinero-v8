@@ -31,6 +31,7 @@
 #include "common/serialization.h"
 #include "consensus/chainparams.h"
 #include "consensus/pow.h"
+#include "consensus/pow.hpp"
 #include <chrono>
 #include <algorithm>
 #include <cstdlib>
@@ -2211,14 +2212,29 @@ Status BlockReindexer::processBlock(const Block& block, const FilePosition& pos,
     // ═══════════════════════════════════════════════════════════════════
 
     // CRITICAL: FAIL HARD on invalid PoW (prevents chain corruption)
-    if (!config_.use_assumevalid || height > 100000) {  // Always validate recent blocks
+    if (Params().regtest_enforce_pow) {
+        // Qualification must replay real work even when assumevalid is enabled.
+        // Use the regtest target range and the same activation-aware ASERT
+        // context as templates/headers, without changing historical networks.
+        if (height > INT32_MAX || !CheckProofOfWork(block.header, false))
+            return Status::Invalid;
+        if (height > 0) {
+            const auto expected = GetNextWorkRequiredWithChainDB(
+                static_cast<int32_t>(height), static_cast<int64_t>(block.header.timestamp),
+                GetConsensusForCurrentNetwork(), chain_db_);
+            if (expected == 0 || block.header.difficulty != expected) {
+                g_logger.error("[reindex] bad-diffbits in PoW profile at height " + std::to_string(height));
+                return Status::Invalid;
+            }
+        }
+    } else if (!config_.use_assumevalid || height > 100000) {  // Always validate recent blocks
         if (!CheckProofOfWork(block.header, true)) {
             g_logger.error("Block at height " + std::to_string(height) + " failed PoW validation");
             return Status::Invalid;
         }
     }
 
-    if ((!config_.use_assumevalid || height > 100000) &&
+    if (!Params().regtest_enforce_pow && (!config_.use_assumevalid || height > 100000) &&
         !CheckDifficultyBits(block.header.difficulty)) {
         g_logger.error("Block at height " + std::to_string(height) + " has invalid difficulty bits");
         return Status::Invalid;

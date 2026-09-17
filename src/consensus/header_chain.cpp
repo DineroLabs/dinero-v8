@@ -832,7 +832,7 @@ bool HeaderChainSelector::ValidateHeader(
     if (hash.IsNull()) {
         return false;
     }
-    if (Params().name != "regtest") {
+    if (!Params().SkipProofOfWork()) {
         if (!CheckProofOfWork(header, /*require_standard=*/false)) {
             return false;
         }
@@ -856,7 +856,7 @@ bool HeaderChainSelector::ValidateHeader(
     // skip rather than reject, so honest persisted headers replay cleanly at
     // startup and block_acceptor remains the backstop. Compact bits are compared
     // for equality against the canonical encoding (never ordered numerically).
-    if (prev != nullptr && Params().name != "regtest") {
+    if (prev != nullptr && !Params().SkipProofOfWork()) {
         const Consensus consensus = GetConsensusForCurrentNetwork();
         const uint32_t expected_bits = GetNextWorkRequiredForCandidate(
             static_cast<int32_t>(prev->height) + 1,
@@ -865,6 +865,9 @@ bool HeaderChainSelector::ValidateHeader(
             /*parent_index=*/static_cast<const CBlockIndex*>(nullptr),
             /*parent_entry=*/prev,
             /*chain_db=*/static_cast<dinero::NoChainDb*>(nullptr));
+        // The isolated qualification profile never credits unverifiable work.
+        // Preserve historical replay behavior on existing networks.
+        if (expected_bits == 0 && Params().regtest_enforce_pow) return false;
         if (expected_bits != 0 && header.difficulty != expected_bits) {
             std::cerr << "[HeaderChainSelector] ❌ bad-diffbits-header at height "
                       << (prev->height + 1) << ": header has "
