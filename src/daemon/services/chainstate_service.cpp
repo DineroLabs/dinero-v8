@@ -8889,7 +8889,14 @@ void ChainstateService::ActivateBestChain() {
     // 4. ConnectTip for bookkeeping (coins, tip pointer, height index)
     // 5. Signal OnUtxoBlock handler to reset next_validate_height
     // ═══════════════════════════════════════════════════════════════════════════
-    if (GetConfig().utreexo_stateless && !disconnect_path.empty() && fork_point) {
+    // After an explicit CSN invalidation the forest has already been rewound.
+    // Reconsidering a stored descendant therefore needs the same verified
+    // replay path, even though there is no remaining disconnect_path.
+    const bool csn_reconnect_after_rewind = GetConfig().utreexo_stateless &&
+        fork_point && stateless_node_ && !connect_path.empty() &&
+        stateless_node_->GetSyncHeight() == static_cast<uint32_t>(fork_point->height);
+    if (GetConfig().utreexo_stateless && fork_point &&
+        (!disconnect_path.empty() || csn_reconnect_after_rewind)) {
         std::cout << "════════════════════════════════════════════════════════════════" << std::endl;
         std::cout << "[ABC-CSN] STATELESS reorg: fork=" << fork_point->height
                   << " disconnect=" << disconnect_path.size()
@@ -12318,6 +12325,43 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
             if (logger_) {
                 logger_->info("[InvalidateBlock] Block is in active chain — disconnecting " +
                              std::to_string(active_tip_->height - target->height + 1) + " blocks");
+            }
+
+            // The CSN DisconnectTip path only rolls back coins and shielded
+            // bookkeeping. ABC normally rewinds its forest first; the manual
+            // invalidation entry must do the same. Reconstruct and verify the
+            // destination before changing the tip, forest or invalidity flags.
+            if (GetConfig().utreexo_stateless) {
+                const auto* parent = target->pprev;
+                if (!parent || !chain_db_ || !consensus_utxo_set_ || !stateless_node_) {
+                    error = "CSN invalidation requires a parent and initialized chainstate";
+                    return false;
+                }
+                consensus::UtreexoForest restored;
+                std::string restore_error;
+                if (storage::RestoreHistoricalForest(*chain_db_, parent->height,
+                        restored, restore_error) != Status::Ok) {
+                    error = "Cannot restore CSN invalidation parent: " + restore_error;
+                    return false;
+                }
+                const auto parent_block = ReadStoredBlock(parent->hash);
+                const auto commitment = restored.getCommitment();
+                if (parent_block.status() != Status::Ok || commitment.size() != 32 ||
+                    !std::equal(commitment.begin(), commitment.end(),
+                                parent_block.value().header.utreexo_root.begin())) {
+                    error = "CSN invalidation parent commitment mismatch or unavailable body";
+                    return false;
+                }
+                // Missing body/undo must not be discovered after the rewind.
+                for (const auto* walk = active_tip_; walk != parent; walk = walk->pprev) {
+                    if (!walk || ReadStoredBlock(walk->hash).status() != Status::Ok ||
+                        ReadStoredUndo(walk->hash).status() != Status::Ok) {
+                        error = "CSN invalidation disconnect data unavailable";
+                        return false;
+                    }
+                }
+                stateless_node_->RewindToCheckpoint(static_cast<uint32_t>(parent->height), restored);
+                csn_reorg_reset_height_.store(static_cast<uint32_t>(parent->height + 1));
             }
 
             // Disconnect from tip down to the invalidated block (inclusive)
