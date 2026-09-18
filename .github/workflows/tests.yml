@@ -566,6 +566,27 @@ jobs:
             echo "collected:"; find "$dest" -type f -printf '  %s\t%p\n' | sort -rn | head -20
           fi
 
+      # The canonical-coin fixture retains /tmp data on failure, but a pointer
+      # to that path is useless after the runner exits. Keep both relay logs.
+      - name: Collect canonical-coin relay failure logs
+        if: always()
+        run: |
+          dest=build-tests/Testing/canonical-coin-relay
+          mkdir -p "$dest"
+          for root in /tmp/dinero_batch_canonical.*; do
+            [ -d "$root" ] || continue
+            case "$root" in *.peer) continue ;; esac
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            for f in "$root.log" "$root.peer.log" \
+                     "$root"/daemon.log "$root"/regtest/daemon.log \
+                     "$root.peer"/daemon.log "$root.peer"/regtest/daemon.log; do
+              [ -f "$f" ] || continue
+              rel=$(printf '%s' "node${f#$root}" | tr '/' '_')
+              tail -c 20971520 "$f" > "$dest/$name/$rel"
+            done
+          done
+
       # Preserve the two-node shielded-root test's diagnostics, not wallet data.
       - name: Collect shielded-root reorg logs
         if: always()

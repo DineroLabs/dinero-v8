@@ -49,3 +49,37 @@ lane; no baseline exemption is added. Full Linux qualification remains pending.
 
 Raw red/green logs, the preserved old daemon, and CI-selection evidence are in
 this worktree's ignored `build-review/evidence/` directory.
+
+## Restart relay readiness follow-up — 2026-09-18
+
+Post-merge [Tests run 35371469326](https://github.com/DineroLabs/dinero-v8/actions/runs/35371469326)
+at `512812f78b6b1346e2dd416af0068ddda6f4d36c` passed both canonical-coin
+verification checks, then failed waiting for the signed child to reach the
+restarted peer's mempool. The owner log places its one-shot INV announcement
+after losing the old connection and before the replacement handshake.
+Matching persisted tips and working proof RPCs do not establish relay readiness.
+
+The fixture now requires `getpeerinfo` to report a connected, version-negotiated
+peer at both ends before submitting the child once. Both nodes' only configured
+connection target is each other. The bounded readiness loop reports both peer
+inventories on failure. Proof verification, corrupt-sibling and missing-outpoint
+rejection, the signed spend, remote mining, rollback/reconnection and the
+300-second CTest timeout are unchanged. No rebroadcast or acceptance retry was
+added. This changes no daemon or consensus behavior and does not establish an
+offline-transaction rebroadcast policy.
+
+Local qualification uses two real regtest daemons. A separate test adapter
+disables the restarted peer's networking, verifies equal tips and zero actual
+connections, then releases networking on the first readiness or remote-mempool
+query. It does not fabricate RPC results. The original fixture broadcasts first
+and fails to relay; the corrected fixture waits for a real handshake, then passes
+every original assertion. Removing only the readiness call reproduces the same
+relay failure as a behavioral negative control. The normal fixture also passes
+without the adapter.
+
+CI now collects both nodes' retained console and daemon logs under the existing
+CTest artifact, capped at 20 MiB per file. Visible filenames keep them eligible
+for the artifact uploader; cookies and wallets are excluded. The actual YAML
+step was exercised with six synthetic log paths, an over-cap log and synthetic
+cookie/wallet files. Workflow-parser self-tests pass, and the canonical-coin test
+remains explicitly selected by the serial lane. Fresh Linux CI is still required.
