@@ -1641,6 +1641,46 @@ bool ChainstateService::PersistShieldedState() const {
     return true;
 }
 
+bool ChainstateService::PersistImportedShieldedState(const uint256& base_hash,
+                                                   uint32_t base_height) const {
+    // LoadSnapshot has already authenticated the complete imported state.
+    // SQLite is only a cache: startup discards its rows when ChainDB has none.
+    // Replace the authoritative nullifiers with the imported set, together
+    // with the frontier, anchors and marker, in one durable batch. This also
+    // removes stale rows when importing an empty or different snapshot set.
+    if (!chain_db_) return false;
+    const auto token = ChainWriteToken::CreateForTesting();
+    rocksdb::WriteBatch batch;
+    if (!chain_db_->deleteAllShieldedNullifiers(token, &batch).ok()) return false;
+    bool puts_ok = true;
+    const bool scan_ok = shielded_nullifiers_.ForEach(
+        [&](uint32_t height, const uint8_t* nullifier) {
+            if (chain_db_->putShieldedNullifier(token, height, nullifier, &batch) != Status::Ok) {
+                puts_ok = false;
+                return false;
+            }
+            return true;
+        });
+    if (!scan_ok || !puts_ok) return false;
+
+    const auto frontier = shielded_tree_.SerializeFrontier();
+    const auto anchors = shielded_anchor_history_.SerializePersistenceBytes();
+    const auto snapshot = CurrentShieldedStateSnapshot();
+    ChainDB::ShieldedTipMarker marker;
+    marker.height = base_height;
+    marker.block_hash = base_hash;
+    marker.shielded_root = snapshot.root;
+    marker.tree_size = snapshot.tree_size;
+    marker.nullifier_count = snapshot.nullifier_count;
+    if (chain_db_->putUtreexoMeta(token, "shielded_frontier",
+            std::string(frontier.begin(), frontier.end()), &batch) != Status::Ok ||
+        chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
+            std::string(anchors.begin(), anchors.end()), &batch) != Status::Ok ||
+        chain_db_->putUtreexoMeta(token, "shielded_anchor_history_migrated_v1", "1", &batch) != Status::Ok ||
+        chain_db_->putShieldedTipMarker(token, marker, &batch) != Status::Ok) return false;
+    return chain_db_->writeBatch(token, std::move(batch), /*sync=*/true) == Status::Ok;
+}
+
 ChainstateService::ShieldedStateSnapshot ChainstateService::CurrentShieldedStateSnapshot() const {
     ShieldedStateSnapshot snapshot;
     snapshot.tree_size = shielded_tree_.Size();
@@ -11716,21 +11756,19 @@ consensus::SnapshotImportResult ChainstateService::LoadSnapshot(const std::files
                 return result;
             }
 
-            // Persist the restored shielded state to ChainDB immediately, so a
-            // restart before the first post-snapshot ConnectTip re-reads THIS
-            // state (frontier + anchor history) instead of an empty tree and
-            // re-wedges / drops into safe mode on a shielded-tip misalignment.
-            if (!PersistShieldedState()) {
-                logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored but PersistShieldedState() "
-                                 "failed — a restart before the first ConnectTip may re-read stale state");
+            // A verified snapshot must publish its nullifiers to ChainDB,
+            // not just the SQLite cache. Commit them atomically with the
+            // frontier, anchors and marker before reporting a usable import.
+            if (!PersistImportedShieldedState(header.block_hash, header.block_height)) {
+                result.error_message = "Failed to durably persist imported shielded state";
+                logger_->error("[LoadSnapshot] " + result.error_message);
+                EnterSafeMode(result.error_message);
+                return result;
             }
-            // Persist the shielded tip marker at the snapshot base. Without it, a
-            // restart before the first post-snapshot ConnectTip hits
-            // VerifyOrBootstrapShieldedTipMarker → "marker NotFound + shielded
-            // activity exists" → refuses to start (fail-safe, but won't boot).
-            if (!PersistShieldedTipMarker(header.block_hash, header.block_height)) {
-                logger_->warning("⚠️  [LoadSnapshot] failed to persist shielded tip marker at snapshot base " +
-                                 std::to_string(header.block_height));
+            // Maintain the legacy flat-file mirrors after the canonical batch.
+            if (!PersistShieldedState()) {
+                logger_->warning("[LoadSnapshot] Imported shielded state is durable in ChainDB; "
+                                 "legacy file mirrors could not be refreshed");
             }
             logger_->warning("⚠️  [LoadSnapshot] v4 shielded state restored (frontier + anchor history + nullifiers)");
 

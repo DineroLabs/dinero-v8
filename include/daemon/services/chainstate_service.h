@@ -1089,6 +1089,7 @@ private:
 
     bool LoadShieldedState();
     bool PersistShieldedState() const;
+    bool PersistImportedShieldedState(const uint256& base_hash, uint32_t base_height) const;
     ShieldedStateSnapshot CurrentShieldedStateSnapshot() const;
     bool PersistShieldedTipMarker(const uint256& tip_hash, uint32_t tip_height) const;
 
