@@ -81,9 +81,10 @@ public:
                           bool shielded_active,
                           uint32_t utreexo_checkpoint_interval = 1)
       : tip_height_(tip_height),
-        utreexo_delta_required_(utreexo_active && !utreexo_stateless),
+        utreexo_delta_required_(utreexo_active),
+        utreexo_forest_marker_required_(utreexo_active && !utreexo_stateless),
         utreexo_checkpoint_required_(
-            utreexo_delta_required_ &&
+            utreexo_forest_marker_required_ &&
             (utreexo_checkpoint_interval <= 1 ||
              tip_height % utreexo_checkpoint_interval == 0)),
         shielded_marker_required_(shielded_active) {}
@@ -126,7 +127,7 @@ public:
             if (utreexo_checkpoint_required_ && !utreexo_checkpoint_staged_) {
                 return std::string("utreexo_checkpoint");
             }
-            if (!utreexo_forest_tip_marker_staged_) return std::string("utreexo_forest_tip_marker");
+            if (utreexo_forest_marker_required_ && !utreexo_forest_tip_marker_staged_) return std::string("utreexo_forest_tip_marker");
             if (!utreexo_delta_staged_) return std::string("utreexo_delta_sidecar");
         }
         if (shielded_marker_required_) {
@@ -162,6 +163,7 @@ public:
 private:
     uint64_t tip_height_;
     bool utreexo_delta_required_;
+    bool utreexo_forest_marker_required_;
     bool utreexo_checkpoint_required_;
     bool shielded_marker_required_;
 

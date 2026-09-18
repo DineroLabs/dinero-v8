@@ -23,6 +23,7 @@ WORK = Path(tempfile.mkdtemp(prefix="dinero_csn_snapshot_proof_restart_"))
 NODES = []
 CHECKS = []
 SUCCESS = False
+HISTORY = os.environ.get("CSN_SNAPSHOT_HISTORY") == "1"
 
 
 def check(name, condition, observed=None):
@@ -128,6 +129,7 @@ try:
     source.call("generate", [130])
     snapshot = WORK / "base.dat"
     source.call("dumptxoutset", [str(snapshot)])
+    states = {130: source.state()}
     address = source.call("wallet.getnewaddress")
     if isinstance(address, dict):
         address = address["address"]
@@ -139,7 +141,9 @@ try:
     assert spent_coin["coinbase"] and spent_coin["height"] <= 130
     old_proof = source.call("blockchain.getutxoproofs_batch", [[spent]])["proofs"]
     assert old_proof[0]["success"]
-    source.call("generate", [8])
+    for height in range(131, 139):
+        source.call("generate", [1])
+        states[height] = source.state()
     spend_block = source.call("getblock", [source.call("getblockhash", [131]), 1])
     assert txid in spend_block["tx"], "spend did not confirm in the first forward block"
     candidates = source.call("wallet.listunspent", [0, 9999999])
@@ -151,6 +155,11 @@ try:
     expected = source.state()
     blocks = [source.call("getblock", [source.call("getblockhash", [height]), 0])
               for height in range(131, 139)]
+    if HISTORY:
+        # Like the phone capture, the header store is ahead of downloaded
+        # bodies. Reconsider must clear the known subtree and recover its
+        # highest eligible body tip without promoting header-only children.
+        source.call("generate", [3])
     source.stop()
     node = Node("csn", source.path / "headers", extra=["--utreexo-stateless=1",
         "--sync-profile=ios_utreexo", "--assumeutxo_forward_connect=1",
@@ -180,6 +189,44 @@ try:
         check(stage + ": spent lookup does not trigger recovery", node.call("safemode.status")["active"] is False)
     failed = [c["name"] for c in CHECKS if not c["passed"]]
     assert not failed, "Failed requirements: " + ", ".join(failed)
+    if HISTORY:
+        # First restore between checkpoints, then restore the exact import base
+        # without relying on a pre-base body. Restart while each fork is invalid.
+        post_proofs = node.call("blockchain.getutxoproofs_batch", [[postbase]])["proofs"]
+        for parent in (136, 130):
+            pivot = node.call("getblockhash", [parent + 1])
+            node.call("invalidateblock", [pivot])
+            for stage in ("disconnected", "disconnected-restart"):
+                if stage.endswith("restart"):
+                    node.stop()
+                    node.start()
+                check(f"{stage} {parent}: exact state", node.state() == states[parent], node.state())
+                check(f"{stage} {parent}: no safe mode", node.call("safemode.status")["active"] is False)
+                proofs(node, f"{stage} {parent} prebase", prebase)
+                if parent == 130:
+                    proofs(node, stage + " resurrected prebase", spent)
+                    rejected = node.call("blockchain.verifyutxoproofs_batch", [post_proofs])
+                    check(stage + ": disconnected postbase rejected", rejected["valid"] == 0 and rejected["invalid"] == 1, rejected)
+                else:
+                    proofs(node, f"{stage} {parent} postbase", postbase)
+            node.call("reconsiderblock", [pivot])
+            deadline = time.monotonic() + 30
+            while node.call("getblockcount") != 138 and time.monotonic() < deadline:
+                time.sleep(0.1)
+            check(f"reconnected from {parent}: exact state", node.state() == expected, node.state())
+            proofs(node, f"reconnected from {parent} postbase", postbase)
+            rejected = node.call("blockchain.verifyutxoproofs_batch", [old_proof])
+            check(f"reconnected from {parent}: spent prebase rejected", rejected["valid"] == 0 and rejected["invalid"] == 1, rejected)
+            node.stop()
+            node.start()
+            check(f"reconnected restart {parent}: exact state", node.state() == expected, node.state())
+            check(f"reconnected restart {parent}: no safe mode", node.call("safemode.status")["active"] is False)
+            proofs(node, f"reconnected restart {parent} prebase", prebase)
+            proofs(node, f"reconnected restart {parent} postbase", postbase)
+            rejected = node.call("blockchain.verifyutxoproofs_batch", [old_proof])
+            check(f"reconnected restart {parent}: spent prebase rejected",
+                  rejected["valid"] == 0 and rejected["invalid"] == 1, rejected)
+        assert all(c["passed"] for c in CHECKS), "historical restore requirement failed"
     SUCCESS = True
     print("SUCCESS: snapshot proof coverage, sparse restart and spent-coin rejection", flush=True)
 finally:

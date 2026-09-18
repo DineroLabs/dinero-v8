@@ -97,13 +97,16 @@ TEST(ChainstateCommitBatchInterval, ZeroIntervalBehavesLikeEveryBlock) {
     EXPECT_EQ(*missing, "utreexo_checkpoint");
 }
 
-TEST(ChainstateCommitBatchInterval, StatelessModeUnaffectedByInterval) {
+TEST(ChainstateCommitBatchInterval, StatelessModeRequiresRecoveryDelta) {
     ChainstateCommitBatch ccb(/*tip_height=*/500, /*utreexo_active=*/true,
                               /*utreexo_stateless=*/true,
                               /*shielded_active=*/false,
                               /*utreexo_checkpoint_interval=*/500);
     StageBaseline(ccb);
-    // Stateless mode never required the utreexo trio in the unified batch.
+    // The worker owns checkpoints/markers, but every connection must commit
+    // its delta with the tip, including local stored-body forward connections.
+    ASSERT_EQ(ccb.AllRequiredStaged(), std::optional<std::string>("utreexo_delta_sidecar"));
+    ccb.MarkUtreexoDeltaStaged();
     EXPECT_FALSE(ccb.AllRequiredStaged().has_value());
 }
 

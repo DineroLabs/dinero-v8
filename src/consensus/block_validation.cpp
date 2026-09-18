@@ -2164,11 +2164,13 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                                                  output.scriptPubKey.end()),
                             height,
                             tx.IsCoinbase());
-                        if (fwd_work.add(leaf) == UINT64_MAX) {
+                        const uint64_t position = fwd_work.add(leaf);
+                        if (position == UINT64_MAX) {
                             error = "utreexo-add-failed (stateless-forward) at height " +
                                     std::to_string(height);
                             return false;
                         }
+                        delta.recordAdd(leaf, position);
                     }
                 }
                 const UtreexoHash fwd_new_root = fwd_work.getCommitment();
@@ -2189,6 +2191,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
                     return false;
                 }
                 live_forest = std::move(fwd_work);
+                // The caller persists this with the canonical tip. Sparse
+                // checkpoint restore needs the same delta as the worker path.
+                undo.utreexo_delta = std::move(delta);
                 std::cout << "\u2705 [STATELESS] Forward-connect applied " << height
                           << " to shared forest (root verified vs header, #382)"
                           << std::endl;
