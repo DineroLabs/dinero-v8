@@ -6,6 +6,7 @@
 
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/pedersen_generators.h"  // PedersenGeneratorsReady
+#include "consensus/shielded/proof_verification_cache.h"
 
 #include "crypto/evp_secp256k1.h"
 #include "zk/zkvm/ec_gadget.h"             // cv-binding EC scalar-mults (Critical #1)
@@ -604,6 +605,10 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
     if (cv_bound && !PedersenGeneratorsReady()) {
         return false;
     }
+    static detail::VerifiedProofCache<> verified;
+    const auto cache_key = detail::SpendProofCacheKey(
+        proof_bytes, pub, bind_public_inputs, cv_bound, spend_auth, private_covenant);
+    if (verified.Contains(cache_key)) return true;
     SpartanProof proof;
     const uint8_t expected_version =
         private_covenant ? kSpendProofVersionPrivateCovenant : spend_auth ? kSpendProofVersionAuth
@@ -626,10 +631,12 @@ bool VerifySpend(const std::vector<uint8_t>& proof_bytes,
 
     const auto& gens = ShieldedGenerators(verifier_cs, sctx);
     const auto circuit_hash = zk::zkvm::spartan_hash_r1cs_structure(verifier_cs);
-    return zk::zkvm::r1cs_spartan_verify(
+    const bool valid = zk::zkvm::r1cs_spartan_verify(
         proof, verifier_cs, verifier_cs.num_constraints(),
         verifier_cs.num_variables(), circuit_hash, Scalar::one(),
         gens, transcript, sctx, bind_public_inputs);
+    if (valid) verified.RememberVerified(cache_key);
+    return valid;
 }
 
 // ── Output circuit ───────────────────────────────────────────────────
@@ -750,6 +757,10 @@ bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
     if (cv_bound && !PedersenGeneratorsReady()) {
         return false;
     }
+    static detail::VerifiedProofCache<> verified;
+    const auto cache_key = detail::OutputProofCacheKey(
+        proof_bytes, pub, bind_public_inputs, cv_bound);
+    if (verified.Contains(cache_key)) return true;
     SpartanProof proof;
     const uint8_t expected_version = cv_bound ? kOutputProofVersionCv : kOutputProofVersion;
     if (!DeserializeShieldedProof(proof_bytes, expected_version, proof, sctx)) {
@@ -763,10 +774,12 @@ bool VerifyOutput(const std::vector<uint8_t>& proof_bytes,
 
     const auto& gens = ShieldedGenerators(verifier_cs, sctx);
     const auto circuit_hash = zk::zkvm::spartan_hash_r1cs_structure(verifier_cs);
-    return zk::zkvm::r1cs_spartan_verify(
+    const bool valid = zk::zkvm::r1cs_spartan_verify(
         proof, verifier_cs, verifier_cs.num_constraints(),
         verifier_cs.num_variables(), circuit_hash, Scalar::one(),
         gens, transcript, sctx, bind_public_inputs);
+    if (valid) verified.RememberVerified(cache_key);
+    return valid;
 }
 
 } // namespace dinero::consensus::shielded

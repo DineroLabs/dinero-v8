@@ -1,0 +1,66 @@
+{
+  "platform": "macOS ARM64",
+  "baseline_core": "10773dcb9f4a66f8f0d2c7c6d89b9c541fee6647",
+  "baseline_sv2": "fb24cb8a434a79144d4d62a4ad197b2d140d9244",
+  "candidate_daemon_sha256": "392b5b2d73082e2a7ee9dd1e101fc0bb5634defd88f9c51dcee6a711d22f7534",
+  "workload": {
+    "observation_seconds": 30,
+    "poll_interval_ms": 100,
+    "max_success_gap_seconds": 5,
+    "pow_enforced": true,
+    "tip_held_fixed": true,
+    "pending_compact_shields": 1
+  },
+  "runs": {
+    "baseline_observation": {
+      "busy_responses": 293,
+      "duration_ms": 30028,
+      "exclusion_rebuilds": 9,
+      "max_rpc_latency_ms": 16,
+      "max_success_gap_ms": 30028,
+      "successful_reads": 0,
+      "tip": "0960b8f044cb51408b3df527b29e07ec698a2e4d652791680f1eeb8c191432e3",
+      "regression_result": "not_enforced"
+    },
+    "baseline_regression": {
+      "busy_responses": 290,
+      "duration_ms": 30002,
+      "exclusion_rebuilds": 9,
+      "max_rpc_latency_ms": 1,
+      "max_success_gap_ms": 20687,
+      "successful_reads": 3,
+      "tip": "7a27e9cba6bbc7f1380e93e10815a8abb2b4d4558e19af8638c1b31e73874b03",
+      "regression_result": "fail"
+    },
+    "candidate": {
+      "busy_responses": 1,
+      "duration_ms": 30033,
+      "exclusion_rebuilds": 11,
+      "max_rpc_latency_ms": 5,
+      "max_success_gap_ms": 205,
+      "successful_reads": 288,
+      "tip": "43c643202523d577513e9bdad7457ace6889e2f75876db1b920cdbd4577e8c87",
+      "regression_result": "pass"
+    },
+    "cache_hits_disabled": {
+      "busy_responses": 292,
+      "duration_ms": 30009,
+      "exclusion_rebuilds": 9,
+      "max_rpc_latency_ms": 1,
+      "max_success_gap_ms": 16282,
+      "successful_reads": 1,
+      "tip": "086472471ef525aab2f5b15b99a3b533a10004026f37eb63e1dbb03b3c4d01ea",
+      "regression_result": "fail"
+    },
+    "candidate_restored": {
+      "busy_responses": 1,
+      "duration_ms": 30047,
+      "exclusion_rebuilds": 10,
+      "max_rpc_latency_ms": 1,
+      "max_success_gap_ms": 204,
+      "successful_reads": 290,
+      "tip": "1b239c87fd8887d77d0a3661d24b9dfd3c0b72a04669c99403e18c55d0addfa6",
+      "regression_result": "pass"
+    }
+  }
+}

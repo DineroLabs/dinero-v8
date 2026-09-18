@@ -2557,6 +2557,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   add_executable(test_shielded_cv_binding
     tests/consensus/test_shielded_cv_binding.cpp
+    tests/consensus/test_shielded_proof_cache.cpp
     tests/stubs/mempool_test_stubs.cpp
   )
   add_dependencies(test_shielded_cv_binding gtest dinero_shielded)
@@ -13062,8 +13063,15 @@ if(DINERO_ENABLE_COMPACT_REGTEST)
   target_compile_definitions(test_compact_regtest_vectors PRIVATE
     COMPACT_REGTEST_VECTOR_DIRECTORY="${CMAKE_SOURCE_DIR}/tests/vectors/compact_regtest_v1")
   add_test(NAME CompactRegtestFixedVectors COMMAND test_compact_regtest_vectors)
+  # The ASan/UBSan lane includes expensive negative proof checks. Its last
+  # passing run took 288s, leaving too little margin under the normal 300s
+  # budget. Let that lane select a bounded larger budget without skipping any
+  # cases or relaxing the timeout for ordinary builds.
+  set(DINERO_COMPACT_VECTOR_TEST_TIMEOUT 300 CACHE STRING
+      "Timeout in seconds for compact fixed-vector verification")
   set_tests_properties(CompactRegtestFixedVectors PROPERTIES
-    LABELS "compact-regtest;shielded;consensus;utreexo;mandatory" TIMEOUT 300)
+    LABELS "compact-regtest;shielded;consensus;utreexo;mandatory"
+    TIMEOUT ${DINERO_COMPACT_VECTOR_TEST_TIMEOUT})
   add_test(NAME CompactRegtestVectorOracle COMMAND python3
     ${CMAKE_SOURCE_DIR}/scripts/check_compact_regtest_vectors.py --self-test)
   set_tests_properties(CompactRegtestVectorOracle PROPERTIES

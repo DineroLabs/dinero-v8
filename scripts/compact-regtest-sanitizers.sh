@@ -28,6 +28,7 @@ if [[ "${mode}" == all ]]; then
         -DCMAKE_CXX_FLAGS_RELWITHDEBINFO='-O1 -g1 -DNDEBUG' \
         -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON \
         -DDINERO_ENABLE_COMPACT_REGTEST=ON \
+        -DDINERO_COMPACT_VECTOR_TEST_TIMEOUT=600 \
         2>&1 | tee "${evidence_dir}/configure.log"
 fi
 build_dir="$(cd "${build_dir}" && pwd)"
