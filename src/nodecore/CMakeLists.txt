@@ -91,6 +91,12 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     sqlite3
     ${CMAKE_DL_LIBS}
   )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # The embedded daemon retains CPU statistics and mining safety code that
+    # calls IOKit on macOS. Static archive creation does not check this link
+    # dependency; consumers (including nodecore_runtime_driver) need it too.
+    target_link_libraries(nodecore_ffi PUBLIC "-framework IOKit")
+  endif()
   link_zstd_if_needed(nodecore_ffi)
 
   # Bulletproofs FFI (range proofs)
