@@ -80,6 +80,14 @@ checks are uploaded from `Testing/nodecore-runtime/`. The execution-map parser's
 self-tests and selection of both names are checked locally; the full Linux
 registration/baseline gate remains a CI responsibility.
 
+The first Linux run reached the real executable link and failed: GNU ld had
+already scanned the NodeCore archive when daemon/RPC libraries introduced
+references to its legacy globals, HTTP/RPC infrastructure and vault bindings.
+The Linux test executable now places those three archives in a rescan group.
+This keeps the real implementations and changes no validation behavior. Linux
+qualification must pass on that corrected head; the failed link is not a runtime
+test result.
+
 Local behavioral negative controls temporarily bypass actual stop, and separately
 bypass `RescanWalletFromSnapshotUTXOs`. The first must fail the real worker-wait
 assertion; the second must fail late wallet recovery. Mutants are restored before

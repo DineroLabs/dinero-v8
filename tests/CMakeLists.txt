@@ -6959,7 +6959,19 @@ endif()
 # The Linux full-test configuration explicitly enables BUILD_NODECORE.
 if(TARGET nodecore_ffi)
   add_executable(nodecore_runtime_driver tests/integration/nodecore_runtime_driver.cpp)
-  target_link_libraries(nodecore_runtime_driver PRIVATE nodecore_ffi jsoncpp_static)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Daemon/RPC objects reference infrastructure in nodecore_ffi (legacy
+    # globals, HTTP/RPC wiring and vault bindings). GNU ld otherwise scans the
+    # FFI archive before those references exist and never revisits it. Keep the
+    # real implementations; no test stubs or unresolved-symbol suppression.
+    # Raw group flags retain the project's CMake 3.20 minimum (LINK_GROUP was
+    # introduced in 3.24).
+    target_link_libraries(nodecore_runtime_driver PRIVATE
+      "-Wl,--start-group" nodecore_ffi dinero_rpc_handlers dinero_core
+      "-Wl,--end-group" jsoncpp_static)
+  else()
+    target_link_libraries(nodecore_runtime_driver PRIVATE nodecore_ffi jsoncpp_static)
+  endif()
   add_test(NAME NodeCoreRuntimeLifecycle
     COMMAND ${CMAKE_COMMAND} -E env
       NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
