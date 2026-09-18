@@ -481,6 +481,8 @@ public:
     StatusOr<uint64_t> countShieldedNullifiers() const;
 
     // Wipe all Utreexo checkpoints + checksums + tip marker (for auto-recovery).
+    // Preserve all other records in the shared CF, including canonical
+    // shielded state/nullifiers, replay data and lifecycle metadata.
     // Does NOT require ChainWriteToken — called during startup before writer exists.
     Status wipeAllUtreexoCheckpoints();
 

@@ -2434,22 +2434,30 @@ StatusOr<uint64_t> ChainDB::countShieldedNullifiers() const {
 Status ChainDB::wipeAllUtreexoCheckpoints() {
     if (!db_) return Status::Internal;
 
-    // Iterate all keys in the utreexo CF and delete them
+    // This CF is shared with canonical shielded state, nullifiers, replay
+    // targets, transition proofs and lifecycle metadata. Only forest
+    // checkpoints (U + height) and their checksums (C + height) belong to
+    // this reset. Deleting the whole CF leaves ShieldedTipMarker pointing
+    // at state that no longer exists and destroys material needed to replay.
     rocksdb::WriteBatch batch;
     rocksdb::ReadOptions read_opts;
     std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(read_opts, cf_[idx_utreexo_].get()));
 
-    int count = 0;
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
-        batch.Delete(cf_[idx_utreexo_].get(), it->key());
-        count++;
+        const auto key = it->key();
+        if (key.size() == 5 &&
+            (key[0] == PREFIX_UTREEXO_CHECKPOINT ||
+             key[0] == PREFIX_UTREEXO_CHECKSUM)) {
+            batch.Delete(cf_[idx_utreexo_].get(), key);
+        }
     }
+    if (!it->status().ok()) return convertRocksDBStatus(it->status());
 
     // Also delete the forest tip marker from meta CF
     batch.Delete(cf_[idx_meta_].get(), KEY_FOREST_TIP);
 
-    if (count == 0) return Status::Ok;
-
+    // Commit this deletion even if no checkpoints remain (a stale marker
+    // alone must not survive a successful reset).
     rocksdb::WriteOptions opts;
     opts.sync = true;
     auto status = db_->Write(opts, &batch);
