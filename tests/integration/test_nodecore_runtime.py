@@ -10,9 +10,11 @@ import copy
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
+import traceback
 
 DRIVER = Path(os.environ["NODECORE_DRIVER"])
 EVIDENCE = os.environ.get("NODECORE_EVIDENCE_DIR")
@@ -51,7 +53,8 @@ class Embedded:
                 result = json.loads(line)
                 assert not isinstance(result, dict) or "driver_error" not in result, result
                 return result
-            assert self.process.poll() is None, f"NodeCore exited: {WORK}"
+            returncode = self.process.poll()
+            assert returncode is None, f"NodeCore exited during {op} (returncode={returncode}): {WORK}"
             time.sleep(0.05)
         raise AssertionError(f"NodeCore operation {op} timed out: {WORK}")
 
@@ -130,6 +133,16 @@ def state(node):
             "shielded": node.rpc("daemon.shieldedroot")}
 
 
+def stopped_wallet_birth_height(path, name):
+    # Only inspect the synthetic wallet after nodecore_stop has closed it.
+    database = path / "wallets" / f"wallet_{name}.db"
+    connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
+    try:
+        return connection.execute("SELECT birth_height FROM sync_meta WHERE id=1").fetchone()[0]
+    finally:
+        connection.close()
+
+
 def snapshot(node):
     # Public deterministic regtest mnemonic, never a user's wallet.
     mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
@@ -164,7 +177,11 @@ def snapshot(node):
     node.rpc("generatetoaddress", [8, owner])
     node.rpc("dumptxoutset", [str(newer)])
     manifest(newer, state(node))
+    node.rpc("wallet.createhd", ["later", 12, "", ""])
     check("source closes before copying header store", node.call("stop") == 0)
+    check("closed source leaves no legacy ChainDB pointer", node.call("legacy_chain_db_bound") is False)
+    check("created wallet birthday uses the owning node tip",
+          stopped_wallet_birth_height(source, "later") == 138)
 
     manifest_config = {"sync_profile": "ios_utreexo",
               "assumeutxo_manifest": str(selected) + ".manifest.json",
@@ -186,6 +203,8 @@ def snapshot(node):
           and "SHA256 mismatch" in str(rejected), rejected)
     check("failed import leaves consensus state unchanged", state(node) == before_rejection, state(node))
     check("rejection control closes", node.call("stop") == 0)
+    check("new node wallet does not inherit the previous node tip",
+          stopped_wallet_birth_height(rejector, "default") == 0)
 
     consumer = datadir("consumer")
     shutil.copytree(source / "headers", consumer / "headers")
@@ -373,11 +392,16 @@ def maintenance_gate(node):
 node = Embedded()
 success = False
 try:
-    {"lifecycle": lifecycle, "snapshot": snapshot, "maintenance": maintenance,
-     "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
-    success = True
+    try:
+        {"lifecycle": lifecycle, "snapshot": snapshot, "maintenance": maintenance,
+         "maintenance_gate": maintenance_gate}[os.environ["NODECORE_SCENARIO"]](node)
+        success = True
+    finally:
+        node.close()
+        if success:
+            check("driver exits as expected", node.process.returncode == ( -9 if os.environ["NODECORE_SCENARIO"] == "maintenance" else 0), node.process.returncode)
+except BaseException:
+    (WORK / "controller-failure.txt").write_text(traceback.format_exc())
+    raise
 finally:
-    node.close()
     print(f"Evidence: {WORK}", flush=True)
-    if success:
-        check("driver exits as expected", node.process.returncode == ( -9 if os.environ["NODECORE_SCENARIO"] == "maintenance" else 0), node.process.returncode)

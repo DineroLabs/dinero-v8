@@ -7261,7 +7261,8 @@ din::Json rpc_context_wallet_createhd(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get());
+    const uint32_t birth_height = ctx.daemon->chainstate ? ctx.daemon->chainstate->getBlockHeight() : 0;
+    result = dinero::rpc::RpcCreateHDWallet(params, &wallet_service->get(), birth_height);
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();
     }
@@ -7496,16 +7497,13 @@ din::Json rpc_context_wallet_importmnemonic(const ExecutionContext& ctx, const d
     }
     dinero::WalletManager* wallet_manager = &wallet_service->get();
 
-    // Get ChainDB from chainstate and set global for rescan
-    // Phase W.1.1: Temporary until rescan API is refactored to accept ChainDB parameter
-    dinero::g_chain_db_direct = ctx.daemon->chainstate->GetChainDB();
-
     din::Json import_params = params;
     if (import_params.isObject()) {
         import_params["rescan"] = false;
     }
 
-    result = dinero::rpc::RpcImportMnemonic(import_params, wallet_manager);
+    result = dinero::rpc::RpcImportMnemonic(import_params, wallet_manager,
+                                           ctx.daemon->chainstate->GetChainDB());
     if (!result.isMember("error")) {
         wallet_service->EnsureRuntimeWalletBindings();
     }
@@ -7643,11 +7641,9 @@ din::Json rpc_context_wallet_importtaprootdescriptor(const ExecutionContext& ctx
     auto& wallet_service = ctx.daemon->wallet;
     dinero::WalletManager* wallet_manager = &wallet_service->get();
 
-    // Set global ChainDB for rescan (temporary until API refactor)
-    dinero::g_chain_db_direct = ctx.daemon->chainstate->GetChainDB();
-
     // Call the Taproot descriptor import implementation
-    return dinero::rpc::RpcImportTaprootDescriptor(params, wallet_manager);
+    return dinero::rpc::RpcImportTaprootDescriptor(params, wallet_manager,
+                                                  ctx.daemon->chainstate->GetChainDB());
 }
 
 // ═══════════════════════════════════════════════════════════════

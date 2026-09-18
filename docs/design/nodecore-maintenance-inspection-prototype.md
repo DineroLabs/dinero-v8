@@ -85,6 +85,38 @@ are restored. Execution-map parser self-tests and the assertion ratchet pass.
 Linux qualification for this prototype remains separate from #775's runtime
 foundation; the latter already passed its 42 runtime checks on Linux.
 
+### Wallet lifetime regression exposed by Linux qualification
+
+Run 35319654885 on `329d0553d` passed lifecycle, journal-gate and ownership
+checks, but the snapshot scenario ended while creating the next node's default
+wallet. The artifact's last line was the successful wallet-policy write. The
+original artifact did not include the controller traceback or exit status, so
+it does not establish a signal or stack trace.
+
+Source inspection found that mnemonic/descriptor imports assigned a raw global
+ChainDB pointer. Completed NodeCore shutdown destroyed that database without
+clearing the pointer; the next default-wallet creation dereferenced it to read
+the wallet birthday. A deterministic regression observes the non-null pointer
+after a real import and completed shutdown without dereferencing freed memory.
+
+Wallet handlers now receive the owning context's ChainDB for synchronous rescan
+and its height for wallet creation. They never publish the database globally.
+The snapshot test also checks a wallet birthday at height 138 and a fresh node's
+birthday at height 0. Restoring the old global assignment fails the lifetime
+check; replacing the supplied birthday with zero fails the height check. Both
+negative controls are restored before qualification. These changes establish
+and fix the dangling-pointer defect; a fresh Linux run remains required to
+confirm the observed CI failure is resolved.
+
+CI artifacts now include each CTest invocation's output and any controller
+traceback, including a subprocess return code when it exits before replying.
+
+Restored follow-up qualification: all four NodeCore suites and ten wallet
+readiness tests passed on macOS arm64 (14/14, 93.64 seconds). The new snapshot
+checks retain the original root/proof/restart assertions. Workflow parser,
+actual execution-map coverage and assertion-ratchet checks passed; CTest output
+capture was exercised locally. Fresh Linux qualification remains pending.
+
 ## Unfinished gates: no destructive rollout
 
 1. Define the reset allowlist, protected wallets/import anchors and typed outcome
