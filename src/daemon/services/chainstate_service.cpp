@@ -4819,10 +4819,30 @@ bool ChainstateService::Start() {
             if (logger_) logger_->info("[ChainstateService] UTXO position index cleared for empty forest");
         } else {
             if (logger_) logger_->info("[ChainstateService] Rebuilding UTXO position index from active consensus set");
-            const auto rebuild_report = utxo_position_index_->Rebuild(
-                consensus_utxo_set_->GetUTXOs(), forest);
+            indexing::UTXOPositionRebuildReport rebuild_report;
+            if (GetConfig().utreexo_stateless) {
+                // CSN replay advances the forest, not the snapshot coin map.
+                // Current post-base coins are in ChainDB; frozen base records
+                // are historical and count only while their exact leaf lives.
+                if (assumeutxo_active_) {
+                    rebuild_report = utxo_position_index_->RebuildSnapshot(
+                        *chain_db_, forest, assumeutxo_base_block_, assumeutxo_base_height_);
+                } else if (promoted_base_height_ > 0) {
+                    const auto base = chain_db_->getBlockHashByHeight(promoted_base_height_);
+                    if (base.ok()) {
+                        rebuild_report = utxo_position_index_->RebuildSnapshot(
+                            *chain_db_, forest, base.value(), promoted_base_height_);
+                    }
+                } else {
+                    rebuild_report = utxo_position_index_->Rebuild(*chain_db_, forest);
+                }
+            } else {
+                rebuild_report = utxo_position_index_->Rebuild(
+                    consensus_utxo_set_->GetUTXOs(), forest);
+            }
             if (!rebuild_report.success) {
-                if (logger_) logger_->warning("[ChainstateService] UTXO position index rebuild incomplete — proof serving may be degraded");
+                ScheduleChainstateRecovery("UTXO position index rebuild failed",
+                                          "[ChainstateService]");
             } else if (rebuild_report.missing > 0) {
                 const std::string reason =
                     "utreexo proof coverage degraded: " + std::to_string(rebuild_report.missing) +

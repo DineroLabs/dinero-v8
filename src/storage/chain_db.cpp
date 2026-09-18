@@ -1541,6 +1541,35 @@ StatusOr<std::pair<uint256, uint32_t>> ChainDB::getPreBaseCoinSetBase() const {
     }
 }
 
+Status ChainDB::forEachPreBaseCoin(
+    std::function<bool(const uint256&, uint32_t, const Coin&)> callback) const {
+    if (!db_ || cf_.size() <= static_cast<size_t>(idx_prebase_coins_)) {
+        return Status::Internal;
+    }
+    std::unique_ptr<rocksdb::Iterator> it(
+        db_->NewIterator(rocksdb::ReadOptions(), cf_[idx_prebase_coins_].get()));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+        const auto key = it->key().ToString();
+        if (key == kPreBaseMarkerKey) continue;
+        if (key.size() != 37 || key[0] != PREFIX_UTXO) return Status::Serialization;
+        // makeUtxoKey stores display-order hash bytes and big-endian vout.
+        std::string hex;
+        static constexpr char digits[] = "0123456789abcdef";
+        for (size_t i = 1; i <= 32; ++i) {
+            const auto byte = static_cast<unsigned char>(key[i]);
+            hex += digits[byte >> 4];
+            hex += digits[byte & 15];
+        }
+        uint32_t vout = 0;
+        for (size_t i = 33; i < 37; ++i)
+            vout = (vout << 8) | static_cast<unsigned char>(key[i]);
+        const auto coin = DeserializeCoinValue(it->value().ToString());
+        if (!coin.ok()) return coin.status();
+        if (!callback(uint256::FromHexUnsafe(hex), vout, coin.value())) break;
+    }
+    return convertRocksDBStatus(it->status());
+}
+
 StatusOr<Coin> ChainDB::getCoinWithConfidentialFallback(const uint256& txid, uint32_t vout) const {
     auto coin_result = getCoin(txid, vout);
     if (coin_result.status() != Status::Ok) {

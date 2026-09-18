@@ -10,6 +10,7 @@
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "storage/chain_db.h"
+#include "util/hex.h"
 #include <algorithm>
 
 namespace dinero {
@@ -164,6 +165,51 @@ UTXOPositionRebuildReport UTXOPositionIndex::Rebuild(const ChainDB& chain_db,
                   (report.skipped_unspendable > 0
                        ? " (skipped " + std::to_string(report.skipped_unspendable) + " provably unspendable output(s))"
                        : ""));
+    return report;
+}
+
+UTXOPositionRebuildReport UTXOPositionIndex::RebuildSnapshot(
+    const ChainDB& chain_db, const consensus::UtreexoForest& forest,
+    const uint256& base_hash, uint32_t base_height) {
+    UTXOPositionRebuildReport report;
+    const auto base = chain_db.getPreBaseCoinSetBase();
+    if (!base.ok() || base.value() != std::make_pair(base_hash, base_height))
+        return report;
+    std::unordered_map<std::pair<TxId, uint32_t>, uint64_t, OutPointHash> positions;
+    auto add = [&](const uint256& txid, uint32_t vout, const Coin& coin, bool frozen) {
+        std::vector<uint8_t> script;
+        if (coin.height < 0 || (frozen && static_cast<uint32_t>(coin.height) > base_height) ||
+            !util::unhex(coin.script_pubkey, script)) {
+            ++report.malformed;
+            return true;
+        }
+        if (!script.empty() && script[0] == 0x6a) {
+            ++report.skipped_unspendable;
+            return true;
+        }
+        const auto leaf = consensus::HashUTXOForCreationHeight(txid, vout,
+            coin.is_confidential ? 0 : coin.amount, script, coin.height, coin.coinbase);
+        const auto position = forest.findLeafPosition(leaf);
+        if (!position) {
+            if (frozen) ++report.skipped_spent_snapshot;
+            else ++report.missing;
+            return true;
+        }
+        const auto [it, inserted] = positions.emplace(std::make_pair(TxId(txid), vout), *position);
+        if (inserted) ++report.matched;
+        else if (it->second != *position) ++report.malformed;
+        return true;
+    };
+    const auto current = chain_db.forEachUTXO(
+        [&](const uint256& t, uint32_t v, const Coin& c) { return add(t, v, c, false); });
+    const auto frozen = chain_db.forEachPreBaseCoin(
+        [&](const uint256& t, uint32_t v, const Coin& c) { return add(t, v, c, true); });
+    if (current != Status::Ok || frozen != Status::Ok || report.malformed != 0) return report;
+    {
+        std::lock_guard<std::mutex> lock(index_mutex_);
+        position_map_.swap(positions);
+    }
+    report.success = true;
     return report;
 }
 

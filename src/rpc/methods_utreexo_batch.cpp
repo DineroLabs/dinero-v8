@@ -10,6 +10,7 @@
 
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "rpc/utreexo_proof_coin.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
 #include "consensus/utreexo_accumulator.h"
@@ -100,10 +101,10 @@ void MaybeScheduleProofCoverageRecovery(dinero::ChainstateService& chainstate,
     const std::string outpoint =
         txid.AsUint256().GetHex() + ":" + std::to_string(vout);
     dinero::g_logger.error(source_tag +
-                           " position index missing live UTXO " + outpoint +
+                           " live forest missing canonical UTXO " + outpoint +
                            " — scheduling chainstate recovery");
     chainstate.RequestChainstateRecovery(
-        "live UTXO missing from Utreexo position index for " + outpoint,
+        "live UTXO missing from Utreexo forest for " + outpoint,
         source_tag);
 }
 
@@ -175,13 +176,6 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
         if (!forest) {
             result["error"]["code"] = -1;
             result["error"]["message"] = "Utreexo forest not available";
-            return result;
-        }
-
-        auto* position_index = chainstate->GetUTXOPositionIndex();
-        if (!position_index) {
-            result["error"]["code"] = -1;
-            result["error"]["message"] = "Position index not available";
             return result;
         }
 
@@ -269,14 +263,37 @@ Json rpc_getutxoproofs_batch(const ExecutionContext& ctx, const Json& params) {
 
             dinero::TxId txid = txid_opt.value();
 
-            // Look up position from index
-            auto position_opt = position_index->GetPosition(txid, vout);
+            // The forest's leaf index describes this captured state. The
+            // separate outpoint cache may not cover a CSN's post-base coins.
+            const auto coin = dinero::rpc::ResolveUtreexoProofCoin(
+                *chainstate, *chain_db, txid.AsUint256(), vout);
+            if (!coin.ok()) {
+                proof_result["success"] = false;
+                proof_result["error_code"] = coin.status() == dinero::Status::NotFound
+                    ? "utxo-not-found" : "utxo-lookup-failed";
+                proof_result["error"] = "Canonical coin unavailable for proof";
+                ++failed;
+                proofs_array.append(proof_result);
+                continue;
+            }
+            std::vector<uint8_t> script;
+            if (coin.value().height < 0 || !util::unhex(coin.value().script_pubkey, script)) {
+                proof_result["success"] = false;
+                proof_result["error_code"] = "invalid-utxo-data";
+                ++failed;
+                proofs_array.append(proof_result);
+                continue;
+            }
+            const auto leaf = dinero::consensus::HashUTXOForCreationHeight(
+                txid.AsUint256(), vout, coin.value().amount, script,
+                coin.value().height, coin.value().coinbase);
+            auto position_opt = forest_view.findLeafPosition(leaf);
             if (!position_opt.has_value()) {
                 MaybeScheduleProofCoverageRecovery(*chainstate, *chain_db, txid, vout,
                                                   "[getutxoproofs_batch]");
                 proof_result["success"] = false;
                 proof_result["error_code"] = "chainstate-recovery-required";
-                proof_result["error"] = "Live UTXO missing from position index; chainstate recovery scheduled";
+                proof_result["error"] = "Live UTXO missing from forest; chainstate recovery scheduled";
                 failed++;
                 proofs_array.append(proof_result);
                 continue;
@@ -500,7 +517,8 @@ Json rpc_verifyutxoproofs_batch(const ExecutionContext& ctx, const Json& params)
             // canonical coin source used by getutxoproof, never from the wallet
             // or caller-supplied metadata. A spent coin must fail even if the
             // wallet still retains its history row.
-            auto coin_result = chain_db->getCoin(txid_uint256, vout);
+            auto coin_result = dinero::rpc::ResolveUtreexoProofCoin(
+                *chainstate, *chain_db, txid_uint256, vout);
             if (!coin_result.ok()) {
                 verify_result["valid"] = false;
                 const bool missing = coin_result.status() == dinero::Status::NotFound;
