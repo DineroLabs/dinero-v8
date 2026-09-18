@@ -117,6 +117,22 @@ wait_same_tip() {
     done
     fail "nodes did not converge on the same tip"
 }
+wait_relay_ready() {
+    local source_peers peer_peers
+    # A restarted node can serve its persisted tip and proofs before reconnecting.
+    # These two nodes have only each other as a connection target. Require a live,
+    # handshaken peer on both ends before the one-shot transaction announcement.
+    for _ in $(seq 1 60); do
+        source_peers="$(rpc_result getpeerinfo '[]')"
+        peer_peers="$(peer_result getpeerinfo '[]')"
+        if jq -e '.result | any(.connected == true and .version > 0)' <<<"${source_peers}" >/dev/null \
+            && jq -e '.result | any(.connected == true and .version > 0)' <<<"${peer_peers}" >/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    fail "relay not ready after restart: source=${source_peers} peer=${peer_peers}"
+}
 peer_mine_tx() {
     local txid="$1" found=0
     for _ in $(seq 1 180); do
@@ -206,6 +222,7 @@ CHILD_AMOUNT="$(jq -r '.amount - 0.001' <<<"${COIN}")"
 RAW="$(rpc_result wallet.createrawtransaction "[[{\"txid\":\"${TXID}\",\"vout\":${VOUT}}],{\"${MINER}\":${CHILD_AMOUNT}}]" | jq -r '.result.hex')"
 SIGNED="$(rpc_result wallet.signrawtransaction "[\"${RAW}\",[{\"txid\":\"${TXID}\",\"vout\":${VOUT},\"scriptPubKey\":\"${SCRIPT}\",\"amount\":${AMOUNT}}]]")"
 jq -e '.result.complete == true' <<<"${SIGNED}" >/dev/null || fail "child signature incomplete"
+wait_relay_ready
 CHILD="$(rpc_result sendrawtransaction "[\"$(jq -r '.result.hex' <<<"${SIGNED}")\"]" | jq -r '.result | if type == "string" then . else .txid // .result end')"
 peer_mine_tx "${CHILD}"
 SPENT_BLOCK="$(peer_result getbestblockhash '[]' | jq -r '.result')"
