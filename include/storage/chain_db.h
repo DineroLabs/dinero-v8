@@ -654,6 +654,7 @@ public:
 
 private:
     void moveFrom(ChainDB&& other) {
+        open_env_ = std::move(other.open_env_);
         db_ = std::move(other.db_);
         cf_ = std::move(other.cf_);
         idx_meta_ = other.idx_meta_;
@@ -666,7 +667,8 @@ private:
         idx_prebase_coins_ = other.idx_prebase_coins_;
     }
 
-    // ⚠️ ORDER MATTERS: declare DB FIRST so it is destroyed LAST
+    // Destruction order: CF handles, DB, then Env owning its file lock.
+    std::shared_ptr<rocksdb::Env> open_env_;
     std::unique_ptr<rocksdb::DB> db_;
     std::vector<CfUPtr> cf_;
 
