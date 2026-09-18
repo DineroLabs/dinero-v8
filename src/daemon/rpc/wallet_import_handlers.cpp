@@ -7,7 +7,7 @@
 #include "wallet/address.h"
 #include "wallet/bip39.h"  // Phase W.1.1: BIP39 mnemonic handling (dinero::bip39 namespace)
 #include "wallet/wallet_worker.h"  // Phase W.1.1: For WalletNotify::RescanBlockchain
-#include "storage/chain_direct.h"  // Phase W.1.1: For g_chain_db_direct
+#include "storage/chain_db.h"
 #include "consensus/coin_type.h"
 #include "crypto/encrypted_key.h"
 #include "crypto/decrypt_encrypted_key.h"
@@ -404,7 +404,7 @@ din::Json RpcExportPrivateKey(const din::Json& params,
 }
 
 din::Json RpcImportMnemonic(const din::Json& params, 
-                            dinero::WalletManager* wallet_manager) {
+                            dinero::WalletManager* wallet_manager, dinero::ChainDB* chain_db) {
     din::Json result;
     
     try {
@@ -598,7 +598,7 @@ din::Json RpcImportMnemonic(const din::Json& params,
                 } else {
                     dinero::g_logger.info("Starting blockchain rescan from height " + std::to_string(rescan_start) + "...");
                 }
-                rescan_success = dinero::WalletNotify::RescanBlockchain(dinero::g_chain_db_direct, rescan_start);
+                rescan_success = dinero::WalletNotify::RescanBlockchain(chain_db, rescan_start);
                 if (rescan_success) {
                     dinero::g_logger.info("✅ Rescan completed successfully");
                 } else {
@@ -1182,7 +1182,7 @@ std::string BytesToHexStr(const uint8_t* data, size_t len) {
 } // anonymous namespace
 
 din::Json RpcImportTaprootDescriptor(const din::Json& params,
-                                      dinero::WalletManager* wallet_manager) {
+                                      dinero::WalletManager* wallet_manager, dinero::ChainDB* chain_db) {
     din::Json result;
     std::array<uint8_t, 32> privkey{};
 
@@ -1304,7 +1304,7 @@ din::Json RpcImportTaprootDescriptor(const din::Json& params,
         // Step 7: MANDATORY blockchain rescan (recovery safety)
         // ═══════════════════════════════════════════════════════════════
         dinero::g_logger.info("[TaprootDescriptor] Starting MANDATORY blockchain rescan from genesis...");
-        bool rescan_success = dinero::WalletNotify::RescanBlockchain(dinero::g_chain_db_direct, 0);
+        bool rescan_success = dinero::WalletNotify::RescanBlockchain(chain_db, 0);
 
         if (rescan_success) {
             dinero::g_logger.info("[TaprootDescriptor] ✅ Rescan completed successfully");

@@ -1,6 +1,8 @@
-// Test transport only: every operation calls the linked production C ABI.
+// Test transport for the linked production C ABI, plus a read-only observation
+// of the retired ChainDB pointer (never dereferenced).
 // Replies use a separate file because DaemonApp owns stdout/stderr logging.
 #include "nodecore/nodecore_ffi.h"
+#include "storage/chain_direct.h"
 
 #include <json/json.h>
 #include <chrono>
@@ -118,6 +120,10 @@ int main(int argc, char** argv) {
                 result = StopAtCallback(request);
             } else if (operation == "status") {
                 result = Owned(nodecore_get_status_json());
+            } else if (operation == "legacy_chain_db_bound") {
+                // Observe the legacy pointer without dereferencing possibly
+                // freed storage. No production hook or fabricated DB involved.
+                result = dinero::g_chain_db_direct != nullptr;
             } else if (operation == "rpc") {
                 const auto method = request["method"].asString();
                 const auto params = Encode(request["params"]);

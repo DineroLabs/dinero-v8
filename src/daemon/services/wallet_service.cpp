@@ -149,7 +149,8 @@ bool WalletService::Start() {
                 createhd_params[2] = "";         // bip39 passphrase (empty)
                 createhd_params[3] = "";         // encryption password (empty for regtest/auto-creation)
 
-                auto createhd_result = dinero::rpc::RpcCreateHDWallet(createhd_params, wallet_mgr_.get());
+                auto createhd_result = dinero::rpc::RpcCreateHDWallet(
+                    createhd_params, wallet_mgr_.get(), actual_blockchain_height);
                 if (createhd_result.isMember("error")) {
                     throw std::runtime_error("Failed to generate HD seed: " + createhd_result["error"].asString());
                 }

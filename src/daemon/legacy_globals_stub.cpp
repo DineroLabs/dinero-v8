@@ -49,9 +49,9 @@ namespace dinero {
 // Logger global (legacy) - defined in logger.cpp
 // Logger g_logger;
 
-// Chain database global (STILL USED BY NON-RPC CODE)
-// USAGE: block_assembler.cpp, template_validator.cpp, transaction_validator.cpp
-// ACTION: Refactor mining code to accept ChainDB* via constructor
+// Retired compatibility symbol. Wallet import/rescan uses the owning daemon
+// context; setting this pointer can outlive ChainDB on embedded-node restart.
+// Keep null until the remaining legacy declarations are removed.
 ChainDB* g_chain_db_direct = nullptr;
 
 // UTXO index global (legacy)

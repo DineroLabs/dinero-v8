@@ -139,8 +139,10 @@ jobs:
       - name: Real NodeCore lifecycle and snapshot consumers
         run: |
           failed=0
+          mkdir -p build-tests/Testing/nodecore-runtime
           for t in NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers; do
             ctest --test-dir build-tests --no-tests=error --output-on-failure \
+              --output-log "build-tests/Testing/nodecore-runtime/${t}.ctest.log" \
               -R "^${t}$" || failed=1
           done
           exit "$failed"
@@ -152,8 +154,10 @@ jobs:
           name: nodecore-runtime-${{ github.sha }}
           path: |
             build-tests/Testing/nodecore-runtime/**/checks.json
-            build-tests/Testing/nodecore-runtime/**/nodecore.log
-            build-tests/Testing/nodecore-runtime/**/replies.jsonl
+            build-tests/Testing/nodecore-runtime/**/nodecore*.log
+            build-tests/Testing/nodecore-runtime/**/replies*.jsonl
+            build-tests/Testing/nodecore-runtime/**/controller-failure.txt
+            build-tests/Testing/nodecore-runtime/*.ctest.log
           if-no-files-found: warn
           retention-days: 14
 
