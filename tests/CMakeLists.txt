@@ -6955,6 +6955,27 @@ else()
   message(STATUS "⚠️  NodeCore runtime guard tests not found (optional)")
 endif()
 
+# Link and execute the actual embedding entry points, not only inline guards.
+# The Linux full-test configuration explicitly enables BUILD_NODECORE.
+if(TARGET nodecore_ffi)
+  add_executable(nodecore_runtime_driver tests/integration/nodecore_runtime_driver.cpp)
+  target_link_libraries(nodecore_runtime_driver PRIVATE nodecore_ffi jsoncpp_static)
+  add_test(NAME NodeCoreRuntimeLifecycle
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=lifecycle
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  add_test(NAME NodeCoreSnapshotConsumers
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=snapshot
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers PROPERTIES
+    LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
 # ════════════════════════════════════════════════════════════════════════════
 # Mining Policy Tripwire Tests (Phase E.1)
 # ════════════════════════════════════════════════════════════════════════════
