@@ -83,9 +83,15 @@ registration/baseline gate remains a CI responsibility.
 The first Linux run reached the real executable link and failed: GNU ld had
 already scanned the NodeCore archive when daemon/RPC libraries introduced
 references to its legacy globals, HTTP/RPC infrastructure and vault bindings.
-The Linux test executable now places those three archives in a rescan group.
-This keeps the real implementations and changes no validation behavior. Linux
-qualification must pass on that corrected head; the failed link is not a runtime
+The initial three-archive rescan group resolved those references, but the next
+run (35317566948) still failed to link: CMake appended the transitive wallet
+archive outside that group, and its slow-reason analyzer referenced core's
+`PeerManager::GetQualityStats`. A symbol-dependency audit of the native project
+archives confirmed additional backward references across wallet, chainstate and
+consensus. The Linux executable now groups the complete mutually dependent
+project-archive set explicitly, keeping external dependencies after it. This
+keeps the real implementations and changes no validation behavior. Linux
+qualification must pass on the corrected head; neither failed link is a runtime
 test result.
 
 Local behavioral negative controls temporarily bypass actual stop, and separately

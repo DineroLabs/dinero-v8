@@ -6960,14 +6960,18 @@ endif()
 if(TARGET nodecore_ffi)
   add_executable(nodecore_runtime_driver tests/integration/nodecore_runtime_driver.cpp)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    # Daemon/RPC objects reference infrastructure in nodecore_ffi (legacy
-    # globals, HTTP/RPC wiring and vault bindings). GNU ld otherwise scans the
-    # FFI archive before those references exist and never revisits it. Keep the
-    # real implementations; no test stubs or unresolved-symbol suppression.
+    # These project archives have backward references (including wallet's
+    # SlowReasonAnalyzer -> core's PeerManager). Group the full mutually
+    # dependent set, not just FFI/RPC/core: CMake appends transitive archives
+    # after raw --end-group flags, where they would be scanned only once.
+    # Keep real implementations; no stubs or unresolved-symbol suppression.
     # Raw group flags retain the project's CMake 3.20 minimum (LINK_GROUP was
     # introduced in 3.24).
     target_link_libraries(nodecore_runtime_driver PRIVATE
       "-Wl,--start-group" nodecore_ffi dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_shielded
+      dinero_bridge dinero_pool dinero_lightning_keys dinero_address_encoding
+      dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives dinero_crypto
       "-Wl,--end-group" jsoncpp_static)
   else()
     target_link_libraries(nodecore_runtime_driver PRIVATE nodecore_ffi jsoncpp_static)
