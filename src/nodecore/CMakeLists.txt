@@ -19,6 +19,11 @@
 # Dependencies: same as dinerod minus gRPC/GUI/Stratum
 # ─────────────────────────────────────────────────────────────────────────
 option(BUILD_NODECORE "Build NodeCore FFI library for mobile embedding" OFF)
+option(DINERO_NODECORE_MAINTENANCE_QUALIFICATION "Enable read-only NodeCore maintenance qualification (native tests only)" OFF)
+if(DINERO_NODECORE_MAINTENANCE_QUALIFICATION AND
+   (NOT BUILD_NODECORE OR CMAKE_CROSSCOMPILING OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$"))
+  message(FATAL_ERROR "NodeCore maintenance qualification requires a native Darwin/Linux NodeCore build")
+endif()
 
 if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
   message(STATUS "📱 Building NodeCore FFI (embedded full node for mobile)")
@@ -30,6 +35,7 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
 
   add_library(nodecore_ffi ${NODECORE_LIBRARY_TYPE}
     src/nodecore/nodecore_ffi.cpp
+    src/nodecore/maintenance_journal.cpp
     src/nodecore/sync_profile_policy.cpp
     $<$<STREQUAL:${CMAKE_SYSTEM_NAME},Android>:src/nodecore/nodecore_jni_android.cpp>
     $<$<STREQUAL:${CMAKE_SYSTEM_NAME},iOS>:src/nodecore/zk_stubs_ios.cpp>
@@ -103,6 +109,9 @@ if(BUILD_NODECORE OR (CMAKE_SYSTEM_NAME STREQUAL "iOS" AND NOT BUILD_FFI_ONLY))
     DINERO_GIT_COMMIT_FULL="nodecore-embedded"
     DINERO_CLI_BUILD_DATE="embedded"
   )
+  if(DINERO_NODECORE_MAINTENANCE_QUALIFICATION)
+    target_compile_definitions(nodecore_ffi PRIVATE DINERO_NODECORE_MAINTENANCE_QUALIFICATION=1)
+  endif()
 
   set_target_properties(nodecore_ffi PROPERTIES
     PUBLIC_HEADER "${CMAKE_SOURCE_DIR}/include/nodecore/nodecore_ffi.h"

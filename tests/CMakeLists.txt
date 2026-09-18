@@ -6958,6 +6958,22 @@ endif()
 # Link and execute the actual embedding entry points, not only inline guards.
 # The Linux full-test configuration explicitly enables BUILD_NODECORE.
 if(TARGET nodecore_ffi)
+  # Test-only POSIX fault adapter; the shipped library has no injection seam.
+  if(NOT CMAKE_CROSSCOMPILING AND CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$")
+    add_library(nodecore_journal_fault_subject OBJECT src/nodecore/maintenance_journal.cpp)
+    target_compile_options(nodecore_journal_fault_subject PRIVATE
+      -include ${CMAKE_SOURCE_DIR}/tests/integration/nodecore_journal_fault_redirect.h)
+    target_include_directories(nodecore_journal_fault_subject PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(nodecore_journal_fault_subject PRIVATE jsoncpp_static OpenSSL::Crypto)
+    add_executable(test_nodecore_journal_faults tests/integration/test_nodecore_journal_faults.cpp
+      $<TARGET_OBJECTS:nodecore_journal_fault_subject>)
+    target_include_directories(test_nodecore_journal_faults PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(test_nodecore_journal_faults PRIVATE gtest dinero_crypto jsoncpp_static OpenSSL::Crypto)
+    add_test(NAME NodeCoreJournalFaults COMMAND test_nodecore_journal_faults
+      --gtest_output=xml:${CMAKE_BINARY_DIR}/Testing/nodecore-runtime/journal-faults.xml)
+    set_tests_properties(NodeCoreJournalFaults PROPERTIES
+      LABELS "integration;nodecore;restart;storage" TIMEOUT 60 RUN_SERIAL TRUE)
+  endif()
   add_executable(nodecore_runtime_driver tests/integration/nodecore_runtime_driver.cpp)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # These project archives have backward references (including wallet's
@@ -6990,6 +7006,24 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
   set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers PROPERTIES
     LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
+  add_test(NAME NodeCoreMaintenanceGate
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=maintenance_gate
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(NodeCoreMaintenanceGate PROPERTIES
+    LABELS "integration;nodecore;restart;storage" TIMEOUT 120 RUN_SERIAL TRUE)
+  if(DINERO_NODECORE_MAINTENANCE_QUALIFICATION)
+    add_test(NAME NodeCoreMaintenanceOwnership
+      COMMAND ${CMAKE_COMMAND} -E env
+        NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+        NODECORE_SCENARIO=maintenance
+        NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+        python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+    set_tests_properties(NodeCoreMaintenanceOwnership PROPERTIES
+      LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
+  endif()
 endif()
 
 # ════════════════════════════════════════════════════════════════════════════

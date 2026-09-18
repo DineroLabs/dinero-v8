@@ -48,15 +48,28 @@ struct ShutdownBarrier {
     bool entered = false;
     bool released = false;
     bool timed_out = false;
+    bool probe_reentry = false;
+    std::string datadir;
+    int32_t reentrant_stop = 0;
+    int32_t reentrant_start = 0;
+    int32_t reentrant_begin = 0;
 
     static void Callback(int32_t event, const char*, void* context) {
         if (event != NODECORE_EVENT_SHUTDOWN) return;
         auto& gate = *static_cast<ShutdownBarrier*>(context);
+        if (gate.probe_reentry) {
+            // These new entry-point guards must return before taking the
+            // mutex held by the operation joining this callback's thread.
+            gate.reentrant_stop = nodecore_stop();
+            gate.reentrant_start = nodecore_start(gate.datadir.c_str(), "{}");
+            char* token = nullptr;
+            gate.reentrant_begin = nodecore_maintenance_begin(gate.datadir.c_str(), "inspect-unchanged-v1", &token);
+            nodecore_free_string(token);
+        }
         std::unique_lock<std::mutex> lock(gate.mutex);
         gate.entered = true;
         gate.changed.notify_all();
-        // No lifecycle API is called from this callback: Stop is joining this
-        // emitting thread. Always release, including a broken test driver.
+        // Always release, including a broken test driver.
         if (!gate.changed.wait_for(lock, 10s, [&] { return gate.released; })) {
             gate.timed_out = true;
         }
@@ -65,8 +78,15 @@ struct ShutdownBarrier {
 
 Json::Value StopAtCallback(const Json::Value& request) {
     ShutdownBarrier gate;
+    gate.probe_reentry = request["op"] == "maintenance_at_callback";
+    gate.datadir = request["datadir"].asString();
+    char* token = nullptr;
     nodecore_set_event_callback(ShutdownBarrier::Callback, &gate);
-    auto stopped = std::async(std::launch::async, [] { return nodecore_stop(); });
+    auto stopped = std::async(std::launch::async, [&] {
+        return gate.probe_reentry
+            ? nodecore_maintenance_begin(gate.datadir.c_str(), "inspect-unchanged-v1", &token)
+            : nodecore_stop();
+    });
     Json::Value result;
     {
         std::unique_lock<std::mutex> lock(gate.mutex);
@@ -93,6 +113,13 @@ Json::Value StopAtCallback(const Json::Value& request) {
         gate.changed.notify_all();
     }
     result["stop_result"] = stopped.get();
+    if (gate.probe_reentry) {
+        result["token"] = token ? Json::Value(token) : Json::Value();
+        nodecore_free_string(token);
+        result["reentrant_stop"] = gate.reentrant_stop;
+        result["reentrant_start"] = gate.reentrant_start;
+        result["reentrant_begin"] = gate.reentrant_begin;
+    }
     if (restarted.valid()) result["restart_result"] = restarted.get();
     nodecore_set_event_callback(nullptr, nullptr);
     result["callback_timed_out"] = gate.timed_out;
@@ -116,8 +143,24 @@ int main(int argc, char** argv) {
                 result = nodecore_start(path.c_str(), config.c_str());
             } else if (operation == "stop") {
                 result = nodecore_stop();
-            } else if (operation == "stop_at_callback") {
+            } else if (operation == "stop_at_callback" || operation == "maintenance_at_callback") {
                 result = StopAtCallback(request);
+            } else if (operation == "maintenance_begin" || operation == "maintenance_resume") {
+                char* token = nullptr;
+                const auto path = request["datadir"].asString();
+                const auto plan = request["plan"].asString();
+                const auto id = request["operation_id"].asString();
+                result["code"] = operation == "maintenance_begin"
+                    ? nodecore_maintenance_begin(path.c_str(), plan.c_str(), &token)
+                    : nodecore_maintenance_resume(path.c_str(), id.c_str(), &token);
+                if (token) { result["token"] = token; nodecore_free_string(token); }
+                else result["token"] = Json::Value();
+            } else if (operation == "maintenance_finish") {
+                const auto token = request["token"].asString();
+                result = nodecore_maintenance_finish(token.c_str(), request["outcome"].asInt());
+            } else if (operation == "maintenance_status") {
+                const auto path = request["datadir"].asString();
+                result = Owned(nodecore_maintenance_status(path.c_str()));
             } else if (operation == "status") {
                 result = Owned(nodecore_get_status_json());
             } else if (operation == "legacy_chain_db_bound") {

@@ -38,6 +38,13 @@ typedef enum {
     NODECORE_ERROR_INVALID_ARGS = -5,
     NODECORE_ERROR_RPC_FAILED = -6,
     NODECORE_ERROR_INTERNAL = -7,
+    NODECORE_ERROR_MAINTENANCE_BUSY = -8,
+    NODECORE_ERROR_RECOVERY_REQUIRED = -9,
+    NODECORE_ERROR_INVALID_TOKEN = -10,
+    NODECORE_ERROR_UNSUPPORTED_PLAN = -11,
+    NODECORE_ERROR_MAINTENANCE_IO = -12,
+    NODECORE_ERROR_MAINTENANCE_VALIDATION = -13,
+    NODECORE_ERROR_CALLBACK_REENTRY = -14,
 } NodeCoreError;
 
 // ============================================================================
@@ -177,6 +184,24 @@ int32_t nodecore_stop(void);
  * ownership.
  */
 bool nodecore_is_running(void);
+
+/** Staged ownership API. No destructive plan is supported.
+ * The native-only qualification build accepts "inspect-unchanged-v1". Its token
+ * authorizes read-only inspection after actual closure; it never authorizes a
+ * reset, snapshot replacement or checkpoint deletion. Ordinary builds reject
+ * every Begin/Resume plan. Interrupted intent still blocks ordinary Start.
+ *
+ * Output tokens are NULL on failure; free successful tokens with
+ * nodecore_free_string. Stop never releases a token. Call Finish only after all
+ * work using the token has completed, including cancellation/expiration workers.
+ * outcome: 0 = verify unchanged and complete; 1 = work finished but uncertain
+ * (retire token, retain the persistent recovery barrier).
+ */
+int32_t nodecore_maintenance_begin(const char* datadir, const char* plan, char** out_token);
+int32_t nodecore_maintenance_finish(const char* token, int32_t outcome);
+int32_t nodecore_maintenance_resume(const char* datadir, const char* operation_id, char** out_token);
+/** Diagnostic only; operation_id is not a lease token or deletion permission. */
+char* nodecore_maintenance_status(const char* datadir);
 
 // ============================================================================
 // Status

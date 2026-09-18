@@ -100,6 +100,7 @@ jobs:
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DENABLE_GRPC=OFF \
             -DBUILD_NODECORE=ON \
+            -DDINERO_NODECORE_MAINTENANCE_QUALIFICATION=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -140,7 +141,7 @@ jobs:
         run: |
           failed=0
           mkdir -p build-tests/Testing/nodecore-runtime
-          for t in NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers; do
+          for t in NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreMaintenanceGate NodeCoreMaintenanceOwnership NodeCoreJournalFaults; do
             ctest --test-dir build-tests --no-tests=error --output-on-failure \
               --output-log "build-tests/Testing/nodecore-runtime/${t}.ctest.log" \
               -R "^${t}$" || failed=1
@@ -158,6 +159,7 @@ jobs:
             build-tests/Testing/nodecore-runtime/**/replies*.jsonl
             build-tests/Testing/nodecore-runtime/**/controller-failure.txt
             build-tests/Testing/nodecore-runtime/*.ctest.log
+            build-tests/Testing/nodecore-runtime/journal-faults.xml
           if-no-files-found: warn
           retention-days: 14
 

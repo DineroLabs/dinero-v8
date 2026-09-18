@@ -36,6 +36,7 @@
 #include "consensus/global_utxo_set.h"
 #include "nodecore/sync_profile_policy.h"
 #include "nodecore/runtime_guards.h"
+#include "nodecore/maintenance_journal.h"
 #include "rpc/rpc_registry.h"
 #include "version.h"
 #include "interfaces/wallet_notifier.h"
@@ -59,6 +60,8 @@
 #include <algorithm>
 #include <sstream>
 #include <cctype>
+#include <filesystem>
+#include <limits>
 
 // Context-aware wallet RPC handlers from src/rpc/methods_wallet_context.cpp
 din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::Json& params);
@@ -70,6 +73,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
 // ============================================================================
 
 namespace {
+
+thread_local bool in_nodecore_callback = false;
 
 struct NodeCoreState {
     std::mutex mtx;
@@ -92,6 +97,12 @@ struct NodeCoreState {
     std::string sync_profile = "unknown";
     uint64_t capabilities = 0;
 
+    dinero::nodecore::MaintenanceJournal maintenance;
+    std::string maintenance_token;
+    std::string maintenance_process;
+    uint64_t maintenance_generation = 0;
+    bool maintenance_recovery = false;
+
     ~NodeCoreState() noexcept {
         shutdown_requested.store(true);
         if (node_thread.joinable()) {
@@ -113,6 +124,25 @@ struct NodeCoreState {
 NodeCoreState& state() {
     static NodeCoreState s;
     return s;
+}
+
+int CloseNodeLocked(NodeCoreState& s) {
+    s.shutdown_requested = true;
+    s.running = false;
+    try {
+        if (s.node_thread.joinable()) {
+            if (s.node_thread.get_id() == std::this_thread::get_id()) return NODECORE_ERROR_CALLBACK_REENTRY;
+            s.node_thread.join();
+        }
+        s.app.reset();
+        return NODECORE_OK;
+    } catch (...) { return NODECORE_ERROR_INTERNAL; }
+}
+
+std::string NewMaintenanceToken(NodeCoreState& s) {
+    if (s.maintenance_process.empty()) s.maintenance_process = dinero::nodecore::MaintenanceJournal::RandomId();
+    if (s.maintenance_generation == std::numeric_limits<uint64_t>::max()) throw std::runtime_error("generation exhausted");
+    return s.maintenance_process + "." + std::to_string(++s.maintenance_generation) + "." + s.maintenance.Operation();
 }
 
 bool is_queryable_locked(const NodeCoreState& s) {
@@ -196,6 +226,11 @@ void emit_event(NodeCoreEventType type, const std::string& json_data) {
     auto& s = state();
     const auto snapshot = s.event_callback.Snapshot();
     if (snapshot.callback) {
+        struct CallbackScope {
+            bool previous = in_nodecore_callback;
+            CallbackScope() { in_nodecore_callback = true; }
+            ~CallbackScope() { in_nodecore_callback = previous; }
+        } scope;
         snapshot.callback(static_cast<int32_t>(type), json_data.c_str(), snapshot.user_data);
     }
 }
@@ -300,15 +335,29 @@ std::unique_ptr<NodeCoreWalletNotifier> g_notifier;
 extern "C" {
 
 int32_t nodecore_start(const char* datadir, const char* config_json) {
+    if (in_nodecore_callback) return NODECORE_ERROR_CALLBACK_REENTRY;
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mtx);
+
+    if (!s.maintenance_token.empty()) return NODECORE_ERROR_MAINTENANCE_BUSY;
+    if (s.maintenance_recovery) return NODECORE_ERROR_RECOVERY_REQUIRED;
 
     if (s.running.load()) {
         return NODECORE_ERROR_ALREADY_RUNNING;
     }
 
-    if (!datadir) {
+    if (!datadir || !*datadir || strnlen(datadir, 4097) > 4096 || !std::filesystem::path(datadir).is_absolute()) {
         return NODECORE_ERROR_INVALID_ARGS;
+    }
+
+    // Read the persistent barrier before Init can create, repair or open files.
+    const int gate = dinero::nodecore::MaintenanceJournal::StartupGate(datadir);
+    if (gate != NODECORE_OK) return gate;
+    // An internally stopped/failed worker may leave a joinable thread and App
+    // behind even with running=false. Reap that owner before replacing it.
+    if (s.app || s.node_thread.joinable()) {
+        const int closed = CloseNodeLocked(s);
+        if (closed != NODECORE_OK) return closed;
     }
 
     s.datadir = datadir;
@@ -608,32 +657,114 @@ int32_t nodecore_start(const char* datadir, const char* config_json) {
 }
 
 int32_t nodecore_stop(void) {
+    if (in_nodecore_callback) return NODECORE_ERROR_CALLBACK_REENTRY;
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mtx);
-
-    if (!s.running.load() && !s.app) {
-        return NODECORE_OK; // Already stopped
-    }
-
-    s.shutdown_requested = true;
-    s.running = false;
-
-    if (s.node_thread.joinable()) {
-        s.node_thread.join();
-    }
-
-    try {
-        s.app.reset();
-    } catch (const std::exception& e) {
-        fprintf(stderr, "[nodecore_ffi] Exception during app cleanup: %s\n", e.what());
-    } catch (...) {
-        fprintf(stderr, "[nodecore_ffi] Unknown exception during app cleanup\n");
-    }
-    return NODECORE_OK;
+    // Plain stop never releases another operation's token or durable intent.
+    return CloseNodeLocked(s);
 }
 
 bool nodecore_is_running(void) {
     return state().running.load();
+}
+
+int32_t nodecore_maintenance_begin(const char* datadir, const char* plan, char** token) {
+    if (token) *token = nullptr;
+#if defined(DINERO_NODECORE_MAINTENANCE_QUALIFICATION)
+    if (!token || !datadir || !plan) return NODECORE_ERROR_INVALID_ARGS;
+    if (std::strcmp(plan, dinero::nodecore::MaintenanceJournal::kInspection) != 0) return NODECORE_ERROR_UNSUPPORTED_PLAN;
+    if (in_nodecore_callback) return NODECORE_ERROR_CALLBACK_REENTRY;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mtx);
+    if (!s.maintenance_token.empty()) return NODECORE_ERROR_MAINTENANCE_BUSY;
+    if (s.maintenance_recovery) return NODECORE_ERROR_RECOVERY_REQUIRED;
+    const int gate = dinero::nodecore::MaintenanceJournal::StartupGate(datadir);
+    if (gate != NODECORE_OK) return gate;
+    if (s.app && !dinero::nodecore::MaintenanceJournal::SameTarget(s.datadir, datadir)) return NODECORE_ERROR_INVALID_ARGS;
+    const int closed = CloseNodeLocked(s);
+    if (closed != NODECORE_OK) return closed;
+    const int prepared = s.maintenance.Prepare(datadir);
+    if (prepared != NODECORE_OK) {
+        s.maintenance_recovery = dinero::nodecore::MaintenanceJournal::StartupGate(datadir) != NODECORE_OK;
+        return prepared;
+    }
+    try {
+        auto value = NewMaintenanceToken(s);
+        *token = strdup_c(value);
+        if (!*token) throw std::bad_alloc();
+        s.maintenance_token = std::move(value);
+        return NODECORE_OK;
+    } catch (...) {
+        s.maintenance_recovery = true;
+        return NODECORE_ERROR_INTERNAL;
+    }
+#else
+    (void)datadir; (void)plan;
+    return NODECORE_ERROR_UNSUPPORTED_PLAN;
+#endif
+}
+int32_t nodecore_maintenance_finish(const char* token, int32_t outcome) {
+#if defined(DINERO_NODECORE_MAINTENANCE_QUALIFICATION)
+    if (in_nodecore_callback) return NODECORE_ERROR_CALLBACK_REENTRY;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mtx);
+    if (!token || s.maintenance_token.empty() || s.maintenance_token != token) return NODECORE_ERROR_INVALID_TOKEN;
+    if (outcome != 0 && outcome != 1) return NODECORE_ERROR_INVALID_ARGS;
+    const int result = outcome == 0 ? s.maintenance.CompleteUnchanged() : s.maintenance.RetainUncertainty();
+    if (result != NODECORE_OK) return result; // Keep the owner on verification/IO failure.
+    s.maintenance_token.clear();
+    s.maintenance_recovery = outcome == 1;
+    return outcome == 0 ? NODECORE_OK : NODECORE_ERROR_RECOVERY_REQUIRED;
+#else
+    (void)token; (void)outcome;
+    return NODECORE_ERROR_UNSUPPORTED_PLAN;
+#endif
+}
+int32_t nodecore_maintenance_resume(const char* datadir, const char* operation, char** token) {
+    if (token) *token = nullptr;
+#if defined(DINERO_NODECORE_MAINTENANCE_QUALIFICATION)
+    if (!token || !datadir || !operation) return NODECORE_ERROR_INVALID_ARGS;
+    if (in_nodecore_callback) return NODECORE_ERROR_CALLBACK_REENTRY;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mtx);
+    if (!s.maintenance_token.empty()) return NODECORE_ERROR_MAINTENANCE_BUSY;
+    if (s.app && !dinero::nodecore::MaintenanceJournal::SameTarget(s.datadir, datadir)) return NODECORE_ERROR_INVALID_ARGS;
+    const int checked = s.maintenance.Resume(datadir, operation);
+    if (checked != NODECORE_OK) return checked;
+    const int closed = CloseNodeLocked(s);
+    if (closed != NODECORE_OK) return closed;
+    const int loaded = s.maintenance.Resume(datadir, operation);
+    if (loaded != NODECORE_OK) return loaded;
+    try {
+        auto value = NewMaintenanceToken(s);
+        *token = strdup_c(value);
+        if (!*token) throw std::bad_alloc();
+        s.maintenance_token = std::move(value);
+        s.maintenance_recovery = false;
+        return NODECORE_OK;
+    } catch (...) {
+        s.maintenance_recovery = true;
+        return NODECORE_ERROR_INTERNAL;
+    }
+#else
+    (void)datadir; (void)operation;
+    return NODECORE_ERROR_UNSUPPORTED_PLAN;
+#endif
+}
+char* nodecore_maintenance_status(const char* datadir) {
+    if (in_nodecore_callback) return nullptr;
+    if (!datadir) return nullptr;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mtx);
+    Json::Value result;
+    result["gate"] = dinero::nodecore::MaintenanceJournal::StartupGate(datadir, &result);
+    result["lease_held"] = !s.maintenance_token.empty();
+#if defined(DINERO_NODECORE_MAINTENANCE_QUALIFICATION)
+    result["inspection_qualification"] = true;
+#else
+    result["inspection_qualification"] = false;
+#endif
+    return json_string(result);
 }
 
 // ============================================================================
