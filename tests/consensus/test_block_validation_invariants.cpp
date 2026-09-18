@@ -18,6 +18,7 @@
 #include "consensus/shielded/nullifier_set.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/utreexo_accumulator.h"
+#include "consensus/utreexo_delta_codec.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/chainparams.h"
 #include "consensus/shielded/commitment_tree.h"
@@ -1348,6 +1349,7 @@ TEST(BlockValidationInvariants, StatelessForwardConnectAdvancesForest) {
     const UtreexoHash expected_root =
         ExpectedPostRoot(utxo_set.GetForest(), block, height);
     SetHeaderRoot(block, expected_root);
+    auto replay_forest = utxo_set.GetForest().clone();
 
     // (1) Forest at PRE-state (the ConnectTip forward path: no worker involved,
     // no block.utreexo). Connect must succeed AND advance the shared forest.
@@ -1358,6 +1360,9 @@ TEST(BlockValidationInvariants, StatelessForwardConnectAdvancesForest) {
     EXPECT_EQ(utxo_set.GetForest().getCommitment(), expected_root)
         << "stateless forward-connect left the shared forest at pre-state (#382 "
            "— the DineroTX frozen-forest bug)";
+    ASSERT_TRUE(undo.utreexo_delta.has_value());
+    ASSERT_TRUE(ApplyUtreexoDeltaForward(replay_forest, *undo.utreexo_delta, error)) << error;
+    EXPECT_EQ(replay_forest.serialize(), utxo_set.GetForest().serialize());
 
     // (2) Forest already at POST-state (worker-applied shape): reconnecting the
     // same block must not double-apply.
@@ -1367,6 +1372,8 @@ TEST(BlockValidationInvariants, StatelessForwardConnectAdvancesForest) {
         << error2;
     EXPECT_EQ(utxo_set.GetForest().getCommitment(), expected_root)
         << "worker-applied block was double-applied";
+    EXPECT_FALSE(undo2.utreexo_delta.has_value())
+        << "an already-applied transition must reuse its durable delta, not invent one";
 }
 
 TEST(BlockValidationInvariants, StatelessForwardConnectRejectsWrongHeaderRoot) {
@@ -1389,6 +1396,7 @@ TEST(BlockValidationInvariants, StatelessForwardConnectRejectsWrongHeaderRoot) {
     EXPECT_NE(error.find("bad-utreexo-root"), std::string::npos) << "error was: " << error;
     EXPECT_EQ(utxo_set.GetForest().getCommitment(), before)
         << "failed connect must not mutate the forest";
+    EXPECT_FALSE(undo.utreexo_delta.has_value());
 }
 
 // ============================================================================

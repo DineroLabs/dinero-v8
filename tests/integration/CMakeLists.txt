@@ -2426,6 +2426,13 @@ set_tests_properties(CSNSnapshotProofRestart PROPERTIES
   LABELS "integration;assumeutxo;snapshot;restart;utreexo;mandatory"
   TIMEOUT 300 RUN_SERIAL TRUE)
 
+add_test(NAME CSNSnapshotHistory
+  COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_snapshot_proof_restart.py)
+set_tests_properties(CSNSnapshotHistory PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_SNAPSHOT_HISTORY=1"
+  LABELS "integration;assumeutxo;snapshot;restart;reorg;utreexo;mandatory"
+  TIMEOUT 600 RUN_SERIAL TRUE)
+
 # Exercise the supported external/coordinator interfaces with DNRS enforced.
 add_test(NAME StateCommitmentMining
   COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_state_commitment_mining.py)

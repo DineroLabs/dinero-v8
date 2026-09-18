@@ -314,6 +314,7 @@ public:
 
     // CSN reorg: Bookkeeping-only connect (no ConnectBlock, no forest mutation).
     // Writes coin changes, an UndoRecord (spent/created + shielded fields),
+    // the caller's pre-state-derived replay delta (atomic with the tip),
     // shielded frontier/anchor/marker/nullifier state, tip pointer, height
     // index, notifications. Used after StatelessNode::ReplayBlock() has
     // already advanced the forest. `shielded_undo` is the BlockUndo the
@@ -327,6 +328,7 @@ public:
     // that block fails loudly ("Missing undo data") instead of silently
     // skipping the shielded rollback.
     bool CommitConnectedBlockBookkeeping(class CBlockIndex* block_index, const Block& block,
+                                         const consensus::UtreexoDelta& replay_delta,
                                          const consensus::BlockUndo* shielded_undo,
                                          std::string* out_error = nullptr);
 

@@ -9018,7 +9018,10 @@ void ChainstateService::ActivateBestChain() {
         {
             std::string restore_error;
             const Status restore_status = storage::RestoreHistoricalForest(
-                *chain_db_, fork_point->height, restored_forest, restore_error);
+                *chain_db_, fork_point->height, restored_forest, restore_error,
+                [fork_point](uint32_t height, uint256& hash) {
+                    return consensus::GetActiveChainHashAtHeight(fork_point, height, hash);
+                });
             if (restore_status != Status::Ok) {
                 if (logger_) logger_->error("[ABC-CSN] Cannot rebuild forest at fork height " +
                                             std::to_string(fork_point->height) + " (" +
@@ -9036,16 +9039,18 @@ void ChainstateService::ActivateBestChain() {
         // A mismatch means the checkpoint is corrupt or from a different fork —
         // replaying from it would silently drift from consensus.
         {
-            auto fp_block_result = ReadStoredBlock(fork_point->hash);
-            if (fp_block_result.status() != Status::Ok) {
+            // An imported base has an authenticated header but need not have
+            // a local body. Only the blocks actually disconnected need bodies.
+            auto fp_header_result = chain_db_->getHeader(fork_point->hash);
+            if (fp_header_result.status() != Status::Ok) {
                 if (logger_) {
-                    logger_->error("[ABC-CSN] Cannot load fork-point block " +
+                    logger_->error("[ABC-CSN] Cannot load fork-point header " +
                                    fork_point->hash.GetHex() +
                                    " for checkpoint root validation — ABORTING REORG");
                 }
                 return;
             }
-            const uint256& expected_fp_root = fp_block_result.value().header.utreexo_root;
+            const uint256& expected_fp_root = fp_header_result.value().utreexo_root;
 
             auto restored_commitment = restored_forest.getCommitment();
             if (restored_commitment.size() != 32) {
@@ -9135,6 +9140,21 @@ void ChainstateService::ActivateBestChain() {
                                               " — forest replay may fail");
             }
 
+            // Capture replay positions while the pre-state still exists.
+            // ReplayBlock authorizes the transition; bookkeeping commits its
+            // delta atomically with the new tip even on stored-body paths.
+            consensus::UtreexoDelta replay_delta;
+            std::string delta_error;
+            {
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                if (!BuildStatelessUtreexoDelta(consensus_utxo_set_->GetForest(),
+                        replay_block, block_index->height, spend_targets,
+                        replay_delta, delta_error)) {
+                    if (logger_) logger_->error("[ABC-CSN] Cannot record replay delta: " + delta_error);
+                    return;
+                }
+            }
+
             // Replay block through forest via StatelessNode (sole forest mutator)
             if (!stateless_node_->ReplayBlock(replay_block, block_index->height, spend_targets, spent_outputs)) {
                 if (logger_) logger_->error("[ABC-CSN] ReplayBlock failed at height " +
@@ -9206,7 +9226,8 @@ void ChainstateService::ActivateBestChain() {
             // pre-reset epoch snapshot) into the persisted UndoRecord so a
             // second reorg can disconnect this replay-connected block.
             std::string bk_err;
-            if (!CommitConnectedBlockBookkeeping(block_index, replay_block, &replay_shielded_undo, &bk_err)) {
+            if (!CommitConnectedBlockBookkeeping(block_index, replay_block, replay_delta,
+                                                 &replay_shielded_undo, &bk_err)) {
                 if (logger_) logger_->error("[ABC-CSN] Bookkeeping failed at height " +
                                             std::to_string(block_index->height) + ": " + bk_err);
                 return;
@@ -12406,16 +12427,21 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                 consensus::UtreexoForest restored;
                 std::string restore_error;
                 if (storage::RestoreHistoricalForest(*chain_db_, parent->height,
-                        restored, restore_error) != Status::Ok) {
+                        restored, restore_error,
+                        [parent](uint32_t height, uint256& hash) {
+                            return consensus::GetActiveChainHashAtHeight(parent, height, hash);
+                        }) != Status::Ok) {
                     error = "Cannot restore CSN invalidation parent: " + restore_error;
                     return false;
                 }
-                const auto parent_block = ReadStoredBlock(parent->hash);
+                // Snapshot bases have a verified persisted header without
+                // necessarily having a body or a pre-base height-index row.
+                const auto parent_header = chain_db_->getHeader(parent->hash);
                 const auto commitment = restored.getCommitment();
-                if (parent_block.status() != Status::Ok || commitment.size() != 32 ||
+                if (parent_header.status() != Status::Ok || commitment.size() != 32 ||
                     !std::equal(commitment.begin(), commitment.end(),
-                                parent_block.value().header.utreexo_root.begin())) {
-                    error = "CSN invalidation parent commitment mismatch or unavailable body";
+                                parent_header.value().utreexo_root.begin())) {
+                    error = "CSN invalidation parent commitment mismatch or unavailable header";
                     return false;
                 }
                 // Missing body/undo must not be discovered after the rewind.
@@ -12611,11 +12637,23 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
         rocksdb::WriteBatch status_batch;
 
         auto stage_clear = [&](CBlockIndex* node) -> bool {
-            const auto persist_status =
+            auto persist_status =
                 chain_db_->clearHeaderStatusBits(token,
                                                  node->hash,
                                                  BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD,
                                                  &status_batch);
+            // Headers can be indexed from the separate validated header store
+            // before a body (and ChainDB metadata row) has ever arrived. Stage
+            // their complete known metadata with the cleared flags in the same
+            // batch. A missing row for a data/undo-bearing block remains an
+            // error; never reconstruct disk locators or validation from absence.
+            if (persist_status == Status::NotFound &&
+                !(node->status & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) &&
+                node->data_size == 0 && node->undo_size == 0) {
+                CBlockIndex cleared = *node;
+                cleared.status &= ~(BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+                persist_status = chain_db_->updateBlockIndex(token, &cleared, &status_batch);
+            }
             if (persist_status != Status::Ok) {
                 error = "Failed to stage cleared invalidity for height " +
                         std::to_string(node->height);
@@ -12668,23 +12706,12 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
         }
     }
 
-    // Re-add to candidate set if eligible
-    // Walk to the tip of this branch and add tip as candidate
-    std::vector<CBlockIndex*> branch_tips;
-    std::vector<CBlockIndex*> scan;
-    scan.push_back(target);
-    while (!scan.empty()) {
-        CBlockIndex* node = scan.back();
-        scan.pop_back();
-        if (node->children.empty()) {
-            // This is a tip — add to candidates if it has block data
-            AddCandidate(node);
-            branch_tips.push_back(node);
-        } else {
-            for (CBlockIndex* c : node->children) {
-                if (c) scan.push_back(c);
-            }
-        }
+    // A header-only descendant is not the connectable branch tip. Offer the
+    // subtree parent-first: AddCandidate keeps the existing eligibility checks
+    // and removes the parent only when an eligible child replaces it. Thus the
+    // highest body-backed frontier survives even when headers extend past it.
+    for (CBlockIndex* node : subtree) {
+        AddCandidate(node);
     }
 
     // Crash boundary: the cleared flags and the advanced generation are
@@ -12701,7 +12728,7 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
     if (logger_) {
         logger_->info("[ReconsiderBlock] Done. Active tip now at height " +
                      std::to_string(active_tip_ ? active_tip_->height : 0) +
-                     ", reconsidered " + std::to_string(branch_tips.size()) + " branch tip(s)");
+                     ", reconsidered " + std::to_string(subtree.size()) + " block(s)");
     }
 
     return true;
@@ -12742,7 +12769,10 @@ bool ChainstateService::RestoreUtreexoCheckpoint(uint32_t height, std::string& e
         // and the ABC-CSN stateless reorg path.
         consensus::UtreexoForest restored;
         const Status restore_status =
-            storage::RestoreHistoricalForest(*chain_db_, height, restored, error);
+            storage::RestoreHistoricalForest(*chain_db_, height, restored, error,
+                [anchor = GetActiveTip()](uint32_t h, uint256& hash) {
+                    return consensus::GetActiveChainHashAtHeight(anchor, h, hash);
+                });
         if (restore_status != Status::Ok) {
             if (error.empty()) {
                 error = "Failed to restore forest to height " + std::to_string(height);
@@ -14320,6 +14350,17 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                 }
             }
 
+            consensus::UtreexoDelta replay_delta;
+            std::string delta_error;
+            {
+                auto forest_lock = consensus_utxo_set_->LockForestShared();
+                if (!BuildStatelessUtreexoDelta(consensus_utxo_set_->GetForest(),
+                        block, tip_to_connect->height, replay_targets,
+                        replay_delta, delta_error)) {
+                    return fail("stateless-replay-delta-failed: " + delta_error);
+                }
+            }
+
             if (!stateless_node_->ReplayBlock(
                     block,
                     tip_to_connect->height,
@@ -14362,7 +14403,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             // snapshot needed for a later disconnect. When shielded_applied
             // is false (pool already at/ahead of this block), nullptr
             // preserves prior behavior for this already-applied block.
-            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block,
+            if (!CommitConnectedBlockBookkeeping(tip_to_connect, block, replay_delta,
                                                  shielded_applied ? &replay_undo : nullptr,
                                                  &bookkeeping_error)) {
                 if (logger_) {
@@ -15196,7 +15237,21 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         // missing-undo case, just via the delta sidecar instead of the
         // undo flatfile. Atomic with the canonical batch closes the
         // window: tip + delta sidecar land together or neither does.
-        if (consensus::IsUtreexoActive(tip_to_connect->height) && !GetConfig().utreexo_stateless) {
+        if (consensus::IsUtreexoActive(tip_to_connect->height)) {
+            // The ordered worker saves its delta before delivering an already-
+            // applied block. Local forward connects instead return it in undo.
+            // Re-stage either source with the tip so every new connection has
+            // durable reconstruction material, irrespective of producer.
+            if (!block_undo.utreexo_delta && GetConfig().utreexo_stateless) {
+                std::string stored_delta;
+                consensus::UtreexoDelta decoded;
+                std::string decode_error;
+                if (chain_db_->getRaw(MakeUtreexoDeltaUndoKey(tip_to_connect->hash),
+                                     stored_delta) == Status::Ok &&
+                    DeserializeUtreexoDelta(stored_delta, decoded, decode_error)) {
+                    block_undo.utreexo_delta = std::move(decoded);
+                }
+            }
             if (!block_undo.utreexo_delta.has_value()) {
                 if (active_batch.has_value()) active_batch->Abort();
                 if (logger_) logger_->error("[ConnectTip] Missing Utreexo delta after ConnectBlock");
@@ -15864,6 +15919,7 @@ bool ChainstateService::ReplayForestDeltasToTip(uint32_t checkpoint_height,
 // ============================================================================
 
 bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index, const Block& block,
+                                                         const consensus::UtreexoDelta& replay_delta,
                                                          const consensus::BlockUndo* shielded_undo,
                                                          std::string* out_error) {
     auto fail = [&](const std::string& reason) {
@@ -15872,6 +15928,12 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     };
 
     if (!block_index || !chain_db_) return fail("null-block-index-or-db");
+
+    std::string delta_blob;
+    std::string delta_error;
+    if (!SerializeUtreexoDelta(replay_delta, delta_blob, delta_error)) {
+        return fail("serialize-replay-delta-failed: " + delta_error);
+    }
 
     ChainWriteToken token;
 
@@ -16062,7 +16124,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
         return fail(std::string("invalid-chainwork: ") + e.what());
     }
 
-    // Persist coin changes + undo record + shielded state + canonical tip and
+    // Persist coin changes + undo record + forest delta + shielded state + canonical tip and
     // height index in ONE atomic batch. In particular, an epoch-reset block's
     // authoritative ChainDB nullifier purge must be indivisible from the
     // post-reset ShieldedTipMarker and the tip advance. Splitting any of those
@@ -16070,6 +16132,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // nullifier rows after a crash (#357).
     {
         rocksdb::WriteBatch utxo_batch;
+        utxo_batch.Put(MakeUtreexoDeltaUndoKey(block_index->hash), delta_blob);
         for (size_t tx_idx = 0; tx_idx < block.vtx.size(); tx_idx++) {
             const auto& tx = block.vtx[tx_idx];
             const TxId txid = tx.GetTxid();
@@ -16293,8 +16356,8 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     // Utreexo checkpoint (forest is already at correct post-replay state).
     // Campaign phase 1: with utreexo.checkpoint_interval N > 1 the full
     // checkpoint is written only at heights % N == 0 (same gating as
-    // ConnectTip's unified batch; the per-block delta sidecar is persisted
-    // by the caller either way).
+    // ConnectTip's unified batch; the per-block delta sidecar was committed
+    // with the canonical tip above, whether or not a checkpoint is due).
     if (consensus_utxo_set_) {
         const uint32_t bk_checkpoint_interval =
             GetConfig().utreexo_checkpoint_interval > 1
