@@ -6969,7 +6969,8 @@ if(TARGET nodecore_ffi)
       $<TARGET_OBJECTS:nodecore_journal_fault_subject>)
     target_include_directories(test_nodecore_journal_faults PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
     target_link_libraries(test_nodecore_journal_faults PRIVATE gtest dinero_crypto jsoncpp_static OpenSSL::Crypto)
-    add_test(NAME NodeCoreJournalFaults COMMAND test_nodecore_journal_faults)
+    add_test(NAME NodeCoreJournalFaults COMMAND test_nodecore_journal_faults
+      --gtest_output=xml:${CMAKE_BINARY_DIR}/Testing/nodecore-runtime/journal-faults.xml)
     set_tests_properties(NodeCoreJournalFaults PROPERTIES
       LABELS "integration;nodecore;restart;storage" TIMEOUT 60 RUN_SERIAL TRUE)
   endif()

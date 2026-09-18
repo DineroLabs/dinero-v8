@@ -159,6 +159,7 @@ jobs:
             build-tests/Testing/nodecore-runtime/**/replies*.jsonl
             build-tests/Testing/nodecore-runtime/**/controller-failure.txt
             build-tests/Testing/nodecore-runtime/*.ctest.log
+            build-tests/Testing/nodecore-runtime/journal-faults.xml
           if-no-files-found: warn
           retention-days: 14
 
