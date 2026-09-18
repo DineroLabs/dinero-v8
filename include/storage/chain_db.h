@@ -537,6 +537,9 @@ public:
     StatusOr<Coin> getCoinWithConfidentialFallback(const uint256& txid, uint32_t vout) const;
     StatusOr<Coin> getPreBaseCoin(const uint256& txid, uint32_t vout) const;
     StatusOr<std::pair<uint256, uint32_t>> getPreBaseCoinSetBase() const;
+    // Historical snapshot records, including subsequently spent coins. Callers
+    // must bind the base and check current forest membership before serving.
+    Status forEachPreBaseCoin(std::function<bool(const uint256&, uint32_t, const Coin&)> callback) const;
 
     StatusOr<std::pair<uint256, uint32_t>> getTxLocation(const uint256& txid) const;
 

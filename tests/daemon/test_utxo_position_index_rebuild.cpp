@@ -211,6 +211,62 @@ int main() {
 
     std::cout << "UTXO position rebuild live-proof generation PASSED" << std::endl;
 
+    // Frozen snapshot records intentionally survive spends. They are not a
+    // current coin map: only their live, exact leaves may enter the index.
+    const auto base_hash = MakeTxId(700);
+    const auto frozen_live = MakeTxId(701);
+    const auto frozen_spent = MakeTxId(702);
+    dinero::Coin frozen_coin;
+    frozen_coin.amount = 17000;
+    frozen_coin.script_pubkey = HexEncode(script_pubkey);
+    frozen_coin.height = 90;
+    frozen_coin.coinbase = false;
+    const auto frozen_leaf = dinero::consensus::HashUTXOForCreationHeight(
+        frozen_live, 0, frozen_coin.amount, script_pubkey, 90, false);
+    forest.add(frozen_leaf);
+    const auto frozen_spent_leaf = dinero::consensus::HashUTXOForCreationHeight(
+        frozen_spent, 0, frozen_coin.amount, script_pubkey, 90, false);
+    forest.add(frozen_spent_leaf);
+    const auto frozen_spent_position = forest.findLeafPosition(frozen_spent_leaf);
+    if (!Require(frozen_spent_position.has_value(), "Frozen coin begins live")) return 1;
+    const auto frozen_spent_proof = forest.prove(*frozen_spent_position);
+    if (!Require(frozen_spent_proof.has_value() && forest.remove(frozen_spent_leaf, *frozen_spent_proof),
+                 "Frozen coin is actually spent before rebuild")) return 1;
+    if (!Require(chain_db.replacePreBaseCoins(dinero::ChainWriteToken::CreateForTesting(),
+            base_hash, 100, {{frozen_live, 0, frozen_coin}, {frozen_spent, 0, frozen_coin}})
+            == dinero::Status::Ok, "Frozen records persist")) return 1;
+    const auto snapshot_report = rebuilt_index.RebuildSnapshot(
+        chain_db, forest, base_hash, 100);
+    if (!Require(snapshot_report.success, "Bound snapshot rebuild succeeds") ||
+        !Require(snapshot_report.matched == 4, "Live snapshot and ordinary coins indexed") ||
+        !Require(snapshot_report.skipped_spent_snapshot == 1, "Spent frozen row excluded") ||
+        !Require(snapshot_report.missing == 1, "Missing ordinary live coin still reported") ||
+        !Require(rebuilt_index.HasPosition(dinero::TxId(frozen_live), 0), "Live frozen coin indexed") ||
+        !Require(!rebuilt_index.HasPosition(dinero::TxId(frozen_spent), 0), "Spent frozen coin not indexed")) return 1;
+    const auto wrong_base = rebuilt_index.RebuildSnapshot(chain_db, forest, MakeTxId(999), 100);
+    if (!Require(!wrong_base.success, "Different snapshot base must fail closed") ||
+        !Require(rebuilt_index.GetPositionCount() == 4, "Failed rebuild must not replace index")) return 1;
+    const auto wrong_height = rebuilt_index.RebuildSnapshot(chain_db, forest, base_hash, 101);
+    if (!Require(!wrong_height.success, "Different snapshot height must fail closed")) return 1;
+    {
+        auto malformed_coin = frozen_coin;
+        malformed_coin.script_pubkey = "not-hex";
+        if (!Require(chain_db.replacePreBaseCoins(dinero::ChainWriteToken::CreateForTesting(),
+                base_hash, 100, {{frozen_live, 0, malformed_coin}}) == dinero::Status::Ok,
+                "Malformed metadata fixture persists")) return 1;
+        const auto malformed = rebuilt_index.RebuildSnapshot(chain_db, forest, base_hash, 100);
+        if (!Require(!malformed.success && malformed.malformed == 1,
+                     "Malformed frozen metadata fails closed") ||
+            !Require(rebuilt_index.GetPositionCount() == 4,
+                     "Malformed rebuild leaves the previous index intact")) return 1;
+        malformed_coin = frozen_coin;
+        malformed_coin.height = 101;
+        if (!Require(chain_db.replacePreBaseCoins(dinero::ChainWriteToken::CreateForTesting(),
+                base_hash, 100, {{frozen_live, 0, malformed_coin}}) == dinero::Status::Invalid,
+                "Storage rejects frozen records newer than the base before committing")) return 1;
+    }
+    std::cout << "Bound snapshot position rebuild and missing-live-coin guard PASSED" << std::endl;
+
     chain_db.close();
     fs::remove_all(test_dir);
     return 0;

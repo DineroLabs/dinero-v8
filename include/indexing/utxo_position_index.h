@@ -24,6 +24,7 @@ struct UTXOPositionRebuildReport {
     size_t missing = 0;
     size_t malformed = 0;
     size_t skipped_unspendable = 0;
+    size_t skipped_spent_snapshot = 0;
 };
 
 /**
@@ -38,11 +39,11 @@ struct UTXOPositionRebuildReport {
  * ✅ Indexing-layer component (like txindex)
  * ✅ Does NOT affect consensus validity
  * ✅ Does NOT store coin data (amounts, scripts)
- * ✅ Required for proof serving RPCs
+ * ✅ Diagnostic coverage cache; proof RPCs resolve canonical leaves directly
  *
  * USAGE:
  * - Updated during ConnectBlock/DisconnectBlock
- * - Queried by proof generation RPCs
+ * - Queried by position-index consumers and diagnostics
  * - Can be rebuilt from chainstate + UtreexoForest
  *
  * REORG SAFETY:
@@ -88,7 +89,7 @@ struct BlockPositionUndo {
  * Global index mapping (txid, vout) → Utreexo position
  *
  * This index is:
- * - Required for proof serving
+ * - A rebuildable coverage cache
  * - Updated during block processing
  * - Rebuildable from chain state
  * - Thread-safe for concurrent queries
@@ -125,7 +126,7 @@ public:
     /**
      * Look up the Utreexo position for a UTXO
      *
-     * This is the PRIMARY API used by proof generation.
+     * A cached position is not evidence that the coin remains unspent.
      *
      * @param txid Transaction ID
      * @param vout Output index
@@ -178,6 +179,12 @@ public:
      */
     UTXOPositionRebuildReport Rebuild(const ChainDB& chain_db,
                                      const consensus::UtreexoForest& forest);
+
+    // The caller supplies the exact active/canonically promoted snapshot base.
+    // Frozen rows may be spent; regular current coins still MUST be in forest.
+    UTXOPositionRebuildReport RebuildSnapshot(const ChainDB& chain_db,
+        const consensus::UtreexoForest& forest, const uint256& base_hash,
+        uint32_t base_height);
 
     /**
      * Rebuild positions from the active in-memory consensus UTXO set.
