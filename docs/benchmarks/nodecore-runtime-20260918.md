@@ -99,6 +99,30 @@ bypass `RescanWalletFromSnapshotUTXOs`. The first must fail the real worker-wait
 assertion; the second must fail late wallet recovery. Mutants are restored before
 the final build/test. A failed build is not counted as a behavioral failure.
 
+## Wallet lifetime correction required by this foundation
+
+The main-integration rerun (35342984885, head `401f9ff7a`) failed during
+snapshot-consumer startup after nine passing checks, immediately after logging
+the new default wallet's policy. The same stale ChainDB pointer defect had
+already been reproduced and fixed in the later maintenance branch (`f907c3742`).
+That correction belongs here too: importing a wallet published a global raw
+database pointer that survived completed NodeCore shutdown; the next wallet's
+birthday lookup could dereference freed storage. A previously green run did not
+make that lifetime safe.
+
+Wallet creation now receives its owning chainstate's height. Mnemonic/descriptor
+imports pass the current database explicitly to synchronous rescans. The existing
+regression checks the retired global after shutdown, wallet birthday 138 on the
+source and birthday 0 on a fresh node, in addition to all original snapshot,
+proof and restart checks. Original test-first and behavioral-negative-control
+evidence is preserved in the wallet-lifetime receipt for `f907c3742`; this
+backport does not introduce a maintenance API or enable inspection plans.
+
+CI now preserves per-scenario CTest output and controller failures, including
+the subprocess return code when it exits before replying. The older artifact
+does not contain a native crash backtrace; the log signature and independently
+proven lifetime bug must not be described as one.
+
 ## Remaining ownership gates
 
 These tests are prerequisites, not a completed maintenance implementation. Still
