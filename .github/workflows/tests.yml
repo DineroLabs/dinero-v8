@@ -100,6 +100,7 @@ jobs:
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DENABLE_GRPC=OFF \
             -DBUILD_NODECORE=ON \
+            -DDINERO_NODECORE_MAINTENANCE_QUALIFICATION=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -139,7 +140,7 @@ jobs:
       - name: Real NodeCore lifecycle and snapshot consumers
         run: |
           failed=0
-          for t in NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers; do
+          for t in NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers NodeCoreMaintenanceGate NodeCoreMaintenanceOwnership; do
             ctest --test-dir build-tests --no-tests=error --output-on-failure \
               -R "^${t}$" || failed=1
           done
@@ -152,8 +153,8 @@ jobs:
           name: nodecore-runtime-${{ github.sha }}
           path: |
             build-tests/Testing/nodecore-runtime/**/checks.json
-            build-tests/Testing/nodecore-runtime/**/nodecore.log
-            build-tests/Testing/nodecore-runtime/**/replies.jsonl
+            build-tests/Testing/nodecore-runtime/**/nodecore*.log
+            build-tests/Testing/nodecore-runtime/**/replies*.jsonl
           if-no-files-found: warn
           retention-days: 14
 

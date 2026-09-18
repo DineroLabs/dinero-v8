@@ -6990,6 +6990,24 @@ if(TARGET nodecore_ffi)
       python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
   set_tests_properties(NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers PROPERTIES
     LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
+  add_test(NAME NodeCoreMaintenanceGate
+    COMMAND ${CMAKE_COMMAND} -E env
+      NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+      NODECORE_SCENARIO=maintenance_gate
+      NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+      python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+  set_tests_properties(NodeCoreMaintenanceGate PROPERTIES
+    LABELS "integration;nodecore;restart;storage" TIMEOUT 120 RUN_SERIAL TRUE)
+  if(DINERO_NODECORE_MAINTENANCE_QUALIFICATION)
+    add_test(NAME NodeCoreMaintenanceOwnership
+      COMMAND ${CMAKE_COMMAND} -E env
+        NODECORE_DRIVER=$<TARGET_FILE:nodecore_runtime_driver>
+        NODECORE_SCENARIO=maintenance
+        NODECORE_EVIDENCE_DIR=${CMAKE_BINARY_DIR}/Testing/nodecore-runtime
+        python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_nodecore_runtime.py)
+    set_tests_properties(NodeCoreMaintenanceOwnership PROPERTIES
+      LABELS "integration;nodecore;restart;storage" TIMEOUT 300 RUN_SERIAL TRUE)
+  endif()
 endif()
 
 # ════════════════════════════════════════════════════════════════════════════
