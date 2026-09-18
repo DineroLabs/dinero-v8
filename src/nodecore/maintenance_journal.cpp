@@ -147,7 +147,7 @@ bool Bound(const Json::Value& record, const fs::path& target) {
 
 // An existing but empty/partial/unknown control directory is unresolved, never
 // permission to start. Only a well-formed completed record releases the fence.
-bool Load(const fs::path& target, Json::Value& record) {
+bool Load(const fs::path& target, Json::Value& record, bool sync_completed = false) {
     const auto control = target.parent_path() / kControl;
     struct stat st{};
     if (::lstat(control.c_str(), &st) != 0) {
@@ -189,6 +189,27 @@ bool Load(const fs::path& target, Json::Value& record) {
     const auto parent = Stat(target.parent_path());
     if (record["parent_device"].asUInt64() != static_cast<uint64_t>(parent.st_dev) ||
         record["parent_inode"].asUInt64() != static_cast<uint64_t>(parent.st_ino)) Fail("intent parent identity changed");
+    if (sync_completed && record["phase"] == "completed") {
+        // A successful rename may be visible even when Store's final fsync
+        // returned an error. Re-establish persistence before allowing Start;
+        // reading "completed" from the page cache alone is insufficient.
+        // The completion validator ran before this record was published. If
+        // it survived an unacknowledged write, it is safe to roll it forward
+        // once these syncs succeed. Prepared/partial records still block.
+        Fd parent_fd(::open(target.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+        struct stat opened_parent{};
+        if (parent_fd.value < 0 || ::fstat(parent_fd.value, &opened_parent) != 0 ||
+            opened_parent.st_dev != parent.st_dev || opened_parent.st_ino != parent.st_ino) Fail("parent identity changed");
+        if (::fsync(file.value) != 0 || ::fsync(dir.value) != 0 || ::fsync(parent_fd.value) != 0) {
+            Fail("completed intent durability unresolved");
+        }
+        const auto named_control = Stat(control);
+        struct stat named_file{};
+        if (named_control.st_dev != opened.st_dev || named_control.st_ino != opened.st_ino ||
+            ::fstatat(dir.value, "intent.json", &named_file, AT_SYMLINK_NOFOLLOW) != 0 ||
+            named_file.st_dev != st.st_dev || named_file.st_ino != st.st_ino ||
+            named_file.st_size != st.st_size) Fail("completed intent identity changed");
+    }
     return true;
 }
 
@@ -243,7 +264,7 @@ bool MaintenanceJournal::SameTarget(const std::string& a, const std::string& b) 
 int MaintenanceJournal::StartupGate(const std::string& input, Json::Value* info) {
     try {
         Json::Value record;
-        if (!Load(Target(input), record)) {
+        if (!Load(Target(input), record, true)) {
             if (info) (*info)["phase"] = "none";
             return NODECORE_OK;
         }
@@ -299,7 +320,18 @@ int MaintenanceJournal::CompleteUnchanged() {
             return NODECORE_ERROR_MAINTENANCE_VALIDATION;
         }
         Json::Value current;
-        if (!Load(target, current) || current != record_) return NODECORE_ERROR_MAINTENANCE_VALIDATION;
+        if (!Load(target, current, true)) return NODECORE_ERROR_MAINTENANCE_VALIDATION;
+        if (current["phase"] == "completed") {
+            // Retry by the same owner after publication succeeded but its
+            // acknowledgement failed. Compare every binding, and revalidate
+            // unchanged contents above; never accept another operation's receipt.
+            auto expected = record_;
+            expected["phase"] = "completed";
+            if (current != expected) return NODECORE_ERROR_MAINTENANCE_VALIDATION;
+            record_ = std::move(current);
+            return NODECORE_OK;
+        }
+        if (current != record_) return NODECORE_ERROR_MAINTENANCE_VALIDATION;
         auto completed = record_;
         completed["phase"] = "completed";
         Store(completed);

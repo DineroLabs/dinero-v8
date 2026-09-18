@@ -45,6 +45,53 @@ not demand an unchanged chain after subsequent normal operation resumes.
 JSON integer representations are normalized after parsing so small positive
 device/inode values compare consistently with their in-memory UInt64 values.
 
+### Unacknowledged completion and restart
+
+An I/O error does not prove that the preceding rename had no effect. In
+particular, publication can succeed before the control-directory fsync fails.
+The original owner retains its token, but a different process can see either
+the prepared record or the already-published completed record. No finite
+sequence of additional marker writes can guarantee that an error response
+always means the final marker is absent. The recovery contract must recognize
+both valid states rather than treating a failed acknowledgement as an undo.
+
+For this read-only plan, the unchanged-content validator finishes before a
+completed record is published. Startup still blocks on prepared, partial or
+malformed records. For a valid completed receipt it now synchronizes the opened
+record, control directory and parent directory, rechecks the named identities,
+and blocks if persistence cannot be established. A surviving verified receipt
+may therefore roll forward once sync succeeds, even if its original caller
+did not receive success. This is a clarification of the earlier blanket claim
+that every completion I/O error must leave a prepared barrier on disk.
+
+The original owner can also retry Finish: the on-disk completed receipt must
+match every field of that owner's expected receipt, and target identity and
+unchanged inventory are revalidated. Another operation's receipt or modified
+target is rejected. A retry never blindly rewrites completed back to prepared.
+This does not define a recovery policy for partial deletion or CF relocation;
+those plans need their own validators before they can publish completion.
+
+`NodeCoreJournalFaults` compiles the production journal source unchanged into
+a separate test object, replacing POSIX calls only in that object. The normal
+NodeCore library has no environment-controlled fault switch or hook. Tests
+cover write errors/ENOSPC/zero writes, short writes and EINTR, rename failures
+including an effect followed by a lost acknowledgement, each sync boundary,
+and abrupt process exit before/after preparation and completion write/sync/rename followed by
+exec of a fresh reader. They use synthetic files and preserve their exact
+bytes. These are syscall/process-failure tests, not a power-cut/storage-cache
+emulator or iOS durability qualification.
+
+Native follow-up (2026-09-18): the two new assertions first failed against the
+unchanged journal. Removing the startup persistence check and, independently,
+the matching-completion retry each reproduces its own assertion failure in a
+successfully built executable. Both controls were restored. The final fault
+suite passes 44 cases. The four linked NodeCore suites pass all 108 checks
+(snapshot proofs/roots, wallet recovery, lifecycle and ownership); a separate
+default-OFF build passes its 21 startup-gate/capability checks. Symbol inspection
+confirms the shipped library contains none of the fault-adapter functions.
+The Linux full Tests lane explicitly runs the new suite; Linux qualification
+of this follow-up is still required.
+
 The inspection inventory is deliberately bounded to 64 MiB and 4,096 entries
 for synthetic qualification directories. It hashes paths, file types/modes and
 regular-file contents. Symlinks and special files are rejected. It is not a
@@ -121,12 +168,11 @@ capture was exercised locally. Fresh Linux qualification remains pending.
 
 1. Define the reset allowlist, protected wallets/import anchors and typed outcome
    integration with Swift. Test cancellation through actual worker completion.
-2. Complete the I/O fault and power-loss matrix, including every write, rename
-   and sync boundary. Current write-error testing fails before publication. In
-   particular, a completed rename followed by failed directory fsync has an
-   uncertain durability outcome: the process keeps its lease, but a new process
-   may observe the verified completed receipt. Do not equate the current test
-   with proof that every possible I/O error preserves a restart barrier.
+2. Extend beyond the qualified write/rename/sync and process-exit cases to real
+   power-loss/storage reordering, close/open errors,
+   and platform-specific persistence behavior. Partial staging remains blocked;
+   no generic repair/removal of an unexplained record is implemented. A valid
+   completed receipt can roll forward only after persistence succeeds as above.
 3. Qualify path replacement, real closure failures and abnormal worker exit.
    Existing inode checks do not fence raw filesystem tools or another process.
 4. Decide the cross-process/mobile owner enforcement and binary rollback policy;
