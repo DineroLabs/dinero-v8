@@ -5,8 +5,9 @@
 // Designed for Swift interop via direct C function calls.
 //
 // Thread safety:
-//   - All functions are thread-safe (internally synchronized)
-//   - Event callback fires on an internal thread — dispatch to main queue in Swift
+//   - Lifecycle and query functions serialize internally.
+//   - Event callbacks execute inline on the emitting thread. Dispatch callback
+//     work asynchronously; do not synchronously reenter lifecycle/query APIs.
 //   - node_rpc_call() may block; call from background queue
 //
 // Memory:
@@ -124,8 +125,14 @@ typedef void (*nodecore_event_callback_t)(
  * Initialize and start the embedded node.
  *
  * Creates RocksDB in datadir, connects to P2P network, begins sync.
- * This is an async operation — returns immediately. Monitor progress
- * via the event callback.
+ * Blocks while initializing and waiting for startup. The current confirmation
+ * loop waits up to 30s, but initialization and cleanup can take longer; this is
+ * not a hard deadline. Call off the UI thread. Sync continues after return.
+ *
+ * Success does not imply snapshot import is complete: a fresh import can remain
+ * pending until headers arrive. Later wallet recovery can reopen the configured
+ * snapshot even after import completes. Keep the selected snapshot/manifest
+ * generation immutable and available; startup return does not release it.
  *
  * @param datadir     Absolute path to node data directory
  *                    (e.g., ".../Application Support/Dinero/node")
@@ -153,9 +160,11 @@ int32_t nodecore_start(const char* datadir, const char* config_json);
  * Gracefully stop the node.
  *
  * Flushes databases, disconnects peers, stops all services.
- * Blocks until shutdown is complete (with 10s timeout).
+ * Blocks through worker join and DaemonApp destruction. There is no 10s timeout.
  *
- * Safe to call from any thread. Safe to call if not running (returns OK).
+ * Safe to call if not running (returns OK). Do not call synchronously from an
+ * event callback. Completion does not reserve the datadir for external work:
+ * another caller can start immediately afterward.
  *
  * @return NODECORE_OK on success
  */
@@ -163,6 +172,9 @@ int32_t nodecore_stop(void);
 
 /**
  * Check if the node is currently running.
+ * Observational only: false may be visible while shutdown still owns database
+ * handles. Neither false nor a completed stop grants filesystem-maintenance
+ * ownership.
  */
 bool nodecore_is_running(void);
 

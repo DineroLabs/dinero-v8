@@ -8,9 +8,13 @@ namespace auth {
 class AuthStore;
 }
 class WalletManager;
+class ChainDB;
 }
 
 namespace dinero::rpc {
+
+// ChainDB arguments are borrowed from the active daemon context for the
+// synchronous import/rescan call; these handlers must not retain them globally.
 
 /**
  * Wallet import/export RPC handlers
@@ -62,7 +66,7 @@ din::Json RpcExportPrivateKey(const din::Json& params,
  *   - message: string
  */
 din::Json RpcImportMnemonic(const din::Json& params, 
-                            dinero::WalletManager* wallet_manager);
+                            dinero::WalletManager* wallet_manager, dinero::ChainDB* chain_db);
 
 /**
  * Export wallet's mnemonic seed phrase (requires unlocked wallet)
@@ -128,7 +132,7 @@ din::Json RpcImportEncryptedKey(const din::Json& params,
  *   - message: string
  */
 din::Json RpcImportTaprootDescriptor(const din::Json& params,
-                                      dinero::WalletManager* wallet_manager);
+                                     dinero::WalletManager* wallet_manager, dinero::ChainDB* chain_db);
 
 /**
  * Explicit one-time migration of legacy HD wallet sidecar.

@@ -99,6 +99,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DDINERO_USE_VENDORED_DEPS=ON \
             -DENABLE_GRPC=OFF \
+            -DBUILD_NODECORE=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
@@ -132,6 +133,33 @@ jobs:
       # to become an unexecuted test.
       - name: Execution-gate parser self-test
         run: python3 scripts/ci/test_check_mandatory_tests_execute.py
+
+      # Build and call the production FFI; the inline RuntimeGuards unit test
+      # alone cannot qualify DaemonApp/ChainDB shutdown or snapshot readers.
+      - name: Real NodeCore lifecycle and snapshot consumers
+        run: |
+          failed=0
+          mkdir -p build-tests/Testing/nodecore-runtime
+          for t in NodeCoreRuntimeLifecycle NodeCoreSnapshotConsumers; do
+            ctest --test-dir build-tests --no-tests=error --output-on-failure \
+              --output-log "build-tests/Testing/nodecore-runtime/${t}.ctest.log" \
+              -R "^${t}$" || failed=1
+          done
+          exit "$failed"
+
+      - name: Upload NodeCore runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodecore-runtime-${{ github.sha }}
+          path: |
+            build-tests/Testing/nodecore-runtime/**/checks.json
+            build-tests/Testing/nodecore-runtime/**/nodecore*.log
+            build-tests/Testing/nodecore-runtime/**/replies*.jsonl
+            build-tests/Testing/nodecore-runtime/**/controller-failure.txt
+            build-tests/Testing/nodecore-runtime/*.ctest.log
+          if-no-files-found: warn
+          retention-days: 14
 
       # Execution gate. check_ctest_integrity proves a registered test is
       # RUNNABLE; this proves it is RUN. Three high-value tests were

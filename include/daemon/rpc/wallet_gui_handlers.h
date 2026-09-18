@@ -1,6 +1,7 @@
 #pragma once
 
 #include "din_json.h"
+#include <cstdint>
 
 namespace dinero {
     class WalletManager;
@@ -17,7 +18,10 @@ namespace dinero::rpc {
 // Params: word_count (12/24), passphrase (optional), password (required),
 //         policy (optional, must be "bip86")
 // Returns: {mnemonic, fingerprint, first_address}
-din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wallet_manager);
+// The owning service supplies its current height. Standalone wallet callers
+// without a chain use zero; never consult a process-global ChainDB pointer.
+din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wallet_manager,
+                            uint32_t birth_height = 0);
 
 // Restore HD wallet from BIP39 mnemonic (GUI-compatible)
 // Params: mnemonic, passphrase (optional), password (optional),

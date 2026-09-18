@@ -7,7 +7,6 @@
 #include "wallet/bip39.h"
 #include "common/logger.h"
 #include "consensus/coin_type.h"
-#include "storage/chain_direct.h"     // For g_chain_db_direct (birthday height)
 #include "external/bech32/bech32.hpp"  // For address decoding
 #include <array>
 #include <cstring>
@@ -333,7 +332,8 @@ void TryRollbackWalletCreate(dinero::WalletManager* wallet_manager, const std::s
 
 namespace dinero::rpc {
 
-din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wallet_manager) {
+din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wallet_manager,
+                            uint32_t birth_height) {
     din::Json result;
     
     try {
@@ -474,13 +474,6 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
 
         // Store birth_height = current chain tip for fast future restoration
         {
-            uint32_t birth_height = 0;
-            if (dinero::g_chain_db_direct) {
-                auto tip_result = dinero::g_chain_db_direct->getTip();
-                if (tip_result.status() == dinero::Status::Ok) {
-                    birth_height = tip_result.value().height;
-                }
-            }
             sqlite3* wdb = wallet_manager->getCurrentDatabase();
             if (wdb) {
                 const char* sql = "INSERT OR REPLACE INTO sync_meta (id, birth_height, gap_limit) VALUES (1, ?, 20)";
