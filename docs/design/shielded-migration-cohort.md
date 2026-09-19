@@ -42,7 +42,8 @@ an `.reindex.tmp` companion, or the sibling `.nodecore-maintenance-v1` control
 directory causes refusal. This intentionally does not reinterpret a maintenance
 prototype record as permission to migrate. Nonempty SQLite `-wal`/`-journal`
 companions also refuse; the migrator never checkpoints or recovers them itself.
-An empty sidecar is retained. SQLite contents are opaque to this layer.
+An empty sidecar is retained. The [eligibility extension](shielded-migration-eligibility.md)
+now inspects SQLite lifecycle and provenance read-only after this byte inventory.
 
 ## Resume and publication
 
@@ -74,14 +75,17 @@ Local test-first evidence: the previous engine passed five controls but failed
 companion digest binding, recovery barrier or companion recheck causes its
 targeted behavioral test to fail. All 55 existing engine cases still pass.
 
-## Remaining eligibility and release gates
+## Eligibility extension and remaining release gates
 
-- Parse external SQLite lifecycle/provenance with bounded read-only access;
-  refuse incomplete promotion/import/reorg and unknown/ambiguous state.
+The [eligibility extension](shielded-migration-eligibility.md) adds bounded
+SQLite inspection, protected-base ancestry checks and actual Utreexo
+reconstruction/proof comparisons on generated migrated stores. The original
+30 cases above remain; the expanded suite has 85. Its limits remain explicit.
+
 - Bind the selected network/profile and canonical ancestry. Mainnet/regtest
   share a genesis hash, so a genesis check alone is not a network proof.
-- Discover protected bases across ChainDB and external metadata; reconstruct
-  required forest states and demonstrate Utreexo proof equivalence.
+- Extend the implemented protected-base discovery/ancestry checks with a
+  pre-migration reconstruction audit of required forest states and proofs.
 - Bind external configured snapshot inputs, binary/datadir pairing, rollback
   selection and disk-headroom policy in a qualified operator tool.
 - Qualify real stopped copies, Linux and relevant filesystem faults, then

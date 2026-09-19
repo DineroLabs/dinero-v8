@@ -188,6 +188,8 @@ uint64_t LE(const std::string& value, size_t offset, size_t count) {
 struct Inventory {
     std::string digest;
     uint64_t selected = 0;
+    uint32_t height = 0;
+    uint256 tip;
 };
 Inventory InspectOriginal(const Store& source, const ShieldedMigrationLimits& limits) {
     Require(source.families.size() == 9 && !source.Get("meta", kLayout) && !source.Get("meta", kJournal),
@@ -243,7 +245,55 @@ Inventory InspectOriginal(const Store& source, const ShieldedMigrationLimits& li
         sh::ComputeNullifierAccumulator(nullifiers), anchors.SerializeBytes());
     Require(root && LE(shielded, 68, 8) == tree.Size() && LE(shielded, 76, 8) == nullifiers.size() &&
             std::memcmp(shielded.data() + 36, root->data, 32) == 0, "shielded state root/count mismatch");
+    result.height = height; result.tip = hash;
     result.digest = digest.Finish(); return result;
+}
+// Validate external base claims while the original's real RocksDB lock is
+// owned, before opening the candidate writable. Height indexes are not an
+// ancestry authority: walk stored headers back from the active tip identity.
+void CheckProtectedBases(const Store& source, const Inventory& inventory,
+                         const detail::ExternalMigrationState& external) {
+    std::map<uint32_t, std::optional<std::string>> targets;
+    auto add = [&](uint32_t height, const std::optional<std::string>& hash) {
+        Require(height <= inventory.height, "protected base is above active tip");
+        auto [it, inserted] = targets.emplace(height, hash);
+        if (!inserted && hash) {
+            Require(!it->second || *it->second == *hash, "conflicting protected-base identities"); it->second = hash;
+        }
+    };
+    if (external.promoted_base) {
+        const auto& base = *external.promoted_base;
+        Require(source.Get("utreexo", "Massumeutxo_promoted:" + base.hash) == std::optional<std::string>("1"),
+                "fully-validated base lacks completed ChainDB promotion");
+        add(base.height, base.hash);
+    }
+    if (external.wallet_base_height) add(*external.wallet_base_height, {});
+    const auto prebase = source.Get("prebase_coins", "M:base");
+    if (prebase) {
+        Require(prebase->size() == 69 && (*prebase)[0] == 64, "invalid pre-base marker encoding");
+        Reader reader(*prebase); const auto hash = reader.readString(); const auto height = reader.read<uint32_t>();
+        Require(reader.eof() && hash != std::string(64, '0') && std::all_of(hash.begin(), hash.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }), "invalid pre-base marker identity");
+        add(height, hash);
+    } else source.Scan("prebase_coins", [](const rocksdb::Slice&, const rocksdb::Slice&) {
+        throw std::runtime_error("pre-base records lack their base marker");
+    });
+    if (targets.empty()) return;
+    const auto lowest = targets.begin()->first;
+    Require(uint64_t(inventory.height) - lowest + 1 <= external.max_ancestry_headers, "protected ancestry exceeds budget");
+    auto hash = inventory.tip;
+    for (uint32_t height = inventory.height;; --height) {
+        const auto bytes = source.Need("headers", "h" + hash.GetHex());
+        Require(bytes.size() == kHeaderWireSize + sizeof(uint32_t) + sizeof(arith_uint256), "invalid ancestry header encoding");
+        Reader reader(bytes); BlockHeader header{}; Deserialize(reader, header);
+        const auto stored_height = reader.read<uint32_t>(); (void)reader.read<arith_uint256>();
+        Require(reader.eof() && stored_height == height && header.GetHash() == hash, "protected ancestry header identity mismatch");
+        const auto target = targets.find(height);
+        if (target != targets.end() && target->second)
+            Require(*target->second == hash.GetHex(), "protected base is not on active ancestry");
+        if (height == lowest) break;
+        hash = header.prev_block_hash;
+    }
 }
 struct Journal {
     std::string operation, source, phase;
@@ -306,7 +356,7 @@ void Compare(const Store& original, const Store& candidate, const Journal& journ
 static ShieldedMigrationResult RunMigration(const fs::path& original_path, const fs::path& candidate_path,
     const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint,
     rocksdb::Env* environment, const std::string& cohort_binding = {},
-    const std::function<void()>& outer_ownership = {}) {
+    const std::function<void()>& outer_ownership = {}, const detail::ExternalMigrationState* external = nullptr) {
     ShieldedMigrationResult result;
     try {
 #if defined(__APPLE__) && TARGET_OS_IOS
@@ -327,6 +377,7 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         Store original, candidate;
         original.Open(original_id.path, original_lock, true); candidate.Open(candidate_id.path, candidate_lock, true);
         const auto inventory = InspectOriginal(original, limits);
+        if (external) CheckProtectedBases(original, inventory, *external);
         Digest binding; binding.Field("shielded-copy-v1"); original_id.Bind(binding); candidate_id.Bind(binding); binding.Field(inventory.digest);
         // A bound migration cannot resume through the unbound engine.
         if (!cohort_binding.empty()) { binding.Field("datadir-companions-v1"); binding.Field(cohort_binding); }
@@ -409,9 +460,9 @@ ShieldedMigrationResult MigrateShieldedStateCopy(const fs::path& original, const
 }
 
 ShieldedMigrationResult detail::MigrateBoundCopy(const fs::path& original, const fs::path& candidate,
-    const ShieldedMigrationLimits& limits, bool apply, const std::string& binding,
+    const ShieldedMigrationLimits& limits, bool apply, const std::string& binding, const detail::ExternalMigrationState& external,
     const std::function<void()>& ownership, const std::function<void(const char*)>& checkpoint) {
-    return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default(), binding, ownership);
+    return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default(), binding, ownership, &external);
 }
 
 #ifdef DINERO_SHIELDED_MIGRATION_FAULT_TESTING

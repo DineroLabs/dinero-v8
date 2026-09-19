@@ -7418,6 +7418,7 @@ if(UNIX AND NOT IOS)
     tests/storage/test_shielded_migration_cohort.cpp
     src/storage/shielded_migration.cpp
     src/storage/shielded_migration_cohort.cpp
+    src/storage/shielded_migration_metadata.cpp
     src/daemon/datadir_guard.cpp
     src/common/logger.cpp
   )
