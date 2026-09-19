@@ -7396,6 +7396,25 @@ target_include_directories(test_shielded_state_storage PRIVATE
 add_test(NAME ShieldedStateStorage COMMAND test_shielded_state_storage)
 set_tests_properties(ShieldedStateStorage PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
 
+# Generated offline-copy qualification only. Not installed or linked into
+# dinerod/NodeCore: whole-datadir eligibility and cutover remain separate gates.
+if(UNIX AND NOT IOS)
+  add_executable(test_shielded_state_migration
+    tests/storage/test_shielded_state_migration.cpp
+    src/storage/shielded_migration.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(test_shielded_state_migration PRIVATE
+    dinero_chainstate dinero_shielded dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+  )
+  target_include_directories(test_shielded_state_migration PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  )
+  target_compile_definitions(test_shielded_state_migration PRIVATE DINERO_SHIELDED_MIGRATION_FAULT_TESTING=1)
+  add_test(NAME ShieldedStateMigration COMMAND test_shielded_state_migration)
+  set_tests_properties(ShieldedStateMigration PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+endif()
+
 # #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
 # restart-mid-backfill "too far ahead of cursor 1" deadlock (phone 2026-07-07).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_accept_window.cpp)
