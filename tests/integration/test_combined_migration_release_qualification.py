@@ -230,6 +230,40 @@ def wait(predicate, timeout=120, desc="condition"):
     raise RuntimeError(f"timeout waiting for {desc}" + (f" (last error: {last_exc})" if last_exc else ""))
 
 
+def wait_for_wallet_sync(which):
+    """A block accepted via submitblock is validated and connected to the
+    chain SYNCHRONOUSLY — but the wallet's own awareness of that block's
+    new outputs is NOT: WalletWorker::QueueBlockConnected
+    (src/wallet/wallet_worker.cpp) queues each connected block for
+    processing on a separate background thread. Calling wallet.
+    signrawtransaction against a UTXO the wallet has not yet indexed can
+    return a transaction that LOOKS successful but was never actually
+    signed (confirmed by direct reproduction on Linux CI: an empty
+    scriptSig, no witness data at all, decoding the exact rejected raw hex
+    from a real CombinedMigrationReleaseQualification run — 'Script
+    validation failed for input 0: invalid script format'). This never
+    reproduced across ~10 local macOS runs, consistent with a race that a
+    faster machine (less incidental delay between mining and signing) hits
+    more often. Same shape as the wallet-indexing race #790 fixed for
+    shielded input selection, for a plain transparent coinbase instead.
+
+    wallet.listunspent's own handler (methods_wallet_context.cpp) already
+    calls mgr.WaitForHeight(chain_tip_height, 5000ms) before reading the
+    wallet DB — calling it once forces that same wait as a side effect.
+    Deliberately NOT polling for the target txid/vout to actually appear
+    in the response: WalletManager::listUnspentUTXOs has its own explicit
+    "skip immature coinbase outputs" filter (hardcoded 100, matching
+    COINBASE_MATURITY elsewhere in this codebase) that unconditionally
+    excludes any immature coinbase from the result regardless of whether
+    the wallet has indexed it — confirmed by direct reproduction: a 30s
+    poll for presence never succeeded even locally, because the phase 6
+    coinbase this is used for is immature BY DESIGN (that's what phase 6
+    tests). Presence there can never distinguish "not yet indexed" from
+    "indexed but correctly filtered as immature" — only the RPC's forced
+    wait itself is a usable signal here."""
+    rpc(which, "wallet.listunspent")
+
+
 def start(which, extra=()):
     datadir = WORK / which
     datadir.mkdir(exist_ok=True)
@@ -1038,6 +1072,10 @@ def main():
     maturity_coinbase_height = height("candidate")
     maturity_block_hash = tip_hash("candidate")
     maturity_txid = rpc("candidate", "getblock", [maturity_block_hash, 1])["tx"][0]
+    # See wait_for_wallet_sync's own docstring: closes the WalletWorker
+    # indexing race between "block accepted" and "wallet knows this
+    # coinbase's key/script well enough to actually sign a spend of it."
+    wait_for_wallet_sync("candidate")
     maturity_addr = rpc("candidate", "wallet.getnewaddress")
     maturity_addr = maturity_addr["address"] if isinstance(maturity_addr, dict) else maturity_addr
     # 99.99 out of the 100 DIN coinbase — a 0.01 DIN (1000000 una) fee,
