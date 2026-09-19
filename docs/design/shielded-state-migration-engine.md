@@ -95,13 +95,16 @@ The [companion wrapper](shielded-migration-cohort.md) now holds the native
 daemon locks and binds frozen external chain-file inventories into migration
 resumption. It is also noninstalled. It preserves the distinction between
 ChainDB READY and a qualified complete datadir; semantic external-state and
-release eligibility checks below remain outstanding.
+release eligibility checks below remain outstanding. The
+[external eligibility extension](shielded-migration-eligibility.md) now checks
+SQLite lifecycle/provenance and protected-base ancestry before writable open;
+it also adds generated migrated-store forest/proof qualification.
 
 ## Remaining gates before an operator tool or release
 
-- Semantic qualification of the frozen cohort: external SQLite provenance,
-  snapshot/lifecycle metadata, block/rev consistency and configured inputs
-  outside the companion wrapper's inventory.
+- Full frozen-cohort qualification beyond the implemented SQLite and ancestry
+  checks: historical commitment/reconstruction, block/rev consistency and
+  configured inputs outside the companion wrapper's inventory.
 - Network/genesis binding, unfinished promotion/import/reindex/recovery refusal,
   protected-base discovery and Utreexo reconstruction/proof equivalence against
   the original. Matching forest-tip identity alone does not prove these.

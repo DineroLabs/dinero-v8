@@ -1,5 +1,6 @@
 #include "storage/shielded_migration_cohort.h"
 #include "shielded_migration_internal.h"
+#include "shielded_migration_metadata.h"
 #include "crypto/sha256.h"
 #include <algorithm>
 #include <array>
@@ -193,6 +194,7 @@ ShieldedMigrationResult MigrateShieldedDatadirCopy(const fs::path& original, con
         Lease source(source_path), copy(candidate_path);
         const auto source_files = Capture(source, companion_limits, true), copy_files = Capture(copy, companion_limits, true);
         Require(source_files.digest == copy_files.digest, "original/candidate companion mismatch");
+        const auto external = detail::InspectMigrationMetadata(source.path, companion_limits);
         Digest binding; source.Bind(binding); copy.Bind(binding); binding.Field(source_files.digest);
         auto verify = [&](bool hash) {
             Verify(source_files, Capture(source, companion_limits, hash), hash);
@@ -200,7 +202,7 @@ ShieldedMigrationResult MigrateShieldedDatadirCopy(const fs::path& original, con
         };
         verify(false);
         result = detail::MigrateBoundCopy(source.path / "blockchain/chaindb", copy.path / "blockchain/chaindb",
-            database_limits, apply, binding.Finish(), [&] { verify(false); }, [&](const char* stage) {
+            database_limits, apply, binding.Finish(), external, [&] { verify(false); }, [&](const char* stage) {
                 if (checkpoint) checkpoint(stage);
                 if (std::string_view(stage) == "before_ready") verify(true);
             });
