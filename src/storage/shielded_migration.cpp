@@ -1,4 +1,5 @@
 #include "storage/shielded_migration.h"
+#include "shielded_migration_internal.h"
 #include "common/serialization.h"
 #include "consensus/chainwork.h"
 #include "consensus/shielded/shielded_root.h"
@@ -304,7 +305,8 @@ void Compare(const Store& original, const Store& candidate, const Journal& journ
 
 static ShieldedMigrationResult RunMigration(const fs::path& original_path, const fs::path& candidate_path,
     const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint,
-    rocksdb::Env* environment) {
+    rocksdb::Env* environment, const std::string& cohort_binding = {},
+    const std::function<void()>& outer_ownership = {}) {
     ShieldedMigrationResult result;
     try {
 #if defined(__APPLE__) && TARGET_OS_IOS
@@ -317,12 +319,17 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         Require(!Nested(original_id.path, candidate_id.path) && !Nested(candidate_id.path, original_id.path) &&
                 !(original_id.device == candidate_id.device && original_id.inode == candidate_id.inode), "overlapping database paths");
         LockedEnv original_lock(original_id.path, environment), candidate_lock(candidate_id.path, environment);
-        auto identity_check = [&] { original_id.Recheck(); candidate_id.Recheck(); original_lock.Recheck(); candidate_lock.Recheck(); };
+        auto identity_check = [&] {
+            original_id.Recheck(); candidate_id.Recheck(); original_lock.Recheck(); candidate_lock.Recheck();
+            if (outer_ownership) outer_ownership();
+        };
         identity_check();
         Store original, candidate;
         original.Open(original_id.path, original_lock, true); candidate.Open(candidate_id.path, candidate_lock, true);
         const auto inventory = InspectOriginal(original, limits);
         Digest binding; binding.Field("shielded-copy-v1"); original_id.Bind(binding); candidate_id.Bind(binding); binding.Field(inventory.digest);
+        // A bound migration cannot resume through the unbound engine.
+        if (!cohort_binding.empty()) { binding.Field("datadir-companions-v1"); binding.Field(cohort_binding); }
         Journal journal{binding.Finish(), inventory.digest, "PREPARING", inventory.selected, 0};
         result.operation = journal.operation; result.source_digest = journal.source; result.selected_rows = journal.rows;
         const auto persisted = candidate.Get("meta", kJournal), layout = candidate.Get("meta", kLayout);
@@ -399,6 +406,12 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
 ShieldedMigrationResult MigrateShieldedStateCopy(const fs::path& original, const fs::path& candidate,
     const ShieldedMigrationLimits& limits, bool apply, const std::function<void(const char*)>& checkpoint) {
     return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default());
+}
+
+ShieldedMigrationResult detail::MigrateBoundCopy(const fs::path& original, const fs::path& candidate,
+    const ShieldedMigrationLimits& limits, bool apply, const std::string& binding,
+    const std::function<void()>& ownership, const std::function<void(const char*)>& checkpoint) {
+    return RunMigration(original, candidate, limits, apply, checkpoint, rocksdb::Env::Default(), binding, ownership);
 }
 
 #ifdef DINERO_SHIELDED_MIGRATION_FAULT_TESTING

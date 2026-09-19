@@ -89,10 +89,19 @@ at copying/retirement/completion transitions, then resume in a fresh process.
 The injected Env is available only in the qualification build; the public engine
 cannot select it. Process exits and injected errors are not a power-loss model.
 
+## Outer datadir qualification layer
+
+The [companion wrapper](shielded-migration-cohort.md) now holds the native
+daemon locks and binds frozen external chain-file inventories into migration
+resumption. It is also noninstalled. It preserves the distinction between
+ChainDB READY and a qualified complete datadir; semantic external-state and
+release eligibility checks below remain outstanding.
+
 ## Remaining gates before an operator tool or release
 
-- Encompassing datadir ownership and a verified frozen cohort: external SQLite,
-  snapshot/lifecycle metadata, block/rev files, caches and recovery barriers.
+- Semantic qualification of the frozen cohort: external SQLite provenance,
+  snapshot/lifecycle metadata, block/rev consistency and configured inputs
+  outside the companion wrapper's inventory.
 - Network/genesis binding, unfinished promotion/import/reindex/recovery refusal,
   protected-base discovery and Utreexo reconstruction/proof equivalence against
   the original. Matching forest-tip identity alone does not prove these.
