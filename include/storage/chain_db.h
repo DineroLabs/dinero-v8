@@ -399,8 +399,9 @@ public:
 
     // Shielded tip marker: persisted alongside shielded frontier/nullifier state
     // so startup can verify that the loaded shielded state belongs to the
-    // active tip. This is the shielded analogue of ForestTipMarker, but the
-    // commitment lives only in local state today, not in the block header.
+    // active tip. shielded_root is CommitmentTree::Root(), as written by
+    // CurrentShieldedStateSnapshot. It is NOT the composite ComputeShieldedRoot
+    // consensus commitment and does not authenticate nullifier/anchor contents.
     struct ShieldedTipMarker {
         int32_t height{0};
         uint256 block_hash;

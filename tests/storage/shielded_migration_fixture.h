@@ -10,7 +10,8 @@ void ValidSeed(const fs::path& path, bool empty = false) {
     Seed(path, false, std::nullopt);
     ChainDB db; Setup(db.init(path) == Status::Ok, "open legacy fixture");
     const auto token = ChainWriteToken::CreateForTesting();
-    sh::CommitmentTree tree; sh::Hash note{}; note[31] = 7; tree.Append(note);
+    sh::CommitmentTree tree;
+    if (!empty) { sh::Hash note{}; note[31] = 7; tree.Append(note); }
     sh::AnchorHistory anchors; anchors.RecordRoot(3, tree.Root());
     std::vector<sh::NullifierEntry> entries;
     if (empty) Setup(db.deleteAllShieldedNullifiers(token).ok(), "empty nullifiers");
@@ -21,8 +22,9 @@ void ValidSeed(const fs::path& path, bool empty = false) {
     marker.height = 3; marker.block_hash.data[0] = 3; marker.tree_size = tree.Size();
     marker.nullifier_count = entries.size();
     const auto root = tree.Root();
-    marker.shielded_root = *sh::ComputeShieldedRootFromParts(
-        {root.begin(), root.end()}, tree.Size(), sh::ComputeNullifierAccumulator(entries), anchors.SerializeBytes());
+    // CurrentShieldedStateSnapshot persists the commitment-tree root here,
+    // not ComputeShieldedRoot's composite consensus hash. Match the writer.
+    std::memcpy(marker.shielded_root.data, root.data(), root.size());
     Setup(db.setTip(token, marker.block_hash, 3, arith_uint256(1)) == Status::Ok, "tip");
     Setup(db.putShieldedTipMarker(token, marker) == Status::Ok, "shielded marker");
     ChainDB::ForestTipMarker forest; forest.height = 3; forest.block_hash = marker.block_hash;
