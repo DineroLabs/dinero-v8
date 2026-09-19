@@ -4,6 +4,7 @@
 #include "daemon/peer_connection.h"
 #include "common/logger.h"
 #include "consensus/outpoint.h"
+#include "consensus/block_reward.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/utreexo_stump.h"
 #include "crypto/sha256.h"
@@ -482,6 +483,21 @@ bool StatelessNode::ValidateAndApplyProofInto(
     consensus::UtreexoForest& forest,
     consensus::UtreexoStump& stump,
     std::string& err_out) {
+    // Bind external and ephemeral input values before trusting them as fees.
+    // The cryptographic batch proof below still authenticates these targets.
+    if (!ValidateStatelessMaturityMetadata(
+            block, proof_msg.block_height, proof_msg.proof_data.spend_proof.targets,
+            &proof_msg.proof_data.spent_outputs, "[StatelessNode] batch proof")) {
+        err_out = "batch-proof-spent-output-metadata-invalid";
+        return false;
+    }
+    // Monetary validity precedes the first forest/stump mutation, including
+    // speculative branch validation.
+    if (!consensus::CheckBlockRewardFromSpentOutputs(
+            block, proof_msg.block_height, &proof_msg.proof_data.spent_outputs,
+            err_out)) {
+        return false;
+    }
     // 1. Block hash matches proof message
     uint256 block_hash = block.GetHash();
     if (block_hash != proof_msg.block_hash) {
@@ -673,6 +689,23 @@ bool StatelessNode::ValidateWithTransitionProof(
     const consensus::UtreexoTransitionProof& tp,
     uint64_t peer_id
 ) {
+    // Bind supplied values to this proof's deletion targets (or the real
+    // earlier output for an ephemeral input) before using them as fee credit.
+    // tp.verify() below remains the cryptographic authority for those targets.
+    if (!ValidateStatelessMaturityMetadata(
+            block, proof_msg.block_height, tp.deletion_targets,
+            &proof_msg.proof_data.spent_outputs, "[StatelessNode-TP]")) {
+        return false;
+    }
+    // A transition proof authenticates a forest update, not permission to mint
+    // its coinbase. Reject bad accounting before even the cached stump moves.
+    std::string reward_error;
+    if (!consensus::CheckBlockRewardFromSpentOutputs(
+            block, proof_msg.block_height, &proof_msg.proof_data.spent_outputs,
+            reward_error)) {
+        g_logger.error("[StatelessNode-TP] " + reward_error);
+        return false;
+    }
     auto hashHex = [](const consensus::UtreexoHash& h) -> std::string {
         if (h.empty()) return "(empty)";
         std::string hex;
@@ -1092,6 +1125,22 @@ void StatelessNode::RewindToCheckpoint(uint32_t height, const consensus::Utreexo
                  }());
 }
 
+bool StatelessNode::CheckReplayReward(
+    const Block& block, uint32_t block_height,
+    const std::vector<consensus::UtreexoHash>& spend_targets,
+    const std::vector<consensus::SpentOutputData>* spent_outputs,
+    std::string& error
+) {
+    if (!ValidateStatelessMaturityMetadata(
+            block, block_height, spend_targets, spent_outputs,
+            "[StatelessNode] replay reward preflight")) {
+        error = "replay-spent-output-metadata-invalid";
+        return false;
+    }
+    return consensus::CheckBlockRewardFromSpentOutputs(
+        block, block_height, spent_outputs, error);
+}
+
 bool StatelessNode::ReplayBlock(
     const Block& block,
     uint32_t block_height,
@@ -1099,12 +1148,14 @@ bool StatelessNode::ReplayBlock(
     const std::vector<consensus::SpentOutputData>* spent_outputs
 ) {
     try {
-        if (!ValidateStatelessMaturityMetadata(
-                block,
-                block_height,
-                spend_targets,
-                spent_outputs,
-                "[StatelessNode] ReplayBlock")) {
+        // Replay may be the first canonical application of a stored body;
+        // proof/forest validity alone does not authorize its coinbase reward.
+        // Missing legacy spend metadata is a recovery requirement, not a
+        // license to guess fees. This is read-only and precedes all mutation.
+        std::string reward_error;
+        if (!CheckReplayReward(
+                block, block_height, spend_targets, spent_outputs, reward_error)) {
+            g_logger.error("[StatelessNode] ReplayBlock: " + reward_error);
             return false;
         }
 

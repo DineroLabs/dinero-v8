@@ -85,6 +85,7 @@ public:
     static bool ParseTransaction(const uint8_t* data, size_t dataSize, size_t& offset, dinero::Transaction& tx);
 
 private:
+    friend class BlockAcceptorFeeTestAccess;
     // Block parsing and validation
     static ParsedBlock ParseBlockFromHex(const std::string& blockHex);
     static bool ValidateBlockHeader(const ParsedBlock& block, std::string& error);
@@ -100,7 +101,7 @@ private:
     static bool ValidateBlockSigops(const ParsedBlock& block, std::string& error);
     static bool ValidateContextual(const ParsedBlock& block, uint64_t height, std::string& error);
     static bool ValidateCheckpoint(const ParsedBlock& block, uint64_t height, std::string& error);
-    static bool ValidateCoinbase(const std::string& coinbaseTx, uint64_t expectedHeight, uint64_t total_fee_budget, std::string& error);
+    static bool ValidateCoinbase(const std::string& coinbaseTx, uint64_t expectedHeight, std::string& error);
 
     // Block operations
     static bool ConnectBlock(const ParsedBlock& block, uint64_t height, const std::string& parentChainwork, std::string& error, bool updateTip = true);

@@ -64,47 +64,11 @@ std::string ActiveUtxoBackendName(const IConsensusUTXOSet* utxo_set) {
     return typeid(*utxo_set).name();
 }
 
-bool HasConfidentialInputs(const std::vector<UTXOEntry>& input_utxos) {
-    return std::any_of(input_utxos.begin(), input_utxos.end(), [](const UTXOEntry& utxo) {
-        return utxo.is_confidential;
-    });
-}
-
-bool UsesConfidentialValueSemantics(const Transaction& tx, const std::vector<UTXOEntry>& input_utxos) {
-    return tx.HasConfidentialOutputs() || HasConfidentialInputs(input_utxos);
-}
-
-bool UsesShieldedValueSemantics(const Transaction& tx) {
-    return Transaction::IsShieldedVersion(tx.version) ||
-           !tx.shielded_bundle_bytes.empty();
-}
-
-bool ComputeValidatedTransactionFee(const Transaction& tx,
-                                    const std::vector<UTXOEntry>& input_utxos,
-                                    uint64_t total_input_value,
-                                    uint64_t total_output_value,
-                                    uint64_t& fee,
-                                    std::string& error) {
-    if (UsesConfidentialValueSemantics(tx, input_utxos) ||
-        (UsesShieldedValueSemantics(tx) && tx.HasExplicitFee())) {
-        if (!tx.HasExplicitFee()) {
-            error = UsesShieldedValueSemantics(tx)
-                ? "Shielded transaction missing explicit fee"
-                : "Confidential transaction missing explicit fee";
-            return false;
-        }
-        fee = tx.GetExplicitFee();
-        return true;
-    }
-
-    if (total_output_value > total_input_value) {
-        error = "Outputs exceed inputs (negative fee)";
-        return false;
-    }
-
-    fee = total_input_value - total_output_value;
-    return true;
-}
+using reward_detail::HasConfidentialInputs;
+using reward_detail::UsesShieldedValueSemantics;
+using reward_detail::ComputeValidatedTransactionFee;
+using reward_detail::AddRewardAmount;
+using reward_detail::CheckCoinbaseReward;
 
 bool ComputeTransparentValueDelta(uint64_t total_input_value,
                                   uint64_t total_output_value,
@@ -833,8 +797,8 @@ bool BlockValidator::ApplyBlockShieldedSection(
 // lockstep — the delta-parity unit suite (ShieldedBlockSectionDeltaParity)
 // pins the equivalence.
 //
-// Deliberately skipped relative to the forward loop (not delta-relevant; the
-// block was fully validated when first stored): script/signature validation,
+// Deliberately skipped relative to the forward loop (not delta-relevant;
+// storage is not evidence of full validity): script/signature validation,
 // double-spend tracking, coinbase-maturity evaluation, ephemeral spent-output
 // cross-checks, and all UTXO/forest mutation. Nothing that feeds the delta
 // (input-value walk, output sum, fee, bundle validation) is skipped.
@@ -848,9 +812,9 @@ bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
 
     deltas_out.clear();
 
-    // A block with no shielded-semantics txs produces no deltas, so it needs
-    // no spend metadata at all. This keeps legacy hash-only CSN replay
-    // records (no spent_outputs) working for transparent-only reorgs.
+    // A block with no shielded-semantics txs produces no shielded deltas and
+    // needs no metadata for this computation. The separate reward preflight
+    // still requires metadata for transparent inputs, including legacy replay.
     bool any_shielded = false;
     for (size_t i = 1; i < block.vtx.size(); ++i) {
         if (UsesShieldedValueSemantics(block.vtx[i])) {
@@ -1814,7 +1778,10 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             }
             pending_shielded_deltas.push_back(tx_delta);
         }
-        total_fees += tx_fee;
+        if (!AddRewardAmount(tx_fee, total_fees,
+                             "block-reward-fee-total-overflow", error)) {
+            return false;
+        }
     }
 
     // Phase 8: Verify all spent_outputs were consumed (stateless validation sanity check)
@@ -1829,16 +1796,9 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
         }
     }
 
-    // Validate coinbase reward
-    // Subsidy is purely height-based per Dinero monetary policy (no total_issued dependency)
-    uint64_t subsidy = GetBlockSubsidy(height);
-    uint64_t expected_reward = subsidy + total_fees;
-    
-    uint64_t coinbase_output_value = SumOutputs(coinbase_tx);
-    
-    if (coinbase_output_value > expected_reward) {
-        error = "Coinbase pays too much: " + std::to_string(coinbase_output_value) + 
-               " > " + std::to_string(expected_reward);
+    // The normal connect and CSN replay paths share one exact reward
+    // comparator. Every coinbase output counts; all totals are checked.
+    if (!CheckCoinbaseReward(coinbase_tx, height, total_fees, error)) {
         return false;
     }
     

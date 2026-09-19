@@ -2486,3 +2486,10 @@ set_tests_properties(PowEnforcedRegtest PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
     TIMEOUT 600 RUN_SERIAL TRUE)
+
+add_test(NAME BlockAcceptorFeeLifecycle
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_block_acceptor_fees.py)
+set_tests_properties(BlockAcceptorFeeLifecycle PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;mining;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
