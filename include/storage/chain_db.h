@@ -440,7 +440,9 @@ public:
     // than `height`. Used by DisconnectTip to roll back disconnected
     // blocks. Implemented as a range scan + per-key Delete because
     // rocksdb::WriteBatch::DeleteRange is not enabled on this CF;
-    // returns the count of rows deleted.
+    // returns the count of rows deleted. A malformed N key encountered in the
+    // requested suffix returns Corruption. Scan/staging errors leave both
+    // persisted rows and any caller-supplied batch (including savepoints) intact.
     StatusOr<uint64_t> deleteShieldedNullifiersAboveHeight(
         const ChainWriteToken& token,
         uint32_t height,
@@ -451,6 +453,8 @@ public:
     // set so a restart's rehydration cannot resurrect the pre-cutover pool.
     // Stage into the same WriteBatch as the cutover block's setTip so the
     // purge is atomic with the tip advance. Returns the count of rows deleted.
+    // Malformed N keys return Corruption, with the same no-partial-staging
+    // guarantee as deleteShieldedNullifiersAboveHeight.
     StatusOr<uint64_t> deleteAllShieldedNullifiers(
         const ChainWriteToken& token,
         rocksdb::WriteBatch* wb = nullptr);
@@ -473,11 +477,15 @@ public:
     // order. Used at startup to populate NullifierSet's in-memory
     // map and by SerializeContent to produce the DSRH preimage.
     // Returning false from the callback aborts the scan early.
+    // An encountered malformed N key returns Corruption; it is never skipped.
+    // Callers must discard partial visitor output on error. An early callback
+    // stop does not validate the unvisited suffix.
     using ShieldedNullifierVisitor =
         std::function<bool(uint32_t height, const uint8_t* nullifier_32)>;
     Status forEachShieldedNullifier(const ShieldedNullifierVisitor& visit) const;
 
-    // Total count of nullifier rows. O(N) scan.
+    // Total count of nullifier rows. O(N) scan. A malformed N key returns
+    // Corruption rather than a successful partial count. Read errors propagate.
     StatusOr<uint64_t> countShieldedNullifiers() const;
 
     // Wipe all Utreexo checkpoints + checksums + tip marker (for auto-recovery).

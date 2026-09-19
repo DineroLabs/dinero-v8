@@ -7338,6 +7338,19 @@ target_include_directories(test_chaindb_open_safety PRIVATE
 add_test(NAME ChainDBOpenSafety COMMAND test_chaindb_open_safety)
 set_tests_properties(ChainDBOpenSafety PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
 
+add_executable(test_shielded_nullifier_scan_safety
+  tests/storage/test_shielded_nullifier_scan_safety.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_shielded_nullifier_scan_safety PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_shielded_nullifier_scan_safety PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME ShieldedNullifierScanSafety COMMAND test_shielded_nullifier_scan_safety)
+set_tests_properties(ShieldedNullifierScanSafety PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
+
 # #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
 # restart-mid-backfill "too far ahead of cursor 1" deadlock (phone 2026-07-07).
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_csn_accept_window.cpp)

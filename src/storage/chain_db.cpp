@@ -2249,6 +2249,39 @@ namespace {
 // duplicate the byte locally. Keep in lockstep with the header.
 constexpr uint8_t kShieldedNullifierPrefix = 'N';
 
+bool HasShieldedNullifierPrefix(const rocksdb::Slice& key) {
+    return !key.empty() && static_cast<uint8_t>(key.data()[0]) == kShieldedNullifierPrefix;
+}
+
+// Stage a complete requested suffix or leave the batch unchanged. In particular,
+// corruption after valid rows must not leave partial deletes in a caller's
+// block/reorg batch. Our savepoint is nested inside any caller savepoints.
+rocksdb::Status StageShieldedNullifierDeletes(
+    rocksdb::Iterator& it, const rocksdb::Slice& seek_key,
+    rocksdb::ColumnFamilyHandle* cf, rocksdb::WriteBatch& batch, uint64_t& deleted) {
+    batch.SetSavePoint();
+    auto status = rocksdb::Status::OK();
+    deleted = 0;
+    for (it.Seek(seek_key); it.Valid(); it.Next()) {
+        const auto key = it.key();
+        if (!HasShieldedNullifierPrefix(key)) break;
+        if (key.size() != 37) {
+            status = rocksdb::Status::Corruption("Malformed shielded nullifier key");
+            break;
+        }
+        status = batch.Delete(cf, key);
+        if (!status.ok()) break;
+        ++deleted;
+    }
+    // Valid()==false can mean a read error, not just end-of-range.
+    if (status.ok()) status = it.status();
+    if (!status.ok()) {
+        const auto rollback = batch.RollbackToSavePoint();
+        return rollback.ok() ? status : rollback;
+    }
+    return batch.PopSavePoint();
+}
+
 // Build the lexicographically-sortable rocksdb key for a single
 // shielded nullifier row. Layout:
 //   [PREFIX_SHIELDED_NULLIFIER (1)] [height_be_4 (4)] [nullifier (32)]
@@ -2329,42 +2362,12 @@ StatusOr<uint64_t> ChainDB::deleteShieldedNullifiersAboveHeight(
     seek_key[3] = static_cast<char>((scan_from >>  8) & 0xFF);
     seek_key[4] = static_cast<char>( scan_from        & 0xFF);
 
-    uint64_t deleted = 0;
-
-    if (wb != nullptr) {
-        for (it->Seek(seek_key); it->Valid(); it->Next()) {
-            const auto k = it->key();
-            if (k.size() != 37 ||
-                static_cast<uint8_t>(k.data()[0]) != kShieldedNullifierPrefix) {
-                break;  // left the prefix
-            }
-            wb->Delete(cf_[idx_utreexo_].get(), k);
-            ++deleted;
-        }
-        // RocksDB iterators set Valid()=false on either end-of-range
-        // or read error. Without status() the caller cannot tell the
-        // two apart — a mid-scan I/O error would otherwise return Ok
-        // with a partial count.
-        if (!it->status().ok()) {
-            return convertRocksDBStatus(it->status());
-        }
-        return deleted;
-    }
-
     rocksdb::WriteBatch local_batch;
-    for (it->Seek(seek_key); it->Valid(); it->Next()) {
-        const auto k = it->key();
-        if (k.size() != 37 ||
-            static_cast<uint8_t>(k.data()[0]) != kShieldedNullifierPrefix) {
-            break;
-        }
-        local_batch.Delete(cf_[idx_utreexo_].get(), k);
-        ++deleted;
-    }
-    if (!it->status().ok()) {
-        return convertRocksDBStatus(it->status());
-    }
-    if (deleted == 0) return uint64_t{0};
+    uint64_t deleted = 0;
+    const auto staged = StageShieldedNullifierDeletes(
+        *it, seek_key, cf_[idx_utreexo_].get(), wb ? *wb : local_batch, deleted);
+    if (!staged.ok()) return convertRocksDBStatus(staged);
+    if (wb != nullptr || deleted == 0) return deleted;
 
     rocksdb::WriteOptions opts;
     opts.sync = true;
@@ -2388,38 +2391,12 @@ StatusOr<uint64_t> ChainDB::deleteAllShieldedNullifiers(
     std::string seek_key;
     seek_key.push_back(static_cast<char>(kShieldedNullifierPrefix));
 
-    uint64_t deleted = 0;
-
-    if (wb != nullptr) {
-        for (it->Seek(seek_key); it->Valid(); it->Next()) {
-            const auto k = it->key();
-            if (k.size() != 37 ||
-                static_cast<uint8_t>(k.data()[0]) != kShieldedNullifierPrefix) {
-                break;  // left the prefix
-            }
-            wb->Delete(cf_[idx_utreexo_].get(), k);
-            ++deleted;
-        }
-        if (!it->status().ok()) {
-            return convertRocksDBStatus(it->status());
-        }
-        return deleted;
-    }
-
     rocksdb::WriteBatch local_batch;
-    for (it->Seek(seek_key); it->Valid(); it->Next()) {
-        const auto k = it->key();
-        if (k.size() != 37 ||
-            static_cast<uint8_t>(k.data()[0]) != kShieldedNullifierPrefix) {
-            break;
-        }
-        local_batch.Delete(cf_[idx_utreexo_].get(), k);
-        ++deleted;
-    }
-    if (!it->status().ok()) {
-        return convertRocksDBStatus(it->status());
-    }
-    if (deleted == 0) return uint64_t{0};
+    uint64_t deleted = 0;
+    const auto staged = StageShieldedNullifierDeletes(
+        *it, seek_key, cf_[idx_utreexo_].get(), wb ? *wb : local_batch, deleted);
+    if (!staged.ok()) return convertRocksDBStatus(staged);
+    if (wb != nullptr || deleted == 0) return deleted;
 
     rocksdb::WriteOptions opts;
     opts.sync = true;
@@ -2481,15 +2458,11 @@ Status ChainDB::forEachShieldedNullifier(
     seek_key.push_back(static_cast<char>(kShieldedNullifierPrefix));
 
     for (it->Seek(seek_key); it->Valid(); it->Next()) {
+        if (!HasShieldedNullifierPrefix(it->key())) break;
         uint32_t height = 0;
         const uint8_t* nullifier_ptr = nullptr;
         if (!DecodeShieldedNullifierKey(it->key(), &height, &nullifier_ptr)) {
-            // Either malformed or we've left the prefix.
-            if (it->key().size() < 1 ||
-                static_cast<uint8_t>(it->key().data()[0]) != kShieldedNullifierPrefix) {
-                break;
-            }
-            continue;
+            return Status::Corruption;
         }
         if (!visit(height, nullifier_ptr)) {
             break;
@@ -2517,10 +2490,8 @@ StatusOr<uint64_t> ChainDB::countShieldedNullifiers() const {
     uint64_t count = 0;
     for (it->Seek(seek_key); it->Valid(); it->Next()) {
         const auto k = it->key();
-        if (k.size() != 37 ||
-            static_cast<uint8_t>(k.data()[0]) != kShieldedNullifierPrefix) {
-            break;
-        }
+        if (!HasShieldedNullifierPrefix(k)) break;
+        if (k.size() != 37) return Status::Corruption;
         ++count;
     }
     if (!it->status().ok()) {
