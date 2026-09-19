@@ -1083,6 +1083,9 @@ public:
     }
 
 private:
+    // Storage-layout startup regression exercises the actual loader without
+    // booting network/wallet services. No public runtime mutation API is added.
+    friend struct ShieldedStateStartupTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};
@@ -1090,6 +1093,7 @@ private:
     };
 
     bool LoadShieldedState();
+    bool LoadSeparatedShieldedState();
     bool PersistShieldedState() const;
     bool PersistImportedShieldedState(const uint256& base_hash, uint32_t base_height) const;
     ShieldedStateSnapshot CurrentShieldedStateSnapshot() const;

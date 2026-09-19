@@ -1961,7 +1961,7 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
                       " root=" + marker.shielded_root.GetHex());
 
         // Persist the anchor history to the rebuilt ChainDB — mirrors the live
-        // ConnectTip putUtreexoMeta("shielded_anchor_history"). The reindexer
+        // ConnectTip typed AnchorHistory record. The reindexer
         // reconstructs anchor_history in memory (RecordRoot per block above) but
         // otherwise never writes it to the rebuilt ChainDB, so the post-reindex
         // startup load found no blob and fell back to a stale flat file (or an
@@ -1972,7 +1972,7 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
         const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
         auto anchor_status =
-            chain_db_->putUtreexoMeta(token, "shielded_anchor_history", anchor_blob);
+            chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory, anchor_blob);
         if (anchor_status != Status::Ok) {
             g_logger.error("[reindex] Failed to persist shielded anchor history at height " +
                            std::to_string(final_tip_height_));
@@ -1994,7 +1994,7 @@ StatusOr<BlockReindexer::Stats> BlockReindexer::execute() {
         const std::string frontier_blob(frontier_bytes.begin(),
                                         frontier_bytes.end());
         auto frontier_status =
-            chain_db_->putUtreexoMeta(token, "shielded_frontier", frontier_blob);
+            chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier, frontier_blob);
         if (frontier_status != Status::Ok) {
             g_logger.error("[reindex] Failed to persist shielded frontier at height " +
                            std::to_string(final_tip_height_));

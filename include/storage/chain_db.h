@@ -357,6 +357,17 @@ public:
                           rocksdb::WriteBatch* wb = nullptr);
     StatusOr<std::string> getUtreexoMeta(const std::string& key) const;
 
+    // Canonical shielded records have their own access domain. Encodings are
+    // unchanged; legacy stores resolve these exact keys inside utreexo, while
+    // verified shielded-state-v1:READY stores resolve only shielded_state_v1.
+    // General Utreexo metadata access rejects these reserved keys in both layouts.
+    enum class ShieldedStateRecord { Frontier, AnchorHistory, LegacyAnchorImportMarker };
+    Status putShieldedState(const ChainWriteToken& token, ShieldedStateRecord record,
+                            const std::string& bytes, rocksdb::WriteBatch* wb = nullptr);
+    StatusOr<std::string> getShieldedState(ShieldedStateRecord record) const;
+    // Diagnostic layout query; not permission to reset or migrate a database.
+    bool hasSeparatedShieldedState() const { return db_ && cf_.size() == 10; }
+
     // CSN reorg: Spend targets stored in utreexo CF for forest replay
     Status putCSNSpendTargets(const ChainWriteToken& token, const uint256& block_hash,
                               const std::string& serialized_targets,
@@ -697,6 +708,12 @@ private:
     int idx_utxo_ = 6;
     int idx_utreexo_ = 7;  // Phase 2.1: Utreexo accumulator checkpoints
     int idx_prebase_coins_ = 8;  // Frozen AssumeUTXO snapshot coin records
+
+    // initAttempt validates the layout marker and resolves handles by name.
+    // This is the sole runtime routing choice; never fall back on a read miss.
+    rocksdb::ColumnFamilyHandle* shieldedStateHandle() const {
+        return cf_[hasSeparatedShieldedState() ? 9 : idx_utreexo_].get();
+    }
 
     // Key prefixes (1-byte tags)
     static constexpr uint8_t PREFIX_BLOCK = 'b';

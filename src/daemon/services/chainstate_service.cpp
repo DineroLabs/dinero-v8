@@ -979,6 +979,64 @@ bool ChainstateService::ResolveCanonicalBlockHash(uint32_t height,
     return false;
 }
 
+bool ChainstateService::LoadSeparatedShieldedState() {
+    // A READY layout cannot be repaired from a stale SQLite cache or legacy
+    // frontier/anchor file. Validate its complete canonical state before opening
+    // or clearing the cache. This is storage eligibility, not a consensus change.
+    const auto refuse = [&](const char* reason) {
+        if (logger_) logger_->error(std::string("[ChainstateService] READY shielded state refused: ") + reason);
+        return false;
+    };
+    const auto marker = chain_db_->getShieldedTipMarker();
+    const auto tip = chain_db_->getTip();
+    const auto count = chain_db_->countShieldedNullifiers();
+    if (!marker.ok() || !tip.ok() || !count.ok()) return refuse("unreadable canonical marker/tip/nullifiers");
+    if (marker.value().height < 0 ||
+        static_cast<uint32_t>(marker.value().height) != tip.value().height ||
+        marker.value().block_hash != tip.value().hash ||
+        marker.value().nullifier_count != count.value())
+        return refuse("canonical marker/tip/nullifier count mismatch");
+
+    const auto frontier = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
+    const auto anchors = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
+    if (!frontier.ok() || !anchors.ok()) return refuse("missing canonical frontier/anchors");
+    consensus::shielded::CommitmentTree tree;
+    consensus::shielded::AnchorHistory history;
+    if (!tree.DeserializeFrontier(reinterpret_cast<const uint8_t*>(frontier.value().data()), frontier.value().size()) ||
+        history.DeserializePersistenceBytes(std::vector<uint8_t>(anchors.value().begin(), anchors.value().end())) !=
+            consensus::shielded::AnchorHistory::IoResult::Ok)
+        return refuse("invalid canonical frontier/anchors; external fallback forbidden");
+    if (tree.Size() != marker.value().tree_size) return refuse("canonical tree size mismatch");
+
+    // Reuse the consensus accumulator and root encoding unchanged. Do not
+    // reserve memory from an untrusted marker count. Resource qualification of
+    // the final release includes this startup materialization (as for the
+    // existing CurrentShieldedStateSnapshot path).
+    std::vector<consensus::shielded::NullifierEntry> entries;
+    bool valid = true;
+    const auto scanned = chain_db_->forEachShieldedNullifier([&](uint32_t height, const uint8_t* nf) {
+        if (height > tip.value().height || entries.size() >= count.value()) {
+            valid = false;
+            return false;
+        }
+        consensus::shielded::NullifierEntry entry;
+        entry.height = height;
+        std::memcpy(entry.nullifier.data(), nf, entry.nullifier.size());
+        entries.push_back(entry);
+        return true;
+    });
+    if (scanned != Status::Ok || !valid || entries.size() != count.value())
+        return refuse("incomplete or inconsistent canonical nullifier scan");
+    const auto accumulator = consensus::shielded::ComputeNullifierAccumulator(std::move(entries));
+    const auto tree_root = tree.Root();
+    const auto root = consensus::shielded::ComputeShieldedRootFromParts(
+        std::vector<uint8_t>(tree_root.begin(), tree_root.end()), tree.Size(), accumulator, history.SerializeBytes());
+    if (!root || *root != marker.value().shielded_root) return refuse("canonical shielded root mismatch");
+    shielded_tree_ = std::move(tree);
+    shielded_anchor_history_ = std::move(history);
+    return true;
+}
+
 bool ChainstateService::LoadShieldedState() {
     // Publish the network decision once, before any shielded bundle can be
     // applied. Hooks inside consensus translation units read this flag rather
@@ -986,6 +1044,9 @@ bool ChainstateService::LoadShieldedState() {
     // dependency — gating one on Params() broke four test targets at link time.
     dinero::testing::CrashHooksEnabled().store(
         dinero::Params().network_id == "regtest");
+
+    const bool separated = chain_db_ && chain_db_->hasSeparatedShieldedState();
+    if (separated && !LoadSeparatedShieldedState()) return false;
 
     const std::string nullifier_path =
         (std::filesystem::path(datadir_) / "blockchain" / "shielded_nullifiers.db").string();
@@ -1041,7 +1102,17 @@ bool ChainstateService::LoadShieldedState() {
             return false;
         }
         const uint64_t chaindb_count = chaindb_count_result.value();
-        const uint64_t sqlite_count_before = shielded_nullifiers_.Size();
+        const auto sqlite_count = separated ? shielded_nullifiers_.TryCount()
+                                           : std::optional<uint64_t>(shielded_nullifiers_.Size());
+        if (!sqlite_count) return false;
+        const uint64_t sqlite_count_before = *sqlite_count;
+        if (separated && sqlite_count_before > 0 && shielded_nullifiers_.GetProvenance() ==
+                consensus::shielded::NullifierSet::Provenance::LegacyCandidate) {
+            if (logger_) logger_->error(
+                "[ChainstateService] READY layout with populated unstamped SQLite state; "
+                "preserving ambiguous evidence, refusing legacy promotion or cache overwrite");
+            return false;
+        }
 
         if (chaindb_count > 0) {
             // Mode B: ChainDB has rows → ChainDB is authoritative,
@@ -1376,7 +1447,11 @@ bool ChainstateService::LoadShieldedState() {
         }
     }
 
-    // Phase 3b option 1: shielded frontier read precedence:
+    // READY blobs were already decoded and checked before touching the cache.
+    // No legacy file or SQLite promotion can substitute for authoritative state.
+    if (separated) return true;
+
+    // Phase 3b option 1: legacy-layout shielded frontier read precedence:
     //   1. ChainDB blob under utreexo-meta key "shielded_frontier"
     //      (the new canonical home — written into the same atomic
     //      WriteBatch as the ShieldedTipMarker by ConnectTip /
@@ -1410,7 +1485,7 @@ bool ChainstateService::LoadShieldedState() {
 
     bool frontier_loaded_from_chaindb = false;
     if (chain_db_) {
-        const auto chaindb_blob = chain_db_->getUtreexoMeta("shielded_frontier");
+        const auto chaindb_blob = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
         if (chaindb_blob.ok()) {
             const std::string& blob = chaindb_blob.value();
             if (!blob.empty()) {
@@ -1488,12 +1563,10 @@ bool ChainstateService::LoadShieldedState() {
     // PersistShieldedState() at shutdown will write it to ChainDB
     // and stamp the sentinel. This is exactly the migration shape
     // the operator's six-step plan calls for in step 2.
-    constexpr const char* kAnchorHistoryKey       = "shielded_anchor_history";
-    constexpr const char* kAnchorHistoryMigrated  = "shielded_anchor_history_migrated_v1";
 
     bool anchor_history_loaded_from_chaindb = false;
     if (chain_db_) {
-        const auto chaindb_blob = chain_db_->getUtreexoMeta(kAnchorHistoryKey);
+        const auto chaindb_blob = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
         if (chaindb_blob.ok()) {
             const std::string& blob = chaindb_blob.value();
             std::vector<uint8_t> bytes(blob.begin(), blob.end());
@@ -1545,7 +1618,7 @@ bool ChainstateService::LoadShieldedState() {
     // Tag the sentinel name + key in a debug log so operators can
     // verify migration completion via getUtreexoMeta on the daemon.
     if (logger_ && chain_db_) {
-        const auto sentinel = chain_db_->getUtreexoMeta(kAnchorHistoryMigrated);
+        const auto sentinel = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::LegacyAnchorImportMarker);
         if (sentinel.ok()) {
             logger_->info(
                 "[ChainstateService] Anchor history ChainDB migration sentinel "
@@ -1588,8 +1661,6 @@ bool ChainstateService::PersistShieldedState() const {
     // crashes between (1) and (2), the next startup re-reads the
     // ChainDB blob, sees no sentinel, and re-stamps it on the next
     // shutdown — idempotent.
-    constexpr const char* kAnchorHistoryKey       = "shielded_anchor_history";
-    constexpr const char* kAnchorHistoryMigrated  = "shielded_anchor_history_migrated_v1";
 
     if (chain_db_) {
         // Persist the frontier to ChainDB as well as the flat file. ChainDB is
@@ -1603,7 +1674,7 @@ bool ChainstateService::PersistShieldedState() const {
             ChainWriteToken ftoken = ChainWriteToken::CreateForTesting();
             const std::string frontier_blob(frontier.begin(), frontier.end());
             const auto fput =
-                chain_db_->putUtreexoMeta(ftoken, "shielded_frontier", frontier_blob);
+                chain_db_->putShieldedState(ftoken, ChainDB::ShieldedStateRecord::Frontier, frontier_blob);
             if (fput != Status::Ok && logger_) {
                 logger_->warning(
                     "[ChainstateService] Failed to persist shielded frontier to "
@@ -1615,7 +1686,7 @@ bool ChainstateService::PersistShieldedState() const {
         const std::string blob(bytes.begin(), bytes.end());
         ChainWriteToken token = ChainWriteToken::CreateForTesting();
         const auto put_status =
-            chain_db_->putUtreexoMeta(token, kAnchorHistoryKey, blob);
+            chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory, blob);
         if (put_status != Status::Ok && logger_) {
             logger_->warning(
                 "[ChainstateService] Failed to persist anchor history to "
@@ -1625,7 +1696,7 @@ bool ChainstateService::PersistShieldedState() const {
             // Stamp the migration sentinel idempotently. The value
             // ("1") records the schema version a future migration
                 // would compare against if the format ever changes.
-            chain_db_->putUtreexoMeta(token, kAnchorHistoryMigrated, "1");
+            chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::LegacyAnchorImportMarker, "1");
         }
     }
 
@@ -1672,11 +1743,11 @@ bool ChainstateService::PersistImportedShieldedState(const uint256& base_hash,
     marker.shielded_root = snapshot.root;
     marker.tree_size = snapshot.tree_size;
     marker.nullifier_count = snapshot.nullifier_count;
-    if (chain_db_->putUtreexoMeta(token, "shielded_frontier",
+    if (chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier,
             std::string(frontier.begin(), frontier.end()), &batch) != Status::Ok ||
-        chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
+        chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory,
             std::string(anchors.begin(), anchors.end()), &batch) != Status::Ok ||
-        chain_db_->putUtreexoMeta(token, "shielded_anchor_history_migrated_v1", "1", &batch) != Status::Ok ||
+        chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::LegacyAnchorImportMarker, "1", &batch) != Status::Ok ||
         chain_db_->putShieldedTipMarker(token, marker, &batch) != Status::Ok) return false;
     return chain_db_->writeBatch(token, std::move(batch), /*sync=*/true) == Status::Ok;
 }
@@ -13449,7 +13520,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
                 undo.pre_block_shielded_frontier.has_value()) {
                 const auto fb = shielded_tree_.SerializeFrontier();
                 const std::string frontier_blob(fb.begin(), fb.end());
-                if (chain_db_->putUtreexoMeta(token, "shielded_frontier",
+                if (chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier,
                                               frontier_blob, &coin_batch) != Status::Ok) {
                     if (logger_) {
                         logger_->error("[DisconnectTip-CSN] Failed to stage rolled-back "
@@ -13459,7 +13530,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
                 }
                 const auto ab = shielded_anchor_history_.SerializePersistenceBytes();
                 const std::string anchor_blob(ab.begin(), ab.end());
-                if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
+                if (chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory,
                                               anchor_blob, &coin_batch) != Status::Ok) {
                     if (logger_) {
                         logger_->error("[DisconnectTip-CSN] Failed to stage rolled-back "
@@ -13925,7 +13996,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         const std::string frontier_blob(frontier_bytes.begin(),
                                         frontier_bytes.end());
         const auto frontier_status =
-            chain_db_->putUtreexoMeta(token, "shielded_frontier",
+            chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier,
                                       frontier_blob, &rollback_batch);
         if (frontier_status != Status::Ok) {
             logger_->error("[DisconnectTip] Failed to stage shielded frontier rollback, status=" +
@@ -13936,7 +14007,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
         const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
         const auto anchor_status =
-            chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
+            chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory,
                                       anchor_blob, &rollback_batch);
         if (anchor_status != Status::Ok) {
             logger_->error("[DisconnectTip] Failed to stage anchor history rollback, status=" +
@@ -14966,7 +15037,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             const std::string frontier_blob(frontier_bytes.begin(),
                                             frontier_bytes.end());
             const auto frontier_status =
-                chain_db_->putUtreexoMeta(token, "shielded_frontier",
+                chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier,
                                           frontier_blob, &utxo_batch);
             if (frontier_status != Status::Ok) {
                 if (active_batch.has_value()) active_batch->Abort();
@@ -14994,7 +15065,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
             const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
             const auto anchor_status =
-                chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
+                chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory,
                                           anchor_blob, &utxo_batch);
             if (anchor_status != Status::Ok) {
                 if (active_batch.has_value()) active_batch->Abort();
@@ -16240,7 +16311,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
 
             const auto frontier_bytes = shielded_tree_.SerializeFrontier();
             const std::string frontier_blob(frontier_bytes.begin(), frontier_bytes.end());
-            if (chain_db_->putUtreexoMeta(token, "shielded_frontier", frontier_blob, &utxo_batch) != Status::Ok) {
+            if (chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier, frontier_blob, &utxo_batch) != Status::Ok) {
                 if (logger_) {
                     logger_->error("[CommitBookkeeping] Failed to stage shielded frontier blob at height " +
                                   std::to_string(block_index->height));
@@ -16249,7 +16320,7 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
             }
             const auto anchor_bytes = shielded_anchor_history_.SerializePersistenceBytes();
             const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
-            if (chain_db_->putUtreexoMeta(token, "shielded_anchor_history", anchor_blob, &utxo_batch) != Status::Ok) {
+            if (chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory, anchor_blob, &utxo_batch) != Status::Ok) {
                 if (logger_) {
                     logger_->error("[CommitBookkeeping] Failed to stage anchor history blob at height " +
                                   std::to_string(block_index->height));
@@ -17904,7 +17975,7 @@ bool ChainstateService::PromoteValidatedHistory(
         {
             const auto frontier_bytes = engine.ShieldedTree()->SerializeFrontier();
             const std::string frontier_blob(frontier_bytes.begin(), frontier_bytes.end());
-            auto st = chain_db_->putUtreexoMeta(token, "shielded_frontier",
+            auto st = chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier,
                                                 frontier_blob, &batch);
             if (st != Status::Ok) {
                 error = "promotion: shielded frontier blob stage failed";
@@ -17912,7 +17983,7 @@ bool ChainstateService::PromoteValidatedHistory(
             }
             const auto anchor_bytes = engine.ShieldedAnchors()->SerializePersistenceBytes();
             const std::string anchor_blob(anchor_bytes.begin(), anchor_bytes.end());
-            st = chain_db_->putUtreexoMeta(token, "shielded_anchor_history",
+            st = chain_db_->putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory,
                                            anchor_blob, &batch);
             if (st != Status::Ok) {
                 error = "promotion: anchor history blob stage failed";
