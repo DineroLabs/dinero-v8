@@ -18,8 +18,10 @@ struct ShieldedCompanionLimits {
 
 // Native, noninstalled qualification layer. Holds the daemon's existing
 // dinerod.lock on both datadirs while the inner engine owns both ChainDB LOCKs.
-// Binds unchanged blockchain companions, blocks, headers and checkpoints into
-// the migration identity. Wallets, secrets, logs and runtime PID files are not
+// Binds unchanged blockchain companions, blocks, headers, checkpoints and the
+// optional PoW profile marker into the migration identity. Marker preservation
+// does not authenticate the requested network or consensus configuration.
+// Wallets, secrets, logs and runtime PID files are not
 // copied, hashed or changed. Existing lock files are required, never created.
 //
 // Includes bounded read-only SQLite lifecycle/provenance checks and protected
