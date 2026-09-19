@@ -5657,6 +5657,36 @@ add_test(NAME MempoolTemplateMaturity COMMAND test_template_maturity)
 set_tests_properties(MempoolTemplateMaturity PROPERTIES
   LABELS "mempool;mining;reorg;utreexo" TIMEOUT 30)
 
+add_executable(test_wallet_input_coins
+  tests/mempool/test_wallet_input_coins.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+target_link_libraries(test_wallet_input_coins PRIVATE
+  dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+  dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+  GTest::gtest GTest::gtest_main
+)
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_wallet_input_coins PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_wallet_input_coins build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_wallet_input_coins)
+target_include_directories(test_wallet_input_coins PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_wallet_input_coins PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME WalletInputCoins COMMAND test_wallet_input_coins)
+set_tests_properties(WalletInputCoins PROPERTIES
+  LABELS "mempool;wallet;reorg;utreexo" TIMEOUT 30)
+
 add_executable(benchmark_covenant_validation
   tests/benchmarks/benchmark_covenant_validation.cpp
 )
