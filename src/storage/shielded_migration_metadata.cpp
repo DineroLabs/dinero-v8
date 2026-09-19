@@ -119,7 +119,7 @@ ExternalMigrationState InspectMigrationMetadata(const std::filesystem::path& roo
     Require(!active || *active == "false", "active or ambiguous AssumeUTXO import");
     const auto state = get("assumeutxo_lifecycle_state");
     Require(!state || *state == "disabled" || *state == "fully_validated", "incomplete or unknown AssumeUTXO lifecycle");
-    ExternalMigrationState result{{}, {}, limits.max_ancestry_headers};
+    ExternalMigrationState result{{}, {}, limits.max_ancestry_headers, limits};
     if (state && *state == "fully_validated") {
         const auto flag = get("assumeutxo_fully_validated"), hash = get("assumeutxo_lc_base_block"), height = get("assumeutxo_lc_base_height");
         Require(flag && *flag == "true" && hash && Hex(*hash) && *hash != std::string(64, '0') && height,

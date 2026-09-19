@@ -11,6 +11,7 @@ struct ExternalMigrationState {
     std::optional<ProtectedMigrationBase> promoted_base;
     std::optional<uint32_t> wallet_base_height;
     uint64_t max_ancestry_headers;
+    ShieldedCompanionLimits limits;
 };
 ExternalMigrationState InspectMigrationMetadata(
     const std::filesystem::path& datadir, const ShieldedCompanionLimits& limits);

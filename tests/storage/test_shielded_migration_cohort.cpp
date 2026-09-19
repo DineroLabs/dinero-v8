@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sqlite3.h>
 #include "storage/forest_restore.h"
+#include "crypto/sha256.h"
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/utreexo_delta_codec.h"
 #include "consensus/utreexo_canonical_roots_activation.h"
@@ -17,7 +18,7 @@ using namespace shielded_store_fixture;
 using dinero::daemon::DatadirGuard;
 using dinero::storage::MigrateShieldedDatadirCopy;
 constexpr dinero::storage::ShieldedMigrationLimits db_limits{32768, 1, 16384, 100};
-constexpr dinero::storage::ShieldedCompanionLimits file_limits{100, 1024 * 1024, 100, 4096, 1000000, 100};
+constexpr dinero::storage::ShieldedCompanionLimits file_limits{100, 1024 * 1024, 100, 4096, 1000000, 100, 65536, 1000, 100, 100};
 std::string executable;
 
 void Write(const fs::path& path, const std::string& bytes) {
@@ -34,13 +35,14 @@ void Sql(const fs::path& path, const std::string& sql) {
     const std::string error = sqlite3_errmsg(raw); sqlite3_close(raw);
     if (rc != SQLITE_OK) throw std::runtime_error("fixture SQL: " + error);
 }
+struct Fixture;
+void SeedDefaultForest(Fixture&);
 struct Fixture {
     CanonicalTemp temp;
     fs::path original = temp.path / "original", candidate = temp.path / "candidate";
-    Fixture() {
+    explicit Fixture(bool seed_forest = true) {
         fs::create_directories(original / "blockchain"); fs::create_directories(candidate / "blockchain");
         ValidSeed(original / "blockchain/chaindb");
-        Clone(original / "blockchain/chaindb", candidate / "blockchain/chaindb");
         for (const auto& root : {original, candidate}) {
             DatadirGuard guard; std::string error; Setup(guard.Acquire(root, error), "seed daemon lock");
             guard.Release();
@@ -55,6 +57,7 @@ struct Fixture {
         fs::create_symlink("missing-secret", original / "wallets");
         Write(original / "dinerod.pid", "30000000\n");
         Write(candidate / "dinerod.pid", "30000001\n");
+        if (seed_forest) SeedDefaultForest(*this);
     }
     auto Run(bool apply = true, const std::function<void(const char*)>& hook = {}) {
         return MigrateShieldedDatadirCopy(original, candidate, db_limits, file_limits, apply, hook);
@@ -258,11 +261,12 @@ ForestData SeedForest(Fixture& fixture) {
     db.close(); fs::remove_all(fixture.candidate / "blockchain/chaindb"); Clone(path, fixture.candidate / "blockchain/chaindb");
     return result;
 }
+void SeedDefaultForest(Fixture& f) { (void)SeedForest(f); }
 void SetMetadata(Fixture& f, const std::string& key, const std::string& value) {
     for (const auto& root : {f.original, f.candidate}) Sql(root / "blockchain/utxo", "INSERT OR REPLACE INTO utxo_metadata VALUES('" + key + "','" + value + "');");
 }
 void ProtectedBase(const std::string& mode) {
-    Fixture f; const auto forest = SeedForest(f); auto budget = file_limits;
+    Fixture f(false); const auto forest = SeedForest(f); auto budget = file_limits;
     const auto hash = forest.hashes[5].GetHex();
     if (mode != "wallet" && mode != "prebase" && mode != "bad_prebase" && mode != "malformed_prebase" && mode != "orphan_prebase") {
         SetMetadata(f,"assumeutxo_lifecycle_state","fully_validated"); SetMetadata(f,"assumeutxo_fully_validated","true");
@@ -297,7 +301,7 @@ void ProtectedBase(const std::string& mode) {
     CHECK(result.ok == good); if (!good) CHECK(Inspect(f.candidate / "blockchain/chaindb") == before);
 }
 void ForestParity(const std::string& mode) {
-    Fixture f; const auto data = SeedForest(f); CHECK(f.Run().ok);
+    Fixture f(false); const auto data = SeedForest(f); CHECK(f.Run().ok);
     // Reopen through the actual reader on both sides. These are generated
     // disposable stores: opening them here is qualification, not a migrator step.
     for (const auto& path : {f.original / "blockchain/chaindb", f.candidate / "blockchain/chaindb"}) {
@@ -326,18 +330,79 @@ void ForestParity(const std::string& mode) {
     }
 }
 
+std::string ForestKey(char prefix, uint32_t height) {
+    std::string key(5, '\0'); key[0] = prefix;
+    for (unsigned i=0;i<4;++i) key[1+i] = static_cast<char>(height >> (24-8*i));
+    return key;
+}
+void ForestAudit(const std::string& fault) {
+    Fixture f(false); const auto data = SeedForest(f); auto budget=file_limits;
+    if (fault=="budget_zero") budget.max_forest_leaves=0;
+    if (fault=="budget_leaves") budget.max_forest_leaves=2;
+    if (fault=="budget_records") budget.max_forest_record_bytes=128;
+    if (fault=="budget_replay") budget.max_replay_blocks=11;
+    if (fault=="budget_checkpoints") budget.max_checkpoints=2;
+    if (fault=="budget_headers") budget.max_ancestry_headers=12;
+    if (fault == "base_below_history") SetMetadata(f,"wallet_snapshot_recovery_base_height","2");
+    for (const auto& root : {f.original,f.candidate}) {
+        Raw raw(root / "blockchain/chaindb", legacy);
+        auto erase = [&](const std::string& cf,const std::string& key) {
+            Setup(raw.db->Delete({},raw.cf(cf),key).ok(),"remove forest fixture row");
+        };
+        if (fault == "missing_delta") erase("default",dinero::MakeUtreexoDeltaUndoKey(data.hashes[7]));
+        else if (fault == "corrupt_delta") raw.put("default",dinero::MakeUtreexoDeltaUndoKey(data.hashes[11]),"corrupt");
+        else if (fault == "delta_count") raw.put("default",dinero::MakeUtreexoDeltaUndoKey(data.hashes[7]), std::string("\1",1)+std::string(8,'\0')+std::string(9,'\xff'));
+        else if (fault == "wrong_checkpoint") raw.put("utreexo",ForestKey('U',5),std::string(data.states[6].begin(),data.states[6].end()));
+        else if (fault == "corrupt_checkpoint") raw.put("utreexo",ForestKey('U',5),"broken");
+        else if (fault == "corrupt_genesis") raw.put("utreexo",ForestKey('U',0),"broken");
+        else if (fault == "nonempty_genesis") raw.put("utreexo",ForestKey('U',0),std::string(data.states[1].begin(),data.states[1].end()));
+        else if (fault == "valid_checksum") {
+            dinero::crypto::CSHA256 hasher; hasher.Write(data.states[5].data(),data.states[5].size());
+            const auto hash=hasher.Finalize(); raw.put("utreexo",ForestKey('C',5),std::string(reinterpret_cast<const char*>(hash.data()),hash.size()));
+        }
+        else if (fault == "checkpoint_count") {
+            auto bytes=data.states[5]; for (size_t i=2;i<10;++i) bytes[i]=255;
+            raw.put("utreexo",ForestKey('U',5),std::string(bytes.begin(),bytes.end()));
+        }
+        else if (fault == "bad_checksum") raw.put("utreexo",ForestKey('C',5),std::string(32,'x'));
+        else if (fault == "orphan_checksum") raw.put("utreexo",ForestKey('C',6),std::string(32,'x'));
+        else if (fault == "malformed_key") raw.put("utreexo","Ubad","preserve this");
+        else if (fault == "future_checkpoint") raw.put("utreexo",ForestKey('U',13),std::string(data.states[12].begin(),data.states[12].end()));
+        else if (fault == "no_checkpoint") for (unsigned h:{0,5,10}) erase("utreexo",ForestKey('U',h));
+        else if (fault == "base_below_history") erase("utreexo",ForestKey('U',0));
+        else if (fault == "missing_header") erase("headers","h"+data.hashes[7].GetHex());
+        else if (fault == "tip_root") {
+            auto value = raw.rows()["meta"]["forest_tip"]; value[36] ^= 1; raw.put("meta","forest_tip",value);
+        } else if (fault == "legacy_v2") {
+            auto value=data.states[5]; value.erase(value.begin()+1); value[0]=2;
+            raw.put("utreexo",ForestKey('U',5),std::string(value.begin(),value.end()));
+        } else if (fault == "stale_index") raw.put("height",dinero::KH(7),std::string(64,'c'));
+        else if (fault != "healthy" && fault.rfind("budget_",0)!=0) Setup(false,"unknown audit case");
+    }
+    const bool good=fault=="healthy" || fault=="legacy_v2" || fault=="stale_index" || fault=="valid_checksum";
+    const auto original=Inspect(f.original / "blockchain/chaindb"), candidate=Inspect(f.candidate / "blockchain/chaindb");
+    const auto result=MigrateShieldedDatadirCopy(f.original,f.candidate,db_limits,budget,true);
+    if (good && !result.ok) std::cerr << result.error << '\n';
+    CHECK(result.ok==good); CHECK(result.ready==good);
+    CHECK(Inspect(f.original / "blockchain/chaindb")==original);
+    if (!good) CHECK(Inspect(f.candidate / "blockchain/chaindb")==candidate);
+}
+
 int main(int argc, char** argv) {
+    std::cout << std::unitbuf;
     executable = fs::canonical(argv[0]);
+    dinero::SelectParams(dinero::Chain::REGTEST);
     if (argc == 3 && std::string(argv[1]) == "--acquire") {
         DatadirGuard guard; std::string error; return guard.Acquire(argv[2], error) ? 0 : 10;
     }
     if (argc == 4 && std::string(argv[1]) == "--interrupt") {
         const auto result = MigrateShieldedDatadirCopy(argv[2], argv[3], db_limits, file_limits, true,
             [](const char* stage) { if (std::string(stage) == "after_copy") _exit(86); });
+        if (!result.ok) std::cerr << result.error << '\n';
         return result.ok ? 0 : 1;
     }
-    dinero::SelectParams(dinero::Chain::REGTEST);
     std::map<std::string, std::function<void()>> cases;
+    for (const std::string mode : {"healthy","legacy_v2","stale_index","valid_checksum","budget_zero","budget_leaves","budget_records","budget_replay","budget_checkpoints","budget_headers","checkpoint_count","missing_delta","corrupt_delta","delta_count","wrong_checkpoint","corrupt_checkpoint","corrupt_genesis","nonempty_genesis","bad_checksum","orphan_checksum","malformed_key","future_checkpoint","no_checkpoint","base_below_history","missing_header","tip_root"}) cases["audit_"+mode] = [=] { ForestAudit(mode); };
     for (const std::string mode : {"promoted", "wallet", "prebase", "stale_index", "future_wallet", "bad_prebase", "missing_promotion", "wrong_hash", "bad_height", "short_progress", "conflict", "ancestry_budget", "missing_ancestry", "malformed_prebase", "orphan_prebase", "corrupt_header"}) cases["protected_"+mode] = [=] { ProtectedBase(mode); };
     for (const std::string mode : {"healthy", "missing_delta", "corrupt_delta"}) cases["forest_"+mode] = [=] { ForestParity(mode); };
     for (const std::string fault : {"missing", "corrupt", "missing_table", "view", "future_schema", "reorg", "recovery", "active", "active_bad", "unknown_state", "snapshot_loaded", "validating_history", "validation_stalled", "fatal_mismatch", "orphan_base", "incomplete_validated", "orphan_validated", "orphan_fatal", "unknown_reserved", "wallet_bad_height", "nul_value", "blob_value", "duplicate", "null_value", "legacy_cache", "future_cache", "cache_schema", "cache_corrupt", "rows", "value_limit", "steps", "step_exhaustion", "empty_legacy_cache", "absent_cache", "disabled"}) cases["metadata_"+fault] = [=] { Metadata(fault); };
