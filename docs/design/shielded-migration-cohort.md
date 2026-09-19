@@ -24,7 +24,8 @@ It does not qualify embedded NodeCore's separate lifecycle/maintenance protocol.
 ## What the companion inventory covers
 
 The wrapper inventories `blockchain/` except the inner `chaindb/`, plus `blocks/`,
-`headers/` and `checkpoints/`. Existing files, directories and absent optional
+`headers/` and `checkpoints/`, and the top-level `regtest-pow-profile` marker.
+Existing files, directories and absent optional
 roots are recorded. Unknown files inside these roots are retained and compared.
 Files must be regular, not symlinks or hardlinks. Budgets bound entry count and
 total bytes read; hashing streams through a 64 KiB buffer. Path/entry metadata
@@ -36,6 +37,19 @@ at inner migration boundaries. Full bytes are rehashed before READY and after
 the inner handles close. Wallet directories, keys, identities, runtime PID
 files, logs and other top-level operational files are not inspected or changed.
 External snapshot paths outside these four roots are not covered by this layer.
+
+The PoW profile marker is an exception to the operational-file exclusion: the
+daemon requires its recorded checksum when reopening the same regtest store.
+Both copies must have the identical marker or both must lack it. A present
+marker must have the daemon's exact v1 envelope and 64 lowercase hexadecimal
+checksum, with a terminating newline. Directories, symlinks, hardlinks and
+malformed records refuse; an unfinished `regtest-pow-profile.tmp` publication
+also refuses. No marker is created, repaired or removed by migration.
+Presence, bytes and file identity join the existing bounded companion inventory
+and its rechecks, including across interruption/resume. This preserves a supplied
+profile; it does not authenticate the checksum or infer the intended network,
+PoW mode or activation heights. Matching against the selected binary and resolved
+configuration remains an operator/launcher gate.
 
 Presence of `chainstate_recovery.marker`, `blockchain/reindex_promotion.marker`,
 an `.reindex.tmp` companion, or the sibling `.nodecore-maintenance-v1` control
@@ -51,6 +65,11 @@ The operation hash additionally binds the two outer paths/directory identities,
 lock identities and original companion inventory digest. This makes changing
 both copies identically insufficient to resume an interrupted operation. The
 inner unbound ChainDB-only API cannot resume a journal created by this wrapper.
+The profile extension versions the inventory digest as `chain-companion-files-v2`.
+Earlier noninstalled qualification journals are intentionally refused by the new
+binding; tests using them must start from a fresh copy of their preserved original.
+No production migration has used those journals and no implicit journal upgrade
+or source modification is provided.
 Relocation's existing record set, synchronous batches and replay/checkpoint
 preservation remain unchanged.
 

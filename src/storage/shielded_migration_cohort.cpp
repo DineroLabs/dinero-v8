@@ -100,6 +100,7 @@ public:
         Require(!Present(path / "chainstate_recovery.marker") &&
                 !Present(path / "blockchain/reindex_promotion.marker") &&
                 !Present(path.parent_path() / ".nodecore-maintenance-v1"), "pending recovery or maintenance barrier");
+        Require(!Present(path / "regtest-pow-profile.tmp"), "unfinished PoW profile publication");
     }
     void Bind(Digest& digest) const {
         digest.Field(path.string()); digest.Field(std::to_string(root_.value.st_dev)); digest.Field(std::to_string(root_.value.st_ino));
@@ -115,6 +116,29 @@ struct Inventory {
     uint64_t bytes = 0;
     std::string digest;
 };
+void CheckProfileMarker(const fs::path& path, const Stamp& expected) {
+    // This is the existing daemon BindRegtestPowProfile envelope, not a new
+    // source of consensus parameters. The launcher must separately match the
+    // recorded checksum to the intended binary's resolved configuration.
+    constexpr std::string_view prefix = "regtest-pow-profile-v1\n";
+    constexpr size_t size = prefix.size() + 64 + 1;
+    Require(expected.Regular() && expected.value.st_size == size, "invalid PoW profile framing");
+    Fd input; input.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    Require(input.value >= 0 && expected.Unchanged(Stamp::File(input.value)), "PoW profile changed before read");
+    std::array<char, size> bytes{}; size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto count = ::read(input.value, bytes.data() + offset, bytes.size() - offset);
+        if (count < 0 && errno == EINTR) continue;
+        Require(count > 0, "PoW profile read failed or truncated"); offset += count;
+    }
+    const std::string_view value(bytes.data(), bytes.size());
+    Require(value.substr(0, prefix.size()) == prefix && value.back() == '\n' &&
+        std::all_of(value.begin() + prefix.size(), value.end() - 1, [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        }), "invalid PoW profile framing");
+    Require(expected.Unchanged(Stamp::File(input.value)) && expected.Unchanged(Stamp::Path(path)),
+            "PoW profile changed during read");
+}
 std::string HashFile(const fs::path& path, const Stamp& expected) {
     Fd input; input.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     Require(input.value >= 0 && expected.Unchanged(Stamp::File(input.value)), "companion changed before read");
@@ -137,6 +161,7 @@ Inventory Capture(const Lease& lease, const ShieldedCompanionLimits& limits, boo
             entry.stamp = Stamp::Path(path);
             Require(S_ISDIR(entry.stamp.value.st_mode) || entry.stamp.Regular(), "nonregular or shared companion");
             Require(key.find(".reindex.tmp") == std::string::npos, "unfinished reindex companion");
+            if (key == "regtest-pow-profile") CheckProfileMarker(path, entry.stamp);
             if (entry.stamp.Regular()) {
                 Require(entry.stamp.value.st_size >= 0 && uint64_t(entry.stamp.value.st_size) <= limits.max_bytes - inventory.bytes,
                         "companion byte budget exceeded");
@@ -148,6 +173,10 @@ Inventory Capture(const Lease& lease, const ShieldedCompanionLimits& limits, boo
         }
         inventory.entries.emplace(key, std::move(entry));
     };
+    // Unlike PID/log files, this top-level record controls whether a daemon
+    // may open the datadir. Bind absence as well as contents into the journal.
+    const auto profile = lease.path / "regtest-pow-profile";
+    add(profile);
     for (const char* component : {"blockchain", "blocks", "headers", "checkpoints"}) {
         const auto root = lease.path / component; add(root);
         const auto& entry = inventory.entries.at(component);
@@ -158,7 +187,7 @@ Inventory Capture(const Lease& lease, const ShieldedCompanionLimits& limits, boo
             add(it->path());
         }
     }
-    Digest digest; digest.Field("chain-companion-files-v1");
+    Digest digest; digest.Field("chain-companion-files-v2");
     for (const auto& [name, entry] : inventory.entries) {
         digest.Field(name); digest.Field(entry.missing ? "missing" : entry.stamp.Regular() ? "file" : "directory");
         if (!entry.missing && entry.stamp.Regular()) { digest.Field(std::to_string(entry.stamp.value.st_size)); digest.Field(entry.digest); }
