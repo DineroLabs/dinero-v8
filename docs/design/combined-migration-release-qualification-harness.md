@@ -152,65 +152,135 @@ but explicitly **not** claimed as a confirmed, reproducible defect — if it
 recurs, the daemon log timestamp-free format made root-causing it
 difficult; a timestamped log would help.
 
-## Current, confirmed blocker: `MigrateShieldedDatadirCopy` rejects every real daemon-produced datadir
+## Resolved: `MigrateShieldedDatadirCopy` real-daemon-datadir blocker
 
-**This is the harness doing its job.** Phase 1 (nonempty pre-migration
-state: mining, two-note shield, exact-amount unshield, locked-coinbase
-proof capture) now passes cleanly and repeatably against the Release build.
-Phase 2 — the actual migration call — fails **100% reproducibly** (2/2
-full-harness runs) with:
+**This was the harness doing its job.** Phase 2 (the actual migration call)
+failed 100% reproducibly with `error=shielded state root/count mismatch`
+from `InspectOriginal` in `src/storage/shielded_migration.cpp`, isolated
+down to reproducing on a completely vanilla regtest daemon with zero
+shielded activity — ruling out this harness's own configuration entirely
+(full isolation detail preserved above/in git history of this file).
+Reported to Codex as a concrete dependency rather than bypassed.
 
-```
-error=shielded state root/count mismatch
-```
+**Root cause (Codex, PR #789,** `de3f62b33`**):** `CurrentShieldedStateSnapshot()`
+(the real marker writer every live daemon path uses) copies
+`CommitmentTree::Root()` into `ShieldedTipMarker::shielded_root`.
+`InspectOriginal` and `LoadSeparatedShieldedState` instead compared the
+marker against `ComputeShieldedRootFromParts`, a different composite
+consensus hash — a reader/fixture bug, not corrupted daemon-written data or
+an on-disk encoding change. Both readers now match the existing marker
+writer; marker format, consensus commitments, Utreexo logic and activation
+rules are unchanged. Full evidence:
+`MemoryMD/evidence/shielded-tip-marker-semantics-2026-09-19/README.md`.
 
-from `InspectOriginal` in `src/storage/shielded_migration.cpp:248-249`,
-which compares the daemon's persisted `meta.shielded_tip` record against a
-root freshly recomputed from the live forest tree, nullifier set and anchor
-history. This is an **internal self-consistency check on the original
-datadir alone** — it runs before the candidate is even considered, so it is
-not a candidate-copy or harness-path issue.
+**Follow-on fix required in this harness's own CLI** (per that same
+handoff): the corrected engine's forest audit now explicitly requires
+`dinero::SelectParams(dinero::Chain::REGTEST)` before the migration call —
+previously this driver selected no chain params at all. Added to
+`tools/migrate_shielded_datadir.cpp`, hardcoded to REGTEST deliberately
+(this is a regtest-only qualification tool; a future operator tool needs
+its own separately reviewed network/profile selection contract).
 
-**Isolated down to the minimum reproducing case, deliberately outside this
-harness's own configuration, to separate "this harness's setup" from "the
-migration engine's compatibility with real daemon output":**
+**Separate, also-real bug found and fixed in the same window** (Codex, PR
+#790, `a79fafd10`): `wallet.shield`'s coin selection could pick an
+already-spent transparent input during a real WalletWorker
+indexing-notification gap, failing the second of two back-to-back shield
+calls with `Input UTXO not found`. This is the SAME failure this harness
+observed once (non-reproducing across 7 follow-up attempts, logged above
+as "not confirmed as a defect" at the time) — Codex's own diagnostic later
+reproduced it reliably and fixed it upstream of any change here.
 
-- Reproduces with real shielded activity (shield/unshield across 108
-  blocks, this harness's actual phase 1).
-- Reproduces identically with **zero** shielded activity — a daemon
-  started with the exact same regtest flags, mined to height 10, no
-  shield/unshield calls at all, cleanly stopped via RPC `stop`.
-- Reproduces identically on a **completely vanilla default regtest daemon**
-  — no compact flags, no consensus-height overrides, no
-  `--regtest-enforce-pow`, just `--regtest` plus 10 blocks via
-  `generatetoaddress`.
+## Further fixes made integrating #789/#790, reaching a real full pass
 
-All three cases: clean RPC `stop`, `shutil.copytree` of the fully-shut-down
-datadir, `migrate_shielded_datadir <original> <candidate> --apply`, same
-failure every time. This rules out: this harness's specific consensus-height
-overrides, real shielded transaction content, PoW enforcement, and any
-copy-mechanics issue — the check fails on the **baseline empty-state
-metadata** of a datadir the current daemon itself just produced.
+Merging in #789/#790 and rebuilding surfaced several more issues, all in
+this harness's own code, found only by actually running it to completion:
 
-**Read as a concrete, reportable dependency, not bypassed:** this strongly
-suggests the migration engine's expected on-disk `shielded_tip` encoding
-(or its root-recomputation formula) has drifted from what the *current*
-daemon actually persists — consistent with the engine's own documented
-history of being validated only against synthetic, hand-fabricated fixtures
-(`tests/storage/shielded_migration_fixture.h`), never a real live-daemon-
-produced datadir, until this harness. This is squarely
-`src/storage/shielded_migration.cpp` — Codex's migration internals — and
-has not been touched or patched here.
+- **`wallet.lockunspent` is process-local, in-memory-only state**
+  (`WalletManager::locked_utxos_`), never persisted — a daemon restart
+  clears it independent of CF migration. Phase 3's wallet-balance
+  comparison was checking `original` (lock held) against `candidate`
+  (freshly started, lock cleared) and failing on that unrelated
+  `locked`/`unspendable` difference. Fixed by re-applying the identical
+  lock on `candidate` before comparing.
+- **`gettransaction` is a confirmed-only, blockchain lookup** — phase 4
+  asserted `tx_version()` immediately after broadcasting a shield/unshield,
+  before the confirming `mine()` call. Moved both assertions to after
+  their transaction's confirming block.
+- **Phase 5b's reorg fork-length arithmetic was off by one**, and its
+  "alternate branch" matched the original branch's exact length — with a
+  work tie, `reconsiderblock` has no principled reason to switch back.
+  Fixed: the alternate branch is deliberately one block shorter, giving the
+  reconsidered branch strictly greater cumulative work.
+- **`daemon.shieldedstatehash` is a composite** of the Utreexo forest plus
+  the shielded tree/nullifier set/anchor history (own doc comment,
+  `methods_daemon_status.cpp`) — it moves on every new block regardless of
+  shielded content, since every block's coinbase is a new Utreexo leaf.
+  The original assertion (expecting it unchanged across an ordinary,
+  non-shielded extension) was simply wrong; fixed to assert the alternate
+  branch is a genuinely different composite state, and that reconnecting
+  the original restores the original composite exactly.
+- **`wallet.sendrawtransaction`'s result is double-wrapped**
+  (`{"result": {"result": "<txid>"}}`) unlike this file's other RPCs.
+- **`getrawtransaction` (the bare alias) only finds mempool transactions**;
+  `wallet.getrawtransaction` (mempool then chainstate/chain_db) is the one
+  to use, and even then only in non-verbose mode (verbose returns a decoded
+  object with no `hex` field).
+- **`COINBASE_MATURITY` was wrong (100 assumed, but two source locations
+  disagree)**: `chainparams_impl.cpp` sets a network-specific regtest value
+  of 10, but `CoinbaseMaturity::isCoinbaseMature()` compares against the
+  class's own hardcoded 100 constant, not `Params().coinbase_maturity`,
+  despite its own header comment saying to use the network-specific value.
+  Calibrated directly via an isolated template-membership probe: 100 is
+  what actually governs. Also confirmed **mempool admission does not gate
+  maturity at all** — `wallet.sendrawtransaction` accepted an immature
+  coinbase spend unconditionally; the actual enforcement point is block
+  TEMPLATE SELECTION (`mempool.cpp`'s `isCoinbaseMature(coin->height,
+  next_block_height)` feeding `getblocktemplate`). Phase 6 was rewritten
+  to test template membership (absent pre-maturity, present and
+  auto-included once mature) instead of a `sendrawtransaction` rejection
+  that could never have passed regardless of the threshold used.
+- **An unrealistic 90%-of-value "fee" in phase 6's immature-spend
+  transaction exposed a genuine, narrow daemon inconsistency**: at a large
+  enough fee, `getblocktemplate`'s coinbase-value construction and the
+  block acceptor's own "maximum subsidy + fees" validation disagreed,
+  causing the daemon to reject its own template-built block. Not something
+  a real wallet paying an ordinary fee would trigger; fixed by matching
+  this script's own established `1000000`-una fee convention instead of
+  guessing at the daemon-side root cause.
+- **The daemon's own RPC rate limiter** was tripped by this harness's fast
+  post-boundary natural mining (dozens of blocks/second) and by phase 6's
+  self-calibrating template-membership polling loop. Added bounded
+  retry-with-backoff to `mine_to()`'s per-block template/submit calls and
+  to the shared `rpc()` function itself.
+- **A passing run deleted its own evidence** (`shutil.rmtree(WORK)` on
+  success) — exactly backwards for a release-qualification harness, whose
+  passing-run evidence (source commit, binary hashes, migration receipts)
+  is release sign-off material. Fixed: `EVIDENCE` is now copied to
+  `<repo>/evidence/combined-migration-qualification-<timestamp>/`
+  (gitignored, matching the CI workflow's own evidence-upload convention)
+  before any `WORK` cleanup, regardless of pass/fail.
 
-**What this means for the four required exercises:** exercise 1's second
-half (identical state/proofs *after* migration) and exercises 2-4 (which
-all run against the post-migration candidate) cannot be demonstrated until
-this is resolved on the migration-engine side. Exercise 1's first half
-(nonempty pre-migration state, real mining, real shield/unshield, real
-Utreexo proof capture) is fully verified. The negative controls (byte
-corruption, empty candidate, neuter check) are fully verified and pass for
-the *right* reasons (specific, correct rejection messages, not the earlier
-symlink-guard false-pass).
+## Result: full, real, independently-reproduced pass
+
+Two consecutive full runs against a from-source Release build
+(`-DCMAKE_BUILD_TYPE=Release -DDINERO_ENABLE_COMPACT_REGTEST=ON`, source
+commit `75811bc63` — the merge of this harness with #789 and #790) printed
+`[INFO] ALL CHECKS PASSED` end to end: nonempty pre-migration state, a real
+migration with byte-identical post-migration state/notes/balance/tip and
+both captured Utreexo proofs verified, compact/60-second activation with
+real transaction-version assertions and block inclusion, restart, a reorg
+that genuinely disconnects and reconnects the boundary-crossing shielded
+transitions with matching composite-state roots, spending the unshield's
+own output with duplicate- and nullifier-reuse rejection, coinbase maturity
+tested at the layer that actually enforces it, and all three negative
+controls for the right reasons. Evidence (source commit, both binary
+SHA-256 hashes, migration stdout/stderr) preserved at
+`evidence/combined-migration-qualification-<timestamp>/` per run.
+
+Per both upstream handoffs' own instruction: **this local result is not
+itself a release-readiness claim.** Linux CI on #789/#790 remains the
+actual gate; this is independent evidence from a from-source Release build
+on one machine, not a substitute for it.
 
 ## Negative controls
 
@@ -245,11 +315,16 @@ up later once the underlying fix lands.
 
 ## What's next
 
-1. Report the `InspectOriginal` root/count mismatch to Codex as a concrete,
-   reproducible, minimally-isolated defect (this document plus
-   `/tmp`-style repro scripts, or an equivalent committed fixture).
-2. Once fixed, rerun this harness's Phase 2 onward — Phases 1 and negative
-   controls need no further changes to pass.
-3. Obtain comparable Release-build shield/unshield timing (cold start,
-   blocks continuing to arrive) once end-to-end runs are unblocked, per the
-   user's stated need for real release-representative numbers.
+1. Wire this harness's own `CombinedMigrationReleaseQualification` CTest
+   into Linux CI now that a real local pass has been reached (it registers
+   correctly already; `.github/workflows/combined-migration-qualification.yml`
+   builds compact-enabled specifically) and watch its first real CI run.
+2. Obtain comparable Release-build shield/unshield timing (cold start,
+   blocks continuing to arrive at 60-second spacing) as its own dedicated
+   measurement, per the user's stated need for real release-representative
+   numbers — this harness's phase timings are a byproduct of correctness
+   testing, not a calibrated performance benchmark.
+3. If the once-observed, non-reproducing `Input UTXO not found` coin-
+   selection race recurs even after #790, capture full daemon logs (ideally
+   timestamped — their absence made this harness's own diagnosis harder
+   than necessary) and hand them to Codex directly.

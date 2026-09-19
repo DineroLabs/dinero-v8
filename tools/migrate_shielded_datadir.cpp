@@ -26,6 +26,7 @@
 // ShieldedMigrationResult, then a human-readable summary. Exit code 0 only
 // when result.ok is true; nonzero (with the failing field printed) otherwise.
 
+#include "consensus/chainparams.h"
 #include "storage/shielded_migration_cohort.h"
 
 #include <cstdio>
@@ -110,6 +111,19 @@ int main(int argc, char** argv) {
             candidate.string().c_str());
         return 2;
     }
+
+    // This qualification-only tool exists solely to drive
+    // MigrateShieldedDatadirCopy against real REGTEST-produced datadirs (see
+    // this file's header comment). The forest audit inside the migration
+    // engine uses network-specific consensus parameters and now explicitly
+    // requires SelectParams() to have been called first (previously this
+    // driver selected none, which the corrected engine surfaces as "Chain
+    // parameters not selected. Call SelectParams() first." rather than
+    // silently defaulting). REGTEST is hardcoded deliberately: this is a
+    // qualification harness for disposable regtest datadirs only, never
+    // production data, and a future operator tool needs its own explicit,
+    // separately reviewed network/profile selection contract — not this one.
+    dinero::SelectParams(dinero::Chain::REGTEST);
 
     const auto checkpoint = [](const char* phase) {
         std::fprintf(stderr, "[migrate_shielded_datadir] phase=%s\n", phase);
