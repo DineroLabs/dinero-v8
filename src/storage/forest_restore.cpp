@@ -11,7 +11,7 @@
 namespace dinero {
 namespace storage {
 
-Status ReplayUtreexoDeltaRange(const ChainDB& db,
+Status ReplayUtreexoDeltaRange(const ForestRestoreView& db,
                                consensus::UtreexoForest& forest,
                                uint32_t from_exclusive,
                                uint32_t to_inclusive,
@@ -71,7 +71,7 @@ Status ReplayUtreexoDeltaRange(const ChainDB& db,
         // Every replayed block must land exactly on the header commitment —
         // the same check reindex enforces. A wrong or reordered sidecar
         // fails loudly here instead of surfacing blocks later.
-        auto header_result = db.getHeader(block_hash);
+        auto header_result = db.getHeaderCommitment(block_hash);
         if (header_result.status() != Status::Ok) {
             error = "replay-missing-header-at-" + std::to_string(h);
             return Status::NotFound;
@@ -81,7 +81,7 @@ Status ReplayUtreexoDeltaRange(const ChainDB& db,
         if (commitment.size() == 32) {
             std::memcpy(computed_root.data, commitment.data(), 32);
         }
-        if (computed_root != header_result.value().utreexo_root) {
+        if (computed_root != header_result.value()) {
             error = "replay-root-mismatch-at-" + std::to_string(h);
             return Status::Invalid;
         }
@@ -89,7 +89,7 @@ Status ReplayUtreexoDeltaRange(const ChainDB& db,
     return Status::Ok;
 }
 
-Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
+Status RestoreHistoricalForest(const ForestRestoreView& db, uint32_t target_height,
                                consensus::UtreexoForest& out,
                                std::string& error,
                                const BlockHashAtHeightResolver& resolve_hash) {
@@ -159,7 +159,7 @@ Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
             }
             ckpt_hash = ckpt_hash_result.value();
         }
-        auto ckpt_header_result = db.getHeader(ckpt_hash);
+        auto ckpt_header_result = db.getHeaderCommitment(ckpt_hash);
         if (ckpt_header_result.status() != Status::Ok) {
             error = "restore-missing-header-at-checkpoint-" +
                     std::to_string(checkpoint_height);
@@ -170,7 +170,7 @@ Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
         if (ckpt_commitment.size() == 32) {
             std::memcpy(ckpt_root.data, ckpt_commitment.data(), 32);
         }
-        if (ckpt_root != ckpt_header_result.value().utreexo_root) {
+        if (ckpt_root != ckpt_header_result.value()) {
             error = "restore-checkpoint-root-mismatch-at-" +
                     std::to_string(checkpoint_height);
             return Status::Invalid;
@@ -185,6 +185,33 @@ Status RestoreHistoricalForest(const ChainDB& db, uint32_t target_height,
 
     out = std::move(restored);
     return Status::Ok;
+}
+
+namespace {
+class ChainDBForestView final : public ForestRestoreView {
+    const ChainDB& db_;
+public:
+    explicit ChainDBForestView(const ChainDB& db) : db_(db) {}
+    StatusOr<std::pair<int, std::vector<uint8_t>>>
+    getLatestUtreexoCheckpointAtOrBelow(int height) const override {
+        return db_.getLatestUtreexoCheckpointAtOrBelow(height);
+    }
+    Status getRaw(const std::string& key, std::string& value) const override { return db_.getRaw(key,value); }
+    StatusOr<uint256> getBlockHashByHeight(int height) const override { return db_.getBlockHashByHeight(height); }
+    StatusOr<uint256> getHeaderCommitment(const uint256& hash) const override {
+        const auto header=db_.getHeader(hash);
+        if (header.status()!=Status::Ok) return header.status();
+        return header.value().utreexo_root;
+    }
+};
+}
+Status ReplayUtreexoDeltaRange(const ChainDB& db, consensus::UtreexoForest& forest,
+    uint32_t from, uint32_t to, std::string& error, const BlockHashAtHeightResolver& resolve) {
+    return ReplayUtreexoDeltaRange(ChainDBForestView(db),forest,from,to,error,resolve);
+}
+Status RestoreHistoricalForest(const ChainDB& db, uint32_t height, consensus::UtreexoForest& out,
+    std::string& error, const BlockHashAtHeightResolver& resolve) {
+    return RestoreHistoricalForest(ChainDBForestView(db),height,out,error,resolve);
 }
 
 }  // namespace storage

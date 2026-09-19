@@ -10,6 +10,10 @@ struct ShieldedCompanionLimits {
     uint64_t max_metadata_value_bytes;
     uint64_t max_sqlite_steps;
     uint64_t max_ancestry_headers;
+    uint64_t max_forest_record_bytes;
+    uint64_t max_forest_leaves;
+    uint64_t max_replay_blocks;
+    uint64_t max_checkpoints;
 };
 
 // Native, noninstalled qualification layer. Holds the daemon's existing
@@ -19,9 +23,10 @@ struct ShieldedCompanionLimits {
 // copied, hashed or changed. Existing lock files are required, never created.
 //
 // Includes bounded read-only SQLite lifecycle/provenance checks and protected
-// base ancestry checks. This is NOT a launch permit: network/profile, protected-
-// base forest reconstruction, binary pairing and disk headroom still
-// need independent qualification. READY describes only the relocated ChainDB.
+// base ancestry checks plus replay of all retained checkpoint intervals to tip.
+// This is NOT a launch permit: network/profile, binary pairing, configured
+// external inputs and disk headroom still need independent qualification.
+// READY describes the relocated ChainDB, not deployed-daemon compatibility.
 ShieldedMigrationResult MigrateShieldedDatadirCopy(
     const std::filesystem::path& original,
     const std::filesystem::path& candidate,

@@ -1,4 +1,6 @@
 #include "storage/shielded_migration.h"
+#include "storage/forest_restore.h"
+#include "consensus/utreexo_accumulator.h"
 #include "shielded_migration_internal.h"
 #include "common/serialization.h"
 #include "consensus/chainwork.h"
@@ -251,7 +253,7 @@ Inventory InspectOriginal(const Store& source, const ShieldedMigrationLimits& li
 // Validate external base claims while the original's real RocksDB lock is
 // owned, before opening the candidate writable. Height indexes are not an
 // ancestry authority: walk stored headers back from the active tip identity.
-void CheckProtectedBases(const Store& source, const Inventory& inventory,
+std::set<uint32_t> CheckProtectedBases(const Store& source, const Inventory& inventory,
                          const detail::ExternalMigrationState& external) {
     std::map<uint32_t, std::optional<std::string>> targets;
     auto add = [&](uint32_t height, const std::optional<std::string>& hash) {
@@ -278,7 +280,7 @@ void CheckProtectedBases(const Store& source, const Inventory& inventory,
     } else source.Scan("prebase_coins", [](const rocksdb::Slice&, const rocksdb::Slice&) {
         throw std::runtime_error("pre-base records lack their base marker");
     });
-    if (targets.empty()) return;
+    if (targets.empty()) return {};
     const auto lowest = targets.begin()->first;
     Require(uint64_t(inventory.height) - lowest + 1 <= external.max_ancestry_headers, "protected ancestry exceeds budget");
     auto hash = inventory.tip;
@@ -294,7 +296,141 @@ void CheckProtectedBases(const Store& source, const Inventory& inventory,
         if (height == lowest) break;
         hash = header.prev_block_hash;
     }
+    std::set<uint32_t> heights;
+    for (const auto& [height,hash]:targets) heights.insert(height);
+    return heights;
 }
+// Strict offline reader over the already-owned read-only store. Replay uses
+// the same implementation as normal ChainDB restoration; no writable reopen.
+class MigrationForestView final : public ForestRestoreView {
+    const Store& source_;
+    const ShieldedCompanionLimits& limits_;
+    std::set<uint32_t> checkpoints_;
+    std::map<uint32_t, uint256> hashes_;
+    std::map<std::string, uint256> roots_;
+    std::string Bounded(const std::string& family, const std::string& key) const {
+        rocksdb::ReadOptions options; options.verify_checksums=true; options.fill_cache=false;
+        std::unique_ptr<rocksdb::Iterator> it(source_.db->NewIterator(options,source_.families.at(family)));
+        it->Seek(key); Check(it->status(), "read forest audit record");
+        Require(it->Valid() && it->key()==key,"missing forest audit record");
+        Require(it->value().size()<=limits_.max_forest_record_bytes,"forest record exceeds budget");
+        return it->value().ToString();
+    }
+    static std::string Key(char prefix,uint32_t height) {
+        std::string key(5,'\0'); key[0]=prefix;
+        for (unsigned i=0;i<4;++i) key[1+i]=static_cast<char>(height>>(24-8*i));
+        return key;
+    }
+    void Frame(const std::string& bytes,uint32_t height) const {
+        Require(!bytes.empty() && (bytes[0]==2 || bytes[0]==3),"unsupported checkpoint encoding for offline audit");
+        size_t offset=1;
+        if (bytes[0]==3) { Require(bytes.size()>1 && uint8_t(bytes[1])<=1,"invalid checkpoint flag"); ++offset; }
+        const auto leaves=LE(bytes,offset,8); offset+=8;
+        Require(leaves<=limits_.max_forest_leaves && (height!=0 || leaves==0),"checkpoint leaf budget or nonempty genesis");
+        const auto roots=LE(bytes,offset,4); offset+=4;
+        Require(roots<=64 && roots<=(bytes.size()-offset)/32,"invalid checkpoint root framing"); offset+=roots*32;
+        const auto nodes=LE(bytes,offset,4); offset+=4;
+        Require(nodes<=bytes.size()-offset && nodes<=limits_.max_forest_leaves,"invalid checkpoint node framing/budget");
+        for (uint64_t i=0;i<nodes;++i) {
+            const auto present=LE(bytes,offset,1); ++offset;
+            Require(present<=1 && (!present || bytes.size()-offset>=32),"invalid checkpoint node flag/hash");
+            if (present) offset+=32;
+        }
+        const auto deleted=LE(bytes,offset,4); offset+=4;
+        Require(deleted<=leaves && deleted<=(bytes.size()-offset)/8 && offset+deleted*8==bytes.size(),"invalid checkpoint tombstone framing");
+        Require(height!=0 || (roots==0 && nodes==0 && deleted==0),"nonempty genesis forest framing");
+        // The production decoder performs node/leaf/root consistency checks.
+        // These framing checks bound its inputs before it allocates/rebuilds.
+    }
+public:
+    MigrationForestView(const Store& source,const Inventory& tip,const ShieldedCompanionLimits& limits)
+      : source_(source),limits_(limits) {
+        Require(limits.max_forest_record_bytes && limits.max_forest_leaves && limits.max_replay_blocks &&
+                limits.max_checkpoints && limits.max_ancestry_headers,"explicit forest audit budgets required");
+        std::set<uint32_t> checksums;
+        source.Scan("utreexo",[&](const rocksdb::Slice& key,const rocksdb::Slice& value) {
+            if (key.empty() || (key[0]!='U' && key[0]!='C')) return;
+            Require(key.size()==5,"malformed checkpoint/checksum key");
+            uint32_t height=0; for (size_t i=1;i<5;++i) height=(height<<8)|uint8_t(key[i]);
+            Require(height<=tip.height,"checkpoint/checksum above active tip");
+            auto& set=key[0]=='U'?checkpoints_:checksums;
+            Require(set.size()<limits.max_checkpoints,"checkpoint inventory exceeds budget"); set.insert(height);
+            Require(value.size()<=limits.max_forest_record_bytes,"forest record exceeds budget");
+            if (key[0]=='C') Require(value.size()==32,"invalid checkpoint checksum encoding");
+        });
+        Require(!checkpoints_.empty(),"no retained forest checkpoint");
+        for (auto height:checksums) Require(checkpoints_.count(height),"checksum lacks checkpoint");
+        const auto earliest=*checkpoints_.begin();
+        Require(uint64_t(tip.height)-earliest<=limits.max_replay_blocks &&
+                uint64_t(tip.height)-earliest+1<=limits.max_ancestry_headers,"forest replay/ancestry exceeds budget");
+        auto hash=tip.tip;
+        for (uint32_t height=tip.height;;--height) {
+            hashes_.emplace(height,hash);
+            if (height>0) {
+                const auto bytes=Bounded("headers","h"+hash.GetHex());
+                Require(bytes.size()==kHeaderWireSize+sizeof(uint32_t)+sizeof(arith_uint256),"invalid forest ancestry header encoding");
+                Reader reader(bytes); BlockHeader header{}; Deserialize(reader,header);
+                const auto stored_height=reader.read<uint32_t>(); (void)reader.read<arith_uint256>();
+                Require(reader.eof() && stored_height==height && header.GetHash()==hash,"forest ancestry identity mismatch");
+                roots_.emplace(hash.GetHex(),header.utreexo_root); hash=header.prev_block_hash;
+            }
+            if (height==earliest) break;
+        }
+    }
+    const std::set<uint32_t>& Checkpoints() const { return checkpoints_; }
+    StatusOr<std::pair<int,std::vector<uint8_t>>> getLatestUtreexoCheckpointAtOrBelow(int height) const override {
+        if (height<0) return Status::NotFound;
+        auto it=checkpoints_.upper_bound(height); if (it==checkpoints_.begin()) return Status::NotFound; --it;
+        const auto bytes=Bounded("utreexo",Key('U',*it)); Frame(bytes,*it);
+        const auto checksum=source_.Get("utreexo",Key('C',*it));
+        if (checksum) {
+            crypto::CSHA256 hasher; hasher.Write(reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size());
+            const auto hash=hasher.Finalize();
+            Require(*checksum==std::string(reinterpret_cast<const char*>(hash.data()),hash.size()),"checkpoint checksum mismatch");
+        }
+        return std::make_pair(static_cast<int>(*it),std::vector<uint8_t>(bytes.begin(),bytes.end()));
+    }
+    Status getRaw(const std::string& key,std::string& value) const override {
+        const auto bytes=Bounded("default",key);
+        // Validate counts against remaining bytes before the production codec's
+        // reserve calls; a tiny corrupt record must not request huge allocation.
+        Reader reader(bytes); Require(reader.read<uint8_t>()==1,"unsupported delta encoding");
+        const auto leaves=reader.read<uint64_t>(); Require(leaves<=limits_.max_forest_leaves,"delta leaf budget exceeded");
+        const auto deleted=reader.readVarInt(); Require(deleted<=reader.remaining()/40,"invalid delta delete count"); reader.skip(deleted*40);
+        const auto added=reader.readVarInt(); Require(added<=reader.remaining()/40 && added<=limits_.max_forest_leaves-leaves,"delta add count/budget exceeded"); reader.skip(added*40);
+        Require(reader.eof(),"trailing delta bytes"); value=bytes; return Status::Ok;
+    }
+    StatusOr<uint256> getBlockHashByHeight(int height) const override {
+        const auto it=hashes_.find(height); if (it==hashes_.end()) return Status::NotFound; return it->second;
+    }
+    StatusOr<uint256> getHeaderCommitment(const uint256& hash) const override {
+        const auto it=roots_.find(hash.GetHex()); if (it==roots_.end()) return Status::NotFound; return it->second;
+    }
+};
+void AuditForest(const Store& source,const Inventory& tip,const detail::ExternalMigrationState& external,
+                 const std::set<uint32_t>& protected_heights) {
+    MigrationForestView view(source,tip,external.limits);
+    const auto earliest=*view.Checkpoints().begin();
+    for (auto height:protected_heights) Require(height>=earliest,"protected base below retained reconstruction history");
+    consensus::UtreexoForest forest; std::string error;
+    auto check=[&](Status status) { if (status!=Status::Ok) throw std::runtime_error("forest audit: "+error); };
+    check(RestoreHistoricalForest(view,earliest,forest,error));
+    auto previous=earliest;
+    // Every interval is replayed, including older intervals that a tip-only
+    // restore would skip. Checkpoint bytes are normalized by the shared reader.
+    for (auto height:view.Checkpoints()) {
+        if (height==earliest) continue;
+        check(ReplayUtreexoDeltaRange(view,forest,previous,height,error));
+        consensus::UtreexoForest checkpoint;
+        check(RestoreHistoricalForest(view,height,checkpoint,error));
+        Require(forest.serialize()==checkpoint.serialize(),"replayed forest differs from retained checkpoint");
+        previous=height;
+    }
+    check(ReplayUtreexoDeltaRange(view,forest,previous,tip.height,error));
+    const auto root=forest.getCommitment(); const auto marker=source.Need("meta","forest_tip");
+    Require(root.size()==32 && std::memcmp(root.data(),marker.data()+36,32)==0,"forest tip root mismatch after replay");
+}
+
 struct Journal {
     std::string operation, source, phase;
     uint64_t rows = 0, retired = 0;
@@ -377,7 +513,7 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         Store original, candidate;
         original.Open(original_id.path, original_lock, true); candidate.Open(candidate_id.path, candidate_lock, true);
         const auto inventory = InspectOriginal(original, limits);
-        if (external) CheckProtectedBases(original, inventory, *external);
+        if (external) AuditForest(original, inventory, *external, CheckProtectedBases(original, inventory, *external));
         Digest binding; binding.Field("shielded-copy-v1"); original_id.Bind(binding); candidate_id.Bind(binding); binding.Field(inventory.digest);
         // A bound migration cannot resume through the unbound engine.
         if (!cohort_binding.empty()) { binding.Field("datadir-companions-v1"); binding.Field(cohort_binding); }

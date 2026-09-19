@@ -2,7 +2,8 @@
 
 This extends the noninstalled stopped-datadir wrapper. It does not add an
 operator command, daemon startup migration, NodeCore entry point, reset API or
-activation setting. Normal consensus and forest restoration code are unchanged.
+activation setting. Consensus rules are unchanged. Forest restoration exposes a
+read-only view; the existing ChainDB API delegates to the same replay implementation.
 
 ## Read-only SQLite eligibility
 
@@ -55,7 +56,7 @@ Before opening the candidate writable, while holding the original RocksDB lock:
 - Ignore persisted height-index answers for ancestry selection. A stale index
   does not override the active tip's hash-linked history.
 
-These checks establish base identity, not checkpoint/replay availability. They
+These identity checks are followed by the forest audit described below. They
 do not delete, normalize or move any protected checkpoint or replay record.
 
 ## Utreexo qualification added
@@ -71,12 +72,11 @@ state remains reconstructible. Missing/corrupt delta cases refuse on both sides.
 These are storage/reconstruction tests. They do not mine real blocks, validate
 PoW/ASERT, execute live connect/disconnect or prove a deployed reorg safe. The
 generated header chain is not a network identity fixture. Corrupt-delta tests
-exercise the proof consumer's refusal; the wrapper does not yet perform a
-complete forest reconstruction audit as a pre-migration eligibility gate.
+exercise the proof consumer's refusal; the subsequent pre-migration gate is described below.
 
 ## Verification and remaining gates
 
-The executing `ShieldedMigrationCohort` suite now contains 85 cases in the normal
+The executing `ShieldedMigrationCohort` suite now contains 111 cases in the normal
 Tests lane. Local test-first evidence includes 31 new SQLite refusal failures
 against opaque-file-only inspection, then six additional protected-base failures
 after parsing alone. A missing namespace brace was a compile/setup failure,
@@ -89,9 +89,60 @@ provenance, VM budget enforcement, the protected-base contract, or base identity
 comparison. Each fails its targeted test. The existing 55-case inner engine
 regression suite remains green. Linux qualification is required separately.
 
-Remaining operator/release gates include network/profile binding, a required
-checkpoint/forest reconstruction audit before migration, configured inputs
+Remaining operator/release gates include network/profile binding, configured inputs
 outside the companion inventory, binary/datadir rollback enforcement, disk and
 real-copy resource qualification, and the actual migrated-daemon compact-proof
 plus 60-second restart/reorg/mining run. Mobile ownership, resources and SR-1
 remain separate. None of these are satisfied by a naked ChainDB READY marker.
+
+
+## Pre-migration forest reconstruction gate
+
+The bound stopped-datadir wrapper now audits the already-owned read-only
+original before any writable candidate open, on inspection, initial migration,
+and resume. The unbound ChainDB-only component remains a lower-level test
+component; it is not an operator entry or a way to bypass the bound journal.
+
+The audit inventories every U/C key with exact length, bounded count and record
+size; malformed, future or orphan checksum rows refuse without deletion. A
+present checksum must match SHA256 of its checkpoint. Legacy checkpoints without
+checksums remain eligible only through the forest/header/replay checks. v2/v3
+checkpoint framing and delta counts are bounded before decoder allocations;
+older unsupported encodings refuse for separate review, never normalization.
+
+Header hashes and recorded heights are checked along the active tip's parent
+chain down to the earliest retained checkpoint. Persisted height indexes cannot
+override that ancestry. The audit restores the earliest checkpoint using the
+shared production algorithm, replays every interval, checks every replayed
+header commitment, and compares complete normalized serialized forest states at
+each later retained checkpoint. It then replays to tip and checks the forest-tip
+marker root. An empty genesis checkpoint must have empty framing; protected
+base heights may not fall below the audited reconstruction range.
+
+`ForestRestoreView` is a read-only interface to the existing algorithm. The
+normal `ChainDB` overloads forward through an adapter; no new replay algorithm,
+consensus rule, mutable DB open, recovery action or deletion permission is
+introduced. All bytes, including optional legacy checkpoints, stay unchanged.
+
+Budgets explicitly cap checkpoint count, record bytes, leaves, ancestry headers
+and replayed blocks. This bounds inputs/work; it is not an RSS guarantee.
+Multiple forests/serialized buffers, database caches, and allocator overhead
+still require real-copy and device measurements. The audit covers the retained
+range from its earliest checkpoint to tip; it does not establish history before
+that range or authenticate a network/PoW chain. Identity, configured external
+snapshot inputs, rollback enforcement, real stopped-copy measurements and actual
+migrated-daemon compact+60-second restart/reorg/mining remain release gates.
+
+The test-first extension has 15 failing refusal assertions and 88 controls on
+the preceding implementation. The existing normal ChainDB forest-restore suite
+passes all nine cases after the shared-reader extraction. Local and Linux
+qualification results for the final extension are recorded separately in its
+PR/evidence; earlier CI successes do not qualify these new bytes.
+
+Final native qualification: 111/111 cohort cases in 107.79 seconds under the
+unchanged 180-second CTest budget, 55/55 engine cases and 9/9 existing
+ForestRestore cases. Five compiling negative controls fail as intended. An
+earlier concurrent harness run timed out; the identical binary subsequently
+passed in 145.38 seconds, then duplicate fixture construction was removed
+without changing assertions or migration durability. No runtime deadline was
+extended. Linux qualification remains separate.
