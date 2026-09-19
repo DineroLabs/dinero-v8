@@ -88,7 +88,7 @@ void Seed(const std::filesystem::path& path, const std::string& malformed = {}) 
         Setup(db.init(path) == Status::Ok, "initialize fixture");
         Setup(db.putShieldedNullifier(token, 1, Nullifier(0x11).data()) == Status::Ok, "seed h1");
         Setup(db.putShieldedNullifier(token, 3, Nullifier(0x33).data()) == Status::Ok, "seed h3");
-        Setup(db.putUtreexoMeta(token, "shielded_frontier", "preserved-frontier") == Status::Ok, "seed frontier");
+        Setup(db.putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier, "preserved-frontier") == Status::Ok, "seed frontier");
         Setup(db.putUtreexoCheckpointWithChecksum(token, 1, {1, 2, 3}) == Status::Ok, "seed checkpoint");
     }
     RawStore raw(path, true);

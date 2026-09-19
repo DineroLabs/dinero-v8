@@ -26,9 +26,9 @@ int main() {
     const std::string replay("replay\0bytes", 12);
     const std::vector<uint8_t> proof{1, 2, 3, 4};
     const auto preserved = [&](ChainDB& db) {
-        auto f = db.getUtreexoMeta("shielded_frontier");
+        auto f = db.getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
         CHECK(f.ok() && f.value() == frontier);
-        auto a = db.getUtreexoMeta("shielded_anchor_history");
+        auto a = db.getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
         CHECK(a.ok() && a.value() == anchors);
         auto journal = db.getUtreexoMeta("consensus_journal_125");
         CHECK(journal.ok() && journal.value() == "journal-state");
@@ -58,8 +58,8 @@ int main() {
     {
         ChainDB db;
         CHECK(db.init(dir) == Status::Ok);
-        CHECK(db.putUtreexoMeta(token, "shielded_frontier", frontier) == Status::Ok);
-        CHECK(db.putUtreexoMeta(token, "shielded_anchor_history", anchors) == Status::Ok);
+        CHECK(db.putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier, frontier) == Status::Ok);
+        CHECK(db.putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory, anchors) == Status::Ok);
         CHECK(db.putUtreexoMeta(token, "consensus_journal_125", "journal-state") == Status::Ok);
         CHECK(db.putUtreexoMeta(token, "assumeutxo_promotion_done", "1") == Status::Ok);
         CHECK(db.putShieldedNullifier(token, 124, nullifier) == Status::Ok);

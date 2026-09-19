@@ -240,14 +240,60 @@ struct OpenedChainDB {
 };
 
 constexpr uint32_t kChainDBSchemaVersion = 4;
-// Reserved fence for the planned storage layout. This opener supports no
-// migration state, including READY; that requires a separately qualified reader.
 constexpr const char* kStorageLayoutKey = "storage_layout_v1";
+constexpr const char* kShieldedFamily = "shielded_state_v1";
+constexpr const char* kShieldedReady = "shielded-state-v1:READY";
+
+const char* ShieldedStateKey(ChainDB::ShieldedStateRecord record) {
+    switch (record) {
+        case ChainDB::ShieldedStateRecord::Frontier: return "Mshielded_frontier";
+        case ChainDB::ShieldedStateRecord::AnchorHistory: return "Mshielded_anchor_history";
+        case ChainDB::ShieldedStateRecord::LegacyAnchorImportMarker:
+            return "Mshielded_anchor_history_migrated_v1";
+    }
+    return nullptr;
+}
+
+bool IsReservedShieldedMeta(const std::string& key) {
+    return key == "shielded_frontier" || key == "shielded_anchor_history" ||
+           key == "shielded_anchor_history_migrated_v1";
+}
+
+// Structural checks before a READY store is opened writable. Semantic frontier,
+// anchor/root and nullifier-count checks remain with the consensus consumer.
+// No missing destination record is rescued from stale old-CF data or files.
+rocksdb::Status CheckReadyShieldedRecords(OpenedChainDB& reader) {
+    const auto reads = rocksdb::ReadOptions();
+    std::string value;
+    for (const auto record : {ChainDB::ShieldedStateRecord::Frontier,
+                              ChainDB::ShieldedStateRecord::AnchorHistory}) {
+        const auto status = reader.db->Get(reads, reader.named(kShieldedFamily), ShieldedStateKey(record), &value);
+        if (status.IsNotFound() || (status.ok() && value.empty()))
+            return rocksdb::Status::Corruption("Missing READY shielded record");
+        if (!status.ok()) return status;
+    }
+    auto status = reader.db->Get(reads, reader.named("meta"), "shielded_tip", &value);
+    if (status.IsNotFound() || (status.ok() && value.size() != 84))
+        return rocksdb::Status::Corruption("Missing or malformed READY shielded tip");
+    if (!status.ok()) return status;
+    for (const auto record : {ChainDB::ShieldedStateRecord::Frontier,
+                              ChainDB::ShieldedStateRecord::AnchorHistory,
+                              ChainDB::ShieldedStateRecord::LegacyAnchorImportMarker}) {
+        status = reader.db->Get(reads, reader.named("utreexo"), ShieldedStateKey(record), &value);
+        if (status.ok()) return rocksdb::Status::Corruption("Stale shielded source record in READY layout");
+        if (!status.IsNotFound()) return status;
+    }
+    std::unique_ptr<rocksdb::Iterator> it(reader.db->NewIterator(reads, reader.named("utreexo")));
+    it->Seek("N");
+    if (it->Valid() && !it->key().empty() && it->key().data()[0] == 'N')
+        return rocksdb::Status::Corruption("Stale nullifier source record in READY layout");
+    return it->status();
+}
 } // namespace
 
 Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery) {
     auto options = getDefaultOptions();
-    const auto descriptors = getColumnFamilyDescriptors();
+    auto descriptors = getColumnFamilyDescriptors();
     const auto lock_path = (dir / "LOCK").string();
     rocksdb::FileLock* lock = nullptr;
     auto status = options.env->LockFile(lock_path, &lock);
@@ -288,6 +334,8 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         if (!status.ok()) return convertRocksDBStatus(status);
         const std::unordered_set<std::string> found(names.begin(), names.end());
         if (found.size() != names.size()) return Status::Corruption;
+        const bool separated = found.count(kShieldedFamily) != 0;
+        if (separated) descriptors.emplace_back(kShieldedFamily, descriptors[idx_utreexo_].options);
         for (const auto& name : names) {
             if (std::none_of(descriptors.begin(), descriptors.end(), [&](const auto& d) { return d.name == name; })) {
                 std::cerr << "ChainDB::init: Unsupported column family: " << name << '\n';
@@ -326,10 +374,18 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         }
         status = reader.db->Get(rocksdb::ReadOptions(), meta, kStorageLayoutKey, &value);
         if (status.ok()) {
-            std::cerr << "ChainDB::init: Unsupported storage layout marker\n";
-            return Status::Invalid;
+            // Only a fully completed shielded-only relocation is readable.
+            // Normal open never creates, resumes, repairs or completes it.
+            if (value != kShieldedReady || !separated || missing_schema || append_prebase) {
+                std::cerr << "ChainDB::init: Unsupported or incomplete storage layout\n";
+                return Status::Invalid;
+            }
+            status = CheckReadyShieldedRecords(reader);
+            if (!status.ok()) return convertRocksDBStatus(status);
+        } else {
+            if (!status.IsNotFound()) return convertRocksDBStatus(status);
+            if (separated) return Status::Corruption;
         }
-        if (!status.IsNotFound()) return convertRocksDBStatus(status);
     }
 
     // All ownership remains local until opening, the approved append, schema
@@ -2091,6 +2147,7 @@ Status ChainDB::putUtreexoMeta(const ChainWriteToken& token, const std::string& 
                                 const std::string& value,
                                 rocksdb::WriteBatch* wb) {
     if (!db_) return Status::Internal;
+    if (IsReservedShieldedMeta(key)) return Status::Invalid;
     (void)token;
 
     // Key: PREFIX_UTREEXO_META + key_string
@@ -2113,6 +2170,7 @@ Status ChainDB::putUtreexoMeta(const ChainWriteToken& token, const std::string& 
 
 StatusOr<std::string> ChainDB::getUtreexoMeta(const std::string& key) const {
     if (!db_) return Status::Internal;
+    if (IsReservedShieldedMeta(key)) return Status::Invalid;
 
     // Key: PREFIX_UTREEXO_META + key_string
     std::string db_key;
@@ -2131,6 +2189,26 @@ StatusOr<std::string> ChainDB::getUtreexoMeta(const std::string& key) const {
     }
 
     return value;
+}
+
+Status ChainDB::putShieldedState(const ChainWriteToken& token, ShieldedStateRecord record,
+                                 const std::string& bytes, rocksdb::WriteBatch* wb) {
+    if (!db_) return Status::Internal;
+    (void)token;
+    const auto* key = ShieldedStateKey(record);
+    if (!key) return Status::Invalid;
+    if (wb) return convertRocksDBStatus(wb->Put(shieldedStateHandle(), key, bytes));
+    return convertRocksDBStatus(db_->Put(rocksdb::WriteOptions(), shieldedStateHandle(), key, bytes));
+}
+
+StatusOr<std::string> ChainDB::getShieldedState(ShieldedStateRecord record) const {
+    if (!db_) return Status::Internal;
+    const auto* key = ShieldedStateKey(record);
+    if (!key) return Status::Invalid;
+    std::string bytes;
+    const auto status = db_->Get(rocksdb::ReadOptions(), shieldedStateHandle(), key, &bytes);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return bytes;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2327,13 +2405,13 @@ Status ChainDB::putShieldedNullifier(const ChainWriteToken& token,
     static const std::string kEmpty;
 
     if (wb != nullptr) {
-        wb->Put(cf_[idx_utreexo_].get(), key, kEmpty);
+        wb->Put(shieldedStateHandle(), key, kEmpty);
         return Status::Ok;
     }
 
     rocksdb::WriteOptions opts;
     opts.sync = true;
-    auto status = db_->Put(opts, cf_[idx_utreexo_].get(), key, kEmpty);
+    auto status = db_->Put(opts, shieldedStateHandle(), key, kEmpty);
     return convertRocksDBStatus(status);
 }
 
@@ -2350,7 +2428,7 @@ StatusOr<uint64_t> ChainDB::deleteShieldedNullifiersAboveHeight(
 
     rocksdb::ReadOptions read_opts;
     std::unique_ptr<rocksdb::Iterator> it(
-        db_->NewIterator(read_opts, cf_[idx_utreexo_].get()));
+        db_->NewIterator(read_opts, shieldedStateHandle()));
 
     // Seek to the first nullifier row at scan_from; rely on big-endian
     // height ordering so everything we care about is contiguous.
@@ -2365,7 +2443,7 @@ StatusOr<uint64_t> ChainDB::deleteShieldedNullifiersAboveHeight(
     rocksdb::WriteBatch local_batch;
     uint64_t deleted = 0;
     const auto staged = StageShieldedNullifierDeletes(
-        *it, seek_key, cf_[idx_utreexo_].get(), wb ? *wb : local_batch, deleted);
+        *it, seek_key, shieldedStateHandle(), wb ? *wb : local_batch, deleted);
     if (!staged.ok()) return convertRocksDBStatus(staged);
     if (wb != nullptr || deleted == 0) return deleted;
 
@@ -2384,7 +2462,7 @@ StatusOr<uint64_t> ChainDB::deleteAllShieldedNullifiers(
 
     rocksdb::ReadOptions read_opts;
     std::unique_ptr<rocksdb::Iterator> it(
-        db_->NewIterator(read_opts, cf_[idx_utreexo_].get()));
+        db_->NewIterator(read_opts, shieldedStateHandle()));
 
     // Seek to the first nullifier row (bare prefix) and delete every row that
     // carries it — the whole set, all heights.
@@ -2394,7 +2472,7 @@ StatusOr<uint64_t> ChainDB::deleteAllShieldedNullifiers(
     rocksdb::WriteBatch local_batch;
     uint64_t deleted = 0;
     const auto staged = StageShieldedNullifierDeletes(
-        *it, seek_key, cf_[idx_utreexo_].get(), wb ? *wb : local_batch, deleted);
+        *it, seek_key, shieldedStateHandle(), wb ? *wb : local_batch, deleted);
     if (!staged.ok()) return convertRocksDBStatus(staged);
     if (wb != nullptr || deleted == 0) return deleted;
 
@@ -2452,7 +2530,7 @@ Status ChainDB::forEachShieldedNullifier(
 
     rocksdb::ReadOptions read_opts;
     std::unique_ptr<rocksdb::Iterator> it(
-        db_->NewIterator(read_opts, cf_[idx_utreexo_].get()));
+        db_->NewIterator(read_opts, shieldedStateHandle()));
 
     std::string seek_key;
     seek_key.push_back(static_cast<char>(kShieldedNullifierPrefix));
@@ -2482,7 +2560,7 @@ StatusOr<uint64_t> ChainDB::countShieldedNullifiers() const {
 
     rocksdb::ReadOptions read_opts;
     std::unique_ptr<rocksdb::Iterator> it(
-        db_->NewIterator(read_opts, cf_[idx_utreexo_].get()));
+        db_->NewIterator(read_opts, shieldedStateHandle()));
 
     std::string seek_key;
     seek_key.push_back(static_cast<char>(kShieldedNullifierPrefix));
@@ -2762,7 +2840,8 @@ rocksdb::ReadOptions ChainDB::getReadOptions() const {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SUPPORTED ROCKSDB LAYOUT: legacy eight named families plus prebase_coins.
+// Legacy descriptors: eight named families plus prebase_coins. initAttempt
+// additionally recognizes the exact shielded-only READY ten-family layout.
 // Internal vector slots below are fixed; on-disk CF IDs/creation order are not
 // array indices. init() validates the set and resolves every handle by name.
 // Only prebase_coins may be appended, after schema/layout validation. Introducing

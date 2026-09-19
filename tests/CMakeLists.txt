@@ -1017,6 +1017,38 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_realign_shielded_after_heal.cpp)
   message(STATUS "✅ Self-heal shielded-marker realign test enabled (#585/#588)")
 endif()
 
+# READY layout may never be rescued by stale external shielded state.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
+  add_executable(test_shielded_state_startup
+    tests/daemon/test_shielded_state_startup.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool seams (chainstate_service.obj refs)
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
+    src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
+  )
+  target_link_libraries(test_shielded_state_startup PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_shielded_state_startup)
+  target_link_directories(test_shielded_state_startup PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_shielded_state_startup PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_shielded_state_startup PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ShieldedStateStartup COMMAND test_shielded_state_startup)
+  set_tests_properties(ShieldedStateStartup PROPERTIES
+    LABELS "daemon;shielded;storage;smoke"
+    TIMEOUT 120
+  )
+  message(STATUS "Shielded CF startup authority test enabled")
+endif()
+
 # AssumeUTXO pre-base backfill bodies: the #309 persist callback could only
 # synthesize a missing ChainDB header-metadata row from g_block_index, which a
 # snapshot-bootstrapped node does not populate below its base height. The body
@@ -7350,6 +7382,19 @@ target_include_directories(test_shielded_nullifier_scan_safety PRIVATE
 )
 add_test(NAME ShieldedNullifierScanSafety COMMAND test_shielded_nullifier_scan_safety)
 set_tests_properties(ShieldedNullifierScanSafety PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
+
+add_executable(test_shielded_state_storage
+  tests/storage/test_shielded_state_storage.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_shielded_state_storage PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_shielded_state_storage PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME ShieldedStateStorage COMMAND test_shielded_state_storage)
+set_tests_properties(ShieldedStateStorage PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
 
 # #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
 # restart-mid-backfill "too far ahead of cursor 1" deadlock (phone 2026-07-07).
