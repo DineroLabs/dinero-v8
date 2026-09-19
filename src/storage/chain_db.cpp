@@ -10,6 +10,7 @@
 #include <rocksdb/slice_transform.h>
 #include <rocksdb/env.h>
 #include <cstring>
+#include <limits>
 #include <chrono>
 #include <thread>
 #include <sstream>
@@ -34,7 +35,8 @@
 // every subsequent Open() fails with "lock hold by current process" — and
 // removing the LOCK *file* doesn't clear the in-memory set.
 //
-// Safe because iOS guarantees single-process access to the app sandbox.
+// This does NOT exclude two owners within the app process. Mobile maintenance
+// ownership remains a separate prerequisite; do not infer it from this Env.
 // ═══════════════════════════════════════════════════════════════════════════════
 #if defined(__APPLE__) && TARGET_OS_IOS
 namespace {
@@ -165,138 +167,204 @@ std::string SerializePersistedHeaderMetadataValue(const ChainDB::PersistedHeader
 
 Status ChainDB::init(const std::filesystem::path& dir) {
     close();  // Ensure clean state
-    dir_ = dir;  // Remember path for lock recovery
 
     try {
         std::filesystem::create_directories(dir);
+        // RocksDB's same-process lock registry is keyed by pathname. Normalize
+        // aliases before acquiring LOCK so two ChainDB owners cannot bypass it.
+        dir_ = std::filesystem::canonical(dir);
     } catch (const std::exception&) {
         return Status::Io;
     }
 
-    return initAttempt(dir, /*allow_lock_recovery=*/true);
+    return initAttempt(dir_, /*allow_lock_recovery=*/true);
 }
+
+namespace {
+// Keep the real RocksDB LOCK continuously from read-only inspection until DB
+// destruction. Writable Open borrows it; its UnlockFile does not release our
+// ownership. This avoids a check/open race without inventing a second lock file.
+// The target Env's locking guarantees still apply (iOS currently uses NoLockEnv).
+class CheckedOpenEnv final : public rocksdb::EnvWrapper {
+public:
+    CheckedOpenEnv(rocksdb::Env* base, std::string path, rocksdb::FileLock* lock)
+        : EnvWrapper(base), path_(std::move(path)), lock_(lock) {}
+    ~CheckedOpenEnv() override { target()->UnlockFile(lock_).PermitUncheckedError(); }
+
+    rocksdb::Status LockFile(const std::string& path, rocksdb::FileLock** lock) override {
+        *lock = nullptr;
+        if (claimed_ || std::filesystem::path(path).lexically_normal() !=
+                            std::filesystem::path(path_).lexically_normal()) {
+            return rocksdb::Status::IOError("unexpected ChainDB lock request", path);
+        }
+        claimed_ = true;
+        *lock = lock_;
+        return rocksdb::Status::OK();
+    }
+    rocksdb::Status UnlockFile(rocksdb::FileLock* lock) override {
+        if (lock != lock_ || !claimed_) {
+            return rocksdb::Status::IOError("unexpected ChainDB lock release");
+        }
+        claimed_ = false;
+        return rocksdb::Status::OK();
+    }
+private:
+    std::string path_;
+    rocksdb::FileLock* lock_;
+    bool claimed_ = false;
+};
+
+// Handles always die before the DB, including partially failed Open calls.
+struct OpenedChainDB {
+    std::unique_ptr<rocksdb::DB> db;
+    std::vector<CfUPtr> handles;
+
+    rocksdb::Status open(const rocksdb::Options& options, const std::string& path,
+                         const std::vector<rocksdb::ColumnFamilyDescriptor>& descriptors,
+                         bool read_only) {
+        rocksdb::DB* raw = nullptr;
+        std::vector<rocksdb::ColumnFamilyHandle*> raw_handles;
+        auto status = read_only
+            ? rocksdb::DB::OpenForReadOnly(options, path, descriptors, &raw_handles, &raw)
+            : rocksdb::DB::Open(options, path, descriptors, &raw_handles, &raw);
+        db.reset(raw);
+        for (auto* handle : raw_handles) handles.emplace_back(handle);
+        return status;
+    }
+    rocksdb::ColumnFamilyHandle* named(const std::string& name) const {
+        for (const auto& handle : handles) {
+            if (handle && handle->GetName() == name) return handle.get();
+        }
+        return nullptr;
+    }
+};
+
+constexpr uint32_t kChainDBSchemaVersion = 4;
+// Reserved fence for the planned storage layout. This opener supports no
+// migration state, including READY; that requires a separately qualified reader.
+constexpr const char* kStorageLayoutKey = "storage_layout_v1";
+} // namespace
 
 Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery) {
     auto options = getDefaultOptions();
-    auto cf_descriptors = getColumnFamilyDescriptors();
-
-    // DEBUG: Log CF descriptors being used
-    std::cerr << "ChainDB::init: Opening DB with " << cf_descriptors.size() << " CF descriptors:" << std::endl;
-    for (const auto& cf_desc : cf_descriptors) {
-        std::cerr << "  - " << cf_desc.name << std::endl;
-    }
-
-    std::vector<rocksdb::ColumnFamilyHandle*> raw_handles;
-    rocksdb::DB* db_raw = nullptr;
-
-    // Phase 34.1: Try to open with all CFs, create missing ones if needed
-    auto status = rocksdb::DB::Open(options, dir.string(), cf_descriptors, &raw_handles, &db_raw);
-
-    // If DB doesn't exist or CFs are missing, list existing CFs and auto-migrate
+    const auto descriptors = getColumnFamilyDescriptors();
+    const auto lock_path = (dir / "LOCK").string();
+    rocksdb::FileLock* lock = nullptr;
+    auto status = options.env->LockFile(lock_path, &lock);
     if (!status.ok()) {
-        std::cerr << "ChainDB::init: Initial open failed: " << status.ToString() << std::endl;
-
-        // Detect lock conflicts and retry once without mutating lock files.
-        // Deleting LOCK can corrupt safety guarantees when another process
-        // legitimately owns the database.
-        if (allow_lock_recovery && status.ToString().find("lock") != std::string::npos) {
-            std::cerr << "ChainDB::init: Lock conflict detected, retrying once without lock-file deletion" << std::endl;
+        if (allow_lock_recovery) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            return initAttempt(dir, /*allow_lock_recovery=*/false);
+            return initAttempt(dir, false);
         }
+        std::cerr << "ChainDB::init: Cannot acquire database lock: " << status.ToString() << '\n';
+        return convertRocksDBStatus(status);
+    }
+    auto env = std::make_shared<CheckedOpenEnv>(options.env, lock_path, lock);
+    options.env = env.get();
+    options.create_if_missing = false;
+    options.create_missing_column_families = false;
 
-        // Try to list existing column families
-        std::vector<std::string> existing_cf_names;
-        auto list_status = rocksdb::DB::ListColumnFamilies(options, dir.string(), &existing_cf_names);
-
-        if (list_status.ok() && !existing_cf_names.empty()) {
-            std::cerr << "ChainDB::init: Found " << existing_cf_names.size() << " existing CFs:" << std::endl;
-            for (const auto& name : existing_cf_names) {
-                std::cerr << "  - " << name << std::endl;
+    const auto current = options.env->FileExists((dir / "CURRENT").string());
+    bool fresh = false;
+    bool missing_schema = false;
+    bool append_prebase = false;
+    std::vector<rocksdb::ColumnFamilyDescriptor> existing;
+    if (current.IsNotFound()) {
+        // A missing CURRENT in a populated directory is damage, not a fresh DB.
+        std::vector<std::string> children;
+        status = options.env->GetChildren(dir.string(), &children);
+        if (!status.ok()) return convertRocksDBStatus(status);
+        for (const auto& name : children) {
+            if (name != "." && name != ".." && name != "LOCK") {
+                std::cerr << "ChainDB::init: Missing CURRENT in nonempty database directory\n";
+                return Status::Corruption;
             }
-
-            // Build descriptors for existing CFs
-            std::vector<rocksdb::ColumnFamilyDescriptor> existing_descriptors;
-            for (const auto& cf_name : existing_cf_names) {
-                existing_descriptors.emplace_back(cf_name, options);
-            }
-
-            std::cerr << "ChainDB::init: Attempting to open with existing CFs..." << std::endl;
-            status = rocksdb::DB::Open(options, dir.string(), existing_descriptors, &raw_handles, &db_raw);
-
-            if (!status.ok()) {
-                std::cerr << "ChainDB::init: Failed to open with existing CFs: " << status.ToString() << std::endl;
-
-                // Same lock recovery for the fallback open path.
-                if (allow_lock_recovery && status.ToString().find("lock") != std::string::npos) {
-                    std::cerr << "ChainDB::init: Lock conflict detected on fallback open, retrying once" << std::endl;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                    return initAttempt(dir, /*allow_lock_recovery=*/false);
-                }
-                return convertRocksDBStatus(status);
-            }
-
-            std::cerr << "ChainDB::init: Successfully opened DB with existing CFs" << std::endl;
-        } else {
-            std::cerr << "ChainDB::init: DB does not exist or is corrupted: " << list_status.ToString() << std::endl;
-            return convertRocksDBStatus(status);
         }
-    }
-    
-    db_.reset(db_raw);
-    
-    // Wrap raw handles in RAII containers
-    cf_.clear();
-    cf_.reserve(raw_handles.size());
-    for (auto* h : raw_handles) {
-        cf_.emplace_back(CfUPtr(h));
-    }
-
-    // Phase 34.1: Verify CF initialization
-    std::cerr << "ChainDB::init: Initialized " << cf_.size() << " column families" << std::endl;
-    for (size_t i = 0; i < cf_.size(); ++i) {
-        std::cerr << "  CF[" << i << "]: " << (cf_[i] ? "valid" : "null") << std::endl;
-    }
-
-    if (cf_.size() < cf_descriptors.size()) {
-        // Append-only schema migration. The fallback open above intentionally
-        // opens every existing CF first; create only descriptors absent from
-        // that database, in canonical append order. Existing handles remain at
-        // their immutable indices and newly-created handles are appended.
-        for (size_t i = cf_.size(); i < cf_descriptors.size(); ++i) {
-            rocksdb::ColumnFamilyHandle* handle = nullptr;
-            const auto create_status = db_->CreateColumnFamily(
-                cf_descriptors[i].options, cf_descriptors[i].name, &handle);
-            if (!create_status.ok()) {
-                std::cerr << "ChainDB::init: Failed to append CF "
-                          << cf_descriptors[i].name << ": "
-                          << create_status.ToString() << std::endl;
-                return convertRocksDBStatus(create_status);
+        fresh = missing_schema = true;
+    } else {
+        if (!current.ok()) return convertRocksDBStatus(current);
+        std::vector<std::string> names;
+        status = rocksdb::DB::ListColumnFamilies(options, dir.string(), &names);
+        if (!status.ok()) return convertRocksDBStatus(status);
+        const std::unordered_set<std::string> found(names.begin(), names.end());
+        if (found.size() != names.size()) return Status::Corruption;
+        for (const auto& name : names) {
+            if (std::none_of(descriptors.begin(), descriptors.end(), [&](const auto& d) { return d.name == name; })) {
+                std::cerr << "ChainDB::init: Unsupported column family: " << name << '\n';
+                return Status::Invalid;
             }
-            cf_.emplace_back(CfUPtr(handle));
-            std::cerr << "ChainDB::init: Appended missing CF "
-                      << cf_descriptors[i].name << std::endl;
         }
+        for (const auto& descriptor : descriptors) {
+            if (found.count(descriptor.name)) {
+                existing.push_back(descriptor);
+            } else if (descriptor.name == "prebase_coins") {
+                append_prebase = true;
+            } else {
+                std::cerr << "ChainDB::init: Required column family is missing: " << descriptor.name << '\n';
+                return Status::Corruption;
+            }
+        }
+        // Inspect schema and the reserved layout fence before writable Open or
+        // the only supported append (legacy eight-family -> prebase_coins).
+        OpenedChainDB reader;
+        status = reader.open(options, dir.string(), existing, true);
+        if (!status.ok()) return convertRocksDBStatus(status);
+        auto* meta = reader.named("meta");
+        if (!meta) return Status::Corruption;
+        std::string value;
+        status = reader.db->Get(rocksdb::ReadOptions(), meta, KEY_SCHEMA_VERSION, &value);
+        missing_schema = status.IsNotFound();
+        if (!missing_schema) {
+            if (!status.ok()) return convertRocksDBStatus(status);
+            if (value.size() != sizeof(uint32_t)) return Status::Corruption;
+            uint32_t version;
+            std::memcpy(&version, value.data(), sizeof(version));
+            if (version != kChainDBSchemaVersion) {
+                std::cerr << "ChainDB::init: Unsupported schema version: " << version << '\n';
+                return Status::Invalid;
+            }
+        }
+        status = reader.db->Get(rocksdb::ReadOptions(), meta, kStorageLayoutKey, &value);
+        if (status.ok()) {
+            std::cerr << "ChainDB::init: Unsupported storage layout marker\n";
+            return Status::Invalid;
+        }
+        if (!status.IsNotFound()) return convertRocksDBStatus(status);
     }
 
-    if (cf_.size() < 9) {
-        std::cerr << "ChainDB::init: ERROR - Expected at least 9 CFs, got " << cf_.size() << std::endl;
-        return Status::Internal;
+    // All ownership remains local until opening, the approved append, schema
+    // initialization and name-based handle resolution have succeeded.
+    OpenedChainDB opened;
+    options.create_if_missing = fresh;
+    options.create_missing_column_families = fresh;
+    status = opened.open(options, dir.string(), fresh ? descriptors : existing, false);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    if (append_prebase) {
+        const auto& descriptor = descriptors.back();
+        rocksdb::ColumnFamilyHandle* handle = nullptr;
+        status = opened.db->CreateColumnFamily(descriptor.options, "prebase_coins", &handle);
+        if (handle) opened.handles.emplace_back(handle);
+        if (!status.ok()) return convertRocksDBStatus(status);
     }
-    
-    // Initialize schema version if not exists
-    int schema_version;
-    if (getSchemaVersion(schema_version) != Status::Ok) {
-        // Bootstrap token - ONLY used during init()
-        ChainWriteToken token;
-        rocksdb::WriteBatch batch;
-        auto init_status = setSchemaVersion(token, 4, &batch);
-        if (init_status != Status::Ok) {
-            return init_status;
-        }
-        return writeBatch(token, std::move(batch), true);
+    std::vector<CfUPtr> ordered;
+    for (const auto& descriptor : descriptors) {
+        const auto found = std::find_if(opened.handles.begin(), opened.handles.end(), [&](const auto& h) {
+            return h && h->GetName() == descriptor.name;
+        });
+        if (found == opened.handles.end()) return Status::Internal;
+        ordered.push_back(std::move(*found));
     }
-
+    if (missing_schema) {
+        const uint32_t version = kChainDBSchemaVersion;
+        rocksdb::WriteOptions writes;
+        writes.sync = true;
+        status = opened.db->Put(writes, ordered[idx_meta_].get(), KEY_SCHEMA_VERSION,
+                               rocksdb::Slice(reinterpret_cast<const char*>(&version), sizeof(version)));
+        if (!status.ok()) return convertRocksDBStatus(status);
+    }
+    open_env_ = std::move(env);
+    db_ = std::move(opened.db);
+    cf_ = std::move(ordered);
     return Status::Ok;
 }
 
@@ -306,6 +374,7 @@ void ChainDB::close() {
     cf_.clear();
     // 3) Then destroy DB:
     db_.reset();
+    open_env_.reset();  // release the actual LOCK only after DB destruction
 }
 
 Status ChainDB::putBlock(const ChainWriteToken& token, const uint256& hash, const Block& block, rocksdb::WriteBatch* wb) {
@@ -2543,7 +2612,10 @@ Status ChainDB::getSchemaVersion(int& version) const {
         return Status::Corruption;
     }
     
-    version = *reinterpret_cast<const uint32_t*>(value.data());
+    uint32_t stored;
+    std::memcpy(&stored, value.data(), sizeof(stored));
+    if (stored > static_cast<uint32_t>(std::numeric_limits<int>::max())) return Status::Invalid;
+    version = static_cast<int>(stored);
     return Status::Ok;
 }
 
@@ -2692,7 +2764,7 @@ rocksdb::Options ChainDB::getDefaultOptions() const {
     // Disable compression (vendored build has no LZ4/Snappy/ZSTD)
     options.compression = rocksdb::kNoCompression;
 
-    // iOS: skip file locking (single-process sandbox, avoids lifecycle lock races)
+    // Existing iOS behavior: no file lock. Same-process ownership is not provided.
 #if defined(__APPLE__) && TARGET_OS_IOS
     options.env = getNoLockEnv();
 #endif
@@ -2719,35 +2791,11 @@ rocksdb::ReadOptions ChainDB::getReadOptions() const {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONSENSUS-CRITICAL INVARIANT: 8-CF ROCKSDB SCHEMA (APPEND-ONLY, FROZEN)
-// ═══════════════════════════════════════════════════════════════════════════════
-// Dinero's blockchain database uses 9 RocksDB column families. The first 8
-// retain their historical immutable indices; prebase_coins is append-only.
-// This schema is IMMUTABLE and crash-tested for production reliability:
-//
-//   1. default  - RocksDB required CF (metadata)
-//   2. meta     - Chain metadata (tip, best chain)
-//   3. blocks   - Full block data (header + transactions)
-//   4. headers  - Block headers only (for headers-first sync)
-//   5. height   - Height-to-hash index (fast lookups)
-//   6. txindex  - Transaction index (optional, for tx lookup by hash)
-//   7. utxo     - UTXO set (unspent transaction outputs)
-//   8. utreexo  - Utreexo accumulator state (AFTER-state roots)
-//
-// PROVEN BY: Hardened soak test (2026-01-08)
-//   - 25 SIGKILL crash cycles under active mining
-//   - Perfect persistence across all crashes
-//   - Zero CF migration failures
-//   - Zero reindex required
-//
-// SCHEMA EVOLUTION RULES:
-//   - NEVER remove existing CFs (breaks old nodes)
-//   - NEVER reorder CFs (breaks compatibility)
-//   - NEW CFs must be APPENDED to the end
-//   - Document migration path for any new CFs
-//
-// See: docs/UTREEXO_PERSISTENCE_AUDIT.md for crash test evidence
-// ═══════════════════════════════════════════════════════════════════════════════
+// SUPPORTED ROCKSDB LAYOUT: legacy eight named families plus prebase_coins.
+// Internal vector slots below are fixed; on-disk CF IDs/creation order are not
+// array indices. init() validates the set and resolves every handle by name.
+// Only prebase_coins may be appended, after schema/layout validation. Introducing
+// another family requires explicit compatibility and migration review.
 std::vector<rocksdb::ColumnFamilyDescriptor> ChainDB::getColumnFamilyDescriptors() const {
     auto options = getDefaultOptions();
 
