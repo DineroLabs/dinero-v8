@@ -1861,7 +1861,7 @@ add_test(
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_promotion_boundary.sh
 )
 set_tests_properties(ShieldedPromotionBoundary PROPERTIES
-    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;PROMOTION_TEST_FRAGMENT_CONSOLE=1"
     LABELS "integration;shielded;assumeutxo;promotion;boundary"
     TIMEOUT 1800
 )

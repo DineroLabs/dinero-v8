@@ -663,6 +663,30 @@ jobs:
             done
           done
 
+      # ShieldedPromotionBoundary keeps its failed fixture in /tmp. Its
+      # exactly-once assertion needs the early base+1 connection, which a
+      # final 60-line daemon tail cannot show. Preserve bounded log evidence,
+      # never the fixture's wallets, cookies or databases.
+      - name: Collect shielded promotion boundary failure evidence
+        if: always()
+        run: |
+          dest=build-tests/Testing/shielded-promotion-boundary
+          mkdir -p "$dest"
+          for root in /tmp/dinero_promo_bound_*; do
+            [ -d "$root" ] || continue
+            name=$(basename "$root")
+            for node in source consumer; do
+              for f in "$root/$node"/daemon*.log "$root/$node/chainstate-events.log"; do
+                [ -f "$f" ] || continue
+                mkdir -p "$dest/$name/$node"
+                out="$dest/$name/$node/$(basename "$f")"
+                wc -c < "$f" > "$out.original-bytes"
+                head -c 20971520 "$f" > "$out.head"
+                tail -c 20971520 "$f" > "$out.tail"
+              done
+            done
+          done
+
       - name: Upload ctest logs
         if: always()
         uses: actions/upload-artifact@v4
