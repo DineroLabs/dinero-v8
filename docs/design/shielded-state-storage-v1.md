@@ -59,10 +59,12 @@ and checkpoint preservation. `ShieldedStateStartup` calls the real loader with
 generated canonical data and stale external files/cache. Both run in the normal
 Tests lane, using runtime assertions that remain active under NDEBUG.
 
-Synthetic READY fixtures do not prove relocation. The next stage must implement
-exclusive stopped-copy ownership, complete raw inventory/semantic eligibility,
-durable PREPARING/MOVING/VERIFYING/READY journaling, bounded verified relocation,
-crash resumption and binary/datadir rollback enforcement. Full daemon import,
+Synthetic READY fixtures do not prove relocation. The subsequent
+[offline ChainDB-copy engine](shielded-state-migration-engine.md) implements
+database lock ownership, raw inventory and shielded-marker checks, durable
+PREPARING/MOVING/VERIFYING/READY journaling, bounded verified relocation and
+crash resumption on generated stores. Complete datadir ownership/eligibility
+and binary/datadir rollback enforcement remain required. Full daemon import,
 connect/disconnect, replay, restart/reindex, Utreexo equivalence, Linux/iOS and
 real-copy resource qualification remain required.
 
