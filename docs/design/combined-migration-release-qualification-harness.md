@@ -1,5 +1,38 @@
 # Combined migration + compact-proof + 60-second release qualification harness
 
+## First real Linux CI run: workflow bug found, and a new genuine failure
+
+PR #791 (this harness, stacked on #790/#789) ran
+`.github/workflows/combined-migration-qualification.yml` for the first
+time. Two findings:
+
+1. **This workflow's own CI-status bug**: every `run:` step piped its
+   command through `tee` to also capture evidence, without `pipefail` —
+   the step's exit code was `tee`'s (always 0), not the piped command's.
+   The actual `CombinedMigrationReleaseQualification` ctest **failed**
+   ("***Failed 164.62 sec", "0% tests passed"), yet the job and PR check
+   both reported success (run `35474838716`). Fixed with a job-level
+   `bash -eo pipefail` default, with a deliberate override on the
+   qualification-ctest step so it still copies `LastTest.log` after a
+   failure instead of exiting immediately.
+
+2. **A new, Linux-CI-specific failure, not reproduced in ~10 local macOS
+   runs**: phase 6's immature-coinbase spend failed immediately on
+   `wallet.sendrawtransaction` with `Script validation failed for input 0:
+   invalid script format`. Decoding the exact rejected hex shows a
+   **legacy-serialized transaction with an empty scriptSig and no witness
+   data at all** — `wallet.signrawtransaction` produced something that was
+   never actually signed, for a coinbase-sourced UTXO specifically (the
+   same call pattern against the unshield's own transparent output, one
+   phase earlier in the identical run, succeeded normally). This was not
+   further diagnosed by rerunning on Linux (no local Linux environment in
+   this session) — reported as a concrete, unconfirmed-root-cause finding
+   rather than guessed at. It has the same *shape* as the wallet-indexing
+   race #790 fixed for shielded input selection (a freshly-mined output
+   used immediately, before some indexing step completes), but for a
+   transparent coinbase output instead of a shielded note — plausible, not
+   confirmed.
+
 Date: 2026-09-19. Prepared per explicit instruction to attack the outstanding
 three-way release gate directly, rather than produce another design review or
 duplicate migration internals.
