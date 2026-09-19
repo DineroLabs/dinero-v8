@@ -242,6 +242,48 @@ jobs:
           path: build-tests/Testing/checkpoint-retention/
           retention-days: 14
 
+      # Builds its own isolated regtest datadirs and calls the reviewed
+      # MigrateShieldedDatadirCopy engine through migrate_shielded_datadir
+      # (tools/migrate_shielded_datadir.cpp). Closes the "actual migrated-
+      # daemon compact-proof plus 60-second restart/reorg/mining" gate named
+      # in docs/design/shielded-state-migration-engine.md. Its own 'integration'
+      # label excludes it from the broad sweep below, same as checkpoint
+      # retention above.
+      - name: Run combined migration release qualification
+        id: migration-qualification
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/migration-qualification
+          ctest --test-dir build-tests \
+            --output-on-failure \
+            --no-tests=error \
+            -V -j1 \
+            -R '^CombinedMigrationReleaseQualification$' \
+            | tee build-tests/Testing/migration-qualification/ctest.log
+
+      - name: Collect migration qualification failure logs
+        if: ${{ always() && steps.migration-qualification.outcome == 'failure' }}
+        run: |
+          dest=build-tests/Testing/migration-qualification
+          for root in /tmp/dinero_migration_qual.*; do
+            [ -d "$root" ] || continue
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            find "$root" -maxdepth 2 \( -name '*.log' -o -name '*-result.txt' -o -name '*.json' \) | while read -r f; do
+              rel="${f#"$root"/}"
+              mkdir -p "$dest/$name/$(dirname "$rel")"
+              head -c 20971520 "$f" > "$dest/$name/$rel.head"
+            done
+          done
+
+      - name: Upload migration qualification failure evidence
+        if: ${{ always() && steps.migration-qualification.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-qualification-${{ github.sha }}
+          path: build-tests/Testing/migration-qualification/
+          retention-days: 14
+
       - name: Run ctest
         run: |
           # Initial v2 soak intentionally runs the stable full-build test subset.

@@ -2486,3 +2486,34 @@ set_tests_properties(PowEnforcedRegtest PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
     TIMEOUT 600 RUN_SERIAL TRUE)
+
+# Combined migration + compact-proof + 60-second release qualification.
+# Owned separately from the migration engine itself (see
+# docs/design/combined-migration-release-qualification-harness.md): calls
+# the reviewed, unmodified MigrateShieldedDatadirCopy engine through the
+# migrate_shielded_datadir CLI driver (tools/migrate_shielded_datadir.cpp)
+# against a real regtest-produced datadir, then continues mining/reorging/
+# restarting the migrated candidate — closing the "actual migrated-daemon
+# compact-proof plus 60-second restart/reorg/mining" gate explicitly named
+# as remaining in docs/design/shielded-state-migration-engine.md and
+# docs/design/shielded-migration-eligibility.md. Requires
+# DINERO_ENABLE_COMPACT_REGTEST (see the CompactTimingLifecycle block above)
+# to exercise the compact-format half of exercise 2; without it the compact
+# transactions in phase 4 still submit and mine (compact format is what's
+# gated, not shield/unshield themselves), so this test is still registered
+# unconditionally, mirroring PowEnforcedRegtest's own "always executed"
+# convention above.
+# migrate_shielded_datadir only exists under the same if(UNIX AND NOT IOS)
+# guard as ShieldedStateMigration/ShieldedMigrationCohort in tests/CMakeLists.txt
+# (see tools/migrate_shielded_datadir.cpp) — TARGET_FILE on a nonexistent
+# target would be a configure-time error, so this registration needs the
+# identical guard, not just the script's own existence check.
+if(UNIX AND NOT IOS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.sh)
+    add_test(NAME CombinedMigrationReleaseQualification
+        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.sh)
+    set_tests_properties(CombinedMigrationReleaseQualification PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;MIGRATE_TOOL=$<TARGET_FILE:migrate_shielded_datadir>"
+        LABELS "integration;shielded;migration;compact-regtest;consensus;utreexo;restart;reorg;qualification;mandatory"
+        TIMEOUT 2400 RUN_SERIAL TRUE)
+    message(STATUS "  ✓ CombinedMigrationReleaseQualification registered")
+endif()
