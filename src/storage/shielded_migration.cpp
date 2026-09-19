@@ -243,10 +243,13 @@ Inventory InspectOriginal(const Store& source, const ShieldedMigrationLimits& li
     Require(anchors.DeserializePersistenceBytes({history.begin(), history.end()}) == sh::AnchorHistory::IoResult::Ok,
             "invalid anchor history");
     const auto tree_root = tree.Root();
-    const auto root = sh::ComputeShieldedRootFromParts({tree_root.begin(), tree_root.end()}, tree.Size(),
-        sh::ComputeNullifierAccumulator(nullifiers), anchors.SerializeBytes());
-    Require(root && LE(shielded, 68, 8) == tree.Size() && LE(shielded, 76, 8) == nullifiers.size() &&
-            std::memcmp(shielded.data() + 36, root->data, 32) == 0, "shielded state root/count mismatch");
+    // The existing marker stores CurrentShieldedStateSnapshot's tree root,
+    // not the composite consensus shielded root. Preserve that format. The
+    // full inventory digest and relocation readback bind every nullifier and
+    // anchor byte separately; this marker alone does not authenticate them.
+    Require(LE(shielded, 68, 8) == tree.Size() && LE(shielded, 76, 8) == nullifiers.size() &&
+            std::memcmp(shielded.data() + 36, tree_root.data(), tree_root.size()) == 0,
+            "shielded state root/count mismatch");
     result.height = height; result.tip = hash;
     result.digest = digest.Finish(); return result;
 }

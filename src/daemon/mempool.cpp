@@ -1693,6 +1693,39 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
 
 // STEP 3: Check if output is spent in mempool (for wallet coin selection)
 // Phase M.0: Updated to use OutPoint directly
+std::vector<std::optional<consensus::UTXOEntry>> Mempool::getConfirmedWalletCoins(
+    const std::vector<OutPoint>& candidates) const {
+    std::vector<std::optional<consensus::UTXOEntry>> result(candidates.size());
+    // Match admission/template lock order. Return copies before any wallet SQL,
+    // signing or proof generation; no chainstate lock spans expensive proving.
+    auto guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
+    if (chainstate_read_guard_factory_ && !guard) return result;
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    if (!chain_state_view_) return result;
+    const auto height = chain_state_view_->getHeight();
+    if (height == std::numeric_limits<uint32_t>::max()) return result;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        const auto& outpoint = candidates[i];
+        if (m_spent_outputs.count(outpoint)) continue;
+        std::optional<consensus::UTXOEntry> coin;
+        const bool frozen = prebase_coin_predicate_ && prebase_coin_predicate_(outpoint);
+        if (frozen) {
+            // A stale auxiliary row is not evidence that a frozen leaf is live.
+            if (prebase_coin_resolver_) coin = prebase_coin_resolver_(outpoint);
+        } else {
+            const auto found = chain_state_view_->getCoin(outpoint);
+            if (found.ok()) coin = found.value();
+            if (!coin && prebase_coin_resolver_ && !prebase_coin_predicate_) {
+                coin = prebase_coin_resolver_(outpoint);
+            }
+        }
+        if (!coin || coin->height > height ||
+            (coin->isCoinbase && !CoinbaseMaturity::isCoinbaseMature(coin->height, height + 1))) continue;
+        result[i] = std::move(coin);
+    }
+    return result;
+}
+
 bool Mempool::isOutputSpentInMempool(const OutPoint& outpoint) const {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
     return m_spent_outputs.find(outpoint) != m_spent_outputs.end();
