@@ -24,6 +24,17 @@ jobs:
     name: Linux combined migration + compact + 60-second qualification
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    defaults:
+      run:
+        # Every step below pipes a command through `tee` to also capture
+        # its output as evidence — without pipefail, the step's exit code
+        # is tee's (always 0 unless it can't write the file), not the
+        # piped command's. Confirmed by direct reproduction: the real
+        # CombinedMigrationReleaseQualification ctest FAILED in run
+        # 35474838716 ("***Failed 164.62 sec", "0% tests passed"), yet the
+        # job and PR check both reported success. bash's default shell
+        # here (GitHub Actions) does not enable pipefail on its own.
+        shell: bash --noprofile --norc -eo pipefail {0}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,11 +100,20 @@ jobs:
             --output-junit "$PWD/evidence/engine-ctest.xml" 2>&1 | tee evidence/engine-ctest.log
 
       - name: Run the combined migration release qualification
+        # Overrides the job-level -e default deliberately: this step must
+        # still copy the detail log below when ctest fails, not stop dead
+        # at the failing pipeline. pipefail alone (no -e) lets $? correctly
+        # reflect ctest's real exit code through the tee pipe, and the
+        # explicit `exit` at the end still fails the step/job on a real
+        # test failure.
+        shell: bash --noprofile --norc -o pipefail {0}
         run: |
           ctest --test-dir build-migration-qual --no-tests=error --output-on-failure -V \
             -R '^CombinedMigrationReleaseQualification$' \
             --output-junit "$PWD/evidence/ctest.xml" 2>&1 | tee evidence/ctest.log
+          ctest_status=$?
           cp build-migration-qual/Testing/Temporary/LastTest.log evidence/ctest-details.log
+          exit "$ctest_status"
 
       - name: Run negative controls standalone
         if: always()
