@@ -7413,6 +7413,22 @@ if(UNIX AND NOT IOS)
   target_compile_definitions(test_shielded_state_migration PRIVATE DINERO_SHIELDED_MIGRATION_FAULT_TESTING=1)
   add_test(NAME ShieldedStateMigration COMMAND test_shielded_state_migration)
   set_tests_properties(ShieldedStateMigration PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+
+  add_executable(test_shielded_migration_cohort
+    tests/storage/test_shielded_migration_cohort.cpp
+    src/storage/shielded_migration.cpp
+    src/storage/shielded_migration_cohort.cpp
+    src/daemon/datadir_guard.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(test_shielded_migration_cohort PRIVATE
+    dinero_chainstate dinero_shielded dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+  )
+  target_include_directories(test_shielded_migration_cohort PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ShieldedMigrationCohort COMMAND test_shielded_migration_cohort)
+  set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
 endif()
 
 # #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
