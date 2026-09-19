@@ -2496,24 +2496,24 @@ set_tests_properties(PowEnforcedRegtest PROPERTIES
 # restarting the migrated candidate — closing the "actual migrated-daemon
 # compact-proof plus 60-second restart/reorg/mining" gate explicitly named
 # as remaining in docs/design/shielded-state-migration-engine.md and
-# docs/design/shielded-migration-eligibility.md. Requires
-# DINERO_ENABLE_COMPACT_REGTEST (see the CompactTimingLifecycle block above)
-# to exercise the compact-format half of exercise 2; without it the compact
-# transactions in phase 4 still submit and mine (compact format is what's
-# gated, not shield/unshield themselves), so this test is still registered
-# unconditionally, mirroring PowEnforcedRegtest's own "always executed"
-# convention above.
-# migrate_shielded_datadir only exists under the same if(UNIX AND NOT IOS)
-# guard as ShieldedStateMigration/ShieldedMigrationCohort in tests/CMakeLists.txt
-# (see tools/migrate_shielded_datadir.cpp) — TARGET_FILE on a nonexistent
-# target would be a configure-time error, so this registration needs the
-# identical guard, not just the script's own existence check.
-if(UNIX AND NOT IOS AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.sh)
+# docs/design/shielded-migration-eligibility.md.
+#
+# Corrected 2026-09-19 after review found the first (bash) version would
+# request compact activation against a compact-disabled build, which
+# src/daemon/main.cpp explicitly rejects at startup. This test now REQUIRES
+# DINERO_ENABLE_COMPACT_REGTEST — it does not silently degrade to ordinary
+# shield/unshield coverage when compact isn't compiled in (the Python script
+# itself also probes and raises a distinct, clear error if invoked against
+# a build that lacks it, as defense in depth). Registered only in the same
+# dedicated compact-enabled build as CompactTimingLifecycle123/124/125 above,
+# never in an ordinary build's job.
+if(UNIX AND NOT IOS AND DINERO_ENABLE_COMPACT_REGTEST
+   AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.py)
     add_test(NAME CombinedMigrationReleaseQualification
-        COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.sh)
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.py)
     set_tests_properties(CombinedMigrationReleaseQualification PROPERTIES
         ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;MIGRATE_TOOL=$<TARGET_FILE:migrate_shielded_datadir>"
-        LABELS "integration;shielded;migration;compact-regtest;consensus;utreexo;restart;reorg;qualification;mandatory"
+        LABELS "integration;compact-regtest;shielded;migration;consensus;utreexo;restart;reorg;qualification;mandatory"
         TIMEOUT 2400 RUN_SERIAL TRUE)
     message(STATUS "  ✓ CombinedMigrationReleaseQualification registered")
 endif()

@@ -6,7 +6,7 @@ duplicate migration internals.
 
 ## Ownership boundary
 
-This harness (`tests/integration/test_combined_migration_release_qualification.sh`,
+This harness (`tests/integration/test_combined_migration_release_qualification.py`,
 `tools/migrate_shielded_datadir.cpp`, and the CMake/CI wiring for both) is
 owned by the DPI/qualification side of this work, not by the migration
 implementation. It calls `dinero::storage::MigrateShieldedDatadirCopy`
@@ -15,223 +15,241 @@ reviewed, unmodified public API. It does not implement, alter or assume
 anything about:
 
 - Migration internals (`src/storage/shielded_migration*.cpp`) — untouched.
-- Lifecycle leases (`DatadirGuard`, the stopped-datadir companion wrapper) —
-  untouched; the harness relies on their documented, verified behavior
-  (`docs/design/shielded-migration-cohort.md`).
-- SR-1's separate core recovery FFI — out of scope entirely; this harness
-  exercises the *offline* migration path only, never a live-recovery path.
+- Lifecycle leases (`DatadirGuard`) — untouched.
+- SR-1's separate core recovery FFI — out of scope entirely.
+- Wallet coin selection / shield-unshield proving — untouched.
 
 No production datadir, activation height or consensus parameter is touched.
-Everything this harness runs operates on disposable regtest datadirs under a
-`mktemp -d` workdir, torn down on success and preserved (with `[INFO] keeping
-work dir...`) on any failure.
+Everything runs on disposable regtest datadirs under a resolved (symlink-free)
+`tempfile.mkdtemp()` workdir, torn down on success and preserved on failure.
 
 ## Pinned starting point
 
-Branch `claude/combined-migration-release-harness`, created from
-`codex/shielded-migration-promotion-qualification` at commit
-`8a80ca9ada00c9e591ecd1174b918207f7e9abd8` — verified via `git ls-remote` to
-be the exact current remote tip of that branch, and via `gh api .../check-runs`
-to have both Linux CI (`35448390849`) and Tests (`35448389984`) green on that
-exact commit. Per `shielded-column-family-scope-2026-09-18.md`'s "Protected-
-branch integration refresh" entry, this branch "combines #782–#785 with #786"
-— the most complete, already-Linux-qualified integration point available at
-the time this harness was built. It does not yet include #787 (PoW profile
-marker preservation), which was still a separate, unmerged PR at this date;
-none of this harness's four required exercises depend on that PR's scope.
+Branch `claude/combined-migration-release-harness`, worktree at
+`/Users/haydarevich/src/dinero-v8-combined-migration-release-harness`, later
+merged with `origin/codex/shielded-migration-profile-marker` (PR #787).
+Current HEAD includes both. Every run's evidence records
+`git rev-parse HEAD` plus `sha256sum` of the exact `dinerod` and
+`migrate_shielded_datadir` binaries invoked (`record_evidence()`).
 
-`git worktree add -b claude/combined-migration-release-harness
-/Users/haydarevich/src/dinero-v8-combined-migration-release-harness
-8a80ca9ada00c9e591ecd1174b918207f7e9abd8` — a dedicated worktree, not a reuse
-of any Codex-owned worktree/branch, per the explicit "no overlapping edits"
-instruction.
+## Rewrite history
 
-## Why a new CLI driver was needed (concrete missing interface)
+**First version** (bash, commit `ce1c342f5`): used `generatetoaddress`
+(hides the ASERT/PoW gate entirely), had a proof-envelope double-`.result`
+bug, an unreserved coinbase for the identity comparison, a reorg that never
+crossed the boundary it claimed to test, a maturity check that tested
+`listunspent`'s `minconf` filter (not actual coinbase maturity), and CI
+wiring that requested compact activation against a compact-disabled build.
+Full review: `MemoryMD/evidence/combined-migration-harness-review-2026-09-19/README.md`.
 
-`MigrateShieldedDatadirCopy` has no daemon, NodeCore, RPC or operator CLI
-entry point — both of its existing PR docs say so explicitly
-(`shielded-state-migration-engine.md`, `shielded-migration-cohort.md`). The
-only existing callers are two C++ unit-test executables
-(`test_shielded_state_migration`, `test_shielded_migration_cohort`), both
-built exclusively against synthetic, internally-fabricated fixtures
-(`tests/storage/shielded_migration_fixture.h`) — explicitly not proof of
-relocation against real daemon-produced state (their own docs: "Synthetic
-READY fixtures do not prove relocation").
+**Second version** (this file's Python rewrite): addresses every point in
+that review — see inline comments in
+`tests/integration/test_combined_migration_release_qualification.py` for the
+line-by-line mapping. This document covers what changed *after* that
+rewrite, while actually trying to get a real end-to-end pass.
 
-Since this harness's whole point is to migrate a *real*, regtest-daemon-
-produced datadir (real shield/unshield transactions, real mining, real
-Utreexo forests), it needed a way to call the real engine against real
-directories from a shell script. `tools/migrate_shielded_datadir.cpp` is a
-~120-line, deliberately thin CLI wrapper: parse two paths and an `--apply`
-flag, call `MigrateShieldedDatadirCopy`, print the typed result, exit
-nonzero on `!ok`. It adds no new logic to the engine itself and is not
-proposed as a shipped operator tool — seeing the remaining gates
-(rollback enforcement, binary/datadir pairing, disk-headroom policy) listed
-in the engine's own docs makes clear why not.
+## Real PoW mining: the ASERT genesis-staleness problem and its fix
 
-**Reported as a concrete dependency, not bypassed:** if a future core-owned
-CLI/RPC for this engine lands, this harness's `MIGRATE_TOOL` environment
-variable should be repointed at it instead of this driver, and
-`tools/migrate_shielded_datadir.cpp` retired.
+`--regtest-enforce-pow` enables genuine PoW/ASERT enforcement. A fresh
+regtest chain's very first blocks compute an astronomically hard target
+(observed: `bits=02008000`, ~2^249 expected hashes) instead of
+`pow_limit_bits=0x207fffff`, because pre-activation ASERT extrapolates from
+`genesis_time` — a fixed, distant-past chainparams constant — against real
+wall-clock "now". `test_pow_enforced_regtest.py` works around this for its
+own short (3-block) chain by manually overriding `curtime`/`bits`/`target`
+on the first 3 `getblocktemplate` calls.
 
-## What the harness proves — mapped to the four required exercises
+This harness needed to premine well past `COINBASE_MATURITY` (100 blocks)
+*before* any block is confirmable to Utreexo maturity — spendable-fund
+setup requires real transparent inputs, and coinbase needs 100 confirmations.
+Two things had to be verified in isolation before trusting this at that
+scale, both confirmed directly (not assumed):
 
-1. **Nonempty shielded state before migration; identical state and Utreexo
-   proofs afterward.** Phase 1 shields and partially unshields real funds
-   on a real regtest chain (mined past coinbase maturity first). Phase 3
-   asserts byte-identical `daemon.shieldedstatehash`,
-   `blockchain.getutreexoroots`, `wallet.listshielded` notes, wallet
-   balance, chain tip, and a captured Utreexo membership proof
-   (`blockchain.getutxoproofs_batch`/`verifyutxoproofs_batch`) for an
-   already-spent coinbase output, before vs. after
-   `MigrateShieldedDatadirCopy --apply`.
-2. **Compact shield/unshield across the 60-second activation boundary.**
-   Phase 4 mines the migrated candidate to one block before a caller-
-   configurable `BOUNDARY_HEIGHT` (default 140), shields, mines across the
-   boundary, then unshields — mirroring this same `CMakeLists.txt`'s own
-   `CompactTimingLifecycle123/124/125` flanking-height convention, applied
-   to a *migrated* store specifically (that combination — migration plus
-   compact plus 60-second, on the same candidate — is exactly what
-   `shielded-migration-eligibility.md` still lists as a remaining gate).
-3. **Restart and reorg, transparent spend, duplicate-spend rejection.**
-   Phase 5a stops/starts the migrated candidate and re-checks height/tip/
-   state-hash identity. Phase 5b forces a real reorg via
-   `invalidateblock`/`reconsiderblock` (the same technique
-   `tests/integration/reorg_harness.sh`'s `force_reorg` already uses and
-   documents in detail — applied inline here since this script needs the
-   surrounding daemon to already be running with migration-specific extra
-   CLI flags that `reorg_harness.sh`'s own `start_node` does not expose).
-   Phase 5c spends a matured transparent coinbase output via
-   `wallet.createrawtransaction`/`signrawtransaction`/`sendrawtransaction`,
-   confirms it, then asserts a rebroadcast of the *exact same* raw
-   transaction is rejected (`rpc_failure`, not silently re-accepted).
-4. **ASERT targets, rewards, coinbase maturity.** Phase 6 compares
-   `getblocktemplate`'s `bits` and `coinbasevalue` between the migrated
-   candidate and a **fresh, unmigrated control chain** mined to the same
-   height with identical consensus flags — a differential check that
-   migration introduces no divergence, not a re-validation of the ASERT
-   formula itself. **This distinction is deliberate and documented, not an
-   evasion:** `tests/integration/test_sixty_second_activation.py`'s own
-   header states "Regtest bypasses ASERT: this qualifies activation/state
-   transitions, not cadence" — real difficulty-adjustment correctness is
-   covered elsewhere (e.g. `DAAGoldenVectors`), out of scope for a
-   migration-consistency harness. Coinbase maturity is checked via
-   `wallet.listunspent`'s exact `[minconf, maxconf]` semantics, unaffected
-   by migration.
+1. **The override scales far past 3 blocks.** With `curtime = genesis_time +
+   h*120` held on every pre-boundary block, the ASERT delta is exactly zero
+   for *every* h, not just an initial handful — confirmed by mining 109
+   consecutive overridden blocks in 22s, `bits` flat at `1f00fc9c` throughout.
+2. **The daemon genuinely enforces this, not just checks hash-vs-target.**
+   Submitting a block with deliberately wrong bits (`0x207fffff` against an
+   established `0x1f00fc9c` chain) was rejected: `bad-diffbits: block has
+   0x207fffff, required 0x1f00fc9c`. This is real ASERT recomputation and
+   enforcement by the daemon, confirmed before relying on it as evidence for
+   exercise 4 ("Correct ASERT targets").
+3. **Reverting to real wall-clock curtime breaks immediately if done before
+   the 60-second-activation height.** A natural (non-overridden) template at
+   height 31, still pre-activation, computed the same unminable
+   `0x02008000` target. The 60-second-activation retarget path does **not**
+   reference `genesis_time` — it self-corrects from a rolling window of
+   actual recent block timestamps — so heights at/after that boundary can
+   safely use natural templates. Confirmed at the harness's actual boundary
+   shape: 109 overridden blocks immediately followed by 6 natural blocks,
+   all landing on the easy `0x207fffff` limit in well under a second.
+
+Design (`mine_to()` in the harness): every height `< BOUNDARY_HEIGHT` uses
+the override; every height `>= BOUNDARY_HEIGHT` uses natural
+`getblocktemplate`. `BOUNDARY_HEIGHT` defaults to 130 — comfortably above
+phase 1's ~108-block premine/setup so phase 4 still has room to cross the
+boundary from below.
+
+## Two harness-owned bugs found and fixed while getting a real run
+
+Both are in this script, not the daemon — reported here for completeness
+since they were briefly (and incorrectly) taken as daemon defects before
+isolation proved otherwise.
+
+1. **Top-level `finally: sys.exit(1)` silently masked every real failure's
+   traceback.** `sys.exit()` inside `finally` raises `SystemExit`, which
+   replaces whatever exception was propagating from `main()`. Two
+   consecutive full runs failed at the identical point with *zero* printed
+   exception (reproduced identically under `python3 -u`, ruling out stdout
+   buffering) until this was found and fixed: the exception is now printed
+   via an explicit `except: traceback.print_exc(); raise` *before* the
+   `finally` block's cleanup runs, and the cleanup-only-failure exit path
+   was moved outside the try/finally entirely so it can't mask anything.
+2. **`note_values()` didn't filter on `spent`.** `wallet.listshielded`
+   returns every note the wallet has ever seen, spent or not, each with an
+   explicit `spent`/`spent_height` field. The helper returned all of them,
+   so phase 1's post-unshield assertion failed even when the daemon behaved
+   correctly (confirmed directly: the "missing" note carried
+   `spent: true, spent_height: 108` in `wallet.listshielded` at the moment
+   of the false failure). Fixed to filter `not n.get("spent", False)`.
+
+Also fixed: macOS's `/tmp` and default `tempfile` dir are symlinks to
+`/private/...`, and `MigrateShieldedDatadirCopy`'s own path validation
+(`shielded_migration_cohort.cpp`) rejects any datadir path containing a
+symlink component. Without resolving `WORK` immediately after `mkdtemp()`,
+both negative controls reported `error=symlink in datadir path` instead of
+the specific rejection they're meant to exercise — and the real phase-2
+migration call would hit the identical false rejection. Fixed with
+`.resolve()`.
+
+## Debug vs. Release timing — do not compare across build types
+
+`wallet.shield` measured at **67.6s** wall-clock on this machine's local
+**Debug** build (unoptimized proving path). The project's own
+`docs/shielded-cost-reduction.md` records a Release-build shield *build*
+time of 3.47s (Apple M4 Max, native arm64) for the same 1-output shape —
+confirming the 67.6s figure is a Debug-build artifact, not a release
+performance measurement, and establishes neither a regression nor an
+acceptable release baseline. The harness's RPC timeout was raised from 60s
+to `RPC_TIMEOUT_SECONDS = 180` to accommodate real proving time regardless
+of build type — this is a correctness fix (the daemon was doing real, slow
+but legitimate work; the client was giving up too early), not a performance
+change. A dedicated Release build (`build-release/`, same flags as the
+Debug build) was created in this worktree for realistic timing and to
+re-test the one non-reproducing race noted below.
+
+## An intermittent, non-reproducing coin-selection anomaly (not confirmed as a defect)
+
+One Debug-build run failed `wallet.shield` with `Input UTXO not found` on
+what was identified as an already-spent coinbase outpoint from an earlier
+`wallet.shield` call in the same sequence — suggesting a possible stale
+coin-selection cache. **This did not reproduce** across 7 subsequent
+attempts (5 isolated repros matching the exact call sequence, plus 2 full
+Release-build harness runs that passed this exact point cleanly). Recorded
+here per the instruction to report honestly rather than silently drop it,
+but explicitly **not** claimed as a confirmed, reproducible defect — if it
+recurs, the daemon log timestamp-free format made root-causing it
+difficult; a timestamped log would help.
+
+## Current, confirmed blocker: `MigrateShieldedDatadirCopy` rejects every real daemon-produced datadir
+
+**This is the harness doing its job.** Phase 1 (nonempty pre-migration
+state: mining, two-note shield, exact-amount unshield, locked-coinbase
+proof capture) now passes cleanly and repeatably against the Release build.
+Phase 2 — the actual migration call — fails **100% reproducibly** (2/2
+full-harness runs) with:
+
+```
+error=shielded state root/count mismatch
+```
+
+from `InspectOriginal` in `src/storage/shielded_migration.cpp:248-249`,
+which compares the daemon's persisted `meta.shielded_tip` record against a
+root freshly recomputed from the live forest tree, nullifier set and anchor
+history. This is an **internal self-consistency check on the original
+datadir alone** — it runs before the candidate is even considered, so it is
+not a candidate-copy or harness-path issue.
+
+**Isolated down to the minimum reproducing case, deliberately outside this
+harness's own configuration, to separate "this harness's setup" from "the
+migration engine's compatibility with real daemon output":**
+
+- Reproduces with real shielded activity (shield/unshield across 108
+  blocks, this harness's actual phase 1).
+- Reproduces identically with **zero** shielded activity — a daemon
+  started with the exact same regtest flags, mined to height 10, no
+  shield/unshield calls at all, cleanly stopped via RPC `stop`.
+- Reproduces identically on a **completely vanilla default regtest daemon**
+  — no compact flags, no consensus-height overrides, no
+  `--regtest-enforce-pow`, just `--regtest` plus 10 blocks via
+  `generatetoaddress`.
+
+All three cases: clean RPC `stop`, `shutil.copytree` of the fully-shut-down
+datadir, `migrate_shielded_datadir <original> <candidate> --apply`, same
+failure every time. This rules out: this harness's specific consensus-height
+overrides, real shielded transaction content, PoW enforcement, and any
+copy-mechanics issue — the check fails on the **baseline empty-state
+metadata** of a datadir the current daemon itself just produced.
+
+**Read as a concrete, reportable dependency, not bypassed:** this strongly
+suggests the migration engine's expected on-disk `shielded_tip` encoding
+(or its root-recomputation formula) has drifted from what the *current*
+daemon actually persists — consistent with the engine's own documented
+history of being validated only against synthetic, hand-fabricated fixtures
+(`tests/storage/shielded_migration_fixture.h`), never a real live-daemon-
+produced datadir, until this harness. This is squarely
+`src/storage/shielded_migration.cpp` — Codex's migration internals — and
+has not been touched or patched here.
+
+**What this means for the four required exercises:** exercise 1's second
+half (identical state/proofs *after* migration) and exercises 2-4 (which
+all run against the post-migration candidate) cannot be demonstrated until
+this is resolved on the migration-engine side. Exercise 1's first half
+(nonempty pre-migration state, real mining, real shield/unshield, real
+Utreexo proof capture) is fully verified. The negative controls (byte
+corruption, empty candidate, neuter check) are fully verified and pass for
+the *right* reasons (specific, correct rejection messages, not the earlier
+symlink-guard false-pass).
 
 ## Negative controls
 
-Run standalone with `bash test_combined_migration_release_qualification.sh
---self-test` (also invoked unconditionally at the end of a full run):
+Run standalone with
+`python3 tests/integration/test_combined_migration_release_qualification.py --self-test`
+(dispatches before any other phase runs):
 
-- A byte-flipped block file in the candidate's companion inventory must be
-  refused by the migration tool (`ok=false`) — proves the byte-identical
-  companion check in `shielded-migration-cohort.md` is actually load-bearing
-  through this harness's own call path, not silently skipped.
-- A candidate directory that was never copied from the original (freshly
-  empty) must be refused — proves the harness cannot accidentally "succeed"
-  by migrating into a directory with no real companion data at all.
-- Rebroadcasting an already-confirmed transaction's exact raw hex must be
-  rejected by the daemon (exercise 3's duplicate-spend check, listed here
-  too since it is a negative control on the daemon's own mempool/UTXO
-  logic, not the migration tool).
-
-## Pinning migration evidence
-
-Each run writes `${WORK}/evidence/`: `pre-shieldedstatehash.txt`,
-`pre-utreexoroots.json`, `pre-utreexoproof.json`, `migrate-result.txt`
-(the full typed `ShieldedMigrationResult` line, including `source_digest`),
-and `migrate-stderr.log` (the engine's phase checkpoints). On CI, these are
-uploaded as the `migration-qualification-<sha>` artifact only on failure,
-matching this repo's existing `checkpoint-retention-<sha>` convention
-(`.github/workflows/tests.yml`).
-
-Binary hashes: this harness deliberately does not pin a specific `dinerod`
-binary hash of its own — it always builds and runs against whatever
-`dinerod`/`migrate_shielded_datadir` the *same* CI/local build produces from
-the pinned source commit above, so its evidence is always traceable to that
-commit via the workflow run's own commit SHA, not a separately-recorded hash
-that could drift from what was actually built.
+- A byte-flipped block file in the candidate's companion inventory is
+  refused with `error=original/candidate companion mismatch` — the
+  byte-identical companion check is genuinely load-bearing through this
+  harness's call path.
+- A candidate directory that was never copied from the original is refused
+  with `error=cannot stat companion path`.
+- A deliberately wrong compact-version constant is caught as a mismatch by
+  the harness's own assertion machinery (proves the equality checks
+  elsewhere are not vacuously true).
 
 ## CI wiring
 
-Registered as CTest `CombinedMigrationReleaseQualification`
-(`tests/integration/CMakeLists.txt`), guarded by the same
-`if(UNIX AND NOT IOS)` condition as `migrate_shielded_datadir` itself (a
-`TARGET_FILE` generator expression on a nonexistent target is a configure-
-time error, not a graceful skip). Labeled `integration;...;mandatory`,
-`TIMEOUT 2400`, `RUN_SERIAL TRUE` — the same label pattern this file's other
-daemon-spawning tests use, which the project's own main ctest sweep
-excludes via `--label-exclude 'integration|...'`
-(`.github/workflows/tests.yml`). Given its own dedicated CI step instead,
-mirroring the existing `CheckpointRetentionDaemon` step exactly: a single
-`ctest -R '^CombinedMigrationReleaseQualification$'` invocation plus
-failure-evidence collection/upload, inserted right after that step in
-`.github/workflows/tests.yml`.
+`tests/integration/CMakeLists.txt` registers `CombinedMigrationReleaseQualification`
+guarded by `DINERO_ENABLE_COMPACT_REGTEST`, `ENVIRONMENT` wiring `DINEROD`/
+`MIGRATE_TOOL` to the built targets, `TIMEOUT 2400`, `RUN_SERIAL TRUE`. A
+dedicated `.github/workflows/combined-migration-qualification.yml` builds
+with `-DDINERO_ENABLE_COMPACT_REGTEST=ON` specifically (the main `tests.yml`
+job builds compact-disabled and must not run this test — this was the
+first version's CI bug, now fixed by giving this its own workflow instead
+of inserting a step into `tests.yml`). Given the confirmed migration
+blocker above, this workflow will not pass end-to-end until that is
+resolved; it is still valuable to land now so CI immediately reflects
+current reality (red for a real, tracked reason) rather than being wired
+up later once the underlying fix lands.
 
-**Flagged, not silently absorbed:** the job's overall `timeout-minutes: 120`
-was not changed. This harness's own CTest `TIMEOUT 2400` (40 minutes) is a
-substantial addition to that budget alongside everything else already
-scheduled in the same job; if the job starts timing out in practice, the fix
-is to either raise `timeout-minutes` or move this step to run in parallel
-with (not after) the existing serial e2e lane, both of which are shared-
-CI-infrastructure decisions outside this harness's own ownership boundary.
+## What's next
 
-## A concrete, unresolved local-build dependency (reported, not bypassed)
-
-Full local execution of the new CTest was **not achieved on this development
-machine** (macOS, Apple Silicon). Root-caused, not just observed:
-
-- `CMakeLists.txt`'s `if(APPLE)` branch (lines ~347-379) unconditionally
-  wraps the vendored `bulletproofs_ffi` Rust crate's `cargo build --release`
-  with `RUSTFLAGS`/`CFLAGS`/`LDFLAGS` all appending
-  `-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}`.
-- On this machine's current Xcode/rustc (1.91.1) combination, that wrapped
-  invocation intermittently — not deterministically — fails to compile
-  proc-macro dependencies (`zeroize_derive`, `thiserror-impl`, `serde_derive`)
-  with `error[E0463]: can't find crate for 'zeroize_derive'`, traced to a
-  malformed Mach-O ("mis-aligned LINKEDIT string pool") in the freshly-built
-  proc-macro dylib that rustc's own loader then rejects.
-- Confirmed non-deterministic, not a fixed environmental toggle: an
-  *unwrapped* `cargo build --release` in the same directory failed once and
-  succeeded twice across three consecutive attempts; the *wrapped* (CMake)
-  invocation failed 3/3 times attempted. Ruled out as the cause: stale
-  build-cache corruption (failed identically after `rm -rf target`),
-  `CARGO_BUILD_JOBS` parallelism (failed identically pinned to 1), and
-  `RUSTFLAGS` specifically (failed identically with `RUSTFLAGS` forcibly
-  unset via a `RUSTC_WRAPPER`/`CARGO_EXECUTABLE` substitution, while
-  `CFLAGS`/`LDFLAGS`/`MACOSX_DEPLOYMENT_TARGET` remained set).
-- **This does not block CI.** `.github/workflows/tests.yml` runs
-  `ubuntu-latest` exclusively; `if(APPLE)` never evaluates true there, so
-  this specific interaction cannot occur on the runners that actually gate
-  merges. It is reported here as a genuine local-development-environment
-  gap on macOS, not worked around by skipping, mocking, or hand-waving the
-  daemon dependency this harness genuinely needs.
-
-**What WAS verified locally, and constitutes real evidence this harness is
-sound**, independent of that blocker:
-
-- `tools/migrate_shielded_datadir.cpp` compiles cleanly against the real
-  project headers (a real, nonzero-size `.o` produced by the project's own
-  build) and links/runs correctly (`./migrate_shielded_datadir` with no args
-  prints the documented usage and exits 2; the full argument-validation path
-  was exercised).
-- The existing, unmodified `test_shielded_migration_cohort` CTest — which
-  links the exact same `dinero_chainstate`/`dinero_shielded`/`dinero_crypto`
-  libraries this harness's CLI driver depends on, and does **not** need
-  `bulletproofs_ffi` — built and ran successfully in this same worktree:
-  **111/111 cases passed**, confirming the migration engine this harness
-  calls is fully functional in this exact checkout, independent of the
-  unrelated `dinerod`-only Rust/wallet dependency chain.
-- `bash -n` confirms the new integration script's syntax is valid; `cmake`
-  reconfigure and `ctest -N` / `ctest --show-only=json-v1` confirm the new
-  CTest registers correctly with the intended `ENVIRONMENT`, `LABELS`,
-  `TIMEOUT` and `RUN_SERIAL` properties; the modified `tests.yml` parses as
-  valid YAML.
-
-Full end-to-end daemon-spawning execution of
-`CombinedMigrationReleaseQualification` itself has **not** been observed to
-pass (or fail) yet on any machine, pending either a fix to the local macOS
-Rust build interaction above or the first real CI run of this branch.
-Reporting this precisely rather than claiming a pass this harness has not
-actually produced.
+1. Report the `InspectOriginal` root/count mismatch to Codex as a concrete,
+   reproducible, minimally-isolated defect (this document plus
+   `/tmp`-style repro scripts, or an equivalent committed fixture).
+2. Once fixed, rerun this harness's Phase 2 onward — Phases 1 and negative
+   controls need no further changes to pass.
+3. Obtain comparable Release-build shield/unshield timing (cold start,
+   blocks continuing to arrive) once end-to-end runs are unblocked, per the
+   user's stated need for real release-representative numbers.
