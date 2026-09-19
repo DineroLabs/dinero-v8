@@ -3,6 +3,7 @@
 #include "shielded_migration_fixture.h"
 #include "storage/shielded_migration_cohort.h"
 #include "daemon/datadir_guard.h"
+#include "daemon/regtest_pow_profile.h"
 #include <fstream>
 #include <sqlite3.h>
 #include "storage/forest_restore.h"
@@ -388,6 +389,55 @@ void ForestAudit(const std::string& fault) {
     if (!good) CHECK(Inspect(f.candidate / "blockchain/chaindb")==candidate);
 }
 
+void ProfileMarker(const std::string& mode) {
+    Fixture f;
+    const auto marker = [](const fs::path& root) { return root / "regtest-pow-profile"; };
+    // Use the daemon's real writer. These synthetic checks cover preservation
+    // and framing, not authentication of the network or consensus parameters.
+    for (const auto& root : {f.original, f.candidate})
+        dinero::daemon::BindRegtestPowProfile(root, std::string(64, 'a'));
+    const auto expected = Read(marker(f.original));
+    if (mode == "missing_source") fs::remove(marker(f.original));
+    if (mode == "missing_candidate") fs::remove(marker(f.candidate));
+    if (mode == "different") Write(marker(f.candidate), "regtest-pow-profile-v1\n" + std::string(64, 'b') + "\n");
+    for (const auto& root : {f.original, f.candidate}) {
+        if (mode == "empty") Write(marker(root), "");
+        if (mode == "short") Write(marker(root), "regtest-pow-profile-v1\na\n");
+        if (mode == "nonhex") Write(marker(root), "regtest-pow-profile-v1\n" + std::string(64, 'g') + "\n");
+        if (mode == "version") Write(marker(root), "regtest-pow-profile-v2\n" + std::string(64, 'a') + "\n");
+        if (mode == "trailing") Write(marker(root), expected + "unexpected\n");
+        if (mode == "temporary") Write(root / "regtest-pow-profile.tmp", expected);
+        if (mode == "directory") { fs::remove(marker(root)); fs::create_directory(marker(root)); }
+    }
+    if (mode == "symlink" || mode == "hardlink") {
+        fs::remove(marker(f.candidate));
+        if (mode == "symlink") fs::create_symlink(marker(f.original), marker(f.candidate));
+        else fs::create_hard_link(marker(f.original), marker(f.candidate));
+    }
+    if (mode == "resume" || mode == "resume_changed") {
+        CHECK(Child({"--interrupt", f.original.string(), f.candidate.string()}) == 86);
+        if (mode == "resume_changed") for (const auto& root : {f.original, f.candidate})
+            Write(marker(root), "regtest-pow-profile-v1\n" + std::string(64, 'b') + "\n");
+    }
+    const auto source_before = Inspect(f.original / "blockchain/chaindb");
+    const auto copy_before = Inspect(f.candidate / "blockchain/chaindb");
+    bool changed = false;
+    const auto result = f.Run(true, [&](const char* stage) {
+        if (mode == "during" && !changed && std::string(stage) == "after_prepare") {
+            changed = true;
+            for (const auto& root : {f.original, f.candidate})
+                Write(marker(root), "regtest-pow-profile-v1\n" + std::string(64, 'b') + "\n");
+        }
+    });
+    const bool good = mode == "matching" || mode == "resume";
+    if (good && !result.ok) std::cerr << result.error << '\n';
+    CHECK(result.ok == good); CHECK(result.ready == good);
+    CHECK(Inspect(f.original / "blockchain/chaindb") == source_before);
+    if (!good && mode != "during") CHECK(Inspect(f.candidate / "blockchain/chaindb") == copy_before);
+    if (mode == "during") CHECK(changed);
+    if (good) for (const auto& root : {f.original, f.candidate}) CHECK(Read(marker(root)) == expected);
+}
+
 int main(int argc, char** argv) {
     std::cout << std::unitbuf;
     executable = fs::canonical(argv[0]);
@@ -402,6 +452,7 @@ int main(int argc, char** argv) {
         return result.ok ? 0 : 1;
     }
     std::map<std::string, std::function<void()>> cases;
+    for (const std::string mode : {"matching", "missing_source", "missing_candidate", "different", "empty", "short", "nonhex", "version", "trailing", "temporary", "directory", "symlink", "hardlink", "resume", "resume_changed", "during"}) cases["profile_" + mode] = [=] { ProfileMarker(mode); };
     for (const std::string mode : {"healthy","legacy_v2","stale_index","valid_checksum","budget_zero","budget_leaves","budget_records","budget_replay","budget_checkpoints","budget_headers","checkpoint_count","missing_delta","corrupt_delta","delta_count","wrong_checkpoint","corrupt_checkpoint","corrupt_genesis","nonempty_genesis","bad_checksum","orphan_checksum","malformed_key","future_checkpoint","no_checkpoint","base_below_history","missing_header","tip_root"}) cases["audit_"+mode] = [=] { ForestAudit(mode); };
     for (const std::string mode : {"promoted", "wallet", "prebase", "stale_index", "future_wallet", "bad_prebase", "missing_promotion", "wrong_hash", "bad_height", "short_progress", "conflict", "ancestry_budget", "missing_ancestry", "malformed_prebase", "orphan_prebase", "corrupt_header"}) cases["protected_"+mode] = [=] { ProtectedBase(mode); };
     for (const std::string mode : {"healthy", "missing_delta", "corrupt_delta"}) cases["forest_"+mode] = [=] { ForestParity(mode); };
