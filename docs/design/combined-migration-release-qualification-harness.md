@@ -282,6 +282,81 @@ itself a release-readiness claim.** Linux CI on #789/#790 remains the
 actual gate; this is independent evidence from a from-source Release build
 on one machine, not a substitute for it.
 
+## Second review round (Codex, `combined-harness-ac5af-review-2026-09-19`) and fixes
+
+Reviewed commit `ac5af747a`. Found and fixed, without further core changes:
+
+- **Phase 6's maturity check self-calibrated** (searched forward up to
+  `COINBASE_MATURITY` blocks for the transaction to appear in a template)
+  instead of asserting the exact boundary directly — "allows inclusion
+  long after the required boundary and still passes." Fixed: absence is
+  asserted at exactly `blocks_on_top == COINBASE_MATURITY - 2`, one `mine()`
+  call, then presence at exactly `COINBASE_MATURITY - 1` — no search loop.
+  Comment corrected to acknowledge template selection is not the sole
+  enforcement layer (`block_validation.cpp` and stateless validation also
+  enforce it); this phase still only exercises template selection.
+- **Phase 4's reward check was `coinbasevalue > 0`**, not exact, and never
+  implemented the differential/independent-control-chain comparison this
+  document's own earlier draft had described as part of the design.
+  Fixed: asserts the exact 100 DIN subsidy (verifying mempool is actually
+  empty first, not assuming it), and mines a **second, unmigrated control
+  daemon** from genesis with identical consensus flags to the same
+  `BOUNDARY_HEIGHT`, asserting its `bits` and `coinbasevalue` match the
+  migrated candidate's exactly.
+- **A fabricated test reference.** An earlier version of this file's own
+  comment claimed a `test_economics_after_sixty_second_activation` case in
+  `test_sixty_second_activation.py` covers mining/validating a real
+  reduced-reward (tail-emission) block. That function does not exist
+  anywhere in the repository — confirmed by a repo-wide search after
+  Codex's review correctly flagged the claim as unsupported. Corrected: no
+  test anywhere in this repo mines a real block at a reduced-reward height
+  and checks the actual coinbase payout; `test_sixty_second_activation.py`
+  only asserts the RPC-reported `tail_emission_una` field (never cross-
+  checked against a mined coinbase) and several C++ unit tests check the
+  subsidy-calculation function in isolation, never through real block
+  validation. Recorded as a genuine coverage gap, not claimed as covered.
+- **The retry wrappers retried every failure**, not only the documented
+  HTTP 429 rate limit, because they called `miner.get_block_template()`/
+  `miner.submit_block()`, which swallow all exceptions internally and
+  return `None`/`False` regardless of cause — so a genuine consensus
+  rejection would be retried uselessly against the same already-built
+  block instead of failing immediately with its real reason. Fixed: both
+  helpers now call `rpc_call()` directly and re-raise immediately on
+  anything that isn't specifically an HTTP 429.
+- **Negative controls accepted "any nonzero exit or missing ok=true"**
+  as proof of refusal, rather than the specific structured refusal. Fixed
+  with a corrected field parser (`parse_migrate_output` — the naive
+  `dict(kv.split("=",1) for kv in stdout.split())` used previously breaks
+  with a `ValueError` on any multi-word `error=` message, confirmed by
+  direct reproduction, since `error=` is always the last field and its
+  value itself contains spaces) and exact `error=` substring assertions.
+- **The "neuter check" was a bare Python constant-versus-constant
+  assertion** (`TX_VERSION_COMPACT_REGTEST == 0x40000007`), proving only
+  that `assert` itself works, not that this script's real comparison logic
+  is discriminating. Fixed: reuses the REAL, genuinely-corrupted migration
+  result from negative control #1 and confirms phase 2's actual success
+  condition (`ok=="true" and ready=="true"`) evaluates false against it.
+- **Nullifier-reuse and duplicate-spend rejections matched any RPC error**,
+  not their specific expected reason. Fixed with exact substring
+  assertions (`"utxo not found"`, `"nullifier"`) against the real observed
+  daemon messages.
+- **A vacuous `assert ... or True`** (phase 5c) — always true regardless of
+  its left operand, and immediately followed by the real check it was
+  presumably meant to be. Removed.
+- **Evidence was five summary files, no complete phase log**, and recorded
+  the source commit at test time without any indication of whether this
+  harness's own script was dirty (uncommitted) relative to that commit —
+  which it was. Fixed: this script's full stdout/stderr is now teed to
+  `evidence/.../transcript.log` from the very first line, and
+  `record_evidence()` additionally captures `git status --short` and a
+  SHA-256 of the harness script file itself, independent of git commit
+  state. A failed evidence-preservation copy now fails the run and retains
+  `WORK`, instead of logging an error and still deleting it on success.
+
+Two further consecutive full runs against a freshly-rebuilt Release build
+(now including `f76d2843c`/`2356d6ebd`, the #789 CI-fixture fix) printed
+`ALL CHECKS PASSED` with all of the above tightened assertions in place.
+
 ## Negative controls
 
 Run standalone with
@@ -289,14 +364,14 @@ Run standalone with
 (dispatches before any other phase runs):
 
 - A byte-flipped block file in the candidate's companion inventory is
-  refused with `error=original/candidate companion mismatch` — the
-  byte-identical companion check is genuinely load-bearing through this
-  harness's call path.
+  refused with the exact structured field `error=original/candidate
+  companion mismatch` — the byte-identical companion check is genuinely
+  load-bearing through this harness's call path.
 - A candidate directory that was never copied from the original is refused
-  with `error=cannot stat companion path`.
-- A deliberately wrong compact-version constant is caught as a mismatch by
-  the harness's own assertion machinery (proves the equality checks
-  elsewhere are not vacuously true).
+  with the exact structured field `error=cannot stat companion path`.
+- The genuinely-corrupted migration result from the first control is fed
+  through phase 2's own real `ok`/`ready` success condition, confirming it
+  evaluates false — not a bare Python constant comparison.
 
 ## CI wiring
 

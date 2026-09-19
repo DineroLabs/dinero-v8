@@ -91,6 +91,31 @@ TX_VERSION_COMPACT_REGTEST = 0x40000006  # include/primitives/transaction.h
 WORK = Path(tempfile.mkdtemp(prefix="dinero_migration_qual_")).resolve()
 EVIDENCE = WORK / "evidence"
 EVIDENCE.mkdir(parents=True)
+
+# Codex's review: the only permanent evidence directory found after a full
+# pass held five small files (source commit, binary hashes, migrate
+# stdout/stderr) — "no complete phase/pass log." Tee this script's own
+# stdout to a transcript file in EVIDENCE from the very start, so a full
+# passing (or failing) run's every [INFO]/[PASS]/[ERROR] line survives
+# alongside the other evidence. This never touches wallet.dat/cookie files,
+# which live in the per-daemon datadirs under WORK, not in EVIDENCE.
+class _Tee:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+
+_transcript_file = open(EVIDENCE / "transcript.log", "a", buffering=1)
+sys.stdout = _Tee(sys.stdout, _transcript_file)
+sys.stderr = _Tee(sys.stderr, _transcript_file)
+
 print(f"[INFO] workdir: {WORK}", flush=True)
 
 processes = {}
@@ -328,30 +353,68 @@ def mine_to(which, target_height):
     assert height(which) == target_height, (which, target_height, height(which))
 
 
+# Codex's review: the previous version of both retry helpers below called
+# miner.get_block_template()/miner.submit_block(), which swallow EVERY
+# exception internally and return None/False regardless of cause — so the
+# retry loop was retrying every failure, not just the documented HTTP 429
+# rate-limit condition, and a genuine consensus rejection would be retried
+# (uselessly, against the same already-rejected block_hex) rather than
+# failing immediately with its real reason. Both helpers now bypass those
+# swallowing wrappers and call miner.rpc_call() directly, so a non-429
+# failure raises immediately with the daemon's own typed error intact.
+def _is_rate_limited(exc: Exception) -> bool:
+    return "HTTP 429" in str(exc)
+
+
 def get_block_template_with_retry(miner, max_attempts=8):
-    """This harness's post-boundary natural mining is fast enough (easy
-    difficulty, near-instant solves) to submit dozens of blocks per second
-    in a tight loop, which tripped the daemon's own RPC rate limiter during
-    a real run ('HTTP 429: Rate limit exceeded. Try again shortly.') well
-    into a long maturity-test mining run. This retries only that specific,
-    transient condition with backoff — a genuine template failure for any
-    other reason still raises/returns None after exhausting attempts."""
+    """Only retries the daemon's own RPC rate limiter ('HTTP 429: Rate
+    limit exceeded...'), confirmed to occur during this harness's fast
+    post-boundary mining and phase 6's template-polling. Any other
+    getblocktemplate failure raises immediately, unretried."""
     for attempt in range(max_attempts):
-        template = miner.get_block_template()
-        if template is not None:
-            return template
-        if attempt < max_attempts - 1:
-            time.sleep(0.5 * (attempt + 1))
-    return None
+        try:
+            params = {"rules": ["segwit"]}
+            if miner.mining_address:
+                params["address"] = miner.mining_address
+            raw = miner.rpc_call("getblocktemplate", [params])
+        except Exception as exc:
+            if _is_rate_limited(exc) and attempt < max_attempts - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise
+        coinbase_txn = raw.get("coinbasetxn", {}) or {}
+        utreexo_obj = raw.get("utreexo", {}) or {}
+        return BlockTemplate(
+            version=raw.get("version", 1), height=raw["height"],
+            previous_block_hash=raw["previousblockhash"], bits=raw["bits"], curtime=raw["curtime"],
+            mintime=raw.get("mintime", raw["curtime"]), maxtime=raw.get("maxtime", raw["curtime"] + 7200),
+            coinbase_value=raw["coinbasevalue"], transactions=raw.get("transactions", []),
+            coinbase_tx_hex=coinbase_txn.get("data", ""), coinbase_txid=coinbase_txn.get("txid", ""),
+            utreexo_commitment=utreexo_obj.get("commitment", raw.get("utreexocommitment", "")),
+            target=raw.get("target", ""), time_mutable="time" in raw.get("mutable", []))
+    raise RuntimeError(f"getblocktemplate: exhausted {max_attempts} attempts, all rate-limited")
 
 
 def submit_block_with_retry(miner, block_hex, max_attempts=8):
+    """Only retries HTTP 429. A genuine rejection (e.g. bad-diffbits, an
+    over-value coinbase) raises immediately with the daemon's own message —
+    it is never retried against the same already-built block, and never
+    silently reduced to a bare True/False."""
     for attempt in range(max_attempts):
-        if miner.submit_block(block_hex):
-            return True
-        if attempt < max_attempts - 1:
-            time.sleep(0.5 * (attempt + 1))
-    return False
+        try:
+            result = miner.rpc_call("submitblock", [block_hex])
+        except Exception as exc:
+            if _is_rate_limited(exc) and attempt < max_attempts - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise
+        # Matches submit_block()'s own success convention: BIP22 success as
+        # null or {}. rpc_call() already raises on a non-null "error" field,
+        # so reaching here at all means genuine acceptance.
+        assert result is None or result == {}, f"unexpected submitblock response: {result}"
+        miner.blocks_found += 1
+        return True
+    raise RuntimeError(f"submitblock: exhausted {max_attempts} attempts, all rate-limited")
 
 
 def mine(which, n):
@@ -513,12 +576,44 @@ def compact_support_present():
     return True
 
 
+def parse_migrate_output(stdout: str) -> dict:
+    """Parses migrate_shielded_datadir's fixed key=value line (tools/
+    migrate_shielded_datadir.cpp's printf: 'ok=%s ready=%s selected_rows=%llu
+    retired_rows=%llu phase=%s operation=%s source_digest=%s error=%s').
+    error= is always the LAST field and its value can itself contain
+    spaces ("original/candidate companion mismatch", "cannot stat companion
+    path") — a naive dict(kv.split('=',1) for kv in stdout.split()) breaks
+    on those with a ValueError (confirmed by direct reproduction), since it
+    splits the error text's own spaces into bogus non-key=value tokens.
+    Split on the LAST 'error=' instead, parsing only the fixed fields
+    before it by whitespace."""
+    stdout = stdout.strip()
+    if not stdout:
+        return {}
+    head, _, error_value = stdout.partition(" error=")
+    fields = dict(kv.split("=", 1) for kv in head.split())
+    fields["error"] = error_value
+    return fields
+
+
 def record_evidence():
     (EVIDENCE / "source-commit.txt").write_text(
         subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout)
     (EVIDENCE / "dinerod.sha256").write_text(f"{sha256_file(DINEROD)}  {DINEROD}\n")
     (EVIDENCE / "migrate_shielded_datadir.sha256").write_text(
         f"{sha256_file(MIGRATE_TOOL)}  {MIGRATE_TOOL}\n")
+    # Codex's review: an evidence directory recorded parent 75811bc63 while
+    # this script's own fixes were committed afterward — source-commit.txt
+    # alone does not establish which exact version of THIS HARNESS produced
+    # the run, only which engine commit the working tree was based on at
+    # git-HEAD granularity. A dirty working tree (uncommitted edits to this
+    # very script, as happened here) makes that gap concrete. Record both:
+    # whether the tree was dirty at test time, and a content hash of this
+    # harness script itself, independent of git commit state.
+    (EVIDENCE / "git-status.txt").write_text(
+        subprocess.run(["git", "status", "--short"], cwd=ROOT, capture_output=True, text=True).stdout)
+    (EVIDENCE / "harness-script.sha256").write_text(
+        f"{sha256_file(Path(__file__).resolve())}  {Path(__file__).name}\n")
 
 
 def main():
@@ -615,7 +710,7 @@ def main():
     (EVIDENCE / "migrate-stdout.txt").write_text(migrate_out.stdout)
     (EVIDENCE / "migrate-stderr.txt").write_text(migrate_out.stderr)
     assert migrate_out.returncode == 0, f"migrate_shielded_datadir exited {migrate_out.returncode}: {migrate_out.stderr}"
-    fields = dict(kv.split("=", 1) for kv in migrate_out.stdout.split())
+    fields = parse_migrate_output(migrate_out.stdout)
     assert fields.get("ok") == "true" and fields.get("ready") == "true", fields
     source_digest = fields.get("source_digest", "")
     assert source_digest, "migration result carried no source_digest"
@@ -695,22 +790,64 @@ def main():
     print(f"[PASS] post-activation unshield used compact version 0x{TX_VERSION_COMPACT_REGTEST:x} "
           f"and was included at height {height('candidate')}", flush=True)
 
+    # Exact subsidy-plus-actual-fees, not just positive (Codex's review) —
+    # verify the "zero additional fees" precondition explicitly rather than
+    # silently assuming it: legacy_shield and compact_unshield are both
+    # already confirmed above, so mempool should hold nothing else, but
+    # confirm that directly instead of asserting a subsidy-only value on
+    # faith.
+    pending_mempool = rpc("candidate", "getrawmempool")
+    assert pending_mempool == [], (
+        f"expected an empty mempool before the exact-subsidy check, found: {pending_mempool}")
     template = rpc("candidate", "getblocktemplate", {"address": addresses["candidate"]})
-    assert template["coinbasevalue"] > 0
-    # The 0.5 DIN tail emission only applies within the final sub-halving
-    # window near the total supply cap (halving_interval=1,314,000 blocks
-    # per test_sixty_second_activation.py's own economics.getinfo check) —
-    # genuinely reaching it here would require mining well over a million
-    # real-PoW blocks, infeasible for this harness's runtime. The ordinary
-    # 100 DIN reward asserted above is unaffected by the 60-second timing
-    # change at this height; the accelerated tail-emission transition itself
-    # is qualified separately by test_sixty_second_activation.py's own
-    # tail_emission_una assertion (100_000_000 vs 50_000_000 una) against an
-    # accelerated activation height, not re-derived here (Codex's review,
-    # point 3 — documented per its "or accurately identify the separate
-    # executing test" alternative).
-    print("[PASS] reward remains a positive standard value across the boundary "
-          "(tail-emission regime itself qualified separately by test_sixty_second_activation.py)", flush=True)
+    STANDARD_SUBSIDY_UNA = 10_000_000_000
+    assert template["coinbasevalue"] == STANDARD_SUBSIDY_UNA, (
+        f"expected the exact standard 100 DIN subsidy plus zero fees (verified empty mempool above), "
+        f"got {template['coinbasevalue']}")
+
+    # Differential/independent ASERT check: an unmigrated control chain,
+    # mined from genesis with the IDENTICAL consensus flags to the exact
+    # same height, must compute the IDENTICAL bits and coinbasevalue as the
+    # migrated candidate. This is a differential check that migration
+    # introduces no divergence in either ASERT retargeting or reward
+    # computation — not a re-validation of the ASERT formula itself, which
+    # test_sixty_second_activation.py's own header already documents as its
+    # own separate scope ("Regtest bypasses ASERT: this qualifies
+    # activation/state transitions, not cadence").
+    print(f"[INFO] mining an unmigrated control chain to height {BOUNDARY_HEIGHT} for a differential ASERT/reward check", flush=True)
+    start("control")
+    mine_to("control", BOUNDARY_HEIGHT)
+    control_template = rpc("control", "getblocktemplate", {"address": addresses["control"]})
+    assert control_template["bits"] == template["bits"], (
+        f"migrated candidate's ASERT bits ({template['bits']}) diverged from an unmigrated "
+        f"control chain mined identically to the same height ({control_template['bits']})")
+    assert control_template["coinbasevalue"] == template["coinbasevalue"] == STANDARD_SUBSIDY_UNA, (
+        f"migrated candidate's coinbasevalue ({template['coinbasevalue']}) diverged from an "
+        f"unmigrated control chain ({control_template['coinbasevalue']})")
+    stop("control")
+    print(f"[PASS] migrated candidate's ASERT bits ({template['bits']}) and exact subsidy "
+          f"({STANDARD_SUBSIDY_UNA} una) match an independently-mined, unmigrated control chain "
+          "at the same height", flush=True)
+
+    # The 0.5 DIN tail-emission reward is NOT independently re-derived here,
+    # and — corrected after Codex's review caught a fabricated claim in an
+    # earlier version of this comment — there is currently no test ANYWHERE
+    # in this repository that mines a real block at a reduced/tail-emission
+    # height and checks its actual coinbase payout. A repo-wide search
+    # found only: (a) test_sixty_second_activation.py's check() function,
+    # which asserts the RPC-REPORTED tail_emission_una field
+    # (100_000_000 vs 50_000_000 una) on a genuinely-mined chain, but never
+    # cross-checks it against a real mined coinbase's actual value, and
+    # asserts next_block_reward_din == 100 at BOTH spacings — it does not
+    # reach a reduced-reward height at all; and (b) several isolated C++
+    # unit tests (test_subsidy_schedule.cpp, test_supply_cap.cpp,
+    # test_subsidy_validation.cpp) that check the subsidy-calculation
+    # function's arithmetic directly, or against synthetic/mocked
+    # coinbases, never through real block mining or validation. Reaching a
+    # genuine tail-emission height via real PoW (halving_interval =
+    # 1,314,000 blocks) is infeasible for this harness's runtime; this is a
+    # genuine coverage gap, reported as such rather than claimed as covered
+    # elsewhere.
 
     # ── Phase 5a: restart ──────────────────────────────────────────────
     print("[INFO] phase 5a: restart on the migrated candidate", flush=True)
@@ -840,12 +977,20 @@ def main():
     assert confirmed.get("confirmations", 0) >= 1, confirmed
     assert proof_is_absent("candidate", unshield_txid, unshield_vout), (
         "the unshield output still has a CURRENT membership proof after being spent")
-    assert block_contains("candidate", legacy_block, legacy_txid) or True  # historical inclusion still queryable
+    # Historical inclusion of the legacy shield is still queryable after its
+    # own input's later spend elsewhere — checked directly below, not via
+    # the `... or True` this line used to carry (vacuously always true,
+    # confirmed the same check already exists two lines down).
     historical = rpc("candidate", "getblock", [legacy_block, 1])
     assert legacy_txid in historical["tx"], "historical inclusion of the (now-spent-input) legacy tx is no longer queryable"
     print("[PASS] spent the unshield output; no current Utreexo proof remains; historical block inclusion is still verifiable", flush=True)
 
+    # Codex's review: match each rejection to its expected reason, not any
+    # RPC error — a wrong-but-still-rejected response (e.g. a transport
+    # failure) would otherwise pass silently.
     dup_error = rpc_expect_error("candidate", "wallet.sendrawtransaction", [signed_hex])
+    assert "utxo not found" in json.dumps(dup_error).lower(), (
+        f"expected an already-spent/UTXO-not-found rejection reason for the duplicate spend, got: {dup_error}")
     print(f"[PASS] duplicate rebroadcast of the confirmed spend rejected: {dup_error}", flush=True)
 
     nullifier_reuse_error = rpc_expect_error("candidate", "wallet.sendrawtransaction", [unshield["hex"]]) \
@@ -858,6 +1003,8 @@ def main():
         # in persistent state" path), a different consensus code path than
         # the ordinary-UTXO duplicate check above.
         nullifier_reuse_error = rpc_expect_error("candidate", "sendrawtransaction", [raw_unshield_hex])
+    assert "nullifier" in json.dumps(nullifier_reuse_error).lower(), (
+        f"expected a nullifier-reuse rejection reason, got: {nullifier_reuse_error}")
     print(f"[PASS] rebroadcasting the confirmed unshield (nullifier already persisted) rejected: {nullifier_reuse_error}", flush=True)
 
     # ── Phase 6: coinbase maturity, tested at the layer that enforces it ────
@@ -870,16 +1017,22 @@ def main():
     # directly (isolated probe) that sendrawtransaction accepts an immature
     # coinbase spend into mempool unconditionally, at blocks_on_top as low
     # as 2 — mempool.cpp's checkDependencies only checks UTXO existence, not
-    # maturity. The actual enforcement point is BLOCK TEMPLATE SELECTION:
+    # maturity. Template selection IS one real enforcement point —
     # mempool.cpp:2358 gates a coinbase input's eligibility for the NEXT
-    # block by isCoinbaseMature(coin->height, next_block_height). Calibrated
+    # block by isCoinbaseMature(coin->height, next_block_height) — but,
+    # per Codex's review, not the SOLE one: block_validation.cpp:3125-3133
+    # enforces the same rule again during block validation itself, and
+    # stateless validation has its own maturity check too. Calibrated
     # directly: a spend broadcast to mempool at low height was absent from
     # getblocktemplate's transactions through blocks_on_top=98, and present
     # starting at blocks_on_top=99 (COINBASE_MATURITY=100's actual boundary
-    # once next_block_height is accounted for). This phase tests exactly
-    # that: broadcast once, prove absence pre-maturity, then prove the very
-    # next natural mine() picks it up and confirms it once mature — real
-    # template-construction behavior, not a guess at an error string.
+    # once next_block_height is accounted for) — an EXACT check now, not a
+    # search (see below). This phase exercises the template-selection layer
+    # specifically: broadcast once, prove absence pre-maturity, then prove
+    # the very next natural mine() picks it up and confirms it once
+    # mature — real template-construction behavior, not a guess at an error
+    # string. It does not separately re-exercise the block-validation-level
+    # or stateless checks, which are defense-in-depth on the same rule.
     print("[INFO] phase 6: coinbase maturity via template inclusion, not mempool admission", flush=True)
     mine("candidate", 1)
     maturity_coinbase_height = height("candidate")
@@ -927,35 +1080,33 @@ def main():
         f"one block before maturity (blocks_on_top={blocks_on_top})")
     print(f"[PASS] immature spend correctly absent from the block template at blocks_on_top={blocks_on_top}", flush=True)
 
-    # The exact blocks_on_top at which the isolated calibration probe (a
-    # much shorter, simpler chain) saw this transaction become template-
-    # eligible may not transfer exactly to this run's actual chain state —
-    # rather than assume it transfers, confirm template membership directly
-    # at each step here, bounded, so this is self-calibrating in the actual
-    # environment under test rather than a second guess at a fixed number.
-    included_at = None
-    for _ in range(COINBASE_MATURITY):
-        template = rpc("candidate", "getblocktemplate", {"address": addresses["candidate"]})
-        template_txids = {tx.get("txid") or tx.get("hash") for tx in template.get("transactions", [])}
-        blocks_on_top = height("candidate") - maturity_coinbase_height
-        present = immature_txid in template_txids
-        print(f"[INFO] blocks_on_top={blocks_on_top}: immature spend present in template = {present}", flush=True)
-        if present:
-            included_at = blocks_on_top
-            break
-        mine("candidate", 1)
-    assert included_at is not None, (
-        f"immature spend {immature_txid} never appeared in the block template "
-        f"within {COINBASE_MATURITY} blocks past the absence check")
+    # Exact boundary, not a search: Codex's review correctly rejected the
+    # earlier self-calibrating loop here ("allows inclusion long after the
+    # required boundary and still passes... never self-calibrate the
+    # consensus expectation from observed behavior"). One block advances
+    # blocks_on_top from 98 to 99, i.e. next_block_height - coin_height
+    # from 99 to exactly 100 — assert presence at that exact point,
+    # directly, the same way absence was just asserted at exactly 98.
+    mine("candidate", 1)
+    blocks_on_top = height("candidate") - maturity_coinbase_height
+    assert blocks_on_top == COINBASE_MATURITY - 1, blocks_on_top
+    template = rpc("candidate", "getblocktemplate", {"address": addresses["candidate"]})
+    template_txids = {tx.get("txid") or tx.get("hash") for tx in template.get("transactions", [])}
+    assert immature_txid in template_txids, (
+        f"coinbase spend {immature_txid} absent from the template at exactly "
+        f"blocks_on_top={blocks_on_top} (next_block_height - coin_height = {COINBASE_MATURITY}), "
+        f"where it should now be mature and template-eligible")
+    print(f"[PASS] spend correctly present in the block template at exactly blocks_on_top={blocks_on_top}", flush=True)
+
     mine("candidate", 1)
     matured_block = tip_hash("candidate")
     assert block_contains("candidate", matured_block, immature_txid), (
-        f"the now-mature spend {immature_txid} was template-eligible at blocks_on_top={included_at} "
+        f"the now-mature spend {immature_txid} was template-eligible one block prior "
         f"but was not actually included in the block mined at that point")
     confirmed = rpc("candidate", "gettransaction", [immature_txid])
     assert confirmed.get("confirmations", 0) >= 1, confirmed
     blocks_on_top = height("candidate") - maturity_coinbase_height
-    print(f"[PASS] the same spend was automatically included and confirmed once mature "
+    print(f"[PASS] the same spend was included and confirmed at exactly the maturity boundary "
           f"(blocks_on_top={blocks_on_top})", flush=True)
 
     stop("candidate")
@@ -987,8 +1138,13 @@ def run_negative_controls(original_dir: Path):
     target_file.write_bytes(bytes(data))
     result = subprocess.run([str(MIGRATE_TOOL), str(original_dir), str(nc_flip), "--apply"],
                              capture_output=True, text=True, timeout=60)
-    assert result.returncode != 0 or "ok=true" not in result.stdout, (
-        f"REGRESSION: byte-corrupted candidate was NOT refused: {result.stdout} {result.stderr}")
+    # Codex's review: assert the intended STRUCTURED refusal, not "any
+    # nonzero exit or missing ok=true" — a transport crash or an unrelated
+    # early argument-usage error would pass that loose a check too.
+    corrupt_fields = parse_migrate_output(result.stdout)
+    assert corrupt_fields.get("ok") == "false" and "companion mismatch" in corrupt_fields.get("error", ""), (
+        f"REGRESSION: byte-corrupted candidate did not produce the specific "
+        f"companion-mismatch refusal: stdout={result.stdout!r} stderr={result.stderr!r}")
     print(f"[PASS] byte-corrupted candidate companion correctly refused: {result.stdout.strip() or result.stderr.strip()}", flush=True)
 
     # 2. Never-copied (empty) candidate.
@@ -996,22 +1152,28 @@ def run_negative_controls(original_dir: Path):
     nc_empty.mkdir()
     result = subprocess.run([str(MIGRATE_TOOL), str(original_dir), str(nc_empty), "--apply"],
                              capture_output=True, text=True, timeout=60)
-    assert result.returncode != 0 or "ok=true" not in result.stdout, (
-        f"REGRESSION: an empty, never-copied candidate was NOT refused: {result.stdout} {result.stderr}")
+    empty_fields = parse_migrate_output(result.stdout)
+    assert empty_fields.get("ok") == "false" and "cannot stat companion path" in empty_fields.get("error", ""), (
+        f"REGRESSION: an empty, never-copied candidate did not produce the specific "
+        f"cannot-stat refusal: stdout={result.stdout!r} stderr={result.stderr!r}")
     print(f"[PASS] uncopied empty candidate correctly refused: {result.stdout.strip() or result.stderr.strip()}", flush=True)
 
-    # 3. Behavioral neuter for the comparison logic itself: deliberately
-    # assert a WRONG constant and confirm the harness's own assertion
-    # machinery actually catches the mismatch, rather than the equality
-    # checks above being vacuously true. This does not touch core internals
-    # (Codex's lane) — it only proves this script's own assertions are load-
-    # bearing, which full behavioral neuters of the C++ engine itself are
-    # Codex's to run against a deliberately-reverted commit.
-    try:
-        assert TX_VERSION_COMPACT_REGTEST == 0x40000007  # deliberately wrong
-        raise RuntimeError("neuter check itself is broken: a wrong constant compared equal")
-    except AssertionError:
-        print("[PASS] neuter check: an intentionally wrong compact-version constant is correctly caught as a mismatch", flush=True)
+    # 3. Behavioral neuter for phase 2's OWN comparison logic, using the
+    # REAL corrupted-migration result from control #1 above — not a bare
+    # Python constant-versus-constant assert, which only proves assert
+    # itself works, not that this script's actual success-checking pattern
+    # is discriminating (Codex's review: "replace... with a mutation that
+    # makes a real phase assertion fail"). Phase 2's real success condition
+    # (see its own code) is `fields.get("ok") == "true" and fields.get
+    # ("ready") == "true"`; applied to control #1's genuinely-corrupted
+    # result, it must evaluate False — if it didn't, phase 2 would have
+    # silently accepted corrupted output as success.
+    phase2_would_accept = corrupt_fields.get("ok") == "true" and corrupt_fields.get("ready") == "true"
+    assert not phase2_would_accept, (
+        "neuter check: phase 2's real ok/ready success condition would have ACCEPTED "
+        f"the byte-corrupted migration result as successful: {corrupt_fields}")
+    print("[PASS] neuter check: phase 2's real success condition correctly rejects the "
+          "genuinely-corrupted migration result from control #1", flush=True)
 
 
 def run_self_test():
@@ -1059,13 +1221,22 @@ finally:
     # immediately afterward under the old code. Copy only EVIDENCE, not
     # the full WORK dir (which also holds full regtest datadirs).
     permanent_evidence = ROOT / "evidence" / f"combined-migration-qualification-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+    _transcript_file.flush()
+    evidence_preserved = False
     try:
         shutil.copytree(EVIDENCE, permanent_evidence)
+        evidence_preserved = True
         print(f"[INFO] evidence preserved at: {permanent_evidence}", flush=True)
     except Exception as exc:
+        # Codex's review: this used to log the failure and continue,
+        # still deleting WORK on success below — silently discarding the
+        # only copy of the evidence a passing run exists to produce. A
+        # failed preservation must fail the run and retain WORK so nothing
+        # is lost.
+        success = False
         print(f"[ERROR] failed to preserve evidence at {permanent_evidence}: {exc}", flush=True)
 
-    if success and not cleanup_errors:
+    if success and not cleanup_errors and evidence_preserved:
         shutil.rmtree(WORK, ignore_errors=True)
     else:
         print(f"[INFO] retaining full workdir (datadirs included): {WORK}", flush=True)
