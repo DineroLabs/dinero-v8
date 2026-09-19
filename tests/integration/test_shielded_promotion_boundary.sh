@@ -95,7 +95,7 @@ ck_fail(){ printf '[FAIL] %s\n' "$*" >&2; FAILED=1; }
 fail() {   # hard failure: infra/setup broke, the test cannot proceed
     printf '[FAIL] %s\n' "$*" >&2
     for d in "$SRC_DIR" "$CON_DIR"; do
-        for lg in "$d"/daemon*.log; do
+        for lg in "$d"/daemon*.log "$d/chainstate-events.log"; do
             [[ -f "$lg" ]] || continue
             printf -- '--- tail %s ---\n' "$lg" >&2
             tail -60 "$lg" >&2 || true
@@ -116,6 +116,9 @@ trap cleanup EXIT
 
 command -v curl >/dev/null || fail "curl is required"
 command -v jq >/dev/null   || fail "jq is required"
+if [[ "${PROMOTION_TEST_FRAGMENT_CONSOLE:-0}" == "1" ]]; then
+    command -v python3 >/dev/null || fail "python3 is required for console fragmentation"
+fi
 [[ -x "$DINEROD" ]] || fail "dinerod not executable at $DINEROD"
 
 cookie_for() {
@@ -135,9 +138,14 @@ rpc() {  # <rpcport> <datadir> <method> [params-json]
 
 start_node() {  # <datadir> <rpcport> <p2pport> <wsport> <logfile> [extra args...]
     local datadir="$1" rpcport="$2" p2pport="$3" wsport="$4" logfile="$5"; shift 5
+    local daemon_command=("$DINEROD")
+    if [[ "${PROMOTION_TEST_FRAGMENT_CONSOLE:-0}" == "1" && "$datadir" == "$CON_DIR" ]]; then
+        daemon_command=(python3 "$(dirname "${BASH_SOURCE[0]}")/helpers/fragment_promotion_console.py" "$DINEROD")
+    fi
     mkdir -p "$datadir"
-    "$DINEROD" --regtest --consensus-state-commitment-height=4294967295 --datadir="$datadir" \
+    "${daemon_command[@]}" --regtest --consensus-state-commitment-height=4294967295 --datadir="$datadir" \
         --rpcport="$rpcport" --port="$p2pport" --wallet-socket-port="$wsport" \
+        --debug.log_file="$datadir/chainstate-events.log" --debug.log_max_size_mb=0 \
         --listen=1 "$@" > "$logfile" 2>&1 &
     LAST_NODE_PID=$!
     local i
@@ -448,16 +456,28 @@ for _ in $(seq 1 60); do
 done
 info "case 3: tip is $(tip_of "$CON_RPC" "$CON_DIR") before counting connections"
 
-# "Connects exactly once" is about CONNECTION, not delivery. BlockAcceptor's
-# "Connecting block at height N" line fires once per DELIVERY (acceptance =
-# storage), so counting it measures how often peers sent the block, not how
-# often it entered the chain. The state mutation is ConnectTip.
-CONNECTED="$(grep -ch "ConnectTip SUCCEEDED for height $((BASE + 1))\b" "$CON_DIR"/daemon*.log 2>/dev/null | paste -sd+ - | bc)"
+# Count canonical advancement, not delivery or unsynchronized console output.
+# ConnectTip's console success message uses separate stream insertions: another
+# thread can print between "height " and the number, making grep count zero
+# even though the block connected. Logger's file output serializes and flushes
+# each entire record under its file mutex. The sole kAdvancement publisher is
+# ConnectTip, after validation, durable commit and the publication invariant.
+# Startup, promotion, rollback and self-heal records are deliberately excluded.
+EVENT_LOG="$CON_DIR/chainstate-events.log"
+[[ -s "$EVENT_LOG" ]] || fail "case 3: serialized chainstate event log is missing or empty"
+B1_HEIGHT=$((BASE + 1))
+B1_SOURCE_HASH="$(rpc "$SRC_RPC" "$SRC_DIR" getblockhash "[$B1_HEIGHT]" | jq -r '.result // ""')"
+B1_CONSUMER_HASH="$(rpc "$CON_RPC" "$CON_DIR" getblockhash "[$B1_HEIGHT]" | jq -r '.result // ""')"
+[[ "$B1_SOURCE_HASH" =~ ^[0-9a-f]{64}$ && "$B1_CONSUMER_HASH" == "$B1_SOURCE_HASH" ]] \
+    || fail "case 3: base+1 canonical hash does not match the source"
+CONNECTED="$(grep -Ec "^\[INFO\] \[PublishActiveTip\] advancement tip=[0-9a-f]{16}\.\.\. height=${B1_HEIGHT}$" "$EVENT_LOG" || true)"
+MATCHING="$(grep -Fxc "[INFO] [PublishActiveTip] advancement tip=${B1_SOURCE_HASH:0:16}... height=${B1_HEIGHT}" "$EVENT_LOG" || true)"
+CONSOLE_CONNECTED="$(grep -ch "ConnectTip SUCCEEDED for height $B1_HEIGHT\b" "$CON_DIR"/daemon*.log 2>/dev/null | paste -sd+ - | bc)"
 DELIVERED="$(grep -ch "Connecting block at height $((BASE + 1))\b" "$CON_DIR"/daemon*.log 2>/dev/null | paste -sd+ - | bc)"
-info "case 3: base+1 (height $((BASE + 1))) — ConnectTip successes=$CONNECTED, deliveries=$DELIVERED"
-[[ "${CONNECTED:-0}" -eq 1 ]] \
-    || fail "case 3: base+1 connected ${CONNECTED:-0} times, expected exactly 1"
-pass "case 3: stored base+1 connected EXACTLY once"
+info "case 3: base+1 (height $B1_HEIGHT) — canonical advancements=$CONNECTED, matching hash=$MATCHING, console successes=$CONSOLE_CONNECTED, deliveries=$DELIVERED"
+[[ "${CONNECTED:-0}" -eq 1 && "${MATCHING:-0}" -eq 1 ]] \
+    || fail "case 3: base+1 has ${CONNECTED:-0} advancements (${MATCHING:-0} matching its hash), expected exactly 1"
+pass "case 3: stored base+1 connected EXACTLY once with the source's canonical hash"
 # Deliveries are legitimately > 1 and are NOT bounded by this branch. The drain
 # ceiling fixed the LIVELOCK (a self-sustaining re-connect loop that produced
 # 83,738 deliveries of one height while fetching zero pre-base bodies); peer
