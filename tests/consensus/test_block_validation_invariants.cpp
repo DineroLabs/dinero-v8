@@ -1024,6 +1024,146 @@ TEST(BlockValidationInvariants, DeferredSpendDisconnectConsistency) {
         << "After disconnect, UTXO count should be 0 (genesis state)";
 }
 
+// Manual undo must recover the whole pre-block state even when a spent coin
+// was created by an earlier transaction in the block. Persisted undo retains
+// that input, but it must not become a live coin after disconnect.
+namespace {
+void RunManualCpfpDisconnectCase(bool external_shares_parent_txid) {
+    SelectRegtestDormantCommitment();
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight() + 200;
+    ConsensusUTXOSet utxo_set;
+    utxo_set.GetForest() = utxo_set.GetForest().cloneForHeight(height - 1);
+
+    const OutPoint funding(MakeTestTxId(9300), 0);
+    Block block = MakeCpfpMatrixBlock(height, funding);
+    auto& parent = block.vtx[1];
+    parent.vout[0].value = AmountUna::Una(4000);
+    TxOutput parent_change;
+    parent_change.value = AmountUna::Una(1500);
+    parent_change.scriptPubKey = MakeMatrixScript(0x43);
+    parent.vout.push_back(parent_change);
+    const OutPoint ephemeral(parent.GetTxid(), 0);
+    const OutPoint parent_survivor(parent.GetTxid(), 1);
+
+    // The alias case deliberately supplies a synthetic historical coin at
+    // parent:2. Disconnect must match actual created outpoints, not a txid
+    // alone; parent has only outputs 0 and 1 in this block.
+    const OutPoint external(
+        external_shares_parent_txid ? parent.GetTxid() : MakeTestTxId(9301), 2);
+    auto& child = block.vtx[2];
+    child.vin[0].prevout.txid = ephemeral.txid;
+    child.vin[0].prevout.vout = ephemeral.vout;
+    TxInput external_input;
+    external_input.prevout.txid = external.txid;
+    external_input.prevout.vout = external.vout;
+    external_input.sequence = 0xfffffffe;
+    child.vin.push_back(external_input);
+    child.vout[0].value = AmountUna::Una(4800);
+
+    const OutPoint untouched(funding.txid, 1);
+    const std::unordered_map<OutPoint, UTXOEntry> before_coins{
+        {funding, UTXOEntry(AmountUna::Una(6000), MakeMatrixScript(0x41), 1, true)},
+        {external, UTXOEntry(AmountUna::Una(1000), MakeMatrixScript(0x44), 2, false)},
+        {untouched, UTXOEntry(AmountUna::Una(777), MakeMatrixScript(0x45), 3, false)},
+    };
+    const auto leaf_for = [](const OutPoint& outpoint, const UTXOEntry& coin) {
+        return HashUTXOForCreationHeight(
+            outpoint.txid.AsUint256(), outpoint.vout, coin.value.GetUna(),
+            coin.scriptPubKey, coin.height, coin.isCoinbase);
+    };
+    for (const auto& outpoint : {funding, external, untouched}) {
+        const auto& coin = before_coins.at(outpoint);
+        ASSERT_TRUE(utxo_set.AddCoin(outpoint, coin));
+        ASSERT_NE(utxo_set.GetForest().add(leaf_for(outpoint, coin)), UINT64_MAX);
+    }
+    const auto before_root = utxo_set.GetUtreexoRoot();
+    const auto before_leaves = utxo_set.GetForest().getNumLeaves();
+
+    // Prepare the connected coin state in transaction order, retaining one
+    // undo entry per input, including the parent's ephemeral output. This
+    // fixture targets disconnection without requiring transaction signatures.
+    BlockUndo undo(height, MakeTestHash(9302));
+    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
+        const auto& tx = block.vtx[tx_idx];
+        if (tx_idx != 0) {
+            for (const auto& input : tx.vin) {
+                const OutPoint outpoint(input.prevout.txid, input.prevout.vout);
+                const auto spent = utxo_set.SpendCoin(outpoint);
+                ASSERT_NE(spent, nullptr);
+                undo.AddSpentCoin(outpoint.txid.AsUint256(), outpoint.vout, *spent);
+            }
+        }
+        for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+            const auto& output = tx.vout[vout];
+            ASSERT_TRUE(utxo_set.AddCoin(
+                OutPoint(tx.GetTxid(), vout),
+                UTXOEntry(output.value, output.scriptPubKey, height, tx_idx == 0)));
+        }
+    }
+
+    // The actual forest delta excludes ephemeral outputs in both directions.
+    UtreexoDelta delta;
+    delta.numLeavesBefore = before_leaves;
+    for (const auto& outpoint : {funding, external}) {
+        const auto leaf = leaf_for(outpoint, before_coins.at(outpoint));
+        const auto position = utxo_set.GetForest().findLeafPosition(leaf);
+        ASSERT_TRUE(position.has_value());
+        ASSERT_TRUE(utxo_set.GetForest().removeAtKnownPosition(*position, leaf));
+        delta.recordDelete(*position, leaf);
+    }
+    const OutPoint coinbase(block.vtx[0].GetTxid(), 0);
+    const OutPoint child_output(child.GetTxid(), 0);
+    for (const auto& outpoint : {coinbase, parent_survivor, child_output}) {
+        const auto* coin = utxo_set.GetCoin(outpoint);
+        ASSERT_NE(coin, nullptr);
+        const auto leaf = leaf_for(outpoint, *coin);
+        const auto position = utxo_set.GetForest().add(leaf);
+        ASSERT_NE(position, UINT64_MAX);
+        delta.recordAdd(leaf, position);
+    }
+    undo.utreexo_delta = std::move(delta);
+    utxo_set.SetBestBlock(undo.block_hash, height);
+
+    ASSERT_EQ(undo.spent_coins.size(), 3u);
+    ASSERT_FALSE(undo.pre_block_snapshot.has_value());  // Force persisted/manual undo.
+    ASSERT_FALSE(utxo_set.HaveCoin(ephemeral));
+    ASSERT_TRUE(utxo_set.HaveCoin(parent_survivor));
+    ASSERT_TRUE(utxo_set.HaveCoin(child_output));
+
+    BlockValidator validator(&utxo_set);
+    std::string error;
+    ASSERT_TRUE(validator.DisconnectBlock(block, height, undo, error)) << error;
+
+    EXPECT_EQ(utxo_set.GetSetSize(), before_coins.size());
+    for (const auto& [outpoint, expected] : before_coins) {
+        SCOPED_TRACE(outpoint.ToString());
+        const auto* actual = utxo_set.GetCoin(outpoint);
+        ASSERT_NE(actual, nullptr);
+        EXPECT_EQ(actual->value.GetUna(), expected.value.GetUna());
+        EXPECT_EQ(actual->scriptPubKey, expected.scriptPubKey);
+        EXPECT_EQ(actual->height, expected.height);
+        EXPECT_EQ(actual->isCoinbase, expected.isCoinbase);
+        EXPECT_EQ(actual->is_confidential, expected.is_confidential);
+        EXPECT_EQ(actual->commitment, expected.commitment);
+    }
+    for (const auto& tx : block.vtx) {
+        for (uint32_t vout = 0; vout < tx.vout.size(); ++vout) {
+            EXPECT_FALSE(utxo_set.HaveCoin(OutPoint(tx.GetTxid(), vout)));
+        }
+    }
+    EXPECT_EQ(utxo_set.GetUtreexoRoot(), before_root);
+    EXPECT_EQ(utxo_set.GetForest().getNumLeaves(), before_leaves);
+}
+}  // namespace
+
+TEST(BlockValidationInvariants, ManualCpfpDisconnectRestoresPreBlockCoinsAndForest) {
+    RunManualCpfpDisconnectCase(false);
+}
+
+TEST(BlockValidationInvariants, ManualCpfpDisconnectMatchesCreatedOutpointsExactly) {
+    RunManualCpfpDisconnectCase(true);
+}
+
 // ============================================================================
 // Snapshot isolation: mutations during validation don't leak on failure
 // ============================================================================

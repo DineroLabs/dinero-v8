@@ -2487,11 +2487,49 @@ set_tests_properties(PowEnforcedRegtest PROPERTIES
     LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
     TIMEOUT 600 RUN_SERIAL TRUE)
 
+# Combined migration + compact-proof + 60-second release qualification.
+# Owned separately from the migration engine itself (see
+# docs/design/combined-migration-release-qualification-harness.md): calls
+# the reviewed, unmodified MigrateShieldedDatadirCopy engine through the
+# migrate_shielded_datadir CLI driver (tools/migrate_shielded_datadir.cpp)
+# against a real regtest-produced datadir, then continues mining/reorging/
+# restarting the migrated candidate — closing the "actual migrated-daemon
+# compact-proof plus 60-second restart/reorg/mining" gate explicitly named
+# as remaining in docs/design/shielded-state-migration-engine.md and
+# docs/design/shielded-migration-eligibility.md.
+#
+# Corrected 2026-09-19 after review found the first (bash) version would
+# request compact activation against a compact-disabled build, which
+# src/daemon/main.cpp explicitly rejects at startup. This test now REQUIRES
+# DINERO_ENABLE_COMPACT_REGTEST — it does not silently degrade to ordinary
+# shield/unshield coverage when compact isn't compiled in (the Python script
+# itself also probes and raises a distinct, clear error if invoked against
+# a build that lacks it, as defense in depth). Registered only in the same
+# dedicated compact-enabled build as CompactTimingLifecycle123/124/125 above,
+# never in an ordinary build's job.
+if(UNIX AND NOT IOS AND DINERO_ENABLE_COMPACT_REGTEST
+   AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.py)
+    add_test(NAME CombinedMigrationReleaseQualification
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.py)
+    set_tests_properties(CombinedMigrationReleaseQualification PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;MIGRATE_TOOL=$<TARGET_FILE:migrate_shielded_datadir>"
+        LABELS "integration;compact-regtest;shielded;migration;consensus;utreexo;restart;reorg;qualification;mandatory"
+        TIMEOUT 2400 RUN_SERIAL TRUE)
+    message(STATUS "  ✓ CombinedMigrationReleaseQualification registered")
+endif()
+
 add_test(NAME BlockAcceptorFeeLifecycle
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_block_acceptor_fees.py)
 set_tests_properties(BlockAcceptorFeeLifecycle PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;consensus;csn;utreexo;mining;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+
+add_test(NAME CsnCpfpDisconnect
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_cpfp_disconnect.py)
+set_tests_properties(CsnCpfpDisconnect PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
     TIMEOUT 600 RUN_SERIAL TRUE)
 
 # Offline mutation is deliberately confined to an explicitly marked regtest

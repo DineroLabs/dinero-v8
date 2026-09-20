@@ -9,6 +9,11 @@ __pycache__/
 *.dylib
 .dinero-build-meta
 
+# CI/local qualification run evidence (source commit, binary hashes, ctest
+# logs, migration receipts) — generated per run, uploaded as a CI artifact
+# by combined-migration-qualification.yml, never repo source.
+/evidence/
+
 # Release vendored OpenSSL prebuilts are intentional source artifacts.
 !third_party/openssl-3.3.2/prebuilt/
 !third_party/openssl-3.3.2/prebuilt/macos-arm64/

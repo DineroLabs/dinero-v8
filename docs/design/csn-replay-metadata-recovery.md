@@ -99,8 +99,10 @@ of qualification on stopped copies of the rollout databases.
   the source back without a second reconsider/reindex; require automatic repair,
   byte-stable target/transaction identities, durable CSN2, and valid Utreexo
   proofs after restart. A second variant retains only local undo metadata and
-  must recover while the source peer remains stopped. Parent/child relay is checked after repair separately
-  from the existing disconnect-cache issue discovered during fixture design.
+  must recover while the source peer remains stopped. The historical branch
+  contains a parent/child package, and another package is checked after repair.
+  `CsnCpfpDisconnect` separately requires exact pre-block coin-set restoration,
+  valid forest proofs, restart and alternate-branch reconnect after package undo.
 - Every new registered test has an executing CI lane. Local diagnostic links
   against cached dependencies are development evidence, not clean release or
   cross-platform qualification. Linux CI and rollout-database coverage remain

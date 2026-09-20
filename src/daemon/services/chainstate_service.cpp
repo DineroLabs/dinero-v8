@@ -13651,7 +13651,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             return false;
         }
 
-        // Remove created outputs, restore spent outputs, persist tip
+        // Restore spent outputs, remove created outputs, persist tip
         // rollback, and stage the ShieldedTipMarker — all in one atomic
         // batch.
         rocksdb::WriteBatch coin_batch;
@@ -13713,10 +13713,6 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             return false;
         }
 
-        for (const auto& created : undo.created) {
-            chain_db_->deleteCoin(token, created.txid, created.vout, &coin_batch);
-        }
-
         for (const auto& spent : undo.spent) {
             dinero::Coin coin;
             coin.amount = spent.value;
@@ -13728,6 +13724,13 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             coin.is_confidential = spent.is_confidential;
             coin.commitment = spent.commitment;
             chain_db_->putCoin(token, spent.prev_txid, spent.prev_vout, coin, &coin_batch);
+        }
+
+        // Undo keeps every input, including outputs created and spent in this
+        // block. Delete exact created outpoints last so those ephemeral coins
+        // cannot survive rollback in the durable UTXO set.
+        for (const auto& created : undo.created) {
+            chain_db_->deleteCoin(token, created.txid, created.vout, &coin_batch);
         }
 
         const auto tip_status = chain_db_->setTip(token, new_tip->hash,
@@ -14032,17 +14035,6 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     rocksdb::WriteBatch rollback_batch;
     const auto& undo_record = undo_result.value();
 
-    for (const auto& created : undo_record.created) {
-        const auto delete_status = chain_db_->deleteCoin(
-            token, created.txid, created.vout, &rollback_batch);
-        if (delete_status != Status::Ok) {
-            logger_->error("[DisconnectTip] Failed to delete disconnected UTXO " +
-                           created.txid.GetHex().substr(0, 16) + "...:" +
-                           std::to_string(created.vout));
-            return false;
-        }
-    }
-
     for (const auto& spent : undo_record.spent) {
         dinero::Coin coin;
         coin.amount = spent.value;
@@ -14063,6 +14055,19 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             logger_->error("[DisconnectTip] Failed to restore spent UTXO " +
                            spent.prev_txid.GetHex().substr(0, 16) + "...:" +
                            std::to_string(spent.prev_vout));
+            return false;
+        }
+    }
+
+    // A same-block parent output appears in both undo lists. The final
+    // operation on each created outpoint must be Delete, just as in CSN mode.
+    for (const auto& created : undo_record.created) {
+        const auto delete_status = chain_db_->deleteCoin(
+            token, created.txid, created.vout, &rollback_batch);
+        if (delete_status != Status::Ok) {
+            logger_->error("[DisconnectTip] Failed to delete disconnected UTXO " +
+                           created.txid.GetHex().substr(0, 16) + "...:" +
+                           std::to_string(created.vout));
             return false;
         }
     }

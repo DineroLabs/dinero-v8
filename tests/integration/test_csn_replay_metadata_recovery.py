@@ -296,8 +296,9 @@ def main():
                 f"{node.name} competing-branch disconnect")
     txid, _ = spend(full, first_coin, 99.9, address)
     first_block = mine(full, address, 10_000_000, [txid])
-    second_tx, _ = spend(full, second_coin, 9.8, address)
-    second_block = mine(full, address, 9_020_000_000, [second_tx])
+    package_parent, prevout = spend(full, second_coin, 99.9, address)
+    second_tx, _ = spend(full, package_parent, 9.8, address, prevout)
+    second_block = mine(full, address, 9_020_000_000, [package_parent, second_tx])
     for _ in range(2):
         tip = mine(full, address)
     wait(lambda: csn.call("getbestblockhash") == tip, "CSN fee branch at height109")
@@ -406,9 +407,9 @@ def main():
     require_no_recovery_fuse()
     proof(full, csn, second_tx)
     print(f"PASS automatic {RECOVERY_SOURCE} repair, CSN2 durability, exact roots and proofs after restart", flush=True)
-    # Exercise parent/child metadata after repair. Disconnecting a historical
-    # CPFP block currently exposes a separate UTXO-cache restoration issue;
-    # it is deliberately not allowed to confound the legacy-repair fixture.
+    # Exercise another parent/child package after repair. The historical
+    # package above also crossed disconnect, metadata repair and restart;
+    # the dedicated CPFP disconnect test checks exact pre-block coin equality.
     third_coin = full.call("getblock", [full.call("getblockhash", [3]), 1])["tx"][0]
     package_parent, prevout = spend(full, third_coin, 99.9, address)
     package_child, _ = spend(full, package_parent, 9.8, address, prevout)
@@ -427,23 +428,28 @@ def main():
 
 
 
-success = False
-try:
-    main()
-    success = True
-finally:
-    errors = []
-    for node in NODES:
-        try:
-            node.stop()
-        except Exception as error:
-            errors.append(str(error))
-    RECEIPT["success"] = success and not errors
-    RECEIPT["cleanup_errors"] = errors
-    (WORK / "receipt.json").write_text(json.dumps(RECEIPT, indent=2) + "\n")
-    if success and not errors and os.environ.get("DINERO_TEST_KEEP_DATA") != "1":
-        shutil.rmtree(WORK)
-    else:
-        print("Retained evidence:", WORK, flush=True)
-    if errors:
-        raise AssertionError(errors)
+def run_test(test=main):
+    success = False
+    try:
+        test()
+        success = True
+    finally:
+        errors = []
+        for node in NODES:
+            try:
+                node.stop()
+            except Exception as error:
+                errors.append(str(error))
+        RECEIPT["success"] = success and not errors
+        RECEIPT["cleanup_errors"] = errors
+        (WORK / "receipt.json").write_text(json.dumps(RECEIPT, indent=2) + "\n")
+        if success and not errors and os.environ.get("DINERO_TEST_KEEP_DATA") != "1":
+            shutil.rmtree(WORK)
+        else:
+            print("Retained evidence:", WORK, flush=True)
+        if errors:
+            raise AssertionError(errors)
+
+
+if __name__ == "__main__":
+    run_test()

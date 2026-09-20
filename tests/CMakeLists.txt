@@ -7504,6 +7504,26 @@ if(UNIX AND NOT IOS)
   )
   add_test(NAME ShieldedMigrationCohort COMMAND test_shielded_migration_cohort)
   set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+
+  # Qualification-only CLI driver for the combined-migration-release
+  # harness (tests/integration/test_combined_migration_release_qualification.sh).
+  # Calls the same reviewed MigrateShieldedDatadirCopy engine as
+  # ShieldedMigrationCohort above against real regtest-produced datadirs
+  # instead of synthetic fixtures. Not installed, no daemon/operator entry.
+  add_executable(migrate_shielded_datadir
+    tools/migrate_shielded_datadir.cpp
+    src/storage/shielded_migration.cpp
+    src/storage/shielded_migration_cohort.cpp
+    src/storage/shielded_migration_metadata.cpp
+    src/daemon/datadir_guard.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(migrate_shielded_datadir PRIVATE
+    dinero_chainstate dinero_shielded dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+  )
+  target_include_directories(migrate_shielded_datadir PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  )
 endif()
 
 # #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
