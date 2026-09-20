@@ -227,6 +227,12 @@ def main():
     address = full.call("wallet.getnewaddress")["address"]
     for _ in range(105):
         mine(full, address)
+        # Each solved block uses four or more RPCs. Keep this maturity-only
+        # bootstrap below HttpRpcServer's 50 request/second token-bucket rate
+        # while leaving transport failures fatal. On Linux, closing a rejected
+        # socket before draining its request can surface the intended HTTP 429
+        # as a TCP reset, which is not a consensus or fee-validation result.
+        time.sleep(.10)
     csn.start()
     parent = full.call("getbestblockhash")
     wait(lambda: csn.call("getbestblockhash") == parent, "CSN mature prefix")
