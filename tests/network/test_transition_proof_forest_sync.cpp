@@ -436,6 +436,52 @@ void test_replay_accepts_post_activation_cpfp_and_binds_child_metadata() {
         "Accepted CPFP replay must advance the forest to the expected root"
     );
 
+    // Metadata covers every input, including the child, while the recovered
+    // batch proof contains only the external funding leaf.
+    BlockHeader repair_parent = funding_block.header;
+    const auto repair_before = initial_forest.getCommitment();
+    std::memcpy(repair_parent.utreexo_root.begin(), repair_before.data(), 32);
+    Block repair_block = cpfp_block;
+    repair_block.header.prev_block_hash = repair_parent.GetHash();
+    UtreexoProofMessage repair_msg;
+    repair_msg.block_hash = repair_block.GetHash();
+    repair_msg.block_height = spend_height;
+    repair_msg.accumulator_root_before = repair_before;
+    repair_msg.accumulator_root_after = expected_after.getCommitment();
+    repair_msg.proof_data.accumulator_root_before = repair_before;
+    repair_msg.proof_data.spent_outputs = spent_outputs;
+    auto& repair_batch = repair_msg.proof_data.spend_proof;
+    repair_batch.targets = {funding_leaf};
+    repair_batch.positions = {*initial_forest.findLeafPosition(funding_leaf)};
+    repair_batch.proof_hashes = initial_forest.generateBatchProof(repair_batch.targets);
+    repair_batch.numLeaves = initial_forest.getNumLeaves();
+    repair_batch.format_version = GetUtreexoProofFormatVersion(spend_height);
+    std::string repair_error;
+    for (bool require_peer_proof : {false, true}) {
+        TEST_ASSERT(StatelessNode::ValidateReplayMetadataRepair(
+            repair_block, spend_height, repair_parent, {funding_leaf}, repair_msg,
+            initial_forest, require_peer_proof, repair_error),
+            "CPFP repair accepts two spent outputs and one external target: " + repair_error);
+    }
+    for (unsigned field = 0; field < 6; ++field) {
+        auto wrong = repair_msg;
+        auto& child = wrong.proof_data.spent_outputs[1];
+        switch (field) {
+            case 0: child.value++; break;
+            case 1: child.scriptPubKey[0] ^= 1; break;
+            case 2: child.created_height++; break;
+            case 3: child.is_coinbase = true; break;
+            case 4: child.is_confidential = true; break;
+            case 5: child.commitment = {0x02}; break;
+        }
+        TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+            repair_block, spend_height, repair_parent, {funding_leaf}, wrong,
+            initial_forest, true, repair_error),
+            "CPFP repair rejects unbound child metadata field " + std::to_string(field));
+    }
+    TEST_ASSERT(initial_forest.getCommitment() == repair_before,
+                "CPFP repair success and failure leave caller forest unchanged");
+
     std::vector<SpentOutputData> lied_child_outputs = spent_outputs;
     lied_child_outputs[1].value = parent_value - 1;
     UtreexoForest lied_replay_forest = initial_forest;
@@ -533,17 +579,19 @@ void applyRewardFixtureAdditions(UtreexoForest& forest, const Block& block, uint
 // These fixtures deliberately have a correct accumulator transition. Rejecting
 // an overpay therefore has to come from monetary validation, not a bad root.
 void test_replay_reward(uint64_t excess, bool split, bool omit_metadata,
-                        bool legacy_leaf = false) {
+                        bool legacy_leaf = false, uint32_t spend_height_override = 0) {
     std::cout << "CSN reward replay excess=" << excess << " split=" << split
               << " omit_metadata=" << omit_metadata << " legacy=" << legacy_leaf << std::endl;
     const uint32_t funding_height = legacy_leaf ? 1 : GetUtreexoMaturityLeafActivationHeight();
-    const uint32_t spend_height = legacy_leaf ? 2 : funding_height + 100;
+    const uint32_t spend_height = spend_height_override != 0
+        ? spend_height_override : (legacy_leaf ? 2 : funding_height + 100);
     const auto script = makeScript();
     constexpr uint64_t funding_value = 50'00000000ULL;
     constexpr uint64_t fee = 10'000000ULL; // 0.1 DIN, above the old admission estimate.
     const uint64_t subsidy = ConsensusSubsidy::GetBlockSubsidy(
         spend_height, Params().sixty_second_activation_height).GetUna();
-    Block funding = makeCoinbaseBlock(funding_height, {{funding_value, script}});
+    Block funding = makeCoinbaseBlock(funding_height,
+        {{funding_value, script}, {funding_value, script}});
     const TxId funding_txid = funding.vtx[0].GetTxid();
     // A legacy fixture is a non-coinbase output so no maturity assumption is
     // needed; the post-activation fixture spends an exactly mature coinbase.
@@ -553,6 +601,10 @@ void test_replay_reward(uint64_t excess, bool split, bool omit_metadata,
     UtreexoForest initial;
     initial = initial.cloneForHeight(funding_height);
     TEST_ASSERT(initial.add(leaf) != UINT64_MAX, "Reward fixture funding add");
+    const auto sibling_leaf = HashUTXOForCreationHeight(
+        funding_txid.AsUint256(), 1, funding_value, script, funding_height, is_coinbase);
+    TEST_ASSERT(initial.add(sibling_leaf) != UINT64_MAX,
+                "Reward fixture retains a sibling requiring a nonempty batch proof");
     Block block = makeSpendBlock(spend_height, funding_txid, 0,
                                  funding_value - fee, script, funding.GetHash());
     block.vtx[0].vout[0].value = AmountUna::Una(split ? subsidy : subsidy + fee + excess);
@@ -576,7 +628,8 @@ void test_replay_reward(uint64_t excess, bool split, bool omit_metadata,
     node.SyncToForestState(spend_height - 1);
     const bool accepted = node.ReplayBlock(block, spend_height, {leaf},
                                            omit_metadata ? nullptr : &spent);
-    const bool should_accept = excess == 0 && !omit_metadata;
+    const bool should_accept = excess == 0 && !omit_metadata &&
+        (!is_coinbase || spend_height >= funding_height + 100);
     TEST_ASSERT(accepted == should_accept,
                 "Root-correct replay must enforce exact reward across all coinbase outputs and require fee metadata");
     TEST_ASSERT(actual.getCommitment() == (should_accept ? expected : initial).getCommitment(),
@@ -595,6 +648,131 @@ void test_replay_reward(uint64_t excess, bool split, bool omit_metadata,
         batch.proof_hashes = initial.generateBatchProof(batch.targets);
         batch.numLeaves = initial.getNumLeaves();
         batch.format_version = GetUtreexoProofFormatVersion(spend_height);
+
+        // Recovery binds untrusted metadata to LOCAL block/parent identities,
+        // preserves the old target sequence, and never touches the live forest.
+        BlockHeader parent_header = funding.header;
+        const auto parent_root = initial.getCommitment();
+        std::memcpy(parent_header.utreexo_root.begin(), parent_root.data(), 32);
+        Block repair_block = block;
+        repair_block.header.prev_block_hash = parent_header.GetHash();
+        auto repair_msg = msg;
+        repair_msg.block_hash = repair_block.GetHash();
+        repair_msg.proof_data.accumulator_root_before = parent_root;
+        std::string repair_error;
+        TEST_ASSERT(StatelessNode::ValidateReplayMetadataRepair(
+            repair_block, spend_height, parent_header, {leaf}, repair_msg,
+            initial, true, repair_error) == should_accept,
+            "Recovered metadata repair validates exact reward on scratch");
+        TEST_ASSERT(StatelessNode::ValidateReplayMetadataRepair(
+            repair_block, spend_height, parent_header, {leaf}, repair_msg,
+            initial, false, repair_error) == should_accept,
+            "Locally recovered undo metadata validates on scratch");
+        TEST_ASSERT(initial.getCommitment() == parent_root,
+                    "Metadata repair must not advance caller forest");
+        if (should_accept) {
+            TEST_ASSERT(!repair_msg.proof_data.spend_proof.proof_hashes.empty(),
+                        "Two-leaf repair fixture cryptographically requires a sibling hash");
+            auto local_undo = repair_msg;
+            local_undo.proof_data.spend_proof.positions.clear();
+            local_undo.proof_data.spend_proof.proof_hashes.clear();
+            TEST_ASSERT(StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, local_undo,
+                initial, false, repair_error),
+                "Trusted local undo metadata needs no supplied batch proof");
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, local_undo,
+                initial, true, repair_error),
+                "Peer repair cannot omit batch positions and sibling hashes");
+
+            auto wrong = repair_msg;
+            wrong.block_height++;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair rejects peer height mismatch");
+            wrong = repair_msg;
+            wrong.accumulator_root_after[0] ^= 1;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair binds root-after to stored header");
+            wrong = repair_msg;
+            wrong.proof_data.spent_outputs[0].value++;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair rejects peer amount lie");
+            wrong = repair_msg;
+            wrong.proof_data.spent_outputs.clear();
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair refuses proof without metadata");
+            auto wrong_targets = std::vector<UtreexoHash>{leaf};
+            wrong_targets[0][0] ^= 1;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, wrong_targets, repair_msg,
+                initial, true, repair_error), "Repair cannot replace original target identities");
+            wrong = repair_msg;
+            wrong.proof_data.spend_proof.positions[0]++;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair requires valid batch proof");
+            wrong = repair_msg;
+            wrong.proof_data.spend_proof.proof_hashes[0][0] ^= 1;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair rejects corrupted sibling hash");
+
+            wrong = repair_msg;
+            wrong.block_hash.begin()[0] ^= 1;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair binds response to exact stored block hash");
+            BlockHeader wrong_parent = parent_header;
+            wrong_parent.nonce++;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, wrong_parent, {leaf}, repair_msg,
+                initial, true, repair_error), "Repair binds local parent identity");
+            wrong = repair_msg;
+            wrong.accumulator_root_before[0] ^= 1;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair binds envelope before-root");
+            wrong = repair_msg;
+            wrong.proof_data.accumulator_root_before[0] ^= 1;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Repair binds payload before-root");
+            UtreexoForest wrong_scratch = initial;
+            TEST_ASSERT(wrong_scratch.add(UtreexoHash(32, 0xa5)) != UINT64_MAX,
+                        "Wrong-history fixture changes the parent forest");
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, repair_msg,
+                wrong_scratch, true, repair_error), "Repair rejects wrong historical scratch root");
+
+            wrong = repair_msg;
+            wrong.proof_data.spend_proof.numLeaves++;
+            TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                repair_block, spend_height, parent_header, {leaf}, wrong,
+                initial, true, repair_error), "Peer repair binds declared leaf count");
+            for (uint8_t version : {0, 3, 7, 255}) {
+                wrong = repair_msg;
+                wrong.proof_data.spend_proof.format_version = version;
+                TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                    repair_block, spend_height, parent_header, {leaf}, wrong,
+                    initial, true, repair_error), "Peer repair rejects unsupported metadata format");
+            }
+            if (!legacy_leaf) {
+                wrong = repair_msg;
+                wrong.proof_data.spent_outputs[0].is_coinbase = false;
+                TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                    repair_block, spend_height, parent_header, {leaf}, wrong,
+                    initial, true, repair_error), "Repair binds v2 coinbase flag to the target");
+                wrong = repair_msg;
+                wrong.proof_data.spent_outputs[0].created_height = funding_height - 1;
+                TEST_ASSERT(!StatelessNode::ValidateReplayMetadataRepair(
+                    repair_block, spend_height, parent_header, {leaf}, wrong,
+                    initial, true, repair_error), "Repair rejects v2 height downgrade to a legacy leaf");
+            }
+        }
 
         UtreexoForest forward = initial;
         StatelessNode forward_node(&forward);
@@ -726,6 +904,10 @@ int main() {
     test_replay_reward(1, true, false);
     test_replay_reward(0, false, true, true);
     test_replay_reward(0, false, false, true);
+    test_replay_reward(0, false, false, true,
+                       GetUtreexoMaturityLeafActivationHeight() + 100);
+    test_replay_reward(0, false, false, false,
+                       GetUtreexoMaturityLeafActivationHeight() + 99);
     test_coinbase_only_replay_reward(0);
     test_coinbase_only_replay_reward(1);
     test_reward_accounting_cardinality_and_overflow();

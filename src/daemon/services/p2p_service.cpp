@@ -974,6 +974,7 @@ void P2PService::StartSchedulerTickLoop() {
                 // restarts anything.
                 if (ctx->chainstate) {
                     ctx->chainstate->CheckHangWatchdog();
+                    ctx->chainstate->PumpReplayMetadataRecovery();
                 }
 
                 // P1 reorg fix: Periodic ActivateBestChain safety net (every 30s).

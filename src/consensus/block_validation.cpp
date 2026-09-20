@@ -826,13 +826,13 @@ bool BlockValidator::ComputeShieldedDeltasForStoredBlock(
         return true;
     }
 
-    // Spent-output source: the stored block's own utreexo payload first;
-    // the CSN replay-data metadata only as fallback when that is absent.
+    // An explicit, validated replay source takes precedence: a legacy stored
+    // block may retain a utreexo payload with missing or stale spend metadata.
     const std::vector<SpentOutputData>* spent_outputs = nullptr;
-    if (block.utreexo.has_value()) {
-        spent_outputs = &block.utreexo->spent_outputs;
-    } else if (fallback_spent_outputs) {
+    if (fallback_spent_outputs) {
         spent_outputs = fallback_spent_outputs;
+    } else if (block.utreexo.has_value()) {
+        spent_outputs = &block.utreexo->spent_outputs;
     }
     if (!spent_outputs) {
         error = "stored-block-shielded-delta-missing-spent-outputs: block has "
