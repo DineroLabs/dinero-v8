@@ -35,7 +35,11 @@ jobs:
   linux-full-build-ctest:
     name: Linux x86_64 — full build + ctest
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # The broad suite and serial daemon lanes can exceed two hours together
+    # (run 35474007537 reached the final durability lane with no test failures).
+    # Keep individual CTest deadlines unchanged and allow the complete gate,
+    # including failure-evidence upload, to finish.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -215,6 +219,14 @@ jobs:
             -V -j1 \
             -R '^(CheckpointRetentionDaemon|ShieldedMigrationDaemonMarker)$' \
             | tee build-tests/Testing/checkpoint-retention/ctest.log
+
+      - name: Run shield wallet notification-gap regressions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/shield-wallet-selection
+          ctest --test-dir build-tests --output-on-failure --no-tests=error -V -j1 \
+            --output-log build-tests/Testing/shield-wallet-selection/ctest.log \
+            -R '^ShieldWalletNotificationGap(ExplicitFee|AutoFee)$'
 
       # Upload immediately: later serial lanes can take an hour, and the job
       # log is unavailable until they finish. Only harness text logs belong in
