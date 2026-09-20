@@ -701,6 +701,54 @@ TEST(CsnShieldedDeltaParity, FallbackSpentOutputsYieldIdenticalDeltas) {
     EXPECT_EQ(deltas, f.expected_deltas_block1);
 }
 
+// A repaired CSN2 sidecar is validated against the stored targets/header before
+// this call. A legacy block can still carry an empty embedded metadata vector;
+// that old payload must not hide the repaired records during shielded replay.
+TEST(CsnShieldedDeltaParity, RepairedMetadataOverridesEmptyEmbeddedProof) {
+    ChainFixture& f = Fixture();
+    ASSERT_FALSE(::testing::Test::HasFatalFailure());
+    ASSERT_TRUE(f.block1.utreexo.has_value());
+    const auto repaired = f.block1.utreexo->spent_outputs;
+    ASSERT_FALSE(repaired.empty());
+    Block legacy = f.block1;
+    legacy.utreexo->spent_outputs.clear();
+
+    ReplayValidator b;
+    std::vector<int64_t> deltas;
+    std::string error;
+    ASSERT_TRUE(b.validator.ComputeShieldedDeltasForStoredBlock(
+        legacy, f.h1, deltas, error, &repaired)) << error;
+    EXPECT_EQ(deltas, f.expected_deltas_block1);
+
+    BlockUndo undo;
+    undo.height = f.h1;
+    ASSERT_TRUE(b.validator.ApplyBlockShieldedSection(legacy, f.h1, deltas, undo, error)) << error;
+    EXPECT_EQ(b.tree.Root(), f.root_after_block1);
+    EXPECT_EQ(b.tree.Size(), 2u);
+    EXPECT_EQ(b.nullifiers.Size(), 0u);
+    EXPECT_TRUE(b.anchors.Contains(f.root_after_block1));
+}
+
+// Explicit metadata is authoritative even when unusable: silently switching to
+// another source would hide a broken replay caller's ordered input selection.
+TEST(CsnShieldedDeltaParity, InvalidExplicitMetadataDoesNotFallBackToEmbeddedProof) {
+    ChainFixture& f = Fixture();
+    ASSERT_FALSE(::testing::Test::HasFatalFailure());
+    ASSERT_TRUE(f.block1.utreexo.has_value());
+    ASSERT_FALSE(f.block1.utreexo->spent_outputs.empty());
+    const std::vector<SpentOutputData> incomplete;
+    ReplayValidator b;
+    const auto root_before = b.tree.Root();
+    std::vector<int64_t> deltas;
+    std::string error;
+    EXPECT_FALSE(b.validator.ComputeShieldedDeltasForStoredBlock(
+        f.block1, f.h1, deltas, error, &incomplete));
+    EXPECT_NE(error.find("underrun"), std::string::npos) << error;
+    EXPECT_EQ(b.tree.Root(), root_before);
+    EXPECT_EQ(b.tree.Size(), 0u);
+    EXPECT_EQ(b.nullifiers.Size(), 0u);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // (5) Transparent-only block: no deltas, and NO spend-metadata requirement
 //     (legacy hash-only CSN replay records must not brick transparent

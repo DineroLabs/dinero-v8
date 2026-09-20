@@ -1125,6 +1125,48 @@ void StatelessNode::RewindToCheckpoint(uint32_t height, const consensus::Utreexo
                  }());
 }
 
+bool StatelessNode::ValidateReplayMetadataRepair(
+    const Block& block, uint32_t height, const BlockHeader& parent_header,
+    const std::vector<consensus::UtreexoHash>& stored_targets,
+    const UtreexoProofMessage& candidate, consensus::UtreexoForest scratch,
+    bool require_batch_proof, std::string& error
+) {
+    error.clear();
+    const consensus::UtreexoHash before(parent_header.utreexo_root.begin(),
+                                        parent_header.utreexo_root.end());
+    const consensus::UtreexoHash after(block.header.utreexo_root.begin(),
+                                       block.header.utreexo_root.end());
+    if (height == 0 || block.header.prev_block_hash != parent_header.GetHash() ||
+        candidate.block_hash != block.GetHash() || candidate.block_height != height ||
+        candidate.proof_data.spend_proof.targets != stored_targets ||
+        candidate.accumulator_root_before != before ||
+        candidate.proof_data.accumulator_root_before != before ||
+        candidate.accumulator_root_after != after || scratch.getCommitment() != before) {
+        error = "replay-repair-local-history-mismatch";
+        return false;
+    }
+    if (require_batch_proof &&
+        ((candidate.proof_data.spend_proof.format_version != 4 &&
+          candidate.proof_data.spend_proof.format_version != 5 &&
+          candidate.proof_data.spend_proof.format_version != 6) ||
+         candidate.proof_data.spend_proof.numLeaves != scratch.getNumLeaves())) {
+        error = "replay-repair-proof-envelope-invalid";
+        return false;
+    }
+    if (!CheckReplayReward(block, height, stored_targets,
+                           &candidate.proof_data.spent_outputs, error)) return false;
+    StatelessNode verifier(&scratch);
+    const bool valid = require_batch_proof
+        ? verifier.ValidateProofIntoForest(block, candidate, scratch)
+        : verifier.ReplayBlock(block, height, stored_targets,
+                               &candidate.proof_data.spent_outputs);
+    if (!valid || scratch.getCommitment() != after) {
+        error = "replay-repair-proof-or-root-invalid";
+        return false;
+    }
+    return true;
+}
+
 bool StatelessNode::CheckReplayReward(
     const Block& block, uint32_t block_height,
     const std::vector<consensus::UtreexoHash>& spend_targets,

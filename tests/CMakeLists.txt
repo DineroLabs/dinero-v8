@@ -406,6 +406,18 @@ set_tests_properties(UtreexoDeltaCodec PROPERTIES
   LABELS "consensus;utreexo;forest-checkpoint-deltas;smoke"
 )
 
+add_executable(test_csn_replay_data tests/consensus/test_csn_replay_data.cpp)
+add_dependencies(test_csn_replay_data gtest gtest_main)
+target_link_libraries(test_csn_replay_data PRIVATE
+  dinero_consensus GTest::gtest_main ${CMAKE_DL_LIBS})
+link_zstd_if_needed(test_csn_replay_data)
+target_include_directories(test_csn_replay_data BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include)
+add_test(NAME CsnReplayData COMMAND test_csn_replay_data)
+# Keep this in the ordinary broad CI lane (no integration/fuzz exclusions).
+set_tests_properties(CsnReplayData PROPERTIES
+  LABELS "consensus;utreexo;serialization;unit;mandatory" TIMEOUT 30)
+
 add_executable(test_forest_delta_replay_equivalence
   tests/consensus/test_forest_delta_replay_equivalence.cpp
 )
@@ -13350,3 +13362,16 @@ set_tests_properties(MiningTemplateExclusions PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "mining;consensus"
     TIMEOUT 180)
+
+# Deterministic clock and concurrent-delivery tests for bounded metadata repair.
+# No daemon, network, forest or storage runtime is required by the queue policy.
+add_executable(test_replay_metadata_recovery
+    tests/daemon/test_replay_metadata_recovery.cpp
+    src/primitives/uint256.cpp)
+target_include_directories(test_replay_metadata_recovery PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(test_replay_metadata_recovery PRIVATE cxx_std_17)
+target_link_libraries(test_replay_metadata_recovery PRIVATE Threads::Threads)
+add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
+set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
+    LABELS "daemon;utreexo;recovery;regression"
+    TIMEOUT 30)
