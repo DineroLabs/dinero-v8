@@ -23,8 +23,7 @@ def main():
     full.peer, csn.peer = csn, full
     full.start()
     address = full.call("wallet.getnewaddress")["address"]
-    for _ in range(105):
-        h.mine(full, address)
+    h.mine_mature_prefix(full, address)
     csn.start()
     ancestor = full.call("getbestblockhash")
     h.wait(lambda: csn.call("getbestblockhash") == ancestor, "CSN mature prefix")

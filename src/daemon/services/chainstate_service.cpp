@@ -940,30 +940,28 @@ bool ChainstateService::LoadSeparatedShieldedState() {
         return refuse("invalid canonical frontier/anchors; external fallback forbidden");
     if (tree.Size() != marker.value().tree_size) return refuse("canonical tree size mismatch");
 
-    // Reuse the consensus accumulator and root encoding unchanged. Do not
-    // reserve memory from an untrusted marker count. Resource qualification of
-    // the final release includes this startup materialization (as for the
-    // existing CurrentShieldedStateSnapshot path).
-    std::vector<consensus::shielded::NullifierEntry> entries;
+    // Check the canonical scan without reserving from an untrusted marker
+    // count. A nullifier appearing at two heights is corrupt even when the
+    // row count matches. The marker's root commits to the tree only.
+    std::set<consensus::shielded::Hash> nullifiers;
     bool valid = true;
     const auto scanned = chain_db_->forEachShieldedNullifier([&](uint32_t height, const uint8_t* nf) {
-        if (height > tip.value().height || entries.size() >= count.value()) {
+        consensus::shielded::Hash nullifier;
+        std::memcpy(nullifier.data(), nf, nullifier.size());
+        if (height > tip.value().height || nullifiers.size() >= count.value() ||
+            !nullifiers.insert(nullifier).second) {
             valid = false;
             return false;
         }
-        consensus::shielded::NullifierEntry entry;
-        entry.height = height;
-        std::memcpy(entry.nullifier.data(), nf, entry.nullifier.size());
-        entries.push_back(entry);
         return true;
     });
-    if (scanned != Status::Ok || !valid || entries.size() != count.value())
+    if (scanned != Status::Ok || !valid || nullifiers.size() != count.value())
         return refuse("incomplete or inconsistent canonical nullifier scan");
-    const auto accumulator = consensus::shielded::ComputeNullifierAccumulator(std::move(entries));
+    // Match CurrentShieldedStateSnapshot and every existing marker writer.
+    // ComputeShieldedRoot is a different, composite consensus commitment.
     const auto tree_root = tree.Root();
-    const auto root = consensus::shielded::ComputeShieldedRootFromParts(
-        std::vector<uint8_t>(tree_root.begin(), tree_root.end()), tree.Size(), accumulator, history.SerializeBytes());
-    if (!root || *root != marker.value().shielded_root) return refuse("canonical shielded root mismatch");
+    if (std::memcmp(tree_root.data(), marker.value().shielded_root.data, tree_root.size()) != 0)
+        return refuse("canonical shielded root mismatch");
     shielded_tree_ = std::move(tree);
     shielded_anchor_history_ = std::move(history);
     return true;
