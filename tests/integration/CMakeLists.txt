@@ -2518,6 +2518,45 @@ if(UNIX AND NOT IOS AND DINERO_ENABLE_COMPACT_REGTEST
     message(STATUS "  ✓ CombinedMigrationReleaseQualification registered")
 endif()
 
+add_test(NAME BlockAcceptorFeeLifecycle
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_block_acceptor_fees.py)
+set_tests_properties(BlockAcceptorFeeLifecycle PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;mining;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+
+add_test(NAME CsnCpfpDisconnect
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_cpfp_disconnect.py)
+set_tests_properties(CsnCpfpDisconnect PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+
+# Offline mutation is deliberately confined to an explicitly marked regtest
+# fixture. This executable is never installed or linked into the daemon.
+if(UNIX AND NOT IOS)
+    add_executable(csn_replay_metadata_fixture
+        ${CMAKE_SOURCE_DIR}/tests/tools/csn_replay_metadata_fixture.cpp
+        ${CMAKE_SOURCE_DIR}/src/daemon/datadir_guard.cpp
+        ${CMAKE_SOURCE_DIR}/src/common/logger.cpp)
+    target_link_libraries(csn_replay_metadata_fixture PRIVATE
+        dinero_chainstate dinero_shielded dinero_crypto RocksDB::rocksdb OpenSSL::Crypto)
+    target_include_directories(csn_replay_metadata_fixture PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME CsnReplayMetadataRecovery
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_replay_metadata_recovery.py)
+    set_tests_properties(CsnReplayMetadataRecovery PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_REPLAY_RECOVERY_SOURCE=peer"
+        LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+        TIMEOUT 600 RUN_SERIAL TRUE)
+    add_test(NAME CsnReplayMetadataLocalUndo
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_replay_metadata_recovery.py)
+    set_tests_properties(CsnReplayMetadataLocalUndo PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_REPLAY_RECOVERY_SOURCE=undo"
+        LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+        TIMEOUT 600 RUN_SERIAL TRUE)
+endif()
+
 if(TARGET test_shielded_migration_cohort)
   add_test(NAME ShieldedMigrationDaemonMarker
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_migration_daemon_marker.py)

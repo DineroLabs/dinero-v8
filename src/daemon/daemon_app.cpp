@@ -1,3 +1,4 @@
+#include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -162,33 +163,7 @@ void LogShutdownPhase(const char* phase,
     std::cout << std::endl;
 }
 
-void AppendU32LE(std::string& out, uint32_t value) {
-    out.push_back(static_cast<char>(value & 0xFF));
-    out.push_back(static_cast<char>((value >> 8) & 0xFF));
-    out.push_back(static_cast<char>((value >> 16) & 0xFF));
-    out.push_back(static_cast<char>((value >> 24) & 0xFF));
-}
-
-std::string SerializeCsnReplayData(
-    const std::vector<consensus::UtreexoHash>& targets,
-    const std::vector<consensus::SpentOutputData>& spent_outputs,
-    uint8_t format_version
-) {
-    std::string blob;
-    blob.append("CSN2", 4);
-    AppendU32LE(blob, static_cast<uint32_t>(targets.size()));
-    for (const auto& target : targets) {
-        blob.append(reinterpret_cast<const char*>(target.data()), target.size());
-    }
-
-    AppendU32LE(blob, static_cast<uint32_t>(spent_outputs.size()));
-    blob.push_back(static_cast<char>(format_version));
-    for (const auto& spent : spent_outputs) {
-        const auto bytes = spent.serialize(format_version);
-        blob.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    }
-    return blob;
-}
+using consensus::SerializeCsnReplayData;
 
 std::string SanitizeHeaderStoreReason(const std::string& reason) {
     std::string sanitized;
@@ -4532,24 +4507,27 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     return false;
                                 }
                                 auto* cdb = chainstate_service->GetChainDB();
-                                ChainWriteToken token;
-                                rocksdb::WriteBatch batch;
-                                const Status replay_status = cdb
-                                    ? cdb->putCSNSpendTargets(
-                                          token, pending.proof_msg.block_hash,
-                                          replay_blob, &batch)
-                                    : Status::Internal;
-                                if (replay_status == Status::Ok) {
-                                    batch.Put(
-                                        MakeUtreexoDeltaUndoKey(
-                                            pending.proof_msg.block_hash),
-                                        delta_blob);
-                                }
-                                if (replay_status != Status::Ok ||
-                                    cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
-                                    g_logger.error("[CSN-ReorgPlan] Failed to persist replay and delta data at height " +
-                                                   std::to_string(h));
-                                    return false;
+                                {
+                                    auto replay_records_lock = chainstate_service->LockCsnReplayRecords();
+                                    ChainWriteToken token;
+                                    rocksdb::WriteBatch batch;
+                                    const Status replay_status = cdb
+                                        ? cdb->putCSNSpendTargets(
+                                              token, pending.proof_msg.block_hash,
+                                              replay_blob, &batch)
+                                        : Status::Internal;
+                                    if (replay_status == Status::Ok) {
+                                        batch.Put(
+                                            MakeUtreexoDeltaUndoKey(
+                                                pending.proof_msg.block_hash),
+                                            delta_blob);
+                                    }
+                                    if (replay_status != Status::Ok ||
+                                        cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
+                                        g_logger.error("[CSN-ReorgPlan] Failed to persist replay and delta data at height " +
+                                                       std::to_string(h));
+                                        return false;
+                                    }
                                 }
 
                                 CBlockIndex* staged = chainstate_service->AddBlockIndex(
@@ -4741,6 +4719,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     return false;
                                 }
                                 {
+                                    auto replay_records_lock = chainstate_service->LockCsnReplayRecords();
                                     ChainWriteToken replay_token;
                                     rocksdb::WriteBatch replay_batch;
                                     const Status prepare_status = cdb->putCSNSpendTargets(
@@ -5073,6 +5052,9 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                         
                         
+                        if (chainstate_service->QueueReplayMetadataResponse(
+                                peer_addr, block.GetHash(), block_height, proof_data, root_after)) return;
+
                         // --- Thread-safe buffer + drain under lock ---
                         std::lock_guard<std::mutex> lock(*buffer_mutex);
 

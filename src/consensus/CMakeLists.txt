@@ -35,6 +35,7 @@ add_library(dinero_consensus_core STATIC
   src/consensus/utreexo_accumulator.cpp
   src/consensus/utreexo_stump.cpp
   src/consensus/utreexo_delta_codec.cpp  # UD sidecar codec + forward replay (campaign phase 2)
+  src/consensus/csn_replay_data.cpp     # Historical CSN targets and spent metadata
 
   # Merkle computation (pure math)
   src/consensus/merkle_root.cpp
@@ -133,6 +134,7 @@ message(STATUS "✅ dinero_consensus_core (pure library) configured")
 # and would touch consensus-critical paths. Tracked but not blocking.
 #
 add_library(dinero_consensus STATIC
+  src/consensus/block_reward.cpp     # Shared exact reward checks, no daemon/storage dependency
   src/consensus/chainparams_impl.cpp   # Chain parameters (mainnet/testnet/regtest)
   src/consensus/chainwork.cpp          # arith_uint256 for difficulty calculations
   src/consensus/block_index.cpp        # Phase 3B: Block index management and fork choice
@@ -173,6 +175,7 @@ add_library(dinero_consensus STATIC
   src/consensus/utreexo_accumulator.cpp  # Phase 34.1: Utreexo forest accumulator
   src/consensus/utreexo_stump.cpp         # Phase 34.2: Utreexo stump (roots-only accumulator)
   src/consensus/utreexo_delta_codec.cpp   # UD sidecar codec + forward replay (campaign phase 2)
+  src/consensus/csn_replay_data.cpp      # Historical CSN targets and spent metadata
   src/consensus/cpu_budget_monitor.cpp   # Phase E.2.d: CPU budget monitoring and validation timeouts
   src/consensus/undo.cpp                 # UndoRecord serialization for ChainDB
   src/address/addr_codec.cpp           # Address encoding/decoding (Taproot support)

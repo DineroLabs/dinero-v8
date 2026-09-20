@@ -195,7 +195,9 @@ void test_stale_proof_retries_immediately() {
     in2.prevout.txid = utxos_1[2].txid;
     in2.prevout.vout = utxos_1[2].vout;
     spend_tx.vin.push_back(in2);
-    spend_tx.vout.push_back(TxOutput(AmountUna::Una(7000), script));
+    // The two inputs total 4000 una; leave a valid 1000 una fee so the
+    // refreshed proof can reach successful validation after the stale root.
+    spend_tx.vout.push_back(TxOutput(AmountUna::Una(3000), script));
     block2.vtx.push_back(spend_tx);
 
     UtreexoHash root_before_2 = bridge_forest.getCommitment();
