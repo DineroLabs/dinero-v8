@@ -41,6 +41,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: compact-daemon-sanitizers-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   daemon-asan-ubsan:
     runs-on: ubuntu-24.04
