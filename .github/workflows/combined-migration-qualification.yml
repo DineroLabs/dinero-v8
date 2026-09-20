@@ -70,11 +70,13 @@ jobs:
       - name: Build pinned vendored OpenSSL
         run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
 
+      # Use the compact-enabled inventory directory audited by the coverage
+      # gates in the compact workflows, including this qualification lane.
       - name: Configure with compact regtest support enabled
         run: |
           mkdir -p evidence
           git rev-parse HEAD > evidence/source-commit.txt
-          cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-migration-qual" -G Ninja \
+          cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-compact-regtest" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DENABLE_TESTS=ON \
             -DDINERO_ENABLE_COMPACT_REGTEST=ON \
             -DDINERO_BUILD_QT=OFF -DDINERO_BUILD_MINER=OFF -DDINERO_BUILD_SEEDER=OFF \
@@ -86,12 +88,12 @@ jobs:
 
       - name: Build dinerod and the migration CLI driver
         run: |
-          cmake --build build-migration-qual --target dinerod migrate_shielded_datadir test_shielded_migration_cohort \
+          cmake --build build-compact-regtest --target dinerod migrate_shielded_datadir test_shielded_migration_cohort \
             -j"$(nproc)" 2>&1 | tee evidence/build.log
-          sha256sum build-migration-qual/dinerod build-migration-qual/migrate_shielded_datadir \
+          sha256sum build-compact-regtest/dinerod build-compact-regtest/migrate_shielded_datadir \
             > evidence/binary-sha256.txt
           cat evidence/binary-sha256.txt
-          bash scripts/ci/check_openssl_version.sh build-migration-qual 3.5.7
+          bash scripts/ci/check_openssl_version.sh build-compact-regtest 3.5.7
 
       - name: "Sanity: unchanged engine regression suite"
         run: |
@@ -103,7 +105,7 @@ jobs:
           # reproduction). ctest's own --output-on-failure writes to stdout, which
           # tee still captures; only stderr is no longer duplicated into the
           # evidence file specifically (the raw Actions log still has it).
-          ctest --test-dir build-migration-qual --no-tests=error --output-on-failure \
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
             -R '^ShieldedMigrationCohort$' \
             --output-junit "$PWD/evidence/engine-ctest.xml" | tee evidence/engine-ctest.log
 
@@ -119,18 +121,18 @@ jobs:
           # No 2>&1 here either -- see the identical note on the sanity-suite
           # step above; this exact line is what check_mandatory_tests_execute.py
           # must parse to credit this test's own executing lane.
-          ctest --test-dir build-migration-qual --no-tests=error --output-on-failure -V \
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure -V \
             -R '^CombinedMigrationReleaseQualification$' \
             --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
           ctest_status=$?
-          cp build-migration-qual/Testing/Temporary/LastTest.log evidence/ctest-details.log
+          cp build-compact-regtest/Testing/Temporary/LastTest.log evidence/ctest-details.log
           exit "$ctest_status"
 
       - name: Run negative controls standalone
         if: always()
         run: |
-          DINEROD="$GITHUB_WORKSPACE/build-migration-qual/dinerod" \
-          MIGRATE_TOOL="$GITHUB_WORKSPACE/build-migration-qual/migrate_shielded_datadir" \
+          DINEROD="$GITHUB_WORKSPACE/build-compact-regtest/dinerod" \
+          MIGRATE_TOOL="$GITHUB_WORKSPACE/build-compact-regtest/migrate_shielded_datadir" \
             python3 tests/integration/test_combined_migration_release_qualification.py --self-test \
             2>&1 | tee evidence/self-test.log
 
