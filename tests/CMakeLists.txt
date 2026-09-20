@@ -13369,7 +13369,7 @@ add_executable(test_replay_metadata_recovery
     tests/daemon/test_replay_metadata_recovery.cpp
     src/primitives/uint256.cpp)
 target_include_directories(test_replay_metadata_recovery PRIVATE ${CMAKE_SOURCE_DIR}/include)
-target_compile_features(test_replay_metadata_recovery PRIVATE cxx_std_17)
+target_compile_features(test_replay_metadata_recovery PRIVATE cxx_std_20)
 target_link_libraries(test_replay_metadata_recovery PRIVATE Threads::Threads)
 add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
 set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
