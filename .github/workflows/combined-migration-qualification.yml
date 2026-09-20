@@ -125,7 +125,7 @@ jobs:
             -R '^CombinedMigrationReleaseQualification$' \
             --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
           ctest_status=$?
-          cp build-compact-regtest/Testing/Temporary/LastTest.log evidence/ctest-details.log
+          cp build-compact-regtest/Testing/Temporary/LastTest.log evidence/ctest-details.log || exit 1
           exit "$ctest_status"
 
       - name: Run negative controls standalone
