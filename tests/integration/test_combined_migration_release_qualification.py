@@ -848,9 +848,23 @@ def main():
     # test_sixty_second_activation.py's own header already documents as its
     # own separate scope ("Regtest bypasses ASERT: this qualifies
     # activation/state transitions, not cadence").
-    print(f"[INFO] mining an unmigrated control chain to height {BOUNDARY_HEIGHT} for a differential ASERT/reward check", flush=True)
+    #
+    # Mine control to CANDIDATE'S actual current tip, not BOUNDARY_HEIGHT:
+    # a real GitHub review comment caught that candidate's tip here is
+    # BOUNDARY_HEIGHT+1 (compact_unshield's own confirming block, mined
+    # just above), so `template` was already captured for height
+    # BOUNDARY_HEIGHT+2 — but a control mined only to BOUNDARY_HEIGHT would
+    # have produced a template for BOUNDARY_HEIGHT+1, a height short of
+    # candidate's. Since difficulty targets depend on height and timestamp
+    # history, comparing two different heights could reject a correct
+    # implementation, or pass vacuously if both happened to clamp to the
+    # same regtest limit — neither proves the intended same-height
+    # equivalence. Matching candidate's real tip height here fixes that.
+    candidate_tip_height = height("candidate")
+    print(f"[INFO] mining an unmigrated control chain to height {candidate_tip_height} "
+          f"(candidate's own current tip) for a differential ASERT/reward check", flush=True)
     start("control")
-    mine_to("control", BOUNDARY_HEIGHT)
+    mine_to("control", candidate_tip_height)
     control_template = rpc("control", "getblocktemplate", {"address": addresses["control"]})
     assert control_template["bits"] == template["bits"], (
         f"migrated candidate's ASERT bits ({template['bits']}) diverged from an unmigrated "
