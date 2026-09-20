@@ -1,3 +1,4 @@
+#include "consensus/shielded/compact.h"
 #include "wallet/private_covenant_descriptor.h"
 /**
  * Wallet-scoped runtime helpers for the v5 shielded pool.
@@ -1065,7 +1066,9 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
     input.key_scheme  = note.key_scheme;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
-    auto built = BuildUnshieldBundleForTx(tx, input, fee_una, cv_bound, auto_fee);
+    auto built = BuildUnshieldBundleForTx(tx, input, fee_una, cv_bound, auto_fee,
+        sh::CompactRulesFor(dinero::Params()).Active(
+            static_cast<uint64_t>(wallet.getBlockchainHeight()) + 1));
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -1122,7 +1125,9 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
         }
         built = BuildAddressedShieldBundleForTx(
             tx, owned->recipient, nullptr, cv_bound, true,
-            outgoing ? &*outgoing : nullptr);
+            outgoing ? &*outgoing : nullptr,
+            sh::CompactRulesFor(dinero::Params()).Active(
+                static_cast<uint64_t>(wallet.getBlockchainHeight()) + 1));
         if (built.status == OpStatus::Ok) {
             built.spend_secret_key = owned->spend_secret;
             built.nullifier_key = owned->nullifier_key;
@@ -1131,7 +1136,9 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
                 owned->recipient.nfk_commitment);
         }
     } else {
-        built = BuildShieldBundleForTx(tx, value_una, cv_bound);
+        built = BuildShieldBundleForTx(tx, value_una, cv_bound,
+            sh::CompactRulesFor(dinero::Params()).Active(
+                static_cast<uint64_t>(wallet.getBlockchainHeight()) + 1));
     }
     if (built.status != OpStatus::Ok) {
         return built;
@@ -1257,7 +1264,9 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     }
     auto built = BuildAddressedShieldBundleForTx(tx, recipient, recipient_memo,
                                                  cv_bound, spend_auth,
-                                                 outgoing ? &*outgoing : nullptr);
+                                                 outgoing ? &*outgoing : nullptr,
+            sh::CompactRulesFor(dinero::Params()).Active(
+                static_cast<uint64_t>(wallet.getBlockchainHeight()) + 1));
     // No self note to persist — the note belongs to the recipient. `persist`
     // exists only for API symmetry with AttachShieldOutputBundle (dry-run
     // fee measurement); there is no wallet state to mutate here.
@@ -1356,7 +1365,9 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
     input.key_scheme  = note.key_scheme;
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
-    auto built = BuildTransferBundleForTx(tx, input, fee_una, cv_bound);
+    auto built = BuildTransferBundleForTx(tx, input, fee_una, cv_bound,
+        sh::CompactRulesFor(dinero::Params()).Active(
+            static_cast<uint64_t>(wallet.getBlockchainHeight()) + 1));
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -1517,7 +1528,9 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
     }
 
     const bool cv_bound = CvBoundForMiningAtTip(wallet.getBlockchainHeight());
-    auto built = BuildMultiTransferBundleForTx(tx, spends, output_values, fee_una, cv_bound);
+    auto built = BuildMultiTransferBundleForTx(tx, spends, output_values, fee_una, cv_bound,
+        sh::CompactRulesFor(dinero::Params()).Active(
+            static_cast<uint64_t>(wallet.getBlockchainHeight()) + 1));
     if (built.status != OpStatus::Ok) {
         return built;
     }
@@ -1731,7 +1744,9 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
         tx, spends, recipient, change_value, fee_una,
         have_memo ? &memo_buf : nullptr, cv_bound, spend_auth,
         owned_change ? &owned_change->recipient : nullptr,
-        outgoing ? &*outgoing : nullptr);
+        outgoing ? &*outgoing : nullptr,
+        sh::CompactRulesFor(dinero::Params()).Active(
+            static_cast<uint64_t>(wallet.getBlockchainHeight()) + 1));
     if (built.status != OpStatus::Ok) {
         return built;
     }

@@ -2578,3 +2578,14 @@ foreach(mode IN ITEMS ExplicitFee AutoFee)
     LABELS "integration;wallet;shielded;utreexo"
     TIMEOUT 600 RUN_SERIAL TRUE)
 endforeach()
+
+# Ordinary builds carry compact v1 validation even without CLI test overrides.
+if(UNIX AND NOT IOS AND NOT DINERO_ENABLE_COMPACT_REGTEST AND TARGET dinerod)
+  add_test(NAME CompactDefaultActivation
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/helpers/compact_regtest_gates.py
+      $<TARGET_FILE:dinerod> $<TARGET_FILE:dinerod>
+      ${CMAKE_SOURCE_DIR}/tests/vectors/compact_v6_v1/unshield.tx.hex
+      --ordinary-only)
+  set_tests_properties(CompactDefaultActivation PROPERTIES
+    LABELS "integration;e2e;shielded;consensus;mandatory" TIMEOUT 120 RUN_SERIAL TRUE)
+endif()

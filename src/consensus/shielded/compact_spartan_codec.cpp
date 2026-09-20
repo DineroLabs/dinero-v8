@@ -5,10 +5,10 @@
 #include <bit>
 #include <stdexcept>
 
-namespace dinero::experimental {
+namespace dinero::consensus::shielded {
 namespace {
 constexpr std::array<uint8_t, 4> kTag{'D', 'Z', 'E', '1'};
-// Prototype ceiling, not a consensus parameter. Current circuits are below it.
+// Defensive ceiling for trusted circuit dimensions. Current circuits are below it.
 // Bounding trusted dimensions too keeps every size/offset calculation small.
 constexpr size_t kMaxCircuitEntries = 1u << 22;
 size_t LogCeil(size_t n) { return std::bit_width(n - 1); }
@@ -81,7 +81,7 @@ CompactSpartanCodec::CompactSpartanCodec(uint8_t version, const zk::zkvm::R1CS &
     const auto n = circuit.num_variables(), m = circuit.num_constraints();
     if ((version != 4 && version != 6) || n == 0 || m == 0 || n > kMaxCircuitEntries ||
         m > kMaxCircuitEntries)
-        throw std::invalid_argument("unsupported compact prototype circuit/profile");
+        throw std::invalid_argument("unsupported compact shielded circuit/profile");
     witness_ = zk::zkvm::HyraxParams::from_n(n);
     error_ = zk::zkvm::HyraxParams::from_n(m);
     outer_rounds_ = LogCeil(m);
@@ -154,4 +154,4 @@ CompactSpartanCodec::Expand(std::span<const uint8_t> compact) const {
     out.insert(out.end(), payload.begin() + error_offset_, payload.end());
     return out;
 }
-} // namespace dinero::experimental
+} // namespace dinero::consensus::shielded

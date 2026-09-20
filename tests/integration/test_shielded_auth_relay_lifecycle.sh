@@ -207,7 +207,7 @@ assert_compact_tx() {
     [[ -n "${DINERO_TEST_COMPACT_HEIGHT:-}" ]] || return 0
     local raw
     raw="$(rpc_result getrawtransaction "[\"$1\",false]" | jq -r '.result | if type == "string" then . else .hex end')"
-    [[ "${raw:0:8}" == "06000040" ]] || fail "$2 did not use experimental compact version: ${raw:0:8}"
+    [[ "${raw:0:8}" == "06000000" ]] || fail "$2 did not use the production v6 envelope: ${raw:0:8}"
     mkdir -p "${COMPACT_EVIDENCE_DIR}"
     printf '%s\n' "${raw}" > "${COMPACT_EVIDENCE_DIR}/$1.hex"
     python3 "${COMPACT_ORACLE}" inspect "${COMPACT_EVIDENCE_DIR}/$1.hex" "$1" \

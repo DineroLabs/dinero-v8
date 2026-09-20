@@ -56,7 +56,7 @@ def decode(encoded):
         value = int.from_bytes(r.take(8), 'little'); script = r.blob().hex()
         require(value > 0, 'fixture uses positive transparent output values')
         outputs.append({'vout': index, 'value': value, 'script': script})
-    compact = int.from_bytes(version, 'little') == 0x40000006
+    compact = int.from_bytes(version, 'little') == 6
     if compact:
         require(r.take(1) == b'\x01', 'compact fixture requires explicit fee'); r.take(8)
     envelope = raw[start:r.at]
@@ -68,6 +68,8 @@ def decode(encoded):
     bundle_offset = None
     if compact:
         length = r.count(); bundle_offset = r.at; bundle = r.take(length)
+        from helpers.compact_regtest_oracle import expanded_bundle
+        expanded_bundle(bundle)  # Require actual DZE1 proofs, not just v6.
     else: bundle = b''
     locktime = r.take(4); require(r.at == len(raw), 'trailing transaction bytes')
     base = version + envelope + (size(len(bundle)) + bundle if compact else b'') + locktime

@@ -38,7 +38,7 @@
 #include "wallet/shielded_derivation.h"
 #include "external/bech32/bech32.hpp"
 #include "wallet/shielded_wallet_ops.h"
-#include "../../contrib/benchmarks/compact_spartan_codec.h"
+#include "consensus/shielded/compact_spartan_codec.h"
 #include "consensus/utreexo_accumulator.h"
 #include "zk/zkvm/r1cs_spartan.h"
 
@@ -2061,7 +2061,7 @@ TEST_F(ShieldedValidationFixture, AuthResourceMeasurements) {
 // Expansion is a separate verification view; it must never rewrite the txid.
 static void CheckCompactCandidate(const dinero::Transaction &original, NullifierSet &nullifiers,
                                   CommitmentTree &tree, const char *shape) {
-    using dinero::experimental::CompactSpartanCodec;
+    using dinero::consensus::shielded::CompactSpartanCodec;
     ShieldedBundle bundle;
     ASSERT_EQ(DeserializeShieldedBundle(original.shielded_bundle_bytes, &bundle),
               BundleDecodeError::Ok);
@@ -2110,11 +2110,17 @@ static void CheckCompactCandidate(const dinero::Transaction &original, Nullifier
         compact, &nullifiers, &tree, 101, bundle.value_balance, 0, nullptr, 0, 0, 2);
     EXPECT_NE(ValidateShieldedBundle(bundle, compact_context), ShieldedValidationError::Ok)
         << "Experimental representation must not enter current consensus";
-    EXPECT_EQ(ValidateShieldedBundle(expanded, compact_context), ShieldedValidationError::Ok)
+    auto original_context = BuildShieldedValidationContext(
+        original, &nullifiers, &tree, 101, bundle.value_balance, 0, nullptr, 0, 0, 2);
+    EXPECT_EQ(ValidateShieldedBundle(expanded, original_context), ShieldedValidationError::Ok)
         << "Existing binding, range and Spartan checks must all pass after exact reconstruction";
-    // A future format needs a separately signed transaction version: simple
-    // repacking under the SAME version preserves the binding signature while
-    // changing txid. This xor is a tamper case, NOT an assigned wire version.
+    // Compact v6 commits to the encoding with a separate signature domain.
+    // Public repacking of a full proof cannot authorize the new txid.
+    compact_context.compact_rules = {true, 101};
+    EXPECT_NE(ValidateShieldedBundle(bundle, compact_context), ShieldedValidationError::Ok);
+    EXPECT_EQ(VerifyBinding(bundle, ComputeShieldedTxSighash(compact)),
+              BindingSigResult::SignatureInvalid);
+    // Version changes remain signed independently of encoding selection.
     auto wrong_version = compact;
     wrong_version.version ^= 0x100;
     EXPECT_EQ(VerifyBinding(expanded, ComputeShieldedTxSighash(wrong_version)),
@@ -2129,14 +2135,14 @@ static void CheckCompactCandidate(const dinero::Transaction &original, Nullifier
     // still evaluated by the current independent resource checker.
     size_t count = 0;
     std::string error;
-    ASSERT_TRUE(CheckAuthTransactionResources(compact, 101, 2, count, error)) << error;
+    ASSERT_TRUE(CheckAuthTransactionResources(compact, 101, 2, count, error, {true, 101})) << error;
     EXPECT_EQ(count, bundle.spends.size() + bundle.outputs.size());
     AuthBlockResourceUsage usage;
     usage.proofs = kAuthMaxBlockProofs - count;
-    ASSERT_TRUE(AccumulateAuthBlockResources(compact, 101, 2, usage, error)) << error;
+    ASSERT_TRUE(AccumulateAuthBlockResources(compact, 101, 2, usage, error, {true, 101})) << error;
     EXPECT_EQ(usage.proofs, kAuthMaxBlockProofs);
     const auto accepted_bytes = usage.shielded_bytes;
-    EXPECT_FALSE(AccumulateAuthBlockResources(compact, 101, 2, usage, error));
+    EXPECT_FALSE(AccumulateAuthBlockResources(compact, 101, 2, usage, error, {true, 101}));
     EXPECT_EQ(error, "shielded-block-proof-limit");
     EXPECT_EQ(usage.proofs, kAuthMaxBlockProofs);
     EXPECT_EQ(usage.shielded_bytes, accepted_bytes);
@@ -2221,6 +2227,124 @@ TEST_F(ShieldedValidationFixture, CompactPrototypeShieldAndTransferVerifyFullBun
     CheckCompactCandidate(transfer, nullifier_set, tree, "transfer_1in_2out");
 }
 
+TEST_F(ShieldedValidationFixture, CompactProductionV6SavedProof) {
+    auto note = AutoFeeAuthNote(tree);
+    std::ifstream file(std::filesystem::path(COMPACT_V6_VECTOR_DIRECTORY) / "unshield.tx.hex");
+    ASSERT_TRUE(file.is_open());
+    std::string hex;
+    file >> hex;
+    Transaction tx;
+    ASSERT_TRUE(TransactionSerializer::Deserialize(tx, hex));
+    EXPECT_EQ(tx.version, Transaction::TX_VERSION_SHIELDED_V2);
+    EXPECT_EQ(tx.GetTxid().AsUint256().GetHex(), "70d4d4d3fda66f9b253df511e47b9724b919c4f2d9d0550548e504002a9eb30f");
+    const auto signing = ComputeShieldedTxSighash(tx);
+    EXPECT_EQ(TransactionSerializer::ToHex(std::vector<uint8_t>(signing.begin(), signing.end())),
+              "86538b5861de32418ae3011b932664f691ac212413032028b99b673abb01cba8");
+    EXPECT_NE(signing, ComputeShieldedTxSighash(tx, ShieldedProofEncoding::Full));
+    EXPECT_EQ(tx.SerializeHex(true), hex);
+    ShieldedBundle bundle;
+    ASSERT_EQ(DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle), BundleDecodeError::Ok);
+    ASSERT_TRUE(HasCompactProofs(bundle));
+    EXPECT_EQ(bundle.value_balance, -static_cast<int64_t>(note.value_una));
+    auto ctx = BuildShieldedValidationContext(tx, &nullifier_set, &tree,
+        101, bundle.value_balance, 0, nullptr, 0, 0, 2, UINT32_MAX, {true, 101});
+    EXPECT_EQ(ValidateShieldedBundle(bundle, ctx), ShieldedValidationError::Ok);
+    ctx.block_height = 100;
+    EXPECT_EQ(ValidateShieldedBundle(bundle, ctx), ShieldedValidationError::NotActive);
+    EXPECT_EQ(tree.Root(), note.anchor);
+    EXPECT_EQ(nullifier_set.Size(), 0u);
+}
+
+TEST_F(ShieldedValidationFixture, CompactProductionV6PreservesHistoryAndUsesNextBlockRules) {
+    // The production profile keeps v6 framing and identifies the encoding
+    // by DZE1 inside the actual proof fields.
+    constexpr int32_t version = Transaction::TX_VERSION_SHIELDED_V2;
+    auto note = AutoFeeAuthNote(tree);
+    auto tx = MakeUnshieldEnvelope(note.value_una - 1000, 1000, 0xD2);
+    tx.version = version;
+    auto built = sops::BuildUnshieldBundleForTx(tx, note, 1000, true,
+                                              sops::UnshieldAutoFee{1.0, 546}, true);
+    ASSERT_EQ(built.status, sops::OpStatus::Ok) << built.error;
+    EXPECT_TRUE(tx.IsShielded());
+    EXPECT_TRUE(tx.ShieldedBundleCommitsToTxid());
+    EXPECT_LT(tx.GetVirtualSize(), 43000u);
+    EXPECT_EQ(built.fee_una, tx.GetVirtualSize() + 16);
+    ShieldedBundle bundle;
+    ASSERT_EQ(DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle), BundleDecodeError::Ok);
+    ASSERT_EQ(bundle.spends.size(), 1u);
+    const auto& spend = bundle.spends[0];
+    CompactSpartanCodec codec(6, BuildSpendCircuit(
+        SpendWitness{}, SpendPublicInputs{spend.nullifier, spend.anchor, spend.cv}, true, true));
+    auto expanded = codec.Expand(spend.zk_proof);
+    ASSERT_TRUE(expanded);
+    auto expanded_bundle = bundle;
+    expanded_bundle.spends[0].zk_proof = *expanded;
+    auto expanded_tx = tx;
+    expanded_tx.shielded_bundle_bytes = SerializeShieldedBundle(expanded_bundle);
+    EXPECT_NE(tx.GetTxid(), expanded_tx.GetTxid());
+    EXPECT_EQ(VerifyBinding(expanded_bundle, ComputeShieldedTxSighash(expanded_tx)),
+              BindingSigResult::SignatureInvalid)
+        << "Changing proof encoding must require a new binding signature";
+    EXPECT_EQ(VerifyBinding(expanded_bundle, ComputeShieldedTxSighash(tx)), BindingSigResult::Ok);
+    auto legacy = tx;
+    legacy.version = Transaction::TX_VERSION_SHIELDED;
+    EXPECT_EQ(VerifyBinding(expanded_bundle, ComputeShieldedTxSighash(legacy)),
+              BindingSigResult::SignatureInvalid);
+    // The same signed bytes must be rejected before H and on every other
+    // network, then accepted at H and H+1. A successful proof cannot cache
+    // away the candidate-height check when we revisit H-1.
+    auto context = [&](uint32_t height, CompactShieldedRules rules) {
+        return BuildShieldedValidationContext(tx, &nullifier_set, &tree,
+            height, bundle.value_balance, 0, nullptr, 0, 0, 2, UINT32_MAX, rules);
+    };
+    const CompactShieldedRules enabled{true, 101};
+    EXPECT_NE(ValidateShieldedBundle(bundle, context(100, enabled)), ShieldedValidationError::Ok);
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context(101, enabled)), ShieldedValidationError::Ok);
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context(102, enabled)), ShieldedValidationError::Ok);
+    EXPECT_NE(ValidateShieldedBundle(bundle, context(100, enabled)), ShieldedValidationError::Ok);
+    EXPECT_NE(ValidateShieldedBundle(bundle, context(101, {})), ShieldedValidationError::Ok);
+    EXPECT_NE(ValidateShieldedBundle(bundle, context(UINT32_MAX, {true, UINT32_MAX})),
+              ShieldedValidationError::Ok);
+    EXPECT_NE(ValidateShieldedBundle(bundle, context(101, {false, 1})), ShieldedValidationError::Ok);
+    EXPECT_EQ(ValidateShieldedBundle(expanded_bundle, context(101, enabled)),
+              ShieldedValidationError::Ok) << "Expanded verifier view retains the original compact signing context";
+    auto repacked_context = BuildShieldedValidationContext(expanded_tx, &nullifier_set, &tree,
+        101, bundle.value_balance, 0, nullptr, 0, 0, 2, UINT32_MAX, enabled);
+    EXPECT_NE(ValidateShieldedBundle(expanded_bundle, repacked_context), ShieldedValidationError::Ok);
+    EXPECT_TRUE(HasCompactProofs(bundle));
+    EXPECT_FALSE(HasCompactProofs(expanded_bundle));
+    const auto root_before = tree.Root();
+    auto malformed = bundle;
+    malformed.spends[0].zk_proof.back() ^= 1;
+    EXPECT_NE(ValidateShieldedBundle(malformed, context(101, enabled)), ShieldedValidationError::Ok);
+    EXPECT_EQ(tree.Root(), root_before);
+    EXPECT_FALSE(nullifier_set.Contains(spend.nullifier));
+    // A reused trusted layout must never become a reused verification verdict.
+    auto altered_public = bundle;
+    altered_public.spends[0].nullifier[0] ^= 1;
+    EXPECT_EQ(ValidateShieldedBundle(altered_public, context(101, enabled)),
+              ShieldedValidationError::ProofInvalid);
+    altered_public = bundle;
+    altered_public.spends[0].cv[0] ^= 1; // Negate the valid compressed point.
+    EXPECT_NE(ValidateShieldedBundle(altered_public, context(101, enabled)),
+              ShieldedValidationError::Ok);
+    EXPECT_EQ(ValidateShieldedBundle(bundle, context(101, enabled)), ShieldedValidationError::Ok);
+    if (const char* capture = std::getenv("DINERO_TEST_COMPACT_V6_CAPTURE")) {
+        std::ofstream saved(capture);
+        ASSERT_TRUE(saved.is_open());
+        saved << tx.SerializeHex(true) << '\n';
+        saved.close();
+        ASSERT_TRUE(saved.good());
+    }
+    const auto bytes = tx.Serialize(true);
+    Transaction reread;
+    ASSERT_TRUE(TransactionSerializer::Deserialize(reread, bytes));
+    EXPECT_EQ(reread.Serialize(true), bytes);
+    EXPECT_EQ(reread.GetTxid(), tx.GetTxid());
+    std::cout << "COMPACT_PRODUCTION_V6_UNSHIELD bytes=" << tx.GetSize()
+              << " vsize=" << tx.GetVirtualSize() << " fee_una=" << built.fee_una << std::endl;
+}
+
 #ifdef DINERO_ENABLE_COMPACT_REGTEST
 TEST(CompactRegtestLayout, PublicAssignmentsDoNotChangeOrdinaryProfileStructure) {
     SpendPublicInputs spend;
@@ -2300,7 +2424,7 @@ TEST(CompactRegtestResources, HeightNetworkCountsAndTransactionalBudget) {
     bundle.spends.resize(1);
     bundle.spends[0].zk_proof = {0x44}; // Resource counting does not verify proofs.
     tx.shielded_bundle_bytes = SerializeShieldedBundle(bundle);
-    const CompactRegtestRules enabled{true, 101};
+    const CompactShieldedRules enabled{true, 101};
     std::string error;
     size_t proofs = 999;
     EXPECT_FALSE(CheckAuthTransactionResources(tx, 100, 2, proofs, error, enabled));
@@ -2347,7 +2471,7 @@ TEST_F(ShieldedValidationFixture, CompactRegtestUnshieldUsesCompactFeesAndFinalI
     ASSERT_EQ(DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle), BundleDecodeError::Ok);
     ASSERT_EQ(bundle.spends.size(), 1u);
     const auto& spend = bundle.spends[0];
-    experimental::CompactSpartanCodec codec(6, BuildSpendCircuit(
+    CompactSpartanCodec codec(6, BuildSpendCircuit(
         SpendWitness{}, SpendPublicInputs{spend.nullifier, spend.anchor, spend.cv}, true, true));
     auto expanded = codec.Expand(spend.zk_proof);
     ASSERT_TRUE(expanded);
@@ -2364,11 +2488,11 @@ TEST_F(ShieldedValidationFixture, CompactRegtestUnshieldUsesCompactFeesAndFinalI
     // The same signed bytes must be rejected before H and on every other
     // network, then accepted at H and H+1. A successful proof cannot cache
     // away the candidate-height check when we revisit H-1.
-    auto context = [&](uint32_t height, CompactRegtestRules rules) {
+    auto context = [&](uint32_t height, CompactShieldedRules rules) {
         return BuildShieldedValidationContext(tx, &nullifier_set, &tree,
             height, bundle.value_balance, 0, nullptr, 0, 0, 2, UINT32_MAX, rules);
     };
-    const CompactRegtestRules enabled{true, 101};
+    const CompactShieldedRules enabled{true, 101};
     EXPECT_NE(ValidateShieldedBundle(bundle, context(100, enabled)), ShieldedValidationError::Ok);
     EXPECT_EQ(ValidateShieldedBundle(bundle, context(101, enabled)), ShieldedValidationError::Ok);
     EXPECT_EQ(ValidateShieldedBundle(bundle, context(102, enabled)), ShieldedValidationError::Ok);

@@ -18,6 +18,7 @@ on:
       - 'tools/migrate_shielded_datadir.cpp'
       - 'tests/integration/test_combined_migration_release_qualification.py'
       - 'tests/mining/dinero_cpu_miner.py'
+      - 'tests/integration/helpers/compact_regtest_oracle.py'
       - 'tests/integration/CMakeLists.txt'
       - 'tests/CMakeLists.txt'
 

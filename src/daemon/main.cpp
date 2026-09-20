@@ -551,7 +551,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             } catch (const std::exception&) { std::cerr << "Invalid private covenant height\n"; return 1; }
         } else if (arg.find("--consensus-shielded-compact-height=") == 0) {
 #ifndef DINERO_ENABLE_COMPACT_REGTEST
-            std::cerr << "Compact regtest support is not compiled into this build\n";
+            std::cerr << "Compact regtest activation override is not compiled into this build\n";
             return 1;
 #else
             try {
@@ -904,7 +904,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             std::cerr << "Compact override requires REGTEST and a height after the Auth reset\n";
             return 1;
         }
-        mp.shielded_compact_regtest_activation_height = static_cast<uint32_t>(compact_regtest_override);
+        mp.shielded_compact_activation_height = static_cast<uint32_t>(compact_regtest_override);
         std::cout << "[Network] EXPERIMENTAL REGTEST compact proofs at height "
                   << compact_regtest_override << "\n";
     }

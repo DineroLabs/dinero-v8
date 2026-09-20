@@ -2593,9 +2593,10 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   add_executable(test_shielded_validation
     src/test/shielded_validation_tests.cpp
-    contrib/benchmarks/compact_spartan_codec.cpp
     tests/stubs/mempool_test_stubs.cpp
   )
+  target_compile_definitions(test_shielded_validation PRIVATE
+    COMPACT_V6_VECTOR_DIRECTORY="${CMAKE_SOURCE_DIR}/tests/vectors/compact_v6_v1")
   add_dependencies(test_shielded_validation gtest dinero_shielded)
   target_link_libraries(test_shielded_validation PRIVATE
     GTest::gtest
@@ -2613,6 +2614,15 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   )
   add_test(NAME ShieldedValidation COMMAND test_shielded_validation
     --gtest_filter=-*AuthResourceMeasurements)
+  add_test(NAME CompactProductionV6Vectors COMMAND test_shielded_validation
+    --gtest_filter=ShieldedValidationFixture.CompactProductionV6*)
+  set_tests_properties(CompactProductionV6Vectors PROPERTIES
+    LABELS "shielded;consensus;mandatory" TIMEOUT 300)
+  add_test(NAME CompactProductionV6Oracle COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/helpers/compact_regtest_oracle.py saved
+    ${CMAKE_SOURCE_DIR}/tests/vectors/compact_v6_v1)
+  set_tests_properties(CompactProductionV6Oracle PROPERTIES
+    LABELS "shielded;consensus;mandatory" TIMEOUT 30)
   # AuthResourceMeasurements is a reproducible capacity benchmark, not a
   # correctness test. Keep it explicitly runnable by shape (documented in the
   # resource-profile spec) without registering a multi-shape, hour-scale ctest
@@ -2662,7 +2672,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
     add_executable(test_spartan_soundness
       tests/zk/test_spartan_soundness.cpp
       tests/zk/test_compact_spartan.cpp
-      contrib/benchmarks/compact_spartan_codec.cpp
+      src/consensus/shielded/compact_spartan_codec.cpp
     )
     add_dependencies(test_spartan_soundness gtest dinero_zk)
     target_link_libraries(test_spartan_soundness PRIVATE
@@ -13314,6 +13324,7 @@ set_tests_properties(RpcRegistryRestartCycle PROPERTIES
 # Dormant Auth resource profile: real serialization and stateless relay boundary.
 add_executable(test_shielded_resource_limits
   tests/consensus/test_shielded_resource_limits.cpp
+  tests/consensus/test_compact_activation.cpp
   src/p2p/structural_validator.cpp)
 target_link_libraries(test_shielded_resource_limits PRIVATE
   GTest::gtest_main dinero_core dinero_shielded)
@@ -13328,6 +13339,11 @@ if(DINERO_ENABLE_COMPACT_REGTEST)
   target_link_libraries(compact_package_builder PRIVATE
     dinero_shielded dinero_wallet wallet_test_deps jsoncpp_static sqlite3)
   target_include_directories(compact_package_builder PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+endif()
+
+# Retain the historical prototype corpus in its original regtest profile.
+# Production-v6 proof and history tests run in ordinary builds.
+if(DINERO_ENABLE_COMPACT_REGTEST)
   add_executable(test_compact_regtest_vectors tests/consensus/test_compact_regtest_vectors.cpp)
   target_link_libraries(test_compact_regtest_vectors PRIVATE
     GTest::gtest_main dinero_core dinero_shielded jsoncpp_static sqlite3)
@@ -13344,11 +13360,13 @@ if(DINERO_ENABLE_COMPACT_REGTEST)
   set_tests_properties(CompactRegtestFixedVectors PROPERTIES
     LABELS "compact-regtest;shielded;consensus;utreexo;mandatory"
     TIMEOUT ${DINERO_COMPACT_VECTOR_TEST_TIMEOUT})
-  add_test(NAME CompactRegtestVectorOracle COMMAND python3
-    ${CMAKE_SOURCE_DIR}/scripts/check_compact_regtest_vectors.py --self-test)
-  set_tests_properties(CompactRegtestVectorOracle PROPERTIES
-    LABELS "compact-regtest;shielded;serialization;mandatory" TIMEOUT 60)
+endif()
+add_test(NAME CompactRegtestVectorOracle COMMAND python3
+  ${CMAKE_SOURCE_DIR}/scripts/check_compact_regtest_vectors.py --self-test)
+set_tests_properties(CompactRegtestVectorOracle PROPERTIES
+  LABELS "compact-regtest;shielded;serialization;mandatory" TIMEOUT 60)
 
+if(DINERO_ENABLE_COMPACT_REGTEST)
   add_executable(capture_compact_regtest_maximum EXCLUDE_FROM_ALL
     tools/capture_compact_regtest_maximum.cpp tests/stubs/mempool_test_stubs.cpp)
   target_link_libraries(capture_compact_regtest_maximum PRIVATE

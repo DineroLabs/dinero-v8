@@ -16,7 +16,7 @@ int main(int argc, char** argv) try {
     dinero::Transaction tx; size_t consumed = 0;
     if (!dinero::TransactionSerializer::Deserialize(tx, raw, consumed) || consumed != raw.size())
         throw std::runtime_error("invalid fixture envelope");
-    tx.version = dinero::Transaction::TX_VERSION_COMPACT_REGTEST;
+    tx.version = dinero::Transaction::TX_VERSION_SHIELDED_V2;
     tx.witness_version = 0;
     tx.SetExplicitFee(request["fee_una"].asUInt64());
     namespace drv = dinero::wallet::shielded;
@@ -28,7 +28,7 @@ int main(int argc, char** argv) try {
     recipient.d = address.d; recipient.pk_d = address.pk_d;
     recipient.pk_d_spend = address.pk_d_spend; recipient.nfk_commitment = address.nfk_commitment;
     recipient.value_una = request["shield_una"].asUInt64();
-    const auto result = ops::BuildAddressedShieldBundleForTx(tx, recipient, nullptr, true, true);
+    const auto result = ops::BuildAddressedShieldBundleForTx(tx, recipient, nullptr, true, true, nullptr, true);
     if (result.status != ops::OpStatus::Ok) throw std::runtime_error(result.error);
     Json::Value output;
     output["hex"] = tx.SerializeHex(true);

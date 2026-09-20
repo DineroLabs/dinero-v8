@@ -11,7 +11,7 @@ project(dinero VERSION 8.1.13 LANGUAGES C CXX)
 set(DINERO_MONOREPO_VERSION "${PROJECT_VERSION}")
 
 # Isolated format experiment. Ordinary builds do not recognize its wire version.
-option(DINERO_ENABLE_COMPACT_REGTEST "Build experimental regtest-only compact shielded format" OFF)
+option(DINERO_ENABLE_COMPACT_REGTEST "Enable regtest-only compact activation overrides and qualification tools" OFF)
 if(DINERO_ENABLE_COMPACT_REGTEST)
   add_compile_definitions(DINERO_ENABLE_COMPACT_REGTEST=1)
 endif()

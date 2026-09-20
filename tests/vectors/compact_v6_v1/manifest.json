@@ -1,0 +1,21 @@
+{
+  "format": "v6-DZE1",
+  "generator": "ShieldedValidationFixture.CompactProductionV6PreservesHistoryAndUsesNextBlockRules",
+  "context": "AutoFeeAuthNote; height=101; compact=101; Auth=2; cv/input/shielded=0",
+  "expected": {
+    "txid": "70d4d4d3fda66f9b253df511e47b9724b919c4f2d9d0550548e504002a9eb30f",
+    "expanded_view_txid": "a890db74761ec6dff4180849e4c88424c8bf33e6d982a7dde936a0f89dadeead",
+    "tx_sighash": "86538b5861de32418ae3011b932664f691ac212413032028b99b673abb01cba8",
+    "wtxid": "317c5e88c4d48c3f77f5cee1c7f47639dab9d151eb186225b4f9748c7b37d235",
+    "wire_bytes": 42021,
+    "base_bytes": 42019,
+    "vsize": 42020,
+    "fee_una": 42036,
+    "outputs": [
+      {
+        "amount_una": 99957964,
+        "script": "00d2"
+      }
+    ]
+  }
+}

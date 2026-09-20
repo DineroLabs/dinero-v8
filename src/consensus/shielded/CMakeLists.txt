@@ -29,6 +29,8 @@ add_library(dinero_shielded STATIC
     shielded_witness.cpp
     shielded_block_validation.cpp
     shielded_block_section.cpp
+    compact.cpp
+    compact_spartan_codec.cpp
     # Wallet-layer shielded operations (note store + shield/unshield handlers).
     # Lives in dinero_shielded rather than dinero_wallet to avoid circular deps.
     ${CMAKE_SOURCE_DIR}/src/wallet/shielded_derivation.cpp
@@ -63,10 +65,5 @@ set_target_properties(dinero_shielded PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-if(DINERO_ENABLE_COMPACT_REGTEST)
-    target_sources(dinero_shielded PRIVATE
-        compact_regtest.cpp
-        ${CMAKE_SOURCE_DIR}/contrib/benchmarks/compact_spartan_codec.cpp)
-    target_include_directories(dinero_shielded PRIVATE ${CMAKE_SOURCE_DIR}/src
-        ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include)
-endif()
+target_include_directories(dinero_shielded PRIVATE ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/secp256k1-zkp/include)

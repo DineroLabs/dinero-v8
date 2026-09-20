@@ -23,7 +23,7 @@
 #include "dinero/daemon/execution_context.h"
 #include "consensus/chainparams.h"
 #include "consensus/shielded/wallet_activation.h"
-#include "consensus/shielded/compact_regtest.h"
+#include "consensus/shielded/compact.h"
 #include "consensus/pq/p2mr_consensus.h"
 #include "primitives/transaction.h"
 #include "wallet/canonical_wallet_utxo.h"
@@ -59,15 +59,9 @@ using din::Json;
 
 const char* HrpForActiveChain();
 
-int32_t OrdinaryShieldedWalletVersion(const ExecutionContext& ctx) {
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (ctx.daemon && ctx.daemon->chainstate) {
-        const auto cs = std::dynamic_pointer_cast<ChainstateService>(ctx.daemon->chainstate);
-        if (cs && consensus::shielded::CompactRulesFor(Params()).Active(
-                      static_cast<uint64_t>(cs->getBlockHeight()) + 1))
-            return Transaction::TX_VERSION_COMPACT_REGTEST;
-    }
-#endif
+int32_t OrdinaryShieldedWalletVersion(const ExecutionContext&) {
+    // Both proof encodings retain the established v6 outer envelope. Builders
+    // choose compact proofs from next-block consensus rules, not a new version.
     return Transaction::TX_VERSION_SHIELDED_V2;
 }
 
