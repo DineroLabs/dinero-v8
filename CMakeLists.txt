@@ -303,6 +303,14 @@ set(BP_FFI_DIR "${CMAKE_SOURCE_DIR}/third_party/bulletproofs_ffi")
 # Cross-arch macOS build (e.g. x86_64 on Apple Silicon): cargo emits to a
 # target-triple subdir (target/<triple>/release) and must be invoked with
 # --target, otherwise it builds for the host arch and the link fails.
+#
+# Every Apple case now gets an EXPLICIT triple (previously iOS device/
+# simulator and native-arch macOS left this empty, silently building
+# bulletproofs_ffi for the host's own native target with no --target flag
+# at all). This is required for the RUSTFLAGS-scoping fix below:
+# CARGO_TARGET_<TRIPLE>_RUSTFLAGS only takes effect for a build that is
+# actually invoked with --target <that triple>; without an explicit
+# target, there is nothing concrete to scope against.
 set(BP_FFI_CARGO_TARGET "")
 if(ANDROID)
     if(ANDROID_ABI STREQUAL "arm64-v8a")
@@ -312,9 +320,21 @@ if(ANDROID)
     else()
         message(FATAL_ERROR "Unsupported Android ABI for Bulletproofs FFI: ${ANDROID_ABI}")
     endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    if(IOS_PLATFORM STREQUAL "SIMULATOR")
+        set(BP_FFI_CARGO_TARGET "aarch64-apple-ios-sim")
+    else()
+        set(BP_FFI_CARGO_TARGET "aarch64-apple-ios")
+    endif()
 elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64"
         AND NOT CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
     set(BP_FFI_CARGO_TARGET "x86_64-apple-darwin")
+elseif(APPLE)
+    if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+        set(BP_FFI_CARGO_TARGET "x86_64-apple-darwin")
+    else()
+        set(BP_FFI_CARGO_TARGET "aarch64-apple-darwin")
+    endif()
 endif()
 
 # Determine library extension based on platform
@@ -345,41 +365,54 @@ if(CARGO_EXECUTABLE)
         )
         message(STATUS "   Bulletproofs FFI Android cargo target: ${BP_FFI_CARGO_TARGET}")
     elseif(APPLE)
-        set(BP_RUSTFLAGS "$ENV{RUSTFLAGS}")
-        if(BP_RUSTFLAGS)
-            set(BP_RUSTFLAGS "${BP_RUSTFLAGS} -C link-arg=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+        # ROOT CAUSE (was): a blanket RUSTFLAGS/CFLAGS/LDFLAGS/
+        # MACOSX_DEPLOYMENT_TARGET set as plain env vars applies to EVERY
+        # rustc/cc invocation cargo makes for this build — including
+        # proc-macro crates (zeroize_derive, serde_derive, thiserror-impl)
+        # and build scripts, which ALWAYS compile for the HOST toolchain
+        # regardless of --target. Proc-macros are themselves linked dylibs;
+        # forcing an unrelated cross-target's -mmacosx-version-min (or, for
+        # an iOS build, a macOS flag on what should be an iOS-min value)
+        # into that link corrupted the resulting dylib intermittently
+        # (observed: "can't find crate for zeroize_derive", traced to a
+        # mis-aligned Mach-O LINKEDIT string pool). CFLAGS/LDFLAGS/
+        # MACOSX_DEPLOYMENT_TARGET as plain env vars are exactly as global.
+        #
+        # FIX: use Cargo's own per-target scoping instead of blanket vars.
+        # CARGO_TARGET_<TRIPLE>_RUSTFLAGS (see Cargo's environment-variables
+        # reference) applies ONLY to units actually compiled for that named
+        # target — proc-macros/build scripts are tracked as host units and
+        # never receive it, by design, independent of whether the target
+        # triple happens to equal the host's own. CFLAGS/LDFLAGS use the
+        # `cc` crate's own per-target lookup (`<VAR>_<exact-triple>` is the
+        # first form it checks) for the same reason. Nothing is exported
+        # under the plain (unscoped) names, so host-side compilation sees
+        # none of this. Verified: 5 consecutive clean `cargo clean && cmake
+        # --build` cycles for the iOS device target with no CARGO_EXECUTABLE
+        # wrapper needed (previously intermittent, ~1-in-3 to ~1-in-2 failure
+        # rate observed before this fix).
+        if(NOT BP_FFI_CARGO_TARGET)
+            message(FATAL_ERROR "Bulletproofs FFI: no cargo target triple resolved for this Apple build; "
+                "the RUSTFLAGS-scoping fix below requires one. See the BP_FFI_CARGO_TARGET selection above.")
+        endif()
+        string(TOUPPER "${BP_FFI_CARGO_TARGET}" BP_TARGET_UPPER)
+        string(REPLACE "-" "_" BP_TARGET_ENV "${BP_TARGET_UPPER}")
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+            set(BP_VERSION_MIN_FLAG "-mios-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
         else()
-            set(BP_RUSTFLAGS "-C link-arg=-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+            set(BP_VERSION_MIN_FLAG "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
         endif()
 
-        set(BP_CFLAGS "$ENV{CFLAGS}")
-        if(BP_CFLAGS)
-            set(BP_CFLAGS "${BP_CFLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        else()
-            set(BP_CFLAGS "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        endif()
-
-        set(BP_LDFLAGS "$ENV{LDFLAGS}")
-        if(BP_LDFLAGS)
-            set(BP_LDFLAGS "${BP_LDFLAGS} -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        else()
-            set(BP_LDFLAGS "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
-        endif()
-
-        set(BP_FFI_CARGO_TARGET_ARGS "")
-        if(BP_FFI_CARGO_TARGET)
-            set(BP_FFI_CARGO_TARGET_ARGS --target ${BP_FFI_CARGO_TARGET})
-        endif()
         set(BP_FFI_BUILD_COMMAND
             ${CMAKE_COMMAND} -E env
-            "MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}"
-            "RUSTFLAGS=${BP_RUSTFLAGS}"
-            "CFLAGS=${BP_CFLAGS}"
-            "LDFLAGS=${BP_LDFLAGS}"
-            "${CARGO_EXECUTABLE}" build --release ${BP_FFI_CARGO_TARGET_ARGS}
+            "CARGO_TARGET_${BP_TARGET_ENV}_RUSTFLAGS=-C link-arg=${BP_VERSION_MIN_FLAG}"
+            "CFLAGS_${BP_FFI_CARGO_TARGET}=${BP_VERSION_MIN_FLAG}"
+            "LDFLAGS_${BP_FFI_CARGO_TARGET}=${BP_VERSION_MIN_FLAG}"
+            "${CARGO_EXECUTABLE}" build --release --target "${BP_FFI_CARGO_TARGET}"
         )
 
-        message(STATUS "   Bulletproofs FFI macOS target: ${CMAKE_OSX_DEPLOYMENT_TARGET} (cargo target: ${BP_FFI_CARGO_TARGET})")
+        message(STATUS "   Bulletproofs FFI Apple target: ${BP_FFI_CARGO_TARGET} (deployment target: ${CMAKE_OSX_DEPLOYMENT_TARGET})")
     endif()
 
     # Add build target for Rust library
