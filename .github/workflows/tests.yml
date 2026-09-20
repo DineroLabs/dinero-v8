@@ -206,9 +206,9 @@ jobs:
         run: bash scripts/ci/check_openssl_version.sh build-tests 3.5.7
 
       # Builds its own isolated regtest datadirs; no seed data is required.
-      # Covers restart, historical proof relay and reorgs after checkpoint
-      # retention. Its integration label excludes it from the broad sweep.
-      - name: Run checkpoint retention daemon integration
+      # Covers retention restart/proofs/reorg and real daemon marker migration.
+      # Their integration labels exclude them from the broad sweep.
+      - name: Run storage daemon integrations
         id: checkpoint-retention
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -217,17 +217,17 @@ jobs:
             --output-on-failure \
             --no-tests=error \
             -V -j1 \
-            -R '^CheckpointRetentionDaemon$' \
+            -R '^(CheckpointRetentionDaemon|ShieldedMigrationDaemonMarker)$' \
             | tee build-tests/Testing/checkpoint-retention/ctest.log
 
       # Upload immediately: later serial lanes can take an hour, and the job
       # log is unavailable until they finish. Only harness text logs belong in
       # this artifact; do not recursively copy databases, cookies or wallets.
-      - name: Collect checkpoint retention failure logs
+      - name: Collect storage daemon failure logs
         if: ${{ always() && steps.checkpoint-retention.outcome == 'failure' }}
         run: |
           dest=build-tests/Testing/checkpoint-retention
-          for root in /tmp/dinero_retention_daemon.*; do
+          for root in /tmp/dinero_retention_daemon.* /tmp/dinero_marker_daemon_*; do
             [ -d "$root" ] || continue
             name=$(basename "$root")
             mkdir -p "$dest/$name"

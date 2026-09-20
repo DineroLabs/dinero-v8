@@ -2493,3 +2493,12 @@ set_tests_properties(BlockAcceptorFeeLifecycle PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;consensus;csn;utreexo;mining;restart;reorg;mandatory"
     TIMEOUT 600 RUN_SERIAL TRUE)
+
+if(TARGET test_shielded_migration_cohort)
+  add_test(NAME ShieldedMigrationDaemonMarker
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_migration_daemon_marker.py)
+  set_tests_properties(ShieldedMigrationDaemonMarker PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;MIGRATION_TEST_DRIVER=$<TARGET_FILE:test_shielded_migration_cohort>"
+    LABELS "integration;storage;shielded;restart"
+    TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
