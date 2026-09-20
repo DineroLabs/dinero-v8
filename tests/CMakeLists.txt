@@ -13364,13 +13364,14 @@ set_tests_properties(MiningTemplateExclusions PROPERTIES
     TIMEOUT 180)
 
 # Deterministic clock and concurrent-delivery tests for bounded metadata repair.
-# No daemon, network, forest or storage runtime is required by the queue policy.
+# The real consensus serializer verifies the queue's wire-size accounting.
 add_executable(test_replay_metadata_recovery
-    tests/daemon/test_replay_metadata_recovery.cpp
-    src/primitives/uint256.cpp)
+    tests/daemon/test_replay_metadata_recovery.cpp)
 target_include_directories(test_replay_metadata_recovery PRIVATE ${CMAKE_SOURCE_DIR}/include)
 target_compile_features(test_replay_metadata_recovery PRIVATE cxx_std_20)
-target_link_libraries(test_replay_metadata_recovery PRIVATE Threads::Threads)
+target_link_libraries(test_replay_metadata_recovery PRIVATE
+  dinero_consensus Threads::Threads ${CMAKE_DL_LIBS})
+link_zstd_if_needed(test_replay_metadata_recovery)
 add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
 set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
     LABELS "daemon;utreexo;recovery;regression"

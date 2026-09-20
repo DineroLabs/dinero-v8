@@ -21,15 +21,33 @@ namespace dinero {
 // return. Callers reconstruct needs from durable legacy records after restart
 // and recheck original_record before committing a verified replacement.
 class ReplayMetadataRecoveryQueue {
+    struct Payload {
+        consensus::BlockUtreexoData proof_data;
+        consensus::UtreexoHash root_after;
+    };
+
 public:
     using Clock = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
 
     static constexpr size_t kMaxRecords = 4;
     static constexpr size_t kMaxOriginalRecordBytes = 4 * 1024 * 1024;
-    // Bound decoded storage, including vector element objects, rather than
-    // trusting the wire frame's length or serializing another large copy.
-    static constexpr size_t kMaxProofBytes = 1024 * 1024;
+    // Match the existing utxoblk proof-frame limit. Decoded vectors can be
+    // larger: a v4 spent output takes only 12 wire bytes before its script,
+    // but occupies sizeof(SpentOutputData) in memory. Derive a separate cap
+    // from the worst element expansion in v4/v5/v6, rounding each ratio up.
+    // On 64-bit CI this is six times the wire limit plus fixed root/object
+    // storage. Variable script/commitment bytes have a 1:1 expansion.
+    // This bounds copied payload contents and objects, not peak RSS or
+    // allocator bookkeeping, which depends on the standard library/runtime.
+    static constexpr size_t kMaxProofWireBytes = 1024 * 1024;
+    static constexpr size_t kMaxProofExpansion = std::max({
+        size_t{1},
+        (sizeof(consensus::SpentOutputData) + 11) / 12,
+        (sizeof(consensus::UtreexoHash) + sizeof(uint64_t) + 32 + 39) / 40,
+        (sizeof(consensus::UtreexoHash) + 32 + 31) / 32});
+    static constexpr size_t kMaxProofBytes =
+        kMaxProofWireBytes * kMaxProofExpansion + sizeof(Payload) + 64;
     static constexpr auto kRequestTimeout = std::chrono::seconds(30);
     static constexpr auto kRetryDelay = std::chrono::seconds(30);
 
@@ -214,11 +232,6 @@ public:
 private:
     enum class State { Waiting, InFlight, Ready, Processing };
 
-    struct Payload {
-        consensus::BlockUtreexoData proof_data;
-        consensus::UtreexoHash root_after;
-    };
-
     struct Entry {
         Attempt attempt;
         State state{State::Waiting};
@@ -247,32 +260,45 @@ private:
 
     static bool ProofFits(const consensus::BlockUtreexoData& data,
                           const consensus::UtreexoHash& root_after) {
+        const uint8_t version = data.spend_proof.format_version;
+        if (version != 4 && version != 5 && version != 6) return false;
         if (root_after.size() != 32 || data.accumulator_root_before.size() != 32 ||
             data.spend_proof.targets.size() != data.spend_proof.positions.size()) return false;
         size_t remaining = kMaxProofBytes;
-        const auto consume = [&remaining](size_t size) {
-            if (size > remaining) return false;
-            remaining -= size;
+        size_t wire_remaining = kMaxProofWireBytes;
+        const auto consume = [](size_t& budget, size_t size) {
+            if (size > budget) return false;
+            budget -= size;
             return true;
         };
-        const auto consume_elements = [&remaining](size_t count, size_t element_size) {
-            if (count > remaining / element_size) return false;
-            remaining -= count * element_size;
+        const auto consume_elements = [](size_t& budget, size_t count, size_t element_size) {
+            if (count > budget / element_size) return false;
+            budget -= count * element_size;
             return true;
         };
-        if (!consume(sizeof(Payload) + 64) ||
-            !consume_elements(data.spend_proof.targets.size(), sizeof(consensus::UtreexoHash)) ||
-            !consume_elements(data.spend_proof.positions.size(), sizeof(uint64_t)) ||
-            !consume_elements(data.spend_proof.proof_hashes.size(), sizeof(consensus::UtreexoHash)) ||
-            !consume_elements(data.spent_outputs.size(), sizeof(consensus::SpentOutputData))) return false;
+        // BlockUtreexoData::serialize(): before-root, version, leaf count,
+        // target count, proof-hash count and spent-output count.
+        const size_t spent_wire_bytes = 12 + (version >= 5 ? 5 : 0) + (version >= 6 ? 5 : 0);
+        if (!consume(wire_remaining, 32 + 1 + 8 + 4 + 4 + 4) ||
+            !consume_elements(wire_remaining, data.spend_proof.targets.size(), 32 + 8) ||
+            !consume_elements(wire_remaining, data.spend_proof.proof_hashes.size(), 32) ||
+            !consume_elements(wire_remaining, data.spent_outputs.size(), spent_wire_bytes) ||
+            !consume(remaining, sizeof(Payload) + 64) ||
+            !consume_elements(remaining, data.spend_proof.targets.size(), sizeof(consensus::UtreexoHash)) ||
+            !consume_elements(remaining, data.spend_proof.positions.size(), sizeof(uint64_t)) ||
+            !consume_elements(remaining, data.spend_proof.proof_hashes.size(), sizeof(consensus::UtreexoHash)) ||
+            !consume_elements(remaining, data.spent_outputs.size(), sizeof(consensus::SpentOutputData))) return false;
         for (const auto& hash : data.spend_proof.targets) {
-            if (hash.size() != 32 || !consume(hash.size())) return false;
+            if (hash.size() != 32 || !consume(remaining, hash.size())) return false;
         }
         for (const auto& hash : data.spend_proof.proof_hashes) {
-            if (hash.size() != 32 || !consume(hash.size())) return false;
+            if (hash.size() != 32 || !consume(remaining, hash.size())) return false;
         }
         for (const auto& spent : data.spent_outputs) {
-            if (!consume(spent.scriptPubKey.size()) || !consume(spent.commitment.size())) return false;
+            if (!consume(wire_remaining, spent.scriptPubKey.size()) ||
+                (version >= 5 && !consume(wire_remaining, spent.commitment.size())) ||
+                !consume(remaining, spent.scriptPubKey.size()) ||
+                !consume(remaining, spent.commitment.size())) return false;
         }
         return true;
     }

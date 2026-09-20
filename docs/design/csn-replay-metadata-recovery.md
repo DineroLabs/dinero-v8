@@ -56,7 +56,13 @@ does not claim that old hashes authenticate fields they never committed to.
 ## Scheduling, restart and bounds
 
 The queue keeps at most four needs, each with bounded original-record and
-proof storage. There is at most one outstanding attempt per hash, a 30-second
+proof storage. Proofs retain the existing 1 MiB wire limit; copied payload
+objects and contents have a separate bound derived from the largest supported
+wire-to-memory expansion (approximately 6 MiB per response on 64-bit builds).
+This counts payload storage, not total process RSS or allocator overhead.
+The separate limits allow valid proofs with many small input records; wire size
+alone and decoded size are not interchangeable. There is at most one outstanding
+attempt per hash, a 30-second
 request timeout/backoff, peer rotation, and explicit NOTFOUND handling. Heavy
 proof validation is done by the scheduler worker, not the receive callback.
 While a hash is pending, wrong-peer, wrong-height, duplicate and stale replies

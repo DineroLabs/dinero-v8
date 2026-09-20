@@ -202,6 +202,106 @@ void TestRecordAndProofBounds() {
             "invalid inputs do not consume a valid response slot");
 }
 
+BlockUtreexoData ManyTinyOutputs(uint8_t version) {
+    auto proof = Proof();
+    proof.spend_proof.format_version = version;
+    proof.spend_proof.numLeaves = 8192;
+    proof.spend_proof.targets.resize(8192, UtreexoHash(32, 2));
+    proof.spend_proof.positions.resize(8192);
+    for (size_t i = 0; i < 8192; ++i) proof.spend_proof.positions[i] = i;
+    proof.spend_proof.proof_hashes.clear();
+    proof.spent_outputs.resize(8192, proof.spent_outputs.front());
+    return proof;
+}
+
+void TestSupportedWireProofMemoryBound() {
+    constexpr size_t wire_limit = 1024 * 1024; // Existing utxoblk proof frame limit.
+    Require(Queue::kMaxProofWireBytes == wire_limit, "queue preserves existing proof wire limit");
+    for (uint8_t version : {4, 5, 6}) {
+        const auto proof = ManyTinyOutputs(version);
+        const auto serialized = proof.serialize();
+        Require(proof.spend_proof.targets.size() <= dinero::consensus::MAX_PROOF_TARGETS,
+                "many tiny outputs remain within the normal proof target count limit");
+        const size_t spent_wire_bytes = 13 + (version >= 5 ? 5 : 0) + (version >= 6 ? 5 : 0);
+        Require(serialized.size() == 53 + 8192 * (40 + spent_wire_bytes),
+                "manual v4/v5/v6 wire size agrees with the actual serializer");
+        const size_t decoded_elements = proof.spent_outputs.size() *
+            (sizeof(dinero::consensus::SpentOutputData) + 1) +
+            proof.spend_proof.targets.size() * (sizeof(UtreexoHash) + 32 + sizeof(uint64_t));
+        Require(serialized.size() < wire_limit && decoded_elements > wire_limit,
+                "supported wire proof exceeds the former decoded-memory cap");
+        std::cout << "wire v" << unsigned(version) << ": " << serialized.size()
+                  << " bytes; decoded elements: " << decoded_elements << " bytes\n";
+        Queue queue;
+        queue.Need(Hash(1), 7, "legacy", start);
+        auto attempt = queue.NextRequest(start, peers);
+        Require(queue.QueueResponse(attempt->peer, Hash(1), 7, proof, root, start + 1s),
+                "admissible wire proof with many tiny outputs must remain recoverable");
+        auto ready = queue.TakeResponse();
+        Require(ready && ready->proof_data.serialize() == serialized,
+                "queued large proof preserves actual serializer bytes");
+        Require(queue.Finish(ready->attempt, true, start + 2s), "large proof completes");
+    }
+}
+
+void TestProofWireBoundaries() {
+    constexpr size_t wire_limit = 1024 * 1024;
+    for (uint8_t version : {4, 5, 6}) {
+        auto proof = ManyTinyOutputs(version);
+        if (version >= 5) {
+            proof.spent_outputs.front().is_confidential = true;
+            proof.spent_outputs.front().commitment.assign(33, 0x42);
+        }
+        size_t remaining = wire_limit - proof.serialize().size();
+        for (auto& spent : proof.spent_outputs) {
+            const size_t added = std::min(remaining, size_t{9999});
+            spent.scriptPubKey.resize(1 + added, 0x51);
+            remaining -= added;
+            if (remaining == 0) break;
+        }
+        Require(remaining == 0 && proof.serialize().size() == wire_limit,
+                "real v4/v5/v6 serializer reaches exact wire boundary");
+        Queue queue;
+        queue.Need(Hash(1), 7, "legacy", start);
+        auto attempt = queue.NextRequest(start, peers);
+        proof.spent_outputs.back().scriptPubKey.push_back(0x51);
+        Require(proof.serialize().size() == wire_limit + 1,
+                "one added script byte crosses actual wire boundary");
+        Require(!queue.QueueResponse(attempt->peer, Hash(1), 7, proof, root, start + 1s),
+                "wire-oversized proof rejected despite fitting decoded-memory cap");
+        proof.spent_outputs.back().scriptPubKey.pop_back();
+        Require(queue.QueueResponse(attempt->peer, Hash(1), 7, proof, root, start + 1s),
+                "exact wire-limit proof remains admissible");
+    }
+
+    Queue queue;
+    queue.Need(Hash(1), 7, "legacy", start);
+    auto attempt = queue.NextRequest(start, peers);
+    for (uint8_t version : {0, 1, 2, 3, 7, 255}) {
+        auto proof = Proof();
+        proof.spend_proof.format_version = version;
+        Require(!queue.QueueResponse(attempt->peer, Hash(1), 7, proof, root, start + 1s),
+                "unsupported proof version rejected before storage");
+    }
+    auto malformed = Proof();
+    malformed.accumulator_root_before.resize(31);
+    Require(!queue.QueueResponse(attempt->peer, Hash(1), 7, malformed, root, start + 1s),
+            "malformed before-root length rejected");
+    malformed = Proof();
+    malformed.spend_proof.proof_hashes.front().resize(31);
+    Require(!queue.QueueResponse(attempt->peer, Hash(1), 7, malformed, root, start + 1s),
+            "malformed proof-hash length rejected");
+    // v4 does not encode commitments, but defensive accounting must still
+    // reject an oversized decoded object supplied through the queue API.
+    auto decoded_oversized = Proof();
+    decoded_oversized.spend_proof.format_version = 4;
+    decoded_oversized.spent_outputs.front().commitment.resize(Queue::kMaxProofBytes);
+    Require(decoded_oversized.serialize().size() < wire_limit,
+            "v4 commitment bytes do not contribute to serialized size");
+    Require(!queue.QueueResponse(attempt->peer, Hash(1), 7, decoded_oversized, root, start + 1s),
+            "decoded-memory cap remains enforced independently of wire size");
+}
+
 void TestFairnessAndRestartReconstruction() {
     Queue queue;
     for (uint8_t i = 1; i <= Queue::kMaxRecords; ++i) queue.Need(Hash(i), i, "legacy", start);
@@ -304,9 +404,11 @@ int main() {
     TestTimeoutRotationAndStaleFinish();
     TestTimeoutWithoutIncomingResponse();
     TestSupersededRecordsAndCancellation();
+    TestSupportedWireProofMemoryBound();
+    TestProofWireBoundaries();
     TestRecordAndProofBounds();
     TestFairnessAndRestartReconstruction();
     TestNeedsSnapshotOwnership();
     TestConcurrentDuplicateDelivery();
-    std::cout << "PASS: 9 replay metadata recovery queue scenarios\n";
+    std::cout << "PASS: 11 replay metadata recovery queue scenarios\n";
 }
