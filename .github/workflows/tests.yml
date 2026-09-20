@@ -220,6 +220,14 @@ jobs:
             -R '^(CheckpointRetentionDaemon|ShieldedMigrationDaemonMarker)$' \
             | tee build-tests/Testing/checkpoint-retention/ctest.log
 
+      - name: Run shield wallet notification-gap regressions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/shield-wallet-selection
+          ctest --test-dir build-tests --output-on-failure --no-tests=error -V -j1 \
+            --output-log build-tests/Testing/shield-wallet-selection/ctest.log \
+            -R '^ShieldWalletNotificationGap(ExplicitFee|AutoFee)$'
+
       # Upload immediately: later serial lanes can take an hour, and the job
       # log is unavailable until they finish. Only harness text logs belong in
       # this artifact; do not recursively copy databases, cookies or wallets.
