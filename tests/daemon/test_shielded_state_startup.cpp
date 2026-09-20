@@ -63,10 +63,17 @@ void Startup(const std::string& fault, bool separated = true) {
         for (uint32_t h : {1, 3}) { sh::NullifierEntry entry; entry.height = h; entry.nullifier.fill(h); entries.push_back(entry); }
     }
     const auto tree_root = tree.Root();
-    const auto root = sh::ComputeShieldedRootFromParts(
-        std::vector<uint8_t>(tree_root.begin(), tree_root.end()), tree.Size(),
-        sh::ComputeNullifierAccumulator(entries), anchors.SerializeBytes());
-    Setup(root.has_value(), "compute fixture state root"); marker.shielded_root = *root;
+    // Match CurrentShieldedStateSnapshot(), the production marker writer:
+    // this field holds the commitment-tree root, not the composite DNRS root.
+    std::memcpy(marker.shielded_root.data, tree_root.data(), tree_root.size());
+    if (fault == "composite_root") {
+        const auto composite = sh::ComputeShieldedRootFromParts(
+            std::vector<uint8_t>(tree_root.begin(), tree_root.end()), tree.Size(),
+            sh::ComputeNullifierAccumulator(entries), anchors.SerializeBytes());
+        Setup(composite.has_value() && *composite != marker.shielded_root,
+              "composite root must differ from persisted tree root");
+        marker.shielded_root = *composite;
+    }
     marker.nullifier_count = entries.size();
     Setup(db.setTip(token, marker.block_hash, marker.height, arith_uint256(1)) == Status::Ok, "seed chain tip");
     if (fault == "count") marker.nullifier_count = 8;
@@ -104,7 +111,7 @@ void Startup(const std::string& fault, bool separated = true) {
 
 int main(int argc, char** argv) {
     SelectParams(Chain::REGTEST);
-    const std::vector<std::string> cases{"valid", "zero_nullifiers", "unstamped_cache", "frontier", "anchors", "count", "root", "size", "height", "hash", "legacy_frontier", "legacy_anchors"};
+    const std::vector<std::string> cases{"valid", "zero_nullifiers", "unstamped_cache", "frontier", "anchors", "count", "root", "composite_root", "size", "height", "hash", "legacy_frontier", "legacy_anchors"};
     if (argc == 2 && std::string(argv[1]) == "--list") {
         for (const auto& name : cases) std::cout << name << '\n'; return 0;
     }

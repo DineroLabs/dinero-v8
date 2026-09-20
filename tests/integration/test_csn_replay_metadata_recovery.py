@@ -249,6 +249,15 @@ def require_no_recovery_fuse():
             "unrelated proof-coverage recovery fuse prevents a clean metadata-recovery test")
 
 
+def mine_mature_prefix(node, address):
+    for _ in range(105):
+        mine(node, address)
+        # Four or more RPCs per block can exhaust the 50 request/second
+        # token bucket. Linux may expose the early HTTP 429 close as a TCP
+        # reset. Pace only this setup; keep transport failures fatal.
+        time.sleep(.10)
+
+
 def main():
     require(RECOVERY_SOURCE in ("peer", "undo"), "CSN_REPLAY_RECOVERY_SOURCE must be peer or undo")
     for binary in (BINARY, FIXTURE):
@@ -259,8 +268,7 @@ def main():
     full.peer, csn.peer = csn, full
     full.start()
     address = full.call("wallet.getnewaddress")["address"]
-    for _ in range(105):
-        mine(full, address)
+    mine_mature_prefix(full, address)
     csn.start()
     parent = full.call("getbestblockhash")
     wait(lambda: csn.call("getbestblockhash") == parent, "CSN mature prefix")
