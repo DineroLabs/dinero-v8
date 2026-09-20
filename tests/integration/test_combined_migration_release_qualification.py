@@ -816,16 +816,20 @@ def main():
 
     compact_unshield = rpc("candidate", "wallet.unshield", {"amount_una": 5000000, "fee_una": 1000000})
     compact_txid = compact_unshield["txid"]
+    # Capture the exact wire bytes while the transaction is still in mempool;
+    # the bare getrawtransaction alias cannot find confirmed transactions.
+    # After mining, bind this independently parsed transaction to persisted
+    # block bytes as well as the block's txid list.
+    compact_raw = bytes.fromhex(rpc("candidate", "wallet.getrawtransaction", [compact_txid])["hex"])
+    from helpers.compact_regtest_oracle import inspect as inspect_compact
+    inspect_compact(compact_raw, compact_txid)
     mine("candidate", 1)
     compact_block = tip_hash("candidate")
     assert block_contains("candidate", compact_block, compact_txid), "compact unshield was not included in the mined block"
     assert tx_version("candidate", compact_txid) == TX_VERSION_SHIELDED_COMPACT, (
         f"post-activation unshield did not use the compact version 0x{TX_VERSION_SHIELDED_COMPACT:x}")
-    from helpers.compact_regtest_oracle import inspect as inspect_compact
-    compact_raw = rpc("candidate", "getrawtransaction", [compact_txid, False])
-    if isinstance(compact_raw, dict):
-        compact_raw = compact_raw["hex"]
-    inspect_compact(bytes.fromhex(compact_raw), compact_txid)
+    persisted_block = bytes.fromhex(rpc("candidate", "getblock", [compact_block, 0]))
+    assert persisted_block.count(compact_raw) == 1, "mined block changed the independently checked compact bytes"
     print(f"[PASS] post-activation unshield used the compact v6 profile 0x{TX_VERSION_SHIELDED_COMPACT:x} "
           f"and was included at height {height('candidate')}", flush=True)
 

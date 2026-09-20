@@ -103,6 +103,7 @@ class Node:
 import sys
 sys.path.insert(0, str(ROOT / "tests/mining"))
 from dinero_cpu_miner import DineroCoinMiner
+from helpers.compact_regtest_oracle import inspect as inspect_compact
 
 try:
     node = Node("active")
@@ -132,8 +133,11 @@ try:
         metadata = node.call("getblocktemplate", [{"address":address}])
         if COMPACT_TIMING:
             selected = [tx for tx in metadata["transactions"] if tx["txid"] == expected_tx]
-            require(len(selected) == 1 and bytes.fromhex(selected[0]["data"])[:4] == b"\x06\x00\x00\x40",
-                    "external fixture did not select compact transaction")
+            require(len(selected) == 1, "external fixture did not select requested transaction")
+            # Production compact proofs use ordinary v6 framing. Inspect the
+            # actual DZE1 spend/output proofs and independently recompute txid;
+            # a v6 version check alone would also accept legacy full proofs.
+            inspect_compact(bytes.fromhex(selected[0]["data"]), expected_tx)
             require(node.call("getconsensusinfo")["target_spacing_seconds"] == (120 if index == 0 else 60),
                     "external miner did not cross timing boundary")
             require(metadata["coinbasevalue"] == 10000000000 + sum(tx["fee"] for tx in metadata["transactions"]),
@@ -170,6 +174,8 @@ try:
     coordinator_tx = None
     if COMPACT_TIMING:
         coordinator_tx = node.call("wallet.shield", {"amount_una":10000000,"fee_una":1000000})["txid"]
+        coordinator_raw = bytes.fromhex(node.call("wallet.getrawtransaction", [coordinator_tx])["hex"])
+        inspect_compact(coordinator_raw, coordinator_tx)
     job = node.call("mining.getjob", [{"address":address}])
     require(not job.get("error"), f"coordinator job: {job}")
     header = bytearray.fromhex(job["header_hex"])
@@ -187,6 +193,9 @@ try:
     if coordinator_tx:
         mined = node.call("getblock", [node.call("getbestblockhash"), 1])
         require(coordinator_tx in mined["tx"], "coordinator dropped compact transaction")
+        raw_block = bytes.fromhex(node.call("getblock", [node.call("getbestblockhash"), 0]))
+        require(raw_block.count(coordinator_raw) == 1,
+                "coordinator changed compact bytes in persisted block")
     committed = node.call("daemon.shieldedroot")["shielded_root"]
     node.stop(); node.start()
     require(node.call("daemon.shieldedroot")["shielded_root"] == committed, "coordinator root not persisted")
