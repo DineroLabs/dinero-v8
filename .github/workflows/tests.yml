@@ -35,7 +35,11 @@ jobs:
   linux-full-build-ctest:
     name: Linux x86_64 — full build + ctest
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # The broad suite and serial daemon lanes can exceed two hours together
+    # (run 35474007537 reached the final durability lane with no test failures).
+    # Keep individual CTest deadlines unchanged and allow the complete gate,
+    # including failure-evidence upload, to finish.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
