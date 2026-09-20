@@ -27,6 +27,8 @@ on:
       - 'src/consensus/shielded/**'
       - 'src/consensus/utreexo*'
       - 'src/consensus/block_validation.cpp'
+      - 'src/consensus/block_reward.cpp'
+      - 'include/consensus/block_reward.h'
       - 'src/daemon/mempool.cpp'
       - 'src/daemon/services/chainstate_service.cpp'
       - 'src/wallet/shielded_*'

@@ -1049,6 +1049,38 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
   message(STATUS "Shielded CF startup authority test enabled")
 endif()
 
+# Admission fee checks must agree with exact stateful/stateless reward validation.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_acceptor_fees.cpp)
+  add_executable(test_block_acceptor_fees
+    tests/daemon/test_block_acceptor_fees.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool seams (chainstate_service.obj refs)
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
+    src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
+  )
+  target_link_libraries(test_block_acceptor_fees PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_block_acceptor_fees)
+  target_link_directories(test_block_acceptor_fees PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_block_acceptor_fees PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_block_acceptor_fees PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME BlockAcceptorFees COMMAND test_block_acceptor_fees)
+  set_tests_properties(BlockAcceptorFees PROPERTIES
+    LABELS "daemon;consensus;smoke"
+    TIMEOUT 120
+  )
+  message(STATUS "Block acceptor fee regression tests enabled")
+endif()
+
 # AssumeUTXO pre-base backfill bodies: the #309 persist callback could only
 # synthesize a missing ChainDB header-metadata row from g_block_index, which a
 # snapshot-bootstrapped node does not populate below its base height. The body

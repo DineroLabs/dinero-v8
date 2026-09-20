@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include "consensus/block_undo.h"
+#include "consensus/block_reward.h"
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/ibd_mode.h"              // Phase 5: Stateless IBD support
 #include "consensus/validation_mode.h"       // Phase 8: Stateless validation mode
@@ -313,14 +314,16 @@ public:
     // is bit-identical to forward validation by construction.
     //
     // Does NOT mutate any validator state, and skips script/signature
-    // validation (the block was already fully validated when first stored);
-    // it does NOT skip any delta-relevant computation.
+    // validation; this computes shielded deltas, not full block validity.
+    // Storage alone is not proof that every consensus check already ran.
     //
     // `fallback_spent_outputs` is consulted ONLY when `block.utreexo` is
     // absent (CSN replay records can carry the spend metadata when the stored
     // block does not). A block with no shielded txs returns true with empty
-    // deltas without requiring spend metadata (legacy hash-only replay
-    // records must not brick transparent-only reorgs). A shielded-bearing
+    // deltas without requiring spend metadata for THIS computation. The
+    // separate reward gate still requires exact metadata for every input;
+    // legacy hash-only spend replay must recover it rather than guess fees.
+    // A shielded-bearing
     // block with neither source, or whose spent_outputs underrun the block's
     // inputs, returns false with a distinct error.
     bool ComputeShieldedDeltasForStoredBlock(

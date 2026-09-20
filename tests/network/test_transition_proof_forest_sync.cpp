@@ -1,6 +1,8 @@
 #include "network/stateless_node.h"
 #include "network/utreexo_messages.h"
 #include "consensus/chainparams.h"
+#include "consensus/block_validation.h"
+#include "consensus/subsidy.h"
 #include "consensus/utreexo_accumulator.h"
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "primitives/block.h"
@@ -380,6 +382,7 @@ void test_replay_accepts_post_activation_cpfp_and_binds_child_metadata() {
         funding_txid.AsUint256(), 0, funding_value, script, funding_height, false);
 
     UtreexoForest initial_forest;
+    initial_forest = initial_forest.cloneForHeight(funding_height);
     TEST_ASSERT(initial_forest.add(funding_leaf) != UINT64_MAX, "Initial funding leaf add should succeed");
 
     const uint64_t parent_value = 49'99900000ULL;
@@ -446,6 +449,265 @@ void test_replay_accepts_post_activation_cpfp_and_binds_child_metadata() {
         lied_replay_forest.getCommitment() == initial_forest.getCommitment(),
         "Rejected CPFP metadata lie must leave the forest unchanged"
     );
+
+    // Manufacture one una of fee in the child's supplied metadata and pay it
+    // in coinbase. The real block's root and external-input proof still match:
+    // the ephemeral parent output is never a forest target. Monetary accounting
+    // alone would trust this lie unless metadata is bound before forest mutation.
+    Block overpay = cpfp_block;
+    const uint64_t subsidy = ConsensusSubsidy::GetBlockSubsidy(
+        spend_height, Params().sixty_second_activation_height).GetUna();
+    overpay.vtx[0].vout[0].value = AmountUna::Una(subsidy + funding_value - child_value + 1);
+    UtreexoForest overpay_after = initial_forest.cloneForHeight(spend_height);
+    const auto overpay_position = overpay_after.findLeafPosition(funding_leaf);
+    const auto overpay_spend = overpay_after.prove(*overpay_position);
+    TEST_ASSERT(overpay_spend.has_value() && overpay_after.remove(funding_leaf, *overpay_spend),
+                "Forged CPFP fixture removes its real funding leaf");
+    for (size_t tx_index : {size_t{0}, size_t{2}}) {
+        const auto& tx = overpay.vtx[tx_index];
+        TEST_ASSERT(overpay_after.add(HashUTXOForCreationHeight(
+            tx.GetTxid().AsUint256(), 0, tx.vout[0].value.GetUna(),
+            tx.vout[0].scriptPubKey, spend_height, tx.IsCoinbase())) != UINT64_MAX,
+            "Forged CPFP fixture adds only surviving outputs");
+    }
+    setHeaderRootFromForest(overpay, overpay_after);
+    auto forged_spent = spent_outputs;
+    forged_spent[1].value = parent_value + 1;
+    std::string accounting_error;
+    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(overpay, spend_height, &forged_spent, accounting_error),
+                "Forged child metadata defeats unauthenticated fee arithmetic as intended by fixture");
+    TEST_ASSERT(!StatelessNode::CheckReplayReward(
+                    overpay, spend_height, {funding_leaf}, &forged_spent, accounting_error),
+                "Reorg reward preflight rejects forged child fee metadata before rewind");
+    TEST_ASSERT(StatelessNode::CheckReplayReward(
+                    cpfp_block, spend_height, {funding_leaf}, &spent_outputs, accounting_error),
+                "Reorg reward preflight accepts exact authentic CPFP metadata");
+    UtreexoProofMessage msg;
+    msg.block_hash = overpay.GetHash();
+    msg.block_height = spend_height;
+    msg.accumulator_root_before = initial_forest.getCommitment();
+    msg.accumulator_root_after = overpay_after.getCommitment();
+    msg.proof_data.spent_outputs = forged_spent;
+    auto& batch = msg.proof_data.spend_proof;
+    batch.targets = {funding_leaf};
+    batch.positions = {*initial_forest.findLeafPosition(funding_leaf)};
+    batch.proof_hashes = initial_forest.generateBatchProof(batch.targets);
+    batch.numLeaves = initial_forest.getNumLeaves();
+    batch.format_version = GetUtreexoProofFormatVersion(spend_height);
+    UtreexoForest forward = initial_forest;
+    StatelessNode forward_node(&forward);
+    forward_node.SyncToForestState(funding_height);
+    TEST_ASSERT(!forward_node.ValidateUtreexoProof(overpay, msg, 1),
+                "Forward proof rejects manufactured fees from forged child metadata");
+    TEST_ASSERT(forward.getCommitment() == initial_forest.getCommitment(),
+                "Forged child fees cannot advance canonical forest");
+    UtreexoForest scratch = initial_forest;
+    TEST_ASSERT(!forward_node.ValidateProofIntoForest(overpay, msg, scratch),
+                "Scratch proof rejects manufactured child fees");
+    TEST_ASSERT(scratch.getCommitment() == initial_forest.getCommitment(),
+                "Forged child fees cannot advance scratch forest");
+    const auto tp = UtreexoTransitionProof::generate(initial_forest, overpay, batch, spend_height);
+    TEST_ASSERT(tp.verify() && tp.commitment_after == overpay_after.getCommitment(),
+                "Forged-fee fixture still carries a valid transition proof");
+    UtreexoForest tp_forest = initial_forest;
+    StatelessNode tp_node(&tp_forest);
+    tp_node.SyncToForestState(funding_height);
+    TEST_ASSERT(!tp_node.ValidateWithTransitionProof(overpay, msg, tp, 1),
+                "Transition proof rejects manufactured child fees before advancing stump");
+    TEST_ASSERT(tp_forest.getCommitment() == initial_forest.getCommitment(),
+                "Forged child fees cannot advance transition forest");
+}
+
+void applyRewardFixtureAdditions(UtreexoForest& forest, const Block& block, uint32_t height) {
+    for (const auto& tx : block.vtx) {
+        const auto txid = tx.GetTxid();
+        for (uint32_t i = 0; i < tx.vout.size(); ++i) {
+            const auto& output = tx.vout[i];
+            TEST_ASSERT(forest.add(HashUTXOForCreationHeight(
+                txid.AsUint256(), i, output.value.GetUna(), output.scriptPubKey,
+                height, tx.IsCoinbase())) != UINT64_MAX, "Reward fixture addition");
+        }
+    }
+}
+
+// These fixtures deliberately have a correct accumulator transition. Rejecting
+// an overpay therefore has to come from monetary validation, not a bad root.
+void test_replay_reward(uint64_t excess, bool split, bool omit_metadata,
+                        bool legacy_leaf = false) {
+    std::cout << "CSN reward replay excess=" << excess << " split=" << split
+              << " omit_metadata=" << omit_metadata << " legacy=" << legacy_leaf << std::endl;
+    const uint32_t funding_height = legacy_leaf ? 1 : GetUtreexoMaturityLeafActivationHeight();
+    const uint32_t spend_height = legacy_leaf ? 2 : funding_height + 100;
+    const auto script = makeScript();
+    constexpr uint64_t funding_value = 50'00000000ULL;
+    constexpr uint64_t fee = 10'000000ULL; // 0.1 DIN, above the old admission estimate.
+    const uint64_t subsidy = ConsensusSubsidy::GetBlockSubsidy(
+        spend_height, Params().sixty_second_activation_height).GetUna();
+    Block funding = makeCoinbaseBlock(funding_height, {{funding_value, script}});
+    const TxId funding_txid = funding.vtx[0].GetTxid();
+    // A legacy fixture is a non-coinbase output so no maturity assumption is
+    // needed; the post-activation fixture spends an exactly mature coinbase.
+    const bool is_coinbase = !legacy_leaf;
+    const auto leaf = HashUTXOForCreationHeight(
+        funding_txid.AsUint256(), 0, funding_value, script, funding_height, is_coinbase);
+    UtreexoForest initial;
+    initial = initial.cloneForHeight(funding_height);
+    TEST_ASSERT(initial.add(leaf) != UINT64_MAX, "Reward fixture funding add");
+    Block block = makeSpendBlock(spend_height, funding_txid, 0,
+                                 funding_value - fee, script, funding.GetHash());
+    block.vtx[0].vout[0].value = AmountUna::Una(split ? subsidy : subsidy + fee + excess);
+    if (split) {
+        TxOutput second;
+        second.value = AmountUna::Una(fee + excess);
+        second.scriptPubKey = script;
+        block.vtx[0].vout.push_back(second);
+    }
+    UtreexoForest expected = initial.cloneForHeight(spend_height);
+    const auto position = expected.findLeafPosition(leaf);
+    TEST_ASSERT(position.has_value(), "Reward fixture funding position");
+    const auto proof = expected.prove(*position);
+    TEST_ASSERT(proof.has_value() && expected.remove(leaf, *proof), "Reward fixture spend");
+    applyRewardFixtureAdditions(expected, block, spend_height);
+    setHeaderRootFromForest(block, expected);
+    std::vector<SpentOutputData> spent{
+        SpentOutputData(funding_value, script, funding_height, is_coinbase)};
+    UtreexoForest actual = initial;
+    StatelessNode node(&actual);
+    node.SyncToForestState(spend_height - 1);
+    const bool accepted = node.ReplayBlock(block, spend_height, {leaf},
+                                           omit_metadata ? nullptr : &spent);
+    const bool should_accept = excess == 0 && !omit_metadata;
+    TEST_ASSERT(accepted == should_accept,
+                "Root-correct replay must enforce exact reward across all coinbase outputs and require fee metadata");
+    TEST_ASSERT(actual.getCommitment() == (should_accept ? expected : initial).getCommitment(),
+                "Rejected reward replay must preserve forest; accepted replay must match expected root");
+
+    if (!omit_metadata) {
+        UtreexoProofMessage msg;
+        msg.block_hash = block.GetHash();
+        msg.block_height = spend_height;
+        msg.accumulator_root_before = initial.getCommitment();
+        msg.accumulator_root_after = expected.getCommitment();
+        msg.proof_data.spent_outputs = spent;
+        auto& batch = msg.proof_data.spend_proof;
+        batch.targets = {leaf};
+        batch.positions = {*initial.findLeafPosition(leaf)};
+        batch.proof_hashes = initial.generateBatchProof(batch.targets);
+        batch.numLeaves = initial.getNumLeaves();
+        batch.format_version = GetUtreexoProofFormatVersion(spend_height);
+
+        UtreexoForest forward = initial;
+        StatelessNode forward_node(&forward);
+        forward_node.SyncToForestState(spend_height - 1);
+        TEST_ASSERT(forward_node.ValidateUtreexoProof(block, msg, 1) == should_accept,
+                    "Forward batch proof must enforce exact reward before canonical mutation");
+        TEST_ASSERT(forward.getCommitment() == (should_accept ? expected : initial).getCommitment(),
+                    "Forward overpay must leave canonical forest unchanged");
+
+        UtreexoForest scratch = initial;
+        TEST_ASSERT(forward_node.ValidateProofIntoForest(block, msg, scratch) == should_accept,
+                    "Speculative batch proof must enforce exact reward before scratch mutation");
+        TEST_ASSERT(scratch.getCommitment() == (should_accept ? expected : initial).getCommitment(),
+                    "Speculative overpay must leave scratch forest unchanged");
+
+        const auto transition = UtreexoTransitionProof::generate(initial, block, batch, spend_height);
+        TEST_ASSERT(transition.verify() && transition.commitment_after == expected.getCommitment(),
+                    "Reward fixture has an independently valid transition proof");
+        UtreexoForest tp_forest = initial;
+        StatelessNode tp_node(&tp_forest);
+        tp_node.SyncToForestState(spend_height - 1);
+        TEST_ASSERT(tp_node.ValidateWithTransitionProof(block, msg, transition, 1) == should_accept,
+                    "Transition proof must enforce exact reward before stump mutation");
+        if (!should_accept) {
+            TEST_ASSERT(tp_forest.getCommitment() == initial.getCommitment(),
+                        "Rejected transition proof must preserve canonical forest");
+        }
+    }
+}
+
+void test_coinbase_only_replay_reward(uint64_t excess) {
+    const uint32_t height = GetUtreexoMaturityLeafActivationHeight();
+    const uint64_t subsidy = ConsensusSubsidy::GetBlockSubsidy(
+        height, Params().sixty_second_activation_height).GetUna();
+    Block block = makeCoinbaseBlock(height, {{subsidy + excess, makeScript()}});
+    UtreexoForest initial;
+    UtreexoForest expected = initial.cloneForHeight(height);
+    applyRewardFixtureAdditions(expected, block, height);
+    setHeaderRootFromForest(block, expected);
+    UtreexoForest actual = initial;
+    StatelessNode node(&actual);
+    node.SyncToForestState(height - 1);
+    const bool accepted = node.ReplayBlock(block, height, {});
+    TEST_ASSERT(accepted == (excess == 0), "Coinbase-only replay checks subsidy without requiring spent metadata");
+    TEST_ASSERT(actual.getCommitment() == (excess == 0 ? expected : initial).getCommitment(),
+                "Coinbase-only overpay must preserve the forest");
+}
+
+void test_reward_accounting_cardinality_and_overflow() {
+    std::cout << "Pure replay reward accounting cardinality and overflow..." << std::endl;
+    const uint32_t height = 120;
+    const auto script = makeScript();
+    const uint64_t subsidy = ConsensusSubsidy::GetBlockSubsidy(
+        height, Params().sixty_second_activation_height).GetUna();
+    constexpr uint64_t fee = 10'000000ULL;
+    Block funding = makeCoinbaseBlock(20, {{50'00000000ULL, script}});
+    Block block = makeSpendBlock(height, funding.vtx[0].GetTxid(), 0,
+                                 50'00000000ULL - fee, script);
+    block.vtx[0].vout[0].value = AmountUna::Una(subsidy + fee);
+    std::vector<SpentOutputData> spent{SpentOutputData(50'00000000ULL, script, 20, true)};
+    auto rejects = [&](const Block& candidate, const std::vector<SpentOutputData>* metadata,
+                       const char* expected) {
+        std::string error;
+        TEST_ASSERT(!CheckBlockRewardFromSpentOutputs(candidate, height, metadata, error),
+                    std::string("Reward accounting rejects ") + expected);
+        TEST_ASSERT(error == expected, "Reward accounting rejects for the intended reason: " + error);
+    };
+    std::string error;
+    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(block, height, &spent, error),
+                "Pure accounting accepts exact transparent fee");
+    rejects(block, nullptr, "block-reward-missing-spent-outputs");
+    std::vector<SpentOutputData> empty;
+    rejects(block, &empty, "block-reward-spent-outputs-underrun");
+    auto surplus = spent;
+    surplus.push_back(spent.front());
+    rejects(block, &surplus, "block-reward-spent-outputs-surplus");
+
+    Block input_overflow = block;
+    input_overflow.vtx[1].vin.push_back(input_overflow.vtx[1].vin.front());
+    auto oversized = surplus;
+    oversized[0].value = UINT64_MAX;
+    oversized[1].value = 1;
+    rejects(input_overflow, &oversized, "block-reward-input-total-overflow");
+
+    Block output_overflow = block;
+    output_overflow.vtx[1].vout[0].value = AmountUna::UnsafeFromRaw(UINT64_MAX);
+    TxOutput extra;
+    extra.value = AmountUna::Una(1);
+    extra.scriptPubKey = {0x6a}; // unspendable outputs still count in reward sums
+    output_overflow.vtx[1].vout.push_back(extra);
+    rejects(output_overflow, &spent, "block-reward-output-total-overflow");
+
+    // Only accounting is under test here: proof/bundle verification remains a
+    // separate required gate. Zero-input shielded fees do not need UTXO metadata.
+    Block shielded = makeCoinbaseBlock(height, {{subsidy + fee, script}});
+    Transaction unshield;
+    unshield.version = Transaction::TX_VERSION_SHIELDED_V2;
+    unshield.SetExplicitFee(fee);
+    TxOutput payout;
+    payout.value = AmountUna::Una(5'00000000ULL);
+    payout.scriptPubKey = script;
+    unshield.vout.push_back(payout);
+    shielded.vtx.push_back(unshield);
+    TEST_ASSERT(CheckBlockRewardFromSpentOutputs(shielded, height, nullptr, error),
+                "Zero-input shielded explicit fee needs no spent metadata for accounting");
+    shielded.vtx[1].SetExplicitFee(UINT64_MAX);
+    rejects(shielded, nullptr, "block-reward-subsidy-fee-overflow");
+    unshield.SetExplicitFee(1);
+    shielded.vtx.push_back(unshield);
+    rejects(shielded, nullptr, "block-reward-fee-total-overflow");
+
+    Block coinbase_overflow = makeCoinbaseBlock(height, {{UINT64_MAX, script}, {1, {0x6a}}});
+    rejects(coinbase_overflow, nullptr, "block-reward-output-total-overflow");
 }
 
 }  // namespace
@@ -459,6 +721,14 @@ int main() {
     test_replay_requires_metadata_after_maturity_leaf_activation();
     test_replay_binds_maturity_metadata_to_spend_target();
     test_replay_accepts_post_activation_cpfp_and_binds_child_metadata();
-    std::cout << "PASS: " << tests_passed << "/" << tests_total << " assertions" << std::endl;
-    return 0;
+    test_replay_reward(0, false, false);
+    test_replay_reward(1, false, false);
+    test_replay_reward(1, true, false);
+    test_replay_reward(0, false, true, true);
+    test_replay_reward(0, false, false, true);
+    test_coinbase_only_replay_reward(0);
+    test_coinbase_only_replay_reward(1);
+    test_reward_accounting_cardinality_and_overflow();
+    std::cout << "RESULT: " << tests_passed << "/" << tests_total << " assertions" << std::endl;
+    return tests_passed == tests_total ? 0 : 1;
 }

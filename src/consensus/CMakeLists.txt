@@ -133,6 +133,7 @@ message(STATUS "✅ dinero_consensus_core (pure library) configured")
 # and would touch consensus-critical paths. Tracked but not blocking.
 #
 add_library(dinero_consensus STATIC
+  src/consensus/block_reward.cpp     # Shared exact reward checks, no daemon/storage dependency
   src/consensus/chainparams_impl.cpp   # Chain parameters (mainnet/testnet/regtest)
   src/consensus/chainwork.cpp          # arith_uint256 for difficulty calculations
   src/consensus/block_index.cpp        # Phase 3B: Block index management and fork choice

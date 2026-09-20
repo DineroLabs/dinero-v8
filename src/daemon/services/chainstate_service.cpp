@@ -9076,6 +9076,24 @@ void ChainstateService::ActivateBestChain() {
                 }
                 return;
             }
+            // Stored proof/transition records prove a forest transition, not
+            // monetary conservation. Check the entire branch's reward before
+            // rewinding the canonical tip. Bind input amounts to the stored
+            // targets and real intra-block outputs here; ReplayBlock repeats
+            // this gate and verifies the resulting forest against the header.
+            const auto& candidate = block_result.value();
+            const auto* fee_coins = candidate.utreexo
+                ? &candidate.utreexo->spent_outputs
+                : (replay_data.has_spent_outputs ? &replay_data.spent_outputs : nullptr);
+            std::string reward_error;
+            if (!network::StatelessNode::CheckReplayReward(
+                    candidate, block_index->height, replay_data.spend_targets,
+                    fee_coins, reward_error)) {
+                if (logger_) logger_->error("[ABC-CSN] Reorg reward preflight failed at height " +
+                    std::to_string(block_index->height) + ": " + reward_error +
+                    " — canonical state left untouched");
+                return;
+            }
         }
 
         // Step 1: Rebuild the forest at fork_point height. Campaign phase 3

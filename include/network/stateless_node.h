@@ -611,6 +611,16 @@ public:
      */
     void RewindToCheckpoint(uint32_t height, const consensus::UtreexoForest& restored_forest);
 
+    // Read-only replay reward preflight: bind metadata to the stored targets
+    // and actual intra-block outputs before computing fees. This can run on an
+    // entire reorg branch before rewind. It does not prove targets against a
+    // forest root or replace ReplayBlock's transactional root verification.
+    static bool CheckReplayReward(
+        const Block& block, uint32_t block_height,
+        const std::vector<consensus::UtreexoHash>& spend_targets,
+        const std::vector<consensus::SpentOutputData>* spent_outputs,
+        std::string& error);
+
     /**
      * @brief Replay a block through the forest using pre-stored spend targets
      *
