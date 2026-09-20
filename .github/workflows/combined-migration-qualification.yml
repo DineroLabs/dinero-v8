@@ -95,9 +95,17 @@ jobs:
 
       - name: "Sanity: unchanged engine regression suite"
         run: |
+          # No 2>&1 here deliberately: scripts/ci/check_mandatory_tests_execute.py
+          # parses this exact line to credit CombinedMigrationReleaseQualification's
+          # executing lane, and its shell splitter treats any unquoted `&` as a
+          # command separator -- `2>&1` on the same statement as `ctest` makes it
+          # mis-split into a bogus "2>" token and FATAL (confirmed by direct
+          # reproduction). ctest's own --output-on-failure writes to stdout, which
+          # tee still captures; only stderr is no longer duplicated into the
+          # evidence file specifically (the raw Actions log still has it).
           ctest --test-dir build-migration-qual --no-tests=error --output-on-failure \
             -R '^ShieldedMigrationCohort$' \
-            --output-junit "$PWD/evidence/engine-ctest.xml" 2>&1 | tee evidence/engine-ctest.log
+            --output-junit "$PWD/evidence/engine-ctest.xml" | tee evidence/engine-ctest.log
 
       - name: Run the combined migration release qualification
         # Overrides the job-level -e default deliberately: this step must
@@ -108,9 +116,12 @@ jobs:
         # test failure.
         shell: bash --noprofile --norc -o pipefail {0}
         run: |
+          # No 2>&1 here either -- see the identical note on the sanity-suite
+          # step above; this exact line is what check_mandatory_tests_execute.py
+          # must parse to credit this test's own executing lane.
           ctest --test-dir build-migration-qual --no-tests=error --output-on-failure -V \
             -R '^CombinedMigrationReleaseQualification$' \
-            --output-junit "$PWD/evidence/ctest.xml" 2>&1 | tee evidence/ctest.log
+            --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
           ctest_status=$?
           cp build-migration-qual/Testing/Temporary/LastTest.log evidence/ctest-details.log
           exit "$ctest_status"
