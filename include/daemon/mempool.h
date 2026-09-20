@@ -217,6 +217,13 @@ public:
     // Phase M.0: Now uses OutPoint directly
     bool isOutputSpentInMempool(const OutPoint& outpoint) const;
 
+    // Snapshot confirmed, mature, unspent candidates under chainstate -> mempool
+    // locks. Results correspond to candidates; unavailable entries are nullopt.
+    // Frozen snapshot coins require live-forest authorization. Copied results
+    // grant no reservation: callers must still use canonical mempool admission.
+    std::vector<std::optional<consensus::UTXOEntry>> getConfirmedWalletCoins(
+        const std::vector<OutPoint>& candidates) const;
+
     // Entry accessors (for RPC fee information) (Phase M.0: Changed to uint256)
     std::optional<MempoolEntry> getMempoolEntry(const uint256& txid) const;
     std::optional<uint64_t> getTransactionFee(const uint256& txid) const;

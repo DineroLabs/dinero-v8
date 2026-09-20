@@ -2502,3 +2502,16 @@ if(TARGET test_shielded_migration_cohort)
     LABELS "integration;storage;shielded;restart"
     TIMEOUT 300 RUN_SERIAL TRUE)
 endif()
+
+foreach(mode IN ITEMS ExplicitFee AutoFee)
+  set(shield_args)
+  if(mode STREQUAL "AutoFee")
+    set(shield_args --auto-fee)
+  endif()
+  add_test(NAME ShieldWalletNotificationGap${mode}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_shield_wallet_notification_gap.py ${shield_args})
+  set_tests_properties(ShieldWalletNotificationGap${mode} PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;wallet;shielded;utreexo"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+endforeach()
