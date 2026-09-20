@@ -442,6 +442,43 @@ int main(int argc, char** argv) {
     std::cout << std::unitbuf;
     executable = fs::canonical(argv[0]);
     dinero::SelectParams(dinero::Chain::REGTEST);
+    // Test-only entry points for ShieldedMigrationDaemonMarker. No production
+    // launcher: the Python test creates and stops every datadir it supplies.
+    if (argc == 4 && std::string(argv[1]) == "--daemon-copy") {
+        const dinero::storage::ShieldedMigrationLimits db_budget{4 * 1024 * 1024, 2000, 1024 * 1024, 10000};
+        const dinero::storage::ShieldedCompanionLimits file_budget{
+            10000, 1024ull * 1024 * 1024, 10000, 1024 * 1024, 10000000,
+            10000, 16 * 1024 * 1024, 1000000, 10000, 10000};
+        const auto result = MigrateShieldedDatadirCopy(argv[2], argv[3], db_budget, file_budget, true);
+        if (!result.ok || !result.ready) { std::cerr << result.error << '\n'; return 1; }
+        std::cout << "READY\n"; return 0;
+    }
+    if (argc == 4 && std::string(argv[1]) == "--damage-daemon-marker") {
+        ChainDB db;
+        Setup(db.init(fs::path(argv[2]) / "blockchain/chaindb") == Status::Ok && db.hasSeparatedShieldedState(), "open READY fixture");
+        auto marker = RequiredValue(db.getShieldedTipMarker());
+        const std::string field(argv[3]);
+        if (field == "root") marker.shielded_root.data[0] ^= 1;
+        else if (field == "tree_size") ++marker.tree_size;
+        else if (field == "nullifier_count") ++marker.nullifier_count;
+        else if (field == "height") ++marker.height;
+        else if (field == "duplicate_nullifier" || field == "future_nullifier") {
+            Setup(marker.nullifier_count == 0 && marker.height > 0, "empty daemon fixture");
+            sh::Hash nf{}; nf[0] = 42;
+            const auto token = ChainWriteToken::CreateForTesting();
+            if (field == "duplicate_nullifier") {
+                Setup(db.putShieldedNullifier(token, 0, nf.data()) == Status::Ok, "first nullifier row");
+                Setup(db.putShieldedNullifier(token, marker.height, nf.data()) == Status::Ok, "duplicate nullifier row");
+                marker.nullifier_count = 2;
+            } else {
+                Setup(db.putShieldedNullifier(token, marker.height + 1, nf.data()) == Status::Ok, "future nullifier row");
+                marker.nullifier_count = 1;
+            }
+        }
+        else return 2;
+        Setup(db.putShieldedTipMarker(ChainWriteToken::CreateForTesting(), marker) == Status::Ok, "damage marker");
+        return 0;
+    }
     if (argc == 3 && std::string(argv[1]) == "--acquire") {
         DatadirGuard guard; std::string error; return guard.Acquire(argv[2], error) ? 0 : 10;
     }
