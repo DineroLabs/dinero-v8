@@ -9,6 +9,10 @@
 #include "storage/chain_db.h"  // Phase W.1.1: For blockchain rescan
 #include "primitives/block.h"  // Phase W.1.1: For Block type
 #include "vault/vault_runtime.h"  // Track C: Liquidity Vault auto-observer
+#include "consensus/chainparams.h"
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <cstring>
 #include <iostream>
 #include <chrono>
@@ -261,6 +265,23 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing block connect: height=" << height
               << " hash=" << hash.substr(0, 16) << "... txs=" << transactions.size() << std::endl;
+
+    // Deterministically expose the real chain-confirmed / wallet-not-yet-indexed
+    // window. Regtest only, explicit external handshake, bounded and interruptible
+    // by Stop(). No chain or mempool lock is held by this asynchronous worker.
+    const char* pause_height = std::getenv("DINERO_TEST_WALLET_CONNECT_PAUSE_HEIGHT");
+    const char* pause_file = std::getenv("DINERO_TEST_WALLET_CONNECT_PAUSE_FILE");
+    if (GetActiveChain() == Chain::REGTEST && pause_height && pause_file &&
+        std::to_string(height) == pause_height && *pause_file) {
+        const std::string path(pause_file);
+        std::ofstream(path + ".entered") << height << '\n';
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(480);
+        while (running_.load() && std::chrono::steady_clock::now() < deadline &&
+               !std::filesystem::exists(path + ".release")) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::ofstream(path + ".exited") << height << '\n';
+    }
 
     if (wallet_manager_) {
         std::string shielded_error;
