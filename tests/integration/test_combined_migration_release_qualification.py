@@ -866,6 +866,9 @@ def main():
     start("control")
     mine_to("control", candidate_tip_height)
     control_template = rpc("control", "getblocktemplate", {"address": addresses["control"]})
+    assert template["height"] == control_template["height"] == candidate_tip_height + 1, (
+        f"ASERT comparison requires both templates at height {candidate_tip_height + 1}; "
+        f"candidate={template['height']}, control={control_template['height']}")
     assert control_template["bits"] == template["bits"], (
         f"migrated candidate's ASERT bits ({template['bits']}) diverged from an unmigrated "
         f"control chain mined identically to the same height ({control_template['bits']})")

@@ -5,10 +5,19 @@ on:
   pull_request:
     paths:
       - '.github/workflows/combined-migration-qualification.yml'
-      - 'include/storage/shielded_migration*.h'
-      - 'src/storage/shielded_migration*.cpp'
+      # This gate covers consensus, mining, RPC/wallet, storage and daemon
+      # recovery together. Changes to any runtime code or build dependency
+      # must qualify the combination, not only the migration implementation.
+      - 'include/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'depends/**'
+      - 'third_party/**'
+      - 'scripts/build-openssl-vendored.sh'
       - 'tools/migrate_shielded_datadir.cpp'
       - 'tests/integration/test_combined_migration_release_qualification.py'
+      - 'tests/mining/dinero_cpu_miner.py'
       - 'tests/integration/CMakeLists.txt'
       - 'tests/CMakeLists.txt'
 
