@@ -423,10 +423,25 @@ create_fat_lib "simulator" "${SIM_BUILD}" "${SIM_FAT}" "${OPENSSL_SIM_DIR}"
 create_fat_lib "macos-arm64" "${MAC_ARM64_BUILD}" "${MAC_ARM64_FAT}" "${OPENSSL_MAC_ARM64_DIR}"
 create_fat_lib "macos-x86_64" "${MAC_X86_64_BUILD}" "${MAC_X86_64_FAT}" "${OPENSSL_MAC_X86_64_DIR}"
 lipo -create "${MAC_ARM64_FAT}" "${MAC_X86_64_FAT}" -output "${MAC_UNIVERSAL_FAT}"
-lipo "${MAC_UNIVERSAL_FAT}" -verify_arch arm64 x86_64 || {
-    echo "ERROR: universal macOS NodeCore archive is missing an architecture" >&2
-    exit 1
-}
+# `lipo file -verify_arch arm64 x86_64` (the documented multi-arch form —
+# `man lipo`: "Because more than one arch_type can be verified at once,
+# all of the input files must appear before the -verify_arch flag") is
+# broken on this toolchain: it fails with "-verify_arch requires exactly
+# one input file", the same error lipo gives for a genuinely malformed
+# invocation, even though the file correctly precedes the flag and the
+# archive is provably correct (`lipo -info` reports both architectures).
+# Confirmed with Xcode 27.0 (27A266a) / this system's lipo — a toolchain-
+# version regression in the multi-arg form, not a usage bug here. Verified
+# single-arch calls (`-verify_arch arm64`, `-verify_arch x86_64`
+# separately) both work correctly on this same binary, so the check below
+# uses two single-arch calls instead of relying on the broken form, and
+# is portable to lipo versions where the multi-arg form does work too.
+for arch in arm64 x86_64; do
+    lipo "${MAC_UNIVERSAL_FAT}" -verify_arch "${arch}" || {
+        echo "ERROR: universal macOS NodeCore archive is missing architecture ${arch}" >&2
+        exit 1
+    }
+done
 
 # ==============================================================================
 # Step 4: Create xcframework
