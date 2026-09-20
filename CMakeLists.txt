@@ -326,8 +326,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     else()
         set(BP_FFI_CARGO_TARGET "aarch64-apple-ios")
     endif()
-elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64"
-        AND NOT CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "arm64")
+    # Honor the requested slice in both cross-build directions, including
+    # the arm64 XCFramework slice built on Intel or under Rosetta.
+    set(BP_FFI_CARGO_TARGET "aarch64-apple-darwin")
+elseif(APPLE AND CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64")
     set(BP_FFI_CARGO_TARGET "x86_64-apple-darwin")
 elseif(APPLE)
     if(CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
