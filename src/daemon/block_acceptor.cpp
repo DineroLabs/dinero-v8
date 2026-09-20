@@ -3129,21 +3129,7 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
         // Step 5: Apply undo (atomic batch)
         rocksdb::WriteBatch batch;
 
-        // 5a. Delete all outputs created by this block using ChainDB
-        LOG_INFO("🗑️ Deleting " + std::to_string(undo.created.size()) + " outputs created by disconnected block...");
-        for (const auto& created : undo.created) {
-            // Remove UTXO from ChainDB
-            // Phase M.0: created.txid is already uint256 (no conversion needed)
-            auto status = chain_db->deleteCoin(token, created.txid, created.vout, &batch);
-            if (status != Status::Ok) {
-                LOG_ERROR("  ⚠️ Failed to delete UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
-                // This could happen if the UTXO was already spent in a later block (which shouldn't happen for tip invalidation)
-            } else {
-                LOG_INFO("  ✅ Deleted UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
-            }
-        }
-
-        // 5b. Restore all spent UTXOs using ChainDB
+        // 5a. Restore all spent UTXOs using ChainDB
         LOG_INFO("♻️ Restoring " + std::to_string(undo.spent.size()) + " UTXOs spent by disconnected block...");
         for (const auto& spent : undo.spent) {
             // Build Coin struct to restore
@@ -3173,6 +3159,21 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
             LOG_INFO("  ✅ Restored UTXO: " + spent.prev_txid.GetHex().substr(0, 16) + "...:" +
                      std::to_string(spent.prev_vout) + " (value=" + std::to_string(spent.value) +
                      ", height=" + std::to_string(spent.height) + ")");
+        }
+
+        // 5b. Delete exact created outpoints last: same-block spent outputs
+        // occur in both undo lists and must not survive the disconnect.
+        LOG_INFO("🗑️ Deleting " + std::to_string(undo.created.size()) + " outputs created by disconnected block...");
+        for (const auto& created : undo.created) {
+            // Remove UTXO from ChainDB
+            // Phase M.0: created.txid is already uint256 (no conversion needed)
+            auto status = chain_db->deleteCoin(token, created.txid, created.vout, &batch);
+            if (status != Status::Ok) {
+                LOG_ERROR("  ⚠️ Failed to delete UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
+                // This could happen if the UTXO was already spent in a later block (which shouldn't happen for tip invalidation)
+            } else {
+                LOG_INFO("  ✅ Deleted UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
+            }
         }
 
         // 5c. Get parent block header and chainwork

@@ -2865,6 +2865,19 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
         }
     };
 
+    // Undo includes inputs created earlier in this same block. Restore first,
+    // then delete the block's exact created outpoints so ephemeral outputs do
+    // not remain in the pre-block coin set. Keep the original undo indexing.
+    for (auto it = undo.spent_coins.rbegin(); it != undo.spent_coins.rend(); ++it) {
+        const auto& entry = *it;
+        OutPoint outpoint(TxId(entry.txid), entry.vout);
+        if (!consensus_utxo_set_->AddCoin(outpoint, entry.coin)) {
+            restore_legacy_on_failure();
+            error = "Failed to restore spent UTXO: " + entry.txid.GetHex();
+            return false;
+        }
+    }
+
     // Remove all non-coinbase transaction outputs (in reverse order)
     for (size_t i = block.vtx.size(); i > 1; --i) {
         const Transaction& tx = block.vtx[i - 1];
@@ -2877,17 +2890,6 @@ bool BlockValidator::DisconnectBlock(const Block& block, uint32_t height, const 
                 error = "Failed to delete tx output during disconnect";
                 return false;
             }
-        }
-    }
-
-    // Restore all spent UTXOs (in reverse order)
-    for (auto it = undo.spent_coins.rbegin(); it != undo.spent_coins.rend(); ++it) {
-        const auto& entry = *it;
-        OutPoint outpoint(TxId(entry.txid), entry.vout);
-        if (!consensus_utxo_set_->AddCoin(outpoint, entry.coin)) {
-            restore_legacy_on_failure();
-            error = "Failed to restore spent UTXO: " + entry.txid.GetHex();
-            return false;
         }
     }
 

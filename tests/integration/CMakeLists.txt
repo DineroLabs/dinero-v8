@@ -2494,6 +2494,13 @@ set_tests_properties(BlockAcceptorFeeLifecycle PROPERTIES
     LABELS "integration;consensus;csn;utreexo;mining;restart;reorg;mandatory"
     TIMEOUT 600 RUN_SERIAL TRUE)
 
+add_test(NAME CsnCpfpDisconnect
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_cpfp_disconnect.py)
+set_tests_properties(CsnCpfpDisconnect PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+
 # Offline mutation is deliberately confined to an explicitly marked regtest
 # fixture. This executable is never installed or linked into the daemon.
 if(UNIX AND NOT IOS)
