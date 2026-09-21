@@ -1782,6 +1782,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
                 fs.block_hash = header_hash;
                 fs.status = FetchStatus::MISSING;
                 fs.stored_pos = FilePosition();
+                fs.side_accepted = false;
                 expected_blocks_.insert(header_hash);
             }
         }

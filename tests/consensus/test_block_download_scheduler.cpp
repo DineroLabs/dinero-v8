@@ -3283,5 +3283,57 @@ int main() {
                   << " h2=" << offers_by_height[2] << " h3=" << offers_by_height[3] << std::endl;
     }
 
+    {
+    std::cout << "\n23. a fork replacement must not inherit side acceptance from another hash...\n";
+    dcs::HeaderChainSelector selector;
+    std::vector<uint256> a, b;
+    BuildLinearHeaders(selector, 6, &a);
+    std::vector<uint256> active{a[0]};
+    for (uint32_t h = 1; h <= 6; ++h) {
+        active.push_back(CreateTestHeader(active.back(), 3'000'000 + h).GetHash());
+    }
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("dinero_pr800_reseat_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    dinero::BlockStorage storage;
+    if (!Require(storage.init(dir) == dinero::Status::Ok, "real temporary block storage opens")) return 2;
+    dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+    int offers_a = 0, offers_b = 0;
+    bool change_during_scan = false, changed = false;
+    scheduler.SetConnectBlockCallback([&](const Block& block, const std::string&) {
+        if (block.GetHash() == a[1]) ++offers_a;
+        if (!b.empty() && block.GetHash() == b[0]) ++offers_b;
+        return dcs::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+    });
+    scheduler.SetGetBlockHashAtHeightCallback([&](uint32_t h, uint256& out) {
+        // This callback runs after ScanForMissingBlocks copies its best-header
+        // identity and releases the selector lock. Materialize a real, heavier
+        // branch here to reproduce a header arrival at that exact interleaving.
+        if (change_during_scan && !changed && h == 6) {
+            AppendForkHeaders(selector, a[0], 7, &b, 2'000'000);
+            changed = true;
+        }
+        if (h >= active.size()) return false;
+        out = active[h];  // active tip remains on its own coherent branch
+        return true;
+    });
+    scheduler.SetLocalTipHeight(0);
+    scheduler.OnHeadersProcessed();
+    if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, a[1])), "original body is received")) return 2;
+    scheduler.SetLocalTipHeight(6);
+    scheduler.Tick();
+    if (!Require(offers_a == 1, "original body is side-accepted exactly once")) return 2;
+    change_during_scan = true;
+    scheduler.OnHeadersProcessed();
+    if (!Require(changed, "heavier headers arrived during real scan")) return 2;
+    if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, b[0])), "replacement body is received")) return 2;
+    for (int i = 0; i < 5; ++i) scheduler.Tick();
+    const bool ok = Require(offers_b == 1,
+        "replacement hash must be offered once; actual offers=" + std::to_string(offers_b));
+    std::cout << "original offers=" << offers_a << " replacement offers=" << offers_b << '\n';
+    storage.close();
+    std::filesystem::remove_all(dir);
+    if (!ok) return 1;
+}
+
     return 0;
 }
