@@ -565,7 +565,8 @@ P2PMessage P2PMessage::create_version(uint32_t protocol_version, uint32_t best_h
     if (services == 0) {
         services = ServiceFlags::NODE_NETWORK
                  | ServiceFlags::NODE_UTREEXO
-                 | ServiceFlags::NODE_DINERO_V2;
+                 | ServiceFlags::NODE_DINERO_V2
+                 | ServiceFlags::NODE_COMPACT_TIMING_V1;
     }
     for (int i = 0; i < 8; i++) {
         payload.push_back((services >> (i * 8)) & 0xFF);
@@ -3342,6 +3343,11 @@ bool P2PManager::send_peer_message(PeerInfo* peer, const P2PMessage& message) {
     if (!peer) {
         return false;
     }
+    // Maintenance/control sends can bypass send_to_peer(). Handshake traffic
+    // is checked at the version/completion gates; established sessions must
+    // obey the current policy here too. The periodic sweep closes idle peers.
+    if (peer->release_handshake_complete.load(std::memory_order_acquire) &&
+        !release_peer_allowed(*peer)) return false;
     if (peer->via_relay) {
         if (peer->via_relay->encrypted_quic) {
             if (!encrypted_relay_transport_allowed()) {
@@ -3446,6 +3452,12 @@ bool P2PManager::enqueue_relay_frame(const std::string& virtual_peer_key,
 }
 
 #ifdef DINERO_TEST_BUILD
+void P2PManager::test_set_release_capability(const std::string& key, bool capable, bool complete) {
+    std::lock_guard<std::mutex> lock(peers_mutex_);
+    auto peer = connected_peers_.at(key);
+    peer->compact_timing_capable.store(capable);
+    peer->release_handshake_complete.store(complete);
+}
 void P2PManager::test_cleanup_peer(const std::string& peer_address) {
     cleanup_peer(peer_address);
 }
@@ -5443,6 +5455,9 @@ static void parse_version_payload(const std::vector<uint8_t>& payload, PeerInfo*
     // Parse protocol version + advertised service flags.
     peer->protocol_version = ReadLE32(payload, 0);
     peer->service_flags = ReadLE64(payload, 4);
+    peer->compact_timing_capable.store(
+        (peer->service_flags & ServiceFlags::NODE_COMPACT_TIMING_V1) != 0,
+        std::memory_order_release);
 
     // NAT traversal Phase 1A: capture the remote nonce so we can sign it
     // back in our `dineroid` message. Layout is fixed by the Bitcoin version
@@ -5517,6 +5532,59 @@ static void seed_peer_sync_telemetry(PeerInfo* peer, uint32_t local_height) {
     peer->synced_blocks = std::max(peer->synced_blocks, effective_height);
 }
 
+bool P2PManager::release_peer_allowed(const PeerInfo& peer) const {
+    return !release_cutoff_provider_ || !release_cutoff_provider_() ||
+        peer.compact_timing_capable.load(std::memory_order_acquire);
+}
+
+bool P2PManager::check_release_handshake(PeerInfo* peer) {
+    if (release_peer_allowed(*peer)) return true;
+    const std::string reason = "upgrade-required: compact-v1-60s-v1";
+    std::cout << "[Handshake] " << reason << std::endl;
+    // Standard reject framing (short CompactSize strings), best effort. Old
+    // clients may display the reason; the server cannot change their UI.
+    P2PMessage reject;
+    reject.command = "reject";
+    reject.payload = {7, 'v', 'e', 'r', 's', 'i', 'o', 'n', 0x11}; // REJECT_OBSOLETE
+    reject.payload.push_back(static_cast<uint8_t>(reason.size()));
+    reject.payload.insert(reject.payload.end(), reason.begin(), reason.end());
+    send_peer_message(peer, reject);
+    return false;
+}
+
+bool P2PManager::enforce_release_compatibility(const std::string& key) {
+    // Query outside peers_mutex_: never acquire a chain lock under a peer lock.
+    if (!release_cutoff_provider_ || !release_cutoff_provider_()) return true;
+    std::shared_ptr<PeerInfo> peer;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        const auto it = connected_peers_.find(key);
+        if (it != connected_peers_.end()) peer = it->second;
+    }
+    if (!peer) return false;
+    if (peer->compact_timing_capable.load(std::memory_order_acquire)) return true;
+    std::cout << "[P2P] upgrade-required: compact-v1-60s-v1 peer=" << key << std::endl;
+    disconnect_peer(key);
+    return false;
+}
+
+void P2PManager::sweep_release_compatibility() {
+    if (!release_cutoff_provider_ || !release_cutoff_provider_()) return;
+    std::vector<std::string> peers;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        for (const auto& [key, peer] : connected_peers_) {
+            // Handshakes enforce their own policy. Do not evict an upgraded
+            // peer while its version has not yet been read/published.
+            if (peer && peer->is_connected &&
+                peer->release_handshake_complete.load(std::memory_order_acquire) &&
+                !peer->compact_timing_capable.load(std::memory_order_acquire))
+                peers.push_back(key);
+        }
+    }
+    for (const auto& key : peers) enforce_release_compatibility(key);
+}
+
 bool P2PManager::perform_handshake(PeerInfo* peer) {
     // P2P sync fix: Get actual chain height instead of hardcoded 0
     uint32_t our_height = height_provider_ ? height_provider_() : 0;
@@ -5553,6 +5621,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
         // P2P sync fix: Parse peer's version info (including their chain height)
         parse_version_payload(response->payload, peer);
+        if (!check_release_handshake(peer)) return false;
         if (version_nonces_.Contains(peer->their_nonce)) {
             std::cout << "[Handshake] Rejected self-connection by version nonce from "
                       << peer->to_string() << std::endl;
@@ -5622,6 +5691,7 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
 
         // P2P sync fix: Parse peer's version info (including their chain height)
         parse_version_payload(version_msg->payload, peer);
+        if (!check_release_handshake(peer)) return false;
         if (version_nonces_.Contains(peer->their_nonce)) {
             std::cout << "[Handshake] Rejected self-connection by version nonce from "
                       << peer->to_string() << std::endl;
@@ -5676,6 +5746,10 @@ bool P2PManager::perform_handshake(PeerInfo* peer) {
         // after they registered (dedup means refreshes won't re-broadcast).
         SendRelayRegistryToNewPeer(peer);
     }
+
+    // Re-evaluate after waits: activation may have changed during handshake.
+    if (!check_release_handshake(peer)) return false;
+    peer->release_handshake_complete.store(true, std::memory_order_release);
 
     P2PMessage sendcmpct_msg;
     sendcmpct_msg.command = "sendcmpct";
@@ -6342,6 +6416,7 @@ std::unique_ptr<P2PMessage> P2PManager::receive_message(int socket_fd) {
 }
 
 void P2PManager::process_message(const std::string& peer_address, const P2PMessage& message) {
+    if (!enforce_release_compatibility(peer_address)) return;
     // Handle built-in messages
     if (message.command == "ping") {
         handle_ping(peer_address, message);
@@ -6549,6 +6624,7 @@ void P2PManager::relay_addresses_to_peers(
 }
 
 bool P2PManager::send_to_peer(const std::string& peer_address, const P2PMessage& message) {
+    if (!enforce_release_compatibility(peer_address)) return false;
     if (!network_active_.load(std::memory_order_acquire)) {
         return false;
     }
@@ -7094,6 +7170,9 @@ void P2PManager::outbox_loop() {
             outbox_queue_.pop_front();
         }
         
+        // Recheck queued traffic at dispatch, not only when enqueued.
+        if (!enforce_release_compatibility(msg.peer_id)) continue;
+
         // Find peer + classify as direct or relay-virtual.
         // Relay-virtual peers have no real TCP socket_fd; they route bytes
         // through QuicSession::EnqueueOutgoingStream instead.
@@ -7675,6 +7754,8 @@ void P2PManager::keepalive_loop() {
         if (!network_active_.load(std::memory_order_acquire)) {
             continue;
         }
+
+        sweep_release_compatibility();
 
         // NAT Phase C3 slice 3: piggyback circuit sweep on the 30s
         // keepalive tick. O(25) work; sweeps idle circuits + lets the

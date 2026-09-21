@@ -1,3 +1,4 @@
+#include "consensus/release_profile.h"
 // Canonical ChainParams implementation
 // This is the ONLY file that defines g_chainParams and implements Params()
 // All other chainparams*.cpp files MUST be deleted to prevent ODR violations
@@ -525,6 +526,11 @@ std::string ConsensusChecksum(const ChainParams& params) {
            << params.shielded_compact_activation_height << '\n';
     }
 
+    if (params.release_v8113_activation_height != UINT32_MAX) {
+        ss << "release_profile=" << consensus::kReleaseProfileV8113 << '\n'
+           << "release_activation_height=" << params.release_v8113_activation_height << '\n';
+    }
+
     // Preserve all existing network fingerprints when the mode is disabled.
     // Include compact activation and maturity in the isolated profile identity.
     if (params.regtest_enforce_pow) {
@@ -587,6 +593,8 @@ const ChainParams& ParamsImpl() {
 // `const ChainParams&` rather than reading the globals is what makes that
 // mistake impossible to reintroduce -- there is no global here to read.
 static void ValidateChainParams(const ChainParams& params) {
+    if (!consensus::ReleaseProfileConfigurationValid(params))
+        throw std::runtime_error("invalid chainparams: joint release requires matching compact, timing and service heights");
     if (!consensus::shielded::CompactActivationConfigurationValid(params)) {
         throw std::runtime_error(
             "invalid chainparams: compact shielded activation must follow "
