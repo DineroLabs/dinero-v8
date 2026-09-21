@@ -166,8 +166,9 @@ struct Transaction {
     // bundle commits into txid so shielded-only spends cannot collide.
     static constexpr int32_t TX_VERSION_SHIELDED_V2  = 6;
 
-    // Experimental regtest version. Not recognized by ordinary builds and not
-    // assigned for any production network. The owner signs this version.
+    // Historical regtest prototype only. Ordinary builds must preserve the
+    // legacy transparent interpretation of this formerly unreserved version.
+    // Production compact proofs use the existing v6 envelope and DZE1 proof tag.
     static constexpr int32_t TX_VERSION_COMPACT_REGTEST = 0x40000006;
     static constexpr bool IsCompactRegtestVersion(int32_t tx_version) {
 #ifdef DINERO_ENABLE_COMPACT_REGTEST

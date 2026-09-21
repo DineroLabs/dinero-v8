@@ -1,4 +1,4 @@
-// Research codec: tests/fuzzers and explicitly enabled compact-regtest builds only.
+// Compact shielded v1 codec. The caller still verifies expanded proofs.
 #pragma once
 
 #include "zk/zkvm/hyrax.h"
@@ -7,11 +7,11 @@
 #include <span>
 #include <vector>
 
-namespace dinero::experimental {
+namespace dinero::consensus::shielded {
 
 // Layout comes from the verifier's circuit, never from untrusted proof dimensions.
 // The version is the historical inner proof profile (0x04 output / 0x06 spend).
-// DZE1 is an experimental file tag, not a proposed/assigned consensus version.
+// Compact v1 retains the qualified DZE1 container tag and fixed circuit hashes.
 // Accepted fields have canonical scalar/point encodings, but callers must still
 // cryptographically verify the expanded proof. Historical decoding is untouched.
 class CompactSpartanCodec {
@@ -29,4 +29,4 @@ class CompactSpartanCodec {
     std::vector<uint8_t> circuit_hash_;
 };
 
-} // namespace dinero::experimental
+} // namespace dinero::consensus::shielded

@@ -26,6 +26,8 @@
 #include "daemon/services/config_service.h"
 #include "daemon/services/wallet_service.h"
 #include "consensus/subsidy.h"
+#include "consensus/shielded/compact.h"
+#include "primitives/transaction.h"
 #include "consensus/chainparams.h"
 #include "storage/chain_direct.h"
 #include "common/logger.h"
@@ -424,6 +426,11 @@ din::Json rpc_context_getconsensusinfo(const ExecutionContext& ctx, const din::J
         result["target_spacing_height"] = static_cast<int64_t>(spacing_height);
         result["target_spacing_seconds"] = static_cast<int>(chainparams.TargetSpacing(spacing_height));
         result["sixty_second_activation_height"] = static_cast<int64_t>(chainparams.sixty_second_activation_height);
+        result["shielded_compact_supported"] = true;
+        result["shielded_compact_proof_encoding"] = "DZE1/v1";
+        result["shielded_compact_version"] = static_cast<int64_t>(dinero::Transaction::TX_VERSION_SHIELDED_V2);
+        result["shielded_compact_activation_height"] = static_cast<int64_t>(chainparams.shielded_compact_activation_height);
+        result["shielded_compact_active"] = dinero::consensus::shielded::CompactRulesFor(chainparams).Active(spacing_height);
         result["regtest_pow_enforced"] = chainparams.regtest_enforce_pow;
 
         // Current chain state

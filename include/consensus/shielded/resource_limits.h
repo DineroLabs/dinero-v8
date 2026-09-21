@@ -1,7 +1,7 @@
 #pragma once
 
 #include "consensus/limits.h"
-#include "consensus/shielded/compact_regtest.h"
+#include "consensus/shielded/compact.h"
 #include "consensus/shielded/shielded_serialization.h"
 #include "primitives/transaction.h"
 #include <cstdint>
@@ -72,17 +72,26 @@ inline bool CheckAuthBundleCounts(size_t spends, size_t outputs) {
 // Auth height is supplied by the caller, never inferred from a proof/version.
 inline bool CheckAuthTransactionResources(const Transaction& tx, uint64_t height,
                                          uint32_t activation, size_t& proofs,
-                                         std::string& error, CompactRegtestRules compact_rules = {}) {
+                                         std::string& error, CompactShieldedRules compact_rules = {}) {
     proofs = 0;
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
     if (Transaction::IsCompactRegtestVersion(tx.version) &&
         (!compact_rules.Active(height) || !AuthResourcesActive(height, activation) ||
          !HasShieldedResources(tx) || !tx.has_explicit_fee)) {
-        error = "compact-regtest-not-active-or-malformed";
+        error = "compact-shielded-not-active-or-malformed";
         return false;
     }
-#endif
-    if (!AuthResourcesActive(height, activation) || !HasShieldedResources(tx)) return true;
+    if (!HasShieldedResources(tx)) return true;
+    if (!AuthResourcesActive(height, activation)) {
+        // Do not tighten historical full-proof bundle parsing before Auth.
+        // A successfully decoded DZE1 claim, however, must never escape the
+        // compact activation check via this historical early return.
+        ShieldedBundle candidate;
+        if (DeserializeShieldedBundle(tx.shielded_bundle_bytes, &candidate) == BundleDecodeError::Ok &&
+            HasCompactProofs(candidate)) {
+            error = "compact-shielded-not-active-or-malformed"; return false;
+        }
+        return true;
+    }
     // Auth bundles must commit to their bytes through txid. Legacy v5 carries
     // the bundle only in witness serialization, so granting it the larger
     // resource profile would preserve its mempool-identity ambiguity.
@@ -94,6 +103,10 @@ inline bool CheckAuthTransactionResources(const Transaction& tx, uint64_t height
     ShieldedBundle bundle;
     if (DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle) != BundleDecodeError::Ok) {
         error = "shielded-bundle-malformed"; return false;
+    }
+    if (HasCompactProofs(bundle) &&
+        (!compact_rules.Active(height) || !tx.has_explicit_fee)) {
+        error = "compact-shielded-not-active-or-malformed"; return false;
     }
     if (!CheckAuthBundleCounts(bundle.spends.size(), bundle.outputs.size())) {
         error = "shielded-bundle-resource-limit"; return false;
@@ -111,7 +124,7 @@ struct AuthBlockResourceUsage {
 inline bool AccumulateAuthBlockResources(const Transaction& tx, uint64_t height,
                                          uint32_t activation,
                                          AuthBlockResourceUsage& usage,
-                                         std::string& error, CompactRegtestRules compact_rules = {}) {
+                                         std::string& error, CompactShieldedRules compact_rules = {}) {
     size_t proofs = 0;
     if (!CheckAuthTransactionResources(tx, height, activation, proofs, error, compact_rules)) {
         return false;
@@ -136,10 +149,7 @@ inline bool AccumulateAuthBlockResources(const Transaction& tx, uint64_t height,
 template <typename Transactions>
 inline bool CheckAuthBlockResources(const Transactions& transactions, uint64_t height,
                                    uint32_t activation, std::string& error,
-                                   CompactRegtestRules compact_rules = {}) {
-#ifndef DINERO_ENABLE_COMPACT_REGTEST
-    if (!AuthResourcesActive(height, activation)) return true;
-#endif
+                                   CompactShieldedRules compact_rules = {}) {
     AuthBlockResourceUsage usage;
     for (const auto& tx : transactions) {
         if (!AccumulateAuthBlockResources(tx, height, activation, usage, error, compact_rules))

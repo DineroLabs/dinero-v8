@@ -12,6 +12,7 @@ EXPECTED_TESTS = (
     'P2PHeaderParserAlignment', 'DaemonServiceRelease',
     'PackedHeaderAlignment', 'SerializationEmptyBuffers',
     'CompactRegtestFixedVectors', 'CompactRegtestVectorOracle', 'ShieldedResourceLimits',
+    'CompactProductionV6Vectors', 'CompactProductionV6Oracle',
     'ShieldedReindexEquivalence', 'ShieldedAuthRelayLifecycle', 'CompactRegtestLifecycle',
     'CsnManualInvalidation', 'CSNShieldedReorgInvertibility',
 )

@@ -257,22 +257,21 @@ static ShieldedValidationError ValidateExpandedShieldedBundle(
 
 ShieldedValidationError ValidateShieldedBundle(const ShieldedBundle& bundle,
                                                const ValidationContext& ctx) {
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (Transaction::IsCompactRegtestVersion(ctx.transaction_version)) {
-        if (!ctx.compact_regtest_rules.Active(ctx.block_height) ||
+    if (Transaction::IsCompactRegtestVersion(ctx.transaction_version) || HasCompactProofs(bundle)) {
+        if (!Transaction::IsShieldedAuthVersion(ctx.transaction_version) ||
+            !ctx.compact_rules.Active(ctx.block_height) ||
             !AuthResourcesActive(ctx.block_height, ctx.shielded_spend_auth_activation_height) ||
             ctx.block_height < ctx.shielded_input_binding_activation_height ||
             ctx.block_height < ctx.shielded_cv_binding_activation_height) {
             return ShieldedValidationError::NotActive;
         }
         ShieldedBundle expanded;
-        if (!ExpandCompactRegtestBundle(bundle, expanded))
+        if (!ExpandCompactShieldedBundle(bundle, expanded))
             return ShieldedValidationError::ProofInvalid;
         // Only a proof-verification view. The original signed context and all
         // transaction, outpoint, block and Utreexo identities remain unchanged.
         return ValidateExpandedShieldedBundle(expanded, ctx);
     }
-#endif
     return ValidateExpandedShieldedBundle(bundle, ctx);
 }
 
@@ -288,7 +287,7 @@ ValidationContext BuildShieldedValidationContext(
     uint32_t                     shielded_cv_binding_activation_height,
     uint32_t                     shielded_spend_auth_activation_height,
     uint32_t                     shielded_private_covenant_activation_height,
-    CompactRegtestRules           compact_regtest_rules) {
+    CompactShieldedRules           compact_rules) {
     ValidationContext ctx(
         nullifier_set,
         commitment_tree,
@@ -305,7 +304,7 @@ ValidationContext BuildShieldedValidationContext(
         shielded_spend_auth_activation_height;
     ctx.shielded_private_covenant_activation_height = shielded_private_covenant_activation_height;
     ctx.transaction_version = tx.version;
-    ctx.compact_regtest_rules = compact_regtest_rules;
+    ctx.compact_rules = compact_rules;
     ctx.private_covenant_envelope = tx.vin.empty() && tx.vout.empty() && tx.has_explicit_fee;
     return ctx;
 }

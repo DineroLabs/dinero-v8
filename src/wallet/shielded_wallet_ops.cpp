@@ -6,7 +6,7 @@
  */
 
 #include "wallet/shielded_wallet_ops.h"
-#include "consensus/shielded/compact_regtest.h"
+#include "consensus/shielded/compact.h"
 #include "wallet/shielded_derivation.h"
 
 #include "consensus/shielded/binding_sig.h"
@@ -162,7 +162,8 @@ uint64_t RequiredFeeForTx(const dinero::Transaction& tx, double min_fee_rate) {
 
 AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
                                           uint64_t value_una,
-                                          bool cv_bound) {
+                                          bool cv_bound,
+                                          bool compact_proofs) {
     AttachShieldResult out;
 
     if (value_una == 0) {
@@ -240,7 +241,9 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
     // 4. Compute transparent-envelope sighash. tx.shielded_bundle_bytes is
     //    expected empty here; the sighash function only hashes
     //    vins/vouts/locktime/version (not bundle bytes, not witnesses).
-    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
+    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx,
+        compact_proofs && tx.version == dinero::Transaction::TX_VERSION_SHIELDED_V2
+            ? sh::ShieldedProofEncoding::CompactV1 : sh::ShieldedProofEncoding::Full);
 
     // 5. Build the bundle (no spends, one output, value_balance = +value).
     sh::ShieldedBundle bundle{};
@@ -261,14 +264,13 @@ AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
-        !sh::PackCompactRegtestBundle(bundle)) {
+    if ((compact_proofs || dinero::Transaction::IsCompactRegtestVersion(tx.version)) &&
+        (!dinero::Transaction::IsShieldedAuthVersion(tx.version) ||
+         !sh::PackCompactShieldedBundle(bundle))) {
         out.status = OpStatus::ProofError;
-        out.error = "compact-regtest-unsupported-proof";
+        out.error = "compact-shielded-unsupported-proof";
         return out;
     }
-#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -294,7 +296,8 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
                                               uint64_t fee_una,
                                               bool cv_bound,
-                                              std::optional<UnshieldAutoFee> auto_fee) {
+                                              std::optional<UnshieldAutoFee> auto_fee,
+                                              bool compact_proofs) {
     AttachUnshieldResult out;
     if (auto_fee && (!std::isfinite(auto_fee->min_fee_rate) || auto_fee->min_fee_rate < 0)) {
         out.status = OpStatus::InvalidParams; out.error = "invalid_min_fee_rate"; return out;
@@ -413,7 +416,9 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
     // 4. Compute transparent-envelope sighash (commits to vout, locktime,
     //    version — recipient swap or payout tweak invalidates). The value
     //    balance check separately enforces the explicit fee.
-    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
+    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx,
+        compact_proofs && tx.version == dinero::Transaction::TX_VERSION_SHIELDED_V2
+            ? sh::ShieldedProofEncoding::CompactV1 : sh::ShieldedProofEncoding::Full);
 
     // 5. Build bundle: one spend, zero outputs, value_balance = -note_value.
     sh::ShieldedBundle bundle{};
@@ -432,14 +437,13 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
-        !sh::PackCompactRegtestBundle(bundle)) {
+    if ((compact_proofs || dinero::Transaction::IsCompactRegtestVersion(tx.version)) &&
+        (!dinero::Transaction::IsShieldedAuthVersion(tx.version) ||
+         !sh::PackCompactShieldedBundle(bundle))) {
         out.status = OpStatus::ProofError;
-        out.error = "compact-regtest-unsupported-proof";
+        out.error = "compact-shielded-unsupported-proof";
         return out;
     }
-#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -560,7 +564,8 @@ UnshieldResult Unshield(UnshieldParams params,
 AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
                                               uint64_t fee_una,
-                                              bool cv_bound) {
+                                              bool cv_bound,
+                                              bool compact_proofs) {
     AttachTransferResult out;
     if (note.key_scheme == NoteKeyScheme::PrivateCovenant) {
         out.status = OpStatus::InvalidParams; out.error = "private_covenant_requires_contract_spend"; return out;
@@ -710,7 +715,9 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
     planned_output.nonce          = RandomHash();
 
     // ── Sighash: empty vin/vout, locktime, version, explicit_fee.
-    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
+    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx,
+        compact_proofs && tx.version == dinero::Transaction::TX_VERSION_SHIELDED_V2
+            ? sh::ShieldedProofEncoding::CompactV1 : sh::ShieldedProofEncoding::Full);
 
     // ── Bundle: one spend, one output, value_balance = -fee_una.
     //    sum(out) - sum(spend) = (note_value - fee) - note_value = -fee.
@@ -733,14 +740,13 @@ AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
         return out;
     }
 
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
-        !sh::PackCompactRegtestBundle(bundle)) {
+    if ((compact_proofs || dinero::Transaction::IsCompactRegtestVersion(tx.version)) &&
+        (!dinero::Transaction::IsShieldedAuthVersion(tx.version) ||
+         !sh::PackCompactShieldedBundle(bundle))) {
         out.status = OpStatus::ProofError;
-        out.error = "compact-regtest-unsupported-proof";
+        out.error = "compact-shielded-unsupported-proof";
         return out;
     }
-#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -775,7 +781,8 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     const std::vector<UnshieldNoteInput>& spends,
     const std::vector<uint64_t>& output_values,
     uint64_t fee_una,
-    bool cv_bound) {
+    bool cv_bound,
+    bool compact_proofs) {
     AttachMultiTransferResult out;
     const bool auth_resources = std::any_of(spends.begin(), spends.end(), [](const auto& n) { return n.key_scheme == NoteKeyScheme::Auth; });
     if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
@@ -962,7 +969,9 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     }
 
     // ── Sighash + bundle.
-    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
+    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx,
+        compact_proofs && tx.version == dinero::Transaction::TX_VERSION_SHIELDED_V2
+            ? sh::ShieldedProofEncoding::CompactV1 : sh::ShieldedProofEncoding::Full);
     sh::ShieldedBundle bundle{};
     const auto build_rc = sh::BuildShieldedBundle(planned_spends, planned_outputs,
                                                   tx_sighash, bundle);
@@ -984,14 +993,13 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
         return out;
     }
 
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
-        !sh::PackCompactRegtestBundle(bundle)) {
+    if ((compact_proofs || dinero::Transaction::IsCompactRegtestVersion(tx.version)) &&
+        (!dinero::Transaction::IsShieldedAuthVersion(tx.version) ||
+         !sh::PackCompactShieldedBundle(bundle))) {
         out.status = OpStatus::ProofError;
-        out.error = "compact-regtest-unsupported-proof";
+        out.error = "compact-shielded-unsupported-proof";
         return out;
     }
-#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;
@@ -1227,7 +1235,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     bool cv_bound,
     bool spend_auth,
     const AddressedRecipient* change_recipient,
-    const OutgoingViewEmissionContext* outgoing) {
+    const OutgoingViewEmissionContext* outgoing,
+    bool compact_proofs) {
     AttachAddressedTransferResult out;
     const bool auth_resources = spend_auth;
     if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
@@ -1419,7 +1428,9 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         }
     }
 
-    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
+    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx,
+        compact_proofs && tx.version == dinero::Transaction::TX_VERSION_SHIELDED_V2
+            ? sh::ShieldedProofEncoding::CompactV1 : sh::ShieldedProofEncoding::Full);
     sh::ShieldedBundle bundle{};
     const auto build_rc = sh::BuildShieldedBundle(planned_spends, planned_outputs,
                                                   tx_sighash, bundle);
@@ -1437,14 +1448,13 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
         return out;
     }
 
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
-        !sh::PackCompactRegtestBundle(bundle)) {
+    if ((compact_proofs || dinero::Transaction::IsCompactRegtestVersion(tx.version)) &&
+        (!dinero::Transaction::IsShieldedAuthVersion(tx.version) ||
+         !sh::PackCompactShieldedBundle(bundle))) {
         out.status = OpStatus::ProofError;
-        out.error = "compact-regtest-unsupported-proof";
+        out.error = "compact-shielded-unsupported-proof";
         return out;
     }
-#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         OPENSSL_cleanse(change_secret_key.data(), change_secret_key.size());
@@ -1494,7 +1504,8 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     const std::array<uint8_t, 512>* recipient_memo,
     bool cv_bound,
     bool spend_auth,
-    const OutgoingViewEmissionContext* outgoing) {
+    const OutgoingViewEmissionContext* outgoing,
+    bool compact_proofs) {
     AttachShieldResult out;
     const bool auth_resources = spend_auth;
     if (auth_resources && !dinero::Transaction::IsShieldedAuthVersion(tx.version)) {
@@ -1542,7 +1553,9 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
 
     // Sighash over the transparent envelope (vins/change/locktime/version/
     // explicit_fee); bundle bytes are not in the sighash.
-    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx);
+    const sh::Hash tx_sighash = sh::ComputeShieldedTxSighash(tx,
+        compact_proofs && tx.version == dinero::Transaction::TX_VERSION_SHIELDED_V2
+            ? sh::ShieldedProofEncoding::CompactV1 : sh::ShieldedProofEncoding::Full);
 
     // Bundle: no spends, one output, value_balance = +value (transparent
     // coins entering the pool), exactly like BuildShieldBundleForTx.
@@ -1561,14 +1574,13 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
         return out;
     }
 
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (dinero::Transaction::IsCompactRegtestVersion(tx.version) &&
-        !sh::PackCompactRegtestBundle(bundle)) {
+    if ((compact_proofs || dinero::Transaction::IsCompactRegtestVersion(tx.version)) &&
+        (!dinero::Transaction::IsShieldedAuthVersion(tx.version) ||
+         !sh::PackCompactShieldedBundle(bundle))) {
         out.status = OpStatus::ProofError;
-        out.error = "compact-regtest-unsupported-proof";
+        out.error = "compact-shielded-unsupported-proof";
         return out;
     }
-#endif
     auto bundle_bytes = sh::SerializeShieldedBundle(bundle);
     if (bundle_bytes.empty()) {
         out.status = OpStatus::InternalError;

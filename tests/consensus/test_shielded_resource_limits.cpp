@@ -171,7 +171,7 @@ TEST(ShieldedResources, PackageProfileIsScopedAndAccommodatesStandaloneMaximum) 
 
 #ifdef DINERO_ENABLE_COMPACT_REGTEST
 namespace {
-constexpr sh::CompactRegtestRules kCompactRules{true, 124};
+constexpr sh::CompactShieldedRules kCompactRules{true, 124};
 Transaction CompactSizedTx(size_t bytes) {
     auto tx = SizedTx(bytes);
     tx.version = Transaction::TX_VERSION_COMPACT_REGTEST;

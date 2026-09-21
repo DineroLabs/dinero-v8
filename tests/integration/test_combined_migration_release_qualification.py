@@ -19,8 +19,8 @@ dinero::storage::MigrateShieldedDatadirCopy engine through its existing
 public API. Migration internals, lifecycle leases and the separate SR-1
 recovery FFI remain Codex's.
 
-Requires DINERO_ENABLE_COMPACT_REGTEST=ON at build time (the compact
-transaction-version assertions in phase 4 need it) — this script asserts
+Requires DINERO_ENABLE_COMPACT_REGTEST=ON at build time (the isolated
+regtest activation-height override needs it) — this script asserts
 that support is actually present before doing anything else, rather than
 silently degrading to ordinary shield/unshield coverage or requesting
 compact activation against a build that will reject it at startup.
@@ -75,7 +75,7 @@ COINBASE_MATURITY = 100
 # change to one doesn't silently break the other.
 PREMINE_BLOCKS = COINBASE_MATURITY + 5
 TX_VERSION_SHIELDED_V2 = 6
-TX_VERSION_COMPACT_REGTEST = 0x40000006  # include/primitives/transaction.h
+TX_VERSION_SHIELDED_COMPACT = 6  # Production uses v6 framing plus DZE1 proofs.
 
 # .resolve() is load-bearing, not cosmetic: on macOS both the default
 # tempdir (/var/folders/...) and /tmp itself are symlinks to /private/...,
@@ -593,7 +593,7 @@ def note_values(which):
 def compact_support_present():
     """Probe whether this build actually has DINERO_ENABLE_COMPACT_REGTEST
     compiled in, per src/daemon/main.cpp:552-556's explicit exit(1) with
-    'Compact regtest support is not compiled into this build.' Fail loudly
+    'Compact regtest activation override is not compiled into this build.' Fail loudly
     and distinctly here rather than letting the very first daemon start
     below crash with a confusing message (Codex's review, point 1)."""
     probe_dir = WORK / "compact-probe"
@@ -816,12 +816,21 @@ def main():
 
     compact_unshield = rpc("candidate", "wallet.unshield", {"amount_una": 5000000, "fee_una": 1000000})
     compact_txid = compact_unshield["txid"]
+    # Capture the exact wire bytes while the transaction is still in mempool;
+    # the bare getrawtransaction alias cannot find confirmed transactions.
+    # After mining, bind this independently parsed transaction to persisted
+    # block bytes as well as the block's txid list.
+    compact_raw = bytes.fromhex(rpc("candidate", "wallet.getrawtransaction", [compact_txid])["hex"])
+    from helpers.compact_regtest_oracle import inspect as inspect_compact
+    inspect_compact(compact_raw, compact_txid)
     mine("candidate", 1)
     compact_block = tip_hash("candidate")
     assert block_contains("candidate", compact_block, compact_txid), "compact unshield was not included in the mined block"
-    assert tx_version("candidate", compact_txid) == TX_VERSION_COMPACT_REGTEST, (
-        f"post-activation unshield did not use the compact version 0x{TX_VERSION_COMPACT_REGTEST:x}")
-    print(f"[PASS] post-activation unshield used compact version 0x{TX_VERSION_COMPACT_REGTEST:x} "
+    assert tx_version("candidate", compact_txid) == TX_VERSION_SHIELDED_COMPACT, (
+        f"post-activation unshield did not use the compact version 0x{TX_VERSION_SHIELDED_COMPACT:x}")
+    persisted_block = bytes.fromhex(rpc("candidate", "getblock", [compact_block, 0]))
+    assert persisted_block.count(compact_raw) == 1, "mined block changed the independently checked compact bytes"
+    print(f"[PASS] post-activation unshield used the compact v6 profile 0x{TX_VERSION_SHIELDED_COMPACT:x} "
           f"and was included at height {height('candidate')}", flush=True)
 
     # Exact subsidy-plus-actual-fees, not just positive (Codex's review) —

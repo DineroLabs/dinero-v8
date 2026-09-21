@@ -1,5 +1,5 @@
 // Experimental codec only: no daemon parser or new consensus acceptance path.
-#include "../contrib/benchmarks/compact_spartan_codec.h"
+#include "consensus/shielded/compact_spartan_codec.h"
 #include "zk/zkvm/r1cs_spartan.h"
 #include <algorithm>
 #include <cstdlib>
@@ -9,7 +9,7 @@
 
 namespace {
 using namespace dinero::zk::zkvm;
-using dinero::experimental::CompactSpartanCodec;
+using dinero::consensus::shielded::CompactSpartanCodec;
 
 struct Fixture {
     R1CS circuit;

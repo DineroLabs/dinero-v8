@@ -97,7 +97,15 @@ Hash ComputeBindingSighash(const ShieldedBundle& bundle,
 
 namespace dinero::consensus::shielded {
 
+enum class ShieldedProofEncoding { Full, CompactV1 };
+// Verifier/caller with a finalized transaction: derive encoding from its proof
+// fields. Historical v5/v6 full proofs keep the v1 domain unchanged.
 Hash ComputeShieldedTxSighash(const ::dinero::Transaction& tx);
+// Builder before a bundle exists: commit explicit encoding intent. Production
+// compact v6 uses DIN/v7/shielded/tx-sighash/compact-v1 so public repacking alone
+// cannot alter a signed transaction's txid/outpoints.
+Hash ComputeShieldedTxSighash(const ::dinero::Transaction& tx,
+                            ShieldedProofEncoding encoding);
 
 /**
  * Compute the canonical bvk_commitment for a sender's bsk:

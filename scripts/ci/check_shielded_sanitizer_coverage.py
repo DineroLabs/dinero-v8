@@ -27,7 +27,8 @@ COMPACT_DAEMON_SOURCES = [
     'src/wallet/shielded_wallet_runtime.cpp',
     'src/wallet/shielded_note_store.cpp',
     'src/wallet/shielded_derivation.cpp',
-    'src/consensus/shielded/compact_regtest.cpp',
+    'src/consensus/shielded/compact.cpp',
+    'src/consensus/shielded/compact_spartan_codec.cpp',
     'src/consensus/shielded/shielded_validation.cpp',
     'src/consensus/shielded/shielded_serialization.cpp',
     'src/consensus/shielded/commitment_tree.cpp',
@@ -39,6 +40,8 @@ COMPACT_DAEMON_SOURCES = [
     'src/zk/zkvm/r1cs_spartan.cpp',
     'tests/consensus/test_compact_regtest_vectors.cpp',
     'tests/consensus/test_shielded_resource_limits.cpp',
+    'tests/consensus/test_compact_activation.cpp',
+    'src/test/shielded_validation_tests.cpp',
     'tests/consensus/test_shielded_reindex_equivalence.cpp',
     'tests/integration/shielded_tx_builder.cpp',
 ]
@@ -67,7 +70,7 @@ def main():
                         help='Audit full compact daemon/wallet qualification sources')
     args = parser.parse_args()
     sources = [
-        'contrib/benchmarks/compact_spartan_codec.cpp',
+        'src/consensus/shielded/compact_spartan_codec.cpp',
         'src/zk/zkvm/scalar.cpp',
         'src/zk/zkvm/r1cs_spartan.cpp',
         'src/consensus/shielded/shielded_serialization.cpp',

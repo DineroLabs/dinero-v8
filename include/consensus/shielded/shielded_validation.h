@@ -25,7 +25,7 @@
  */
 
 #include "consensus/shielded/anchor_history.h"
-#include "consensus/shielded/compact_regtest.h"
+#include "consensus/shielded/compact.h"
 #include "consensus/shielded/commitment_tree.h"
 #include "consensus/shielded/nullifier_set.h"
 #include "consensus/shielded/shielded_tx.h"
@@ -136,7 +136,7 @@ struct ValidationContext {
     uint32_t                shielded_private_covenant_activation_height = UINT32_MAX;
     bool                    private_covenant_envelope = false;
     int32_t                 transaction_version = 0;
-    CompactRegtestRules     compact_regtest_rules{};
+    CompactShieldedRules     compact_rules{};
 
     constexpr ValidationContext(
         const NullifierSet*    nullifier_set,
@@ -225,7 +225,7 @@ ValidationContext BuildShieldedValidationContext(
     uint32_t                     shielded_cv_binding_activation_height = UINT32_MAX,
     uint32_t                     shielded_spend_auth_activation_height = UINT32_MAX,
     uint32_t                     shielded_private_covenant_activation_height = UINT32_MAX,
-    CompactRegtestRules           compact_regtest_rules = {});
+    CompactShieldedRules           compact_rules = {});
 
 // (Phase 2's ComputeBindingTag — SHA-256 structural tag — was replaced
 // by the Phase 3 wave 2 Schnorr binding signature. See binding_sig.h
