@@ -133,6 +133,57 @@ int main() {
         check(dinero::HasInvalidAncestor(b), "MarkBlockInvalid is visible through the cache");
     }
 
+    // 5. PR #800 review finding (orphan_cache_repro): a walk that ends at a
+    //    MISSING parent (orphan-queued, pprev == nullptr, height > 0) proves
+    //    nothing and must not be cached. When the parent later arrives through
+    //    the real AddBlockIndex() relink and sits below an already-invalid
+    //    block, HasInvalidAncestor() must report it. Uses the real block index.
+    {
+        dinero::InvalidateAncestryCache();
+        dinero::g_invalid_descendants.clear();
+        auto header = [](const dinero::uint256& parent, uint32_t serial) {
+            BlockHeader h{};
+            h.prev_block_hash = parent;
+            h.difficulty = 0x207fffff;
+            h.timestamp = 1'900'000'000u + serial;
+            return h;
+        };
+        auto genesis_header = header(dinero::uint256{}, 1);
+        CBlockIndex* genesis = dinero::AddBlockIndex(genesis_header, 0);
+        genesis->status |= dinero::BLOCK_VALID_CHAIN | dinero::BLOCK_HAVE_DATA;
+        auto failed_header = header(genesis->hash, 2);
+        CBlockIndex* failed = dinero::AddBlockIndex(failed_header, 1);
+        dinero::MarkBlockInvalid(failed, dinero::BlockRejectReason::INVALID_POW,
+                                 "known invalid ancestor");
+        auto missing_header = header(failed->hash, 3);           // not inserted yet
+        auto orphan_header = header(missing_header.GetHash(), 4);
+        CBlockIndex* orphan = dinero::AddBlockIndex(orphan_header, 3);
+        auto child_header = header(orphan->hash, 5);
+        CBlockIndex* child = dinero::AddBlockIndex(child_header, 4);
+        check(orphan->pprev == nullptr, "orphan has no parent link while its parent is missing");
+        check(!dinero::HasInvalidAncestor(child),
+              "with the parent missing, no invalid ancestor is visible yet");
+        CBlockIndex* arrived = dinero::AddBlockIndex(missing_header, 2);
+        check(orphan->pprev == arrived && arrived->pprev == failed,
+              "arriving parent relinks the orphan below the invalid block");
+        check(dinero::HasInvalidAncestor(child),
+              "after the relink the invalid ancestor is reported (walk to a missing parent must not be cached)");
+        check(dinero::HasInvalidAncestor(orphan),
+              "the relinked orphan itself reports the invalid ancestor");
+        // A complete, clean chain is still cached: a sibling of `child` above a
+        // clean genesis-rooted branch costs O(1) on repeat.
+        auto clean_root_header = header(dinero::uint256{}, 6);
+        CBlockIndex* clean_root = dinero::AddBlockIndex(clean_root_header, 0);
+        auto clean_a_header = header(clean_root->hash, 7);
+        CBlockIndex* clean_a = dinero::AddBlockIndex(clean_a_header, 1);
+        auto clean_b_header = header(clean_a->hash, 8);
+        CBlockIndex* clean_b = dinero::AddBlockIndex(clean_b_header, 2);
+        check(!dinero::HasInvalidAncestor(clean_b), "genesis-rooted clean branch is clean");
+        dinero::g_invalid_ancestor_walk_steps = 0;
+        check(!dinero::HasInvalidAncestor(clean_b) && dinero::g_invalid_ancestor_walk_steps <= 1,
+              "genesis-rooted clean branch is cached after one walk");
+    }
+
     std::cout << (g_failures == 0
                   ? "\n✅ ALL INVALID-ANCESTOR CACHE TESTS PASSED\n"
                   : "\n❌ FAILURES: " + std::to_string(g_failures) + "\n");

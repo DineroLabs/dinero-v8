@@ -111,10 +111,18 @@ bool HasInvalidAncestor(const CBlockIndex* pindex) {
     }
 
     // Walk chain backward to find invalid ancestor. Stop at the first ancestor
-    // whose own ancestry is already known clean (or at genesis); everything
-    // walked below that point is then clean too and is recorded, so repeated
-    // calls over siblings/descendants cost O(new blocks), not O(chain height).
+    // whose own ancestry is already known clean; everything walked below that
+    // point is then clean too and is recorded, so repeated calls over
+    // siblings/descendants cost O(new blocks), not O(chain height).
+    //
+    // A walk may only be recorded as clean when it PROVED the whole ancestry:
+    // it ended at genesis (height 0, no parent) or at an entry already proven
+    // clean. A null pprev on a higher block means the parent has not arrived
+    // yet (orphan-queued); the missing parent can later link this branch below
+    // an already-invalid block, so such a walk proves nothing and must not be
+    // cached (PR #800 review, orphan_cache_repro).
     std::vector<const CBlockIndex*> walked;
+    bool ancestry_complete = false;
     const CBlockIndex* current = pindex->pprev;
     while (current) {
         ++g_invalid_ancestor_walk_steps;
@@ -124,13 +132,20 @@ bool HasInvalidAncestor(const CBlockIndex* pindex) {
             return true;
         }
         if (g_clean_ancestry.count(current->GetBlockHash())) {
+            ancestry_complete = true;
             break;
         }
         walked.push_back(current);
+        if (!current->pprev) {
+            ancestry_complete = (current->height == 0);
+            break;
+        }
         current = current->pprev;
     }
-    for (const CBlockIndex* clean : walked) {
-        g_clean_ancestry.insert(clean->GetBlockHash());
+    if (ancestry_complete) {
+        for (const CBlockIndex* clean : walked) {
+            g_clean_ancestry.insert(clean->GetBlockHash());
+        }
     }
 
     return false;
