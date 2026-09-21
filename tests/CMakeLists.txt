@@ -12018,6 +12018,18 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reorg_candidate_eligibility.c
   add_test(NAME ReorgCandidateEligibilityTest COMMAND test_reorg_candidate_eligibility)
 endif()
 
+# #803: fork-acceptance policy (bad-fork-prior-to-checkpoint + fork-aware overlay
+# depth cap). Header-only rules; no chainstate needed.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_fork_acceptance_policy.cpp)
+  add_executable(test_fork_acceptance_policy
+    tests/consensus/test_fork_acceptance_policy.cpp
+  )
+  target_include_directories(test_fork_acceptance_policy PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ForkAcceptancePolicyTest COMMAND test_fork_acceptance_policy)
+endif()
+
 # #741: getchaintips must report every known tip (abandoned branches as
 # valid-fork, header-only / invalid tips), not only ActivateBestChain candidates.
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chain_tips_snapshot.cpp)

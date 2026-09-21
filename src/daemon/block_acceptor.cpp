@@ -21,6 +21,7 @@
 #include "consensus/merkle_root.h"  // Phase 11a: Canonical merkle computation
 #include "consensus/block_index.h"  // For FindBlockIndex, CBlockIndex::GetMedianTimePast (Reorg MTP fix)
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
+#include "consensus/fork_acceptance_policy.h"  // #803: fork-prior-to-checkpoint, overlay depth cap
 #include "consensus/header_chain.h"  // Fork-aware MTP: HeaderIndexEntry::GetMedianTimePast
 #include "metrics/metrics_registry.h"
 #include "primitives/block.h"
@@ -265,6 +266,39 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 
         // 5.5. Validate checkpoint (prevent reorg past checkpoint blocks)
         std::cout << "[ACCEPTOR-DEBUG] Step 5.5: Validating checkpoint..." << std::endl;
+        // #803: a NEW block at or below the last checkpoint height is a fork
+        // prior to the checkpoint and can never activate. Reject it here,
+        // before the fork-aware utreexo overlay below walks the whole chain
+        // for it (~40 min per block on mainnet at height 114k). A re-delivered
+        // main-chain block (canonical at its height) is left to the ordinary
+        // duplicate handling.
+        if (!isMainChainExtension) {
+            const auto& cp_params = dinero::Params();
+            const uint32_t last_checkpoint =
+                consensus::LastCheckpointHeight(cp_params.vCheckpoints);
+            if (newHeight <= last_checkpoint) {
+                bool canonical_here = false;
+                if (auto* dctx = DaemonContext::instance()) {
+                    if (auto cs_cp = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                            dctx->chainstate)) {
+                        dinero::uint256 canonical;
+                        canonical_here =
+                            cs_cp->ResolveCanonicalBlockHash(
+                                static_cast<uint32_t>(newHeight), canonical) &&
+                            canonical.GetHex() == block.blockHash;
+                    }
+                }
+                if (consensus::ForksPriorToLastCheckpoint(
+                        static_cast<uint32_t>(newHeight), cp_params.vCheckpoints, canonical_here)) {
+                    error = "bad-fork-prior-to-checkpoint: height " + std::to_string(newHeight) +
+                            " is at or below the last checkpoint (" +
+                            std::to_string(last_checkpoint) + ")";
+                    std::cout << "[ACCEPTOR-DEBUG] REJECTED: " << error << std::endl;
+                    dinero::metrics::MetricsRegistry::IncrementBlocksRejected("fork-prior-to-checkpoint");
+                    return BlockAcceptResult::Rejected(BlockRejectCode::CHECKPOINT_VIOLATION, error, block_hash, newHeight);
+                }
+            }
+        }
         if (!ValidateCheckpoint(block, newHeight, error)) {
             std::cout << "[ACCEPTOR-DEBUG] REJECTED: Checkpoint violation - " << error << std::endl;
             dinero::metrics::MetricsRegistry::IncrementBlocksRejected("checkpoint-violation");
@@ -440,7 +474,23 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                 const uint32_t tip_h =
                                     dinero::storage::GetChainHeight(chain_db_for_utreexo);
                                 bool overlay_ok = true;
-                                for (uint32_t h = tip_h;
+                                // #803: the overlay costs O(tip - parent) undo
+                                // reads under the ingress lock. It is a
+                                // consistency pre-check only (ConnectTip
+                                // validates the branch per block if it ever
+                                // wins), so skip it for deep forks.
+                                if (!consensus::ForkAwareOverlayWithinDepth(
+                                        tip_h, static_cast<uint32_t>(parentHeight))) {
+                                    LOG_ERROR("⚠️  fork-aware overlay: skipping utreexo root "
+                                              "pre-check for side-chain block at height " +
+                                              std::to_string(newHeight) + " — fork depth " +
+                                              std::to_string(tip_h - static_cast<uint32_t>(parentHeight)) +
+                                              " exceeds " +
+                                              std::to_string(consensus::kMaxForkAwareOverlayDepth) +
+                                              " (validated at ConnectTip if the branch wins)");
+                                    overlay_ok = false;
+                                }
+                                for (uint32_t h = overlay_ok ? tip_h : static_cast<uint32_t>(parentHeight);
                                      h > static_cast<uint32_t>(parentHeight);
                                      --h) {
                                     dinero::uint256 mainchain_hash;
