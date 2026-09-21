@@ -12045,6 +12045,52 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_fork_acceptance_policy.cpp)
   add_test(NAME ForkAcceptancePolicyTest COMMAND test_fork_acceptance_policy)
 endif()
 
+# HasInvalidAncestor() ancestry-clean cache: GetBestCandidate() must stay
+# O(candidates), not O(candidates x chain height), when a node holds thousands
+# of same-height sibling tips (SJ incident 2026-09-21: 1.3 s per
+# ActivateBestChain pass under the ingress lock, peer sockets left unread).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_invalid_ancestor_cache.cpp)
+  add_executable(test_invalid_ancestor_cache
+    tests/consensus/test_invalid_ancestor_cache.cpp
+    src/common/logger.cpp
+    src/common/json_logger.cpp
+  )
+  target_link_libraries(test_invalid_ancestor_cache PRIVATE
+    dinero_core        # block_lifecycle.cpp (HasInvalidAncestor)
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    secp256k1
+  )
+  link_zstd_if_needed(test_invalid_ancestor_cache)
+  target_include_directories(test_invalid_ancestor_cache PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_invalid_ancestor_cache PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME InvalidAncestorCacheTest COMMAND test_invalid_ancestor_cache)
+  set_tests_properties(InvalidAncestorCacheTest PROPERTIES TIMEOUT 60)
+  option(DINERO_ANCESTRY_CACHE_TSAN "Instrument the ancestry cache regression with ThreadSanitizer" OFF)
+  if(DINERO_ANCESTRY_CACHE_TSAN)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      message(FATAL_ERROR "DINERO_ANCESTRY_CACHE_TSAN requires GCC or Clang")
+    endif()
+    # Compile the real implementation into the test with instrumentation;
+    # the uninstrumented archive member is then not selected by the linker.
+    target_sources(test_invalid_ancestor_cache PRIVATE src/consensus/block_lifecycle.cpp)
+    target_compile_options(test_invalid_ancestor_cache PRIVATE
+      -fsanitize=thread -fno-omit-frame-pointer -g)
+    target_link_options(test_invalid_ancestor_cache PRIVATE -fsanitize=thread)
+  endif()
+endif()
+
 # #741: getchaintips must report every known tip (abandoned branches as
 # valid-fork, header-only / invalid tips), not only ActivateBestChain candidates.
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chain_tips_snapshot.cpp)

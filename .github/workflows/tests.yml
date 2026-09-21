@@ -728,6 +728,17 @@ jobs:
             [ ! -f "$root/receipt.json" ] || cp "$root/receipt.json" "$dest/$name/"
           done
 
+      - name: Check ancestry-cache concurrency with ThreadSanitizer
+        run: |
+          # Normal build and all normal tests above finish first. Rebuild only
+          # this focused target with its real cache implementation instrumented.
+          cmake -S . -B build-tests -DDINERO_ANCESTRY_CACHE_TSAN=ON
+          cmake --build build-tests --target test_invalid_ancestor_cache -j2
+          TSAN_OPTIONS=halt_on_error=1 setarch x86_64 -R \
+            ctest --test-dir build-tests --output-on-failure --no-tests=error \
+            -R '^InvalidAncestorCacheTest$' \
+            --output-log build-tests/Testing/ancestry-cache-tsan.log
+
       - name: Upload ctest logs
         if: always()
         uses: actions/upload-artifact@v4
