@@ -77,6 +77,12 @@ struct BlockFetchState {
     std::chrono::steady_clock::time_point received_time; // First receipt in this retry cycle
     uint32_t retry_count = 0;
     std::string chosen_peer;
+    // The stored body was offered to the chainstate and came back
+    // ACCEPTED_NOT_ACTIVE: it is indexed on a side branch and ActivateBestChain
+    // owns it from here. The drain must not offer it again (each offer is a
+    // full acceptance pass under the block-ingress lock); it is promoted to
+    // CONNECTED once the active chain carries this hash at this height.
+    bool side_accepted = false;
 
     BlockFetchState(const uint256& hash, uint32_t h)
         : block_hash(hash), height(h), status(FetchStatus::MISSING) {}

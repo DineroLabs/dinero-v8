@@ -828,7 +828,11 @@ void ApplyPersistedMetadataToBlockIndex(CBlockIndex* block_index,
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
     block_index->status = metadata.status_flags;
+    if (metadata.status_flags & BLOCK_FAILED_VALID) {
+        InvalidateAncestryCache();
+    }
     block_index->file_number = metadata.file_number;
     block_index->data_pos = metadata.data_pos;
     block_index->data_size = metadata.data_size;
@@ -9973,7 +9977,11 @@ void ChainstateService::ActivateBestChain() {
                 if (logger_) logger_->warning("[ActivateBestChain] REORG ABORT: consensus-invalid block at height " +
                                               std::to_string(block_index->height) +
                                               " — marking BLOCK_FAILED_VALID (#309/I2)");
-                block_index->status |= BLOCK_FAILED_VALID;
+                {
+                    std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+                    block_index->status |= BLOCK_FAILED_VALID;
+                    InvalidateAncestryCache();
+                }
                 if (chain_db_) {
                     ChainWriteToken token = ChainWriteToken::CreateForTesting();
                     chain_db_->setHeaderStatusBits(token, block_index->hash, BLOCK_FAILED_VALID);
@@ -12789,7 +12797,11 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
     }
 
     // Step 2: Mark block and all descendants as invalid
-    target->status |= BLOCK_FAILED_VALID;
+    {
+        std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+        target->status |= BLOCK_FAILED_VALID;
+        InvalidateAncestryCache();
+    }
     RemoveCandidate(target);
 
     // Apr 14 2026 (Bug #6 / #38) — persist BLOCK_FAILED_VALID to ChainDB.
