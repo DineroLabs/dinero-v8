@@ -154,6 +154,7 @@ def main(receipt):
     try:
         csn.start_at(proxy.port)
         wait(lambda: csn.call("getbestblockhash") == initial_tip, "initial CSN convergence", 60)
+        initial_root = fixture.root(csn)
         proxy.armed.set()
         bridge.call("invalidateblock", [bridge.call("getblockhash", [110])])
         require(bridge.call("getblockcount") == 109, "fork did not start at 109")
@@ -166,13 +167,20 @@ def main(receipt):
         def stored_without_prefix():
             require(not proxy.errors, f"proxy failed: {proxy.errors}")
             log = (WORK / "csn.log").read_text(errors="replace")
-            return ("Proof failed at height 113 during a reorg-lag window" in log and
+            # The guarded worker now rejects a stale parent before attempting
+            # to apply its proof. Both paths leave the same persisted bodies
+            # without a usable proof receipt, which is the restart condition.
+            deferred = ("Proof failed at height 113 during a reorg-lag window" in log or
+                        "Discarding stale forward proof at height 113; active parent changed" in log)
+            return (deferred and
                     all(f"persisted body position at height {height} {hashes[height][:16]}" in log
                         for height in range(113, 120)))
 
         wait(stored_without_prefix, "descendant bodies persisted before fork-point proofs", 15)
         require(csn.call("getbestblockhash") == initial_tip,
                 "out-of-order unvalidated bodies must not replace the active chain")
+        require(fixture.root(csn) == initial_root,
+                "out-of-order unvalidated bodies must not change the canonical forest")
         receipt["stored_descendants"] = {str(h): hashes[h] for h in range(113, 120)}
         receipt["checks"].append("unvalidated stored descendants leave the active tip unchanged")
     finally:

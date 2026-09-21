@@ -4651,6 +4651,49 @@ bool DaemonApp::Init(int argc, char** argv) {
                             pending_blocks->size(), std::memory_order_relaxed);
                         lk.unlock();
 
+                        // Proof validation below mutates the canonical forest, before
+                        // BlockAcceptor gets to reject persistent invalidity. A stored
+                        // body can be refetched after invalidate/restart, so check that
+                        // decision here too. Serialize the check, forest mutation and
+                        // block publication with invalidation/activation; a dispatcher
+                        // check alone races an RPC rollback while this item is queued.
+                        // buffer_mutex is released before acquiring this lock, and the
+                        // activation lock is released before touching the queue again.
+                        auto activation_lock =
+                            chainstate_service->AcquireBlockIngressActivationLock();
+                        auto* proof_db = chainstate_service->GetChainDB();
+                        if (!proof_db) {
+                            g_logger.error("[CSN] Cannot check canonical proof eligibility without ChainDB");
+                            return false;
+                        }
+                        const auto metadata = proof_db->getHeaderMetadata(pending.proof_msg.block_hash);
+                        if (metadata.status() != Status::Ok && metadata.status() != Status::NotFound) {
+                            g_logger.error("[CSN] Cannot read canonical proof block status at height " +
+                                           std::to_string(h));
+                            return false;
+                        }
+                        const auto* known = chainstate_service->FindBlockIndex(pending.proof_msg.block_hash);
+                        const uint32_t failure_flags =
+                            ((metadata.status() == Status::Ok ? metadata.value().status_flags : 0u) |
+                             (known ? known->status : 0u)) & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+                        if (failure_flags != 0) {
+                            g_logger.info("[CSN] Skipping canonical proof for invalidated block " +
+                                          pending.proof_msg.block_hash.GetHex());
+                            return true;
+                        }
+                        const auto* proof_tip = chainstate_service->GetActiveTip();
+                        if (!proof_tip || proof_tip->height < 0 ||
+                            static_cast<uint64_t>(proof_tip->height) + 1 != h ||
+                            !chainstate_service->ExtendsActiveTipLocked(pending.block.header.prev_block_hash)) {
+                            g_logger.info("[CSN] Discarding stale forward proof at height " +
+                                          std::to_string(h) + "; active parent changed");
+                            activation_lock.unlock();
+                            if (block_download_for_csn) {
+                                block_download_for_csn->ReRequestBlock(pending.proof_msg.block_hash);
+                            }
+                            return true;
+                        }
+
                         uint64_t peer_id = GetPeerID(pending.peer_addr);
                             const bool use_transition_proof = csn_should_use_transition_proof(pending);
                             const auto& replay_targets =
@@ -4793,9 +4836,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     }
                                 }
 
-                                csn_request_frontier_headers(pending.peer_addr, h);
                             }
+                        activation_lock.unlock();
                         if (valid) {
+                            csn_request_frontier_headers(pending.peer_addr, h);
                             {
                                 std::lock_guard<std::mutex> rl(*buffer_mutex);
                                 if (*next_validate_height == h) {
