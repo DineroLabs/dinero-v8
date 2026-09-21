@@ -12018,6 +12018,39 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reorg_candidate_eligibility.c
   add_test(NAME ReorgCandidateEligibilityTest COMMAND test_reorg_candidate_eligibility)
 endif()
 
+# HasInvalidAncestor() ancestry-clean cache: GetBestCandidate() must stay
+# O(candidates), not O(candidates x chain height), when a node holds thousands
+# of same-height sibling tips (SJ incident 2026-09-21: 1.3 s per
+# ActivateBestChain pass under the ingress lock, peer sockets left unread).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_invalid_ancestor_cache.cpp)
+  add_executable(test_invalid_ancestor_cache
+    tests/consensus/test_invalid_ancestor_cache.cpp
+    src/common/logger.cpp
+    src/common/json_logger.cpp
+  )
+  target_link_libraries(test_invalid_ancestor_cache PRIVATE
+    dinero_core        # block_lifecycle.cpp (HasInvalidAncestor)
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    secp256k1
+  )
+  link_zstd_if_needed(test_invalid_ancestor_cache)
+  target_include_directories(test_invalid_ancestor_cache PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_invalid_ancestor_cache PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME InvalidAncestorCacheTest COMMAND test_invalid_ancestor_cache)
+endif()
+
 # #741: getchaintips must report every known tip (abandoned branches as
 # valid-fork, header-only / invalid tips), not only ActivateBestChain candidates.
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chain_tips_snapshot.cpp)

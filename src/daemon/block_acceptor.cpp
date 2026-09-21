@@ -3226,6 +3226,7 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
                     // immediately re-activate it on the next ActivateBestChain pass.
                     if (auto* invalid_idx = chainstate->FindBlockIndex(blockHashU256)) {
                         invalid_idx->status |= dinero::BLOCK_FAILED_VALID;
+                        dinero::InvalidateAncestryCache();
                         chainstate->RemoveCandidate(invalid_idx);
                     }
 

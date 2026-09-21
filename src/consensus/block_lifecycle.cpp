@@ -2,6 +2,8 @@
 #include "consensus/block_index.h"
 #include "common/logger.h"
 #include <chrono>
+#include <unordered_set>
+#include <vector>
 
 namespace dinero {
 
@@ -9,6 +11,21 @@ namespace dinero {
 std::unordered_map<uint256, InvalidBlockEntry> g_invalid_blocks;
 std::unordered_map<uint256, InFlightBlock> g_inflight_blocks;
 std::unordered_map<uint256, uint256> g_invalid_descendants;
+
+// Negative-result cache for HasInvalidAncestor(): hashes whose entire ancestry
+// has been walked and found free of BLOCK_FAILED_VALID. Cleared by
+// InvalidateAncestryCache() whenever any index entry gains a failure flag.
+// Without this the walk is O(chain height) per call, and GetBestCandidate()
+// runs it for every candidate on every ActivateBestChain pass: a node that
+// accumulated thousands of same-height sibling tips (a pool re-submitting a
+// stale job) spent ~1.3 s per pass at height 114k, saturating the block
+// ingress lock and starving its peer sockets.
+static std::unordered_set<uint256> g_clean_ancestry;
+uint64_t g_invalid_ancestor_walk_steps = 0;
+
+void InvalidateAncestryCache() {
+    g_clean_ancestry.clear();
+}
 
 /**
  * Mark block as invalid and propagate to all descendants
@@ -25,6 +42,7 @@ void MarkBlockInvalid(CBlockIndex* pindex, BlockRejectReason reason, const std::
 
     // Set failure flags
     pindex->status |= BLOCK_FAILED_VALID;
+    InvalidateAncestryCache();
 
     g_logger.log(LogLevel::WARNING, "Block marked invalid: " + message);
 
@@ -92,15 +110,27 @@ bool HasInvalidAncestor(const CBlockIndex* pindex) {
         return true;
     }
 
-    // Walk chain backward to find invalid ancestor
+    // Walk chain backward to find invalid ancestor. Stop at the first ancestor
+    // whose own ancestry is already known clean (or at genesis); everything
+    // walked below that point is then clean too and is recorded, so repeated
+    // calls over siblings/descendants cost O(new blocks), not O(chain height).
+    std::vector<const CBlockIndex*> walked;
     const CBlockIndex* current = pindex->pprev;
     while (current) {
+        ++g_invalid_ancestor_walk_steps;
         if (current->status & BLOCK_FAILED_VALID) {
             // Cache this result
             g_invalid_descendants[pindex->GetBlockHash()] = current->GetBlockHash();
             return true;
         }
+        if (g_clean_ancestry.count(current->GetBlockHash())) {
+            break;
+        }
+        walked.push_back(current);
         current = current->pprev;
+    }
+    for (const CBlockIndex* clean : walked) {
+        g_clean_ancestry.insert(clean->GetBlockHash());
     }
 
     return false;
