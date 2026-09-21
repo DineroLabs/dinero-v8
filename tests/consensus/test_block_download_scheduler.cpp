@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <map>
 #include <vector>
 
 using dinero::BlockHeader;
@@ -3168,6 +3169,118 @@ int main() {
         storage.close();
         std::filesystem::remove_all(storage_dir);
         std::cout << "   ✅ genuine fork below tip still connects: attempts=" << connect_attempts << std::endl;
+    }
+
+    {
+        std::cout << "\n22. a side-branch body the chainstate already indexed "
+                     "(ACCEPTED_NOT_ACTIVE) is offered once, the drain moves on to the "
+                     "next branch height, and the entry is promoted once the active chain "
+                     "carries it..." << std::endl;
+
+        // SJ mainnet 2026-09-21: the node sat on its own 11-block fork while the
+        // network was 550 blocks ahead. The drain offered the first main-branch
+        // body (113563) to the chainstate on EVERY tick; each offer was a full
+        // acceptance pass (~3.5 s under the block-ingress lock) that came back
+        // ACCEPTED_NOT_ACTIVE because that single block could not outweigh the
+        // local fork, and the drain never advanced to 113564+. Meanwhile the
+        // per-peer threads waiting on that lock left the bodies that would have
+        // let the branch win unread in their sockets.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 6, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_side_accepted_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::remove_all(storage_dir);
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "temporary block storage must initialize")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetLocalTipHeight(0);
+
+        std::map<uint32_t, int> offers_by_height;
+        scheduler.SetConnectBlockCallback(
+            [&offers_by_height, &hashes](const Block& b, const std::string&) {
+                const uint256 h = b.GetHash();
+                for (uint32_t i = 0; i < hashes.size(); ++i) {
+                    if (hashes[i] == h) ++offers_by_height[i];
+                }
+                // The chainstate indexes the block on a side branch; the local
+                // fork still has more work, so it does not become active.
+                return dcs::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+            });
+
+        // Active chain: heights 1..3 carry DIFFERENT hashes than the queued
+        // branch (a genuine fork below tip); tip stays at 6 until the reorg.
+        bool reorged = false;
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&reorged, &hashes](uint32_t height, uint256& out_hash) -> bool {
+                if (height >= 1 && height <= 3) {
+                    out_hash = reorged ? hashes[height] : hashes[5];
+                    return true;
+                }
+                return false;
+            });
+
+        scheduler.OnHeadersProcessed();
+        for (uint32_t h = 1; h <= 3; ++h) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[h])),
+                         "branch body at height " + std::to_string(h) + " must be receivable")) {
+                storage.close();
+                std::filesystem::remove_all(storage_dir);
+                return 1;
+            }
+        }
+        scheduler.SetLocalTipHeight(6);
+
+        const int kTicks = 25;
+        for (int i = 0; i < kTicks; ++i) {
+            scheduler.Tick();
+        }
+
+        bool ok = true;
+        ok = Require(offers_by_height[1] == 1,
+                     "height 1 must be offered exactly once across " + std::to_string(kTicks) +
+                     " ticks, got " + std::to_string(offers_by_height[1])) && ok;
+        ok = Require(offers_by_height[2] == 1,
+                     "the drain must move on and offer height 2 once, got " +
+                     std::to_string(offers_by_height[2])) && ok;
+        ok = Require(offers_by_height[3] == 1,
+                     "the drain must move on and offer height 3 once, got " +
+                     std::to_string(offers_by_height[3])) && ok;
+        if (!ok) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        // The branch now outweighs the local fork and ActivateBestChain has
+        // switched to it: the active chain carries the queued hashes at 1..3.
+        // The drain must promote them without offering any body again.
+        reorged = true;
+        for (int i = 0; i < 5; ++i) {
+            scheduler.Tick();
+        }
+        ok = Require(offers_by_height[1] == 1 && offers_by_height[2] == 1 &&
+                         offers_by_height[3] == 1,
+                     "no body may be re-offered after the active chain adopted the branch") && ok;
+        if (!ok) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        storage.close();
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ side-accepted bodies offered once each: h1=" << offers_by_height[1]
+                  << " h2=" << offers_by_height[2] << " h3=" << offers_by_height[3] << std::endl;
     }
 
     return 0;
