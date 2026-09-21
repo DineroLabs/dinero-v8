@@ -729,6 +729,7 @@ jobs:
           done
 
       - name: Check ancestry-cache concurrency with ThreadSanitizer
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           # Normal build and all normal tests above finish first. Rebuild only
           # this focused target with its real cache implementation instrumented.
