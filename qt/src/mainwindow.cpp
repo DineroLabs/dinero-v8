@@ -121,6 +121,8 @@
 
 namespace {
 
+constexpr int kWalletUnlockTimeoutSeconds = 60 * 60;
+
 enum class NavigationGlyph {
   Dashboard,
   Wallet,
@@ -13837,8 +13839,8 @@ void MainWindow::onUnlockWallet() {
           // SUCCESS: Wallet unlocked
           walletUnlocked_ = true;
 
-          // Start countdown timer (15 minutes = 900 seconds)
-          unlockSecondsRemaining_ = 900;
+          // Use the same one-hour timeout as the daemon unlock request.
+          unlockSecondsRemaining_ = kWalletUnlockTimeoutSeconds;
           unlockCountdownTimer_->start(1000);  // Tick every second
 
           // Update button to show unlocked state with countdown
@@ -13856,7 +13858,7 @@ void MainWindow::onUnlockWallet() {
           QMessageBox::information(this, "Success",
             "✅ Wallet unlocked successfully!\n\n"
             "• Taproot signing is now enabled\n"
-            "• Wallet will auto-lock in 15 minutes\n"
+            "• Wallet will auto-lock in 1 hour\n"
             "• You can now spend P2TR outputs and sign transactions");
         }
       });
@@ -13895,7 +13897,7 @@ void MainWindow::onUnlockWallet() {
         updateWalletUIState();
       });
 
-    rpc_->walletUnlock(password, 900); // 15 minutes timeout
+    rpc_->walletUnlock(password, kWalletUnlockTimeoutSeconds);
   }
 }
 
