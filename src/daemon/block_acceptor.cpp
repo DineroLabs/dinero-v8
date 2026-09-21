@@ -266,37 +266,24 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 
         // 5.5. Validate checkpoint (prevent reorg past checkpoint blocks)
         std::cout << "[ACCEPTOR-DEBUG] Step 5.5: Validating checkpoint..." << std::endl;
-        // #803: a NEW block at or below the last checkpoint height is a fork
-        // prior to the checkpoint and can never activate. Reject it here,
-        // before the fork-aware utreexo overlay below walks the whole chain
-        // for it (~40 min per block on mainnet at height 114k). A re-delivered
-        // main-chain block (canonical at its height) is left to the ordinary
-        // duplicate handling.
+        // Reject historical forks only once a checkpoint's exact hash is
+        // established on the active chain. Before that, a competing branch
+        // may be the checkpoint's own ancestry and must remain syncable.
+        // The enclosing activation guard keeps this ancestry stable.
         if (!isMainChainExtension) {
-            const auto& cp_params = dinero::Params();
-            const uint32_t last_checkpoint =
-                consensus::LastCheckpointHeight(cp_params.vCheckpoints);
-            if (newHeight <= last_checkpoint) {
-                bool canonical_here = false;
-                if (auto* dctx = DaemonContext::instance()) {
-                    if (auto cs_cp = std::dynamic_pointer_cast<dinero::ChainstateService>(
-                            dctx->chainstate)) {
-                        dinero::uint256 canonical;
-                        canonical_here =
-                            cs_cp->ResolveCanonicalBlockHash(
-                                static_cast<uint32_t>(newHeight), canonical) &&
-                            canonical.GetHex() == block.blockHash;
-                    }
-                }
-                if (consensus::ForksPriorToLastCheckpoint(
-                        static_cast<uint32_t>(newHeight), cp_params.vCheckpoints, canonical_here)) {
-                    error = "bad-fork-prior-to-checkpoint: height " + std::to_string(newHeight) +
-                            " is at or below the last checkpoint (" +
-                            std::to_string(last_checkpoint) + ")";
-                    std::cout << "[ACCEPTOR-DEBUG] REJECTED: " << error << std::endl;
-                    dinero::metrics::MetricsRegistry::IncrementBlocksRejected("fork-prior-to-checkpoint");
-                    return BlockAcceptResult::Rejected(BlockRejectCode::CHECKPOINT_VIOLATION, error, block_hash, newHeight);
-                }
+            auto* checkpoint_ctx = DaemonContext::instance();
+            auto checkpoint_cs = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                checkpoint_ctx ? checkpoint_ctx->chainstate : nullptr);
+            const auto violated = consensus::ForkPriorToEstablishedCheckpoint(
+                static_cast<uint32_t>(newHeight), block_hash,
+                dinero::Params().vCheckpoints,
+                checkpoint_cs ? checkpoint_cs->GetActiveTip() : nullptr);
+            if (violated) {
+                error = "bad-fork-prior-to-checkpoint: height " + std::to_string(newHeight) +
+                        " conflicts with established checkpoint " + std::to_string(*violated);
+                dinero::metrics::MetricsRegistry::IncrementBlocksRejected("fork-prior-to-checkpoint");
+                return BlockAcceptResult::Rejected(BlockRejectCode::CHECKPOINT_VIOLATION,
+                                                  error, block_hash, newHeight);
             }
         }
         if (!ValidateCheckpoint(block, newHeight, error)) {

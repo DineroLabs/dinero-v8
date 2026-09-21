@@ -326,7 +326,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in CompactDefaultActivation PowEnforcedRegtest BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
+          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -710,6 +710,22 @@ jobs:
                 tail -c 20971520 "$f" > "$out.tail"
               done
             done
+          done
+
+      - name: Preserve checkpoint acceptance evidence
+        if: always()
+        run: |
+          dest=build-tests/Testing/checkpoint-acceptance
+          mkdir -p "$dest"
+          for root in /tmp/dinero-checkpoint-fork-*; do
+            [ -d "$root" ] || continue
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            for log in "$root"/*.log; do
+              [ -f "$log" ] || continue
+              tail -c 2097152 "$log" > "$dest/$name/$(basename "$log")"
+            done
+            [ ! -f "$root/receipt.json" ] || cp "$root/receipt.json" "$dest/$name/"
           done
 
       - name: Upload ctest logs

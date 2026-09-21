@@ -8,8 +8,8 @@
  * under the block-ingress lock: ~40 minutes per block, node otherwise idle.
  *
  * Two pure rules close this:
- *   1. ForksPriorToLastCheckpoint — a new block at or below the last checkpoint
- *      height is rejected outright (Bitcoin Core's bad-fork-prior-to-checkpoint),
+ *   1. ForkPriorToEstablishedCheckpoint — conflicting blocks at or below an
+ *      established active-chain checkpoint are rejected,
  *      except a re-delivered main-chain block, which stays a duplicate.
  *   2. ForkAwareOverlayWithinDepth — the eager utreexo root pre-check is skipped
  *      for forks deeper than kMaxForkAwareOverlayDepth.
@@ -17,11 +17,13 @@
 #include <iostream>
 #include <map>
 #include <string>
+#include <vector>
+#include <cstring>
 
 #include "consensus/fork_acceptance_policy.h"
 
 using dinero::consensus::ForkAwareOverlayWithinDepth;
-using dinero::consensus::ForksPriorToLastCheckpoint;
+using dinero::consensus::ForkPriorToEstablishedCheckpoint;
 using dinero::consensus::LastCheckpointHeight;
 using dinero::consensus::kMaxForkAwareOverlayDepth;
 
@@ -44,19 +46,43 @@ int main() {
     check(LastCheckpointHeight(mainnet) == 13000, "last checkpoint height is the highest key");
     check(LastCheckpointHeight(none) == 0, "no checkpoints -> 0");
 
-    // 1. The SJ specimens: new blocks at 1988 / 2086 / 2234 on a foreign branch.
-    for (uint32_t h : {1988u, 2086u, 2234u}) {
-        check(ForksPriorToLastCheckpoint(h, mainnet, /*canonical=*/false),
-              "new block at height " + std::to_string(h) + " below checkpoint 13000 is rejected");
+    std::vector<dinero::CBlockIndex> active(13002);
+    for (uint32_t h = 0; h < active.size(); ++h) {
+        active[h].height = h;
+        std::memcpy(active[h].hash.data, &h, sizeof(h));
+        active[h].pprev = h ? &active[h - 1] : nullptr;
     }
-    check(ForksPriorToLastCheckpoint(13000, mainnet, false),
-          "a different block AT the checkpoint height is rejected");
-    check(!ForksPriorToLastCheckpoint(13001, mainnet, false),
-          "a fork just above the last checkpoint is not rejected by this rule");
-    check(!ForksPriorToLastCheckpoint(2234, mainnet, /*canonical=*/true),
-          "a re-delivered main-chain block below the checkpoint is not rejected (duplicate path)");
-    check(!ForksPriorToLastCheckpoint(2234, none, false),
-          "without checkpoints nothing is rejected");
+    active[13000].hash = dinero::uint256::FromHexUnsafe(mainnet.at(13000));
+    const auto foreign = dinero::uint256::FromHexUnsafe(std::string(64, 'f'));
+    auto rejects = [&](uint32_t height) {
+        return ForkPriorToEstablishedCheckpoint(height, foreign, mainnet, &active.back()).has_value();
+    };
+    for (uint32_t h : {1988u, 2086u, 2234u})
+        check(rejects(h), "SJ foreign block below established checkpoint is rejected");
+    check(rejects(13000), "foreign block at established checkpoint is rejected");
+    check(!rejects(13001), "block above checkpoint is not rejected by this rule");
+    check(!ForkPriorToEstablishedCheckpoint(2234, active[2234].hash, mainnet, &active.back()),
+          "canonical duplicate below established checkpoint remains eligible");
+    check(!ForkPriorToEstablishedCheckpoint(2234, foreign, none, &active.back()),
+          "no checkpoint means no checkpoint-fork rejection");
+    check(!ForkPriorToEstablishedCheckpoint(999, foreign, mainnet, &active[1000]),
+          "initial sync below checkpoint permits competing branch bodies");
+    check(!ForkPriorToEstablishedCheckpoint(999, foreign, mainnet, nullptr),
+          "missing active ancestry does not prove a fork conflict");
+    const auto saved = active[13000].hash;
+    active[13000].hash = foreign;
+    check(!ForkPriorToEstablishedCheckpoint(999, foreign, mainnet, &active.back()),
+          "height alone does not establish the configured checkpoint hash");
+    active[13000].hash = saved;
+    auto future = mainnet;
+    future.emplace(20000, std::string(64, 'a'));
+    check(ForkPriorToEstablishedCheckpoint(999, foreign, future, &active.back()) == 13000,
+          "an unknown future checkpoint does not hide an established earlier checkpoint");
+    auto* parent = active[1000].pprev;
+    active[1000].pprev = nullptr;
+    check(!ForkPriorToEstablishedCheckpoint(999, foreign, mainnet, &active.back()),
+          "missing historical ancestry is not guessed to be a conflict");
+    active[1000].pprev = parent;
 
     // 2. Overlay depth cap.
     check(!ForkAwareOverlayWithinDepth(114173, 2233),

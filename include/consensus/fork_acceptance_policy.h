@@ -1,6 +1,6 @@
 #pragma once
 // Pure acceptance policy for side-chain (fork) blocks. Kept header-only and
-// dependency-free so the rules are unit-testable without a chainstate.
+// backed by explicit active ancestry, so a future checkpoint cannot freeze IBD.
 //
 // Background (dinero-v8 #803): a peer fed SJ blocks from an abandoned
 // April-era branch (heights 1988/2086/2234). Each was accepted as a side-chain
@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <optional>
+#include "consensus/active_chain_ancestry.h"
 
 namespace dinero::consensus {
 
@@ -20,17 +22,29 @@ inline uint32_t LastCheckpointHeight(const std::map<uint32_t, std::string>& chec
     return checkpoints.empty() ? 0u : checkpoints.rbegin()->first;
 }
 
-// Bitcoin Core's "bad-fork-prior-to-checkpoint": a NEW block at or below the
-// last checkpoint height cannot be on the checkpointed chain (those blocks are
-// already known), so it can never activate and must be rejected before any
-// expensive work. `block_is_canonical_at_height` lets a re-delivered main-chain
-// block pass through to the ordinary duplicate handling.
-inline bool ForksPriorToLastCheckpoint(uint32_t height,
-                                       const std::map<uint32_t, std::string>& checkpoints,
-                                       bool block_is_canonical_at_height) {
-    const uint32_t last = LastCheckpointHeight(checkpoints);
-    if (last == 0 || height > last) return false;
-    return !block_is_canonical_at_height;
+// Return the established checkpoint violated by this block, if any. A
+// configured future checkpoint does not prove that today's active branch is
+// correct. During IBD a competing branch may contain that checkpoint, and its
+// bodies must remain eligible even while the old branch is still active.
+// Only trust a checkpoint whose exact hash is present in active-tip ancestry.
+// A missing ancestry link is not proof of a conflict.
+inline std::optional<uint32_t> ForkPriorToEstablishedCheckpoint(
+    uint32_t height, const uint256& block_hash,
+    const std::map<uint32_t, std::string>& checkpoints,
+    const CBlockIndex* active_tip) {
+    if (height > LastCheckpointHeight(checkpoints)) return std::nullopt;
+    const CBlockIndex* cursor = active_tip;
+    for (auto cp = checkpoints.rbegin(); cp != checkpoints.rend(); ++cp) {
+        if (cp->first == 0 || height > cp->first) break;
+        while (cursor && cursor->height > cp->first) cursor = cursor->pprev;
+        if (!cursor) break;
+        if (cursor->height != cp->first || cursor->hash.GetHex() != cp->second) continue;
+        uint256 expected;
+        if (GetActiveChainHashAtHeight(cursor, height, expected) && expected != block_hash)
+            return cp->first;
+        return std::nullopt;
+    }
+    return std::nullopt;
 }
 
 // The fork-aware utreexo root pre-check for a side-chain block costs

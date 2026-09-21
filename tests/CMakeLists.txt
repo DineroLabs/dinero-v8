@@ -47,6 +47,20 @@ if(NOT WIN32)
     $<TARGET_FILE:test_daemon_service_release>)
   set_tests_properties(DaemonServiceRelease PROPERTIES
     LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+
+  add_executable(test_checkpoint_acceptance_daemon
+    tests/daemon/checkpoint_acceptance_daemon.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_checkpoint_property dinerod ${_property})
+    if(_checkpoint_property)
+      set_property(TARGET test_checkpoint_acceptance_daemon PROPERTY ${_property} "${_checkpoint_property}")
+    endif()
+  endforeach()
+  add_test(NAME CheckpointForkAcceptance COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_checkpoint_fork_acceptance.py
+    $<TARGET_FILE:test_checkpoint_acceptance_daemon>)
+  set_tests_properties(CheckpointForkAcceptance PROPERTIES
+    LABELS "integration;e2e-daemon;consensus;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 endif()
 
 add_executable(test_packed_header_alignment
@@ -12023,6 +12037,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_fork_acceptance_policy.cpp)
   add_executable(test_fork_acceptance_policy
     tests/consensus/test_fork_acceptance_policy.cpp
+    src/primitives/uint256.cpp
   )
   target_include_directories(test_fork_acceptance_policy PRIVATE
     ${CMAKE_SOURCE_DIR}/include
