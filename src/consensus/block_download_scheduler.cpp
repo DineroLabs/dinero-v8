@@ -1273,7 +1273,11 @@ void BlockDownloadScheduler::SetGetBlockBodyPositionCallback(
 
 bool BlockDownloadScheduler::AdoptStoredTipBodyLocked(
         BlockFetchState& fetch_state) {
-    if (!get_block_body_position_callback_) {
+    // A CSN persists the raw body before its ordered worker validates the
+    // separately delivered proof. Disk presence cannot stand in for that
+    // receipt, especially after a proof retry or restart. Only full nodes can
+    // recover pending validation from the stored body alone.
+    if (stateless_mode_ || !get_block_body_position_callback_) {
         return false;
     }
     const auto stored = get_block_body_position_callback_(
@@ -1876,6 +1880,10 @@ bool BlockDownloadScheduler::ReRequestBlock(const uint256& block_hash) {
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
             fetch_state.status = FetchStatus::MISSING;
+            // The caller no longer has a usable body/proof receipt. Retaining
+            // the old receipt would let the stale-request sweep cancel this
+            // explicit retry as "already present" without delivering a reply.
+            received_blocks_.erase(block_hash);
             in_flight_blocks_.erase(block_hash);
             g_logger.info("[BlockDownloadScheduler] Re-requesting block: " +
                          block_hash.GetHex() +

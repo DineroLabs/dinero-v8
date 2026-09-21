@@ -75,7 +75,33 @@ def main():
     h.require_no_recovery_fuse()
     print("PASS CSN disconnect and offline restart preserve only pre-block coins", flush=True)
 
+    # Keep the bridge on the invalidated package until the CSN actually
+    # processes its refetched proof. Immediately invalidating the bridge too
+    # hid a race: the worker could advance the canonical forest for a block
+    # whose persistent failure flag later prevented chain activation.
+    csn_log = h.WORK / "csn.log"
+    replay_log_start = csn_log.stat().st_size
     full.start()
+
+    def refetched_package_processed():
+        with csn_log.open("rb") as log:
+            log.seek(replay_log_start)
+            text = log.read().decode(errors="replace")
+        # Wait for a completed worker decision, not merely receipt. The old
+        # path marks the block connected even though it cannot activate it.
+        return (f"Skipping canonical proof for invalidated block {package}" in text or
+                f"Block marked CONNECTED: {package}" in text)
+
+    h.wait(refetched_package_processed, "invalidated package proof processed")
+    h.require(csn.call("getbestblockhash") == ancestor and h.root(csn) == ancestor_root,
+              "refetched invalidated proof changed canonical tip/forest")
+    h.require(csn.call("gettxoutsetinfo") == ancestor_coins["csn"],
+              "refetched invalidated proof changed durable coins")
+    verified = csn.call("blockchain.verifyutxoproofs_batch", [original_proof])
+    h.require(verified["valid"] == 1 and verified["invalid"] == 0,
+              f"refetched invalidated proof invalidated ancestor proof: {verified}")
+    print("PASS refetched invalidated package leaves canonical state unchanged", flush=True)
+
     full.call("blockchain.invalidateblock", [package])
     h.require(full.call("getbestblockhash") == ancestor and h.root(full) == ancestor_root,
               "full-node disconnect changed ancestor identity/root")

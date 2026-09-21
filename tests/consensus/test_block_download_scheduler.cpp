@@ -905,6 +905,52 @@ int main() {
     }
 
     {
+        std::cout << "\n6c. a stateless stored body cannot replace a missing proof receipt..." << std::endl;
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        BuildLinearHeaders(selector, 3, &hashes);
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_csn_proof_retry_" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "CSN proof retry storage must initialize")) return 1;
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetStatelessMode(true);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.SetGetTipHeightCallback([] { return 0u; });
+        scheduler.SetGetBlockBodyPositionCallback(
+            [](const uint256&, uint32_t) -> std::optional<dinero::FilePosition> {
+                return dinero::FilePosition(1, 128, 256);
+            });
+        std::unordered_map<uint256, int> sends;
+        scheduler.SetSendGetDataCallback(
+            [&](const uint256& hash, uint32_t) { ++sends[hash]; });
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(sends[hashes[1]] == 1 && sends[hashes[2]] == 1 && sends[hashes[3]] == 1,
+                     "CSN must request proofs even when every raw block body is stored")) return 1;
+
+        // Receipt followed by an explicit proof retry: body bytes remain on disk,
+        // but no proof is owned by the validation worker now. Lost responses must
+        // remain retryable even for a non-frontier descendant of a reorg plan.
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[2])),
+                     "proof receipt setup must succeed")) return 1;
+        if (!Require(scheduler.ReRequestBlock(hashes[2]),
+                     "explicit proof retry must find the stored descendant")) return 1;
+        scheduler.Tick();
+        const int before_timeout = sends[hashes[2]];
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        scheduler.Tick();
+        if (!Require(sends[hashes[2]] == before_timeout + 1,
+                     "a lost descendant proof retry must not be suppressed by its earlier receipt/body")) return 1;
+        if (!Require(scheduler.IsBlockInFlight(hashes[2]) && !scheduler.HasReceivedBlock(hashes[2]),
+                     "a requested proof is in flight, not already received")) return 1;
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ CSN body presence does not suppress proof fetch or retry" << std::endl;
+    }
+
+    {
         std::cout << "\n7. issue #216 reorg-safety: a stale block whose hash differs from the active chain at its height IS re-requested..." << std::endl;
 
         dcs::HeaderChainSelector selector;
