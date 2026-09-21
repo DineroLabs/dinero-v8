@@ -3225,6 +3225,7 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
                     // Mark invalidated tip as failed so candidate selection does not
                     // immediately re-activate it on the next ActivateBestChain pass.
                     if (auto* invalid_idx = chainstate->FindBlockIndex(blockHashU256)) {
+                        std::lock_guard<std::recursive_mutex> index_lock(dinero::g_block_index_mutex);
                         invalid_idx->status |= dinero::BLOCK_FAILED_VALID;
                         dinero::InvalidateAncestryCache();
                         chainstate->RemoveCandidate(invalid_idx);

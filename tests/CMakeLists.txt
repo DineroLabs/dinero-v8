@@ -12049,6 +12049,19 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_invalid_ancestor_cache.cpp)
     )
   endif()
   add_test(NAME InvalidAncestorCacheTest COMMAND test_invalid_ancestor_cache)
+  set_tests_properties(InvalidAncestorCacheTest PROPERTIES TIMEOUT 60)
+  option(DINERO_ANCESTRY_CACHE_TSAN "Instrument the ancestry cache regression with ThreadSanitizer" OFF)
+  if(DINERO_ANCESTRY_CACHE_TSAN)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      message(FATAL_ERROR "DINERO_ANCESTRY_CACHE_TSAN requires GCC or Clang")
+    endif()
+    # Compile the real implementation into the test with instrumentation;
+    # the uninstrumented archive member is then not selected by the linker.
+    target_sources(test_invalid_ancestor_cache PRIVATE src/consensus/block_lifecycle.cpp)
+    target_compile_options(test_invalid_ancestor_cache PRIVATE
+      -fsanitize=thread -fno-omit-frame-pointer -g)
+    target_link_options(test_invalid_ancestor_cache PRIVATE -fsanitize=thread)
+  endif()
 endif()
 
 # #741: getchaintips must report every known tip (abandoned branches as

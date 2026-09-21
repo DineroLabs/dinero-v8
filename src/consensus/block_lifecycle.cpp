@@ -20,10 +20,14 @@ std::unordered_map<uint256, uint256> g_invalid_descendants;
 // accumulated thousands of same-height sibling tips (a pool re-submitting a
 // stale job) spent ~1.3 s per pass at height 114k, saturating the block
 // ingress lock and starving its peer sockets.
+// All cache operations use the existing recursive block-index mutex. Candidate
+// selection already owns it before calling HasInvalidAncestor; reusing it
+// avoids introducing a second lock with an inverse acquisition order.
 static std::unordered_set<uint256> g_clean_ancestry;
 uint64_t g_invalid_ancestor_walk_steps = 0;
 
 void InvalidateAncestryCache() {
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
     g_clean_ancestry.clear();
 }
 
@@ -35,6 +39,7 @@ void InvalidateAncestryCache() {
  */
 void MarkBlockInvalid(CBlockIndex* pindex, BlockRejectReason reason, const std::string& message) {
     if (!pindex) return;
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
 
     // Add to invalid block cache
     g_invalid_blocks.emplace(pindex->GetBlockHash(),
@@ -58,6 +63,7 @@ void MarkBlockInvalid(CBlockIndex* pindex, BlockRejectReason reason, const std::
  */
 void PropagateInvalidToDescendants(CBlockIndex* pindex) {
     if (!pindex) return;
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
 
     for (CBlockIndex* child : pindex->children) {
         if (!child) continue;
@@ -80,6 +86,7 @@ void PropagateInvalidToDescendants(CBlockIndex* pindex) {
  * Check if block is directly invalid
  */
 bool IsBlockInvalid(const uint256& block_hash) {
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
     // Check invalid block cache first (fast path)
     if (g_invalid_blocks.count(block_hash)) {
         return true;
@@ -99,6 +106,10 @@ bool IsBlockInvalid(const uint256& block_hash) {
  */
 bool HasInvalidAncestor(const CBlockIndex* pindex) {
     if (!pindex) return false;
+    // Hold through lookup, the ancestry walk and cache publication. Locking
+    // individual unordered_set operations would allow an invalidation between
+    // the walk and insertion to publish a stale clean result afterwards.
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
 
     // Check BLOCK_FAILED_CHILD flag (fast path)
     if (pindex->status & BLOCK_FAILED_CHILD) {

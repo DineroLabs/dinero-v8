@@ -22,6 +22,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <barrier>
+#include <thread>
 
 #include "consensus/block_index.h"
 #include "consensus/block_lifecycle.h"
@@ -51,7 +54,61 @@ static CBlockIndex* mk(uint32_t height, CBlockIndex* parent, uint64_t serial) {
     return idx;
 }
 
-int main() {
+static void concurrent_cache_invalidation() {
+    // The graph is immutable for the entire concurrent phase. Any race here
+    // belongs to the cache, not to unsynchronized block-index mutation.
+    dinero::InvalidateAncestryCache();
+    std::vector<std::unique_ptr<CBlockIndex>> chain;
+    for (uint32_t h = 0; h <= 512; ++h) {
+        chain.emplace_back(mk(h, h ? chain.back().get() : nullptr, 1'000'000 + h));
+    }
+    std::barrier start(3);
+    std::atomic<bool> invalid{false};
+    auto read = [&] {
+        start.arrive_and_wait();
+        for (int i = 0; i < 2000; ++i) {
+            if (dinero::HasInvalidAncestor(chain.back().get())) invalid.store(true);
+        }
+    };
+    std::thread reader(read);
+    std::thread second_reader(read);
+    start.arrive_and_wait();
+    for (int i = 0; i < 2000; ++i) dinero::InvalidateAncestryCache();
+    reader.join();
+    second_reader.join();
+    check(!invalid.load(), "concurrent readers and invalidation preserve clean ancestry");
+    dinero::InvalidateAncestryCache();
+
+    // A mutation and its invalidation must also publish as one operation.
+    // Once MarkBlockInvalid returns, every later reader must see the failure.
+    std::barrier mutation_start(3);
+    std::atomic<bool> marked{false}, stale_clean{false};
+    auto read_mutating = [&] {
+        mutation_start.arrive_and_wait();
+        for (int i = 0; i < 2000; ++i) {
+            const bool must_be_invalid = marked.load();
+            const bool result = dinero::HasInvalidAncestor(chain.back().get());
+            if (must_be_invalid && !result) stale_clean.store(true);
+        }
+    };
+    std::thread before_after_reader(read_mutating);
+    std::thread other_reader(read_mutating);
+    mutation_start.arrive_and_wait();
+    dinero::MarkBlockInvalid(chain[256].get(), dinero::BlockRejectReason::INVALID_POW,
+                            "concurrent ancestry invalidation regression");
+    marked.store(true);
+    before_after_reader.join();
+    other_reader.join();
+    check(!stale_clean.load() && dinero::HasInvalidAncestor(chain.back().get()),
+          "completed invalidation cannot be overwritten by a stale clean-cache publication");
+    dinero::InvalidateAncestryCache();
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--concurrent-cache") {
+        concurrent_cache_invalidation();
+        return g_failures == 0 ? 0 : 1;
+    }
     std::cout << "=== HasInvalidAncestor ancestry-clean cache ===\n";
 
     constexpr uint32_t kChainHeight = 20000;
@@ -183,6 +240,10 @@ int main() {
         check(!dinero::HasInvalidAncestor(clean_b) && dinero::g_invalid_ancestor_walk_steps <= 1,
               "genesis-rooted clean branch is cached after one walk");
     }
+
+    // 6. Run this with ThreadSanitizer too: a passing ordinary run cannot
+    // prove the absence of a race between clear(), lookup and insertion.
+    concurrent_cache_invalidation();
 
     std::cout << (g_failures == 0
                   ? "\n✅ ALL INVALID-ANCESTOR CACHE TESTS PASSED\n"
