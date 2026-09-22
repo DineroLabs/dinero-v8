@@ -21,7 +21,12 @@ struct SparseMatrixCSR {
     size_t nnz() const { return col.size(); }
 };
 
+// Immutable trusted verifier context for one circuit: identity (structure hash) + matrices.
+// A verify call that receives one requires proof.circuit_hash == circuit_hash and, when the
+// caller also supplies an expected hash, expected == circuit_hash. Dimensions alone never
+// identify a circuit; two different circuits can share them.
 struct R1CSVerifierMatrices {
+    std::vector<uint8_t> circuit_hash;   // spartan_hash_r1cs_structure(cs), 32 bytes
     SparseMatrixCSR a, b, c;
     size_t num_constraints = 0;
     size_t num_variables = 0;

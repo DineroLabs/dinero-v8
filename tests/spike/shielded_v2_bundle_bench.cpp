@@ -8,6 +8,7 @@
 #include "consensus/shielded/pedersen_generators.h"
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/shielded_tx.h"
+#include "wallet/shielded_derivation.h"
 #include "bundle_circuit_v2.h"
 #include "crypto/evp_secp256k1.h"
 #include <secp256k1.h>
@@ -93,6 +94,42 @@ static double median_of(std::vector<double> v) {
     return v[v.size() / 2];
 }
 
+// Old design on the same host: today's LIVE Auth spend proof (mainnet since 110000), built from a
+// valid recipient-authority witness exactly as the wallet does (DeriveDiversifiedSpendKey etc.).
+static BenchRow BaselineAuthSpend() {
+    namespace wsh = dinero::wallet::shielded;
+    const uint64_t value = 100'000'000;
+    std::vector<double> prove, verify; size_t bytes = 0;
+    for (int i = 0; i < 4; ++i) {   // 1 warm-up + 3 measured: Auth proving is ~1M constraints
+        std::array<uint8_t, 64> seed{}; seed[0] = 0x51; seed[31] = static_cast<uint8_t>(0xA0 + i);
+        const auto keys = wsh::DeriveShieldedAccount(seed.data(), seed.size(), 0);
+        const auto addr = wsh::DeriveDiversifiedAddress(keys, 7, wsh::kHrpRegtest);
+        const auto spend_key = wsh::DeriveDiversifiedSpendKey(keys.ask, keys.ak, addr.d);
+        const auto nfk = wsh::DeriveDiversifiedNullifierKey(keys.nvk, addr.d);
+        const Hash ownership = AuthRecipientCommitmentKey(addr.pk_d_spend, wsh::NullifierKeyCommitment(nfk));
+        Hash d{}; std::memcpy(d.data(), addr.d.data(), addr.d.size());
+        const Hash randomness = MakeHash(0xD1, static_cast<uint8_t>(0xA5 + i));
+        CommitmentTree tree; tree.Append(MakeHash(0x10)); tree.Append(MakeHash(0x11, static_cast<uint8_t>(i)));
+        const Hash cm = NoteCommitment(d, ownership, ValueAsHash(value), randomness);
+        const uint64_t idx = tree.Append(cm);
+        const auto path = tree.GetAuthPath(idx);
+        SpendWitness w{}; w.secret_key = spend_key.s; w.nullifier_key = nfk; w.leaf_index = idx; w.value = ValueAsHash(value);
+        w.randomness = randomness; w.d = d; w.rcv = MakeBlind(static_cast<uint8_t>(0x40 + i)); w.merkle_path = path->siblings;
+        SpendPublicInputs pub{}; pub.nullifier = ComputeNullifier(nfk, idx); pub.anchor = tree.Root(); pub.cv = Commit(w.rcv, value);
+        auto t0 = Clock::now();
+        auto proof = ProveSpend(w, pub, nullptr, true, /*cv_bound=*/true, /*spend_auth=*/true);
+        const double p = ms_since(t0);
+        if (proof.empty()) { std::fprintf(stderr, "auth spend prove failed\n"); std::exit(2); }
+        t0 = Clock::now();
+        const bool ok = VerifySpend(proof, pub, nullptr, true, true, true);
+        const double v = ms_since(t0);
+        if (!ok) { std::fprintf(stderr, "auth spend verify failed\n"); std::exit(2); }
+        if (i) { prove.push_back(p); verify.push_back(v); }
+        bytes = proof.size();
+    }
+    return BenchRow{"old_spend_auth_live", 0, 0, bytes, median_of(prove), median_of(verify)};
+}
+
 // Old design on the same host: one cv-bound OUTPUT proof (live profile for outputs).
 static BenchRow BaselineOutput() {
     const uint64_t value = 100'000'000;
@@ -114,7 +151,7 @@ static BenchRow BaselineOutput() {
         if (i) { prove.push_back(p); verify.push_back(v); }
         bytes = proof.size();
     }
-    return BenchRow{"old_output_cv_bound", 0, 0, bytes, median_of(prove), median_of(verify)};
+    return BenchRow{"old_output_cv_bound_live", 0, 0, bytes, median_of(prove), median_of(verify)};
 }
 
 // Baseline: today's cv-bound spend proof (mainnet profile since height 61000).
@@ -188,7 +225,7 @@ static BenchRow BaselineSpend() {
         }
         bytes = proof.size();
     }
-    return BenchRow{"baseline_spend_cv_bound", 0, 0, bytes, median_of(prove), median_of(verify)};
+    return BenchRow{"old_spend_cv_bound_historical", 0, 0, bytes, median_of(prove), median_of(verify)};
 }
 
 
@@ -350,15 +387,19 @@ static void BenchBatch(std::vector<BenchRow>& rows) {
     for (auto& pb : proofs) if (!VerifyFull(pb, sctx, 1).ok) { std::fprintf(stderr, "batch verify failed\n"); std::exit(2); }
     rows.push_back(BenchRow{"verify_50_sequential_full_ms", 0, 0, 0, 0, ms_since(t0)});
     for (int workers : {1, 2, 4, 8}) {
-        t0 = Clock::now();
-        std::atomic<size_t> next{0}; std::vector<std::future<bool>> fs;
-        for (int t = 0; t < workers; ++t) fs.push_back(std::async(std::launch::async, [&] {
-            secp256k1_context* c = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-            bool ok = true; for (size_t i; (i = next++) < proofs.size();) ok = VerifyFull(proofs[i], c, /*matrix_threads=*/1).ok && ok;
-            secp256k1_context_destroy(c); return ok; }));
-        for (auto& f : fs) if (!f.get()) { std::fprintf(stderr, "parallel batch verify failed\n"); std::exit(2); }
-        char label[80]; std::snprintf(label, sizeof label, "verify_50_workers%d_serial_inner_full_ms", workers);
-        rows.push_back(BenchRow{label, 0, 0, 0, 0, ms_since(t0)});
+        std::vector<double> samples;
+        for (int rep = 0; rep < 6; ++rep) {   // 1 warm-up + 5 measured, median reported
+            t0 = Clock::now();
+            std::atomic<size_t> next{0}; std::vector<std::future<bool>> fs;
+            for (int t = 0; t < workers; ++t) fs.push_back(std::async(std::launch::async, [&] {
+                secp256k1_context* c = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+                bool ok = true; for (size_t i; (i = next++) < proofs.size();) ok = VerifyFull(proofs[i], c, /*matrix_threads=*/1).ok && ok;
+                secp256k1_context_destroy(c); return ok; }));
+            for (auto& f : fs) if (!f.get()) { std::fprintf(stderr, "parallel batch verify failed\n"); std::exit(2); }
+            if (rep) samples.push_back(ms_since(t0));
+        }
+        char label[80]; std::snprintf(label, sizeof label, "verify_50_workers%d_serial_inner_full_ms_median5", workers);
+        rows.push_back(BenchRow{label, 0, 0, 0, 0, median_of(samples)});
     }
 }
 
@@ -475,7 +516,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--negatives") return Negatives();
     if (argc > 1 && std::string(argv[1]) == "--selftest") return SelfTest();
     std::vector<BenchRow> rows;
-    if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) { rows.push_back(BaselineSpend()); rows.push_back(BaselineOutput()); }
+    if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) { rows.push_back(BaselineSpend()); rows.push_back(BaselineAuthSpend()); rows.push_back(BaselineOutput()); }
     rows.push_back(BenchBundle(1, 2));
     rows.push_back(BenchBundle(2, 2));
     rows.push_back(BenchBundle(4, 2));

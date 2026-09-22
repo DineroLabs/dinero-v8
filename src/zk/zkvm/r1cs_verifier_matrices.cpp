@@ -1,4 +1,5 @@
 #include "zk/zkvm/r1cs_verifier_matrices.h"
+#include "zk/zkvm/r1cs_spartan.h"
 #include <algorithm>
 #include <thread>
 
@@ -41,6 +42,7 @@ R1CSVerifierMatrices R1CSVerifierMatrices::FromR1CS(const R1CS& cs) {
     m.num_constraints = cs.num_constraints();
     m.num_variables = cs.num_variables();
     m.n_zp = next_pow2_local(m.num_variables);
+    m.circuit_hash = spartan_hash_r1cs_structure(cs);
     const Scalar one = Scalar::one();
     const Scalar neg_one = -Scalar::one();
     for (SparseMatrixCSR* s : {&m.a, &m.b, &m.c}) s->row_ptr.push_back(0);

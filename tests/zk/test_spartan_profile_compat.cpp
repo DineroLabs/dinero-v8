@@ -130,6 +130,24 @@ TEST(SpartanProfileCompat, CsrMatrixWalkGivesTheSameVerdictAsTheConstraintWalk) 
             EXPECT_EQ(walk, !tamper) << "omit=" << omit;
         }
     }
+    // A context built for a different circuit with the SAME dimensions is refused by identity.
+    {
+        R1CS twin;
+        for (int i = 0; i < 2; ++i) {
+            auto x = twin.alloc(Scalar::one());
+            twin.constrain(LinearCombination(x), LinearCombination(x),
+                           i == 0 ? LinearCombination(x) : LinearCombination(Scalar::one() + Scalar::one(), x) - LinearCombination(x), "b");
+        }
+        ASSERT_EQ(twin.num_constraints(), f.cs.num_constraints());
+        ASSERT_EQ(twin.num_variables(), f.cs.num_variables());
+        const auto twin_ctx = R1CSVerifierMatrices::FromR1CS(twin);
+        ASSERT_NE(twin_ctx.circuit_hash, m.circuit_hash);
+        SpartanProof p; ASSERT_TRUE(SpartanProof::deserialize(f.prove(false, f.cs), p, f.ctx, false));
+        Transcript t("spartan.profile.compat");
+        EXPECT_FALSE(r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), {}, Scalar::one(), f.gens(), t, f.ctx, true, true, false, 1, &twin_ctx));
+        Transcript t2("spartan.profile.compat");
+        EXPECT_FALSE(r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), twin_ctx.circuit_hash, Scalar::one(), f.gens(), t2, f.ctx, true, true, false, 1, &m)) << "expected hash must match the context";
+    }
     // A CSR built for a different shape is refused, never silently used.
     R1CS other; { auto x = other.alloc(Scalar::one()); other.constrain(LinearCombination(x), LinearCombination(x), LinearCombination(x), "b"); }
     const auto wrong = R1CSVerifierMatrices::FromR1CS(other);
@@ -185,5 +203,64 @@ TEST(SpartanProfileCompat, LargeFixtureParallelBranchIsVerdictIdenticalOnValidAn
     for (size_t threads : {size_t{1}, size_t{8}}) for (const R1CSVerifierMatrices* m : {static_cast<const R1CSVerifierMatrices*>(nullptr), &csr}) {
         Transcript tv("spartan.profile.compat.large");
         EXPECT_FALSE(r1cs_spartan_verify(p, big, big.num_constraints(), big.num_variables(), hash, Scalar::one(), gens, tv, f.ctx, true, true, false, threads, m)) << threads << (m != nullptr);
+    }
+}
+
+// Mixed coefficients (2, 3, -5, 7, -1) on a >= 16384-constraint fixture, and an invalid case that
+// can only fail at the matrix evaluation: the proof is for circuit A, the verifier evaluates the
+// matrices of circuit B (same dimensions, one coefficient changed). Sum-checks, transcript and
+// Hyrax openings never read the verifier's matrices, so the inner final check
+// (inner_final == M~_B(rx,ry) * z~(ry)) is the only check that can reject. For the CSR path the
+// identity binding would reject first, so the test forges B's context hash to A's to reach it.
+static void MixedFixture(R1CS& cs, bool flip_one_coefficient) {
+    const Scalar two = Scalar::one() + Scalar::one(), three = two + Scalar::one(), five = three + two, seven = five + two;
+    for (int i = 0; i < 17000; ++i) {
+        // x = 2, y = 3: (2x + 3y - 5) * (7x - y) = z  with z = (4+9-5)*(14-3) = 8*11 = 88
+        auto x = cs.alloc(two), y = cs.alloc(three);
+        Scalar z = Scalar(uint64_t{88});
+        auto zv = cs.alloc(z);
+        LinearCombination lhs = LinearCombination(two, x) + LinearCombination(three, y) - LinearCombination::constant(five);
+        LinearCombination rhs = LinearCombination(seven, x) - LinearCombination(y);
+        if (flip_one_coefficient && i == 4242) rhs = LinearCombination(seven, x) - LinearCombination(two, y);
+        cs.constrain(lhs, rhs, LinearCombination(zv), "mixed");
+    }
+}
+
+TEST(SpartanProfileCompat, MixedCoefficientLargeFixtureAndMatrixEvaluationRejection) {
+    Fixture f;
+    R1CS A, B;
+    MixedFixture(A, false); MixedFixture(B, true);
+    ASSERT_GE(A.num_constraints(), 16384u);
+    ASSERT_TRUE(A.is_satisfied());
+    ASSERT_EQ(A.num_constraints(), B.num_constraints()); ASSERT_EQ(A.num_variables(), B.num_variables());
+    const auto hashA = spartan_hash_r1cs_structure(A), hashB = spartan_hash_r1cs_structure(B);
+    ASSERT_NE(hashA, hashB);
+    const auto ctxA = R1CSVerifierMatrices::FromR1CS(A);
+    EXPECT_GT(ctxA.nnz_total - ctxA.nnz_one - ctxA.nnz_neg_one, 0u) << "fixture has general coefficients";
+    EXPECT_GT(ctxA.nnz_neg_one, 0u);
+    const auto& gens = GeneratorSet::cached(std::max<size_t>(4, std::max(HyraxParams::from_n(A.num_variables()).n_cols, HyraxParams::from_n(A.num_constraints()).n_cols)), f.ctx);
+    for (bool omit : {false, true}) {
+        Transcript tp("spartan.profile.compat.mixed");
+        auto bytes = r1cs_spartan_prove(A, std::vector<Scalar>(A.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, f.ctx, true, omit).serialize(f.ctx);
+        SpartanProof p; ASSERT_TRUE(SpartanProof::deserialize(bytes, p, f.ctx, omit));
+        // Valid: walk and CSR, 1 and 8 threads, agree and accept.
+        for (size_t threads : {size_t{1}, size_t{8}}) {
+            Transcript t1("spartan.profile.compat.mixed"), t2("spartan.profile.compat.mixed");
+            EXPECT_TRUE(r1cs_spartan_verify(p, A, A.num_constraints(), A.num_variables(), hashA, Scalar::one(), gens, t1, f.ctx, true, true, omit, threads, nullptr)) << omit << threads;
+            EXPECT_TRUE(r1cs_spartan_verify(p, A, A.num_constraints(), A.num_variables(), hashA, Scalar::one(), gens, t2, f.ctx, true, true, omit, threads, &ctxA)) << omit << threads;
+        }
+        // Invalid at the matrix evaluation only (walk path, expected hash left empty so the
+        // fast-reject is skipped and the M~ check is reached; B's witness slots equal A's).
+        for (size_t threads : {size_t{1}, size_t{8}}) {
+            Transcript t("spartan.profile.compat.mixed");
+            EXPECT_FALSE(r1cs_spartan_verify(p, B, B.num_constraints(), B.num_variables(), {}, Scalar::one(), gens, t, f.ctx, true, true, omit, threads, nullptr)) << "walk " << omit << threads;
+        }
+        // Same for the CSR path: forge B's identity to A's so binding passes and M~_B rejects.
+        auto forged = R1CSVerifierMatrices::FromR1CS(B);
+        forged.circuit_hash = hashA;
+        for (size_t threads : {size_t{1}, size_t{8}}) {
+            Transcript t("spartan.profile.compat.mixed");
+            EXPECT_FALSE(r1cs_spartan_verify(p, A, A.num_constraints(), A.num_variables(), hashA, Scalar::one(), gens, t, f.ctx, true, true, omit, threads, &forged)) << "csr " << omit << threads;
+        }
     }
 }

@@ -19,27 +19,47 @@ fixture, so the ≥16,384 parallel branch actually runs). A CSR built for anothe
 
 ## Old design versus new on this host (verification of one 2-in-2-out transaction)
 
+Old rows are real proofs with valid witnesses; the Auth spend is built exactly as the wallet builds
+it (`DeriveShieldedAccount`, `DeriveDiversifiedSpendKey`, `DeriveDiversifiedNullifierKey`,
+`AuthRecipientCommitmentKey`), proven with `ProveSpend(cv_bound=true, spend_auth=true)` and
+verified with `VerifySpend`. Medians of 3 after 1 warm-up for the old rows, of 5 for the new.
+
 | | proof bytes | prove | verify |
 |---|---|---|---|
-| old: cv-bound spend proof (mainnet profile 61000–109999) | 44,571 | 3,220 ms | 864 ms |
-| old: cv-bound output proof (live profile for outputs) | 43,185 | 3,156 ms | 826 ms |
-| old per tx, lower bound = 2 spends + 2 outputs | ≈ 175 KB | ≈ 12.8 s | ≈ 3.4 s |
-| new: one bundle proof, serial | 11,771 | 483 ms | 28.4 ms |
-| new: one bundle proof, 8 matrix threads | 11,771 | 483 ms | 18.1 ms |
+| old, historical cv-bound spend (mainnet 61000–109999, no longer produced) | 44,571 | 3,259 ms | 868 ms |
+| **old, live Auth spend (mainnet since 110000)** | 73,281 | 4,493 ms | 1,410 ms |
+| old, live cv-bound output | 43,185 | 3,146 ms | 828 ms |
+| **old per tx today = 2 Auth spends + 2 outputs** | ≈ 233 KB | ≈ 15.3 s | ≈ 4.5 s |
+| new: one bundle proof, serial (complete warm entry point) | 11,771 | 489 ms | 28.9 ms |
+| new: one bundle proof, 8 matrix threads | 11,771 | 489 ms | 18.2 ms |
 
-The old spend row is the cv-bound profile because the bench can build a valid witness for it; the
-LIVE spend profile (Auth) is 1,045,170 constraints against 597,009, so the true old per-tx cost is
-higher than the lower bound above. Old proofs are verified one at a time by the existing verifier.
+Old proofs are verified one at a time by the existing verifier, which is single-threaded per proof.
 
-## Worker sweep, 50 fresh 2-in-2-out proofs, one budget, serial inner path
+## Worker sweep, 50 fresh 2-in-2-out proofs, one budget, serial inner path (medians of 5 after 1 warm-up)
 
 | workers | 1 | 2 | 4 | 8 |
 |---|---|---|---|---|
-| wall ms | 1,493 | 750 | 400 | 223 |
-| per proof amortized | 29.9 | 15.0 | 8.0 | 4.5 |
+| wall ms | 1,512 | 765 | 400 | 223 |
+| per proof amortized | 30.2 | 15.3 | 8.0 | 4.5 |
 
-Scaling is near-linear to 8 workers on this host. The same sweep on the GitHub 2-core VM is produced
-by the `shielded-v2-spike-bench` workflow on every push of the research branch.
+Scaling is near-linear to 8 workers on this host (6.8× at 8). The same sweep and the old baselines
+run on the GitHub 2-core VM through the `shielded-v2-spike-bench` workflow on every push.
+
+## Trusted verifier context (owner review of 585097e24, point 1)
+
+`R1CSVerifierMatrices` now carries the circuit's structure hash. A verify that receives a context
+requires `proof.circuit_hash == context.circuit_hash` and, when the caller supplies an expected
+hash, `expected == context.circuit_hash`, before the dimension checks. A context built for a
+different circuit with identical dimensions is refused (test `…SameVerdict…`, twin-circuit case).
+
+## Equivalence tests (point 2)
+
+`MixedCoefficientLargeFixtureAndMatrixEvaluationRejection`: 17,000 constraints of the form
+(2x + 3y − 5)(7x − y) = z (general, +1 and −1 coefficients all present, parallel branch reached);
+walk and CSR at 1 and 8 threads accept the honest proof under both profiles; a proof for circuit A
+verified against circuit B (same dimensions, one coefficient changed) is rejected on the walk path
+with the expected hash left empty (so the only differing check is the matrix evaluation) and on the
+CSR path with B's context identity forged to A's (so binding passes and M̃_B rejects).
 
 ## What this does and does not show
 

@@ -50,8 +50,8 @@ jobs:
           ./build-bench/spike_shielded_v2_bench --selftest | tee evidence/selftest.log
           ./build-bench/spike_shielded_v2_bench --negatives | tee evidence/negatives.log
           ./build-bench/spike_shielded_v2_bench --profile-soundness | tee evidence/profile-soundness.log
-      - name: Bench (fresh proofs, entry point cold/warm, bounded batch)
-        run: ./build-bench/spike_shielded_v2_bench --no-baseline 2> evidence/bench-stderr.log | tee evidence/bench.json
+      - name: Bench (old baselines incl. live Auth spend, fresh proofs, entry point cold/warm, bounded batch sweep, medians of 5)
+        run: ./build-bench/spike_shielded_v2_bench 2> evidence/bench-stderr.log | tee evidence/bench.json
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4

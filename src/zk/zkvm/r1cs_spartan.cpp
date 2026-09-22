@@ -740,6 +740,10 @@ bool r1cs_spartan_verify(
     Scalar M_eval = Scalar::zero();
     const size_t nthreads = std::max<size_t>(1, std::min<size_t>(matrix_threads, 64));
     if (matrices) {
+        // Trusted context binding: identity first, dimensions second. The context's hash is the
+        // trusted anchor; the proof's claimed hash and the caller's expectation must both match it.
+        if (matrices->circuit_hash.size() != 32 || matrices->circuit_hash != proof.circuit_hash) return false;
+        if (!expected_circuit_hash.empty() && expected_circuit_hash != matrices->circuit_hash) return false;
         if (matrices->num_constraints != num_constraints || matrices->num_variables != num_variables ||
             matrices->n_zp != n_zp) return false;
         M_eval = EvalMatrixCombinationCSR(*matrices, eq_rx_m, eq_ry, rho, rho2, nc_check, nthreads);
