@@ -45,6 +45,7 @@
  */
 
 #include "zk/zkvm/r1cs.h"
+#include "zk/zkvm/r1cs_verifier_matrices.h"
 #include "zk/zkvm/hyrax.h"
 #include <array>
 #include <vector>
@@ -162,7 +163,10 @@ bool r1cs_spartan_verify(
     // Worker budget for the M~(rx,ry) evaluation. 1 (default) = serial, no thread is created:
     // legacy callers keep their exact resource behaviour. Callers that own a parallelism
     // budget (the shielded v2 verifier) pass their share; the result is bit-identical.
-    size_t matrix_threads = 1
+    size_t matrix_threads = 1,
+    // Optional trusted per-shape CSR form of verifier_cs's matrices (research). When given, the
+    // M~ evaluation walks it instead of verifier_cs.constraints(); the value is identical.
+    const struct R1CSVerifierMatrices* matrices = nullptr
 );
 
 /**

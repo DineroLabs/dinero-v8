@@ -467,6 +467,7 @@ if(ENABLE_ZK)
         src/zk/zkvm/gadgets.cpp
         src/zk/zkvm/r1cs_ipa.cpp
         src/zk/zkvm/r1cs_spartan.cpp
+        src/zk/zkvm/r1cs_verifier_matrices.cpp
         src/zk/zkvm/poseidon_gadget.cpp
         src/zk/zkvm/sha256_gadget.cpp
         src/zk/zkvm/secp256k1_fe_gadget.cpp

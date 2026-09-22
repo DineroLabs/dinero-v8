@@ -13,6 +13,7 @@
 #include <secp256k1.h>
 #include "zk/zkvm/ipa.h"
 #include "zk/zkvm/r1cs_spartan.h"
+#include "zk/zkvm/r1cs_verifier_matrices.h"
 #include "zk/zkvm/transcript.h"
 
 #include <algorithm>
@@ -90,6 +91,30 @@ static ValueCommitment Commit(const Hash& blind, uint64_t value) {
 static double median_of(std::vector<double> v) {
     std::sort(v.begin(), v.end());
     return v[v.size() / 2];
+}
+
+// Old design on the same host: one cv-bound OUTPUT proof (live profile for outputs).
+static BenchRow BaselineOutput() {
+    const uint64_t value = 100'000'000;
+    std::vector<double> prove, verify; size_t bytes = 0;
+    for (int i = 0; i < 6; ++i) {
+        OutputWitness w{};
+        w.value = ValueAsHash(value); w.public_key = MakeHash(0x21, static_cast<uint8_t>(i)); w.randomness = MakeHash(0x22, static_cast<uint8_t>(i)); w.d = MakeHash(0x23, 0x10); w.rcv = MakeBlind(static_cast<uint8_t>(0x30 + i));
+        OutputPublicInputs pub{};
+        pub.commitment = NoteCommitment(w.d, w.public_key, w.value, w.randomness);
+        pub.cv = Commit(w.rcv, value);
+        auto t0 = Clock::now();
+        auto proof = ProveOutput(w, pub, nullptr, true, true);
+        const double p = ms_since(t0);
+        if (proof.empty()) { std::fprintf(stderr, "baseline output prove failed\n"); std::exit(2); }
+        t0 = Clock::now();
+        const bool ok = VerifyOutput(proof, pub, nullptr, true, true);
+        const double v = ms_since(t0);
+        if (!ok) { std::fprintf(stderr, "baseline output verify failed\n"); std::exit(2); }
+        if (i) { prove.push_back(p); verify.push_back(v); }
+        bytes = proof.size();
+    }
+    return BenchRow{"old_output_cv_bound", 0, 0, bytes, median_of(prove), median_of(verify)};
 }
 
 // Baseline: today's cv-bound spend proof (mainnet profile since height 61000).
@@ -226,7 +251,7 @@ static BenchRow BenchBundle(size_t n_in, size_t n_out) {
 // generator size. Cold initialisation (build + hash) is reported separately; per proof the
 // structure is copied and its public-input slots set (R1CS::set_value), which is what a node does.
 struct ShapeKey { size_t n_in, n_out; bool omit; bool operator<(const ShapeKey& o) const { return std::tie(n_in, n_out, omit) < std::tie(o.n_in, o.n_out, o.omit); } };
-struct ShapeData { dinero::zk::zkvm::R1CS structure; std::vector<uint8_t> chash; size_t gens_need = 0; double cold_init_ms = 0; };
+struct ShapeData { dinero::zk::zkvm::R1CS structure; dinero::zk::zkvm::R1CSVerifierMatrices matrices; std::vector<uint8_t> chash; size_t gens_need = 0; double cold_init_ms = 0; double csr_build_ms = 0; };
 static std::map<ShapeKey, ShapeData> g_shapes; static std::mutex g_shapes_mu;
 static const ShapeData& ShapeFor(size_t n_in, size_t n_out) {
     using namespace dinero::zk::zkvm;
@@ -242,6 +267,9 @@ static const ShapeData& ShapeFor(size_t n_in, size_t n_out) {
     zero.sighash = Scalar::zero(); zero.fee = 0;
     d.structure = spike::BuildBundleCircuitV2(zero);
     d.chash = spartan_hash_r1cs_structure(d.structure);
+    { auto tc = Clock::now(); d.matrices = R1CSVerifierMatrices::FromR1CS(d.structure); d.csr_build_ms = ms_since(tc);
+      std::fprintf(stderr, "CSR shape %zu-in-%zu-out: nnz=%zu (+1: %zu, -1: %zu, general: %zu) build=%.1f ms\n", n_in, n_out,
+                   d.matrices.nnz_total, d.matrices.nnz_one, d.matrices.nnz_neg_one, d.matrices.nnz_total - d.matrices.nnz_one - d.matrices.nnz_neg_one, d.csr_build_ms); }
     d.gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(d.structure.num_variables()).n_cols, HyraxParams::from_n(d.structure.num_constraints()).n_cols));
     d.cold_init_ms = ms_since(t0);
     return g_shapes.emplace(key, std::move(d)).first->second;
@@ -285,7 +313,8 @@ static VerifyBreakdown VerifyFull(const ProvenBundle& pb, secp256k1_context* sct
     for (size_t i = 0; i < inputs.size(); ++i) vcs.set_value(Variable{i + 1}, inputs[i]);
     const auto t2 = Clock::now();
     Transcript tv("dinero.shielded.bundle.v2.spike");
-    r.ok = r1cs_spartan_verify(parsed, vcs, vcs.num_constraints(), vcs.num_variables(), shape.chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm, matrix_threads);
+    static const bool no_csr = std::getenv("DINERO_NO_CSR") != nullptr;
+    r.ok = r1cs_spartan_verify(parsed, vcs, vcs.num_constraints(), vcs.num_variables(), shape.chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm, matrix_threads, no_csr ? nullptr : &shape.matrices);
     const auto t3 = Clock::now();
     auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
     r.deser = ms(t0, t1); r.structure = ms(t1, t2); r.verify = ms(t2, t3); r.total = ms(t0, t3);
@@ -320,14 +349,17 @@ static void BenchBatch(std::vector<BenchRow>& rows) {
     auto t0 = Clock::now();
     for (auto& pb : proofs) if (!VerifyFull(pb, sctx, 1).ok) { std::fprintf(stderr, "batch verify failed\n"); std::exit(2); }
     rows.push_back(BenchRow{"verify_50_sequential_full_ms", 0, 0, 0, 0, ms_since(t0)});
-    t0 = Clock::now();
-    std::atomic<size_t> next{0}; std::vector<std::future<bool>> fs;
-    for (int t = 0; t < 8; ++t) fs.push_back(std::async(std::launch::async, [&] {
-        secp256k1_context* c = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-        bool ok = true; for (size_t i; (i = next++) < proofs.size();) ok = VerifyFull(proofs[i], c, /*matrix_threads=*/1).ok && ok;
-        secp256k1_context_destroy(c); return ok; }));
-    for (auto& f : fs) if (!f.get()) { std::fprintf(stderr, "parallel batch verify failed\n"); std::exit(2); }
-    rows.push_back(BenchRow{"verify_50_workers8_serial_inner_full_ms", 0, 0, 0, 0, ms_since(t0)});
+    for (int workers : {1, 2, 4, 8}) {
+        t0 = Clock::now();
+        std::atomic<size_t> next{0}; std::vector<std::future<bool>> fs;
+        for (int t = 0; t < workers; ++t) fs.push_back(std::async(std::launch::async, [&] {
+            secp256k1_context* c = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+            bool ok = true; for (size_t i; (i = next++) < proofs.size();) ok = VerifyFull(proofs[i], c, /*matrix_threads=*/1).ok && ok;
+            secp256k1_context_destroy(c); return ok; }));
+        for (auto& f : fs) if (!f.get()) { std::fprintf(stderr, "parallel batch verify failed\n"); std::exit(2); }
+        char label[80]; std::snprintf(label, sizeof label, "verify_50_workers%d_serial_inner_full_ms", workers);
+        rows.push_back(BenchRow{label, 0, 0, 0, 0, ms_since(t0)});
+    }
 }
 
 // Task 2: bundle circuit satisfiability self-test (spec §3.1 relations).
@@ -443,7 +475,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--negatives") return Negatives();
     if (argc > 1 && std::string(argv[1]) == "--selftest") return SelfTest();
     std::vector<BenchRow> rows;
-    if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) rows.push_back(BaselineSpend());
+    if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) { rows.push_back(BaselineSpend()); rows.push_back(BaselineOutput()); }
     rows.push_back(BenchBundle(1, 2));
     rows.push_back(BenchBundle(2, 2));
     rows.push_back(BenchBundle(4, 2));

@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "zk/zkvm/r1cs_spartan.h"
+#include "zk/zkvm/r1cs_verifier_matrices.h"
 #include "crypto/sha256.h"
 #include <cassert>
 #include <cstring>
@@ -580,7 +581,8 @@ bool r1cs_spartan_verify(
     bool bind_public_inputs,
     bool require_zero_error,
     bool omit_error_term,
-    size_t matrix_threads
+    size_t matrix_threads,
+    const R1CSVerifierMatrices* matrices
 ) {
     SpartanPhaseTimer T;
     // --- Basic sanity checks ---
@@ -737,7 +739,11 @@ bool r1cs_spartan_verify(
     };
     Scalar M_eval = Scalar::zero();
     const size_t nthreads = std::max<size_t>(1, std::min<size_t>(matrix_threads, 64));
-    if (nc_check >= 16384 && nthreads > 1) {
+    if (matrices) {
+        if (matrices->num_constraints != num_constraints || matrices->num_variables != num_variables ||
+            matrices->n_zp != n_zp) return false;
+        M_eval = EvalMatrixCombinationCSR(*matrices, eq_rx_m, eq_ry, rho, rho2, nc_check, nthreads);
+    } else if (nc_check >= 16384 && nthreads > 1) {
         std::vector<Scalar> partial(nthreads, Scalar::zero());
         std::vector<std::thread> pool;
         const size_t chunk = (nc_check + nthreads - 1) / nthreads;

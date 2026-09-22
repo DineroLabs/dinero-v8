@@ -3,6 +3,7 @@
 // behaviour; strictness applies to the E-less profile only. Review finding 2026-09-22
 // (MemoryMD/evidence/shielded-v2-task7-review-2026-09-22).
 #include "zk/zkvm/r1cs_spartan.h"
+#include "zk/zkvm/r1cs_verifier_matrices.h"
 #include "zk/zkvm/transcript.h"
 #include <gtest/gtest.h>
 #include <secp256k1.h>
@@ -108,5 +109,81 @@ TEST(SpartanProfileCompat, MatrixThreadBudgetDoesNotChangeTheVerdict) {
     tampered[tampered.size() / 2] ^= 0x01;
     for (size_t threads : {size_t{1}, size_t{8}}) {
         EXPECT_FALSE(f.decode_verify(tampered, false, threads).second) << threads;
+    }
+}
+
+TEST(SpartanProfileCompat, CsrMatrixWalkGivesTheSameVerdictAsTheConstraintWalk) {
+    Fixture f;
+    const auto m = R1CSVerifierMatrices::FromR1CS(f.cs);
+    EXPECT_EQ(m.num_constraints, f.cs.num_constraints());
+    EXPECT_EQ(m.nnz_total, 3u * f.cs.num_constraints());
+    for (bool omit : {false, true}) {
+        auto bytes = f.prove(omit, f.cs);
+        for (int tamper = 0; tamper <= 1; ++tamper) {
+            auto in = bytes; if (tamper) in[in.size() / 2] ^= 0x01;
+            SpartanProof p; ASSERT_TRUE(SpartanProof::deserialize(in, p, f.ctx, omit) || tamper);
+            if (!SpartanProof::deserialize(in, p, f.ctx, omit)) continue;
+            Transcript t1("spartan.profile.compat"), t2("spartan.profile.compat");
+            const bool walk = r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), f.hash, Scalar::one(), f.gens(), t1, f.ctx, true, true, omit, 1, nullptr);
+            const bool csr  = r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), f.hash, Scalar::one(), f.gens(), t2, f.ctx, true, true, omit, 1, &m);
+            EXPECT_EQ(walk, csr) << "omit=" << omit << " tamper=" << tamper;
+            EXPECT_EQ(walk, !tamper) << "omit=" << omit;
+        }
+    }
+    // A CSR built for a different shape is refused, never silently used.
+    R1CS other; { auto x = other.alloc(Scalar::one()); other.constrain(LinearCombination(x), LinearCombination(x), LinearCombination(x), "b"); }
+    const auto wrong = R1CSVerifierMatrices::FromR1CS(other);
+    SpartanProof p; ASSERT_TRUE(SpartanProof::deserialize(f.prove(false, f.cs), p, f.ctx, false));
+    Transcript t("spartan.profile.compat");
+    EXPECT_FALSE(r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), f.hash, Scalar::one(), f.gens(), t, f.ctx, true, true, false, 1, &wrong));
+}
+
+// Review point 2026-09-22: the parallel matrix branch only runs for >= 16384 constraints, so the
+// budget-independence claim must be tested on a fixture that size, for valid AND invalid proofs,
+// both profiles, walk and CSR.
+TEST(SpartanProfileCompat, LargeFixtureParallelBranchIsVerdictIdenticalOnValidAndInvalidProofs) {
+    Fixture f;
+    R1CS big;
+    std::vector<Variable> xs;
+    for (int i = 0; i < 20000; ++i) {
+        auto x = big.alloc(Scalar::one());
+        big.constrain(LinearCombination(x), LinearCombination(x), LinearCombination(x), "boolean");
+        xs.push_back(x);
+    }
+    ASSERT_GE(big.num_constraints(), 16384u);
+    ASSERT_TRUE(big.is_satisfied());
+    const auto hash = spartan_hash_r1cs_structure(big);
+    const auto csr = R1CSVerifierMatrices::FromR1CS(big);
+    const auto& gens = GeneratorSet::cached(std::max<size_t>(4, std::max(HyraxParams::from_n(big.num_variables()).n_cols,
+                                                                            HyraxParams::from_n(big.num_constraints()).n_cols)), f.ctx);
+    for (bool omit : {false, true}) {
+        Transcript tp("spartan.profile.compat.large");
+        auto bytes = r1cs_spartan_prove(big, std::vector<Scalar>(big.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, f.ctx, true, omit).serialize(f.ctx);
+        ASSERT_FALSE(bytes.empty());
+        for (int variant = 0; variant < 3; ++variant) {
+            auto in = bytes;
+            if (variant == 1) in[in.size() / 2] ^= 0x01;          // corrupt a sum-check / opening scalar
+            if (variant == 2) in[40] ^= 0x01;                      // corrupt a commitment point byte
+            SpartanProof p;
+            if (!SpartanProof::deserialize(in, p, f.ctx, omit)) { EXPECT_NE(variant, 0); continue; }
+            bool verdict[4]; int k = 0;
+            for (size_t threads : {size_t{1}, size_t{8}}) for (const R1CSVerifierMatrices* m : {static_cast<const R1CSVerifierMatrices*>(nullptr), &csr}) {
+                Transcript tv("spartan.profile.compat.large");
+                verdict[k++] = r1cs_spartan_verify(p, big, big.num_constraints(), big.num_variables(), hash, Scalar::one(), gens, tv, f.ctx, true, true, omit, threads, m);
+            }
+            for (int j = 1; j < 4; ++j) EXPECT_EQ(verdict[0], verdict[j]) << "omit=" << omit << " variant=" << variant << " config=" << j;
+            EXPECT_EQ(verdict[0], variant == 0) << "omit=" << omit << " variant=" << variant;
+        }
+    }
+    // Invalid witness on the large fixture: rejected identically by every configuration.
+    R1CS bad;
+    for (int i = 0; i < 20000; ++i) { auto x = bad.alloc(i == 777 ? Scalar::one() + Scalar::one() : Scalar::one()); bad.constrain(LinearCombination(x), LinearCombination(x), LinearCombination(x), "boolean"); }
+    ASSERT_FALSE(bad.is_satisfied());
+    Transcript tp("spartan.profile.compat.large");
+    auto bytes = r1cs_spartan_prove(bad, std::vector<Scalar>(bad.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, f.ctx, true, false).serialize(f.ctx);
+    SpartanProof p; ASSERT_TRUE(SpartanProof::deserialize(bytes, p, f.ctx, false));
+    for (size_t threads : {size_t{1}, size_t{8}}) for (const R1CSVerifierMatrices* m : {static_cast<const R1CSVerifierMatrices*>(nullptr), &csr}) {
+        Transcript tv("spartan.profile.compat.large");
+        EXPECT_FALSE(r1cs_spartan_verify(p, big, big.num_constraints(), big.num_variables(), hash, Scalar::one(), gens, tv, f.ctx, true, true, false, threads, m)) << threads << (m != nullptr);
     }
 }
