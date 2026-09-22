@@ -2740,7 +2740,6 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
       src/consensus/shielded/compact_spartan_codec.cpp
     )
     add_dependencies(test_spartan_soundness gtest dinero_zk)
-    target_compile_definitions(test_spartan_soundness PRIVATE DINERO_ZK_TEST_HOOKS=1)
     target_link_libraries(test_spartan_soundness PRIVATE
       GTest::gtest
       GTest::gtest_main

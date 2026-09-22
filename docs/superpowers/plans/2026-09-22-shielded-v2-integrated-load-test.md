@@ -24,13 +24,14 @@ All on regtest with the shielded heights forced low, one node under test (NUT) p
 
 | id | scenario | what is driven | duration |
 |---|---|---|---|
-| W1 steady | blocks and transactions together | PEER mines one block every 10 s containing up to 50 shielded txs; harness submits 5 shielded txs/s to NUT's mempool throughout | 10 min |
+| W1 steady | blocks and transactions together | PEER mines one block every 10 s; each block carries the LEGAL shielded budget (`kAuthMaxBlockProofs = 8` proofs, ≤ 1,000,000 shielded bytes: e.g. two 2-in-2-out, or eight shields); the harness offers pre-generated valid shielded txs to NUT's mempool at a stated offered rate and records the achieved rate, queue growth and rejections; block contents are read back (txids, shapes, proof counts, bytes) | 10 min |
+| W1-over | overload / capacity (labelled separately) | same as W1 with the offered rate raised until the mempool grows; never by changing consensus limits | 10 min |
 | W2 catch-up | recovery after downtime | NUT stopped for 30 blocks of W1-style load on PEER, then restarted; time to tip | until synced + 2 min |
 | W3 fork | reorg under load | PEER and a second peer produce a 6-block fork with shielded txs on both sides; NUT switches | until converged + 2 min |
 | W4 service | templates and RPC during validation | W1 load plus `getblocktemplate` every 2 s and `getblockcount`/`getrawmempool`/`getshieldedbalance` every 1 s from a separate client | 10 min |
 | W5 hostile | expensive invalid proofs | W1 load plus 2 invalid-proof shielded txs/s (proof bytes mutated, everything else valid) submitted over P2P and RPC | 10 min |
 
-Fresh randomness everywhere: no proof is ever seen twice by the NUT, so the verification cache cannot help.
+Fresh randomness everywhere, and two traffic classes kept apart: mempool-then-block traffic (the block's proofs were verified on admission and hit the verification cache) and cold traffic (peer-delivered blocks whose transactions NUT never saw, and catch-up), which is where full block verification cost appears. Transactions are pre-generated on a separate machine or process so that expensive proving never throttles the offered load on the node under test.
 
 ## 3. Metrics (all captured per scenario, per design, per host class)
 
@@ -156,6 +157,10 @@ mutations spread over the middle 80% of the transaction so they land inside the 
   are unaffected. A fee-free crafted transaction therefore holds the mempool and template path for
   ≈0.5 s per proof on the old design; a crafted 2-in-2-out (four proofs) would hold it ≈4.5 s per
   submission. The new bundle verifies (and rejects) a crafted 2-in-2-out in ≈30 ms serial on this host.
+  **Both sentences are projections, not measurements** (owner review): the measured hostile seed is a
+  one-output-proof transaction, bundle verification short-circuits on the first invalid proof, and no
+  integrated v2 path exists yet. The rerun below adds a measured three-proof (1-in-2-out) seed and uses
+  the node's reject reason, not elapsed time, as the stage signal.
 
 ### 8.4 Baseline conclusion (single node, M4 Max)
 

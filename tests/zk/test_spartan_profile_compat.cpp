@@ -11,6 +11,14 @@
 
 using namespace dinero::zk::zkvm;
 
+namespace dinero { namespace zk { namespace zkvm {
+// Test-only definition of the friend declared in r1cs_verifier_matrices.h. Lets a test forge a
+// context's identity to prove that the matrix evaluation itself rejects a mismatched circuit.
+struct R1CSVerifierMatricesTestAccess {
+    static void ForgeIdentity(R1CSVerifierMatrices& m, const std::vector<uint8_t>& h) { m.circuit_hash_ = h; }
+};
+}}}  // namespace dinero::zk::zkvm
+
 namespace {
 struct Fixture {
     secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
@@ -257,7 +265,7 @@ TEST(SpartanProfileCompat, MixedCoefficientLargeFixtureAndMatrixEvaluationReject
         }
         // Same for the CSR path: forge B's identity to A's so binding passes and M~_B rejects.
         auto forged = R1CSVerifierMatrices::Build(B);
-        forged.ForgeIdentityForTests(hashA);
+        R1CSVerifierMatricesTestAccess::ForgeIdentity(forged, hashA);
         for (size_t threads : {size_t{1}, size_t{8}}) {
             Transcript t("spartan.profile.compat.mixed");
             EXPECT_FALSE(r1cs_spartan_verify(p, A, A.num_constraints(), A.num_variables(), hashA, Scalar::one(), gens, t, f.ctx, true, true, omit, threads, &forged)) << "csr " << omit << threads;

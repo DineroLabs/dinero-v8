@@ -42,10 +42,9 @@ public:
     size_t nnz_one() const { return nnz_one_; }
     size_t nnz_neg_one() const { return nnz_neg_one_; }
 
-#ifdef DINERO_ZK_TEST_HOOKS
-    // Test-only: forge the identity so a test can prove the matrix evaluation itself rejects.
-    void ForgeIdentityForTests(const std::vector<uint8_t>& h) { circuit_hash_ = h; }
-#endif
+    // Test access type: declared unconditionally so every translation unit sees the same class
+    // definition (ODR). It is DEFINED only in test sources; the library never defines or uses it.
+    friend struct R1CSVerifierMatricesTestAccess;
 
 private:
     R1CSVerifierMatrices() = default;
