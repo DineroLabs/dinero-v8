@@ -413,6 +413,10 @@ struct ChainParams {
     // Checkpoints: height -> block hash
     // Prevents reorganization past these points
     std::map<uint32_t, std::string> vCheckpoints;
+
+    // Joint compact-v1 / 60-second release and service cutoff. Public heights
+    // are source-selected, never operator overrides. UINT32_MAX is dormant.
+    uint32_t release_v8113_activation_height = UINT32_MAX;
 };
 
 // ============================================================================

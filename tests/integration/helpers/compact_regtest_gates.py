@@ -45,6 +45,12 @@ with tempfile.TemporaryDirectory(prefix="dinero-compact-gates-") as temporary:
         capture_output=True, text=True, timeout=15)
     assert disabled.returncode != 0 and "not compiled" in disabled.stderr, disabled
 
+    disabled_joint = subprocess.run(
+        [ordinary, "--regtest", f"--datadir={root / 'disabled-joint'}",
+         "--consensus-release-height=124"],
+        capture_output=True, text=True, timeout=15)
+    assert disabled_joint.returncode != 0 and "not compiled" in disabled_joint.stderr, disabled_joint
+
     # An ordinary build recognizes the format, but no activation is scheduled
     # here. Reject by the consensus gate, not by omitting the wire decoder.
     sockets = [socket.socket() for _ in range(3)]

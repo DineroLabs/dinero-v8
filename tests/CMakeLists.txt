@@ -3550,6 +3550,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
+    tests/p2p/test_release_peer_cutoff.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
@@ -13398,6 +13399,7 @@ set_tests_properties(RpcRegistryRestartCycle PROPERTIES
 add_executable(test_shielded_resource_limits
   tests/consensus/test_shielded_resource_limits.cpp
   tests/consensus/test_compact_activation.cpp
+  tests/consensus/test_release_profile.cpp
   src/p2p/structural_validator.cpp)
 target_link_libraries(test_shielded_resource_limits PRIVATE
   GTest::gtest_main dinero_core dinero_shielded)

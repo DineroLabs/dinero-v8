@@ -1,3 +1,4 @@
+#include "consensus/release_profile.h"
 // Dinero Daemon - Clean Service Architecture
 // Week 1 Migration: Using DaemonApp with dependency injection
 
@@ -459,6 +460,7 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
     int64_t private_covenant_override = -1;   // paired auth activation/reset; REGTEST only
     int64_t contextual_locks_height_override = -1;
     int64_t sixty_second_height_override = -1;
+    int64_t joint_release_height_override = -1;
     long state_commitment_height_override = -1;   // <0 = unset; REGTEST only (UINT32_MAX = dormant)
     long state_commitment_burial_override = -1;   // <0 = unset; REGTEST only
 
@@ -498,6 +500,21 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
                           << val << "\n";
                 return 1;
             }
+        } else if (arg.find("--consensus-release-height=") == 0) {
+#ifndef DINERO_ENABLE_COMPACT_REGTEST
+            std::cerr << "Joint release override is not compiled into this build\n";
+            return 1;
+#else
+            const auto value = arg.substr(std::string("--consensus-release-height=").size());
+            try {
+                size_t parsed = 0;
+                const auto height = std::stoull(value, &parsed);
+                if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos ||
+                    parsed != value.size() || height == 0 || height >= UINT32_MAX)
+                    throw std::invalid_argument("height");
+                joint_release_height_override = static_cast<int64_t>(height);
+            } catch (...) { std::cerr << "Invalid joint release activation height\n"; return 1; }
+#endif
         } else if (arg.find("--consensus-sixty-second-height=") == 0) {
             const auto value = arg.substr(std::string("--consensus-sixty-second-height=").size());
             try {
@@ -961,6 +978,22 @@ int RunDaemonMain(int argc, char* argv[], bool running_as_windows_service) {
             static_cast<uint32_t>(state_commitment_burial_override);
         std::cout << "[Network] REGTEST: state commitment burial depth forced to "
                   << state_commitment_burial_override << " (test-only)\n";
+    }
+
+    if (joint_release_height_override >= 0) {
+        // Do not silently override individually supplied heights: a typo must
+        // not produce a different network/profile than the operator requested.
+        if (chain != dinero::Chain::REGTEST || compact_regtest_override >= 0 ||
+            sixty_second_height_override >= 0) {
+            std::cerr << "Joint release override requires REGTEST and no individual compact/timing overrides\n";
+            return 1;
+        }
+        try {
+            dinero::consensus::ConfigureReleaseV8113(dinero::MutableParams(),
+                static_cast<uint32_t>(joint_release_height_override));
+        } catch (const std::exception& error) {
+            std::cerr << error.what() << "\n"; return 1;
+        }
     }
 
     if (regtest_enforce_pow) {
