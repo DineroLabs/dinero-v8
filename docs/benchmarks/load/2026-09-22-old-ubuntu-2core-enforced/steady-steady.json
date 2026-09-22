@@ -1,0 +1,226 @@
+{
+  "scenario": "steady+service",
+  "seconds": 300,
+  "start_height": 140,
+  "end_height": 147,
+  "generation": {
+    "offered_equals_achieved": true,
+    "achieved_tx_per_s": 0.03666666666666667,
+    "builds_ok": 11,
+    "builds_failed": [],
+    "shield_ms": {
+      "n": 5,
+      "p50": 12365.543853999952,
+      "p95": 12680.483701999947,
+      "p99": 12680.483701999947,
+      "max": 12680.483701999947,
+      "mean": 12351.349225199965
+    },
+    "transfer_ms": {
+      "n": 6,
+      "p50": 43030.80914799989,
+      "p95": 43279.91340699987,
+      "p99": 43279.91340699987,
+      "max": 43279.91340699987,
+      "mean": 43018.54224333332
+    }
+  },
+  "blocks": {
+    "count": 7,
+    "generate_ms": {
+      "n": 7,
+      "p50": 217.10483100014244,
+      "p95": 497.68892499992035,
+      "p99": 497.68892499992035,
+      "max": 497.68892499992035,
+      "mean": 275.46941228570176
+    },
+    "shielded_txs_confirmed": 11,
+    "per_block": [
+      {
+        "height": 141,
+        "hash": "441847f0d1460f34551962f55b5d2208558b709def3ebd35e430a58ae5d316e7",
+        "generate_ms": 90.35054299988587,
+        "mempool_before": 2,
+        "tx_count": 3,
+        "shielded_included": 2,
+        "included_kinds": {
+          "shield": 2,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 142,
+        "hash": "3874631e448b112fbba0b20dafd39da04c84393c53148be4962facda31fe00a3",
+        "generate_ms": 186.86443699994015,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 143,
+        "hash": "69bc578134c532fc4c11ebcb68dbacbe9717add71486e89284b6f6cf15acce02",
+        "generate_ms": 276.55478299993774,
+        "mempool_before": 2,
+        "tx_count": 3,
+        "shielded_included": 2,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 144,
+        "hash": "6e4fae2394c3ea21c50b472a4addf566a46aff2fdcd548096e747c067d5b34f0",
+        "generate_ms": 445.28838199994425,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 145,
+        "hash": "30fb1bc05dd81223143f6b66d1700acad7f1527ef6f978ebdc958b9179ef78cd",
+        "generate_ms": 497.68892499992035,
+        "mempool_before": 2,
+        "tx_count": 3,
+        "shielded_included": 2,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 146,
+        "hash": "5df77231f492f3fe1437c1ddd5f7504c6c6900598ed91f6a36444a4121104b9e",
+        "generate_ms": 214.43398500014155,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 147,
+        "hash": "1e5b1c9c8c7b03a35f2ec6103ae3c0812b4ed196029821f9f0cfe1bb5d813c9b",
+        "generate_ms": 217.10483100014244,
+        "mempool_before": 2,
+        "tx_count": 3,
+        "shielded_included": 2,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 1
+        }
+      }
+    ]
+  },
+  "probes": {
+    "getblockcount": {
+      "method": "getblockcount",
+      "interval_s": 1.0,
+      "samples": 322,
+      "ok": 322,
+      "errors": {},
+      "missed_deadlines": 0,
+      "latency_ms": {
+        "n": 322,
+        "p50": 1.1938389998249477,
+        "p95": 1.5972710000369261,
+        "p99": 1.9036889998460538,
+        "max": 3.496627999993507,
+        "mean": 1.2315285062149657
+      },
+      "slow_over_1s": 0
+    },
+    "getrawmempool": {
+      "method": "getrawmempool",
+      "interval_s": 1.0,
+      "samples": 299,
+      "ok": 299,
+      "errors": {},
+      "missed_deadlines": 23,
+      "latency_ms": {
+        "n": 299,
+        "p50": 0.9380620001593343,
+        "p95": 1.5940460002639156,
+        "p99": 5379.073557000083,
+        "max": 5635.386722000021,
+        "mean": 128.24248574248338
+      },
+      "slow_over_1s": 11
+    },
+    "wallet.shieldedbalance": {
+      "method": "wallet.shieldedbalance",
+      "interval_s": 1.0,
+      "samples": 80,
+      "ok": 80,
+      "errors": {},
+      "missed_deadlines": 242,
+      "latency_ms": {
+        "n": 80,
+        "p50": 0.9719949998725497,
+        "p95": 36304.126086,
+        "p99": 36581.266225000036,
+        "max": 36641.00810900004,
+        "mean": 3328.6738193124875
+      },
+      "slow_over_1s": 16
+    },
+    "getblocktemplate": {
+      "method": "getblocktemplate",
+      "interval_s": 2.0,
+      "samples": 156,
+      "ok": 156,
+      "errors": {},
+      "missed_deadlines": 5,
+      "latency_ms": {
+        "n": 156,
+        "p50": 8.862948000114557,
+        "p95": 466.63052799999605,
+        "p99": 5457.80435000006,
+        "max": 5668.762827999899,
+        "mean": 225.692314121793
+      },
+      "slow_over_1s": 8,
+      "stale_template_with_stable_tip": 0
+    }
+  },
+  "resources": {
+    "samples": 320,
+    "cpu_pct_of_one_core": {
+      "n": 320,
+      "p50": 99.20158625081983,
+      "p95": 99.23744015852989,
+      "p99": 198.4202478307009,
+      "max": 198.44558230252596,
+      "mean": 101.66777360881414
+    },
+    "rss_mb": {
+      "n": 320,
+      "p50": 845,
+      "p95": 1395,
+      "p99": 1477,
+      "max": 1536,
+      "mean": 904.00625
+    }
+  },
+  "log_counters": {
+    "SAFE MODE": 0,
+    "INVARIANT VIOLATION": 0,
+    "corrupt": 0,
+    "REORG ABORT": 0,
+    "RPC server busy": 0
+  },
+  "miner": "rdin1ppqkg3es6ddm09mq68tyfvqw52tpk04hzeccyeugtns6r2q99yaqsax3tmd",
+  "qualification_failures": [],
+  "qualification_failed": false
+}

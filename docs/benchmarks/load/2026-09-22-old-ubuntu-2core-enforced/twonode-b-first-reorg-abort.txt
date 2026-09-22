@@ -1,0 +1,8 @@
+15072-[ERROR] [ConnectTip] Failed to read block at height 54, hash=544dbdc450beb1e2224fd9814e61353c7c9ffd5e84d2f8b4589a006191b5ad7e, status=1
+15073-❌ [ConnectTip] Failed to read stored block
+15074-   status=1
+15075-[WARNING] [ConnectTip] Cleared BLOCK_HAVE_DATA for height 54 and marked its body unreadable for recovery
+15076-[ERROR] [ActivateBestChain] Failed to connect block at height 54, error=read-block-failed-status-1
+15077-❌ [ActivateBestChain] ConnectTip FAILED for height 54
+15078:[WARNING] [ActivateBestChain] REORG ABORT: preserving candidate after operational connect failure; retry in 250ms
+15079-[INFO] [AddCandidate] Added: height=52, chainwork=...00000000051ebe0d, status=399

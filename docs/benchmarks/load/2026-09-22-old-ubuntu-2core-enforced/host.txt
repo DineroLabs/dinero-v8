@@ -1,0 +1,13 @@
+Linux runnervmlun5p 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+4
+CPU(s):                                  4
+Model name:                              Intel(R) Xeon(R) 6973P-C
+Thread(s) per core:                      2
+Core(s) per socket:                      2
+CPU(s) scaling MHz:                      115%
+CPU max MHz:                             2600.0000
+CPU min MHz:                             800.0000
+               total        used        free      shared  buff/cache   available
+Mem:           15988        1354        9793          48        5234       14634
+Swap:           3071           0        3071
+25d2ebf35585f19b32392ee050993e1bd4935e5b

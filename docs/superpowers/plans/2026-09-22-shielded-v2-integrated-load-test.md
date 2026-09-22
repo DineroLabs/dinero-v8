@@ -408,3 +408,23 @@ any RPC could be served. No REORG ABORT, no failure counters.
 no failures) because of two defects of mine: the harness dereferenced the absent steady result in hostile-only
 mode, and the workflow's exit-code capture never ran under the shell's exit-on-error. Both fixed; the
 enforcement run that follows is the first one whose green badge can mean anything.
+
+### 8.15 First fully enforced small-host run (35740085935 on 25d2ebf35): FAILED, correctly
+
+Evidence `docs/benchmarks/load/2026-09-22-old-ubuntu-2core-enforced/`. The enforcement chain worked end to end:
+exit codes captured for all three scenarios (hostile 0, two-node 2, steady 0), the negative control exited
+non-zero as required, and the enforcer failed the job with reasons written to `ENFORCEMENT.txt`. Read from
+the artifact, not the badge:
+
+- **Steady (300 s):** passed. 0.037 tx/s (11 built, 11 confirmed), 7 blocks, CPU 102% of one core, no counters.
+- **Hostile (240 s):** passed. Proof lanes 0 accepted (all `proof-invalid`), controls accepted, no errors.
+- **Two-node:** the scenarios themselves completed (W2 tip 29.1 s from spawn, RPC ready after 15.5 s, one
+  block validated before the first sample, observed gap 13.6 s; W3 converged 27.8 s from spawn, before RPC
+  readiness), but qualification failed on **23 `REORG ABORT` lines in B's log**. They occurred at height 54,
+  during B's initial sync of the 140 funding blocks from A, long before any shielded proof: `ConnectTip`
+  failed to read a stored block the index marked as present (`read-block-failed-status-1`), cleared its
+  HAVE_DATA, and `ActivateBestChain` entered the 250 → 500 → 1000 → 2000 ms backoff ladder while deferring
+  1–14 body fetches to the scheduler; B recovered and finished. This is issue #806's family reproduced on the
+  small host with plain transparent blocks over P2P; it is a node finding, not a harness effect, and the
+  enforcer is right to fail the run on it. Consequence for this plan: the two-node baseline on the small host
+  is not qualified until #806 is understood; the timings above are observational only.

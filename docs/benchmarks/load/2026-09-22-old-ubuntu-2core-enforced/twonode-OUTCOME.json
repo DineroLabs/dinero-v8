@@ -1,0 +1,7 @@
+{
+  "exit": 2,
+  "two_node": [
+    "W2 b log: REORG ABORT x23",
+    "W3 b log: REORG ABORT x23"
+  ]
+}

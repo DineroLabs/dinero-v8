@@ -1,0 +1,3 @@
+hostile exit=0
+two-node exit=2
+steady exit=0

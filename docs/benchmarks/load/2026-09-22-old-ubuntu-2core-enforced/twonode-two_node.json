@@ -1,0 +1,318 @@
+{
+  "scenario": "two-node",
+  "phases": {
+    "W2_catchup_cold_proofs": {
+      "blocks_produced_offline": [
+        {
+          "height": 142,
+          "hash": "692a086490f4368c2266d2e148a0407317a147b313b3c8941296076e01a9e126",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 143,
+          "hash": "5caec60b80e9462981b425f3a3de74b85b04c387038b79e691606f5451d38721",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        }
+      ],
+      "proofs_total": 16,
+      "synced": true,
+      "time_to_tip_s_from_spawn": 29.095301730000074,
+      "startup_to_rpc_ready_s": 15.537117660999911,
+      "height_at_first_rpc_sample": 142,
+      "start_height": 141,
+      "blocks_validated_before_rpc_ready": 1,
+      "b_height_timeline": [
+        {
+          "height": 142,
+          "t_since_restart_s": 15.538443067000117
+        },
+        {
+          "height": 143,
+          "t_since_restart_s": 29.0958471670001
+        }
+      ],
+      "per_block_gap_s": {
+        "n": 1,
+        "p50": 13.557404099999985,
+        "p95": 13.557404099999985,
+        "p99": 13.557404099999985,
+        "max": 13.557404099999985,
+        "mean": 13.557404099999985
+      },
+      "b_probes": {
+        "getblockcount": {
+          "method": "getblockcount",
+          "interval_s": 1.0,
+          "samples": 14,
+          "ok": 14,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 14,
+            "p50": 0.9634220000407367,
+            "p95": 1.2462269999105047,
+            "p99": 1.2825500000417378,
+            "max": 1.2825500000417378,
+            "mean": 1.0072355000180064
+          },
+          "slow_over_1s": 0
+        },
+        "getrawmempool": {
+          "method": "getrawmempool",
+          "interval_s": 1.0,
+          "samples": 14,
+          "ok": 14,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 14,
+            "p50": 0.7316190001347422,
+            "p95": 0.9218340001098113,
+            "p99": 0.991011999985858,
+            "max": 0.991011999985858,
+            "mean": 0.7436754285663483
+          },
+          "slow_over_1s": 0
+        },
+        "wallet.shieldedbalance": {
+          "method": "wallet.shieldedbalance",
+          "interval_s": 1.0,
+          "samples": 14,
+          "ok": 14,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 14,
+            "p50": 0.5837480000536743,
+            "p95": 0.7728690000021743,
+            "p99": 329.2785950000052,
+            "max": 329.2785950000052,
+            "mean": 24.077484428581947
+          },
+          "slow_over_1s": 0
+        },
+        "getblocktemplate": {
+          "method": "getblocktemplate",
+          "interval_s": 2.0,
+          "samples": 2,
+          "ok": 2,
+          "errors": {},
+          "missed_deadlines": 5,
+          "latency_ms": {
+            "n": 2,
+            "p50": 5.548898000142799,
+            "p95": 13343.233469000097,
+            "p99": 13343.233469000097,
+            "max": 13343.233469000097,
+            "mean": 6674.39118350012
+          },
+          "slow_over_1s": 1,
+          "stale_template_with_stable_tip": 0
+        }
+      },
+      "b_resources": {
+        "samples": 14,
+        "cpu_pct_of_one_core": {
+          "n": 14,
+          "p50": 99.21226542665148,
+          "p95": 99.25259835708495,
+          "p99": 198.40750655280678,
+          "max": 198.40750655280678,
+          "mean": 92.13172366941012
+        },
+        "rss_mb": {
+          "n": 14,
+          "p50": 739,
+          "p95": 848,
+          "p99": 848,
+          "max": 848,
+          "mean": 739.8571428571429
+        }
+      },
+      "b_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 23,
+        "RPC server busy": 0
+      },
+      "a_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      }
+    },
+    "W3_reorg_onto_cold_proofs": {
+      "fork_base_height": 143,
+      "b_side_blocks": 1,
+      "a_side_blocks": [
+        {
+          "height": 144,
+          "hash": "5f8b05b90949dcbe2ef58d7ae476587afa72e2dfbf29f8764031ab60731de460",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 145,
+          "hash": "324052326e40b55583c57004c7446d9bc4d72d4b20cc7c436d561c8022c26764",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        }
+      ],
+      "a_side_proofs": 16,
+      "b_tip_before": "5a2ece8d5582ae727d8c0071f7afd0866ad9bb915376f3e6ed2b91ab2ec3f966",
+      "a_tip": "324052326e40b55583c57004c7446d9bc4d72d4b20cc7c436d561c8022c26764",
+      "converged_to_a": true,
+      "time_to_converge_s_from_spawn": 27.82282396300002,
+      "startup_to_rpc_ready_s": 27.819003307999992,
+      "converged_before_first_rpc_sample": true,
+      "b_height_timeline": [
+        {
+          "height": 145,
+          "t_s": 27.821207473999948
+        }
+      ],
+      "b_probes": {
+        "getblockcount": {
+          "method": "getblockcount",
+          "interval_s": 1.0,
+          "samples": 1,
+          "ok": 1,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 1,
+            "p50": 0.9956740000234277,
+            "p95": 0.9956740000234277,
+            "p99": 0.9956740000234277,
+            "max": 0.9956740000234277,
+            "mean": 0.9956740000234277
+          },
+          "slow_over_1s": 0
+        },
+        "getrawmempool": {
+          "method": "getrawmempool",
+          "interval_s": 1.0,
+          "samples": 1,
+          "ok": 1,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 1,
+            "p50": 1.2362620000203606,
+            "p95": 1.2362620000203606,
+            "p99": 1.2362620000203606,
+            "max": 1.2362620000203606,
+            "mean": 1.2362620000203606
+          },
+          "slow_over_1s": 0
+        },
+        "wallet.shieldedbalance": {
+          "method": "wallet.shieldedbalance",
+          "interval_s": 1.0,
+          "samples": 1,
+          "ok": 1,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 1,
+            "p50": 135.66074300001674,
+            "p95": 135.66074300001674,
+            "p99": 135.66074300001674,
+            "max": 135.66074300001674,
+            "mean": 135.66074300001674
+          },
+          "slow_over_1s": 0
+        },
+        "getblocktemplate": {
+          "method": "getblocktemplate",
+          "interval_s": 2.0,
+          "samples": 1,
+          "ok": 1,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 1,
+            "p50": 122.68478200007848,
+            "p95": 122.68478200007848,
+            "p99": 122.68478200007848,
+            "max": 122.68478200007848,
+            "mean": 122.68478200007848
+          },
+          "slow_over_1s": 0,
+          "stale_template_with_stable_tip": 0
+        }
+      },
+      "b_resources": {
+        "samples": 1,
+        "cpu_pct_of_one_core": {
+          "n": 1,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 0.0,
+          "mean": 0.0
+        },
+        "rss_mb": {
+          "n": 1,
+          "p50": 365,
+          "p95": 365,
+          "p99": 365,
+          "max": 365,
+          "mean": 365.0
+        }
+      },
+      "b_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 23,
+        "RPC server busy": 0
+      },
+      "a_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      }
+    }
+  },
+  "qualification_failures": [
+    "W2 b log: REORG ABORT x23",
+    "W3 b log: REORG ABORT x23"
+  ],
+  "qualification_failed": true
+}

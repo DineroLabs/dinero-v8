@@ -1,0 +1,4 @@
+twonode/two_node.json: W2 b log REORG ABORT
+twonode/two_node.json: W3 b log REORG ABORT
+twonode/two_node.json: qualification_failed=True ['W2 b log: REORG ABORT x23', 'W3 b log: REORG ABORT x23']
+twonode/OUTCOME.json: harness exit 2
