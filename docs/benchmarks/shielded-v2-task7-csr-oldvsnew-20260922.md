@@ -88,3 +88,23 @@ best, and 8 workers buys nothing. Amortized per proof at 4 workers: 31 ms. Again
 1,901 ms at 8 workers, CSR saves 17%. The 20 ms / 400 ms thresholds remain unmet on this runner
 class; the design's practicality for small nodes is the owner's assessment (proof stage ≈ 2.6% of
 a 60-second interval here), to be confirmed by the integrated node under load.
+
+## Old versus new on the GitHub x86 runner (run 35689979725 on 362767b96, same 2-core VM)
+
+Raw rows: `shielded-v2-task7-oldvsnew-ubuntu-24.04-20260922.json`. Checks: compat 9/9, negatives 0,
+profile soundness 0. Old rows medians of 3, new rows and sweep medians of 5, all after a warm-up.
+
+| one 2-in-2-out transaction, this VM | bytes | prove | verify |
+|---|---|---|---|
+| old, live Auth spend, per spend | 73,281 | 10,399 ms | 2,900 ms |
+| old, live output, per output | 43,185 | 7,291 ms | 1,725 ms |
+| old per tx today (2 + 2) | ≈ 233 KB | ≈ 35 s | ≈ 9.2 s |
+| old, historical cv-bound spend (no longer produced) | 44,571 | 7,683 ms | 1,795 ms |
+| new bundle, serial complete warm entry point | 11,771 | 1,317 ms | 70.5 ms |
+| new bundle, matrix budget (4 vCPUs) | 11,771 | 1,317 ms | 54.4 ms |
+
+Cold init per shape 149 ms (once). Sweep, 50 proofs, medians of 5: 3,815 / 1,932 / 1,567 / 1,567 ms
+for 1 / 2 / 4 / 8 workers (2 physical cores; 8 workers gain nothing over 4). On this host the new
+design verifies a transaction ~130× faster serially and in ~20× fewer bytes than today's live
+proofs; the 20 ms / 400 ms thresholds are still not met here. Proof stage only; integrated-node
+measurements under load remain the deciding evidence.
