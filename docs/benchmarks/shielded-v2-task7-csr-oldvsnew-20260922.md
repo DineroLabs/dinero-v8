@@ -125,3 +125,16 @@ measurements under load remain the deciding evidence.
 Still true: the small-runner thresholds are unmet; the next useful work is integrated-node load
 testing under an explicit hardware contract; this research stays separate from the CF /
 compact-v1 / 60-second release (#797 merged 2026-09-22, activation unset).
+
+## Measured whole old transaction on the GitHub x86 runner (run 35713219131 on 4ed198529)
+
+Raw rows: `shielded-v2-task7-measured-oldtx-ubuntu-24.04-20260922.json`. Checks passed (compat, negatives,
+profile soundness). Same 2-core / 4-vCPU EPYC VM.
+
+| one 2-in-2-out transaction, this VM | bytes | verify |
+|---|---|---|
+| old, measured: 2 live Auth spends + 2 live outputs verified back to back (median of 5) | 232,932 | 7,708 ms |
+| new bundle, serial complete warm entry point | 11,771 | 67.3 ms |
+| new bundle, matrix budget (4 vCPUs) | 11,771 | 55.8 ms |
+
+Measured ratio on this host: ≈115× serial. This replaces the summed estimate for the small-node class as well.
