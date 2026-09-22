@@ -2,6 +2,13 @@ name: Shielded v2 spike bench (research branch, x86 runner class)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/shielded-v2]
+    paths:
+      - '.github/workflows/shielded-v2-spike-bench.yml'
+      - 'src/zk/**'
+      - 'tests/spike/**'
+      - 'tests/zk/test_spartan_profile_compat.cpp'
 
 permissions:
   contents: read
