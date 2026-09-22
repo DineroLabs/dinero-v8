@@ -332,3 +332,20 @@ measurement-window artefact and earlier W2 "time to tip after restart" figures w
 from RPC readiness, not from process spawn. Corrected: the harness now measures from spawn, reports the
 startup-to-RPC gap, the number of blocks validated before the first sample, and whether convergence
 preceded the first sample. The M4 and small-host two-node numbers are re-measured with this fix below.
+
+### 8.12 Enforced outcomes (owner review of b78e96315, commit e877b3b78)
+
+Two review findings closed: the workflow had converted harness exit codes into success (a green run
+whose saved reorg result said `qualification_failed: true`), and incomplete runs could report a pass
+(zero proof decisions with thousands of transport errors). Now every scenario writes its failure
+reasons (`qualification_failures`) into its result and an `OUTCOME.json`, exits 2 on any, and the
+workflow runs all scenarios, then an "Enforce outcomes" step fails the job on any non-zero harness
+exit or saved failure and writes `ENFORCEMENT.txt` into the artifact, which is always uploaded.
+Rules, in one place in the harness: per proof lane ≥ 20 decisions and ≥ 3 decisions that reached the
+verifier (> 100 ms); (transport + protocol + malformed) ≤ 5% of attempts per lane; any acceptance in a
+proof lane fails; a ciphertext control lane that never accepts is flagged (layout attribution
+suspect); SAFE MODE / INVARIANT VIOLATION / corrupt / REORG ABORT in any daemon log fails; steady must
+build, mine and confirm at least one shielded transaction; two-node must sync and converge with cold
+proofs present, and an incomplete two-node scenario is a failure. Seventeen stub-RPC tests cover the
+rules. Green now means "all scenarios ran to completion with the required coverage and no failure";
+it still asserts no performance threshold.
