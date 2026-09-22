@@ -42,6 +42,12 @@ stop_pid() {
         done
         kill -9 "${pid}" 2>/dev/null || true
     fi
+    # Sending SIGKILL does not wait for process exit or release its datadir
+    # lock. Reap this child before start_source can reopen the same directory.
+    # Forced termination has a nonzero exit status under the existing policy.
+    if [[ -n "${pid}" ]]; then
+        wait "${pid}" 2>/dev/null || true
+    fi
 }
 
 stop_all() {
