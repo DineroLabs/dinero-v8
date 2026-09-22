@@ -1,0 +1,360 @@
+{
+  "scenario": "two-node",
+  "phases": {
+    "W2_catchup_cold_proofs": {
+      "blocks_produced_offline": [
+        {
+          "height": 142,
+          "hash": "21267728551317aa2cc9d76c8a501ab59c6d4d8c68132d16cc25039c2cab2609",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 143,
+          "hash": "1a91fd6d9f79a73825434e4b1dfcb2a553b77e1ec41b933ac5f95f72568778b8",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 144,
+          "hash": "000fff8f77398f735107dedcd5577a9495759efb98bdc845d726d94e167fff37",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        }
+      ],
+      "proofs_total": 24,
+      "synced": true,
+      "time_to_tip_s_from_spawn": 24.732239082979504,
+      "startup_to_rpc_ready_s": 0.7684624579851516,
+      "height_at_first_rpc_sample": 141,
+      "start_height": 141,
+      "blocks_validated_before_rpc_ready": 0,
+      "b_height_timeline": [
+        {
+          "height": 142,
+          "t_since_restart_s": 8.923353624995798
+        },
+        {
+          "height": 143,
+          "t_since_restart_s": 16.826954957970884
+        },
+        {
+          "height": 144,
+          "t_since_restart_s": 24.732266083010472
+        }
+      ],
+      "per_block_gap_s": {
+        "n": 2,
+        "p50": 7.903601332975086,
+        "p95": 7.905311125039589,
+        "p99": 7.905311125039589,
+        "max": 7.905311125039589,
+        "mean": 7.904456229007337
+      },
+      "b_probes": {
+        "getblockcount": {
+          "method": "getblockcount",
+          "interval_s": 1.0,
+          "samples": 25,
+          "ok": 25,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 25,
+            "p50": 0.7554999901913106,
+            "p95": 1.0809579980559647,
+            "p99": 1.2779589742422104,
+            "max": 1.2779589742422104,
+            "mean": 0.7828917587175965
+          },
+          "slow_over_1s": 0
+        },
+        "getrawmempool": {
+          "method": "getrawmempool",
+          "interval_s": 1.0,
+          "samples": 25,
+          "ok": 25,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 25,
+            "p50": 0.7769999792799354,
+            "p95": 1.1413749889470637,
+            "p99": 2.810125006362796,
+            "max": 2.810125006362796,
+            "mean": 0.8276583161205053
+          },
+          "slow_over_1s": 0
+        },
+        "wallet.shieldedbalance": {
+          "method": "wallet.shieldedbalance",
+          "interval_s": 1.0,
+          "samples": 25,
+          "ok": 25,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 25,
+            "p50": 0.6708749569952488,
+            "p95": 1.2507920037023723,
+            "p99": 2.9549170285463333,
+            "max": 2.9549170285463333,
+            "mean": 0.8125382824800909
+          },
+          "slow_over_1s": 0
+        },
+        "getblocktemplate": {
+          "method": "getblocktemplate",
+          "interval_s": 2.0,
+          "samples": 7,
+          "ok": 7,
+          "errors": {},
+          "missed_deadlines": 6,
+          "latency_ms": {
+            "n": 7,
+            "p50": 3.7065829965285957,
+            "p95": 8082.964208966587,
+            "p99": 8082.964208966587,
+            "max": 8082.964208966587,
+            "mean": 3114.3969465629198
+          },
+          "slow_over_1s": 3,
+          "stale_template_with_stable_tip": 0
+        }
+      },
+      "b_resources": {
+        "samples": 24,
+        "cpu_pct_of_one_core": {
+          "n": 24,
+          "p50": 100.76653358854932,
+          "p95": 101.75642627011288,
+          "p99": 101.83734845502816,
+          "max": 101.83734845502816,
+          "mean": 99.14742166038837
+        },
+        "rss_mb": {
+          "n": 24,
+          "p50": 580,
+          "p95": 584,
+          "p99": 585,
+          "max": 585,
+          "mean": 574.2916666666666
+        }
+      },
+      "b_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      },
+      "a_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      }
+    },
+    "W3_reorg_onto_cold_proofs": {
+      "fork_base_height": 144,
+      "b_side_blocks": 2,
+      "a_side_blocks": [
+        {
+          "height": 145,
+          "hash": "3494f74b9bef573027aaf24c59f5fe99231af9b1560207f614d5d106f9c96135",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 146,
+          "hash": "14b0aee1ca8bce9082bce68e290d09d3b169465764adfe1af3b620d5e43dd868",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 147,
+          "hash": "6a8216a53a32b44eb23b29a883ca65d3b821338553a3db66f184e04b8f25b66e",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        }
+      ],
+      "a_side_proofs": 24,
+      "b_tip_before": "66763530e8124f2e3ff3c293295217e2c82360abaeb909c29c30f760d037eb6b",
+      "a_tip": "6a8216a53a32b44eb23b29a883ca65d3b821338553a3db66f184e04b8f25b66e",
+      "converged_to_a": true,
+      "time_to_converge_s_from_spawn": 24.50855195900658,
+      "startup_to_rpc_ready_s": 0.764836959016975,
+      "converged_before_first_rpc_sample": false,
+      "b_height_timeline": [
+        {
+          "height": 146,
+          "t_s": 0.7672449169913307
+        },
+        {
+          "height": 144,
+          "t_s": 1.0229745000251569
+        },
+        {
+          "height": 145,
+          "t_s": 8.910659417044371
+        },
+        {
+          "height": 146,
+          "t_s": 16.819375917024445
+        },
+        {
+          "height": 147,
+          "t_s": 24.465933834027965
+        }
+      ],
+      "b_probes": {
+        "getblockcount": {
+          "method": "getblockcount",
+          "interval_s": 1.0,
+          "samples": 24,
+          "ok": 24,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 24,
+            "p50": 0.7900830241851509,
+            "p95": 1.0266249882988632,
+            "p99": 1.170207979157567,
+            "max": 1.170207979157567,
+            "mean": 0.7523887907154858
+          },
+          "slow_over_1s": 0
+        },
+        "getrawmempool": {
+          "method": "getrawmempool",
+          "interval_s": 1.0,
+          "samples": 24,
+          "ok": 24,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 24,
+            "p50": 0.8176250266842544,
+            "p95": 1.1920830002054572,
+            "p99": 2.197665977291763,
+            "max": 2.197665977291763,
+            "mean": 0.8029340339514116
+          },
+          "slow_over_1s": 0
+        },
+        "wallet.shieldedbalance": {
+          "method": "wallet.shieldedbalance",
+          "interval_s": 1.0,
+          "samples": 24,
+          "ok": 24,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 24,
+            "p50": 0.7883330108597875,
+            "p95": 1.0868330136872828,
+            "p99": 2.6337080053053796,
+            "max": 2.6337080053053796,
+            "mean": 0.8663262512224416
+          },
+          "slow_over_1s": 0
+        },
+        "getblocktemplate": {
+          "method": "getblocktemplate",
+          "interval_s": 2.0,
+          "samples": 3,
+          "ok": 3,
+          "errors": {},
+          "missed_deadlines": 9,
+          "latency_ms": {
+            "n": 3,
+            "p50": 47.181333997286856,
+            "p95": 21675.77304202132,
+            "p99": 21675.77304202132,
+            "max": 21675.77304202132,
+            "mean": 7241.914292001941
+          },
+          "slow_over_1s": 1,
+          "stale_template_with_stable_tip": 0
+        }
+      },
+      "b_resources": {
+        "samples": 24,
+        "cpu_pct_of_one_core": {
+          "n": 24,
+          "p50": 100.79525728632916,
+          "p95": 101.76502625003056,
+          "p99": 101.93964925505037,
+          "max": 101.93964925505037,
+          "mean": 98.51345173073958
+        },
+        "rss_mb": {
+          "n": 24,
+          "p50": 579,
+          "p95": 581,
+          "p99": 585,
+          "max": 585,
+          "mean": 572.6666666666666
+        }
+      },
+      "b_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      },
+      "a_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      }
+    }
+  },
+  "qualification_failed": false
+}

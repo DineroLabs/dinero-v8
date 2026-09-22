@@ -349,3 +349,24 @@ build, mine and confirm at least one shielded transaction; two-node must sync an
 proofs present, and an incomplete two-node scenario is a failure. Seventeen stub-RPC tests cover the
 rules. Green now means "all scenarios ran to completion with the required coverage and no failure";
 it still asserts no performance threshold.
+
+### 8.13 Two-node baseline re-measured from process spawn, M4 Max (harness 7f28da4ae, daemon 4ed198529)
+
+Evidence `docs/benchmarks/load/2026-09-22-old-m4max-twonode-v2/` (two_node.json, raw height/probe/resource
+series, both node logs). These supersede the §8.8 figures, which were measured from RPC readiness.
+
+**W2 catch-up, 3 blocks × 8 cold Auth proofs:** tip reached **24.7 s after process spawn**; RPC ready after
+0.8 s; 0 blocks validated before the first RPC sample (the unobserved window is 0.8 s); observed per-block
+gaps 7.9 s (n = 2); B CPU 99% of one core; chain/mempool/wallet RPCs 1–3 ms, 0 missed ticks;
+`getblocktemplate` blocked up to 8.1 s per block (6 of 13 ticks missed). No failure counters on either node.
+
+**W3 reorg, B's own 2 blocks vs A's 3 blocks with 24 cold proofs:** converged **24.5 s after spawn**;
+not converged at the first sample (RPC ready at 0.8 s, B still on its own tip 146); B height timeline
+146 @0.8 s → 144 @1.0 s (disconnect) → 145 @8.9 s → 146 @16.8 s → 147 @24.5 s, i.e. 7.8–7.9 s per cold
+block; `getblocktemplate` blocked 21.7 s continuously (9 of 12 ticks missed); no REORG ABORT, no failure
+counters. Qualification (enforced rules): passed.
+
+Scope: single client, single peer, Release build, idle M4 Max; per-block figures are the observed
+gaps between B's height changes at 250 ms sampling; cold means B never saw the transactions before the
+block. The small-host equivalent comes from run 35734908253's artifact (spawn-timed harness), to be
+assessed by its receipts, not its badge.
