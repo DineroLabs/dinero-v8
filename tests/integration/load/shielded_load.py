@@ -409,6 +409,11 @@ def wait_height(node, target, timeout):
         time.sleep(0.25)
     return False
 
+def fork_sides(blocks_per_phase):
+    """W3 needs A's side strictly longer than B's own chain or no reorg can happen. Returns (b_side, a_side)."""
+    a_side = max(2, blocks_per_phase); b_side = a_side - 1
+    return b_side, a_side
+
 def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
     """W2 (catch-up with cold proofs) and W3 (reorg onto a chain with cold proofs). Node A produces
     shielded transactions and blocks; node B (the node under test) is offline while they are produced, so
@@ -448,9 +453,11 @@ def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
         b.stop(); b.connect = None; b.start()   # offline (no peer), mines alone
         bminer = b.rpc("wallet.getnewaddress", ["taproot", "b"], 30); bminer = bminer["address"] if isinstance(bminer, dict) else bminer
         fork_base = b.rpc("getblockcount", [])
-        b.rpc("generatetoaddress", [2, bminer], 600); b_tip = b.rpc("getbestblockhash", [], 10)
+        b_side, a_side = fork_sides(blocks_per_phase)
+        b.rpc("generatetoaddress", [b_side, bminer], 600); b_tip = b.rpc("getbestblockhash", [], 10)
         produced2 = []
-        for _ in range(blocks_per_phase): produced2.append(produce_block_with_proofs(a, miner, recipient, ["transfer", "transfer", "shield", "shield"]))
+        for _ in range(a_side): produced2.append(produce_block_with_proofs(a, miner, recipient, ["transfer", "transfer", "shield", "shield"]))
+        if a.rpc("getblockcount", []) <= b.rpc("getblockcount", []): raise RuntimeError("harness: A's fork side is not longer than B's; no reorg possible")
         a_tip = a.rpc("getbestblockhash", [], 10); target2 = a.rpc("getblockcount", [])
         b.stop(); b.start(connect=a.p2pport)
         t_start = time.monotonic(); tracker = HeightTracker(b); tracker.start(); probes, rs = start_probes(b, miner)
@@ -462,7 +469,7 @@ def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
             time.sleep(0.5)
         t_conv = time.monotonic() - t_start
         tracker.stop_flag = True; tracker.join(timeout=5); reports, resrep, raw_probe, raw_res = stop_probes(probes, rs)
-        res["phases"]["W3_reorg_onto_cold_proofs"] = {"fork_base_height": fork_base, "b_side_blocks": 2, "a_side_blocks": produced2, "a_side_proofs": sum(p["proofs_included"] for p in produced2),
+        res["phases"]["W3_reorg_onto_cold_proofs"] = {"fork_base_height": fork_base, "b_side_blocks": b_side, "a_side_blocks": produced2, "a_side_proofs": sum(p["proofs_included"] for p in produced2),
             "b_tip_before": b_tip, "a_tip": a_tip, "converged_to_a": converged, "time_to_converge_s": t_conv,
             "b_height_timeline": [{"height": c["height"], "t_s": c["t"] - t_start} for c in tracker.changes], "b_probes": reports, "b_resources": resrep,
             "b_log_counters": failure_counters(b.log_path), "a_log_counters": failure_counters(a.log_path)}

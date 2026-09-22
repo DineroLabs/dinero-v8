@@ -37,6 +37,12 @@ class StubNode:
     def cpu_seconds(self): return 0.0
     def rss_mb(self): return 1
 
+class ForkSidesTests(unittest.TestCase):
+    def test_a_side_always_longer_than_b_side(self):
+        for n in (1, 2, 3, 5):
+            b_side, a_side = L.fork_sides(n)
+            self.assertGreater(a_side, b_side); self.assertGreaterEqual(b_side, 1)
+
 class ParserTests(unittest.TestCase):
     def test_list_form_accepted_and_rejected(self):
         self.assertEqual(L.parse_accept([{"allowed": True, "txid": "x"}]), ("accepted", None))

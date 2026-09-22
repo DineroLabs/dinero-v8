@@ -1,0 +1,248 @@
+{
+  "scenario": "steady+service",
+  "seconds": 300,
+  "start_height": 140,
+  "end_height": 149,
+  "generation": {
+    "offered_equals_achieved": true,
+    "achieved_tx_per_s": 0.03,
+    "builds_ok": 9,
+    "builds_failed": [],
+    "shield_ms": {
+      "n": 4,
+      "p50": 16587.701914999798,
+      "p95": 16895.932272999744,
+      "p99": 16895.932272999744,
+      "max": 16895.932272999744,
+      "mean": 16610.30169399987
+    },
+    "transfer_ms": {
+      "n": 5,
+      "p50": 57616.03512200009,
+      "p95": 57831.01778999981,
+      "p99": 57831.01778999981,
+      "max": 57831.01778999981,
+      "mean": 57640.618972600074
+    }
+  },
+  "blocks": {
+    "count": 9,
+    "generate_ms": {
+      "n": 9,
+      "p50": 110.39606800022739,
+      "p95": 118.02682500001538,
+      "p99": 118.02682500001538,
+      "max": 118.02682500001538,
+      "mean": 90.60902344450976
+    },
+    "shielded_txs_confirmed": 9,
+    "per_block": [
+      {
+        "height": 141,
+        "hash": "5aa2d185279c48043a3c4534fe1603d4ddba717f29cfdc457eab5c4dcdbb7ba5",
+        "generate_ms": 57.4350689998937,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 142,
+        "hash": "6173e47fd0f13198ce665434e943ccfdeaea262bfec066bb9053bd08f0685445",
+        "generate_ms": 61.68851100028405,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 143,
+        "hash": "2d671daf02da816c191836e98958ebc31daf5374b949a92d72af439f2364ed67",
+        "generate_ms": 114.78833999990457,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 144,
+        "hash": "3c6ef03dffcb1042ffbcdd3d0132ab8db3072e26e54e0e2a1f621705b76550f9",
+        "generate_ms": 63.34599200044977,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 145,
+        "hash": "549e034529202155e0c649273519682da2f37f3ce83f311bd4047674395ce0b9",
+        "generate_ms": 110.39606800022739,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 146,
+        "hash": "3f1b65573618905001c5e6af057adfeba73d1770d170587620586e056c6b77ae",
+        "generate_ms": 116.79206600001635,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 147,
+        "hash": "7ae4bd05a00be85bb8488bd785a05012809da5facfc2ec7a30858bdd8fe590d2",
+        "generate_ms": 61.459530999854906,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 148,
+        "hash": "14eb1ae3731b61e0705caa13384cf162315d35c29434cb3181b68b1bdbc6b749",
+        "generate_ms": 118.02682500001538,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 149,
+        "hash": "2a760e80946cacbc561f1c86778fedd765e7e58cd1272ab57cf284c8e7ae0fad",
+        "generate_ms": 111.54880899994168,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      }
+    ]
+  },
+  "probes": {
+    "getblockcount": {
+      "method": "getblockcount",
+      "interval_s": 1.0,
+      "samples": 356,
+      "ok": 356,
+      "errors": {},
+      "missed_deadlines": 0,
+      "latency_ms": {
+        "n": 356,
+        "p50": 1.1236179998377338,
+        "p95": 1.4016230002198427,
+        "p99": 1.6133799999806797,
+        "max": 3.3719230000315292,
+        "mean": 1.1454726601145973
+      },
+      "slow_over_1s": 0
+    },
+    "getrawmempool": {
+      "method": "getrawmempool",
+      "interval_s": 1.0,
+      "samples": 332,
+      "ok": 332,
+      "errors": {},
+      "missed_deadlines": 24,
+      "latency_ms": {
+        "n": 332,
+        "p50": 0.9179890002997126,
+        "p95": 1.2030269999740995,
+        "p99": 6201.811892000023,
+        "max": 6650.784184999793,
+        "mean": 111.13509003312942
+      },
+      "slow_over_1s": 8
+    },
+    "wallet.shieldedbalance": {
+      "method": "wallet.shieldedbalance",
+      "interval_s": 1.0,
+      "samples": 69,
+      "ok": 69,
+      "errors": {},
+      "missed_deadlines": 287,
+      "latency_ms": {
+        "n": 69,
+        "p50": 0.9459329999117472,
+        "p95": 25429.324243999872,
+        "p99": 50745.49196699991,
+        "max": 51079.76763899978,
+        "mean": 4474.159645521738
+      },
+      "slow_over_1s": 15
+    },
+    "getblocktemplate": {
+      "method": "getblocktemplate",
+      "interval_s": 2.0,
+      "samples": 173,
+      "ok": 173,
+      "errors": {},
+      "missed_deadlines": 5,
+      "latency_ms": {
+        "n": 173,
+        "p50": 6.136976999187027,
+        "p95": 86.97336400018685,
+        "p99": 5471.919239999806,
+        "max": 5732.725823999772,
+        "mean": 192.6977012485491
+      },
+      "slow_over_1s": 7,
+      "stale_template_with_stable_tip": 0
+    }
+  },
+  "resources": {
+    "samples": 351,
+    "cpu_pct_of_one_core": {
+      "n": 351,
+      "p50": 98.60574445377536,
+      "p95": 196.14778826901852,
+      "p99": 197.2354298736129,
+      "max": 197.28602065236288,
+      "mean": 103.91972178640155
+    },
+    "rss_mb": {
+      "n": 351,
+      "p50": 963,
+      "p95": 1334,
+      "p99": 1398,
+      "max": 1463,
+      "mean": 929.1111111111111
+    }
+  },
+  "log_counters": {
+    "SAFE MODE": 0,
+    "INVARIANT VIOLATION": 0,
+    "corrupt": 0,
+    "REORG ABORT": 0,
+    "RPC server busy": 0
+  },
+  "miner": "rdin1p938cvqj9yr5q7psnfh53ajpxx7722jfur4apxqd9qvet8c6zf8rsn25qtx"
+}

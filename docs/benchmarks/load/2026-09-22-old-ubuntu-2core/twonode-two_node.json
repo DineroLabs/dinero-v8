@@ -1,0 +1,308 @@
+{
+  "scenario": "two-node",
+  "phases": {
+    "W2_catchup_cold_proofs": {
+      "blocks_produced_offline": [
+        {
+          "height": 142,
+          "hash": "3eb0dd63478ba7741f0ad6780b6ed0c62fcb55ff58518fbef6e5e5d3a0f3b43b",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 143,
+          "hash": "72d51feeffce456c0f54f78f5e1edeb8ecce378a851b03789dff3a1bdf39332c",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        }
+      ],
+      "proofs_total": 16,
+      "synced": true,
+      "time_to_tip_s": 17.333927237999887,
+      "b_height_timeline": [
+        {
+          "height": 142,
+          "t_since_restart_s": 0.0016103739999380196
+        },
+        {
+          "height": 143,
+          "t_since_restart_s": 17.33411976100001
+        }
+      ],
+      "per_block_gap_s": {
+        "n": 1,
+        "p50": 17.332509387000073,
+        "p95": 17.332509387000073,
+        "p99": 17.332509387000073,
+        "max": 17.332509387000073,
+        "mean": 17.332509387000073
+      },
+      "b_probes": {
+        "getblockcount": {
+          "method": "getblockcount",
+          "interval_s": 1.0,
+          "samples": 18,
+          "ok": 18,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 18,
+            "p50": 1.1110940001799463,
+            "p95": 1.5324230000715033,
+            "p99": 2.651891000141404,
+            "max": 2.651891000141404,
+            "mean": 1.2080505000034867
+          },
+          "slow_over_1s": 0
+        },
+        "getrawmempool": {
+          "method": "getrawmempool",
+          "interval_s": 1.0,
+          "samples": 18,
+          "ok": 18,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 18,
+            "p50": 0.9582360000877088,
+            "p95": 1.1350719998972636,
+            "p99": 2.251233999913893,
+            "max": 2.251233999913893,
+            "mean": 1.024907833349668
+          },
+          "slow_over_1s": 0
+        },
+        "wallet.shieldedbalance": {
+          "method": "wallet.shieldedbalance",
+          "interval_s": 1.0,
+          "samples": 18,
+          "ok": 18,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 18,
+            "p50": 0.8341420000306243,
+            "p95": 1.1659479998797906,
+            "p99": 1.8909419998180965,
+            "max": 1.8909419998180965,
+            "mean": 0.9134518333363909
+          },
+          "slow_over_1s": 0
+        },
+        "getblocktemplate": {
+          "method": "getblocktemplate",
+          "interval_s": 2.0,
+          "samples": 2,
+          "ok": 2,
+          "errors": {},
+          "missed_deadlines": 7,
+          "latency_ms": {
+            "n": 2,
+            "p50": 5.977146000077482,
+            "p95": 17321.795202999965,
+            "p99": 17321.795202999965,
+            "max": 17321.795202999965,
+            "mean": 8663.886174500021
+          },
+          "slow_over_1s": 1,
+          "stale_template_with_stable_tip": 0
+        }
+      },
+      "b_resources": {
+        "samples": 18,
+        "cpu_pct_of_one_core": {
+          "n": 18,
+          "p50": 98.5151351570522,
+          "p95": 98.57242378818148,
+          "p99": 99.27057332798992,
+          "max": 99.27057332798992,
+          "mean": 93.08958849460579
+        },
+        "rss_mb": {
+          "n": 18,
+          "p50": 737,
+          "p95": 845,
+          "p99": 845,
+          "max": 845,
+          "mean": 741.6666666666666
+        }
+      },
+      "b_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      },
+      "a_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      }
+    },
+    "W3_reorg_onto_cold_proofs": {
+      "fork_base_height": 143,
+      "b_side_blocks": 2,
+      "a_side_blocks": [
+        {
+          "height": 144,
+          "hash": "4f86a4653ba5207a46b55be3fad0811bd003aebb408159992c686eef00a57070",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        },
+        {
+          "height": 145,
+          "hash": "0a3a01fd2d5d3eda122b8ad060815be112c229fe3990a6591144d6322abac763",
+          "tx_count": 5,
+          "shielded_included": 4,
+          "proofs_included": 8,
+          "kinds": [
+            "transfer",
+            "transfer",
+            "shield",
+            "shield"
+          ]
+        }
+      ],
+      "a_side_proofs": 16,
+      "b_tip_before": "27f112409a7654042bb4dc99f41ce14359f24f4d32d57aa6fba233889a29c0f0",
+      "a_tip": "0a3a01fd2d5d3eda122b8ad060815be112c229fe3990a6591144d6322abac763",
+      "converged_to_a": false,
+      "time_to_converge_s": 1800.500707617,
+      "b_height_timeline": [
+        {
+          "height": 145,
+          "t_s": 0.0025539610001032997
+        }
+      ],
+      "b_probes": {
+        "getblockcount": {
+          "method": "getblockcount",
+          "interval_s": 1.0,
+          "samples": 1801,
+          "ok": 1801,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 1801,
+            "p50": 1.2344960000518768,
+            "p95": 1.7050219998964167,
+            "p99": 1.9850409998980467,
+            "max": 2.340402999834623,
+            "mean": 1.257888074956804
+          },
+          "slow_over_1s": 0
+        },
+        "getrawmempool": {
+          "method": "getrawmempool",
+          "interval_s": 1.0,
+          "samples": 1801,
+          "ok": 1801,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 1801,
+            "p50": 1.146661999882781,
+            "p95": 1.6042309998738347,
+            "p99": 1.8676450004022627,
+            "max": 2.8622449999602395,
+            "mean": 1.1795109650120796
+          },
+          "slow_over_1s": 0
+        },
+        "wallet.shieldedbalance": {
+          "method": "wallet.shieldedbalance",
+          "interval_s": 1.0,
+          "samples": 1801,
+          "ok": 1801,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 1801,
+            "p50": 1.2084280001545267,
+            "p95": 1.6841010001371615,
+            "p99": 1.8449569997756043,
+            "max": 4.901524999922913,
+            "mean": 1.2516571538039662
+          },
+          "slow_over_1s": 0
+        },
+        "getblocktemplate": {
+          "method": "getblocktemplate",
+          "interval_s": 2.0,
+          "samples": 901,
+          "ok": 901,
+          "errors": {},
+          "missed_deadlines": 0,
+          "latency_ms": {
+            "n": 901,
+            "p50": 6.403468999906181,
+            "p95": 6.8192740000085905,
+            "p99": 7.060948999878747,
+            "max": 8.720856000081767,
+            "mean": 6.420562677036624
+          },
+          "slow_over_1s": 0,
+          "stale_template_with_stable_tip": 0
+        }
+      },
+      "b_resources": {
+        "samples": 1775,
+        "cpu_pct_of_one_core": {
+          "n": 1775,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "max": 98.56570031588438,
+          "mean": 0.9991292192011598
+        },
+        "rss_mb": {
+          "n": 1775,
+          "p50": 44,
+          "p95": 44,
+          "p99": 44,
+          "max": 44,
+          "mean": 43.97915492957746
+        }
+      },
+      "b_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      },
+      "a_log_counters": {
+        "SAFE MODE": 0,
+        "INVARIANT VIOLATION": 0,
+        "corrupt": 0,
+        "REORG ABORT": 0,
+        "RPC server busy": 0
+      }
+    }
+  },
+  "qualification_failed": true
+}

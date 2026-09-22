@@ -289,3 +289,36 @@ Old design, at the load it can generate: chain RPCs are never starved; wallet RP
 entire validation of every peer-delivered block with cold proofs (7.8 s per legal 8-proof block on the
 M4, the whole 23 s of a 3-block reorg). On the small-node class these scale by the ≈2.7× per-core factor
 measured for the proof stage. These are the comparison baselines for the v2 run; they are not §5 verdicts.
+
+### 8.10 Same harness on the small-node class (GitHub ubuntu-24.04, EPYC 7763, 2 cores / 4 vCPUs)
+
+Workflow `shielded-v2-load-baseline`, run 35722951455 on 98e9af7d7; evidence `docs/benchmarks/load/2026-09-22-old-ubuntu-2core/`.
+Harness self-tests passed on the runner.
+
+**Steady (300 s):** achieved 0.030 tx/s (shield 16.6 s, transfer 57.6 s of proving), 9 blocks, 9 shielded tx
+confirmed; daemon CPU mean 104% of one core (p95 196%: proving spills to the second core), RSS max 1.46 GB.
+Chain RPC 0 missed ticks; mempool RPC p99 6.2 s, 24 missed ticks; wallet balance RPC 287 of 356 ticks missed,
+max 51 s; template RPC p99 5.5 s (5 missed). The M4 pattern, ≈2.4–2.7× slower.
+
+**Hostile (60 s inside steady):** proof lanes 0 of 126 accepted, all `proof-invalid`; ciphertext control 30 of
+30 accepted (expected). Full verification of a crafted proof: ≈1.0 s (output) / ≈2.0 s (spend first); while
+it runs, `getrawmempool` p95 1.2 s and `getblocktemplate` p50 0.97 s / p95 1.8 s.
+
+**Two-node W2 (2 blocks × 8 cold Auth proofs):** B reached the tip 17.3 s after restart, i.e. **17.3 s per
+cold 8-proof block**, CPU 93% of one core; chain/mempool/wallet RPCs 1–3 ms unaffected; `getblocktemplate`
+blocked for the whole block validation (17.3 s max, 7 of 9 ticks missed).
+
+**Two-node W3:** reported as not converged, and that is a harness defect, not a node result: with two blocks
+per phase, A's fork side (2 blocks) was not longer than B's own 2 blocks, so no reorg was possible; B held its
+tip for the full 1,800 s window at 1–2 ms RPC latency and 1% CPU. Fixed (`fork_sides`: B mines one block fewer
+than A, asserted; unit-tested); the next push re-runs this on the runner.
+
+| cold 8-proof block validation, old design | M4 Max | small-node class |
+|---|---|---|
+| per block | 7.8 s | 17.3 s |
+| template path blocked per block | ≈7.9 s | ≈17.3 s |
+
+At a 60-second block interval, a small node spends ≈29% of the interval validating one legal 8-proof block
+with today's proofs and serves no template during it; a 3-block catch-up or reorg costs ≈52 s. The v2
+projection for the same blocks (4 bundles ≈ 0.3 s serial on this host, and off the activation lock with
+the bounded prewarm) remains a projection until the integrated v2 path exists.
