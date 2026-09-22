@@ -44,11 +44,17 @@ jobs:
       - name: Harness self-tests
         run: python3 tests/integration/load/test_shielded_load_harness.py 2>&1 | tee evidence/harness-tests.log
       - name: Hostile lane (attributed)
-        run: python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/hostile --hostile-only --hostile-seconds 240 --host "$(lscpu | grep 'Model name' | cut -d: -f2 | xargs), $(nproc) vCPU" || echo "hostile exit=$?" | tee -a evidence/exit-codes.txt
+        run: |
+          HOST="$(lscpu | grep 'Model name' | cut -d ':' -f2 | xargs), $(nproc) vCPU"
+          python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/hostile --hostile-only --hostile-seconds 240 --host "$HOST" || echo "hostile exit=$?" | tee -a evidence/exit-codes.txt
       - name: Two-node cold proofs, catch-up and reorg
-        run: python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/twonode --two-node --blocks-per-phase 2 --host "$(lscpu | grep 'Model name' | cut -d: -f2 | xargs), $(nproc) vCPU" || echo "twonode exit=$?" | tee -a evidence/exit-codes.txt
+        run: |
+          HOST="$(lscpu | grep 'Model name' | cut -d ':' -f2 | xargs), $(nproc) vCPU"
+          python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/twonode --two-node --blocks-per-phase 2 --host "$HOST" || echo "two-node exit=$?" | tee -a evidence/exit-codes.txt
       - name: Steady + service (shortened)
-        run: python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/steady --steady-seconds 300 --hostile-seconds 60 --host "$(lscpu | grep 'Model name' | cut -d: -f2 | xargs), $(nproc) vCPU" || echo "steady exit=$?" | tee -a evidence/exit-codes.txt
+        run: |
+          HOST="$(lscpu | grep 'Model name' | cut -d ':' -f2 | xargs), $(nproc) vCPU"
+          python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/steady --steady-seconds 300 --hostile-seconds 60 --host "$HOST" || echo "steady exit=$?" | tee -a evidence/exit-codes.txt
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
