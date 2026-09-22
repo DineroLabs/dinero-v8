@@ -1,0 +1,3 @@
+# third-party checkouts used by the spike are never committed
+whir/
+target/
