@@ -55,23 +55,16 @@ jobs:
         run: |
           HOST="$(lscpu | grep 'Model name' | cut -d ':' -f2 | xargs), $(nproc) vCPU"
           python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/steady --steady-seconds 300 --hostile-seconds 60 --host "$HOST"; rc=$?; echo "steady exit=$rc" | tee -a evidence/exit-codes.txt; true
-      - name: Enforce outcomes (fails the job on any non-zero harness exit or saved qualification failure)
+      - name: Enforcer self-test and negative control (a deliberately failing fixture must exit non-zero)
         run: |
-          python3 - <<'EOF'
-          import json, glob, sys, re
-          bad = []
-          for line in open('evidence/exit-codes.txt'):
-              m = re.match(r'(\w+) exit=(\d+)', line.strip())
-              if m and int(m.group(2)) != 0: bad.append(f"{m.group(1)}: exit {m.group(2)}")
-          for f in glob.glob('evidence/*/OUTCOME.json') + glob.glob('evidence/*/*.json'):
-              try: d = json.load(open(f))
-              except Exception: continue
-              if isinstance(d, dict) and d.get('qualification_failed'): bad.append(f"{f}: qualification_failed {d.get('qualification_failures')}")
-          for f in glob.glob('evidence/*/HARNESS_ERROR.txt') + glob.glob('evidence/*/QUALIFICATION_FAILED.txt'): bad.append(f + ': ' + open(f).read().strip()[:200])
-          open('evidence/ENFORCEMENT.txt', 'w').write('\n'.join(bad) + ('\n' if bad else 'PASS\n'))
-          print('\n'.join(bad) if bad else 'PASS')
-          sys.exit(1 if bad else 0)
-          EOF
+          python3 tests/integration/load/test_enforce_outcomes.py 2>&1 | tee evidence/enforcer-tests.log
+          mkdir -p evidence/negative-control/hostile
+          echo "hostile exit=2" > evidence/negative-control/exit-codes.txt
+          echo '{"counts": {"x/proof": {"decisions": 5, "accepted": 1}}, "qualification_failed": true}' > evidence/negative-control/hostile/hostile.json
+          if python3 tests/integration/load/enforce_outcomes.py evidence/negative-control --require hostile; then echo "NEGATIVE CONTROL PASSED: enforcer is broken"; exit 1; fi
+          echo "negative control exited non-zero as required"
+      - name: Enforce outcomes (fails the job on missing/malformed results, non-zero harness exit, acceptance, invariants, failed sync/reorg)
+        run: python3 tests/integration/load/enforce_outcomes.py evidence --require hostile twonode steady --out evidence/ENFORCEMENT.txt
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
