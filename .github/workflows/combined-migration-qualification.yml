@@ -1,0 +1,155 @@
+name: Combined migration release qualification
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/combined-migration-qualification.yml'
+      # This gate covers consensus, mining, RPC/wallet, storage and daemon
+      # recovery together. Changes to any runtime code or build dependency
+      # must qualify the combination, not only the migration implementation.
+      - 'include/**'
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'depends/**'
+      - 'third_party/**'
+      - 'scripts/build-openssl-vendored.sh'
+      - 'tools/migrate_shielded_datadir.cpp'
+      - 'tests/integration/test_combined_migration_release_qualification.py'
+      - 'tests/mining/dinero_cpu_miner.py'
+      - 'tests/integration/helpers/compact_regtest_oracle.py'
+      - 'tests/integration/CMakeLists.txt'
+      - 'tests/CMakeLists.txt'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: combined-migration-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux combined migration + compact + 60-second qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        # Every step below pipes a command through `tee` to also capture
+        # its output as evidence — without pipefail, the step's exit code
+        # is tee's (always 0 unless it can't write the file), not the
+        # piped command's. Confirmed by direct reproduction: the real
+        # CombinedMigrationReleaseQualification ctest FAILED in run
+        # 35474838716 ("***Failed 164.62 sec", "0% tests passed"), yet the
+        # job and PR check both reported success. bash's default shell
+        # here (GitHub Actions) does not enable pipefail on its own.
+        shell: bash --noprofile --norc -eo pipefail {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build and regtest dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build ccache pkg-config python3 perl \
+            curl jq lsof libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache compiler outputs
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: combined-migration-qualification-linux
+          max-size: 1G
+
+      - name: Cache vendored prerequisites
+        uses: actions/cache@v4
+        with:
+          path: |
+            third_party/openssl-3.5.7
+            third_party/bulletproofs_ffi/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: combined-migration-vendored-${{ runner.os }}-${{ hashFiles('scripts/build-openssl-vendored.sh', 'third_party/bulletproofs_ffi/Cargo.lock') }}
+
+      - name: Build pinned vendored OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+
+      # Use the compact-enabled inventory directory audited by the coverage
+      # gates in the compact workflows, including this qualification lane.
+      - name: Configure with compact regtest support enabled
+        run: |
+          mkdir -p evidence
+          git rev-parse HEAD > evidence/source-commit.txt
+          cmake -S "$GITHUB_WORKSPACE" -B "$GITHUB_WORKSPACE/build-compact-regtest" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DENABLE_TESTS=ON \
+            -DDINERO_ENABLE_COMPACT_REGTEST=ON \
+            -DDINERO_BUILD_QT=OFF -DDINERO_BUILD_MINER=OFF -DDINERO_BUILD_SEEDER=OFF \
+            -DDINERO_USE_VENDORED_DEPS=ON -DENABLE_GRPC=OFF \
+            -DENABLE_GPU_MINING=OFF -DDINERO_ENABLE_PORTMAPPING=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DDINERO_VENDORED_OPENSSL_DIR="$GITHUB_WORKSPACE/third_party/openssl-3.5.7/prebuilt/linux-x86_64" \
+            2>&1 | tee evidence/configure.log
+
+      - name: Build dinerod and the migration CLI driver
+        run: |
+          cmake --build build-compact-regtest --target dinerod migrate_shielded_datadir test_shielded_migration_cohort \
+            -j"$(nproc)" 2>&1 | tee evidence/build.log
+          sha256sum build-compact-regtest/dinerod build-compact-regtest/migrate_shielded_datadir \
+            > evidence/binary-sha256.txt
+          cat evidence/binary-sha256.txt
+          bash scripts/ci/check_openssl_version.sh build-compact-regtest 3.5.7
+
+      - name: "Sanity: unchanged engine regression suite"
+        run: |
+          # No 2>&1 here deliberately: scripts/ci/check_mandatory_tests_execute.py
+          # parses this exact line to credit CombinedMigrationReleaseQualification's
+          # executing lane, and its shell splitter treats any unquoted `&` as a
+          # command separator -- `2>&1` on the same statement as `ctest` makes it
+          # mis-split into a bogus "2>" token and FATAL (confirmed by direct
+          # reproduction). ctest's own --output-on-failure writes to stdout, which
+          # tee still captures; only stderr is no longer duplicated into the
+          # evidence file specifically (the raw Actions log still has it).
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
+            -R '^ShieldedMigrationCohort$' \
+            --output-junit "$PWD/evidence/engine-ctest.xml" | tee evidence/engine-ctest.log
+
+      - name: Run the combined migration release qualification
+        # Overrides the job-level -e default deliberately: this step must
+        # still copy the detail log below when ctest fails, not stop dead
+        # at the failing pipeline. pipefail alone (no -e) lets $? correctly
+        # reflect ctest's real exit code through the tee pipe, and the
+        # explicit `exit` at the end still fails the step/job on a real
+        # test failure.
+        shell: bash --noprofile --norc -o pipefail {0}
+        run: |
+          # No 2>&1 here either -- see the identical note on the sanity-suite
+          # step above; this exact line is what check_mandatory_tests_execute.py
+          # must parse to credit this test's own executing lane.
+          ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure -V \
+            -R '^CombinedMigrationReleaseQualification$' \
+            --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
+          ctest_status=$?
+          cp build-compact-regtest/Testing/Temporary/LastTest.log evidence/ctest-details.log || exit 1
+          exit "$ctest_status"
+
+      - name: Run negative controls standalone
+        if: always()
+        run: |
+          DINEROD="$GITHUB_WORKSPACE/build-compact-regtest/dinerod" \
+          MIGRATE_TOOL="$GITHUB_WORKSPACE/build-compact-regtest/migrate_shielded_datadir" \
+            python3 tests/integration/test_combined_migration_release_qualification.py --self-test \
+            2>&1 | tee evidence/self-test.log
+
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-migration-qualification-${{ github.event.pull_request.head.sha || github.sha }}
+          path: evidence
+          if-no-files-found: error

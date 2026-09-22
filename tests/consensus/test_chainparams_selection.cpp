@@ -64,6 +64,7 @@ public:
           cv_(params->shielded_cv_binding_activation_height),
           input_(params->shielded_input_binding_activation_height),
           auth_(params->shielded_spend_auth_activation_height),
+          compact_(params->shielded_compact_activation_height),
           outgoing_(params->shielded_outgoing_recovery_activation_height),
           auth_reset_(params->shielded_spend_auth_epoch_reset_height) {}
 
@@ -72,6 +73,7 @@ public:
         params_->shielded_cv_binding_activation_height = cv_;
         params_->shielded_input_binding_activation_height = input_;
         params_->shielded_spend_auth_activation_height = auth_;
+        params_->shielded_compact_activation_height = compact_;
         params_->shielded_outgoing_recovery_activation_height = outgoing_;
         params_->shielded_spend_auth_epoch_reset_height = auth_reset_;
     }
@@ -85,6 +87,7 @@ private:
     uint32_t cv_;
     uint32_t input_;
     uint32_t auth_;
+    uint32_t compact_;
     uint32_t outgoing_;
     uint32_t auth_reset_;
 };
@@ -101,6 +104,24 @@ TEST(ChainParamsSelection, EpochResetMustEqualCvBindingActivation) {
     regtest->shielded_epoch_reset_height =
         regtest->shielded_cv_binding_activation_height - 1;
     EXPECT_THROW(SelectParams(Chain::REGTEST), std::runtime_error);
+}
+
+TEST(ChainParamsSelection, CompactRequiresExistingBoundAuthorityAndNoNewReset) {
+    SelectParams(Chain::MAINNET);
+    auto* params = &dinero::MutableParams();
+    const ScopedShieldedHeights restore(params);
+    const auto auth = params->shielded_spend_auth_activation_height;
+    const auto cv_reset = params->shielded_epoch_reset_height;
+    const auto auth_reset = params->shielded_spend_auth_epoch_reset_height;
+    params->shielded_compact_activation_height = auth;
+    EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error);
+    params->shielded_compact_activation_height = auth + 1;
+    EXPECT_NO_THROW(SelectParams(Chain::MAINNET));
+    EXPECT_EQ(Params().shielded_epoch_reset_height, cv_reset);
+    EXPECT_EQ(Params().shielded_spend_auth_epoch_reset_height, auth_reset);
+    params->shielded_spend_auth_activation_height = UINT32_MAX;
+    params->shielded_spend_auth_epoch_reset_height = UINT32_MAX;
+    EXPECT_THROW(SelectParams(Chain::MAINNET), std::runtime_error);
 }
 
 TEST(ChainParamsSelection, SixtySecondRuleIsDormantAndChecksumCommitsActivation) {

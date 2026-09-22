@@ -252,6 +252,7 @@ TEST(CovenantActivation, ConsensusChecksumCommitsToEveryActivationHeight) {
     expect_committed(&ChainParams::state_commitment_activation_height);
     expect_committed(&ChainParams::contextual_locks_activation_height);
     expect_committed(&ChainParams::sixty_second_activation_height);
+    expect_committed(&ChainParams::shielded_compact_activation_height);
 }
 
 TEST(CovenantActivation, HighLevelValidationUsesSpendHeightNotCoinHeight) {

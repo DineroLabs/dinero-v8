@@ -23,7 +23,7 @@
 #include "dinero/daemon/execution_context.h"
 #include "consensus/chainparams.h"
 #include "consensus/shielded/wallet_activation.h"
-#include "consensus/shielded/compact_regtest.h"
+#include "consensus/shielded/compact.h"
 #include "consensus/pq/p2mr_consensus.h"
 #include "primitives/transaction.h"
 #include "wallet/canonical_wallet_utxo.h"
@@ -35,6 +35,7 @@
 #include "wallet/wallet_manager.h"
 #include "wallet/shielded_wallet_ops.h"
 #include "wallet/shielded_derivation.h"
+#include "util/hex.h"
 
 #include <openssl/crypto.h>
 
@@ -58,15 +59,9 @@ using din::Json;
 
 const char* HrpForActiveChain();
 
-int32_t OrdinaryShieldedWalletVersion(const ExecutionContext& ctx) {
-#ifdef DINERO_ENABLE_COMPACT_REGTEST
-    if (ctx.daemon && ctx.daemon->chainstate) {
-        const auto cs = std::dynamic_pointer_cast<ChainstateService>(ctx.daemon->chainstate);
-        if (cs && consensus::shielded::CompactRulesFor(Params()).Active(
-                      static_cast<uint64_t>(cs->getBlockHeight()) + 1))
-            return Transaction::TX_VERSION_COMPACT_REGTEST;
-    }
-#endif
+int32_t OrdinaryShieldedWalletVersion(const ExecutionContext&) {
+    // Both proof encodings retain the established v6 outer envelope. Builders
+    // choose compact proofs from next-block consensus rules, not a new version.
     return Transaction::TX_VERSION_SHIELDED_V2;
 }
 
@@ -390,21 +385,44 @@ Json RpcWalletShieldWithCovenant(const ExecutionContext& ctx, const Json& params
         size_t                  n_inputs = 0;
         std::string             change_address;  // LOW #273: reuse across probes/final
     };
+    // WalletWorker and its indexes update asynchronously after consensus and
+    // mempool confirmation. The wallet can therefore still list an input that
+    // the chain has spent, even though it is no longer spent *in the mempool*.
+    // Both fee sizing and the final build use this same canonical read filter.
+    auto shield_candidates = [&]() {
+        auto utxos = wm->listUnspentUTXOs(1, 9999999);
+        utxos.erase(std::remove_if(utxos.begin(), utxos.end(), [&](const auto& u) {
+            return wm->isUTXOLocked(u.txid, u.vout);
+        }), utxos.end());
+        std::vector<OutPoint> outpoints;
+        outpoints.reserve(utxos.size());
+        for (const auto& u : utxos) {
+            outpoints.emplace_back(TxId(uint256::FromHexUnsafe(u.txid)), u.vout);
+        }
+        const auto coins = mempool.getConfirmedWalletCoins(outpoints);
+        std::vector<dinero::WalletManager::WalletUTXO> live;
+        live.reserve(utxos.size());
+        for (size_t i = 0; i < utxos.size(); ++i) {
+            const auto& u = utxos[i];
+            const auto& coin = coins[i];
+            std::vector<unsigned char> script;
+            if (!coin || coin->is_confidential || coin->value.GetUna() != u.amount_una ||
+                coin->height != u.height || coin->isCoinbase != u.is_coinbase ||
+                !util::unhex(u.script_pubkey, script) || script != coin->scriptPubKey) continue;
+            live.push_back(u);
+        }
+        std::sort(live.begin(), live.end(),
+                  [](const auto& a, const auto& b) { return a.amount_una > b.amount_una; });
+        return live;
+    };
+
     auto build_signed_shield_tx = [&](uint64_t fee, bool persist,
                                       BuiltShieldTx& out,
                                       const std::string& reuse_change_addr = {}) -> bool {
         const uint64_t needed = value_una + fee;
 
         // ── Greedy UTXO selection ─────────────────────────────────────
-        auto utxos = wm->listUnspentUTXOs(1, 9999999);
-        utxos.erase(std::remove_if(utxos.begin(), utxos.end(),
-            [&](const dinero::WalletManager::WalletUTXO& u) {
-                OutPoint op(dinero::TxId(uint256::FromHexUnsafe(u.txid)), u.vout);
-                return mempool.isOutputSpentInMempool(op) ||
-                       wm->isUTXOLocked(u.txid, u.vout);
-            }), utxos.end());
-        std::sort(utxos.begin(), utxos.end(),
-                  [](const auto& a, const auto& b) { return a.amount_una > b.amount_una; });
+        auto utxos = shield_candidates();
 
         std::vector<dinero::WalletManager::WalletUTXO> selected;
         uint64_t total_in = 0;
@@ -577,15 +595,7 @@ Json RpcWalletShieldWithCovenant(const ExecutionContext& ctx, const Json& params
     // probes so we never do an extra ZK build in the shape-stable case.
     auto count_inputs_for_fee = [&](uint64_t fee) -> size_t {
         const uint64_t needed = value_una + fee;
-        auto utxos = wm->listUnspentUTXOs(1, 9999999);
-        utxos.erase(std::remove_if(utxos.begin(), utxos.end(),
-            [&](const dinero::WalletManager::WalletUTXO& u) {
-                OutPoint op(dinero::TxId(uint256::FromHexUnsafe(u.txid)), u.vout);
-                return mempool.isOutputSpentInMempool(op) ||
-                       wm->isUTXOLocked(u.txid, u.vout);
-            }), utxos.end());
-        std::sort(utxos.begin(), utxos.end(),
-                  [](const auto& a, const auto& b) { return a.amount_una > b.amount_una; });
+        auto utxos = shield_candidates();
         size_t count = 0;
         uint64_t total_in = 0;
         for (const auto& u : utxos) {

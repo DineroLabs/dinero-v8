@@ -214,9 +214,13 @@ struct AttachShieldResult {
 // The caller decides this from the tx's expected mining height vs
 // Params().shielded_cv_binding_activation_height (see the Attach* wrappers).
 // Default false = legacy (0x01/0x02), correct while activation is inert.
+// `compact_proofs` is explicit construction intent for the v6 DZE1 profile.
+// Runtime wrappers derive it from next-block network rules; pure builders do
+// not inspect global chain state. Existing callers default to full proofs.
 AttachShieldResult BuildShieldBundleForTx(dinero::Transaction& tx,
                                           uint64_t value_una,
-                                          bool cv_bound = false);
+                                          bool cv_bound = false,
+                                          bool compact_proofs = false);
 
 /**
  * Wallet-manager-backed wrapper around `BuildShieldBundleForTx` that ALSO
@@ -299,7 +303,8 @@ AttachUnshieldResult BuildUnshieldBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
                                               uint64_t fee_una,
                                               bool cv_bound = false,
-                                              std::optional<UnshieldAutoFee> auto_fee = std::nullopt);
+                                              std::optional<UnshieldAutoFee> auto_fee = std::nullopt,
+                                              bool compact_proofs = false);
 
 /**
  * Wallet-bound wrapper around `BuildUnshieldBundleForTx`. Looks up the
@@ -369,7 +374,8 @@ struct AttachTransferResult {
 AttachTransferResult BuildTransferBundleForTx(dinero::Transaction& tx,
                                               const UnshieldNoteInput& note,
                                               uint64_t fee_una,
-                                              bool cv_bound = false);
+                                              bool cv_bound = false,
+                                              bool compact_proofs = false);
 
 /**
  * Wallet-bound wrapper. Looks up the note at `note_leaf_index`, builds
@@ -435,7 +441,8 @@ AttachMultiTransferResult BuildMultiTransferBundleForTx(
     const std::vector<UnshieldNoteInput>& spends,
     const std::vector<uint64_t>& output_values,
     uint64_t fee_una,
-    bool cv_bound = false);
+    bool cv_bound = false,
+    bool compact_proofs = false);
 
 /**
  * Wallet-bound wrapper. Looks up each note at the supplied leaf indices,
@@ -534,7 +541,8 @@ AttachAddressedTransferResult BuildAddressedTransferBundleForTx(
     bool cv_bound = false,
     bool spend_auth = false,
     const AddressedRecipient* change_recipient = nullptr,
-    const OutgoingViewEmissionContext* outgoing = nullptr);
+    const OutgoingViewEmissionContext* outgoing = nullptr,
+    bool compact_proofs = false);
 
 /**
  * Wallet-bound wrapper. Looks up `note_leaf_indices`, decodes
@@ -643,7 +651,8 @@ AttachShieldResult BuildAddressedShieldBundleForTx(
     const std::array<uint8_t, 512>* recipient_memo = nullptr,
     bool cv_bound = false,
     bool spend_auth = false,
-    const OutgoingViewEmissionContext* outgoing = nullptr);
+    const OutgoingViewEmissionContext* outgoing = nullptr,
+    bool compact_proofs = false);
 
 /**
  * Wallet-bound wrapper. Decodes `recipient_address` (rejecting a non-dins /

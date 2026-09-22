@@ -820,6 +820,7 @@ void BlockDownloadScheduler::TickLocked() {
                     expected_blocks_.erase(gap_state.block_hash);
                     gap_state.block_hash = header_hash;
                     gap_state.status = FetchStatus::MISSING;
+                    gap_state.side_accepted = false;
                     gap_state.stored_pos = FilePosition();
                     expected_blocks_.insert(header_hash);
                     // Point the request cursor at the re-seated frontier so
@@ -1272,7 +1273,11 @@ void BlockDownloadScheduler::SetGetBlockBodyPositionCallback(
 
 bool BlockDownloadScheduler::AdoptStoredTipBodyLocked(
         BlockFetchState& fetch_state) {
-    if (!get_block_body_position_callback_) {
+    // A CSN persists the raw body before its ordered worker validates the
+    // separately delivered proof. Disk presence cannot stand in for that
+    // receipt, especially after a proof retry or restart. Only full nodes can
+    // recover pending validation from the stored body alone.
+    if (stateless_mode_ || !get_block_body_position_callback_) {
         return false;
     }
     const auto stored = get_block_body_position_callback_(
@@ -1781,6 +1786,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
                 fs.block_hash = header_hash;
                 fs.status = FetchStatus::MISSING;
                 fs.stored_pos = FilePosition();
+                fs.side_accepted = false;
                 expected_blocks_.insert(header_hash);
             }
         }
@@ -1874,6 +1880,10 @@ bool BlockDownloadScheduler::ReRequestBlock(const uint256& block_hash) {
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
             fetch_state.status = FetchStatus::MISSING;
+            // The caller no longer has a usable body/proof receipt. Retaining
+            // the old receipt would let the stale-request sweep cancel this
+            // explicit retry as "already present" without delivering a reply.
+            received_blocks_.erase(block_hash);
             in_flight_blocks_.erase(block_hash);
             g_logger.info("[BlockDownloadScheduler] Re-requesting block: " +
                          block_hash.GetHex() +
@@ -2138,6 +2148,11 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                             continue;
                         }
                     }
+                    if (fs.side_accepted) {
+                        // Already indexed on the side branch (see
+                        // BlockFetchState::side_accepted); nothing to offer.
+                        continue;
+                    }
                     want = fs.height;
                     break;
                 }
@@ -2148,6 +2163,21 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             missing_blocks_.begin(),
             missing_blocks_.end(),
             [want](const BlockFetchState& fs) { return fs.height == want; });
+
+        // A body the chainstate already indexed on a side branch needs no second
+        // offer (SJ 2026-09-21: the same fork block was re-accepted every tick,
+        // ~3.5 s of ingress-lock time each, while the bodies that would have
+        // let the branch win sat unread in peer sockets). Move on to the next
+        // height; the below-tip loop above promotes it to CONNECTED once the
+        // active chain carries it.
+        while (want_it != missing_blocks_.end() && want_it->side_accepted &&
+               want_it->status == FetchStatus::RECEIVED) {
+            ++want;
+            want_it = std::find_if(
+                missing_blocks_.begin(),
+                missing_blocks_.end(),
+                [want](const BlockFetchState& fs) { return fs.height == want; });
+        }
 
         if (want_it == missing_blocks_.end()) {
             // Gap between chainstate tip and queued range; rescan from actual tip.
@@ -2314,8 +2344,11 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             case ConnectBlockResult::ACCEPTED_NOT_ACTIVE:
                 // The block is stored/indexed, but not on the active chain at
                 // this height yet. Keep it in RECEIVED so the drainer does not
-                // advance its local tip or skip earlier heights.
+                // advance its local tip or skip earlier heights, and remember
+                // that the chainstate has it so it is not offered again.
                 fetch_state.status = FetchStatus::RECEIVED;
+                fetch_state.side_accepted = true;
+                drain_failure_streak_.RecordProgress();
                 g_logger.info("[BlockDownloadScheduler] Stored block accepted but not active at height " +
                              std::to_string(want) + ": " +
                              fetch_state.block_hash.GetHex().substr(0, 16) + "...");

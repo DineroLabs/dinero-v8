@@ -19,7 +19,7 @@ on:
       - 'tests/integration/test_state_commitment_mining.py'
       - 'tests/integration/helpers/compact_regtest_*'
       - 'tests/consensus/test_shielded_reindex_equivalence.cpp'
-      - 'contrib/benchmarks/compact_spartan_codec.*'
+      - 'src/consensus/shielded/compact_spartan_codec.*'
 
 permissions:
   contents: read
@@ -57,6 +57,7 @@ jobs:
           build-compact-regtest .github/workflows/compact-regtest.yml
           .github/workflows/compact-regtest-vectors.yml
           .github/workflows/compact-package-boundaries.yml
+          .github/workflows/combined-migration-qualification.yml
           --only-absent-from build-compact-disabled
           --baseline scripts/ci/unexecuted_tests_baseline_compact_regtest.txt
       - name: Build default daemon and experimental targets

@@ -1,3 +1,5 @@
+#include "consensus/utreexo_maturity_leaf_activation.h"
+#include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
 #include "consensus/assumeutxo_fork_guard.h"
 #include "daemon/chainstate_recovery_marker.h"
@@ -127,7 +129,8 @@ constexpr const char* kIncompleteReorgRecoveryTipKey = "incomplete_reorg_recover
 constexpr const char* kStartupCatchupSource = "startup-catchup";
 constexpr uint32_t kInvMsgBlock = 2u;
 constexpr uint32_t kInvMsgUtreexoBlock = 0x50000002u;
-constexpr char kCsnReplayDataMagic[] = {'C', 'S', 'N', '2'};
+using consensus::CsnReplayData;
+using consensus::DecodeCsnReplayData;
 
 bool RuntimeRetainsHistoricalBodies() {
     const auto& config = GetConfig();
@@ -167,77 +170,6 @@ Coin UtxoEntryToDbCoin(const consensus::UTXOEntry& entry) {
     coin.is_confidential = entry.is_confidential;
     coin.commitment = entry.commitment;
     return coin;
-}
-
-struct CsnReplayData {
-    std::vector<consensus::UtreexoHash> spend_targets;
-    std::vector<consensus::SpentOutputData> spent_outputs;
-    bool has_spent_outputs = false;
-};
-
-bool ReadU32LE(const std::string& data, size_t& offset, uint32_t& out) {
-    if (offset + 4 > data.size()) {
-        return false;
-    }
-    out = static_cast<uint8_t>(data[offset]) |
-          (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 1])) << 8) |
-          (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 2])) << 16) |
-          (static_cast<uint32_t>(static_cast<uint8_t>(data[offset + 3])) << 24);
-    offset += 4;
-    return true;
-}
-
-bool DecodeCsnReplayData(const std::string& blob, CsnReplayData& out) {
-    size_t offset = 0;
-    const bool v2 =
-        blob.size() >= 4 &&
-        std::memcmp(blob.data(), kCsnReplayDataMagic, 4) == 0;
-    if (v2) {
-        offset = 4;
-    }
-
-    uint32_t target_count = 0;
-    if (!ReadU32LE(blob, offset, target_count)) {
-        return false;
-    }
-    if (target_count > 1'000'000u || offset + static_cast<size_t>(target_count) * 32 > blob.size()) {
-        return false;
-    }
-
-    out.spend_targets.clear();
-    out.spend_targets.reserve(target_count);
-    for (uint32_t i = 0; i < target_count; ++i) {
-        out.spend_targets.emplace_back(blob.begin() + offset, blob.begin() + offset + 32);
-        offset += 32;
-    }
-
-    if (!v2) {
-        return offset == blob.size();
-    }
-
-    uint32_t spent_count = 0;
-    if (!ReadU32LE(blob, offset, spent_count) || offset >= blob.size()) {
-        return false;
-    }
-    const uint8_t format_version = static_cast<uint8_t>(blob[offset++]);
-    if (spent_count > 1'000'000u) {
-        return false;
-    }
-
-    std::vector<uint8_t> bytes(blob.begin(), blob.end());
-    out.spent_outputs.clear();
-    out.spent_outputs.reserve(spent_count);
-    for (uint32_t i = 0; i < spent_count; ++i) {
-        const size_t before = offset;
-        auto spent = consensus::SpentOutputData::deserialize(bytes, offset, format_version);
-        if (offset <= before) {
-            return false;
-        }
-        out.spent_outputs.push_back(std::move(spent));
-    }
-
-    out.has_spent_outputs = true;
-    return offset == blob.size();
 }
 
 uint32_t BlockGetDataInventoryType() {
@@ -896,7 +828,11 @@ void ApplyPersistedMetadataToBlockIndex(CBlockIndex* block_index,
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
     block_index->status = metadata.status_flags;
+    if (metadata.status_flags & BLOCK_FAILED_VALID) {
+        InvalidateAncestryCache();
+    }
     block_index->file_number = metadata.file_number;
     block_index->data_pos = metadata.data_pos;
     block_index->data_size = metadata.data_size;
@@ -1008,30 +944,28 @@ bool ChainstateService::LoadSeparatedShieldedState() {
         return refuse("invalid canonical frontier/anchors; external fallback forbidden");
     if (tree.Size() != marker.value().tree_size) return refuse("canonical tree size mismatch");
 
-    // Reuse the consensus accumulator and root encoding unchanged. Do not
-    // reserve memory from an untrusted marker count. Resource qualification of
-    // the final release includes this startup materialization (as for the
-    // existing CurrentShieldedStateSnapshot path).
-    std::vector<consensus::shielded::NullifierEntry> entries;
+    // Check the canonical scan without reserving from an untrusted marker
+    // count. A nullifier appearing at two heights is corrupt even when the
+    // row count matches. The marker's root commits to the tree only.
+    std::set<consensus::shielded::Hash> nullifiers;
     bool valid = true;
     const auto scanned = chain_db_->forEachShieldedNullifier([&](uint32_t height, const uint8_t* nf) {
-        if (height > tip.value().height || entries.size() >= count.value()) {
+        consensus::shielded::Hash nullifier;
+        std::memcpy(nullifier.data(), nf, nullifier.size());
+        if (height > tip.value().height || nullifiers.size() >= count.value() ||
+            !nullifiers.insert(nullifier).second) {
             valid = false;
             return false;
         }
-        consensus::shielded::NullifierEntry entry;
-        entry.height = height;
-        std::memcpy(entry.nullifier.data(), nf, entry.nullifier.size());
-        entries.push_back(entry);
         return true;
     });
-    if (scanned != Status::Ok || !valid || entries.size() != count.value())
+    if (scanned != Status::Ok || !valid || nullifiers.size() != count.value())
         return refuse("incomplete or inconsistent canonical nullifier scan");
-    const auto accumulator = consensus::shielded::ComputeNullifierAccumulator(std::move(entries));
+    // Match CurrentShieldedStateSnapshot and every existing marker writer.
+    // ComputeShieldedRoot is a different, composite consensus commitment.
     const auto tree_root = tree.Root();
-    const auto root = consensus::shielded::ComputeShieldedRootFromParts(
-        std::vector<uint8_t>(tree_root.begin(), tree_root.end()), tree.Size(), accumulator, history.SerializeBytes());
-    if (!root || *root != marker.value().shielded_root) return refuse("canonical shielded root mismatch");
+    if (std::memcmp(tree_root.data(), marker.value().shielded_root.data, tree_root.size()) != 0)
+        return refuse("canonical shielded root mismatch");
     shielded_tree_ = std::move(tree);
     shielded_anchor_history_ = std::move(history);
     return true;
@@ -8068,6 +8002,290 @@ bool ChainstateService::IsBlockInFlight(const std::string& block_hash) const {
     return in_flight_blocks_.count(block_hash) > 0;
 }
 
+bool ChainstateService::RestoreReplayRepairParent(
+    const CBlockIndex* index, consensus::UtreexoForest& scratch, std::string& error) {
+    const CBlockIndex* parent = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
+        if (index) parent = index->pprev;
+    }
+    if (!parent || !chain_db_ || !consensus_utxo_set_) {
+        error = "replay-repair-parent-unavailable";
+        return false;
+    }
+    const auto header = chain_db_->getHeader(parent->hash);
+    if (header.status() != Status::Ok) {
+        error = "replay-repair-parent-header-unavailable";
+        return false;
+    }
+    const consensus::UtreexoHash before(header.value().utreexo_root.begin(),
+                                        header.value().utreexo_root.end());
+    {
+        auto lock = consensus_utxo_set_->LockForestShared();
+        const auto& live = consensus_utxo_set_->GetForest();
+        if (live.getCommitment() == before) {
+            scratch = live.cloneForHeight(parent->height);
+            return true;
+        }
+    }
+    // Checkpoints are keyed by height, not branch identity. Start at the
+    // common ancestor so a newer checkpoint from the active branch cannot
+    // hide reconstructible history on the requested branch.
+    CBlockIndex* fork = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
+        fork = FindFork(active_tip_, const_cast<CBlockIndex*>(parent));
+    }
+    if (!fork) {
+        error = "replay-repair-common-ancestor-unavailable";
+        return false;
+    }
+    if (storage::RestoreHistoricalForest(*chain_db_, fork->height, scratch, error,
+            [fork](uint32_t h, uint256& hash) {
+                std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
+                return consensus::GetActiveChainHashAtHeight(fork, h, hash);
+            }) != Status::Ok) return false;
+    if (storage::ReplayUtreexoDeltaRange(*chain_db_, scratch, fork->height,
+            parent->height, error, [parent](uint32_t h, uint256& hash) {
+                std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
+                return consensus::GetActiveChainHashAtHeight(parent, h, hash);
+            }) != Status::Ok) return false;
+    if (scratch.getCommitment() != before) {
+        error = "replay-repair-parent-root-mismatch";
+        return false;
+    }
+    return true;
+}
+
+bool ChainstateService::VerifyAndPersistReplayMetadata(
+    const CBlockIndex* index, const Block& block, const std::string& original_record,
+    const consensus::BlockUtreexoData& proof,
+    const consensus::UtreexoHash& root_after, bool require_batch_proof,
+    std::string& error) {
+    activation_mutex_.AssertHeld("VerifyAndPersistReplayMetadata");
+    consensus::CsnReplayData legacy;
+    if (!index || index->height == 0 || block.GetHash() != index->hash ||
+        !consensus::DecodeCsnReplayData(original_record, legacy) || legacy.has_spent_outputs) {
+        error = "replay-repair-not-legacy";
+        return false;
+    }
+    const auto parent_header = chain_db_->getHeader(block.header.prev_block_hash);
+    if (parent_header.status() != Status::Ok) {
+        error = "replay-repair-parent-header-unavailable";
+        return false;
+    }
+    consensus::UtreexoForest scratch;
+    if (!RestoreReplayRepairParent(index, scratch, error)) return false;
+    UtreexoProofMessage candidate;
+    candidate.block_hash = index->hash;
+    candidate.block_height = index->height;
+    candidate.accumulator_root_before = proof.accumulator_root_before;
+    candidate.accumulator_root_after = root_after;
+    candidate.proof_data = proof;
+    if (!network::StatelessNode::ValidateReplayMetadataRepair(
+            block, index->height, parent_header.value(), legacy.spend_targets,
+            candidate, std::move(scratch), require_batch_proof, error)) return false;
+
+    // Also excludes the two normal CSN sidecar writers. No activation/network
+    // callback may run while this innermost lock is held.
+    auto record_lock = LockCsnReplayRecords();
+    const auto current = chain_db_->getCSNSpendTargets(index->hash);
+    if (current.status() != Status::Ok || current.value() != original_record) {
+        error = "replay-repair-record-changed";
+        return false;
+    }
+    const auto replacement = consensus::SerializeCsnReplayData(
+        legacy.spend_targets, proof.spent_outputs,
+        consensus::GetUtreexoProofFormatVersion(index->height));
+    ChainWriteToken token;
+    rocksdb::WriteBatch batch;
+    if (chain_db_->putCSNSpendTargets(token, index->hash, replacement, &batch) != Status::Ok ||
+        chain_db_->writeBatch(token, std::move(batch), true) != Status::Ok) {
+        error = "replay-repair-persist-failed";
+        return false;
+    }
+    return true;
+}
+
+bool ChainstateService::EnsureCsnReplayMetadata(
+    const CBlockIndex* index, const Block& block, const std::string& original_record,
+    consensus::CsnReplayData& replay) {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (replay.has_spent_outputs) return true; // Complete records retain normal validation.
+    size_t inputs = 0;
+    for (size_t i = 1; i < block.vtx.size(); ++i) inputs += block.vtx[i].vin.size();
+    if (inputs == 0) return true;
+    if (!index || index->height == 0) return false;
+    const auto now = ReplayMetadataRecoveryQueue::Clock::now();
+    const auto attempted = replay_metadata_local_attempts_.find(index->hash);
+    if (attempted == replay_metadata_local_attempts_.end() ||
+        attempted->second.first != original_record || now >= attempted->second.second) {
+        // Keep this cache bounded like the request queue. Eviction affects
+        // performance only: another observation may safely retry local data.
+        if (replay_metadata_local_attempts_.size() >= ReplayMetadataRecoveryQueue::kMaxRecords)
+            replay_metadata_local_attempts_.erase(replay_metadata_local_attempts_.begin());
+        replay_metadata_local_attempts_[index->hash] =
+            {original_record, now + ReplayMetadataRecoveryQueue::kRetryDelay};
+        const auto try_local = [&](consensus::BlockUtreexoData recovered) {
+            const auto parent = chain_db_->getHeader(block.header.prev_block_hash);
+            if (parent.status() != Status::Ok || recovered.spent_outputs.size() != inputs) return false;
+            recovered.accumulator_root_before.assign(parent.value().utreexo_root.begin(),
+                                                       parent.value().utreexo_root.end());
+            recovered.spend_proof.targets = replay.spend_targets;
+            const consensus::UtreexoHash after(block.header.utreexo_root.begin(), block.header.utreexo_root.end());
+            std::string error;
+            if (!VerifyAndPersistReplayMetadata(index, block, original_record, recovered, after, false, error)) {
+                if (logger_) logger_->warning("[CSN-ReplayRepair] Local history unavailable: " + error);
+                return false;
+            }
+            replay.spent_outputs = std::move(recovered.spent_outputs);
+            replay.has_spent_outputs = true;
+            replay_metadata_recovery_.Cancel(index->hash);
+            replay_metadata_local_attempts_.erase(index->hash);
+            if (logger_) logger_->info("[CSN-ReplayRepair] Recovered metadata at height " +
+                std::to_string(index->height) + " from local history");
+            return true;
+        };
+        if (block.utreexo && block.utreexo->spent_outputs.size() == inputs && try_local(*block.utreexo)) return true;
+        // A stale stored payload must not mask a valid archival undo record.
+        consensus::BlockUtreexoData recovered;
+        {
+            const auto undo = storage::ReadArchivalUndo(*chain_db_, block_storage_.get(), index->hash);
+            if (undo.status() == Status::Ok) {
+                std::unordered_map<OutPoint, consensus::SpentOutputData> available;
+                for (const auto& coin : undo.value().spent) {
+                    consensus::SpentOutputData data;
+                    data.value = coin.value;
+                    data.scriptPubKey = coin.scriptPubKey;
+                    data.created_height = coin.height;
+                    data.is_coinbase = coin.is_coinbase;
+                    data.is_confidential = coin.is_confidential;
+                    data.commitment = coin.commitment;
+                    available.emplace(OutPoint(TxId(coin.prev_txid), coin.prev_vout), std::move(data));
+                }
+                bool complete = true;
+                for (size_t t = 0; t < block.vtx.size() && complete; ++t) {
+                    const auto& tx = block.vtx[t];
+                    if (t != 0) {
+                        for (const auto& input : tx.vin) {
+                            const auto it = available.find(OutPoint(input.prevout.txid, input.prevout.vout));
+                            if (it == available.end()) { complete = false; break; }
+                            recovered.spent_outputs.push_back(it->second);
+                            available.erase(it);
+                        }
+                    }
+                    // Only earlier transactions can supply ephemeral inputs.
+                    for (uint32_t v = 0; v < tx.vout.size(); ++v) {
+                        const auto& output = tx.vout[v];
+                        consensus::SpentOutputData data;
+                        data.value = output.value.GetUna();
+                        data.scriptPubKey = output.scriptPubKey;
+                        data.created_height = index->height;
+                        data.is_coinbase = tx.IsCoinbase();
+                        data.is_confidential = output.is_confidential;
+                        data.commitment = output.commitment;
+                        available[OutPoint(tx.GetTxid(), v)] = std::move(data);
+                    }
+                }
+                if (!complete) recovered.spent_outputs.clear();
+            }
+        }
+        if (try_local(std::move(recovered))) return true;
+    }
+    const bool already = replay_metadata_recovery_.Contains(index->hash);
+    if (replay_metadata_recovery_.Need(index->hash, index->height, original_record,
+                                      ReplayMetadataRecoveryQueue::Clock::now()) && !already && logger_) {
+        logger_->warning("[CSN-ReplayRepair] Waiting for verified metadata at height " +
+                         std::to_string(index->height));
+    }
+    replay_metadata_retry_activation_.store(true);
+    return false;
+}
+
+bool ChainstateService::QueueReplayMetadataResponse(
+    const std::string& peer, const uint256& hash, uint32_t height,
+    const consensus::BlockUtreexoData& proof, const consensus::UtreexoHash& root_after) {
+    if (!replay_metadata_recovery_.Contains(hash)) return false;
+    // A wrong/late response for a repair hash must not fall through to the
+    // normal scheduler and alter its cursor, invalidity flags or counters.
+    replay_metadata_recovery_.QueueResponse(peer, hash, height, proof, root_after,
+                                            ReplayMetadataRecoveryQueue::Clock::now());
+    return true;
+}
+
+void ChainstateService::PumpReplayMetadataRecovery() {
+    if (!GetConfig().utreexo_stateless || !chain_db_) return;
+    {
+        std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+        // Operational activation cooldown is not branch abandonment. Keep
+        // recovery for the retained best-work candidate while it backs off.
+        const CBlockIndex* best = nullptr;
+        {
+            std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
+            best = candidates_.Best([&](CBlockIndex* candidate) {
+                return candidate && IsReorgCandidateEligible(candidate) && !HasInvalidAncestor(candidate);
+            });
+        }
+        for (const auto& need : replay_metadata_recovery_.Needs()) {
+            const auto record = chain_db_->getCSNSpendTargets(need.hash);
+            const auto* index = FindBlockIndex(need.hash);
+            uint256 wanted;
+            bool resolved_other_branch = false;
+            bool index_failed = false;
+            {
+                std::lock_guard<std::recursive_mutex> graph_lock(dinero::g_block_index_mutex);
+                index_failed = index && (index->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD));
+                resolved_other_branch = best && best->height >= need.height &&
+                    consensus::GetActiveChainHashAtHeight(best, need.height, wanted) && wanted != need.hash;
+            }
+            if (record.status() != Status::Ok || record.value() != need.original_record ||
+                !index || index_failed || resolved_other_branch) {
+                replay_metadata_recovery_.Cancel(need.hash);
+                replay_metadata_local_attempts_.erase(need.hash);
+                replay_metadata_retry_activation_.store(true);
+            }
+        }
+    }
+    if (auto ready = replay_metadata_recovery_.TakeResponse()) {
+        bool success = false;
+        std::string error;
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+            auto* index = FindBlockIndex(ready->attempt.hash);
+            const auto body = ReadStoredBlock(ready->attempt.hash);
+            if (index && index->height == ready->attempt.height && body.status() == Status::Ok)
+                success = VerifyAndPersistReplayMetadata(index, body.value(), ready->attempt.original_record,
+                    ready->proof_data, ready->root_after, true, error);
+            else error = "replay-repair-local-block-unavailable";
+            if (success) replay_metadata_local_attempts_.erase(ready->attempt.hash);
+        }
+        replay_metadata_recovery_.Finish(ready->attempt, success, ReplayMetadataRecoveryQueue::Clock::now());
+        if (logger_) {
+            if (success) logger_->info("[CSN-ReplayRepair] Recovered metadata at height " +
+                std::to_string(ready->attempt.height) + " from peer " + ready->attempt.peer);
+            else logger_->warning("[CSN-ReplayRepair] Rejected recovery response: " + error);
+        }
+        replay_metadata_retry_activation_.store(true);
+    }
+    // Retry branch selection after repair even for equal-height/heavier-work
+    // branches, which the generic height-ahead safety net does not cover.
+    if (replay_metadata_retry_activation_.exchange(false)) ActivateBestChain();
+    if (!p2p_service_ || !replay_metadata_recovery_.HasPending()) return;
+    std::vector<std::string> peers;
+    const auto connected = p2p_service_->GetConnectedPeers();
+    for (bool bridge : {true, false}) {
+        for (const auto& peer : connected) {
+            const auto key = peer.to_string();
+            if (p2p_service_->get().peer_has_service_flags(key, ServiceFlags::NODE_UTREEXO_BRIDGE) == bridge)
+                peers.push_back(key);
+        }
+    }
+    if (auto attempt = replay_metadata_recovery_.NextRequest(ReplayMetadataRecoveryQueue::Clock::now(), peers)) {
+        if (!p2p_service_->get().send_to_peer(attempt->peer, CreateBlockGetDataMessage(attempt->hash.GetHex())))
+            replay_metadata_recovery_.Finish(*attempt, false, ReplayMetadataRecoveryQueue::Clock::now());
+    }
+}
+
 void ChainstateService::HandleNotFoundFromPeer(const std::string& peer_addr,
                                                const std::vector<uint8_t>& payload) {
     size_t offset = 0;
@@ -8099,6 +8317,10 @@ void ChainstateService::HandleNotFoundFromPeer(const std::string& peer_addr,
         std::memcpy(hash.data, payload.data() + offset, 32);
         offset += 32;
 
+        if (inv_type == kInvMsgUtreexoBlock && replay_metadata_recovery_.Contains(hash)) {
+            replay_metadata_recovery_.NotFound(peer_addr, hash, ReplayMetadataRecoveryQueue::Clock::now());
+            continue;
+        }
         if (inv_type == kInvMsgBlock || inv_type == kInvMsgUtreexoBlock) {
             missing_blocks.insert(hash.GetHex());
             notfound_hashes.push_back(hash);
@@ -9078,6 +9300,25 @@ void ChainstateService::ActivateBestChain() {
                 }
                 return;
             }
+            // Stored proof/transition records prove a forest transition, not
+            // monetary conservation. Check the entire branch's reward before
+            // rewinding the canonical tip. Bind input amounts to the stored
+            // targets and real intra-block outputs here; ReplayBlock repeats
+            // this gate and verifies the resulting forest against the header.
+            const auto& candidate = block_result.value();
+            if (!EnsureCsnReplayMetadata(block_index, candidate, replay_result.value(), replay_data)) return;
+            const auto* fee_coins = replay_data.has_spent_outputs
+                ? &replay_data.spent_outputs
+                : (candidate.utreexo ? &candidate.utreexo->spent_outputs : nullptr);
+            std::string reward_error;
+            if (!network::StatelessNode::CheckReplayReward(
+                    candidate, block_index->height, replay_data.spend_targets,
+                    fee_coins, reward_error)) {
+                if (logger_) logger_->error("[ABC-CSN] Reorg reward preflight failed at height " +
+                    std::to_string(block_index->height) + ": " + reward_error +
+                    " — canonical state left untouched");
+                return;
+            }
         }
 
         // Step 1: Rebuild the forest at fork_point height. Campaign phase 3
@@ -9199,7 +9440,7 @@ void ChainstateService::ActivateBestChain() {
                     return;
                 }
                 spend_targets = std::move(replay_data.spend_targets);
-                if (!spent_outputs && replay_data.has_spent_outputs) {
+                if (replay_data.has_spent_outputs) {
                     replay_spent_outputs = std::move(replay_data.spent_outputs);
                     spent_outputs = &replay_spent_outputs;
                 }
@@ -9736,7 +9977,11 @@ void ChainstateService::ActivateBestChain() {
                 if (logger_) logger_->warning("[ActivateBestChain] REORG ABORT: consensus-invalid block at height " +
                                               std::to_string(block_index->height) +
                                               " — marking BLOCK_FAILED_VALID (#309/I2)");
-                block_index->status |= BLOCK_FAILED_VALID;
+                {
+                    std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+                    block_index->status |= BLOCK_FAILED_VALID;
+                    InvalidateAncestryCache();
+                }
                 if (chain_db_) {
                     ChainWriteToken token = ChainWriteToken::CreateForTesting();
                     chain_db_->setHeaderStatusBits(token, block_index->hash, BLOCK_FAILED_VALID);
@@ -12552,7 +12797,11 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
     }
 
     // Step 2: Mark block and all descendants as invalid
-    target->status |= BLOCK_FAILED_VALID;
+    {
+        std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+        target->status |= BLOCK_FAILED_VALID;
+        InvalidateAncestryCache();
+    }
     RemoveCandidate(target);
 
     // Apr 14 2026 (Bug #6 / #38) — persist BLOCK_FAILED_VALID to ChainDB.
@@ -13414,7 +13663,7 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             return false;
         }
 
-        // Remove created outputs, restore spent outputs, persist tip
+        // Restore spent outputs, remove created outputs, persist tip
         // rollback, and stage the ShieldedTipMarker — all in one atomic
         // batch.
         rocksdb::WriteBatch coin_batch;
@@ -13476,10 +13725,6 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             return false;
         }
 
-        for (const auto& created : undo.created) {
-            chain_db_->deleteCoin(token, created.txid, created.vout, &coin_batch);
-        }
-
         for (const auto& spent : undo.spent) {
             dinero::Coin coin;
             coin.amount = spent.value;
@@ -13491,6 +13736,13 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             coin.is_confidential = spent.is_confidential;
             coin.commitment = spent.commitment;
             chain_db_->putCoin(token, spent.prev_txid, spent.prev_vout, coin, &coin_batch);
+        }
+
+        // Undo keeps every input, including outputs created and spent in this
+        // block. Delete exact created outpoints last so those ephemeral coins
+        // cannot survive rollback in the durable UTXO set.
+        for (const auto& created : undo.created) {
+            chain_db_->deleteCoin(token, created.txid, created.vout, &coin_batch);
         }
 
         const auto tip_status = chain_db_->setTip(token, new_tip->hash,
@@ -13795,17 +14047,6 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     rocksdb::WriteBatch rollback_batch;
     const auto& undo_record = undo_result.value();
 
-    for (const auto& created : undo_record.created) {
-        const auto delete_status = chain_db_->deleteCoin(
-            token, created.txid, created.vout, &rollback_batch);
-        if (delete_status != Status::Ok) {
-            logger_->error("[DisconnectTip] Failed to delete disconnected UTXO " +
-                           created.txid.GetHex().substr(0, 16) + "...:" +
-                           std::to_string(created.vout));
-            return false;
-        }
-    }
-
     for (const auto& spent : undo_record.spent) {
         dinero::Coin coin;
         coin.amount = spent.value;
@@ -13826,6 +14067,19 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
             logger_->error("[DisconnectTip] Failed to restore spent UTXO " +
                            spent.prev_txid.GetHex().substr(0, 16) + "...:" +
                            std::to_string(spent.prev_vout));
+            return false;
+        }
+    }
+
+    // A same-block parent output appears in both undo lists. The final
+    // operation on each created outpoint must be Delete, just as in CSN mode.
+    for (const auto& created : undo_record.created) {
+        const auto delete_status = chain_db_->deleteCoin(
+            token, created.txid, created.vout, &rollback_batch);
+        if (delete_status != Status::Ok) {
+            logger_->error("[DisconnectTip] Failed to delete disconnected UTXO " +
+                           created.txid.GetHex().substr(0, 16) + "...:" +
+                           std::to_string(created.vout));
             return false;
         }
     }
@@ -14414,6 +14668,8 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
                     }
                     return fail("stateless-replay-data-malformed");
                 }
+                if (!EnsureCsnReplayMetadata(tip_to_connect, block, replay_result.value(), replay_data))
+                    return fail("stateless-replay-metadata-unavailable");
                 replay_targets = std::move(replay_data.spend_targets);
                 if (replay_data.has_spent_outputs) {
                     replay_spent_outputs = std::move(replay_data.spent_outputs);
@@ -14457,7 +14713,7 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             bool shielded_applied = false;
             std::string shielded_err;
             if (!ApplyStatelessReplayShielded(block, tip_to_connect->height, replay_undo,
-                                              shielded_applied, shielded_err)) {
+                                              shielded_applied, shielded_err, spent_outputs)) {
                 if (logger_) {
                     logger_->error("[ConnectTip] Stateless recovery shielded apply failed at height " +
                                    std::to_string(tip_to_connect->height) + ": " + shielded_err);
@@ -16104,25 +16360,25 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     dinero::UndoRecord undo_record;
     if (!skip_undo_write) {
         // Resolve the same spent-outputs source the ABC-CSN replay loop
-        // already loaded for this block before calling us: block.utreexo's
-        // embedded metadata when present, else the CF7 CSN-replay-data
-        // sidecar (older hash-only records carry spend metadata there
-        // instead, and ConnectTip's own stateless-replay call site always
-        // has block.utreexo populated by its gate).
+        // already loaded for this block before calling us: the verified CSN2
+        // replay sidecar, else the embedded block.utreexo metadata.
+        // A legacy hash-only sidecar must first be repaired; it cannot supply
+        // input values on its own. An empty embedded payload must not mask
+        // metadata that recovery has already authenticated and persisted.
         std::vector<consensus::SpentOutputData> fallback_spent_outputs_storage;
         const std::vector<consensus::SpentOutputData>* spent_outputs_src = nullptr;
-        if (block.utreexo.has_value()) {
-            spent_outputs_src = &block.utreexo->spent_outputs;
-        } else {
-            auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
-            if (st_result.status() == Status::Ok && st_result.value().size() >= 4) {
-                CsnReplayData replay_data;
-                if (DecodeCsnReplayData(st_result.value(), replay_data) && replay_data.has_spent_outputs) {
-                    fallback_spent_outputs_storage = std::move(replay_data.spent_outputs);
-                    spent_outputs_src = &fallback_spent_outputs_storage;
-                }
+        const auto st_result = chain_db_->getCSNSpendTargets(block_index->hash);
+        if (st_result.status() == Status::Ok) {
+            CsnReplayData replay_data;
+            if (!DecodeCsnReplayData(st_result.value(), replay_data))
+                return fail("malformed-csn-replay-data-for-undo");
+            if (replay_data.has_spent_outputs) {
+                fallback_spent_outputs_storage = std::move(replay_data.spent_outputs);
+                spent_outputs_src = &fallback_spent_outputs_storage;
             }
         }
+        if (!spent_outputs_src && block.utreexo.has_value())
+            spent_outputs_src = &block.utreexo->spent_outputs;
 
         size_t global_input_idx = 0;
         for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {

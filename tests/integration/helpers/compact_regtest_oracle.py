@@ -82,20 +82,24 @@ def expanded_bundle(wire):
 def inspect(raw, expected_txid):
     r = Reader(raw)
     version = r.take(4)
-    assert int.from_bytes(version, 'little') == 0x40000006
+    assert int.from_bytes(version, 'little') == 6
     assert r.take(2) == b'\x00\x01'
     start = r.at
     inputs = r.size()
+    signing = bytearray(b'DIN/v7/shielded/tx-sighash/compact-v1' + version + struct.pack('<I', inputs))
     for _ in range(inputs):
-        r.take(36)
+        signing += r.take(36)
         r.blob()
-        r.take(4)
+        signing += r.take(4)
     outputs = []
-    for _ in range(r.size()):
+    output_count = r.size()
+    signing += struct.pack('<I', output_count)
+    for _ in range(output_count):
         amount = int.from_bytes(r.take(8), 'little')
         script = r.blob()
         assert amount > 0, 'fixture only creates nonzero transparent outputs'
         outputs.append({'amount_una': amount, 'script': script.hex()})
+        signing += struct.pack('<QI', amount, len(script)) + script
     assert r.take(1) == b'\x01'
     fee = int.from_bytes(r.take(8), 'little')
     envelope = raw[start:r.at]
@@ -104,6 +108,7 @@ def inspect(raw, expected_txid):
             r.blob()
     bundle = r.blob()
     locktime = r.take(4)
+    signing += locktime
     assert r.at == len(raw)
     base = version + envelope + compact_size(len(bundle)) + bundle + locktime
     txid = sha(sha(base))[::-1].hex()
@@ -114,6 +119,7 @@ def inspect(raw, expected_txid):
     assert expanded_id != txid
     weight = 3 * len(base) + len(raw)
     return {'txid': txid, 'expanded_view_txid': expanded_id,
+            'tx_sighash': sha(signing).hex(),
             'wtxid': sha(sha(raw))[::-1].hex(), 'wire_bytes': len(raw),
             'base_bytes': len(base), 'vsize': (weight + 3) // 4,
             'fee_una': fee, 'outputs': outputs}
@@ -159,8 +165,15 @@ def prove(record, proof_response, roots_response, height):
 if __name__ == '__main__':
     if sys.argv[1] == 'inspect':
         result = inspect(bytes.fromhex(Path(sys.argv[2]).read_text().strip()), sys.argv[3])
+    elif sys.argv[1] == 'saved':
+        folder = Path(sys.argv[2])
+        manifest = json.loads((folder / 'manifest.json').read_text())
+        assert manifest['format'] == 'v6-DZE1'
+        expected = manifest['expected']
+        result = inspect(bytes.fromhex((folder / 'unshield.tx.hex').read_text()), expected['txid'])
+        assert result == expected, (result, expected)
     elif sys.argv[1] == 'prove':
         result = prove(*(json.loads(Path(p).read_text()) for p in sys.argv[2:5]), int(sys.argv[5]))
     else:
-        raise SystemExit('expected inspect or prove')
+        raise SystemExit('expected inspect, saved or prove')
     print(json.dumps(result, sort_keys=True))

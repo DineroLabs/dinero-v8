@@ -167,13 +167,13 @@ public:
         } else {
             value = readUint64();
         }
-        // New compact-regtest envelopes have exactly one length encoding.
+        // The old compact-regtest prototype has exactly one length encoding.
         // Historical v5/v6 parsing retains its existing rules.
         if (minimal_lengths_ &&
             ((first == 0xfd && value < 253) ||
              (first == 0xfe && value <= 0xffff) ||
              (first == 0xff && value <= 0xffffffff))) {
-            throw std::runtime_error("Nonminimal compact-regtest length");
+            throw std::runtime_error("Nonminimal compact shielded length");
         }
         return value;
     }
@@ -229,7 +229,7 @@ bool TransactionSerializer::Deserialize(Transaction& tx, const std::vector<uint8
         }
 
         if (Transaction::IsCompactRegtestVersion(tx.version) && !is_segwit) {
-            throw std::runtime_error("Compact-regtest wire format requires witness marker");
+            throw std::runtime_error("Compact shielded wire format requires witness marker");
         }
 
         // Read inputs

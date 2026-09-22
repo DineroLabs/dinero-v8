@@ -47,6 +47,20 @@ if(NOT WIN32)
     $<TARGET_FILE:test_daemon_service_release>)
   set_tests_properties(DaemonServiceRelease PROPERTIES
     LABELS "integration;restart;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+
+  add_executable(test_checkpoint_acceptance_daemon
+    tests/daemon/checkpoint_acceptance_daemon.cpp ${_release_sources})
+  foreach(_property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+    get_target_property(_checkpoint_property dinerod ${_property})
+    if(_checkpoint_property)
+      set_property(TARGET test_checkpoint_acceptance_daemon PROPERTY ${_property} "${_checkpoint_property}")
+    endif()
+  endforeach()
+  add_test(NAME CheckpointForkAcceptance COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_checkpoint_fork_acceptance.py
+    $<TARGET_FILE:test_checkpoint_acceptance_daemon>)
+  set_tests_properties(CheckpointForkAcceptance PROPERTIES
+    LABELS "integration;e2e-daemon;consensus;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
 endif()
 
 add_executable(test_packed_header_alignment
@@ -405,6 +419,18 @@ add_test(NAME UtreexoDeltaCodec COMMAND test_utreexo_delta_codec)
 set_tests_properties(UtreexoDeltaCodec PROPERTIES
   LABELS "consensus;utreexo;forest-checkpoint-deltas;smoke"
 )
+
+add_executable(test_csn_replay_data tests/consensus/test_csn_replay_data.cpp)
+add_dependencies(test_csn_replay_data gtest gtest_main)
+target_link_libraries(test_csn_replay_data PRIVATE
+  dinero_consensus GTest::gtest_main ${CMAKE_DL_LIBS})
+link_zstd_if_needed(test_csn_replay_data)
+target_include_directories(test_csn_replay_data BEFORE PRIVATE
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include)
+add_test(NAME CsnReplayData COMMAND test_csn_replay_data)
+# Keep this in the ordinary broad CI lane (no integration/fuzz exclusions).
+set_tests_properties(CsnReplayData PROPERTIES
+  LABELS "consensus;utreexo;serialization;unit;mandatory" TIMEOUT 30)
 
 add_executable(test_forest_delta_replay_equivalence
   tests/consensus/test_forest_delta_replay_equivalence.cpp
@@ -1047,6 +1073,38 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
     TIMEOUT 120
   )
   message(STATUS "Shielded CF startup authority test enabled")
+endif()
+
+# Admission fee checks must agree with exact stateful/stateless reward validation.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_block_acceptor_fees.cpp)
+  add_executable(test_block_acceptor_fees
+    tests/daemon/test_block_acceptor_fees.cpp
+    tests/stubs/mempool_test_stubs.cpp  # no-op Mempool seams (chainstate_service.obj refs)
+    tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault isolation seams
+    src/daemon/config.cpp               # GetConfig() — referenced by chainstate_service.obj
+  )
+  target_link_libraries(test_block_acceptor_fees PRIVATE
+    dinero_core
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_block_acceptor_fees)
+  target_link_directories(test_block_acceptor_fees PRIVATE /opt/homebrew/lib)
+  if(APPLE)
+    target_link_libraries(test_block_acceptor_fees PRIVATE "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_block_acceptor_fees PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME BlockAcceptorFees COMMAND test_block_acceptor_fees)
+  set_tests_properties(BlockAcceptorFees PROPERTIES
+    LABELS "daemon;consensus;smoke"
+    TIMEOUT 120
+  )
+  message(STATUS "Block acceptor fee regression tests enabled")
 endif()
 
 # AssumeUTXO pre-base backfill bodies: the #309 persist callback could only
@@ -2549,9 +2607,10 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   add_executable(test_shielded_validation
     src/test/shielded_validation_tests.cpp
-    contrib/benchmarks/compact_spartan_codec.cpp
     tests/stubs/mempool_test_stubs.cpp
   )
+  target_compile_definitions(test_shielded_validation PRIVATE
+    COMPACT_V6_VECTOR_DIRECTORY="${CMAKE_SOURCE_DIR}/tests/vectors/compact_v6_v1")
   add_dependencies(test_shielded_validation gtest dinero_shielded)
   target_link_libraries(test_shielded_validation PRIVATE
     GTest::gtest
@@ -2569,6 +2628,15 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/test/shielded_validation_tests.cpp)
   )
   add_test(NAME ShieldedValidation COMMAND test_shielded_validation
     --gtest_filter=-*AuthResourceMeasurements)
+  add_test(NAME CompactProductionV6Vectors COMMAND test_shielded_validation
+    --gtest_filter=ShieldedValidationFixture.CompactProductionV6*)
+  set_tests_properties(CompactProductionV6Vectors PROPERTIES
+    LABELS "shielded;consensus;mandatory" TIMEOUT 300)
+  add_test(NAME CompactProductionV6Oracle COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/helpers/compact_regtest_oracle.py saved
+    ${CMAKE_SOURCE_DIR}/tests/vectors/compact_v6_v1)
+  set_tests_properties(CompactProductionV6Oracle PROPERTIES
+    LABELS "shielded;consensus;mandatory" TIMEOUT 30)
   # AuthResourceMeasurements is a reproducible capacity benchmark, not a
   # correctness test. Keep it explicitly runnable by shape (documented in the
   # resource-profile spec) without registering a multi-shape, hour-scale ctest
@@ -2618,7 +2686,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
     add_executable(test_spartan_soundness
       tests/zk/test_spartan_soundness.cpp
       tests/zk/test_compact_spartan.cpp
-      contrib/benchmarks/compact_spartan_codec.cpp
+      src/consensus/shielded/compact_spartan_codec.cpp
     )
     add_dependencies(test_spartan_soundness gtest dinero_zk)
     target_link_libraries(test_spartan_soundness PRIVATE
@@ -5657,6 +5725,36 @@ add_test(NAME MempoolTemplateMaturity COMMAND test_template_maturity)
 set_tests_properties(MempoolTemplateMaturity PROPERTIES
   LABELS "mempool;mining;reorg;utreexo" TIMEOUT 30)
 
+add_executable(test_wallet_input_coins
+  tests/mempool/test_wallet_input_coins.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+target_link_libraries(test_wallet_input_coins PRIVATE
+  dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+  dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+  GTest::gtest GTest::gtest_main
+)
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_wallet_input_coins PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_wallet_input_coins build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_wallet_input_coins)
+target_include_directories(test_wallet_input_coins PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_wallet_input_coins PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME WalletInputCoins COMMAND test_wallet_input_coins)
+set_tests_properties(WalletInputCoins PROPERTIES
+  LABELS "mempool;wallet;reorg;utreexo" TIMEOUT 30)
+
 add_executable(benchmark_covenant_validation
   tests/benchmarks/benchmark_covenant_validation.cpp
 )
@@ -7413,6 +7511,43 @@ if(UNIX AND NOT IOS)
   target_compile_definitions(test_shielded_state_migration PRIVATE DINERO_SHIELDED_MIGRATION_FAULT_TESTING=1)
   add_test(NAME ShieldedStateMigration COMMAND test_shielded_state_migration)
   set_tests_properties(ShieldedStateMigration PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+
+  add_executable(test_shielded_migration_cohort
+    tests/storage/test_shielded_migration_cohort.cpp
+    src/storage/shielded_migration.cpp
+    src/storage/shielded_migration_cohort.cpp
+    src/storage/shielded_migration_metadata.cpp
+    src/daemon/datadir_guard.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(test_shielded_migration_cohort PRIVATE
+    dinero_chainstate dinero_shielded dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+  )
+  target_include_directories(test_shielded_migration_cohort PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ShieldedMigrationCohort COMMAND test_shielded_migration_cohort)
+  set_tests_properties(ShieldedMigrationCohort PROPERTIES LABELS "storage;smoke" TIMEOUT 180)
+
+  # Qualification-only CLI driver for the combined-migration-release
+  # harness (tests/integration/test_combined_migration_release_qualification.sh).
+  # Calls the same reviewed MigrateShieldedDatadirCopy engine as
+  # ShieldedMigrationCohort above against real regtest-produced datadirs
+  # instead of synthetic fixtures. Not installed, no daemon/operator entry.
+  add_executable(migrate_shielded_datadir
+    tools/migrate_shielded_datadir.cpp
+    src/storage/shielded_migration.cpp
+    src/storage/shielded_migration_cohort.cpp
+    src/storage/shielded_migration_metadata.cpp
+    src/daemon/datadir_guard.cpp
+    src/common/logger.cpp
+  )
+  target_link_libraries(migrate_shielded_datadir PRIVATE
+    dinero_chainstate dinero_shielded dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+  )
+  target_include_directories(migrate_shielded_datadir PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+  )
 endif()
 
 # #384: CSN cursor-to-tip reconcile — pure predicate that breaks the
@@ -11897,6 +12032,65 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reorg_candidate_eligibility.c
   add_test(NAME ReorgCandidateEligibilityTest COMMAND test_reorg_candidate_eligibility)
 endif()
 
+# #803: fork-acceptance policy (bad-fork-prior-to-checkpoint + fork-aware overlay
+# depth cap). Header-only rules; no chainstate needed.
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_fork_acceptance_policy.cpp)
+  add_executable(test_fork_acceptance_policy
+    tests/consensus/test_fork_acceptance_policy.cpp
+    src/primitives/uint256.cpp
+  )
+  target_include_directories(test_fork_acceptance_policy PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+  )
+  add_test(NAME ForkAcceptancePolicyTest COMMAND test_fork_acceptance_policy)
+endif()
+
+# HasInvalidAncestor() ancestry-clean cache: GetBestCandidate() must stay
+# O(candidates), not O(candidates x chain height), when a node holds thousands
+# of same-height sibling tips (SJ incident 2026-09-21: 1.3 s per
+# ActivateBestChain pass under the ingress lock, peer sockets left unread).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_invalid_ancestor_cache.cpp)
+  add_executable(test_invalid_ancestor_cache
+    tests/consensus/test_invalid_ancestor_cache.cpp
+    src/common/logger.cpp
+    src/common/json_logger.cpp
+  )
+  target_link_libraries(test_invalid_ancestor_cache PRIVATE
+    dinero_core        # block_lifecycle.cpp (HasInvalidAncestor)
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    secp256k1
+  )
+  link_zstd_if_needed(test_invalid_ancestor_cache)
+  target_include_directories(test_invalid_ancestor_cache PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_invalid_ancestor_cache PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME InvalidAncestorCacheTest COMMAND test_invalid_ancestor_cache)
+  set_tests_properties(InvalidAncestorCacheTest PROPERTIES TIMEOUT 60)
+  option(DINERO_ANCESTRY_CACHE_TSAN "Instrument the ancestry cache regression with ThreadSanitizer" OFF)
+  if(DINERO_ANCESTRY_CACHE_TSAN)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+      message(FATAL_ERROR "DINERO_ANCESTRY_CACHE_TSAN requires GCC or Clang")
+    endif()
+    # Compile the real implementation into the test with instrumentation;
+    # the uninstrumented archive member is then not selected by the linker.
+    target_sources(test_invalid_ancestor_cache PRIVATE src/consensus/block_lifecycle.cpp)
+    target_compile_options(test_invalid_ancestor_cache PRIVATE
+      -fsanitize=thread -fno-omit-frame-pointer -g)
+    target_link_options(test_invalid_ancestor_cache PRIVATE -fsanitize=thread)
+  endif()
+endif()
+
 # #741: getchaintips must report every known tip (abandoned branches as
 # valid-fork, header-only / invalid tips), not only ActivateBestChain candidates.
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_chain_tips_snapshot.cpp)
@@ -13203,6 +13397,7 @@ set_tests_properties(RpcRegistryRestartCycle PROPERTIES
 # Dormant Auth resource profile: real serialization and stateless relay boundary.
 add_executable(test_shielded_resource_limits
   tests/consensus/test_shielded_resource_limits.cpp
+  tests/consensus/test_compact_activation.cpp
   src/p2p/structural_validator.cpp)
 target_link_libraries(test_shielded_resource_limits PRIVATE
   GTest::gtest_main dinero_core dinero_shielded)
@@ -13217,6 +13412,11 @@ if(DINERO_ENABLE_COMPACT_REGTEST)
   target_link_libraries(compact_package_builder PRIVATE
     dinero_shielded dinero_wallet wallet_test_deps jsoncpp_static sqlite3)
   target_include_directories(compact_package_builder PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+endif()
+
+# Retain the historical prototype corpus in its original regtest profile.
+# Production-v6 proof and history tests run in ordinary builds.
+if(DINERO_ENABLE_COMPACT_REGTEST)
   add_executable(test_compact_regtest_vectors tests/consensus/test_compact_regtest_vectors.cpp)
   target_link_libraries(test_compact_regtest_vectors PRIVATE
     GTest::gtest_main dinero_core dinero_shielded jsoncpp_static sqlite3)
@@ -13233,11 +13433,13 @@ if(DINERO_ENABLE_COMPACT_REGTEST)
   set_tests_properties(CompactRegtestFixedVectors PROPERTIES
     LABELS "compact-regtest;shielded;consensus;utreexo;mandatory"
     TIMEOUT ${DINERO_COMPACT_VECTOR_TEST_TIMEOUT})
-  add_test(NAME CompactRegtestVectorOracle COMMAND python3
-    ${CMAKE_SOURCE_DIR}/scripts/check_compact_regtest_vectors.py --self-test)
-  set_tests_properties(CompactRegtestVectorOracle PROPERTIES
-    LABELS "compact-regtest;shielded;serialization;mandatory" TIMEOUT 60)
+endif()
+add_test(NAME CompactRegtestVectorOracle COMMAND python3
+  ${CMAKE_SOURCE_DIR}/scripts/check_compact_regtest_vectors.py --self-test)
+set_tests_properties(CompactRegtestVectorOracle PROPERTIES
+  LABELS "compact-regtest;shielded;serialization;mandatory" TIMEOUT 60)
 
+if(DINERO_ENABLE_COMPACT_REGTEST)
   add_executable(capture_compact_regtest_maximum EXCLUDE_FROM_ALL
     tools/capture_compact_regtest_maximum.cpp tests/stubs/mempool_test_stubs.cpp)
   target_link_libraries(capture_compact_regtest_maximum PRIVATE
@@ -13301,3 +13503,17 @@ set_tests_properties(MiningTemplateExclusions PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "mining;consensus"
     TIMEOUT 180)
+
+# Deterministic clock and concurrent-delivery tests for bounded metadata repair.
+# The real consensus serializer verifies the queue's wire-size accounting.
+add_executable(test_replay_metadata_recovery
+    tests/daemon/test_replay_metadata_recovery.cpp)
+target_include_directories(test_replay_metadata_recovery PRIVATE ${CMAKE_SOURCE_DIR}/include)
+target_compile_features(test_replay_metadata_recovery PRIVATE cxx_std_20)
+target_link_libraries(test_replay_metadata_recovery PRIVATE
+  dinero_consensus Threads::Threads ${CMAKE_DL_LIBS})
+link_zstd_if_needed(test_replay_metadata_recovery)
+add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
+set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
+    LABELS "daemon;utreexo;recovery;regression"
+    TIMEOUT 30)

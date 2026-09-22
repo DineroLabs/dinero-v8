@@ -3,6 +3,7 @@
 // All other chainparams*.cpp files MUST be deleted to prevent ODR violations
 
 #include "consensus/chainparams.h"
+#include "consensus/shielded/compact.h"
 #include "consensus/chain_identity.h"
 #include "consensus/chainparamsseeds.h"  // Phase D: generated fixed-seed list
 #include "crypto/sha256.h"
@@ -516,11 +517,19 @@ std::string ConsensusChecksum(const ChainParams& params) {
        << "witness_commitment_height="
        << params.witness_commitment_enforcement_height << '\n';
 
+    // Preserve dormant network fingerprints. Once scheduled, compact v1 and
+    // its height must participate in drift detection on every network.
+    if (params.shielded_compact_activation_height != UINT32_MAX) {
+        ss << "compact-shielded-v1\n"
+           << "shielded_compact_activation_height="
+           << params.shielded_compact_activation_height << '\n';
+    }
+
     // Preserve all existing network fingerprints when the mode is disabled.
     // Include compact activation and maturity in the isolated profile identity.
     if (params.regtest_enforce_pow) {
         ss << "regtest-pow-profile-v1\n"
-           << "compact_height=" << params.shielded_compact_regtest_activation_height << '\n'
+           << "compact_height=" << params.shielded_compact_activation_height << '\n'
            << "coinbase_maturity=" << params.coinbase_maturity << '\n';
     }
     auto str = ss.str();
@@ -578,6 +587,11 @@ const ChainParams& ParamsImpl() {
 // `const ChainParams&` rather than reading the globals is what makes that
 // mistake impossible to reintroduce -- there is no global here to read.
 static void ValidateChainParams(const ChainParams& params) {
+    if (!consensus::shielded::CompactActivationConfigurationValid(params)) {
+        throw std::runtime_error(
+            "invalid chainparams: compact shielded activation must follow "
+            "the bound recipient-authority profile and its existing resets");
+    }
     // An activated covenant opcode is only meaningful inside an active BIP341
     // script path. Fail startup if a future chain edit would create a covenant
     // boundary before (or without) script-path activation.

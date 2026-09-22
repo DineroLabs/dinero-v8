@@ -35,7 +35,11 @@ jobs:
   linux-full-build-ctest:
     name: Linux x86_64 — full build + ctest
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # The broad suite and serial daemon lanes can exceed two hours together
+    # (run 35474007537 reached the final durability lane with no test failures).
+    # Keep individual CTest deadlines unchanged and allow the complete gate,
+    # including failure-evidence upload, to finish.
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -202,9 +206,9 @@ jobs:
         run: bash scripts/ci/check_openssl_version.sh build-tests 3.5.7
 
       # Builds its own isolated regtest datadirs; no seed data is required.
-      # Covers restart, historical proof relay and reorgs after checkpoint
-      # retention. Its integration label excludes it from the broad sweep.
-      - name: Run checkpoint retention daemon integration
+      # Covers retention restart/proofs/reorg and real daemon marker migration.
+      # Their integration labels exclude them from the broad sweep.
+      - name: Run storage daemon integrations
         id: checkpoint-retention
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -213,17 +217,25 @@ jobs:
             --output-on-failure \
             --no-tests=error \
             -V -j1 \
-            -R '^CheckpointRetentionDaemon$' \
+            -R '^(CheckpointRetentionDaemon|ShieldedMigrationDaemonMarker)$' \
             | tee build-tests/Testing/checkpoint-retention/ctest.log
+
+      - name: Run shield wallet notification-gap regressions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/shield-wallet-selection
+          ctest --test-dir build-tests --output-on-failure --no-tests=error -V -j1 \
+            --output-log build-tests/Testing/shield-wallet-selection/ctest.log \
+            -R '^ShieldWalletNotificationGap(ExplicitFee|AutoFee)$'
 
       # Upload immediately: later serial lanes can take an hour, and the job
       # log is unavailable until they finish. Only harness text logs belong in
       # this artifact; do not recursively copy databases, cookies or wallets.
-      - name: Collect checkpoint retention failure logs
+      - name: Collect storage daemon failure logs
         if: ${{ always() && steps.checkpoint-retention.outcome == 'failure' }}
         run: |
           dest=build-tests/Testing/checkpoint-retention
-          for root in /tmp/dinero_retention_daemon.*; do
+          for root in /tmp/dinero_retention_daemon.* /tmp/dinero_marker_daemon_*; do
             [ -d "$root" ] || continue
             name=$(basename "$root")
             mkdir -p "$dest/$name"
@@ -314,7 +326,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in PowEnforcedRegtest SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease CsnManualInvalidation ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
+          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -546,24 +558,34 @@ jobs:
           dest=build-tests/Testing/churn-gate-logs
           mkdir -p "$dest"
           found=0
-          for root in /tmp/dinero_restart_churn_gate_*; do
+          for root in /tmp/dinero_restart_churn_gate_* \
+                      /tmp/dinero_bridge_churn_* /tmp/dinero_csn_churn_*; do
             [ -d "$root" ] || continue
             found=1
             name=$(basename "$root")
             mkdir -p "$dest/$name"
-            # Harness-level logs, then every preserved node daemon.log.
-            for f in "$root"/run.log "$root"/*_soak.log \
+            # The CSN soak keeps cycle logs one directory down, while its
+            # failed nodes live in separate /tmp directories. Preserve both:
+            # the harness's final 40-line tail cannot diagnose the first stall.
+            # Only logs/receipts are copied, never wallets or database files.
+            for f in "$root"/*.log "$root"/csn/*.log "$root"/csn/summary.tsv \
                      "$root"/*/stress-failure-logs-*/*.log; do
               [ -f "$f" ] || continue
               rel=$(echo "${f#$root/}" | tr '/' '_')
               # last 20 MB only: enough for the failure tail, bounded artifact
-              tail -c 20971520 "$f" > "$dest/$name/$rel" 2>/dev/null || true
+              tail -c 20971520 "$f" > "$dest/$name/$rel"
             done
           done
           if [ "$found" = "0" ]; then
             echo "no churn-gate artifact roots present (gate did not run, or left none)"
           else
-            echo "collected:"; find "$dest" -type f -printf '  %s\t%p\n' | sort -rn | head -20
+            python3 - "$dest" <<'PY'
+          import pathlib, sys
+          files = sorted((p.stat().st_size, str(p)) for p in pathlib.Path(sys.argv[1]).rglob('*') if p.is_file())
+          print('collected:')
+          for size, path in reversed(files[-20:]):
+              print(f'  {size}\t{path}')
+          PY
           fi
 
       # The canonical-coin fixture retains /tmp data on failure, but a pointer
@@ -613,11 +635,14 @@ jobs:
         run: |
           dest=build-tests/Testing/csn-reorg-logs
           mkdir -p "$dest"
-          for root in /tmp/dinero_bridge_spend_reorg_* /tmp/dinero_csn_spend_reorg_*; do
+          for root in /tmp/dinero_bridge_spend_reorg_* /tmp/dinero_csn_spend_reorg_* \
+                      /tmp/dinero-csn-stored-proof-retry-* \
+                      /tmp/dinero-csn-replay-metadata-* /tmp/dinero-pow-enforced-*; do
             [ -d "$root" ] || continue
             name=$(basename "$root")
             mkdir -p "$dest/$name"
-            for f in "$root"/daemon.log "$root"/failure-*.json "$root"/failure-*.stderr; do
+            for f in "$root"/daemon.log "$root"/failure-*.json "$root"/failure-*.stderr \
+                     "$root"/bridge.log "$root"/full.log "$root"/csn.log "$root"/receipt.json; do
               [ -f "$f" ] || continue
               tail -c 20971520 "$f" > "$dest/$name/$(basename "$f")"
             done
@@ -686,6 +711,34 @@ jobs:
               done
             done
           done
+
+      - name: Preserve checkpoint acceptance evidence
+        if: always()
+        run: |
+          dest=build-tests/Testing/checkpoint-acceptance
+          mkdir -p "$dest"
+          for root in /tmp/dinero-checkpoint-fork-*; do
+            [ -d "$root" ] || continue
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            for log in "$root"/*.log; do
+              [ -f "$log" ] || continue
+              tail -c 2097152 "$log" > "$dest/$name/$(basename "$log")"
+            done
+            [ ! -f "$root/receipt.json" ] || cp "$root/receipt.json" "$dest/$name/"
+          done
+
+      - name: Check ancestry-cache concurrency with ThreadSanitizer
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          # Normal build and all normal tests above finish first. Rebuild only
+          # this focused target with its real cache implementation instrumented.
+          cmake -S . -B build-tests -DDINERO_ANCESTRY_CACHE_TSAN=ON
+          cmake --build build-tests --target test_invalid_ancestor_cache -j2
+          TSAN_OPTIONS=halt_on_error=1 setarch x86_64 -R \
+            ctest --test-dir build-tests --output-on-failure --no-tests=error \
+            -R '^InvalidAncestorCacheTest$' \
+            --output-log build-tests/Testing/ancestry-cache-tsan.log
 
       - name: Upload ctest logs
         if: always()

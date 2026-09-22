@@ -1,22 +1,22 @@
-#include "consensus/shielded/compact_regtest.h"
+#include "consensus/shielded/compact.h"
 #include "consensus/shielded/resource_limits.h"
 #include "consensus/shielded/shielded_circuit.h"
-#include "../../../contrib/benchmarks/compact_spartan_codec.h"
+#include "consensus/shielded/compact_spartan_codec.h"
 
 namespace dinero::consensus::shielded {
 namespace {
-const experimental::CompactSpartanCodec& SpendLayout() {
+const CompactSpartanCodec& SpendLayout() {
     // Only immutable dimensions and the circuit-structure hash are retained.
     // Public values are assignments, not coefficients, in this fixed profile.
     // ValidateShieldedBundle still verifies every proof against its actual
     // public inputs and current context; no acceptance verdict is cached.
-    static const experimental::CompactSpartanCodec codec(
+    static const CompactSpartanCodec codec(
         6, BuildSpendCircuit(SpendWitness{}, SpendPublicInputs{}, true, true));
     return codec;
 }
 
-const experimental::CompactSpartanCodec& OutputLayout() {
-    static const experimental::CompactSpartanCodec codec(
+const CompactSpartanCodec& OutputLayout() {
+    static const CompactSpartanCodec codec(
         4, BuildOutputCircuit(OutputWitness{}, OutputPublicInputs{}, true));
     return codec;
 }
@@ -41,10 +41,10 @@ bool Transform(const ShieldedBundle& source, ShieldedBundle& destination, bool p
     return true;
 }
 } // namespace
-bool PackCompactRegtestBundle(ShieldedBundle& bundle) {
+bool PackCompactShieldedBundle(ShieldedBundle& bundle) {
     return Transform(bundle, bundle, true);
 }
-bool ExpandCompactRegtestBundle(const ShieldedBundle& bundle, ShieldedBundle& expanded) {
+bool ExpandCompactShieldedBundle(const ShieldedBundle& bundle, ShieldedBundle& expanded) {
     return Transform(bundle, expanded, false);
 }
 } // namespace dinero::consensus::shielded

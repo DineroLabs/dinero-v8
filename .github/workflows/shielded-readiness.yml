@@ -10,7 +10,7 @@ on:
       - 'src/daemon/services/chainstate_service.cpp'
       - 'tests/consensus/test_shielded_*'
       - 'src/test/shielded_*'
-      - 'contrib/benchmarks/compact_spartan_codec.*'
+      - 'src/consensus/shielded/compact_spartan_codec.*'
       - 'tests/zk/test_compact_spartan.cpp'
       - 'fuzz/fuzz_compact_spartan.cpp'
       - 'fuzz/CMakeLists.txt'

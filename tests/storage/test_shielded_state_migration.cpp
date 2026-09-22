@@ -1,5 +1,5 @@
 // Only generated, disposable stores. Never a datadir migration launcher.
-#include "shielded_store_fixture.h"
+#include "shielded_migration_fixture.h"
 #include "storage/shielded_migration.h"
 #include "consensus/shielded/shielded_root.h"
 #include <cstring>
@@ -15,7 +15,6 @@ namespace fs = std::filesystem;
 using dinero::storage::MigrateShieldedStateCopy;
 constexpr dinero::storage::ShieldedMigrationLimits limits{32768, 1, 16384, 100};
 std::string executable;
-struct CanonicalTemp : TempDir { CanonicalTemp() { path = fs::canonical(path); } };
 
 namespace dinero::storage {
 ShieldedMigrationResult MigrateShieldedStateCopyForTesting(const fs::path&, const fs::path&,
@@ -78,40 +77,6 @@ std::map<std::string, std::string> PersistentFiles(const fs::path& path) {
     return files;
 }
 
-void ValidSeed(const fs::path& path, bool empty = false) {
-    Seed(path, false, std::nullopt);
-    ChainDB db; Setup(db.init(path) == Status::Ok, "open legacy fixture");
-    const auto token = ChainWriteToken::CreateForTesting();
-    sh::CommitmentTree tree; sh::Hash note{}; note[31] = 7; tree.Append(note);
-    sh::AnchorHistory anchors; anchors.RecordRoot(3, tree.Root());
-    std::vector<sh::NullifierEntry> entries;
-    if (empty) Setup(db.deleteAllShieldedNullifiers(token).ok(), "empty nullifiers");
-    else for (uint32_t h : {1, 3}) {
-        sh::NullifierEntry entry; entry.height = h; entry.nullifier.fill(h); entries.push_back(entry);
-    }
-    ChainDB::ShieldedTipMarker marker;
-    marker.height = 3; marker.block_hash.data[0] = 3; marker.tree_size = tree.Size();
-    marker.nullifier_count = entries.size();
-    const auto root = tree.Root();
-    marker.shielded_root = *sh::ComputeShieldedRootFromParts(
-        {root.begin(), root.end()}, tree.Size(), sh::ComputeNullifierAccumulator(entries), anchors.SerializeBytes());
-    Setup(db.setTip(token, marker.block_hash, 3, arith_uint256(1)) == Status::Ok, "tip");
-    Setup(db.putShieldedTipMarker(token, marker) == Status::Ok, "shielded marker");
-    ChainDB::ForestTipMarker forest; forest.height = 3; forest.block_hash = marker.block_hash;
-    // This marker checks identity only; forest reconstruction is a separate gate.
-    Setup(db.putForestTipMarker(token, forest) == Status::Ok, "forest marker");
-    const auto frontier = tree.SerializeFrontier(), history = anchors.SerializePersistenceBytes();
-    Setup(db.putShieldedState(token, ChainDB::ShieldedStateRecord::Frontier,
-        {frontier.begin(), frontier.end()}) == Status::Ok, "frontier");
-    Setup(db.putShieldedState(token, ChainDB::ShieldedStateRecord::AnchorHistory,
-        {history.begin(), history.end()}) == Status::Ok, "anchors");
-}
-
-void Clone(const fs::path& source, const fs::path& destination) {
-    const auto rows = Inspect(source); Raw target(destination, legacy);
-    for (const auto& [name, records] : rows)
-        for (const auto& [key, value] : records) target.put(name, key, value);
-}
 bool Selected(const std::string& key) {
     return (key.size() == 37 && key[0] == 'N') || key == "Mshielded_frontier" ||
         key == "Mshielded_anchor_history" || key == "Mshielded_anchor_history_migrated_v1";
@@ -167,9 +132,25 @@ void Refusal(const std::string& fault) {
         if (fault == "frontier") raw.put("utreexo", "Mshielded_frontier", "invalid");
         if (fault == "anchors") raw.put("utreexo", "Mshielded_anchor_history", "invalid");
         if (fault == "missing_frontier") Setup(raw.db->Delete({}, raw.cf("utreexo"), "Mshielded_frontier").ok(), "delete");
-        if (fault == "root" || fault == "count" || fault == "height") {
+        if (fault == "root" || fault == "count" || fault == "tree_size" || fault == "height") {
             auto bytes = raw.rows().at("meta").at("shielded_tip");
-            bytes[fault == "root" ? 36 : fault == "count" ? 76 : 0] ^= 1;
+            bytes[fault == "root" ? 36 : fault == "count" ? 76 : fault == "tree_size" ? 68 : 0] ^= 1;
+            raw.put("meta", "shielded_tip", bytes);
+        }
+        if (fault == "composite_root") {
+            sh::CommitmentTree tree; sh::Hash note{}; note[31] = 7; tree.Append(note);
+            sh::AnchorHistory anchors; anchors.RecordRoot(3, tree.Root());
+            std::vector<sh::NullifierEntry> entries;
+            for (uint32_t h : {1, 3}) {
+                sh::NullifierEntry entry; entry.height = h; entry.nullifier.fill(h); entries.push_back(entry);
+            }
+            const auto tree_root = tree.Root();
+            const auto composite = sh::ComputeShieldedRootFromParts(
+                {tree_root.begin(), tree_root.end()}, tree.Size(), sh::ComputeNullifierAccumulator(entries), anchors.SerializeBytes());
+            Setup(composite.has_value(), "composite root for negative control");
+            auto bytes = raw.rows().at("meta").at("shielded_tip");
+            Setup(std::memcmp(bytes.data() + 36, composite->data, 32) != 0, "roots must differ");
+            std::memcpy(bytes.data() + 36, composite->data, 32);
             raw.put("meta", "shielded_tip", bytes);
         }
         if (fault == "forest_tip") raw.put("meta", "forest_tip", std::string(68, '\0'));
@@ -296,7 +277,7 @@ int main(int argc, char** argv) {
     for (const std::string fault : {"append", "sync", "ack"})
         for (const std::string stage : {"after_create", "before_copy", "after_readback", "before_ready"})
             cases["io_" + fault + "_" + stage] = [=] { IOFailure(fault, stage); };
-    for (const std::string fault : {"short_nf", "long_nf", "nf_value", "duplicate_nf", "frontier", "trailing_frontier", "anchors", "missing_frontier", "root", "count", "height", "forest_tip", "copy_changed", "record_limit", "nullifier_limit", "zero_batch"}) cases[fault] = [=] { Refusal(fault); };
+    for (const std::string fault : {"short_nf", "long_nf", "nf_value", "duplicate_nf", "frontier", "trailing_frontier", "anchors", "missing_frontier", "root", "composite_root", "count", "tree_size", "height", "forest_tip", "copy_changed", "record_limit", "nullifier_limit", "zero_batch"}) cases[fault] = [=] { Refusal(fault); };
     for (const std::string fault : {"source_locked", "copy_locked", "same", "nested", "symlink", "hardlink"}) cases[fault] = [=] { Ownership(fault); };
     for (const std::string stage : {"after_prepare", "after_create", "after_copy", "after_readback", "after_retire", "after_verifying", "before_ready", "after_ready"}) cases[stage] = [=] { Interrupt(stage); };
     for (const std::string fault : {"conflict", "unknown", "unselected", "lost_both", "journal"}) cases[fault] = [=] { Interrupt("after_copy", fault); };

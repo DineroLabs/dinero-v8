@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <map>
 #include <vector>
 
 using dinero::BlockHeader;
@@ -901,6 +902,52 @@ int main() {
             return 1;
         }
         std::cout << "   ✅ durable body adopted; absent sibling retried" << std::endl;
+    }
+
+    {
+        std::cout << "\n6c. a stateless stored body cannot replace a missing proof receipt..." << std::endl;
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        BuildLinearHeaders(selector, 3, &hashes);
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_csn_proof_retry_" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "CSN proof retry storage must initialize")) return 1;
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetStatelessMode(true);
+        scheduler.SetLocalTipHeight(0);
+        scheduler.SetGetTipHeightCallback([] { return 0u; });
+        scheduler.SetGetBlockBodyPositionCallback(
+            [](const uint256&, uint32_t) -> std::optional<dinero::FilePosition> {
+                return dinero::FilePosition(1, 128, 256);
+            });
+        std::unordered_map<uint256, int> sends;
+        scheduler.SetSendGetDataCallback(
+            [&](const uint256& hash, uint32_t) { ++sends[hash]; });
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(sends[hashes[1]] == 1 && sends[hashes[2]] == 1 && sends[hashes[3]] == 1,
+                     "CSN must request proofs even when every raw block body is stored")) return 1;
+
+        // Receipt followed by an explicit proof retry: body bytes remain on disk,
+        // but no proof is owned by the validation worker now. Lost responses must
+        // remain retryable even for a non-frontier descendant of a reorg plan.
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[2])),
+                     "proof receipt setup must succeed")) return 1;
+        if (!Require(scheduler.ReRequestBlock(hashes[2]),
+                     "explicit proof retry must find the stored descendant")) return 1;
+        scheduler.Tick();
+        const int before_timeout = sends[hashes[2]];
+        scheduler.SetStaleRequestTimeoutSeconds(0);
+        scheduler.Tick();
+        if (!Require(sends[hashes[2]] == before_timeout + 1,
+                     "a lost descendant proof retry must not be suppressed by its earlier receipt/body")) return 1;
+        if (!Require(scheduler.IsBlockInFlight(hashes[2]) && !scheduler.HasReceivedBlock(hashes[2]),
+                     "a requested proof is in flight, not already received")) return 1;
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ CSN body presence does not suppress proof fetch or retry" << std::endl;
     }
 
     {
@@ -3169,6 +3216,170 @@ int main() {
         std::filesystem::remove_all(storage_dir);
         std::cout << "   ✅ genuine fork below tip still connects: attempts=" << connect_attempts << std::endl;
     }
+
+    {
+        std::cout << "\n22. a side-branch body the chainstate already indexed "
+                     "(ACCEPTED_NOT_ACTIVE) is offered once, the drain moves on to the "
+                     "next branch height, and the entry is promoted once the active chain "
+                     "carries it..." << std::endl;
+
+        // SJ mainnet 2026-09-21: the node sat on its own 11-block fork while the
+        // network was 550 blocks ahead. The drain offered the first main-branch
+        // body (113563) to the chainstate on EVERY tick; each offer was a full
+        // acceptance pass (~3.5 s under the block-ingress lock) that came back
+        // ACCEPTED_NOT_ACTIVE because that single block could not outweigh the
+        // local fork, and the drain never advanced to 113564+. Meanwhile the
+        // per-peer threads waiting on that lock left the bodies that would have
+        // let the branch win unread in their sockets.
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> hashes;
+        try {
+            BuildLinearHeaders(selector, 6, &hashes);
+        } catch (const std::exception& e) {
+            std::cerr << "   ❌ header build failed: " << e.what() << std::endl;
+            return 1;
+        }
+
+        const auto storage_dir = std::filesystem::temp_directory_path() /
+            ("dinero_scheduler_side_accepted_" +
+             std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::remove_all(storage_dir);
+        dinero::BlockStorage storage;
+        if (!Require(storage.init(storage_dir) == dinero::Status::Ok,
+                     "temporary block storage must initialize")) return 1;
+
+        dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+        scheduler.SetLocalTipHeight(0);
+
+        std::map<uint32_t, int> offers_by_height;
+        scheduler.SetConnectBlockCallback(
+            [&offers_by_height, &hashes](const Block& b, const std::string&) {
+                const uint256 h = b.GetHash();
+                for (uint32_t i = 0; i < hashes.size(); ++i) {
+                    if (hashes[i] == h) ++offers_by_height[i];
+                }
+                // The chainstate indexes the block on a side branch; the local
+                // fork still has more work, so it does not become active.
+                return dcs::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+            });
+
+        // Active chain: heights 1..3 carry DIFFERENT hashes than the queued
+        // branch (a genuine fork below tip); tip stays at 6 until the reorg.
+        bool reorged = false;
+        scheduler.SetGetBlockHashAtHeightCallback(
+            [&reorged, &hashes](uint32_t height, uint256& out_hash) -> bool {
+                if (height >= 1 && height <= 3) {
+                    out_hash = reorged ? hashes[height] : hashes[5];
+                    return true;
+                }
+                return false;
+            });
+
+        scheduler.OnHeadersProcessed();
+        for (uint32_t h = 1; h <= 3; ++h) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, hashes[h])),
+                         "branch body at height " + std::to_string(h) + " must be receivable")) {
+                storage.close();
+                std::filesystem::remove_all(storage_dir);
+                return 1;
+            }
+        }
+        scheduler.SetLocalTipHeight(6);
+
+        const int kTicks = 25;
+        for (int i = 0; i < kTicks; ++i) {
+            scheduler.Tick();
+        }
+
+        bool ok = true;
+        ok = Require(offers_by_height[1] == 1,
+                     "height 1 must be offered exactly once across " + std::to_string(kTicks) +
+                     " ticks, got " + std::to_string(offers_by_height[1])) && ok;
+        ok = Require(offers_by_height[2] == 1,
+                     "the drain must move on and offer height 2 once, got " +
+                     std::to_string(offers_by_height[2])) && ok;
+        ok = Require(offers_by_height[3] == 1,
+                     "the drain must move on and offer height 3 once, got " +
+                     std::to_string(offers_by_height[3])) && ok;
+        if (!ok) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        // The branch now outweighs the local fork and ActivateBestChain has
+        // switched to it: the active chain carries the queued hashes at 1..3.
+        // The drain must promote them without offering any body again.
+        reorged = true;
+        for (int i = 0; i < 5; ++i) {
+            scheduler.Tick();
+        }
+        ok = Require(offers_by_height[1] == 1 && offers_by_height[2] == 1 &&
+                         offers_by_height[3] == 1,
+                     "no body may be re-offered after the active chain adopted the branch") && ok;
+        if (!ok) {
+            storage.close();
+            std::filesystem::remove_all(storage_dir);
+            return 1;
+        }
+
+        storage.close();
+        std::filesystem::remove_all(storage_dir);
+        std::cout << "   ✅ side-accepted bodies offered once each: h1=" << offers_by_height[1]
+                  << " h2=" << offers_by_height[2] << " h3=" << offers_by_height[3] << std::endl;
+    }
+
+    {
+    std::cout << "\n23. a fork replacement must not inherit side acceptance from another hash...\n";
+    dcs::HeaderChainSelector selector;
+    std::vector<uint256> a, b;
+    BuildLinearHeaders(selector, 6, &a);
+    std::vector<uint256> active{a[0]};
+    for (uint32_t h = 1; h <= 6; ++h) {
+        active.push_back(CreateTestHeader(active.back(), 3'000'000 + h).GetHash());
+    }
+    const auto dir = std::filesystem::temp_directory_path() /
+        ("dinero_pr800_reseat_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    dinero::BlockStorage storage;
+    if (!Require(storage.init(dir) == dinero::Status::Ok, "real temporary block storage opens")) return 2;
+    dcs::BlockDownloadScheduler scheduler(&selector, &storage);
+    int offers_a = 0, offers_b = 0;
+    bool change_during_scan = false, changed = false;
+    scheduler.SetConnectBlockCallback([&](const Block& block, const std::string&) {
+        if (block.GetHash() == a[1]) ++offers_a;
+        if (!b.empty() && block.GetHash() == b[0]) ++offers_b;
+        return dcs::ConnectBlockResult::ACCEPTED_NOT_ACTIVE;
+    });
+    scheduler.SetGetBlockHashAtHeightCallback([&](uint32_t h, uint256& out) {
+        // This callback runs after ScanForMissingBlocks copies its best-header
+        // identity and releases the selector lock. Materialize a real, heavier
+        // branch here to reproduce a header arrival at that exact interleaving.
+        if (change_during_scan && !changed && h == 6) {
+            AppendForkHeaders(selector, a[0], 7, &b, 2'000'000);
+            changed = true;
+        }
+        if (h >= active.size()) return false;
+        out = active[h];  // active tip remains on its own coherent branch
+        return true;
+    });
+    scheduler.SetLocalTipHeight(0);
+    scheduler.OnHeadersProcessed();
+    if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, a[1])), "original body is received")) return 2;
+    scheduler.SetLocalTipHeight(6);
+    scheduler.Tick();
+    if (!Require(offers_a == 1, "original body is side-accepted exactly once")) return 2;
+    change_during_scan = true;
+    scheduler.OnHeadersProcessed();
+    if (!Require(changed, "heavier headers arrived during real scan")) return 2;
+    if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, b[0])), "replacement body is received")) return 2;
+    for (int i = 0; i < 5; ++i) scheduler.Tick();
+    const bool ok = Require(offers_b == 1,
+        "replacement hash must be offered once; actual offers=" + std::to_string(offers_b));
+    std::cout << "original offers=" << offers_a << " replacement offers=" << offers_b << '\n';
+    storage.close();
+    std::filesystem::remove_all(dir);
+    if (!ok) return 1;
+}
 
     return 0;
 }

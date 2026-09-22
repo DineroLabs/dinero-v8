@@ -1,4 +1,6 @@
 #include "consensus/shielded/binding_sig.h"
+#include "consensus/shielded/compact.h"
+#include "consensus/shielded/shielded_serialization.h"
 #include "consensus/shielded/pedersen_generators.h"
 #include "crypto/evp_secp256k1.h"
 #include "crypto/sha256.h"
@@ -39,9 +41,23 @@ struct Sha256Builder {
 }  // namespace
 
 Hash ComputeShieldedTxSighash(const ::dinero::Transaction& tx) {
-    constexpr const char kDst[] = "DIN/v7/shielded/tx-sighash/v1";
+    ShieldedBundle bundle;
+    const bool compact = tx.version == Transaction::TX_VERSION_SHIELDED_V2 &&
+        DeserializeShieldedBundle(tx.shielded_bundle_bytes, &bundle) == BundleDecodeError::Ok &&
+        HasCompactProofs(bundle);
+    return ComputeShieldedTxSighash(tx, compact ? ShieldedProofEncoding::CompactV1
+                                              : ShieldedProofEncoding::Full);
+}
+
+Hash ComputeShieldedTxSighash(const ::dinero::Transaction& tx,
+                            ShieldedProofEncoding encoding) {
+    constexpr const char kFull[] = "DIN/v7/shielded/tx-sighash/v1";
+    constexpr const char kCompact[] = "DIN/v7/shielded/tx-sighash/compact-v1";
     Sha256Builder b;
-    b.Add(kDst, sizeof(kDst) - 1);
+    if (encoding == ShieldedProofEncoding::CompactV1)
+        b.Add(kCompact, sizeof(kCompact) - 1);
+    else
+        b.Add(kFull, sizeof(kFull) - 1);
 
     // version
     unsigned char v[4];

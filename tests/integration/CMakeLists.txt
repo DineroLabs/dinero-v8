@@ -2465,6 +2465,13 @@ set_tests_properties(CsnManualInvalidation PROPERTIES
     LABELS "integration;csn;utreexo;reorg;mandatory"
     TIMEOUT 300 RUN_SERIAL TRUE)
 
+add_test(NAME CsnStoredProofRetry
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_stored_proof_retry.py)
+set_tests_properties(CsnStoredProofRetry PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 420 RUN_SERIAL TRUE)
+
 # Timing upgrade qualification is always registered and executed in the serial lane.
 add_test(NAME SixtySecondActivation
     COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_sixty_second_activation.py)
@@ -2486,3 +2493,106 @@ set_tests_properties(PowEnforcedRegtest PROPERTIES
     ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
     LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
     TIMEOUT 600 RUN_SERIAL TRUE)
+
+# Combined migration + compact-proof + 60-second release qualification.
+# Owned separately from the migration engine itself (see
+# docs/design/combined-migration-release-qualification-harness.md): calls
+# the reviewed, unmodified MigrateShieldedDatadirCopy engine through the
+# migrate_shielded_datadir CLI driver (tools/migrate_shielded_datadir.cpp)
+# against a real regtest-produced datadir, then continues mining/reorging/
+# restarting the migrated candidate — closing the "actual migrated-daemon
+# compact-proof plus 60-second restart/reorg/mining" gate explicitly named
+# as remaining in docs/design/shielded-state-migration-engine.md and
+# docs/design/shielded-migration-eligibility.md.
+#
+# Corrected 2026-09-19 after review found the first (bash) version would
+# request compact activation against a compact-disabled build, which
+# src/daemon/main.cpp explicitly rejects at startup. This test now REQUIRES
+# DINERO_ENABLE_COMPACT_REGTEST — it does not silently degrade to ordinary
+# shield/unshield coverage when compact isn't compiled in (the Python script
+# itself also probes and raises a distinct, clear error if invoked against
+# a build that lacks it, as defense in depth). Registered only in the same
+# dedicated compact-enabled build as CompactTimingLifecycle123/124/125 above,
+# never in an ordinary build's job.
+if(UNIX AND NOT IOS AND DINERO_ENABLE_COMPACT_REGTEST
+   AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.py)
+    add_test(NAME CombinedMigrationReleaseQualification
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_combined_migration_release_qualification.py)
+    set_tests_properties(CombinedMigrationReleaseQualification PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;MIGRATE_TOOL=$<TARGET_FILE:migrate_shielded_datadir>"
+        LABELS "integration;compact-regtest;shielded;migration;consensus;utreexo;restart;reorg;qualification;mandatory"
+        TIMEOUT 2400 RUN_SERIAL TRUE)
+    message(STATUS "  ✓ CombinedMigrationReleaseQualification registered")
+endif()
+
+add_test(NAME BlockAcceptorFeeLifecycle
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_block_acceptor_fees.py)
+set_tests_properties(BlockAcceptorFeeLifecycle PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;mining;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+
+add_test(NAME CsnCpfpDisconnect
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_cpfp_disconnect.py)
+set_tests_properties(CsnCpfpDisconnect PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+
+# Offline mutation is deliberately confined to an explicitly marked regtest
+# fixture. This executable is never installed or linked into the daemon.
+if(UNIX AND NOT IOS)
+    add_executable(csn_replay_metadata_fixture
+        ${CMAKE_SOURCE_DIR}/tests/tools/csn_replay_metadata_fixture.cpp
+        ${CMAKE_SOURCE_DIR}/src/daemon/datadir_guard.cpp
+        ${CMAKE_SOURCE_DIR}/src/common/logger.cpp)
+    target_link_libraries(csn_replay_metadata_fixture PRIVATE
+        dinero_chainstate dinero_shielded dinero_crypto RocksDB::rocksdb OpenSSL::Crypto)
+    target_include_directories(csn_replay_metadata_fixture PRIVATE
+        ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+    add_test(NAME CsnReplayMetadataRecovery
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_replay_metadata_recovery.py)
+    set_tests_properties(CsnReplayMetadataRecovery PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_REPLAY_RECOVERY_SOURCE=peer"
+        LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+        TIMEOUT 600 RUN_SERIAL TRUE)
+    add_test(NAME CsnReplayMetadataLocalUndo
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_csn_replay_metadata_recovery.py)
+    set_tests_properties(CsnReplayMetadataLocalUndo PROPERTIES
+        ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;CSN_REPLAY_FIXTURE=$<TARGET_FILE:csn_replay_metadata_fixture>;CSN_REPLAY_RECOVERY_SOURCE=undo"
+        LABELS "integration;consensus;csn;utreexo;restart;reorg;mandatory"
+        TIMEOUT 600 RUN_SERIAL TRUE)
+endif()
+
+if(TARGET test_shielded_migration_cohort)
+  add_test(NAME ShieldedMigrationDaemonMarker
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_shielded_migration_daemon_marker.py)
+  set_tests_properties(ShieldedMigrationDaemonMarker PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>;MIGRATION_TEST_DRIVER=$<TARGET_FILE:test_shielded_migration_cohort>"
+    LABELS "integration;storage;shielded;restart"
+    TIMEOUT 300 RUN_SERIAL TRUE)
+endif()
+
+foreach(mode IN ITEMS ExplicitFee AutoFee)
+  set(shield_args)
+  if(mode STREQUAL "AutoFee")
+    set(shield_args --auto-fee)
+  endif()
+  add_test(NAME ShieldWalletNotificationGap${mode}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/test_shield_wallet_notification_gap.py ${shield_args})
+  set_tests_properties(ShieldWalletNotificationGap${mode} PROPERTIES
+    ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+    LABELS "integration;wallet;shielded;utreexo"
+    TIMEOUT 600 RUN_SERIAL TRUE)
+endforeach()
+
+# Ordinary builds carry compact v1 validation even without CLI test overrides.
+if(UNIX AND NOT IOS AND NOT DINERO_ENABLE_COMPACT_REGTEST AND TARGET dinerod)
+  add_test(NAME CompactDefaultActivation
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/helpers/compact_regtest_gates.py
+      $<TARGET_FILE:dinerod> $<TARGET_FILE:dinerod>
+      ${CMAKE_SOURCE_DIR}/tests/vectors/compact_v6_v1/unshield.tx.hex
+      --ordinary-only)
+  set_tests_properties(CompactDefaultActivation PROPERTIES
+    LABELS "integration;e2e;shielded;consensus;mandatory" TIMEOUT 120 RUN_SERIAL TRUE)
+endif()

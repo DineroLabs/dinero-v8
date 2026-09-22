@@ -2,6 +2,8 @@
 #include "consensus/block_index.h"
 #include "common/logger.h"
 #include <chrono>
+#include <unordered_set>
+#include <vector>
 
 namespace dinero {
 
@@ -9,6 +11,25 @@ namespace dinero {
 std::unordered_map<uint256, InvalidBlockEntry> g_invalid_blocks;
 std::unordered_map<uint256, InFlightBlock> g_inflight_blocks;
 std::unordered_map<uint256, uint256> g_invalid_descendants;
+
+// Negative-result cache for HasInvalidAncestor(): hashes whose entire ancestry
+// has been walked and found free of BLOCK_FAILED_VALID. Cleared by
+// InvalidateAncestryCache() whenever any index entry gains a failure flag.
+// Without this the walk is O(chain height) per call, and GetBestCandidate()
+// runs it for every candidate on every ActivateBestChain pass: a node that
+// accumulated thousands of same-height sibling tips (a pool re-submitting a
+// stale job) spent ~1.3 s per pass at height 114k, saturating the block
+// ingress lock and starving its peer sockets.
+// All cache operations use the existing recursive block-index mutex. Candidate
+// selection already owns it before calling HasInvalidAncestor; reusing it
+// avoids introducing a second lock with an inverse acquisition order.
+static std::unordered_set<uint256> g_clean_ancestry;
+uint64_t g_invalid_ancestor_walk_steps = 0;
+
+void InvalidateAncestryCache() {
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
+    g_clean_ancestry.clear();
+}
 
 /**
  * Mark block as invalid and propagate to all descendants
@@ -18,6 +39,7 @@ std::unordered_map<uint256, uint256> g_invalid_descendants;
  */
 void MarkBlockInvalid(CBlockIndex* pindex, BlockRejectReason reason, const std::string& message) {
     if (!pindex) return;
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
 
     // Add to invalid block cache
     g_invalid_blocks.emplace(pindex->GetBlockHash(),
@@ -25,6 +47,7 @@ void MarkBlockInvalid(CBlockIndex* pindex, BlockRejectReason reason, const std::
 
     // Set failure flags
     pindex->status |= BLOCK_FAILED_VALID;
+    InvalidateAncestryCache();
 
     g_logger.log(LogLevel::WARNING, "Block marked invalid: " + message);
 
@@ -40,6 +63,7 @@ void MarkBlockInvalid(CBlockIndex* pindex, BlockRejectReason reason, const std::
  */
 void PropagateInvalidToDescendants(CBlockIndex* pindex) {
     if (!pindex) return;
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
 
     for (CBlockIndex* child : pindex->children) {
         if (!child) continue;
@@ -62,6 +86,7 @@ void PropagateInvalidToDescendants(CBlockIndex* pindex) {
  * Check if block is directly invalid
  */
 bool IsBlockInvalid(const uint256& block_hash) {
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
     // Check invalid block cache first (fast path)
     if (g_invalid_blocks.count(block_hash)) {
         return true;
@@ -81,6 +106,10 @@ bool IsBlockInvalid(const uint256& block_hash) {
  */
 bool HasInvalidAncestor(const CBlockIndex* pindex) {
     if (!pindex) return false;
+    // Hold through lookup, the ancestry walk and cache publication. Locking
+    // individual unordered_set operations would allow an invalidation between
+    // the walk and insertion to publish a stale clean result afterwards.
+    std::lock_guard<std::recursive_mutex> lock(g_block_index_mutex);
 
     // Check BLOCK_FAILED_CHILD flag (fast path)
     if (pindex->status & BLOCK_FAILED_CHILD) {
@@ -92,15 +121,42 @@ bool HasInvalidAncestor(const CBlockIndex* pindex) {
         return true;
     }
 
-    // Walk chain backward to find invalid ancestor
+    // Walk chain backward to find invalid ancestor. Stop at the first ancestor
+    // whose own ancestry is already known clean; everything walked below that
+    // point is then clean too and is recorded, so repeated calls over
+    // siblings/descendants cost O(new blocks), not O(chain height).
+    //
+    // A walk may only be recorded as clean when it PROVED the whole ancestry:
+    // it ended at genesis (height 0, no parent) or at an entry already proven
+    // clean. A null pprev on a higher block means the parent has not arrived
+    // yet (orphan-queued); the missing parent can later link this branch below
+    // an already-invalid block, so such a walk proves nothing and must not be
+    // cached (PR #800 review, orphan_cache_repro).
+    std::vector<const CBlockIndex*> walked;
+    bool ancestry_complete = false;
     const CBlockIndex* current = pindex->pprev;
     while (current) {
+        ++g_invalid_ancestor_walk_steps;
         if (current->status & BLOCK_FAILED_VALID) {
             // Cache this result
             g_invalid_descendants[pindex->GetBlockHash()] = current->GetBlockHash();
             return true;
         }
+        if (g_clean_ancestry.count(current->GetBlockHash())) {
+            ancestry_complete = true;
+            break;
+        }
+        walked.push_back(current);
+        if (!current->pprev) {
+            ancestry_complete = (current->height == 0);
+            break;
+        }
         current = current->pprev;
+    }
+    if (ancestry_complete) {
+        for (const CBlockIndex* clean : walked) {
+            g_clean_ancestry.insert(clean->GetBlockHash());
+        }
     }
 
     return false;

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <unordered_set>
 #include <algorithm>
@@ -210,6 +211,9 @@ extern BlockCandidates g_candidates;
 
 // Block index management
 extern std::unordered_map<uint256, std::unique_ptr<CBlockIndex>> g_block_index;
+// Inner lock for index/candidate operations and ancestry caches. Acquire only
+// after any chainstate activation lock; never enter chainstate from under it.
+extern std::recursive_mutex g_block_index_mutex;
 
 // Orphan pool for headers/blocks with missing parents
 extern std::unordered_map<uint256, std::vector<CBlockIndex*>> g_orphan_pool;

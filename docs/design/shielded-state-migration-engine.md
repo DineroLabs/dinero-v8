@@ -11,7 +11,11 @@ The engine takes two existing, disjoint ChainDB directories: a preserved
 original and a candidate containing identical logical records. It requires the
 supported nine-family schema-4 original, canonical persisted shielded data,
 consistent chain/forest/shielded marker height and hash, and a recomputed
-shielded root/count. It rejects malformed nullifier keys or values, duplicate
+commitment-tree root, tree size and nullifier count. `meta/shielded_tip` stores
+`CurrentShieldedStateSnapshot`'s tree root, **not** the composite consensus
+`ComputeShieldedRoot`. The unchanged marker does not authenticate the nullifier
+or anchor contents; the complete inventory digest and byte-for-byte relocation
+checks preserve those records. It rejects malformed nullifier keys or values, duplicate
 nullifiers across heights, and absent or invalid required state. Unknown records
 outside the selected domain are retained and compared, not inferred disposable.
 
@@ -89,10 +93,31 @@ at copying/retirement/completion transitions, then resume in a fresh process.
 The injected Env is available only in the qualification build; the public engine
 cannot select it. Process exits and injected errors are not a power-loss model.
 
+`ShieldedMigrationDaemonMarker` runs in Tests' explicit serial storage-daemon
+step. A real ordinary regtest daemon creates the legacy source, then the stopped
+copy migrates and starts through `LoadSeparatedShieldedState`, connects another
+block and restarts with the same state hash. Corrupt marker root, tree-size,
+nullifier-count and height copies must refuse at that READY startup check. This
+minimal empty-shielded reproduction guards against synthetic fixtures encoding
+the same mistaken composite-root assumption as the reader. Nonempty shielded
+activity and combined compact/60-second qualification remain separate gates.
+
+## Outer datadir qualification layer
+
+The [companion wrapper](shielded-migration-cohort.md) now holds the native
+daemon locks and binds frozen external chain-file inventories into migration
+resumption. It is also noninstalled. It preserves the distinction between
+ChainDB READY and a qualified complete datadir; semantic external-state and
+release eligibility checks below remain outstanding. The
+[external eligibility extension](shielded-migration-eligibility.md) now checks
+SQLite lifecycle/provenance and protected-base ancestry before writable open;
+it also adds generated migrated-store forest/proof qualification.
+
 ## Remaining gates before an operator tool or release
 
-- Encompassing datadir ownership and a verified frozen cohort: external SQLite,
-  snapshot/lifecycle metadata, block/rev files, caches and recovery barriers.
+- Full frozen-cohort qualification beyond the implemented SQLite and ancestry
+  checks: historical commitment/reconstruction, block/rev consistency and
+  configured inputs outside the companion wrapper's inventory.
 - Network/genesis binding, unfinished promotion/import/reindex/recovery refusal,
   protected-base discovery and Utreexo reconstruction/proof equivalence against
   the original. Matching forest-tip identity alone does not prove these.

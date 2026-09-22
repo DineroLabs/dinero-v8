@@ -17,7 +17,13 @@ on:
       - 'tests/consensus/test_compact_regtest_vectors.cpp'
       - 'tests/consensus/test_shielded_resource_limits.cpp'
       - 'tests/vectors/compact_regtest_v1/**'
+      - 'tests/vectors/compact_v6_v1/**'
+      - 'src/test/shielded_validation_tests.cpp'
+      - 'src/wallet/shielded_wallet_ops.cpp'
+      - 'include/wallet/shielded_wallet_ops.h'
+      - 'tests/consensus/test_compact_activation.cpp'
       - 'scripts/check_compact_regtest_vectors.py'
+      - 'tests/integration/helpers/compact_regtest_oracle.py'
       - 'scripts/generate_shielded_protocol_vectors.py'
       - 'third_party/secp256k1-zkp'
       - 'third_party/secp256k1-zkp/**'
@@ -37,7 +43,13 @@ on:
       - 'tests/consensus/test_compact_regtest_vectors.cpp'
       - 'tests/consensus/test_shielded_resource_limits.cpp'
       - 'tests/vectors/compact_regtest_v1/**'
+      - 'tests/vectors/compact_v6_v1/**'
+      - 'src/test/shielded_validation_tests.cpp'
+      - 'src/wallet/shielded_wallet_ops.cpp'
+      - 'include/wallet/shielded_wallet_ops.h'
+      - 'tests/consensus/test_compact_activation.cpp'
       - 'scripts/check_compact_regtest_vectors.py'
+      - 'tests/integration/helpers/compact_regtest_oracle.py'
       - 'scripts/generate_shielded_protocol_vectors.py'
       - 'third_party/secp256k1-zkp'
       - 'third_party/secp256k1-zkp/**'
@@ -70,7 +82,7 @@ jobs:
           mkdir -p evidence
           git rev-parse HEAD > evidence/commit.txt
           uname -m > evidence/architecture.txt
-          sha256sum tests/vectors/compact_regtest_v1/* > evidence/fixture-sha256.txt
+          sha256sum tests/vectors/compact_regtest_v1/* tests/vectors/compact_v6_v1/* > evidence/fixture-sha256.txt
       - name: Configure experimental and default inventories
         run: |
           cmake -S . -B build-compact-disabled -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -85,17 +97,18 @@ jobs:
           build-compact-regtest .github/workflows/compact-regtest.yml
           .github/workflows/compact-regtest-vectors.yml
           .github/workflows/compact-package-boundaries.yml
+          .github/workflows/combined-migration-qualification.yml
           --only-absent-from build-compact-disabled
           --baseline scripts/ci/unexecuted_tests_baseline_compact_regtest.txt
       - name: Build fixed-proof consumers
         run: >-
           cmake --build build-compact-regtest --parallel "$(nproc)"
-          --target test_compact_regtest_vectors test_shielded_resource_limits
+          --target test_compact_regtest_vectors test_shielded_resource_limits test_shielded_validation
       - name: Verify saved proofs, independent literals and resource boundaries
         run: |
           set -o pipefail
           ctest --test-dir build-compact-regtest --no-tests=error --output-on-failure \
-            -R '^(CompactRegtestFixedVectors|CompactRegtestVectorOracle|ShieldedResourceLimits)$' \
+            -R '^(CompactRegtestFixedVectors|CompactRegtestVectorOracle|CompactProductionV6Vectors|CompactProductionV6Oracle|ShieldedResourceLimits)$' \
             --output-junit "$PWD/evidence/ctest.xml" | tee evidence/ctest.log
       - name: Retain qualification evidence
         if: always()

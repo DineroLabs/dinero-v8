@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include "consensus/block_undo.h"
+#include "consensus/block_reward.h"
 #include "consensus/utreexo_accumulator.h"  // v0.14.0.4: Utreexo enforcement
 #include "consensus/ibd_mode.h"              // Phase 5: Stateless IBD support
 #include "consensus/validation_mode.h"       // Phase 8: Stateless validation mode
@@ -303,7 +304,7 @@ public:
     // ABC-CSN reorg replay: recompute `pending_shielded_deltas` for an
     // already-stored block EXACTLY as the forward STATELESS per-tx loop in
     // ConnectBlockInternal does: walk non-coinbase txs in block order; each
-    // input consumes one entry of `block.utreexo->spent_outputs` at a single
+    // input consumes one entry of the selected spent-output source at a single
     // GLOBAL index (never reset per tx), summing `spent_output.value` into the
     // tx's total_input_value; `total_output_value = SumOutputs(tx)`; fee via
     // ComputeValidatedTransactionFee with fee_input_utxos built from the same
@@ -313,14 +314,18 @@ public:
     // is bit-identical to forward validation by construction.
     //
     // Does NOT mutate any validator state, and skips script/signature
-    // validation (the block was already fully validated when first stored);
-    // it does NOT skip any delta-relevant computation.
+    // validation; this computes shielded deltas, not full block validity.
+    // Storage alone is not proof that every consensus check already ran.
     //
-    // `fallback_spent_outputs` is consulted ONLY when `block.utreexo` is
-    // absent (CSN replay records can carry the spend metadata when the stored
-    // block does not). A block with no shielded txs returns true with empty
-    // deltas without requiring spend metadata (legacy hash-only replay
-    // records must not brick transparent-only reorgs). A shielded-bearing
+    // A nonnull `fallback_spent_outputs` explicitly selects the caller's
+    // validated metadata, overriding `block.utreexo` even when present. This
+    // lets repaired CSN replay records replace missing or stale embedded
+    // metadata. Without it, use `block.utreexo->spent_outputs`.
+    // A block with no shielded txs returns true with empty
+    // deltas without requiring spend metadata for THIS computation. The
+    // separate reward gate still requires exact metadata for every input;
+    // legacy hash-only spend replay must recover it rather than guess fees.
+    // A shielded-bearing
     // block with neither source, or whose spent_outputs underrun the block's
     // inputs, returns false with a distinct error.
     bool ComputeShieldedDeltasForStoredBlock(

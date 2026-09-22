@@ -21,6 +21,7 @@
 #include "consensus/merkle_root.h"  // Phase 11a: Canonical merkle computation
 #include "consensus/block_index.h"  // For FindBlockIndex, CBlockIndex::GetMedianTimePast (Reorg MTP fix)
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
+#include "consensus/fork_acceptance_policy.h"  // #803: fork-prior-to-checkpoint, overlay depth cap
 #include "consensus/header_chain.h"  // Fork-aware MTP: HeaderIndexEntry::GetMedianTimePast
 #include "metrics/metrics_registry.h"
 #include "primitives/block.h"
@@ -265,6 +266,26 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 
         // 5.5. Validate checkpoint (prevent reorg past checkpoint blocks)
         std::cout << "[ACCEPTOR-DEBUG] Step 5.5: Validating checkpoint..." << std::endl;
+        // Reject historical forks only once a checkpoint's exact hash is
+        // established on the active chain. Before that, a competing branch
+        // may be the checkpoint's own ancestry and must remain syncable.
+        // The enclosing activation guard keeps this ancestry stable.
+        if (!isMainChainExtension) {
+            auto* checkpoint_ctx = DaemonContext::instance();
+            auto checkpoint_cs = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                checkpoint_ctx ? checkpoint_ctx->chainstate : nullptr);
+            const auto violated = consensus::ForkPriorToEstablishedCheckpoint(
+                static_cast<uint32_t>(newHeight), block_hash,
+                dinero::Params().vCheckpoints,
+                checkpoint_cs ? checkpoint_cs->GetActiveTip() : nullptr);
+            if (violated) {
+                error = "bad-fork-prior-to-checkpoint: height " + std::to_string(newHeight) +
+                        " conflicts with established checkpoint " + std::to_string(*violated);
+                dinero::metrics::MetricsRegistry::IncrementBlocksRejected("fork-prior-to-checkpoint");
+                return BlockAcceptResult::Rejected(BlockRejectCode::CHECKPOINT_VIOLATION,
+                                                  error, block_hash, newHeight);
+            }
+        }
         if (!ValidateCheckpoint(block, newHeight, error)) {
             std::cout << "[ACCEPTOR-DEBUG] REJECTED: Checkpoint violation - " << error << std::endl;
             dinero::metrics::MetricsRegistry::IncrementBlocksRejected("checkpoint-violation");
@@ -440,7 +461,23 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                 const uint32_t tip_h =
                                     dinero::storage::GetChainHeight(chain_db_for_utreexo);
                                 bool overlay_ok = true;
-                                for (uint32_t h = tip_h;
+                                // #803: the overlay costs O(tip - parent) undo
+                                // reads under the ingress lock. It is a
+                                // consistency pre-check only (ConnectTip
+                                // validates the branch per block if it ever
+                                // wins), so skip it for deep forks.
+                                if (!consensus::ForkAwareOverlayWithinDepth(
+                                        tip_h, static_cast<uint32_t>(parentHeight))) {
+                                    LOG_ERROR("⚠️  fork-aware overlay: skipping utreexo root "
+                                              "pre-check for side-chain block at height " +
+                                              std::to_string(newHeight) + " — fork depth " +
+                                              std::to_string(tip_h - static_cast<uint32_t>(parentHeight)) +
+                                              " exceeds " +
+                                              std::to_string(consensus::kMaxForkAwareOverlayDepth) +
+                                              " (validated at ConnectTip if the branch wins)");
+                                    overlay_ok = false;
+                                }
+                                for (uint32_t h = overlay_ok ? tip_h : static_cast<uint32_t>(parentHeight);
                                      h > static_cast<uint32_t>(parentHeight);
                                      --h) {
                                     dinero::uint256 mainchain_hash;
@@ -1491,40 +1528,12 @@ bool BlockAcceptor::ValidateContextual(const ParsedBlock& block, uint64_t height
         return false;
     }
 
-    // Compute total fee budget from non-coinbase transactions.
-    // For CT/ring txs (HasExplicitFee): use the committed explicit_fee field.
-    // For transparent txs: exact fee requires the coin view (not available here);
-    //   use a conservative per-tx budget as an upper bound.
-    uint64_t total_explicit_fees = 0;
-    size_t transparent_tx_count = 0;
-
-    for (size_t i = 1; i < block.transactions.size(); i++) {
-        const std::string& txHex = block.transactions[i];
-        if (txHex.empty()) continue;
-
-        std::vector<uint8_t> txBytes = HexToBytes(txHex);
-        size_t offset = 0;
-        dinero::Transaction tx;
-        if (ParseTransaction(txBytes.data(), txBytes.size(), offset, tx)) {
-            if (tx.HasExplicitFee()) {
-                total_explicit_fees += tx.GetExplicitFee();
-            } else {
-                transparent_tx_count++;
-            }
-        }
-    }
-
-    // Budget for transparent txs: 10 una/vbyte * 100KB max tx size = 1M una per tx.
-    // This is a loose upper bound — exact accounting requires the coin view.
-    const uint64_t TRANSPARENT_FEE_PER_TX = 1000000;
-    uint64_t total_fee_budget = total_explicit_fees + transparent_tx_count * TRANSPARENT_FEE_PER_TX;
-
-    // Validate coinbase (BIP34 height + subsidy check with computed fee budget)
-    if (!ValidateCoinbase(block.transactions[0], height, total_fee_budget, error)) {
-        return false;
-    }
-
-    return true;
+    // This admission phase has no parent-chain coin view. Transaction size or
+    // fee-rate policy cannot bound a transparent input/output value difference.
+    // Exact subsidy + fees (summing every coinbase output) is enforced by
+    // BlockValidator against parent coins and by the CSN proof/replay reward
+    // gates before a candidate changes the forest or stump.
+    return ValidateCoinbase(block.transactions[0], height, error);
 }
 
 bool BlockAcceptor::ValidateCheckpoint(const ParsedBlock& block, uint64_t height, std::string& error) {
@@ -1551,7 +1560,7 @@ bool BlockAcceptor::ValidateCheckpoint(const ParsedBlock& block, uint64_t height
     return true;
 }
 
-bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t expectedHeight, uint64_t total_fee_budget, std::string& error) {
+bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t expectedHeight, std::string& error) {
     if (coinbaseTx.empty()) {
         error = "Empty coinbase transaction";
         return false;
@@ -1632,7 +1641,7 @@ bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t exp
     LOG_INFO("✅ BIP34 height validation passed: height=" + std::to_string(expectedHeight));
 
     // =========================================================================
-    // CRITICAL CONSENSUS: Validate coinbase subsidy amount
+    // Check output framing; reward accounting needs the parent coin view.
     // =========================================================================
     // Skip to outputs section: coinbase input script + sequence (4 bytes)
     offset += scriptLen + 4;
@@ -1650,36 +1659,9 @@ bool BlockAcceptor::ValidateCoinbase(const std::string& coinbaseTx, uint64_t exp
         return false;
     }
 
-    uint64_t coinbase_value = 0;
-    for (int i = 0; i < 8; i++) {
-        coinbase_value |= static_cast<uint64_t>(txBytes[offset + i]) << (i * 8);
-    }
-
-    // Calculate expected subsidy for this height
-    uint64_t expected_subsidy = 0;
-    if (expectedHeight == 0) {
-        // Genesis: 100 DIN (unspendable)
-        expected_subsidy = dinero::ConsensusSubsidy::GENESIS_UNSPENDABLE_UNA;
-    } else {
-        // PoW blocks (height 1+): Standard subsidy with halving + tail emission
-        expected_subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(static_cast<uint32_t>(expectedHeight), dinero::Params().sixty_second_activation_height).GetUna();
-    }
-
-    // Validate: coinbase output must not exceed subsidy + block fees.
-    // total_fee_budget is computed by ValidateContextual:
-    //   - CT/ring txs: uses explicit_fee field (exact)
-    //   - Transparent txs: conservative per-tx estimate (exact requires coin view)
-    if (coinbase_value > expected_subsidy + total_fee_budget) {
-        error = "Coinbase output (" + std::to_string(coinbase_value) + " una) exceeds maximum subsidy + fees (" +
-                std::to_string(expected_subsidy + total_fee_budget) + " una) at height " + std::to_string(expectedHeight);
-        LOG_ERROR("❌ " + error);
-        return false;
-    }
-
-    LOG_INFO("✅ Coinbase subsidy validation passed: " + std::to_string(coinbase_value) +
-             " una (subsidy=" + std::to_string(expected_subsidy) +
-             " + fees=" + std::to_string(total_fee_budget) + " una)");
-
+    // Do not guess a fee allowance here. The normal connect and CSN proof/replay
+    // gates check ALL outputs against subsidy + exact fees, using parent coins
+    // or Utreexo-authenticated spent-output metadata respectively.
     return true;
 }
 
@@ -3184,21 +3166,7 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
         // Step 5: Apply undo (atomic batch)
         rocksdb::WriteBatch batch;
 
-        // 5a. Delete all outputs created by this block using ChainDB
-        LOG_INFO("🗑️ Deleting " + std::to_string(undo.created.size()) + " outputs created by disconnected block...");
-        for (const auto& created : undo.created) {
-            // Remove UTXO from ChainDB
-            // Phase M.0: created.txid is already uint256 (no conversion needed)
-            auto status = chain_db->deleteCoin(token, created.txid, created.vout, &batch);
-            if (status != Status::Ok) {
-                LOG_ERROR("  ⚠️ Failed to delete UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
-                // This could happen if the UTXO was already spent in a later block (which shouldn't happen for tip invalidation)
-            } else {
-                LOG_INFO("  ✅ Deleted UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
-            }
-        }
-
-        // 5b. Restore all spent UTXOs using ChainDB
+        // 5a. Restore all spent UTXOs using ChainDB
         LOG_INFO("♻️ Restoring " + std::to_string(undo.spent.size()) + " UTXOs spent by disconnected block...");
         for (const auto& spent : undo.spent) {
             // Build Coin struct to restore
@@ -3228,6 +3196,21 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
             LOG_INFO("  ✅ Restored UTXO: " + spent.prev_txid.GetHex().substr(0, 16) + "...:" +
                      std::to_string(spent.prev_vout) + " (value=" + std::to_string(spent.value) +
                      ", height=" + std::to_string(spent.height) + ")");
+        }
+
+        // 5b. Delete exact created outpoints last: same-block spent outputs
+        // occur in both undo lists and must not survive the disconnect.
+        LOG_INFO("🗑️ Deleting " + std::to_string(undo.created.size()) + " outputs created by disconnected block...");
+        for (const auto& created : undo.created) {
+            // Remove UTXO from ChainDB
+            // Phase M.0: created.txid is already uint256 (no conversion needed)
+            auto status = chain_db->deleteCoin(token, created.txid, created.vout, &batch);
+            if (status != Status::Ok) {
+                LOG_ERROR("  ⚠️ Failed to delete UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
+                // This could happen if the UTXO was already spent in a later block (which shouldn't happen for tip invalidation)
+            } else {
+                LOG_INFO("  ✅ Deleted UTXO: " + created.txid.GetHex().substr(0, 16) + "...:" + std::to_string(created.vout));
+            }
         }
 
         // 5c. Get parent block header and chainwork
@@ -3279,7 +3262,9 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
                     // Mark invalidated tip as failed so candidate selection does not
                     // immediately re-activate it on the next ActivateBestChain pass.
                     if (auto* invalid_idx = chainstate->FindBlockIndex(blockHashU256)) {
+                        std::lock_guard<std::recursive_mutex> index_lock(dinero::g_block_index_mutex);
                         invalid_idx->status |= dinero::BLOCK_FAILED_VALID;
+                        dinero::InvalidateAncestryCache();
                         chainstate->RemoveCandidate(invalid_idx);
                     }
 

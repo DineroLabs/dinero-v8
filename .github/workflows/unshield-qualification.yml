@@ -15,7 +15,7 @@ on:
       - 'tests/integration/test_csn_shielded_reorg_invertibility.sh'
       - 'tests/integration/CMakeLists.txt'
       - 'tests/CMakeLists.txt'
-      - 'contrib/benchmarks/compact_spartan_codec.*'
+      - 'src/consensus/shielded/compact_spartan_codec.*'
       - 'tests/zk/test_compact_spartan.cpp'
 
 permissions:

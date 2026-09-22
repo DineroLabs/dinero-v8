@@ -1,3 +1,4 @@
+#include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
 #ifdef __APPLE__
 #include <TargetConditionals.h>
@@ -162,33 +163,7 @@ void LogShutdownPhase(const char* phase,
     std::cout << std::endl;
 }
 
-void AppendU32LE(std::string& out, uint32_t value) {
-    out.push_back(static_cast<char>(value & 0xFF));
-    out.push_back(static_cast<char>((value >> 8) & 0xFF));
-    out.push_back(static_cast<char>((value >> 16) & 0xFF));
-    out.push_back(static_cast<char>((value >> 24) & 0xFF));
-}
-
-std::string SerializeCsnReplayData(
-    const std::vector<consensus::UtreexoHash>& targets,
-    const std::vector<consensus::SpentOutputData>& spent_outputs,
-    uint8_t format_version
-) {
-    std::string blob;
-    blob.append("CSN2", 4);
-    AppendU32LE(blob, static_cast<uint32_t>(targets.size()));
-    for (const auto& target : targets) {
-        blob.append(reinterpret_cast<const char*>(target.data()), target.size());
-    }
-
-    AppendU32LE(blob, static_cast<uint32_t>(spent_outputs.size()));
-    blob.push_back(static_cast<char>(format_version));
-    for (const auto& spent : spent_outputs) {
-        const auto bytes = spent.serialize(format_version);
-        blob.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-    }
-    return blob;
-}
+using consensus::SerializeCsnReplayData;
 
 std::string SanitizeHeaderStoreReason(const std::string& reason) {
     std::string sanitized;
@@ -4532,24 +4507,27 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     return false;
                                 }
                                 auto* cdb = chainstate_service->GetChainDB();
-                                ChainWriteToken token;
-                                rocksdb::WriteBatch batch;
-                                const Status replay_status = cdb
-                                    ? cdb->putCSNSpendTargets(
-                                          token, pending.proof_msg.block_hash,
-                                          replay_blob, &batch)
-                                    : Status::Internal;
-                                if (replay_status == Status::Ok) {
-                                    batch.Put(
-                                        MakeUtreexoDeltaUndoKey(
-                                            pending.proof_msg.block_hash),
-                                        delta_blob);
-                                }
-                                if (replay_status != Status::Ok ||
-                                    cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
-                                    g_logger.error("[CSN-ReorgPlan] Failed to persist replay and delta data at height " +
-                                                   std::to_string(h));
-                                    return false;
+                                {
+                                    auto replay_records_lock = chainstate_service->LockCsnReplayRecords();
+                                    ChainWriteToken token;
+                                    rocksdb::WriteBatch batch;
+                                    const Status replay_status = cdb
+                                        ? cdb->putCSNSpendTargets(
+                                              token, pending.proof_msg.block_hash,
+                                              replay_blob, &batch)
+                                        : Status::Internal;
+                                    if (replay_status == Status::Ok) {
+                                        batch.Put(
+                                            MakeUtreexoDeltaUndoKey(
+                                                pending.proof_msg.block_hash),
+                                            delta_blob);
+                                    }
+                                    if (replay_status != Status::Ok ||
+                                        cdb->writeBatch(token, std::move(batch), true) != Status::Ok) {
+                                        g_logger.error("[CSN-ReorgPlan] Failed to persist replay and delta data at height " +
+                                                       std::to_string(h));
+                                        return false;
+                                    }
                                 }
 
                                 CBlockIndex* staged = chainstate_service->AddBlockIndex(
@@ -4673,6 +4651,49 @@ bool DaemonApp::Init(int argc, char** argv) {
                             pending_blocks->size(), std::memory_order_relaxed);
                         lk.unlock();
 
+                        // Proof validation below mutates the canonical forest, before
+                        // BlockAcceptor gets to reject persistent invalidity. A stored
+                        // body can be refetched after invalidate/restart, so check that
+                        // decision here too. Serialize the check, forest mutation and
+                        // block publication with invalidation/activation; a dispatcher
+                        // check alone races an RPC rollback while this item is queued.
+                        // buffer_mutex is released before acquiring this lock, and the
+                        // activation lock is released before touching the queue again.
+                        auto activation_lock =
+                            chainstate_service->AcquireBlockIngressActivationLock();
+                        auto* proof_db = chainstate_service->GetChainDB();
+                        if (!proof_db) {
+                            g_logger.error("[CSN] Cannot check canonical proof eligibility without ChainDB");
+                            return false;
+                        }
+                        const auto metadata = proof_db->getHeaderMetadata(pending.proof_msg.block_hash);
+                        if (metadata.status() != Status::Ok && metadata.status() != Status::NotFound) {
+                            g_logger.error("[CSN] Cannot read canonical proof block status at height " +
+                                           std::to_string(h));
+                            return false;
+                        }
+                        const auto* known = chainstate_service->FindBlockIndex(pending.proof_msg.block_hash);
+                        const uint32_t failure_flags =
+                            ((metadata.status() == Status::Ok ? metadata.value().status_flags : 0u) |
+                             (known ? known->status : 0u)) & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD);
+                        if (failure_flags != 0) {
+                            g_logger.info("[CSN] Skipping canonical proof for invalidated block " +
+                                          pending.proof_msg.block_hash.GetHex());
+                            return true;
+                        }
+                        const auto* proof_tip = chainstate_service->GetActiveTip();
+                        if (!proof_tip || proof_tip->height < 0 ||
+                            static_cast<uint64_t>(proof_tip->height) + 1 != h ||
+                            !chainstate_service->ExtendsActiveTipLocked(pending.block.header.prev_block_hash)) {
+                            g_logger.info("[CSN] Discarding stale forward proof at height " +
+                                          std::to_string(h) + "; active parent changed");
+                            activation_lock.unlock();
+                            if (block_download_for_csn) {
+                                block_download_for_csn->ReRequestBlock(pending.proof_msg.block_hash);
+                            }
+                            return true;
+                        }
+
                         uint64_t peer_id = GetPeerID(pending.peer_addr);
                             const bool use_transition_proof = csn_should_use_transition_proof(pending);
                             const auto& replay_targets =
@@ -4741,6 +4762,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     return false;
                                 }
                                 {
+                                    auto replay_records_lock = chainstate_service->LockCsnReplayRecords();
                                     ChainWriteToken replay_token;
                                     rocksdb::WriteBatch replay_batch;
                                     const Status prepare_status = cdb->putCSNSpendTargets(
@@ -4814,9 +4836,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     }
                                 }
 
-                                csn_request_frontier_headers(pending.peer_addr, h);
                             }
+                        activation_lock.unlock();
                         if (valid) {
+                            csn_request_frontier_headers(pending.peer_addr, h);
                             {
                                 std::lock_guard<std::mutex> rl(*buffer_mutex);
                                 if (*next_validate_height == h) {
@@ -5073,6 +5096,9 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                         
                         
+                        if (chainstate_service->QueueReplayMetadataResponse(
+                                peer_addr, block.GetHash(), block_height, proof_data, root_after)) return;
+
                         // --- Thread-safe buffer + drain under lock ---
                         std::lock_guard<std::mutex> lock(*buffer_mutex);
 

@@ -36,11 +36,11 @@ add_custom_target(fuzz_shielded_quick
         -max_len=200000 -timeout=5 -max_total_time=60 -print_final_stats=1
     DEPENDS fuzz_shielded_surfaces)
 
-# Experimental compact-proof decoder; both raw and valid-shape mutation modes.
+# Compact v1 proof decoder; both raw and valid-shape mutation modes.
 # Only this target's codec/harness are instrumented by the fuzz flags above.
 add_executable(fuzz_compact_spartan
     fuzz_compact_spartan.cpp
-    ${CMAKE_SOURCE_DIR}/contrib/benchmarks/compact_spartan_codec.cpp)
+    ${CMAKE_SOURCE_DIR}/src/consensus/shielded/compact_spartan_codec.cpp)
 target_include_directories(fuzz_compact_spartan PRIVATE
     ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(fuzz_compact_spartan PRIVATE dinero_zk dinero_crypto)

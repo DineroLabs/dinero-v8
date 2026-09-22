@@ -2,7 +2,7 @@
 // No proving takes place here. The production verifier checks all fixed proofs.
 #include <gtest/gtest.h>
 #include "consensus/shielded/binding_sig.h"
-#include "consensus/shielded/compact_regtest.h"
+#include "consensus/shielded/compact.h"
 #include "consensus/shielded/resource_limits.h"
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/shielded_serialization.h"
@@ -115,7 +115,7 @@ TEST(CompactFixedVectors, IdentityExpansionSigningAndUtreexoMatchIndependentLite
         EXPECT_EQ(Hex(sh::ComputeBindingSighash(bundle, sh::ComputeShieldedTxSighash(tx))),
                   expected["binding_sighash"].asString());
         sh::ShieldedBundle expanded;
-        ASSERT_TRUE(sh::ExpandCompactRegtestBundle(bundle, expanded));
+        ASSERT_TRUE(sh::ExpandCompactShieldedBundle(bundle, expanded));
         const auto expanded_bytes = sh::SerializeShieldedBundle(expanded);
         EXPECT_EQ(expanded_bytes, ReadHex(fixture["expanded_bundle_file"].asString()));
         EXPECT_EQ(Digest(expanded_bytes), expected["expanded_bundle_sha256"].asString());
@@ -123,7 +123,7 @@ TEST(CompactFixedVectors, IdentityExpansionSigningAndUtreexoMatchIndependentLite
         EXPECT_EQ(expanded_tx.GetTxid().AsUint256().GetHex(), expected["expanded_view_txid"].asString());
         EXPECT_NE(expanded_tx.GetTxid(), tx.GetTxid());
         auto roundtrip = expanded;
-        ASSERT_TRUE(sh::PackCompactRegtestBundle(roundtrip));
+        ASSERT_TRUE(sh::PackCompactShieldedBundle(roundtrip));
         EXPECT_EQ(sh::SerializeShieldedBundle(roundtrip), tx.shielded_bundle_bytes);
         size_t receipt = 0;
         auto check_proofs = [&](const auto& compact, const auto& ordinary) {
@@ -207,7 +207,7 @@ TEST(CompactFixedVectors, WarmProofsRejectChangedBytesInputsAndProfiles) {
         if (name != "shield" && name != "unshield") continue;
         SCOPED_TRACE(name);
         sh::ShieldedBundle expanded;
-        ASSERT_TRUE(sh::ExpandCompactRegtestBundle(Bundle(Decode(fixture)), expanded));
+        ASSERT_TRUE(sh::ExpandCompactShieldedBundle(Bundle(Decode(fixture)), expanded));
         if (!expanded.outputs.empty()) {
             const auto& out = expanded.outputs[0];
             const sh::OutputPublicInputs pub{out.commitment, out.cv};
@@ -243,4 +243,5 @@ TEST(CompactFixedVectors, WarmProofsRejectChangedBytesInputsAndProfiles) {
         }
     }
 }
+
 } // namespace

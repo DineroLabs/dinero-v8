@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "common/status.h"
 #include "primitives/uint256.h"
@@ -42,6 +44,28 @@ namespace storage {
 // reason.
 using BlockHashAtHeightResolver =
     std::function<bool(uint32_t height, uint256& out_hash)>;
+
+// Read-only input to the same restore algorithm. Offline qualification can
+// supply already-owned read-only storage without opening a writable ChainDB.
+// This interface grants no open, mutation, reset or retention permissions.
+class ForestRestoreView {
+public:
+    virtual ~ForestRestoreView() = default;
+    virtual StatusOr<std::pair<int, std::vector<uint8_t>>>
+        getLatestUtreexoCheckpointAtOrBelow(int height) const = 0;
+    virtual Status getRaw(const std::string& key, std::string& value) const = 0;
+    virtual StatusOr<uint256> getBlockHashByHeight(int height) const = 0;
+    virtual StatusOr<uint256> getHeaderCommitment(const uint256& hash) const = 0;
+};
+
+Status ReplayUtreexoDeltaRange(const ForestRestoreView& db,
+                               consensus::UtreexoForest& forest,
+                               uint32_t from_exclusive, uint32_t to_inclusive,
+                               std::string& error,
+                               const BlockHashAtHeightResolver& resolve_hash = {});
+Status RestoreHistoricalForest(const ForestRestoreView& db, uint32_t target_height,
+                               consensus::UtreexoForest& out, std::string& error,
+                               const BlockHashAtHeightResolver& resolve_hash = {});
 
 // Replays the UD sidecars for heights (from_exclusive, to_inclusive]
 // onto `forest`, in ascending order, mirroring live validation exactly:

@@ -1,5 +1,5 @@
 // Native codec tests use genuine proofs and the unchanged Spartan verifier.
-#include "../../contrib/benchmarks/compact_spartan_codec.h"
+#include "consensus/shielded/compact_spartan_codec.h"
 #include "zk/zkvm/r1cs_spartan.h"
 #include <algorithm>
 #include <array>
@@ -11,7 +11,7 @@
 #include <stdexcept>
 
 using namespace dinero::zk::zkvm;
-using dinero::experimental::CompactSpartanCodec;
+using dinero::consensus::shielded::CompactSpartanCodec;
 namespace {
 class CompactSpartan : public ::testing::Test {
   protected:

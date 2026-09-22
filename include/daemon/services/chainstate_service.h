@@ -1,4 +1,6 @@
 #pragma once
+#include "consensus/csn_replay_data.h"
+#include "daemon/replay_metadata_recovery.h"
 #include "daemon/iservice.h"
 #include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
@@ -425,7 +427,12 @@ public:
     bool DebugClearUndoFlagForBlock(const uint256& hash, std::string& error);
 
     // CSN reorg support: Wire StatelessNode for forest checkpoint restore
-    void setStatelessNode(std::shared_ptr<network::StatelessNode> sn) { stateless_node_ = std::move(sn); }
+    void setStatelessNode(std::shared_ptr<network::StatelessNode> sn) {
+        stateless_node_ = std::move(sn);
+        // Init precedes P2P wiring. Revisit stored candidates once replay is
+        // available, including equal-height branches with greater work.
+        replay_metadata_retry_activation_.store(true);
+    }
     // Pool accounting support: Wire PoolManager for confirmation/orphan updates
     void setPoolManager(std::shared_ptr<pool::PoolManager> manager) { pool_manager_ = std::move(manager); }
 
@@ -841,6 +848,20 @@ public:
     void RecordHeaderAnnouncements(const std::string& peer_addr,
                                    const std::vector<BlockHeader>& headers);
 
+    // Separate historical-proof repair transport: does not touch the normal
+    // block scheduler or advance the live forest on the receive thread.
+    bool QueueReplayMetadataResponse(const std::string& peer, const uint256& hash,
+        uint32_t height, const consensus::BlockUtreexoData& proof,
+        const consensus::UtreexoHash& root_after);
+    void PumpReplayMetadataRecovery();
+
+    // Serialize sidecar publication with repair's read/compare/write. If both
+    // locks are needed, acquire activation_mutex_ first; release this lock
+    // before entering block-index or chain-activation operations.
+    std::unique_lock<std::mutex> LockCsnReplayRecords() {
+        return std::unique_lock<std::mutex>(csn_replay_records_mutex_);
+    }
+
     /**
      * Handle NOTFOUND response from a peer.
      * Clears only the matching block in-flight requests assigned to that peer.
@@ -1116,8 +1137,8 @@ private:
     // apply (mirroring ConnectBlockInternal); pre_reset_shielded_epoch is filled
     // by ApplyBlockShieldedSection when height == the epoch-reset height.
     // `fallback_spent_outputs` is forwarded to ComputeShieldedDeltasForStoredBlock
-    // and consulted ONLY when block.utreexo is absent (CSN replay records carry
-    // the spend metadata for hash-only stored blocks).
+    // as the already-validated replay metadata, taking precedence over an
+    // older embedded payload that may have no spent-output metadata.
     bool ApplyStatelessReplayShielded(const Block& block, uint32_t height,
                                       consensus::BlockUndo& undo_out, bool& applied_out,
                                       std::string& error,
@@ -1703,6 +1724,24 @@ private:
                                          bool parent_expected,
                                          bool synced);
     bool ShouldRequestParentNow(const uint256& parent_hash);
+    ReplayMetadataRecoveryQueue replay_metadata_recovery_;
+    // Accessed only under activation_mutex_; bounded with the transport queue.
+    std::map<uint256, std::pair<std::string, ReplayMetadataRecoveryQueue::TimePoint>>
+        replay_metadata_local_attempts_;
+    std::atomic<bool> replay_metadata_retry_activation_{false};
+    bool EnsureCsnReplayMetadata(const CBlockIndex* index,
+        const Block& block, const std::string& original_record,
+        consensus::CsnReplayData& replay);
+    bool RestoreReplayRepairParent(const CBlockIndex* index,
+        consensus::UtreexoForest& scratch, std::string& error);
+    bool VerifyAndPersistReplayMetadata(const CBlockIndex* index,
+        const Block& block, const std::string& original_record,
+        const consensus::BlockUtreexoData& proof,
+        const consensus::UtreexoHash& root_after, bool require_batch_proof,
+        std::string& error);
+
+    std::mutex csn_replay_records_mutex_;
+
 };
 
 } // namespace dinero
