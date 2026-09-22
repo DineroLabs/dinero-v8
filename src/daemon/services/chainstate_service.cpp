@@ -9203,6 +9203,33 @@ void ChainstateService::ActivateBestChain() {
     }
     std::reverse(connect_path.begin(), connect_path.end()); // Connect in forward order
 
+    // #806: a forward extension (nothing to disconnect) must not walk into a body
+    // gap either. A header-only ancestor can carry BLOCK_VALID_CHAIN, which lets the
+    // candidate pass eligibility; the reorg-side guard below only runs when a branch
+    // is being disconnected, so a forward sync that received block N+k before N..N+k-1
+    // tried to read a body it never had, failed ConnectTip, and entered the
+    // REORG ABORT backoff ladder. Connect the contiguous prefix of bodies that ARE
+    // present and defer the rest: the scheduler is already fetching the missing
+    // bodies and the candidate stays queued for the next pass.
+    if (disconnect_path.empty()) {
+        const size_t available = dinero::ContiguousBodyPrefix(connect_path);
+        if (available < connect_path.size()) {
+            const CBlockIndex* gap = connect_path[available];
+            if (logger_) {
+                logger_->debug("[ActivateBestChain] Deferring candidate height=" +
+                               std::to_string(best_candidate->height) + ": body gap at height " +
+                               std::to_string(gap->height) + " (header-only); connecting " +
+                               std::to_string(available) + " available block(s) first");
+            }
+            connect_path.resize(available);
+            if (connect_path.empty()) {
+                std::cout << "⏸️ [ActivateBestChain] Deferring: first missing body at height " << gap->height << std::endl;
+                return;   // nothing connectable yet; no abort, no backoff
+            }
+            best_candidate = connect_path.back();
+        }
+    }
+
     // Never move the canonical tip until the complete replacement branch is
     // locally available. BLOCK_VALID_CHAIN is not proof that a side-branch
     // block was active (or even has a body), so the connected-base shortcut
