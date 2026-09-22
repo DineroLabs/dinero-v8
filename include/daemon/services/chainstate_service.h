@@ -1116,6 +1116,9 @@ private:
     // Storage-layout startup regression exercises the actual loader without
     // booting network/wallet services. No public runtime mutation API is added.
     friend struct ShieldedStateStartupTestAccess;
+    // Exercises production activation/candidate retry bookkeeping without a
+    // running P2P stack. No alternate activation implementation is used.
+    friend struct ActivationRetryTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};

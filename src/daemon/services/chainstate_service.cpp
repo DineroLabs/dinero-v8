@@ -8876,6 +8876,10 @@ void ChainstateService::ActivateBestChain() {
     }
     // Phase 41: Get best candidate from BlockIndex graph
     CBlockIndex* best_candidate = GetBestCandidate();
+    // Activation may stop at the snapshot base or an available body prefix.
+    // Retry eligibility belongs to the candidate selected from the queue, not
+    // that temporary target (which might not itself be queued).
+    CBlockIndex* const queued_candidate = best_candidate;
 
     std::cout << "🔍 [ActivateBestChain] best_candidate=" << (best_candidate ? "EXISTS" : "NULL") << std::endl;
     if (best_candidate) {
@@ -9833,7 +9837,7 @@ void ChainstateService::ActivateBestChain() {
             // later activation tick retries it without a hot loop.
             if (best_candidate) {
                 const auto delay = activation_retries_.RecordFailure(
-                    best_candidate->hash, std::chrono::steady_clock::now());
+                    queued_candidate->hash, std::chrono::steady_clock::now());
                 if (logger_) logger_->warning(
                     "[ActivateBestChain] REORG ABORT: preserving candidate after disconnect failure; retry in " +
                     std::to_string(delay.count()) + "ms");
@@ -10021,11 +10025,11 @@ void ChainstateService::ActivateBestChain() {
             // network's best-work branch until the body was announced again.
             if (best_candidate) {
                 if (consensus_invalid && !missing_utxo) {
-                    RemoveCandidate(best_candidate);
-                    activation_retries_.Clear(best_candidate->hash);
+                    RemoveCandidate(queued_candidate);
+                    activation_retries_.Clear(queued_candidate->hash);
                 } else {
                     const auto delay = activation_retries_.RecordFailure(
-                        best_candidate->hash, std::chrono::steady_clock::now());
+                        queued_candidate->hash, std::chrono::steady_clock::now());
                     if (logger_) logger_->warning(
                         "[ActivateBestChain] REORG ABORT: preserving candidate after operational connect failure; retry in " +
                         std::to_string(delay.count()) + "ms");
@@ -10090,7 +10094,7 @@ void ChainstateService::ActivateBestChain() {
 
     // Update active tip (already done by ConnectTip, but ensure consistency)
     PublishActiveTipLocked(best_candidate, TipPublishReason::kSelfHealRealign);
-    activation_retries_.Clear(best_candidate->hash);
+    activation_retries_.Clear(queued_candidate->hash);
 
     // Read-only observability, recorded only once the reorg has actually
     // COMPLETED.

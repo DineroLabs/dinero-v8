@@ -12034,6 +12034,28 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reorg_candidate_eligibility.c
 endif()
 
 # #806: forward-sync body-gap deferral (connect the available prefix, never abort into a gap).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_forward_sync_activation_retry.cpp)
+  add_executable(test_forward_sync_activation_retry
+    tests/daemon/test_forward_sync_activation_retry.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/daemon_test_stubs.cpp
+    src/daemon/config.cpp
+  )
+  target_link_libraries(test_forward_sync_activation_retry PRIVATE
+    dinero_core dinero_chainstate dinero_consensus dinero_crypto RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_forward_sync_activation_retry)
+  if(APPLE)
+    target_link_libraries(test_forward_sync_activation_retry PRIVATE
+      "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_forward_sync_activation_retry PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  add_test(NAME ForwardSyncActivationRetry COMMAND test_forward_sync_activation_retry)
+  set_tests_properties(ForwardSyncActivationRetry PROPERTIES
+    LABELS "daemon;consensus;regression;mandatory" TIMEOUT 30)
+endif()
+
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_forward_sync_body_gap.cpp)
   add_executable(test_forward_sync_body_gap
     tests/consensus/test_forward_sync_body_gap.cpp
