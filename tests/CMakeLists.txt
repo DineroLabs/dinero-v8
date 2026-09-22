@@ -2681,6 +2681,32 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   endif()
   add_test(NAME ShieldedCvBinding COMMAND test_shielded_cv_binding)
 
+  # SPIKE (docs/superpowers/specs/2026-09-22-shielded-v2-design.md §7) — throwaway
+  # benchmark harness, deliberately NOT registered with add_test.
+  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/spike/shielded_v2_bundle_bench.cpp)
+    add_executable(spike_shielded_v2_bench
+      tests/spike/shielded_v2_bundle_bench.cpp
+      tests/stubs/mempool_test_stubs.cpp
+    )
+    add_dependencies(spike_shielded_v2_bench dinero_shielded)
+    target_link_libraries(spike_shielded_v2_bench PRIVATE
+      dinero_shielded
+      dinero_wallet
+      wallet_test_deps
+      dinero_zk
+      sqlite3
+    )
+    target_include_directories(spike_shielded_v2_bench BEFORE PRIVATE
+      ${CMAKE_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/src
+      ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+    )
+    target_compile_definitions(spike_shielded_v2_bench PRIVATE BUILD_TYPE_STR="${CMAKE_BUILD_TYPE}")
+    if(APPLE)
+      target_link_libraries(spike_shielded_v2_bench PRIVATE "-framework Security")
+    endif()
+  endif()
+
   # Spartan proof-system soundness regression (standalone require_zero_error).
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/zk/test_spartan_soundness.cpp)
     add_executable(test_spartan_soundness
