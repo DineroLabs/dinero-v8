@@ -21,6 +21,13 @@
 #include <algorithm>
 #include <cctype>
 #include <unordered_set>
+#include <mutex>
+#include <set>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -35,8 +42,9 @@
 // every subsequent Open() fails with "lock hold by current process" — and
 // removing the LOCK *file* doesn't clear the in-memory set.
 //
-// This does NOT exclude two owners within the app process. Mobile maintenance
-// ownership remains a separate prerequisite; do not infer it from this Env.
+// This Env does not exclude owners. ProcessDirectoryOwner below independently
+// excludes simultaneous ChainDB owners, including during failed opening/close.
+// Ownership across stop -> external maintenance remains a separate prerequisite.
 // ═══════════════════════════════════════════════════════════════════════════════
 #if defined(__APPLE__) && TARGET_OS_IOS
 namespace {
@@ -181,14 +189,67 @@ Status ChainDB::init(const std::filesystem::path& dir) {
 }
 
 namespace {
+// iOS deliberately has no RocksDB file lock. Reserve the actual directory's
+// identity before any engine inspection, independently of the selected Env.
+// The descriptor pins the inode until the DB and its Env lock have closed;
+// aliases (including renamed paths) cannot create a second ChainDB owner.
+// This is in-process exclusion, not a cross-process lock or permission to reset
+// files after close. Windows retains its native RocksDB file-lock behavior.
+class ProcessDirectoryOwner {
+public:
+    static std::unique_ptr<ProcessDirectoryOwner> Acquire(const std::filesystem::path& dir) {
+        auto owner = std::make_unique<ProcessDirectoryOwner>();
+#ifndef _WIN32
+        owner->fd_ = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (owner->fd_ < 0) return {};
+        struct stat identity{};
+        if (::fstat(owner->fd_, &identity) != 0 || !S_ISDIR(identity.st_mode)) return {};
+        owner->identity_ = {identity.st_dev, identity.st_ino};
+        // Every lease keeps the registry alive through its own destruction,
+        // including a static ChainDB destroyed during process shutdown.
+        static auto registry = std::make_shared<Registry>();
+        owner->registry_ = registry;
+        std::lock_guard<std::mutex> lock(registry->mutex);
+        owner->registered_ = registry->directories.insert(owner->identity_).second;
+        if (!owner->registered_) return {};
+#endif
+        return owner;
+    }
+    ~ProcessDirectoryOwner() {
+#ifndef _WIN32
+        if (registered_) {
+            std::lock_guard<std::mutex> lock(registry_->mutex);
+            registry_->directories.erase(identity_);
+        }
+        if (fd_ >= 0) ::close(fd_);
+#endif
+    }
+    ProcessDirectoryOwner() = default;
+    ProcessDirectoryOwner(const ProcessDirectoryOwner&) = delete;
+    ProcessDirectoryOwner& operator=(const ProcessDirectoryOwner&) = delete;
+private:
+#ifndef _WIN32
+    using Identity = std::pair<dev_t, ino_t>;
+    struct Registry {
+        std::mutex mutex;
+        std::set<Identity> directories;
+    };
+    std::shared_ptr<Registry> registry_;
+    Identity identity_{};
+    int fd_ = -1;
+    bool registered_ = false;
+#endif
+};
+
 // Keep the real RocksDB LOCK continuously from read-only inspection until DB
 // destruction. Writable Open borrows it; its UnlockFile does not release our
 // ownership. This avoids a check/open race without inventing a second lock file.
-// The target Env's locking guarantees still apply (iOS currently uses NoLockEnv).
+// Process ownership outlives UnlockFile even when the target Env has no lock.
 class CheckedOpenEnv final : public rocksdb::EnvWrapper {
 public:
-    CheckedOpenEnv(rocksdb::Env* base, std::string path, rocksdb::FileLock* lock)
-        : EnvWrapper(base), path_(std::move(path)), lock_(lock) {}
+    CheckedOpenEnv(rocksdb::Env* base, std::string path, rocksdb::FileLock* lock,
+                   std::unique_ptr<ProcessDirectoryOwner> owner)
+        : EnvWrapper(base), path_(std::move(path)), lock_(lock), owner_(std::move(owner)) {}
     ~CheckedOpenEnv() override { target()->UnlockFile(lock_).PermitUncheckedError(); }
 
     rocksdb::Status LockFile(const std::string& path, rocksdb::FileLock** lock) override {
@@ -211,6 +272,7 @@ public:
 private:
     std::string path_;
     rocksdb::FileLock* lock_;
+    std::unique_ptr<ProcessDirectoryOwner> owner_;
     bool claimed_ = false;
 };
 
@@ -292,12 +354,18 @@ rocksdb::Status CheckReadyShieldedRecords(OpenedChainDB& reader) {
 } // namespace
 
 Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_recovery) {
+    auto owner = ProcessDirectoryOwner::Acquire(dir);
+    if (!owner) {
+        std::cerr << "ChainDB::init: Database directory unavailable or already owned in this process\n";
+        return Status::Io;
+    }
     auto options = getDefaultOptions();
     auto descriptors = getColumnFamilyDescriptors();
     const auto lock_path = (dir / "LOCK").string();
     rocksdb::FileLock* lock = nullptr;
     auto status = options.env->LockFile(lock_path, &lock);
     if (!status.ok()) {
+        owner.reset();  // No DB opened; a retry must acquire a fresh reservation.
         if (allow_lock_recovery) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             return initAttempt(dir, false);
@@ -305,7 +373,7 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         std::cerr << "ChainDB::init: Cannot acquire database lock: " << status.ToString() << '\n';
         return convertRocksDBStatus(status);
     }
-    auto env = std::make_shared<CheckedOpenEnv>(options.env, lock_path, lock);
+    auto env = std::make_shared<CheckedOpenEnv>(options.env, lock_path, lock, std::move(owner));
     options.env = env.get();
     options.create_if_missing = false;
     options.create_missing_column_families = false;
@@ -2813,7 +2881,8 @@ rocksdb::Options ChainDB::getDefaultOptions() const {
     // Disable compression (vendored build has no LZ4/Snappy/ZSTD)
     options.compression = rocksdb::kNoCompression;
 
-    // Existing iOS behavior: no file lock. Same-process ownership is not provided.
+    // ProcessDirectoryOwner enforces same-process exclusion independently.
+    // This Env still provides no cross-process lock on iOS.
 #if defined(__APPLE__) && TARGET_OS_IOS
     options.env = getNoLockEnv();
 #endif
