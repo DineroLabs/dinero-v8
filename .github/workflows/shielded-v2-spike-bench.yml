@@ -1,0 +1,53 @@
+name: Shielded v2 spike bench (research branch, x86 runner class)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: spike bench (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build cmake curl perl pkg-config python3-yaml
+          libudev-dev libusb-1.0-0-dev
+      - name: Build pinned OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Configure (Release)
+        run: >-
+          cmake -S . -B build-bench -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=ON -DENABLE_ZK=ON
+      - name: Build spike bench and profile regression
+        run: cmake --build build-bench --parallel "$(nproc)" --target spike_shielded_v2_bench test_spartan_soundness
+      - name: Record host
+        run: |
+          mkdir -p evidence
+          { uname -a; nproc; lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|MHz'; free -m; git rev-parse HEAD; } > evidence/host.txt
+      - name: Profile compatibility regression
+        run: ./build-bench/test_spartan_soundness --gtest_filter='SpartanProfileCompat.*' 2>&1 | tee evidence/profile-compat.log
+      - name: Self-test, negatives, profile soundness
+        run: |
+          ./build-bench/spike_shielded_v2_bench --selftest | tee evidence/selftest.log
+          ./build-bench/spike_shielded_v2_bench --negatives | tee evidence/negatives.log
+          ./build-bench/spike_shielded_v2_bench --profile-soundness | tee evidence/profile-soundness.log
+      - name: Bench (fresh proofs, entry point cold/warm, bounded batch)
+        run: ./build-bench/spike_shielded_v2_bench --no-baseline 2> evidence/bench-stderr.log | tee evidence/bench.json
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shielded-v2-spike-bench-${{ matrix.runner }}-${{ github.sha }}
+          path: evidence/

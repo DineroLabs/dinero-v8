@@ -158,7 +158,11 @@ bool r1cs_spartan_verify(
     // may pass false.
     bool require_zero_error = true,
     // Research profile: proof carries no E term; verifier requires Ez_claim == 0 and u == 1.
-    bool omit_error_term = false
+    bool omit_error_term = false,
+    // Worker budget for the M~(rx,ry) evaluation. 1 (default) = serial, no thread is created:
+    // legacy callers keep their exact resource behaviour. Callers that own a parallelism
+    // budget (the shielded v2 verifier) pass their share; the result is bit-identical.
+    size_t matrix_threads = 1
 );
 
 /**

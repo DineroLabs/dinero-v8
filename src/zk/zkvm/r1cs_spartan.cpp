@@ -579,7 +579,8 @@ bool r1cs_spartan_verify(
     secp256k1_context* ctx,
     bool bind_public_inputs,
     bool require_zero_error,
-    bool omit_error_term
+    bool omit_error_term,
+    size_t matrix_threads
 ) {
     SpartanPhaseTimer T;
     // --- Basic sanity checks ---
@@ -735,7 +736,7 @@ bool r1cs_spartan_verify(
         return acc;
     };
     Scalar M_eval = Scalar::zero();
-    const size_t nthreads = std::min<size_t>(8, std::max<size_t>(1, std::thread::hardware_concurrency()));
+    const size_t nthreads = std::max<size_t>(1, std::min<size_t>(matrix_threads, 64));
     if (nc_check >= 16384 && nthreads > 1) {
         std::vector<Scalar> partial(nthreads, Scalar::zero());
         std::vector<std::thread> pool;
@@ -902,7 +903,10 @@ bool SpartanProof::deserialize(const std::vector<uint8_t>& data,
     } else {
         out.eval_E = HyraxEvalProof{};
     }
-    if (offset != data.size()) return false;   // no trailing bytes in either profile
+    // Strict consumption is a property of the NEW profile only. The legacy profile keeps its
+    // historical accepted language (trailing bytes were never rejected here; DeserializeShieldedProof
+    // relies on that), see the differential regression in tests/zk/test_spartan_profile_compat.cpp.
+    if (omit_error_term && offset != data.size()) return false;
 
     return true;
 }

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <tuple>
 #include <mutex>
 #include <future>
 #include <chrono>
@@ -207,7 +208,7 @@ static BenchRow BenchBundle(size_t n_in, size_t n_out) {
         if (!SpartanProof::deserialize(ser, parsed, sctx, kOmitErrorTerm)) { std::fprintf(stderr, "deserialize failed\n"); std::exit(2); }
         if (timing) std::fprintf(stderr, "BENCH_PHASE deserialize   %8.3f ms\n", ms_since(t0));
         Transcript tv("dinero.shielded.bundle.v2.spike");
-        const bool ok = r1cs_spartan_verify(parsed, vcs, ncons, nvars, chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm);
+        const bool ok = r1cs_spartan_verify(parsed, vcs, ncons, nvars, chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm, /*matrix_threads=*/8);
         const double v = ms_since(t0);
         if (!ok) { std::fprintf(stderr, "bundle verify failed (%zu-in-%zu-out)\n", n_in, n_out); std::exit(2); }
         if (i) { prove.push_back(p); verify.push_back(v); }
@@ -217,53 +218,116 @@ static BenchRow BenchBundle(size_t n_in, size_t n_out) {
 }
 
 
-// Task 4: batched verification estimate — 50 two-in-two-out bundles, sequential vs 8 threads.
-struct ProvenBundle { spike::BundleV2 pub_only; std::vector<uint8_t> proof; size_t ncons = 0, nvars = 0; };
-static ProvenBundle ProveOnce(uint64_t fee_seed) {
+// Task 7 (owner review 2026-09-22): the complete warm verification entry point with trusted,
+// immutable per-shape verifier data, and a batch with ONE bounded parallelism budget.
+//
+// ShapeCache: keyed by the full circuit shape and profile (n_in, n_out, omit_error_term), never by
+// constraint count. Holds the verifier R1CS structure (zero witness), the structure hash and the
+// generator size. Cold initialisation (build + hash) is reported separately; per proof the
+// structure is copied and its public-input slots set (R1CS::set_value), which is what a node does.
+struct ShapeKey { size_t n_in, n_out; bool omit; bool operator<(const ShapeKey& o) const { return std::tie(n_in, n_out, omit) < std::tie(o.n_in, o.n_out, o.omit); } };
+struct ShapeData { dinero::zk::zkvm::R1CS structure; std::vector<uint8_t> chash; size_t gens_need = 0; double cold_init_ms = 0; };
+static std::map<ShapeKey, ShapeData> g_shapes; static std::mutex g_shapes_mu;
+static const ShapeData& ShapeFor(size_t n_in, size_t n_out) {
+    using namespace dinero::zk::zkvm;
+    std::lock_guard<std::mutex> lk(g_shapes_mu);
+    const ShapeKey key{n_in, n_out, kOmitErrorTerm};
+    auto it = g_shapes.find(key);
+    if (it != g_shapes.end()) return it->second;
+    auto t0 = Clock::now();
+    ShapeData d;
+    spike::BundleV2 zero = spike::MakeHonestBundle(n_in, n_out, 1000);
+    for (auto& sp : zero.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = sp.anchor = sp.nullifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
+    for (auto& o : zero.outputs) { o.value = o.public_key = o.randomness = o.diversifier = o.commitment = Scalar::zero(); }
+    zero.sighash = Scalar::zero(); zero.fee = 0;
+    d.structure = spike::BuildBundleCircuitV2(zero);
+    d.chash = spartan_hash_r1cs_structure(d.structure);
+    d.gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(d.structure.num_variables()).n_cols, HyraxParams::from_n(d.structure.num_constraints()).n_cols));
+    d.cold_init_ms = ms_since(t0);
+    return g_shapes.emplace(key, std::move(d)).first->second;
+}
+// Public inputs in the exact allocation order of BuildBundleCircuitV2: sighash, fee, (anchor, nullifier)*, commitment*.
+static std::vector<dinero::zk::zkvm::Scalar> PublicInputsOf(const spike::BundleV2& b) {
+    using dinero::zk::zkvm::Scalar;
+    std::vector<Scalar> v{b.sighash, Scalar(b.fee)};
+    for (const auto& s : b.spends) { v.push_back(s.anchor); v.push_back(s.nullifier); }
+    for (const auto& o : b.outputs) v.push_back(o.commitment);
+    return v;
+}
+struct ProvenBundle { spike::BundleV2 pub; std::vector<uint8_t> proof; size_t n_in = 0, n_out = 0; };
+static ProvenBundle ProveOnce(size_t n_in, size_t n_out, uint64_t fee_seed) {
     using namespace dinero::zk::zkvm;
     secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
-    spike::BundleV2 b = spike::MakeHonestBundle(2, 2, 1000 + fee_seed);
+    spike::BundleV2 b = spike::MakeHonestBundle(n_in, n_out, 1000 + fee_seed);
     R1CS cs = spike::BuildBundleCircuitV2(b);
-    const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(cs.num_variables()).n_cols, HyraxParams::from_n(cs.num_constraints()).n_cols));
-    const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
+    const GeneratorSet& gens = GeneratorSet::cached(ShapeFor(n_in, n_out).gens_need, sctx);
     Transcript tp("dinero.shielded.bundle.v2.spike");
     SpartanProof proof = r1cs_spartan_prove(cs, std::vector<Scalar>(cs.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, sctx, true, kOmitErrorTerm);
-    ProvenBundle pb; pb.proof = proof.serialize(sctx); pb.ncons = cs.num_constraints(); pb.nvars = cs.num_variables();
-    pb.pub_only = b;
-    for (auto& sp : pb.pub_only.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
-    for (auto& o : pb.pub_only.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); }
+    ProvenBundle pb; pb.proof = proof.serialize(sctx); pb.n_in = n_in; pb.n_out = n_out; pb.pub = b;
+    for (auto& sp : pb.pub.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
+    for (auto& o : pb.pub.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); }
     return pb;
 }
-static bool VerifyOne(const ProvenBundle& pb, secp256k1_context* sctx) {
+// The complete warm entry point for one proof: deserialize, copy the trusted structure and set
+// its public inputs, verify. Everything a node pays per proof after cold init and before the
+// enclosing transaction/bundle checks (nullifiers, anchors, sighash, cache lookup).
+struct VerifyBreakdown { double deser = 0, structure = 0, verify = 0, total = 0; bool ok = false; };
+static VerifyBreakdown VerifyFull(const ProvenBundle& pb, secp256k1_context* sctx, size_t matrix_threads) {
     using namespace dinero::zk::zkvm;
-    R1CS vcs = spike::BuildBundleCircuitV2(pb.pub_only);
-    const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(pb.nvars).n_cols, HyraxParams::from_n(pb.ncons).n_cols));
-    const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
-    SpartanProof parsed; if (!SpartanProof::deserialize(pb.proof, parsed, sctx, kOmitErrorTerm)) return false;
+    VerifyBreakdown r;
+    const auto t0 = Clock::now();
+    const ShapeData& shape = ShapeFor(pb.n_in, pb.n_out);
+    const GeneratorSet& gens = GeneratorSet::cached(shape.gens_need, sctx);
+    SpartanProof parsed; if (!SpartanProof::deserialize(pb.proof, parsed, sctx, kOmitErrorTerm)) return r;
+    const auto t1 = Clock::now();
+    R1CS vcs = shape.structure;
+    const auto inputs = PublicInputsOf(pb.pub);
+    for (size_t i = 0; i < inputs.size(); ++i) vcs.set_value(Variable{i + 1}, inputs[i]);
+    const auto t2 = Clock::now();
     Transcript tv("dinero.shielded.bundle.v2.spike");
-    // Per-shape constant, computed once (a node caches it per (n_in, n_out)); never per proof.
-    static std::map<size_t, std::vector<uint8_t>> chash_by_shape;
-    static std::mutex chash_mu;
-    std::vector<uint8_t> chash;
-    { std::lock_guard<std::mutex> lk(chash_mu); auto it = chash_by_shape.find(pb.ncons);
-      if (it == chash_by_shape.end()) it = chash_by_shape.emplace(pb.ncons, spartan_hash_r1cs_structure(vcs)).first;
-      chash = it->second; }
-    return r1cs_spartan_verify(parsed, vcs, pb.ncons, pb.nvars, chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm);
+    r.ok = r1cs_spartan_verify(parsed, vcs, vcs.num_constraints(), vcs.num_variables(), shape.chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm, matrix_threads);
+    const auto t3 = Clock::now();
+    auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    r.deser = ms(t0, t1); r.structure = ms(t1, t2); r.verify = ms(t2, t3); r.total = ms(t0, t3);
+    return r;
 }
-static void BenchBatch(std::vector<BenchRow>& rows) {
+static void BenchEntryPoint(std::vector<BenchRow>& rows) {
     secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
-    std::vector<ProvenBundle> proofs; for (int i = 0; i < 50; ++i) proofs.push_back(ProveOnce(static_cast<uint64_t>(i)));
+    // Cold: first use of the 2-in-2-out shape in this process (build + hash), reported once.
+    g_shapes.clear();
+    const auto t_cold = Clock::now();
+    const ShapeData& shape = ShapeFor(2, 2);
+    rows.push_back(BenchRow{"cold_init_2in2out_ms(build+hash)", shape.structure.num_constraints(), 0, 0, 0, ms_since(t_cold)});
+    std::vector<ProvenBundle> proofs; for (int i = 0; i < 6; ++i) proofs.push_back(ProveOnce(2, 2, 500 + i));
+    for (size_t threads : {size_t{1}, size_t{8}}) {
+        std::vector<double> total, deser, structure, verify;
+        for (size_t i = 0; i < proofs.size(); ++i) {
+            const auto r = VerifyFull(proofs[i], sctx, threads);
+            if (!r.ok) { std::fprintf(stderr, "entry-point verify failed\n"); std::exit(2); }
+            if (i) { total.push_back(r.total); deser.push_back(r.deser); structure.push_back(r.structure); verify.push_back(r.verify); }
+        }
+        char label[96]; std::snprintf(label, sizeof label, "warm_full_verify_2in2out_threads%zu_ms", threads);
+        rows.push_back(BenchRow{label, 0, 0, proofs[0].proof.size(), 0, median_of(total)});
+        std::fprintf(stderr, "ENTRY threads=%zu deser=%.2f structure_copy+inputs=%.2f verify=%.2f total=%.2f ms\n", threads, median_of(deser), median_of(structure), median_of(verify), median_of(total));
+    }
+}
+// Batch: 50 fresh proofs, ONE budget of 8 workers for the whole batch, serial matrix path inside
+// each worker (matrix_threads = 1), so at most 8 threads exist at any time.
+static void BenchBatch(std::vector<BenchRow>& rows) {
+    std::vector<ProvenBundle> proofs; for (int i = 0; i < 50; ++i) proofs.push_back(ProveOnce(2, 2, static_cast<uint64_t>(i)));
+    (void)ShapeFor(2, 2);
+    secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
     auto t0 = Clock::now();
-    for (auto& pb : proofs) if (!VerifyOne(pb, sctx)) { std::fprintf(stderr, "batch verify failed\n"); std::exit(2); }
-    rows.push_back(BenchRow{"verify_50_sequential_ms", 0, 0, 0, 0, ms_since(t0)});
+    for (auto& pb : proofs) if (!VerifyFull(pb, sctx, 1).ok) { std::fprintf(stderr, "batch verify failed\n"); std::exit(2); }
+    rows.push_back(BenchRow{"verify_50_sequential_full_ms", 0, 0, 0, 0, ms_since(t0)});
     t0 = Clock::now();
     std::atomic<size_t> next{0}; std::vector<std::future<bool>> fs;
     for (int t = 0; t < 8; ++t) fs.push_back(std::async(std::launch::async, [&] {
         secp256k1_context* c = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
-        bool ok = true; for (size_t i; (i = next++) < proofs.size();) ok = VerifyOne(proofs[i], c) && ok;
+        bool ok = true; for (size_t i; (i = next++) < proofs.size();) ok = VerifyFull(proofs[i], c, /*matrix_threads=*/1).ok && ok;
         secp256k1_context_destroy(c); return ok; }));
     for (auto& f : fs) if (!f.get()) { std::fprintf(stderr, "parallel batch verify failed\n"); std::exit(2); }
-    rows.push_back(BenchRow{"verify_50_parallel8_ms", 0, 0, 0, 0, ms_since(t0)});
+    rows.push_back(BenchRow{"verify_50_workers8_serial_inner_full_ms", 0, 0, 0, 0, ms_since(t0)});
 }
 
 // Task 2: bundle circuit satisfiability self-test (spec §3.1 relations).
@@ -299,7 +363,6 @@ static int SelfTest() {
     check(cs.num_constraints() < 60000, "2-in-2-out is under 60k constraints (measured 56,790 with the §10.2 hash-key legs; legacy per-tx total is ~3.3M)");
     return failures == 0 ? 0 : 1;
 }
-
 
 // Owner review 2026-09-22 finding 2: negative cases against the EXACT amended statement.
 // Each must be unsatisfiable (no valid witness exists for a party lacking `ask`).
@@ -384,6 +447,7 @@ int main(int argc, char** argv) {
     rows.push_back(BenchBundle(1, 2));
     rows.push_back(BenchBundle(2, 2));
     rows.push_back(BenchBundle(4, 2));
+    BenchEntryPoint(rows);
     if (!(argc > 1 && std::string(argv[1]) == "--no-batch")) BenchBatch(rows);
     PrintJson(rows, BUILD_TYPE_STR);
     return 0;

@@ -2736,6 +2736,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
     add_executable(test_spartan_soundness
       tests/zk/test_spartan_soundness.cpp
       tests/zk/test_compact_spartan.cpp
+      tests/zk/test_spartan_profile_compat.cpp
       src/consensus/shielded/compact_spartan_codec.cpp
     )
     add_dependencies(test_spartan_soundness gtest dinero_zk)
