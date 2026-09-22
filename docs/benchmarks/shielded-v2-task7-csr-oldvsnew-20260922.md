@@ -67,3 +67,24 @@ It shows the proof stage only, on an idle machine, with cold init excluded (52 m
 It does not show block-validation latency, CPU utilization, catch-up, forks, template/RPC service
 under load, or the cost of rejecting invalid proofs; those need the integrated node. The 20 ms and
 400 ms thresholds and their hardware contract remain the owner's to fix (plan Global Constraints).
+
+## Same commit on the GitHub x86 runner (run 35689416657, ubuntu-24.04, EPYC 7763, 2 cores / 4 vCPUs)
+
+Raw rows: `shielded-v2-task7-csr-ubuntu-24.04-20260922.json`. All checks passed there (compat 8/8,
+negatives, profile soundness).
+
+| 2-in-2-out complete warm entry point | walk (b79d876c1) | CSR (585097e24) | saving |
+|---|---|---|---|
+| serial | 86.8 ms | 71.3 ms | 18% |
+| matrix budget 8 (4 vCPUs exist) | 61.1 ms | 55.2 ms | 10% |
+| cold init per shape | 91.4 ms | 96.2 ms | (CSR build 4.6 ms) |
+
+| 50 proofs, one budget, serial inner | 1 worker | 2 | 4 | 8 |
+|---|---|---|---|---|
+| wall ms (single run each on this commit) | 3,867 | 1,954 | 1,573 | 1,576 |
+
+Scaling stops at 4 workers on this host: 2 physical cores plus hyper-threading gives ~2.5× at
+best, and 8 workers buys nothing. Amortized per proof at 4 workers: 31 ms. Against the walk's
+1,901 ms at 8 workers, CSR saves 17%. The 20 ms / 400 ms thresholds remain unmet on this runner
+class; the design's practicality for small nodes is the owner's assessment (proof stage ≈ 2.6% of
+a 60-second interval here), to be confirmed by the integrated node under load.
