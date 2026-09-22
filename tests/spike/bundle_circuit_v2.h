@@ -1,6 +1,6 @@
 // tests/spike/bundle_circuit_v2.h
 // THROWAWAY spike code — the Shielded v2 bundle statement (spec §3.1) built from the
-// existing R1CS gadgets. Not consensus code. Legacy nullifier derivation (Poseidon(sk, idx))
+// existing R1CS gadgets. Not consensus code. Statement per spec §10.2 (hash-derived ownership key, nfk-based nullifier); previously legacy Poseidon(sk, idx)
 // is used for the fixture; the auth profile adds two Poseidon calls per spend.
 #pragma once
 
@@ -31,8 +31,24 @@ namespace gadgets = dinero::zk::zkvm::gadgets;
 
 inline Scalar HashToScalarV2(const Hash& h) { return Scalar(h.data()); }
 
+// "DIN/v7/shielded/v2/hk" left-aligned in 32 bytes (same shape as AddrBindTag()).
+inline Hash HkTagV2() {
+    static constexpr char kTag[] = "DIN/v7/shielded/v2/hk";
+    Hash h{};
+    std::memcpy(h.data(), kTag, sizeof(kTag) - 1);
+    return h;
+}
+using dinero::consensus::shielded::NullifierKeyTag;
+// Native mirror of the in-circuit ownership key: pk = P(P(P(ask,HK), d), P(nfk, NFK_TAG)).
+inline Scalar OwnershipKeyNativeV2(const Scalar& ask, const Scalar& nfk, const Scalar& d) {
+    const Scalar hk = poseidon2_native(ask, HashToScalarV2(HkTagV2()));
+    const Scalar pk_d = poseidon2_native(hk, d);
+    const Scalar nfk_c = poseidon2_native(nfk, HashToScalarV2(NullifierKeyTag()));
+    return poseidon2_native(pk_d, nfk_c);
+}
+
 struct SpendLeg {
-    Scalar secret_key, value, randomness, diversifier;
+    Scalar ask, nullifier_key, value, randomness, diversifier;  // spec §10.2: hk = P(ask, HK_TAG), pk_d = P(hk, d), nfk from nvk
     uint32_t leaf_index = 0;
     std::array<Hash, TREE_DEPTH> siblings{};
     Scalar anchor, nullifier;  // public
@@ -99,17 +115,22 @@ inline R1CS BuildBundleCircuitV2(const BundleV2& b) {
     for (size_t i = 0; i < b.spends.size(); ++i) {
         const auto& s = b.spends[i];
         const std::string p = "spend" + std::to_string(i);
-        Variable sk = cs.alloc(s.secret_key);
+        Variable ask = cs.alloc(s.ask);
+        Variable nfk = cs.alloc(s.nullifier_key);
         Variable val = cs.alloc(s.value);
         Variable rnd = cs.alloc(s.randomness);
         Variable div = cs.alloc(s.diversifier);
         Variable idx = cs.alloc(Scalar(static_cast<uint64_t>(s.leaf_index)));
-        Variable zero = gadgets::constant(cs, Scalar::zero(), p + "_zero");
-        Variable pk = poseidon2_gadget(cs, sk, zero, p + "_pk");
+        Variable hk_tag = gadgets::constant(cs, HashToScalarV2(HkTagV2()), p + "_hktag");
+        Variable nfk_tag = gadgets::constant(cs, HashToScalarV2(NullifierKeyTag()), p + "_nfktag");
+        Variable hk = poseidon2_gadget(cs, ask, hk_tag, p + "_hk");
+        Variable pk_d = poseidon2_gadget(cs, hk, div, p + "_pkd");
+        Variable nfk_c = poseidon2_gadget(cs, nfk, nfk_tag, p + "_nfkc");
+        Variable pk = poseidon2_gadget(cs, pk_d, nfk_c, p + "_pk");
         Variable cm = NoteCommitmentV2(cs, div, pk, val, rnd, p);
         Variable root = MerklePathV2(cs, cm, idx, s.siblings, p);
         gadgets::assert_equal(cs, root, anchors[i], p + "_anchor");
-        Variable nf = poseidon2_gadget(cs, sk, idx, p + "_nf");
+        Variable nf = poseidon2_gadget(cs, nfk, idx, p + "_nf");
         gadgets::assert_equal(cs, nf, nullifiers[i], p + "_nullifier");
         gadgets::range_check(cs, val, 64, p + "_range");
         sum_in = gadgets::add(cs, sum_in, val, p + "_sum");
@@ -140,11 +161,12 @@ inline BundleV2 MakeHonestBundle(size_t n_in, size_t n_out, uint64_t fee) {
     std::vector<Scalar> cms;
     for (size_t i = 0; i < n_in; ++i) {
         SpendLeg s;
-        s.secret_key = Scalar(uint64_t{1000 + i});
+        s.ask = Scalar(uint64_t{1000 + i});
+        s.nullifier_key = Scalar(uint64_t{7000 + i});
         s.value = Scalar(value_each);
         s.randomness = Scalar(uint64_t{2000 + i});
         s.diversifier = Scalar(uint64_t{3000 + i});
-        const Scalar pk = poseidon2_native(s.secret_key, Scalar::zero());
+        const Scalar pk = OwnershipKeyNativeV2(s.ask, s.nullifier_key, s.diversifier);
         const Scalar cm = NoteCommitmentNativeV2(s.diversifier, pk, s.value, s.randomness);
         Hash cm_hash{};
         std::memcpy(cm_hash.data(), cm.data(), cm_hash.size());
@@ -155,7 +177,7 @@ inline BundleV2 MakeHonestBundle(size_t n_in, size_t n_out, uint64_t fee) {
         const auto path = tree.GetAuthPath(s.leaf_index);
         s.siblings = path->siblings;
         s.anchor = HashToScalarV2(tree.Root());
-        s.nullifier = poseidon2_native(s.secret_key, Scalar(static_cast<uint64_t>(s.leaf_index)));
+        s.nullifier = poseidon2_native(s.nullifier_key, Scalar(static_cast<uint64_t>(s.leaf_index)));
     }
     const uint64_t total_out = value_each * n_in - fee;
     for (size_t j = 0; j < n_out; ++j) {

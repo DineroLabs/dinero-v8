@@ -1,0 +1,24 @@
+{
+  "date": "2026-09-22",
+  "host": "M4 Max, Release, build-spike (vendored deps)",
+  "commit_measured_on": "claude/shielded-v2 after bb2479c64 (spike patched to spec §10.2 statement)",
+  "statement": "spec §10.2: hk = P(ask, 'DIN/v7/shielded/v2/hk'); pk_d = P(hk, d); nfk_c = P(nfk, NFK_TAG); pk = P(pk_d, nfk_c); cm = NoteCommitment(d, pk, value, rcm); Merkle depth 32; nf = P(nfk, leaf_index); 64-bit ranges; sum_in = sum_out + fee; sighash bound (constraint + transcript)",
+  "method": "existing Spartan sum-check + Hyrax (dinero_zk), bind_public_inputs=true, require_zero_error=true; 6 iterations per shape with fresh randomness (no VerifiedProofCache hits), median of the last 5; verifier rebuilds the R1CS structure from public inputs with a zero witness",
+  "tool": "tests/spike/shielded_v2_bundle_bench.cpp --no-baseline (plus --selftest and --negatives, both exit 0)",
+  "rows": [
+    {"label": "bundle_1in2out", "constraints": 30997,  "variables": 31039,  "proof_bytes": 12892, "prove_ms": 293.9, "verify_ms": 41.5},
+    {"label": "bundle_2in2out", "constraints": 56790,  "variables": 56868,  "proof_bytes": 19749, "prove_ms": 523.6, "verify_ms": 70.2},
+    {"label": "bundle_4in2out", "constraints": 108376, "variables": 108526, "proof_bytes": 19412, "prove_ms": 916.6, "verify_ms": 128.5},
+    {"label": "verify_50x_2in2out_sequential_ms", "verify_ms": 4282.9},
+    {"label": "verify_50x_2in2out_parallel8_ms",  "verify_ms": 643.5}
+  ],
+  "negatives_unsatisfiable": ["wrong ask (sender/attacker)", "ask=0 with correct hk/nfk/d/value/rcm (full viewer)", "wrong nullifier key", "wrong diversifier", "output value +1", "public fee +1", "wrong leaf index", "wrong merkle sibling"],
+  "spec_gates_phase1": {
+    "proof_bytes_le_32768": {"measured": 19749, "pass": true},
+    "verify_2in2out_le_20ms": {"measured": 70.2, "pass": false, "ratio": 3.5},
+    "block_of_50_le_400ms": {"measured": 643.5, "pass": false, "ratio": 1.6},
+    "prove_2in2out_m4_le_600ms": {"measured": 523.6, "pass": true}
+  },
+  "delta_vs_legacy_spike_statement": "hash-key legs add 3 Poseidon-2 per spend: +1,876 constraints/spend, +5% verify, +5% bytes",
+  "note": "verify and block gates are NOT met on Spartan+Hyrax; plan Task 7 (E-less BundleV2 Spartan profile, Hyrax shaping) must close a 3.5x gap or the owner decides; phase 1 is not post-quantum"
+}

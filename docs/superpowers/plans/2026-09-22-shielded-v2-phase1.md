@@ -12,14 +12,25 @@
 
 ## Global Constraints
 
-- Transaction versions 5 and 6 behave byte-for-byte as today at every height below `shielded_v1_sunset_height`. Every existing shielded ctest stays green; none is edited except to extend it.
-- New consensus heights: `shielded_v2_activation_height = UINT32_MAX`, `shielded_v1_sunset_height = UINT32_MAX` on every network. Overrides are REGTEST-only CLI flags, refused elsewhere, exactly like `--consensus-shielded-spend-auth-height`.
+- Transaction versions 5 and 6 behave byte-for-byte as today at every height. **No v1 sunset in phase 1** (owner review 2026-09-22, finding 1): mainnet supports three note schemes today, `LegacySenderKey` (0, unspendable since the 110000 reset), `Auth` (1) and `PrivateCovenant` (2, proof 0x07, active since 110000 with minimum-height and output restrictions checked in `shielded_validation.cpp:55-68`). v2 has a statement only for hash-key notes; covenant notes have no v2 statement and cannot be migrated by an ordinary transfer (their covenant may forbid it or they may not be spendable yet). Every supported scheme keeps its v1 spending path indefinitely; no sunset height, no `V1Allowed`, no `ProofVersionSunset` error exists in this plan. An epoch reset is NOT a fallback for slow migration (it would destroy notes, not migrate them) and is removed from the spec.
+- New consensus height: `shielded_v2_activation_height = UINT32_MAX` on every network. Override is a REGTEST-only CLI flag, refused elsewhere, exactly like `--consensus-shielded-spend-auth-height`.
+- Security scope (owner review finding 3), stated so nobody reads "v2" as post-quantum: phase 1 ownership authorization is hash-based (Poseidon-2) and would be PQ on its own, but proof soundness and zero-knowledge rest on Hyrax (discrete log, classical) and note discovery/encryption on secp256k1 ECDH (classical). Phase 2 replaces the PCS; note encryption stays classical in both phases. Phase 1 is therefore **not** post-quantum and must not be labelled so in code comments, RPC help or release notes. Task 3 pins field encodings, domain strings, the complete public-input list and the zero-knowledge requirement in the vectors.
 - Envelope: `'D' 'Z' 'V' '2' | proof_system_id (u8) | CompactSize len | proof bytes`. Phase 1 accepts `proof_system_id = 0x01` only. Any other id, tag or length fails closed (`ProofInvalid`).
 - Caps, enforced before any proof work: `kV2MaxSpends = 4`, `kV2MaxOutputs = 2`, `kV2MaxProofBytes = 32768`, `kV2MaxEnvelopeBytes = 4 + 1 + 5 + 32768`.
 - Transcript domain: `dinero.shielded.bundle.v2`. Sighash domain for version 7: `DIN/v7/shielded/tx-sighash/bundle-v2`. Cache-key domain: `dinero.shielded.verified.bundle.v2`. Hash spend key tag: `DIN/v7/shielded/v2/hk`. These strings are consensus-critical; they appear once each in code and are pinned by vectors.
 - Public-input order (prover and verifier identical): `sighash, vb_pos, vb_neg, anchor[0], nullifier[0], …, anchor[n-1], nullifier[n-1], commitment[0], …, commitment[m-1]`.
 - Statement (spec §3.1 as amended by §10.2): per spend `hk = P(ask, HK_TAG)`, `pk_d = P(hk, d)`, `nfk_c = P(nfk, NFK_TAG)`, `pk = P(pk_d, nfk_c)`, `cm = P(P(P(ADDR_TAG, P(d, pk)), value), rcm)`, Merkle path depth 32 to `anchor_i`, `nullifier_i = P(nfk, leaf_index)`, `value_i` 64-bit; per output `cm_j` as above with `pk` a witness, `value_j` 64-bit; `vb_pos + Σ value_i = vb_neg + Σ value_j`, `vb_pos`, `vb_neg` 64-bit; `sighash` bound by one constraint and by the transcript. `P` is Poseidon-2 over the secp256k1 scalar field (`poseidon2_gadget`).
-- Performance gates (Release only, asserted by ctest on the CI runner class; local M4 Max numbers recorded in JSON, not asserted): proof envelope ≤ 20,480 bytes; single 2-in-2-out verify ≤ 140 ms; batched 50 × 2-in-2-out ≤ 25 ms per proof on 8 threads; prove 2-in-2-out ≤ 1,000 ms. M4 Max reference from the spike: 18,792 B / 65 ms / 11.7 ms / 486 ms.
+- Performance contract: ONE table, the spec §2 CI thresholds, unchanged by this plan.
+
+| metric | workload | hardware | cache | limit |
+|---|---|---|---|---|
+| single verify | one 2-in-2-out v7 tx, fresh proof | M4 Max class builder (the spec's reference) | cold (proof never seen; cache bypassed) | ≤ 20 ms |
+| block verify | 50 × 2-in-2-out v7 txs, fresh proofs, batched on 8 threads | same | cold | ≤ 400 ms |
+| prove | one 2-in-2-out v7 tx | same | n/a | ≤ 600 ms |
+| prove (phone) | same | iPhone-class via the prover kit, Task 5 run log | n/a | ≤ 2 s |
+| proof bytes | envelope of a 2-in-2-out v7 tx | n/a | n/a | ≤ 32,768 (phase-1 column) |
+
+  Measurement method: medians of 5 runs after 1 warm-up; every proof carries fresh randomness so no run is served by the verification cache; numbers recorded in `docs/benchmarks/` with host, commit and build type. **Known gap:** the spike measured 65 ms single verify and 585 ms per 50 batched on M4 Max, i.e. phase 1 as spiked FAILS the verify and block gates by 3.3× and 1.5×. Task 7 first implements the verifier tuning, then registers the gate test; a failing gate blocks merge; changing a limit requires an owner-approved spec edit. The spike report's "relaxed gates" are withdrawn. A test that passes a relaxed table must never be reported as satisfying this one.
 - Repo rule: every rule or fix ships with a test that fails without it. `assert()` is not a gate; use gtest assertions or exit-nonzero.
 - Commit after every task with the attribution line `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Nothing merges to `dinero-main` without owner approval.
 
@@ -28,18 +39,18 @@
 | file | change |
 |---|---|
 | `include/primitives/transaction.h:167-184` | add `TX_VERSION_SHIELDED_BUNDLE_V2 = 7`, `IsShieldedBundleV2Version`, include it in `IsShieldedAuthVersion` |
-| `include/consensus/chainparams.h:272` | add `shielded_v2_activation_height`, `shielded_v1_sunset_height` |
+| `include/consensus/chainparams.h:272` | add `shielded_v2_activation_height` |
 | `src/consensus/chainparams_impl.cpp:589` | `ValidateChainParams` also checks `V2ActivationConfigurationValid` |
-| `src/daemon/main.cpp:900-909` | two REGTEST-only overrides next to the compact override |
+| `src/daemon/main.cpp:900-909` | one REGTEST-only override next to the compact override |
 | `include/consensus/shielded/shielded_tx.h:99-121` | add `std::vector<uint8_t> v2_proof;` to `ShieldedBundle` |
 | `include/consensus/shielded/binding_sig.h:100`, `src/consensus/shielded/binding_sig.cpp:43-60` | third `ShieldedProofEncoding::BundleV2`, its domain, version-7 auto-detect |
-| `include/consensus/shielded/shielded_validation.h:59-70,90-139,209-228`, `src/consensus/shielded/shielded_validation.cpp:258,278` | new error `ProofVersionSunset = 10`; `ValidationContext::v2_rules`; 13th `BuildShieldedValidationContext` parameter; two-line dispatch |
-| `src/consensus/block_validation.cpp:101-112,149,167-179,683` | error string; codec front door; pass `V2RulesFor(Params())` |
+| `include/consensus/shielded/shielded_validation.h:90-139,209-228`, `src/consensus/shielded/shielded_validation.cpp:258,278` | `ValidationContext::v2_rules`; 13th `BuildShieldedValidationContext` parameter; two-line dispatch |
+| `src/consensus/block_validation.cpp:149,167-179,683` | codec front door; pass `V2RulesFor(Params())` |
 | `src/daemon/mempool.cpp:2461,2526-2538,3331,3345` | codec front door; pass `V2RulesFor` |
 | `src/consensus/reindexer.cpp:2431,2471-2483` | codec front door; pass `V2RulesFor` |
 | `include/consensus/shielded/resource_limits.h:73-120` | codec front door; version-7 branch (`proofs = 1`, v2 caps, envelope cap) |
 | `src/consensus/shielded/CMakeLists.txt:10-44` | add the `v2/*.cpp` sources |
-| `src/daemon/block_acceptor.cpp:721` | one call to `PrewarmBundleProofCacheV2` at the top of `AcceptBlockFromPeer` |
+| `src/daemon/block_acceptor.cpp:120,721` | one prewarm call at the top of `AcceptBlockFromRPC` (before the activation lock) and one at the top of `AcceptBlockFromPeer` |
 | `include/wallet/shielded_note_store.h:41-49` | `NoteKeyScheme::HashKeyV2 = 3` |
 | `include/wallet/shielded_derivation.h`, `src/wallet/shielded_derivation.cpp` | `ShieldedAccountKeys::hk`; `DeriveDiversifiedAddressV2`; v2 HRPs in `DecodeShieldedAddress` |
 | `src/wallet/shielded_wallet_ops.cpp`, `include/wallet/shielded_wallet_ops.h` | scan recognises scheme 3; change outputs to v2 addresses when the wallet has `hk` |
@@ -116,7 +127,7 @@ Expected: self-test exit 0; JSON with three `bundle_*` rows. Constraints for `bu
 
 - [ ] **Step 3: Record**
 
-Write the JSON output verbatim to `docs/benchmarks/shielded-v2-phase1-statement-20260922.json` with a top-level `"host": "M4 Max, Release, build-spike"` field added. If `bundle_2in2out.verify_ms` exceeds 70 or `proof_bytes` exceeds 20,480, stop and report before Task 7: the report's tuning items (drop the `E` opening, Hyrax column shaping) move ahead of the performance ctest.
+Write the JSON output verbatim to `docs/benchmarks/shielded-v2-phase1-statement-20260922.json` with a top-level `"host": "M4 Max, Release, build-spike"` field added. Expect `bundle_2in2out.verify_ms` near 65 and `proof_bytes` near 18,800: above the spec gates for verify (20 ms) and block (400 ms per 50). Record, do not change any gate; Task 7 owns closing the gap. Task 0 also runs `--negatives` (sender-cannot-spend: wrong `ask`; viewer-cannot-spend: `ask = 0` with correct `hk`-derived public data; wrong `nullifier_key`) and asserts each is unsatisfiable, and every measured verification is of a proof never seen before (fresh randomness per iteration, cache bypass verified by timing).
 
 - [ ] **Step 4: Commit**
 
@@ -129,7 +140,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 1: Activation and sunset heights
+### Task 1: Activation height and rules
 
 **Files:**
 - Create: `include/consensus/shielded/v2/rules.h`
@@ -140,7 +151,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `tests/CMakeLists.txt` (new target next to `test_compact_activation`, found with `grep -n test_compact_activation tests/CMakeLists.txt`)
 
 **Interfaces:**
-- Produces: `struct ShieldedV2Rules { bool enabled; uint32_t activation_height; uint32_t v1_sunset_height; constexpr bool Active(uint64_t) const; constexpr bool V1Allowed(uint64_t) const; }`, `bool V2ActivationConfigurationValid(const ChainParams&)`, `ShieldedV2Rules V2RulesFor(const ChainParams&)`; `ChainParams::shielded_v2_activation_height`, `ChainParams::shielded_v1_sunset_height`.
+- Produces: `struct ShieldedV2Rules { bool enabled; uint32_t activation_height; constexpr bool Active(uint64_t) const; }`, `bool V2ActivationConfigurationValid(const ChainParams&)`, `ShieldedV2Rules V2RulesFor(const ChainParams&)`; `ChainParams::shielded_v2_activation_height`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -165,20 +176,16 @@ ChainParams Scheduled() {
     p.shielded_spend_auth_activation_height = 4;
     p.shielded_spend_auth_epoch_reset_height = 4;
     p.shielded_v2_activation_height = 20;
-    p.shielded_v1_sunset_height = 30;
     return p;
 }
 
 TEST(ShieldedV2Activation, DefaultsAreDormantOnEveryNetwork) {
     ChainParams p{};
     EXPECT_EQ(p.shielded_v2_activation_height, UINT32_MAX);
-    EXPECT_EQ(p.shielded_v1_sunset_height, UINT32_MAX);
     EXPECT_TRUE(sh::V2ActivationConfigurationValid(p));
     const auto rules = sh::V2RulesFor(p);
     EXPECT_FALSE(rules.Active(0));
     EXPECT_FALSE(rules.Active(UINT32_MAX));
-    EXPECT_TRUE(rules.V1Allowed(0));
-    EXPECT_TRUE(rules.V1Allowed(UINT32_MAX));
 }
 
 TEST(ShieldedV2Activation, ScheduledBoundaries) {
@@ -187,9 +194,6 @@ TEST(ShieldedV2Activation, ScheduledBoundaries) {
     EXPECT_FALSE(rules.Active(19));
     EXPECT_TRUE(rules.Active(20));
     EXPECT_TRUE(rules.Active(21));
-    EXPECT_TRUE(rules.V1Allowed(29));
-    EXPECT_FALSE(rules.V1Allowed(30));
-    EXPECT_FALSE(rules.V1Allowed(31));
 }
 
 TEST(ShieldedV2Activation, InvalidSchedulesFailClosed) {
@@ -197,15 +201,6 @@ TEST(ShieldedV2Activation, InvalidSchedulesFailClosed) {
     p.shielded_v2_activation_height = 4;  // not after the Auth reset
     EXPECT_FALSE(sh::V2ActivationConfigurationValid(p));
     EXPECT_FALSE(sh::V2RulesFor(p).Active(100));
-
-    p = Scheduled();
-    p.shielded_v1_sunset_height = 20;  // sunset not after activation
-    EXPECT_FALSE(sh::V2ActivationConfigurationValid(p));
-
-    p = Scheduled();
-    p.shielded_v2_activation_height = UINT32_MAX;  // sunset without activation
-    EXPECT_FALSE(sh::V2ActivationConfigurationValid(p));
-    EXPECT_TRUE(sh::V2RulesFor(p).V1Allowed(1000));
 
     p = Scheduled();
     p.shielded_spend_auth_activation_height = UINT32_MAX;  // v2 requires Auth scheduled
@@ -230,10 +225,8 @@ In `include/consensus/chainparams.h` directly after `uint32_t shielded_compact_a
     // Requires the Auth profile to be scheduled and lies strictly after it.
     // UINT32_MAX is dormant on every network; regtest override only.
     uint32_t shielded_v2_activation_height = UINT32_MAX;
-    // From this height new blocks may not carry v1 shielded proofs (tx versions
-    // 5/6 with a non-empty bundle). Must lie strictly after v2 activation and is
-    // chosen only after migration telemetry. UINT32_MAX = never.
-    uint32_t shielded_v1_sunset_height = UINT32_MAX;
+    // No v1 sunset: every supported note scheme (Auth, PrivateCovenant) keeps its
+    // v1 spending path. See spec §10.4.
 ```
 
 - [ ] **Step 4: Write the rules header**
@@ -249,30 +242,22 @@ namespace dinero::consensus::shielded {
 struct ShieldedV2Rules {
     bool enabled = false;
     uint32_t activation_height = UINT32_MAX;
-    uint32_t v1_sunset_height = UINT32_MAX;
 
     constexpr bool Active(uint64_t height) const {
         return enabled && activation_height != UINT32_MAX && height >= activation_height;
     }
-    // v1 proofs stay valid until the sunset. A sunset can only bite once v2 is active.
-    constexpr bool V1Allowed(uint64_t height) const {
-        return !(Active(height) && v1_sunset_height != UINT32_MAX && height >= v1_sunset_height);
-    }
 };
 
-// Fail closed for any schedule that is not (Auth < v2 < sunset-or-never).
+// Fail closed for any schedule that is not (Auth < v2).
 inline bool V2ActivationConfigurationValid(const ChainParams& p) {
     const uint32_t v2 = p.shielded_v2_activation_height;
-    const uint32_t sunset = p.shielded_v1_sunset_height;
-    if (v2 == UINT32_MAX) return sunset == UINT32_MAX;
+    if (v2 == UINT32_MAX) return true;
     return p.shielded_spend_auth_activation_height != UINT32_MAX &&
-           p.shielded_spend_auth_activation_height < v2 &&
-           (sunset == UINT32_MAX || sunset > v2);
+           p.shielded_spend_auth_activation_height < v2;
 }
 
 inline ShieldedV2Rules V2RulesFor(const ChainParams& p) {
-    return {V2ActivationConfigurationValid(p), p.shielded_v2_activation_height,
-            p.shielded_v1_sunset_height};
+    return {V2ActivationConfigurationValid(p), p.shielded_v2_activation_height};
 }
 
 }  // namespace dinero::consensus::shielded
@@ -284,16 +269,16 @@ In `src/consensus/chainparams_impl.cpp` inside `ValidateChainParams`, after the 
 
 ```cpp
     if (!consensus::shielded::V2ActivationConfigurationValid(params)) {
-        throw std::runtime_error("chainparams: shielded v2 schedule invalid (need Auth < v2 < sunset)");
+        throw std::runtime_error("chainparams: shielded v2 schedule invalid (need Auth < v2)");
     }
 ```
 
 (`#include "consensus/shielded/v2/rules.h"` at the top.) Match the throw/abort style the compact check uses two lines above.
 
-In `src/daemon/main.cpp`, declare `long long shielded_v2_override = -1, shielded_v1_sunset_override = -1;` where `compact_regtest_override` is declared, parse `--consensus-shielded-v2-height=` and `--consensus-shielded-v1-sunset-height=` where `--consensus-shielded-compact-height=` is parsed (same pattern), and after the compact override block add:
+In `src/daemon/main.cpp`, declare `long long shielded_v2_override = -1;` where `compact_regtest_override` is declared, parse `--consensus-shielded-v2-height=` where `--consensus-shielded-compact-height=` is parsed (same pattern), and after the compact override block add:
 
 ```cpp
-    if (shielded_v2_override >= 0 || shielded_v1_sunset_override >= 0) {
+    if (shielded_v2_override >= 0) {
         auto& mp = dinero::MutableParams();
         if (chain != dinero::Chain::REGTEST || mp.shielded_spend_auth_activation_height == UINT32_MAX ||
             shielded_v2_override <= static_cast<long long>(mp.shielded_spend_auth_activation_height)) {
@@ -301,15 +286,7 @@ In `src/daemon/main.cpp`, declare `long long shielded_v2_override = -1, shielded
             return 1;
         }
         mp.shielded_v2_activation_height = static_cast<uint32_t>(shielded_v2_override);
-        if (shielded_v1_sunset_override >= 0) {
-            if (shielded_v1_sunset_override <= shielded_v2_override) {
-                std::cerr << "Shielded v1 sunset must be after v2 activation\n";
-                return 1;
-            }
-            mp.shielded_v1_sunset_height = static_cast<uint32_t>(shielded_v1_sunset_override);
-        }
         std::cout << "[Network] REGTEST shielded v2 bundle proofs at height " << shielded_v2_override
-                  << (shielded_v1_sunset_override >= 0 ? ", v1 sunset at " + std::to_string(shielded_v1_sunset_override) : std::string())
                   << " (test-only)\n";
     }
 ```
@@ -323,7 +300,7 @@ Expected: 3 tests PASS. Also run `./build-spike/test_compact_activation` (must s
 
 ```bash
 git add include/consensus/shielded/v2/rules.h include/consensus/chainparams.h src/consensus/chainparams_impl.cpp src/daemon/main.cpp tests/consensus/test_shielded_v2_activation.cpp tests/CMakeLists.txt
-git commit -m "shielded-v2: activation and v1 sunset heights (dormant), rules, regtest override
+git commit -m "shielded-v2: activation height (dormant), rules, regtest override
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1373,13 +1350,13 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Consensus validation for version 7, v1 sunset, resource limits
+### Task 4: Consensus validation for version 7 and resource limits
 
 **Files:**
 - Create: `include/consensus/shielded/v2/validation.h`, `src/consensus/shielded/v2/validation.cpp`
-- Modify: `include/consensus/shielded/shielded_validation.h:59-70` (enum), `:90-139` (`ValidationContext::v2_rules`), `:209-228` (13th parameter)
+- Modify: `include/consensus/shielded/shielded_validation.h:90-139` (`ValidationContext::v2_rules`), `:209-228` (13th parameter)
 - Modify: `src/consensus/shielded/shielded_validation.cpp:258-275` (dispatch), `:278-310` (set `v2_rules`)
-- Modify: `src/consensus/block_validation.cpp:101-112` (error string), `:167-179` (pass rules), `:651-660` (block resource gate passes rules)
+- Modify: `src/consensus/block_validation.cpp:167-179` (pass rules), `:651-660` (block resource gate passes rules)
 - Modify: `src/daemon/mempool.cpp:2526-2538`, `src/consensus/reindexer.cpp:2471-2483` (pass rules)
 - Modify: `include/consensus/shielded/resource_limits.h:73-120` (version-7 branch)
 - Modify: `src/consensus/shielded/CMakeLists.txt` (add `v2/validation.cpp`)
@@ -1387,7 +1364,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `ShieldedV2Rules` (Task 1); codec front door (Task 2); `BundlePublicInputs::FromBundle`, `VerifyBundleV2` (Task 3); `ValidationContext`, `ShieldedValidationError`, `ApplyShieldedBundle` (existing).
-- Produces: `ShieldedValidationError ValidateShieldedBundleV2(const ShieldedBundle&, const ValidationContext&)`; `ShieldedValidationError::ProofVersionSunset = 10`; `ValidationContext::v2_rules` (`ShieldedV2Rules`, defaulted member); `BuildShieldedValidationContext(..., CompactShieldedRules compact_rules = {}, ShieldedV2Rules v2_rules = {})`; `ShieldedValidationErrorToString(ProofVersionSunset) == "shielded-proof-version-sunset"`.
+- Produces: `ShieldedValidationError ValidateShieldedBundleV2(const ShieldedBundle&, const ValidationContext&)`; `ValidationContext::v2_rules` (`ShieldedV2Rules`, defaulted member); `BuildShieldedValidationContext(..., CompactShieldedRules compact_rules = {}, ShieldedV2Rules v2_rules = {})`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1470,7 +1447,7 @@ ValidationContext Ctx(const Built& b, uint32_t height, ShieldedV2Rules rules, co
     return BuildShieldedValidationContext(b.tx, &b.nullifiers, &b.tree, height, b.bundle.value_balance,
         /*activation=*/1, hist, /*input_binding=*/2, /*cv=*/3, /*auth=*/4, /*covenant=*/UINT32_MAX, {}, rules);
 }
-const ShieldedV2Rules kLive{true, 100, 200};
+const ShieldedV2Rules kLive{true, 100};
 
 TEST(ShieldedV2Validation, SighashIsIndependentOfTheProofBytes) {
     // The proof is inside the bundle bytes; the sighash must not cover it or proving is circular.
@@ -1551,21 +1528,17 @@ TEST(ShieldedV2Validation, CachedProofDoesNotSkipContextualRules) {
     EXPECT_EQ(ValidateShieldedBundle(b.bundle, ctx), ShieldedValidationError::NullifierDuplicate);
 }
 
-TEST(ShieldedV2Validation, V1ProofsSunset) {
-    // A v6 bundle validated under the v1 rules is out of scope here; the sunset gate fires
-    // before any v1 work. Use an empty-proof v6 bundle which would otherwise be BundleMalformed.
+TEST(ShieldedV2Validation, LegacyVersionsAreUntouchedByV2Rules) {
+    // No sunset in phase 1: a v6 bundle at any height reaches the v1 path with the same verdict
+    // whether v2 rules are live or dormant.
     Transaction v6; v6.version = Transaction::TX_VERSION_SHIELDED_V2;
     ShieldedBundle legacy; legacy.value_balance = -1; legacy.spends.push_back({H(1), H(2), {}, {1}});
     v6.shielded_bundle_bytes = SerializeShieldedBundle(legacy);
     CommitmentTree tree; NullifierSet nf;
-    auto ctx = [&](uint32_t h, ShieldedV2Rules r) {
-        return BuildShieldedValidationContext(v6, &nf, &tree, h, -1, 1, nullptr, 2, 3, 4, UINT32_MAX, {}, r);
-    };
-    EXPECT_EQ(ValidateShieldedBundle(legacy, ctx(199, kLive)), ShieldedValidationError::BundleMalformed) << "v1 path still reached";
-    EXPECT_EQ(ValidateShieldedBundle(legacy, ctx(200, kLive)), ShieldedValidationError::ProofVersionSunset);
-    EXPECT_EQ(ValidateShieldedBundle(legacy, ctx(200, {})), ShieldedValidationError::BundleMalformed) << "dormant: no sunset";
-    ShieldedBundle empty;
-    EXPECT_EQ(ValidateShieldedBundle(empty, ctx(200, kLive)), ShieldedValidationError::Ok) << "empty bundles are never sunset";
+    auto ctx = BuildShieldedValidationContext(v6, &nf, &tree, 5000, -1, 1, nullptr, 2, 3, 4, UINT32_MAX, {}, kLive);
+    EXPECT_EQ(ValidateShieldedBundle(legacy, ctx), ShieldedValidationError::BundleMalformed);
+    ctx.v2_rules = {};
+    EXPECT_EQ(ValidateShieldedBundle(legacy, ctx), ShieldedValidationError::BundleMalformed);
 }
 
 TEST(ShieldedV2Validation, ResourceLimitsForVersionSeven) {
@@ -1588,12 +1561,11 @@ Register the target like `test_shielded_v2_circuit` (same links, plus the test-h
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cmake --build build-spike --target test_shielded_v2_validation`
-Expected: compile errors (`v2/validation.h`, `ProofVersionSunset`, 13th parameter).
+Expected: compile errors (`v2/validation.h`, 13th parameter).
 
 - [ ] **Step 3: Context, enum, dispatch**
 
 `include/consensus/shielded/shielded_validation.h`:
-- enum: add `ProofVersionSunset = 10,   ///< v1 proof (tx version 5/6) at/after shielded_v1_sunset_height`.
 - `#include "consensus/shielded/v2/rules.h"`; after `CompactShieldedRules compact_rules{};` add `ShieldedV2Rules v2_rules{};`.
 - `BuildShieldedValidationContext` declaration: append `, ShieldedV2Rules v2_rules = {}` after `CompactShieldedRules compact_rules = {}`.
 
@@ -1605,14 +1577,11 @@ Expected: compile errors (`v2/validation.h`, `ProofVersionSunset`, 13th paramete
     if (Transaction::IsShieldedBundleV2Version(ctx.transaction_version)) {
         return v2::ValidateShieldedBundleV2(bundle, ctx);
     }
-    if (!bundle.IsEmpty() && !ctx.v2_rules.V1Allowed(ctx.block_height)) {
-        return ShieldedValidationError::ProofVersionSunset;
-    }
 ```
 
 - In `BuildShieldedValidationContext`, add the parameter and `ctx.v2_rules = v2_rules;`.
 
-`src/consensus/block_validation.cpp:101-112`: add `case ShieldedValidationError::ProofVersionSunset: return "shielded-proof-version-sunset";`. At the three `BuildShieldedValidationContext` call sites (`block_validation.cpp:167`, `mempool.cpp:2526`, `reindexer.cpp:2471`) append the argument `shielded::V2RulesFor(Params())` (namespace-qualified as each file does for `CompactRulesFor`).
+At the three `BuildShieldedValidationContext` call sites (`block_validation.cpp:167`, `mempool.cpp:2526`, `reindexer.cpp:2471`) append the argument `shielded::V2RulesFor(Params())` (namespace-qualified as each file does for `CompactRulesFor`).
 
 - [ ] **Step 4: v2 validation**
 
@@ -1714,7 +1683,7 @@ Expected: all PASS.
 
 ```bash
 git add include/consensus/shielded/v2/validation.h src/consensus/shielded/v2/validation.cpp include/consensus/shielded/shielded_validation.h src/consensus/shielded/shielded_validation.cpp src/consensus/block_validation.cpp src/daemon/mempool.cpp src/consensus/reindexer.cpp include/consensus/shielded/resource_limits.h src/consensus/shielded/CMakeLists.txt tests/consensus/test_shielded_v2_validation.cpp tests/CMakeLists.txt
-git commit -m "shielded-v2: version-7 bundle validation, v1 sunset gate, resource limits
+git commit -m "shielded-v2: version-7 bundle validation and resource limits
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1723,7 +1692,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ### Task 5: Wallet: v2 key scheme, addresses, scanning, bundle builder, migration, RPC, prover kit
 
-**Blocked on:** owner approval of spec §10 (Amendment A). Build Tasks 6–8 first if approval is pending.
+**Blocked on:** owner approval of spec §10 (Amendment A) after the independent review of Task 0's results. Build Tasks 6–8 first if approval is pending.
+
+**Guards (owner review findings 1 and 6):**
+- Every operation that CREATES a v2-scheme note (`wallet.transferv2`, `wallet.shieldedmigratev2`, change outputs to a v2 address, and any v1 transfer whose recipient address decodes as `HashKeyV2`) is refused with `shielded-v2-not-active` unless `V2RulesFor(Params()).Active(next_block_height)`. A v1 output proof can commit to a hash-key `pk` before v2 spending exists; without this guard a wallet strands value until a future activation.
+- Migration selects `NoteKeyScheme::Auth` notes only. `PrivateCovenant` notes are never selected, are counted in `skipped_covenant_notes`, and passing one explicitly returns `InvalidParams` / `covenant_note_not_migratable`. They keep their v1 spending path.
+- Scanning recognises a v2 note by address-scheme derivation (`Poseidon2(hk, d)` match), never by the originating transaction's version: a migrated v2 note is deliberately created inside a v6 transaction.
+- If a reorg undoes activation, v2 notes created in the orphaned blocks roll back with the block as today; notes that remain confirmed but whose spend path is not active (activation moved by a regtest override, or a reorg below `H`) are shown by `wallet.shieldedbalance` under `unspendable_until_v2_active_una`, and the wallet refuses to build v7 transactions until `Active(next_height)` again.
+- Viewing keys: `hk` joins the full viewing key, so exported FVKs gain a version byte (v2) and importers of v1 FVKs cannot see v2 notes; seed-only restoration derives `hk` from `ask` and needs no new material. `wallet.exportviewingkey` / `importviewingkey` carry the version explicitly; a v1-format import into a wallet that receives v2 notes warns. Both behaviours are tested.
 
 **Files:**
 - Modify: `include/wallet/shielded_note_store.h:41-49` (`HashKeyV2 = 3`)
@@ -1744,7 +1720,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
   - `DecodedShieldedAddress::scheme` (`NoteKeyScheme`, `Auth` for `dins*`, `HashKeyV2` for `dinz*`); decoder accepts both HRP families, curve-checks `pk_d` always and `pk_d_spend` only for `Auth`.
   - `struct V2SpendInput { ShieldedNote note; };` `struct V2OutputRequest { DecodedShieldedAddress to; uint64_t value_una; std::array<uint8_t,512> memo; };`
   - `OpResult BuildV2BundleForTx(Transaction& tx, const ShieldedAccountKeys& keys, const std::vector<ShieldedNote>& spends, const std::vector<V2OutputRequest>& outputs, int64_t value_balance, const CommitmentTree& tree, ShieldedNoteStore& store);` sets `tx.version = 7`, fills `tx.shielded_bundle_bytes`, persists outputs to self as `HashKeyV2` notes.
-  - RPCs: `wallet.shieldedaddressv2 {"index": j}` → `{address}`; `wallet.transferv2 {"to": addr, "amount_una": n, "fee_una": f}` → `{txid}`; `wallet.shieldedmigratev2 {"max_notes": 4}` → `{txid, migrated_una}` (v1 auth-proof transfer of up to `kAuthMaxSpends` auth notes to the wallet's own v2 address 0).
+  - RPCs: `wallet.shieldedaddressv2 {"index": j}` → `{address}`; `wallet.transferv2 {"to": addr, "amount_una": n, "fee_una": f}` → `{txid}`; `wallet.shieldedmigratev2 {"max_notes": 4}` → `{txid, migrated_una, skipped_covenant_notes}` (v1 auth-proof transfer of up to `kAuthMaxSpends` `Auth` notes to the wallet's own v2 address 0; refused with `shielded-v2-not-active` before activation).
   - Prover kit: `typedef struct dinero_shielded_v2_bundle_request { const uint8_t* serialized_unsigned_tx; size_t serialized_unsigned_tx_len; int64_t value_balance; const dinero_shielded_v2_spend_note* spends; size_t n_spends; const dinero_shielded_v2_output* outputs; size_t n_outputs; uint8_t ask32[32]; uint8_t nvk32[32]; }` and `dinero_shielded_status dinero_shielded_prove_bundle_v2(const dinero_shielded_v2_bundle_request*, dinero_shielded_unshield_result*)` returning the bundle bytes to splice into the version-7 envelope (same contract as the existing unshield entry point).
 
 - [ ] **Step 1: Write the failing tests**
@@ -1839,7 +1815,7 @@ TEST(ShieldedV2Wallet, TransferBuildsValidVersionSevenTransaction) {
     EXPECT_EQ(b.spends.size(), 2u);
     EXPECT_EQ(b.outputs.size(), 2u) << "payment + change";
     EXPECT_EQ(b.value_balance, -1000);
-    auto ctx = csh::BuildShieldedValidationContext(tx, &nullifiers, &tree, 102, -1000, 1, nullptr, 2, 3, 4, UINT32_MAX, {}, {true, 100, UINT32_MAX});
+    auto ctx = csh::BuildShieldedValidationContext(tx, &nullifiers, &tree, 102, -1000, 1, nullptr, 2, 3, 4, UINT32_MAX, {}, {true, 100});
     EXPECT_EQ(csh::ValidateShieldedBundle(b, ctx), csh::ShieldedValidationError::Ok);
     // Recipient discovers the payment with ivk only.
     size_t found = 0;
@@ -1870,6 +1846,35 @@ TEST(ShieldedV2Wallet, MigrationSpendsAuthNotesWithV1ProofsToOwnV2Address) {
     ASSERT_EQ(unspent.size(), 1u);
     EXPECT_EQ(unspent[0].key_scheme, dinero::wallet::NoteKeyScheme::HashKeyV2);
     EXPECT_EQ(unspent[0].value_una, 1'999'000u);
+}
+
+TEST(ShieldedV2Wallet, MigrationRefusesPrivateCovenantNotes) {
+    const auto k = Keys(0x32);
+    csh::CommitmentTree tree;
+    dinero::wallet::ShieldedNoteStore store(":memory:"); ASSERT_TRUE(store.Open());
+    auto note = wsh::test::MakeConfirmedAuthNote(k, tree, store, 2'000'000);
+    note.key_scheme = dinero::wallet::NoteKeyScheme::PrivateCovenant;
+    dinero::Transaction tx;
+    auto r = wsh::BuildMigrateToV2Tx(tx, k, {note}, 1000, tree, store, wsh::kHrpRegtestV2, /*v2_active=*/true);
+    EXPECT_EQ(r.status, dinero::wallet::shielded_ops::OpStatus::InvalidParams);
+    EXPECT_EQ(r.error, "covenant_note_not_migratable");
+    EXPECT_TRUE(tx.shielded_bundle_bytes.empty());
+}
+
+TEST(ShieldedV2Wallet, NoV2NoteIsCreatedBeforeActivation) {
+    const auto k = Keys(0x33);
+    csh::CommitmentTree tree;
+    dinero::wallet::ShieldedNoteStore store(":memory:"); ASSERT_TRUE(store.Open());
+    auto note = wsh::test::MakeConfirmedAuthNote(k, tree, store, 2'000'000);
+    dinero::Transaction tx;
+    auto r = wsh::BuildMigrateToV2Tx(tx, k, {note}, 1000, tree, store, wsh::kHrpRegtestV2, /*v2_active=*/false);
+    EXPECT_EQ(r.status, dinero::wallet::shielded_ops::OpStatus::InvalidParams);
+    EXPECT_EQ(r.error, "shielded-v2-not-active");
+    // A v1 transfer addressed to a v2 (dinz) address is refused the same way.
+    const auto v2addr = wsh::DeriveDiversifiedAddressV2(k, 0, wsh::kHrpRegtestV2);
+    auto r2 = wsh::GuardV2Recipient(wsh::DecodeShieldedAddress(v2addr.address), /*v2_active=*/false);
+    EXPECT_EQ(r2.status, dinero::wallet::shielded_ops::OpStatus::InvalidParams);
+    EXPECT_EQ(r2.error, "shielded-v2-not-active");
 }
 }  // namespace
 ```
@@ -1938,7 +1943,13 @@ shielded_ops::OpResult BuildV2BundleForTx(Transaction& tx, const ShieldedAccount
 shielded_ops::OpResult BuildMigrateToV2Tx(Transaction& tx, const ShieldedAccountKeys& keys,
                                           const std::vector<ShieldedNote>& auth_notes, uint64_t fee_una,
                                           const consensus::shielded::CommitmentTree& tree,
-                                          ShieldedNoteStore& store, const std::string& hrp_v2);
+                                          ShieldedNoteStore& store, const std::string& hrp_v2,
+                                          bool v2_active);
+
+/// Refuses (`shielded-v2-not-active`) any recipient whose address scheme is HashKeyV2 while v2
+/// spending is not active, so no wallet path can create a note that cannot yet be spent.
+/// Called by every v1 and v2 builder before it accepts a recipient.
+shielded_ops::OpResult GuardV2Recipient(const DecodedShieldedAddress& to, bool v2_active);
 
 /// Scheme-aware scan of one confirmed transaction: decrypts each output with ivk, then
 /// recognises ownership under Auth (pk_d = s·G) OR HashKeyV2 (Poseidon2(hk, d)) and stores
@@ -2005,7 +2016,7 @@ shielded_ops::OpResult BuildV2BundleForTx(Transaction& tx, const ShieldedAccount
 
 `HrpV2For(tx)` maps the daemon's chain to `kHrpMainnetV2/kHrpTestnetV2/kHrpRegtestV2` the same way the existing ops pick `kHrpMainnet/...` (grep `kHrpMainnet` in `shielded_wallet_ops.cpp` and mirror). `ValueToHash` and `RandomHash` are the existing helpers in `shielded_wallet_ops.cpp`; move them to a small internal header `src/wallet/shielded_ops_util.h` so both files share one definition (do not duplicate).
 
-`BuildMigrateToV2Tx` derives address 0 under `hrp_v2`, then calls the existing `BuildAddressedTransferBundleForTx` (`shielded_wallet_ops.cpp:1228`) with that address as the single recipient, amount `Σ notes − fee_una`, no change. The existing builder already accepts any decodable address; the only new behaviour is that `DecodeShieldedAddress` now accepts the v2 HRP, so the change here is a thin wrapper plus a test.
+`BuildMigrateToV2Tx` first returns `shielded-v2-not-active` when `!v2_active`, then rejects any note with `key_scheme != Auth` (`covenant_note_not_migratable` for scheme 2, `legacy_note_not_migratable` for scheme 0), then derives address 0 under `hrp_v2` and calls the existing `BuildAddressedTransferBundleForTx` (`shielded_wallet_ops.cpp:1228`) with that address as the single recipient, amount `Σ notes − fee_una`, no change. `GuardV2Recipient` is inserted at the recipient-decoding point of `BuildAddressedTransferBundleForTx` and `BuildAddressedShieldBundleForTx` (the two existing v1 builders that accept arbitrary addresses) with `v2_active = V2RulesFor(Params()).Active(next_height)` supplied by the RPC layer. `wallet.shieldedmigratev2` selects `WHERE key_scheme = 1` and reports scheme-2 unspent notes as `skipped_covenant_notes`. The existing builder already accepts any decodable address; the only new behaviour is that `DecodeShieldedAddress` now accepts the v2 HRP, so the change here is a thin wrapper plus a test.
 
 `RescanConfirmedBlockV2`: locate the ownership check in the existing scan (`grep -n DeriveDiversifiedSpendPublicKey src/wallet/shielded_wallet_ops.cpp`, the site that recomputes `pk` from `(ak, d)` and compares `NoteCommitment`); extend it to also try `csh::AuthRecipientCommitmentKey(csh::v2::DiversifiedSpendPublicKeyV2(keys.hk, d_padded), NullifierKeyCommitment(nfk))` and store `key_scheme = HashKeyV2` on a match. `RescanConfirmedBlockV2` is the exported per-transaction entry that the test and the daemon's block-scan loop both call.
 
@@ -2041,7 +2052,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: `VerifyBundleV2`, `BundlePublicInputs::FromBundle` (Task 3); `DeserializeShieldedBundleForVersion` (Task 2); `ComputeShieldedTxSighash`; `ShieldedV2Rules` (Task 1).
-- Produces: `struct PrewarmStats { size_t candidates = 0, verified = 0, failed = 0, skipped = 0; double wall_ms = 0; };` `PrewarmStats PrewarmBundleProofCacheV2(const Block& block, uint32_t height, const ShieldedV2Rules& rules, size_t threads);` Thread count 0 means `std::thread::hardware_concurrency()` capped at 16.
+- Produces: `struct PrewarmStats { size_t candidates = 0, verified = 0, failed = 0, skipped = 0, rejected_budget = 0; double wall_ms = 0; };` `PrewarmStats PrewarmBundleProofCacheV2(const Block& block, uint32_t height, const ShieldedV2Rules& rules);` running on ONE process-wide `BundleVerifierPool` (`static`, `min(hardware_concurrency, 8)` threads, bounded queue of `kV2MaxPrewarmQueue = 4 * kAuthMaxBlockProofs` jobs; when full, remaining jobs are counted in `rejected_budget` and verified later on the normal path). Memory bound: the pool holds at most queue-size envelopes (≤ `kV2MaxEnvelopeBytes` each). The cache is `VerifiedProofCache<4096>` for v2 (≥ 4096 / `kAuthMaxBlockProofs` = 512 blocks of headroom before FIFO eviction can drop a success that is still needed); an eviction only costs a re-verification, never correctness.
+- Invalid proofs: never cached; a bounded `RecentlyFailedCache<1024>` keyed by the same cache key short-circuits repeated identical bad proofs (same envelope + same public inputs) so a peer replaying one bad block cannot make the locked path re-verify it; a proof that fails under one public-input set and is resubmitted with different inputs is a different key and is verified once.
+- Correctness does not depend on the prewarm: the locked path always calls `VerifyBundleV2`, which checks the success cache, then the failed cache, then verifies. The prewarm only moves the expensive case off the lock. Both entry paths (`AcceptBlockFromPeer` and `AcceptBlockFromRPC`) call it before any consensus lock.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2065,7 +2078,7 @@ dinero::Block BlockOf(std::vector<dinero::Transaction> txs) {
     for (auto& t : txs) b.vtx.push_back(std::move(t));
     return b;
 }
-const ShieldedV2Rules kLive{true, 100, UINT32_MAX};
+const ShieldedV2Rules kLive{true, 100};
 
 TEST(ShieldedV2Batch, PrewarmVerifiesEveryVersionSevenTxAndCachesOnlySuccesses) {
     std::vector<dinero::Transaction> txs;
@@ -2073,7 +2086,7 @@ TEST(ShieldedV2Batch, PrewarmVerifiesEveryVersionSevenTxAndCachesOnlySuccesses) 
     auto bad = BuildV7(1, 1, -1000, 77); bad.bundle.v2_proof[10] ^= 1; bad.tx.shielded_bundle_bytes = SerializeShieldedBundleV2(bad.bundle);
     txs.push_back(bad.tx);
     dinero::Transaction plain; plain.version = 2; txs.push_back(plain);
-    const auto stats = v2::PrewarmBundleProofCacheV2(BlockOf(txs), 100, kLive, 4);
+    const auto stats = v2::PrewarmBundleProofCacheV2(BlockOf(txs), 100, kLive);
     EXPECT_EQ(stats.candidates, 7u);
     EXPECT_EQ(stats.verified, 6u);
     EXPECT_EQ(stats.failed, 1u);
@@ -2091,17 +2104,46 @@ TEST(ShieldedV2Batch, PrewarmVerifiesEveryVersionSevenTxAndCachesOnlySuccesses) 
 
 TEST(ShieldedV2Batch, PrewarmIsANoOpWhenDormantOrBeforeActivation) {
     auto tx = BuildV7(1, 1, -1000, 5).tx;
-    EXPECT_EQ(v2::PrewarmBundleProofCacheV2(BlockOf({tx}), 100, {}, 2).skipped, 1u);
-    EXPECT_EQ(v2::PrewarmBundleProofCacheV2(BlockOf({tx}), 99, kLive, 2).skipped, 1u);
+    EXPECT_EQ(v2::PrewarmBundleProofCacheV2(BlockOf({tx}), 100, {}).skipped, 1u);
+    EXPECT_EQ(v2::PrewarmBundleProofCacheV2(BlockOf({tx}), 99, kLive).skipped, 1u);
+}
+
+TEST(ShieldedV2Batch, PoolIsProcessWideAndBounded) {
+    // Two blocks submitted back to back share one pool; the queue bound is honoured and the
+    // overflow is reported, not dropped silently.
+    std::vector<dinero::Transaction> a, b;
+    for (uint8_t i = 1; i <= 8; ++i) { a.push_back(BuildV7(1, 1, -1000, 100 + i).tx); b.push_back(BuildV7(1, 1, -1000, 150 + i).tx); }
+    const auto sa = v2::PrewarmBundleProofCacheV2(BlockOf(a), 100, kLive);
+    const auto sb = v2::PrewarmBundleProofCacheV2(BlockOf(b), 100, kLive);
+    EXPECT_EQ(sa.verified + sa.rejected_budget, 8u);
+    EXPECT_EQ(sb.verified + sb.rejected_budget, 8u);
+    EXPECT_LE(v2::BundleVerifierPool::Instance().Threads(), 8u);
+    EXPECT_EQ(v2::BundleVerifierPool::Instance().QueueCapacity(), 4u * kAuthMaxBlockProofs);
+}
+
+TEST(ShieldedV2Batch, RepeatedBadProofIsNotReverified) {
+    auto bad = BuildV7(1, 1, -1000, 77); bad.bundle.v2_proof[10] ^= 1; bad.tx.shielded_bundle_bytes = SerializeShieldedBundleV2(bad.bundle);
+    ShieldedBundle b; ASSERT_EQ(DeserializeShieldedBundleForVersion(7, bad.tx.shielded_bundle_bytes, &b), BundleDecodeError::Ok);
+    const auto pub = v2::BundlePublicInputs::FromBundle(b, ComputeShieldedTxSighash(bad.tx));
+    auto* ctx = dinero::crypto::GetSecp256k1ContextSignVerify();
+    auto t0 = std::chrono::steady_clock::now();
+    EXPECT_FALSE(v2::VerifyBundleV2(b.v2_proof, pub, ctx));
+    const double first = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    t0 = std::chrono::steady_clock::now();
+    EXPECT_FALSE(v2::VerifyBundleV2(b.v2_proof, pub, ctx));
+    const double second = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    EXPECT_LT(second, 2.0) << "first " << first << " ms";
 }
 
 TEST(ShieldedV2Batch, ParallelIsFasterThanSerialFor16Proofs) {
     std::vector<dinero::Transaction> txs;
     for (uint8_t i = 1; i <= 16; ++i) txs.push_back(BuildV7(2, 2, -1000, 100 + i).tx);
-    const auto serial = v2::PrewarmBundleProofCacheV2(BlockOf(txs), 100, kLive, 1);
+    v2::BundleVerifierPool::Instance().SetThreadsForTests(1);
+    const auto serial = v2::PrewarmBundleProofCacheV2(BlockOf(txs), 100, kLive);
     std::vector<dinero::Transaction> txs2;
     for (uint8_t i = 1; i <= 16; ++i) txs2.push_back(BuildV7(2, 2, -1000, 200 + i).tx);
-    const auto parallel = v2::PrewarmBundleProofCacheV2(BlockOf(txs2), 100, kLive, 8);
+    v2::BundleVerifierPool::Instance().SetThreadsForTests(8);
+    const auto parallel = v2::PrewarmBundleProofCacheV2(BlockOf(txs2), 100, kLive);
     EXPECT_EQ(serial.verified, 16u); EXPECT_EQ(parallel.verified, 16u);
     EXPECT_LT(parallel.wall_ms, serial.wall_ms * 0.6) << "serial " << serial.wall_ms << " ms, parallel " << parallel.wall_ms << " ms";
 }
@@ -2121,31 +2163,35 @@ Expected: compile error, `v2/batch_verifier.h` missing.
 #include "consensus/shielded/v2/rules.h"
 #include "primitives/block.h"
 #include <cstddef>
+#include <functional>
 namespace dinero::consensus::shielded::v2 {
-struct PrewarmStats { size_t candidates = 0, verified = 0, failed = 0, skipped = 0; double wall_ms = 0; };
-/// Verifies every version-7 shielded proof in `block` on `threads` workers (0 = hardware
-/// concurrency, max 16) and records successes in the v2 proof cache. Never fails the block:
-/// consensus validation re-runs the same VerifyBundleV2 and hits the cache. Call BEFORE any
-/// consensus lock (spec §3.4).
-PrewarmStats PrewarmBundleProofCacheV2(const Block& block, uint32_t height, const ShieldedV2Rules& rules, size_t threads = 0);
+struct PrewarmStats { size_t candidates = 0, verified = 0, failed = 0, skipped = 0, rejected_budget = 0; double wall_ms = 0; };
+
+/// One process-wide pool: min(hardware_concurrency, 8) threads, bounded FIFO queue of
+/// kV2MaxPrewarmQueue jobs. Submit() returns false when the queue is full (caller counts
+/// rejected_budget; the proof is verified later on the normal path). Never blocks the caller.
+class BundleVerifierPool {
+public:
+    static BundleVerifierPool& Instance();
+    size_t Threads() const;
+    size_t QueueCapacity() const;
+    bool Submit(std::function<void()> job);
+    void Drain();                       // wait for the queue to empty (tests, shutdown)
+    void SetThreadsForTests(size_t n);  // test hook; no-op in Release builds
+};
+constexpr size_t kV2MaxPrewarmQueue = 4 * kAuthMaxBlockProofs;
+
+/// Verifies every version-7 proof of `block` on the shared pool and records successes in the
+/// v2 proof cache. Consensus does not depend on it: the locked path re-checks the cache and
+/// verifies on a miss. Called BEFORE any consensus lock on both the P2P and RPC entry paths.
+PrewarmStats PrewarmBundleProofCacheV2(const Block& block, uint32_t height, const ShieldedV2Rules& rules);
 }
 ```
 
 ```cpp
-// src/consensus/shielded/v2/batch_verifier.cpp
-#include "consensus/shielded/v2/batch_verifier.h"
-#include "consensus/shielded/binding_sig.h"
-#include "consensus/shielded/v2/bundle_circuit.h"
-#include "consensus/shielded/v2/serialization.h"
-#include "crypto/evp_secp256k1.h"
-#include <algorithm>
-#include <atomic>
-#include <chrono>
-#include <thread>
-#include <vector>
-
-namespace dinero::consensus::shielded::v2 {
-PrewarmStats PrewarmBundleProofCacheV2(const Block& block, uint32_t height, const ShieldedV2Rules& rules, size_t threads) {
+// src/consensus/shielded/v2/batch_verifier.cpp  (load-bearing parts; the pool is a plain
+// mutex + condition_variable + std::deque<std::function<void()>> with N std::jthread workers)
+PrewarmStats PrewarmBundleProofCacheV2(const Block& block, uint32_t height, const ShieldedV2Rules& rules) {
     PrewarmStats st;
     const auto t0 = std::chrono::steady_clock::now();
     std::vector<const Transaction*> jobs;
@@ -2156,30 +2202,28 @@ PrewarmStats PrewarmBundleProofCacheV2(const Block& block, uint32_t height, cons
         if (!rules.Active(height)) { ++st.skipped; continue; }
         jobs.push_back(&tx);
     }
-    if (jobs.empty()) { st.wall_ms = 0; return st; }
-    if (threads == 0) threads = std::min<size_t>(16, std::max<unsigned>(1, std::thread::hardware_concurrency()));
-    threads = std::min(threads, jobs.size());
-    std::atomic<size_t> next{0}, ok{0}, bad{0};
-    auto worker = [&] {
-        auto* ctx = dinero::crypto::GetSecp256k1ContextSignVerify();
-        for (size_t j = next.fetch_add(1); j < jobs.size(); j = next.fetch_add(1)) {
+    if (jobs.empty()) return st;
+    auto* ctx = dinero::crypto::GetSecp256k1ContextSignVerify();   // initialised once here, shared read-only
+    std::atomic<size_t> ok{0}, bad{0}; std::latch done(static_cast<ptrdiff_t>(jobs.size()));
+    size_t submitted = 0;
+    for (const Transaction* tx : jobs) {
+        const bool accepted = BundleVerifierPool::Instance().Submit([tx, ctx, &ok, &bad, &done] {
             ShieldedBundle b;
-            if (DeserializeShieldedBundleForVersion(jobs[j]->version, jobs[j]->shielded_bundle_bytes, &b) != BundleDecodeError::Ok ||
-                b.spends.size() > kV2MaxSpends || b.outputs.size() > kV2MaxOutputs || b.v2_proof.size() > kV2MaxEnvelopeBytes) { ++bad; continue; }
-            const auto pub = BundlePublicInputs::FromBundle(b, ComputeShieldedTxSighash(*jobs[j]));
-            (VerifyBundleV2(b.v2_proof, pub, ctx) ? ok : bad)++;
-        }
-    };
-    std::vector<std::thread> pool;
-    for (size_t t = 1; t < threads; ++t) pool.emplace_back(worker);
-    worker();
-    for (auto& t : pool) t.join();
+            if (DeserializeShieldedBundleForVersion(tx->version, tx->shielded_bundle_bytes, &b) == BundleDecodeError::Ok &&
+                b.spends.size() <= kV2MaxSpends && b.outputs.size() <= kV2MaxOutputs && b.v2_proof.size() <= kV2MaxEnvelopeBytes &&
+                VerifyBundleV2(b.v2_proof, BundlePublicInputs::FromBundle(b, ComputeShieldedTxSighash(*tx)), ctx)) ++ok; else ++bad;
+            done.count_down();
+        });
+        if (accepted) ++submitted; else { ++st.rejected_budget; done.count_down(); }
+    }
+    done.wait();
     st.verified = ok; st.failed = bad;
     st.wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     return st;
 }
-}  // namespace dinero::consensus::shielded::v2
 ```
+
+`VerifyBundleV2` (Task 3) gains the failed-proof short-circuit: after the success-cache check, `if (FailedCache().Contains(key)) return false;` and on a verification failure `FailedCache().RememberVerified(key)` (a second `VerifiedProofCache<1024>` instance used as a "recently failed" set; name it `RecentlyFailedCacheV2` in code). The success cache is `VerifiedProofCache<4096>`.
 
 Check that `GetSecp256k1ContextSignVerify()` is safe to call concurrently from several threads (read `src/crypto/evp_secp256k1.cpp`); if it lazily initialises a shared context without a lock, call it once on the calling thread before spawning workers and pass the pointer in. `VerifyBundleV2`'s cache is already mutex-protected (`VerifiedProofCache`).
 
@@ -2195,7 +2239,22 @@ Call site, `src/daemon/block_acceptor.cpp:721`, first lines of `AcceptBlockFromP
     }
 ```
 
-Use whatever field the `Block` type exposes for its height (`grep -n 'height' include/primitives/block.h`); if the header carries no height, look it up from the parent index without taking `g_block_index_mutex` for longer than the lookup, and skip the prewarm when the parent is unknown (orphans are verified on the normal path later). The RPC path (`AcceptBlockFromRPC`) parses after the lock and is left alone: pool submissions are one block per minute.
+Use whatever field the `Block` type exposes for its height (`grep -n 'height' include/primitives/block.h`); if the header carries no height, look it up from the parent index without taking `g_block_index_mutex` for longer than the lookup, and skip the prewarm when the parent is unknown (orphans are verified on the normal path later). The RPC path (`AcceptBlockFromRPC`, `block_acceptor.cpp:120-139`) is prewarmed too. The SV2 pool submits bursts of same-parent siblings (34 `submitblock` calls in 3 minutes on 2026-09-21; target spacing bounds nothing about RPC rate), and the RPC path takes the activation lock before parsing: verification under that lock is the #799/#803 starvation vector. Insert as the first statement of `AcceptBlockFromRPC`, before `AcquireBlockIngressActivationLock`, a parse of a throwaway copy for the prewarm only:
+
+```cpp
+    // Shielded v2: verify bundle proofs BEFORE the activation lock (spec §3.4). The locked path
+    // below re-parses and re-validates exactly as today and only hits the proof cache.
+    try {
+        const ParsedBlock prewarm_block = ParseBlockFromHex(blockHex);
+        const auto st = consensus::shielded::v2::PrewarmBundleProofCacheV2(
+            prewarm_block.block, prewarm_block.block.header.height, consensus::shielded::V2RulesFor(dinero::Params()));
+        if (st.candidates) LOG_INFO("[ShieldedV2] prewarm rpc source=" + source + " candidates=" + std::to_string(st.candidates) +
+                                    " verified=" + std::to_string(st.verified) + " failed=" + std::to_string(st.failed) +
+                                    " rejected_budget=" + std::to_string(st.rejected_budget) + " ms=" + std::to_string(static_cast<int>(st.wall_ms)));
+    } catch (...) { /* the locked path reports parse errors exactly as today */ }
+```
+
+Parsing twice costs microseconds against a proof verification, and the existing locked sequence is not reordered. `ParsedBlock`'s field names come from `ParseBlockFromHex` (`grep -n "struct ParsedBlock" src/daemon/*.h`). Add a test that drives `AcceptBlockFromRPC` with a hex block containing one v7 tx and asserts, through a test hook counting `AcquireBlockIngressActivationLock` calls, that the proof cache is warm while the count is still zero.
 
 - [ ] **Step 4: Run the tests**
 
@@ -2213,9 +2272,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 7: Release-only performance gate
+### Task 7: Verifier tuning to the spec gates, then the Release-only performance gate
+
+**Why this task exists:** the spike's Spartan+Hyrax verify is 65 ms for 2-in-2-out against the spec's 20 ms gate, and 585 ms per 50 batched against 400 ms. Two reductions were identified in the spike report and neither is implemented or measured yet: (1) with `u = 1` and `E = 0` the `comm_E`/`eval_E` Hyrax commitment and opening are redundant for a standalone (non-folded) proof, so a v2-only Spartan profile can omit them (one fewer Hyrax opening and multi-scalar multiplication); (2) Hyrax row/column shaping (`HyraxParams::from_n`) trades prover work for verifier MSM size. Implement both behind an additive `SpartanProfile::BundleV2` in `src/zk/zkvm/r1cs_spartan.{h,cpp}` that leaves the legacy profile byte-identical (the existing v1 saved-proof vectors pin that), with a soundness test that an unsatisfied witness and a non-zero-E proof are rejected under the new profile. Measure after each step. If the gates are still missed, the task ends with the measured numbers reported to the owner, not with a changed constant.
 
 **Files:**
+- Modify: `src/zk/zkvm/r1cs_spartan.h`, `src/zk/zkvm/r1cs_spartan.cpp` (additive `SpartanProfile::BundleV2`; legacy untouched)
+- Modify: `src/consensus/shielded/v2/bundle_circuit.cpp` (use the profile)
+- Create: `tests/zk/test_spartan_bundle_profile.cpp` (soundness of the E-less profile)
 - Create: `tests/consensus/test_shielded_v2_perf.cpp` (target `test_shielded_v2_perf`, ctest `ShieldedV2Performance`, registered only when `CMAKE_BUILD_TYPE STREQUAL "Release"`, labels `shielded;performance;mandatory`, TIMEOUT 1200)
 - Modify: `tests/CMakeLists.txt`
 - Create: `docs/benchmarks/shielded-v2-phase1-gates.md`
@@ -2241,11 +2305,12 @@ namespace v2 = dinero::consensus::shielded::v2;
 using Clock = std::chrono::steady_clock;
 double Ms(Clock::time_point t0) { return std::chrono::duration<double, std::milli>(Clock::now() - t0).count(); }
 
-// Gates from the plan's Global Constraints (CI runner class). Local numbers are printed, not asserted.
-constexpr size_t kMaxProofBytes = 20480;
-constexpr double kMaxVerifyMs = 140.0;
-constexpr double kMaxBatchedMsPerProof = 25.0;
-constexpr double kMaxProveMs = 1000.0;
+// Gates from spec §2. Runs on the M4 Max class builder the spec names; a slower runner does not lower the bar.
+// Spec §2 CI thresholds (plan Global Constraints table). Changing any requires an owner-approved spec edit.
+constexpr size_t kMaxProofBytes = 32768;
+constexpr double kMaxVerifyMs = 20.0;
+constexpr double kMaxBlockOf50Ms = 400.0;
+constexpr double kMaxProveMs = 600.0;
 
 TEST(ShieldedV2Performance, TwoInTwoOutMeetsGates) {
 #ifndef NDEBUG
@@ -2276,10 +2341,10 @@ TEST(ShieldedV2Performance, FiftyProofBlockBatched) {
 #endif
     dinero::Block block; block.vtx.emplace_back();
     for (uint8_t i = 1; i <= 50; ++i) block.vtx.push_back(BuildV7(2, 2, -1000, 50 + i).tx);
-    const auto st = v2::PrewarmBundleProofCacheV2(block, 100, {true, 100, UINT32_MAX}, 8);
+    const auto st = v2::PrewarmBundleProofCacheV2(block, 100, {true, 100}, 8);
     ASSERT_EQ(st.verified, 50u);
     std::printf("SHIELDED_V2_PERF batched_ms_per_proof=%.2f wall_ms=%.0f\n", st.wall_ms / 50.0, st.wall_ms);
-    EXPECT_LE(st.wall_ms / 50.0, kMaxBatchedMsPerProof);
+    EXPECT_LE(st.wall_ms, kMaxBlockOf50Ms);
 }
 }  // namespace
 ```
@@ -2289,7 +2354,7 @@ CMake: wrap the target and `add_test` in `if(CMAKE_BUILD_TYPE STREQUAL "Release"
 - [ ] **Step 2: Run locally**
 
 Run: `cmake --build build-spike --target test_shielded_v2_perf && ./build-spike/test_shielded_v2_perf`
-Expected: PASS on M4 Max with margins; record the two printed lines in `docs/benchmarks/shielded-v2-phase1-gates.md` together with the Task 0 numbers and the gate table.
+Expected: PASS against the spec gates after the tuning steps; record the two printed lines in `docs/benchmarks/shielded-v2-phase1-gates.md` with the Task 0 (pre-tuning) numbers, host, commit, build type and the spec §2 table. If it does not pass, the task ends with a report, not a changed constant.
 
 - [ ] **Step 3: Commit**
 
@@ -2326,7 +2391,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 // committed files (ShieldedV2VectorsRegenerateCheck), so any consensus drift is a red lane.
 ```
 
-Vectors (all at height 101 under rules `{true, 101, 300}`, Auth scheduled at 4):
+Vectors (all at height 101 under rules `{true, 101}`, Auth scheduled at 4):
 
 | file | shape | expected |
 |---|---|---|
@@ -2338,7 +2403,7 @@ Vectors (all at height 101 under rules `{true, 101, 300}`, Auth scheduled at 4):
 | derived | nullifier duplicated | NullifierDuplicate |
 | derived | `lockTime` changed | ProofInvalid (sighash binding) |
 | derived | height 100 | NotActive (v2 before activation) |
-| derived | v6 legacy bundle at height 300 | ProofVersionSunset |
+| derived | v6 legacy bundle at height 300 under live v2 rules | identical verdict to dormant rules (no sunset) |
 | derived | envelope id 0x7F | ProofInvalid (unknown id) |
 
 The consumer asserts every row; the manifest stores `txid`, `tx_sighash`, `wire_bytes`, `proof_bytes`, `constraints` per valid vector. Deterministic generation needs `BuildV7` to take an explicit RNG seed for `rcm`/`esk` (it already takes `seed`), and `ProveBundleV2`'s Hyrax blinding must be seeded for the regenerate check: add a test-hook `v2::SetDeterministicProverRngForTests(uint64_t)` under `DINERO_SHIELDED_V2_TEST_HOOKS` that the generator calls; production builds have no such symbol. If Hyrax blinding cannot be seeded through the existing `dinero_zk` API, the regenerate check compares everything except `proof_bytes` and additionally asserts that the regenerated proof verifies under the committed public inputs.
@@ -2370,27 +2435,30 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 9: Regtest harness across activation, reorg, restart, sunset, replay
+### Task 9: Regtest harness across activation, reorg, restart, replay
 
 **Files:**
 - Create: `tests/integration/test_shielded_v2_regtest.py` (or the harness language the combined migration harness uses; find it with `grep -rn 'combined-migration' .github/workflows/combined-migration-qualification.yml`)
 - Modify: `.github/workflows/combined-migration-qualification.yml` (add the v2 scenario job)
 
 **Interfaces:**
-- Consumes: `dinerod --consensus-shielded-v2-height=H --consensus-shielded-v1-sunset-height=S` (Task 1), RPCs from Task 5.
+- Consumes: `dinerod --consensus-shielded-v2-height=H` (Task 1), RPCs from Task 5.
 
 - [ ] **Step 1: Scenario (each numbered step is an assertion in the harness)**
 
-Two regtest nodes A and B, Auth at 4, v2 at H = 40, sunset S = 60.
+Two regtest nodes A and B, Auth at 4, v2 at H = 40. No sunset.
 
 1. Mine to 30. Shield 5 DIN into an Auth address on A (`wallet.shield`). Mine 1. Balance visible on A and B.
-2. At 35: `wallet.transferv2` → error `shielded-v2-not-active`. Mine to 40.
-3. At 40: `wallet.shieldedmigratev2` on A (v6 tx). Mine 1. A's unspent notes: one `HashKeyV2` note. B validates the block (same tip).
-4. At 41: `wallet.transferv2` to B's v2 address (v7 tx). Mine 1. B sees the note with ivk; both tips equal; `getblock` shows the tx with version 7.
-5. Reorg across activation: disconnect B, mine 3 blocks on A (including a v7 tx) and 4 on B (including a v6 tx), reconnect. Both converge on B's chain; A's v7 tx returns to A's mempool and is re-mined at ≥ 44; A's note store shows the notes unspent then spent again.
-6. Restart A and B (graceful stop, start). Heights, best hashes, shielded roots (`getshieldedroot` or the existing state RPC) equal before and after.
-7. Mine to 60. At 60 a v6 shielded tx is rejected by the mempool with `shielded-proof-version-sunset`; a v7 tx is accepted. A block containing a v6 shielded tx submitted via `submitblock` is rejected with `shielded-proof-version-sunset`.
-8. Replay: stop B, delete its chainstate, restart with `-reindex`; B reaches the same tip and shielded root as A.
+2. At 35: `wallet.transferv2`, `wallet.shieldedmigratev2`, and a v1 transfer to a `rdinz` address all return `shielded-v2-not-active`. Mine to 38.
+3. **Reorg that crosses activation (fork point 38 < H = 40).** Disconnect A and B at height 38.
+   - A mines 39, 40, 41, 42: at 40 `wallet.shieldedmigratev2` (v6 tx creating a v2 note), at 41 `wallet.transferv2` (v7 tx spending it). Assert A's note store: Auth note spent, v2 note created then spent.
+   - B mines 39, 40, 41, 42, 43 (one more) with only transparent txs.
+   - Reconnect. Both converge on B's chain (longer). Assert on A: the v6 migration tx and the v7 transfer are back in A's mempool; the mempool re-checks them against height 44 (`Active` true) and keeps both; A's note store shows the Auth note unspent again and the v2 note gone (rolled back with its block). Mine 1 on B; assert the migration is re-mined first (dependency order), then the v7 transfer in the next block; both nodes agree on tips and shielded roots.
+   - **Reverse direction:** disconnect again at 45. A mines 46–50 (nothing shielded). B mines only 46, 47 and, via regtest override on a restarted B with `--consensus-shielded-v2-height=100`, produces a chain where 46+ has v2 inactive. Reconnect: A (longer) wins; B, back on the original params after restart, must accept A's v7 blocks and its own mempool must have rejected any v7 tx while its override was live (`shielded-v2-not-active`). This qualifies a node whose activation height moves under it: consensus follows the chain, the wallet's `unspendable_until_v2_active_una` shows the v2 note while inactive.
+4. At 51: `wallet.transferv2` to B's v2 address (v7 tx). Mine 1. B sees the note with ivk; both tips equal; `getblock` shows version 7.
+5. Restart A and B (graceful stop, start). Heights, best hashes, shielded roots equal before and after.
+6. Mine to 60. A v6 shielded tx (spending a remaining Auth note) and a v7 tx are both accepted and mined in the same block; both nodes agree. (No sunset in phase 1; every scheme keeps its spending path.)
+7. Replay: stop B, delete its chainstate, restart with `-reindex`; B reaches the same tip and shielded root as A.
 
 - [ ] **Step 2: Wire into the qualification workflow** as a separate job `shielded-v2-regtest` with the same runner and timeout as the existing combined harness; upload the node logs as evidence.
 
@@ -2400,7 +2468,7 @@ Two regtest nodes A and B, Auth at 4, v2 at H = 40, sunset S = 60.
 
 ```bash
 git add tests/integration/test_shielded_v2_regtest.py .github/workflows/combined-migration-qualification.yml
-git commit -m "shielded-v2: regtest qualification across activation, reorg, restart, sunset, replay
+git commit -m "shielded-v2: regtest qualification across activation, reorg (both directions), restart, replay
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -2415,7 +2483,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `~/src/MemoryMD/dinero-shielded-v2.md` (local only, never pushed)
 
 - [ ] **Step 1:** Update the spec with the owner's decision on §10 and record the measured numbers from Tasks 0 and 7 in §2's table as a third column "measured (phase 1)".
-- [ ] **Step 2:** Write the operator notes: version-7 transactions appear only after `shielded_v2_activation_height`; pool software needs no change (templates carry v7 txs like any other); wallets need the v2 address (`dinz…`) and the migration RPC; the v1 sunset schedule is announced separately.
+- [ ] **Step 2:** Write the operator notes: version-7 transactions appear only after `shielded_v2_activation_height`; pool software needs no change (templates carry v7 txs like any other); wallets need the v2 address (`dinz…`) and the migration RPC, both refused until activation; there is no v1 sunset, PrivateCovenant notes are not migratable and keep their v1 path, and phase 1 is not post-quantum (Hyrax and ECDH note encryption remain classical).
 - [ ] **Step 3:** Open the PR against `dinero-main` as **draft**, titled "shielded-v2 phase 1: bundle proofs behind dormant heights", body listing the blast-radius table, the gate results, and the owner decisions still open. Do not request merge.
 - [ ] **Step 4:** Commit and push.
 
@@ -2431,14 +2499,14 @@ git push origin claude/shielded-v2
 
 ## Self-review
 
-**Spec coverage.** §2 targets → Task 7 gates + Task 0 measurement. §3.1 statement (as amended §10.2) → Task 3. §3.2 envelope → Task 2. §3.3 phase 1 on the native prover → Task 3. §3.4 batch verification off the locks → Task 6 (prewarm before `AcceptBlockFromPeer`'s locked path; note: per-proof parallel verification gives failing-tx attribution for free, so §5's "reject batch then re-verify individually" applies only to the algebraic batching of phase 2). §3.5 coexistence → Tasks 1 and 4 (`V1Allowed`, `ProofVersionSunset`); migration → Task 5. §4 prover API → Task 5 (C++ builder + prover-kit C entry; FFI crate deferred to phase 2 as the report says). §5 threat notes: sighash binding → Task 3 constraint + transcript + neuter test; caps before verification → Tasks 2 and 4; fee as public input → `vb_neg`. §6.1 vectors → Task 8; §6.2 neuter tests → Task 3; §6.3 perf ctest → Task 7; §6.4 sanitizers + fuzzers → Task 8; §6.5 regtest harness → Task 9; §6.6 the 22 e2e tests → Task 8 lane; §6.7 every rule with a test → every task. §10 → Tasks 0, 3, 5.
+**Spec coverage.** §2 targets → Task 7 gates + Task 0 measurement. §3.1 statement (as amended §10.2) → Task 3. §3.2 envelope → Task 2. §3.3 phase 1 on the native prover → Task 3. §3.4 batch verification off the locks → Task 6 (prewarm before `AcceptBlockFromPeer`'s locked path; note: per-proof parallel verification gives failing-tx attribution for free, so §5's "reject batch then re-verify individually" applies only to the algebraic batching of phase 2). §3.5 coexistence → Tasks 1 and 4 (activation only; no sunset, per spec §10.4 and owner review finding 1); migration → Task 5 (Auth notes only, covenant notes refused, all v2-note creation gated on activation). §4 prover API → Task 5 (C++ builder + prover-kit C entry; FFI crate deferred to phase 2 as the report says). §5 threat notes: sighash binding → Task 3 constraint + transcript + neuter test; caps before verification → Tasks 2 and 4; fee as public input → `vb_neg`. §6.1 vectors → Task 8; §6.2 neuter tests → Task 3; §6.3 perf ctest → Task 7; §6.4 sanitizers + fuzzers → Task 8; §6.5 regtest harness → Task 9; §6.6 the 22 e2e tests → Task 8 lane; §6.7 every rule with a test → every task. §10 → Tasks 0, 3, 5.
 
-**Gaps found and fixed while reviewing.** (1) The spec's §3.1 "fee" public input could not express shield/unshield; replaced with `vb_pos`/`vb_neg` derived from `value_balance`, consistent with v1's `value_balance == transparent_delta` rule. (2) The sighash must not cover the proof bytes (circularity); Task 4's first test pins that the version-7 sighash preimage excludes `v2_proof`, which holds because `ComputeShieldedTxSighash` hashes the transparent envelope, not the bundle bytes; if a reading of `binding_sig.cpp` shows the bundle bytes are hashed for v6, the version-7 branch must hash the bundle with `v2_proof` cleared. (3) `IsShieldedAuthVersion(7) == true` is load-bearing for txid commitment and the auth resource envelope; Task 2's test pins it.
+**Gaps found and fixed while reviewing.** (1) The spec's §3.1 "fee" public input could not express shield/unshield; replaced with `vb_pos`/`vb_neg` derived from `value_balance`, consistent with v1's `value_balance == transparent_delta` rule. (2) The sighash must not cover the proof bytes (circularity); Task 4's first test pins that the version-7 sighash preimage excludes `v2_proof`, which holds because `ComputeShieldedTxSighash` hashes the transparent envelope, not the bundle bytes; if a reading of `binding_sig.cpp` shows the bundle bytes are hashed for v6, the version-7 branch must hash the bundle with `v2_proof` cleared. (3) `IsShieldedAuthVersion(7) == true` is load-bearing for txid commitment and the auth resource envelope; Task 2's test pins it. (4) Owner review 2026-09-22 (`MemoryMD/design/shielded-v2-amendment-review-2026-09-22.md`, six findings): gates now equal the spec table with method and hardware stated; the v1 sunset and the epoch-reset fallback are removed and covenant notes keep their v1 path; the security scope is stated (phase 1 not PQ; ECDH encryption classical in both phases; FVK versioning added); the verifier pool is process-wide and bounded with failed-proof and eviction behaviour specified and both entry paths covered; the reorg test now forks before H and runs both directions; every v2-note-creating path is gated on activation and scanning is scheme-based. Independent review of Task 0's exact-statement results precedes any wallet or runtime wiring.
 
 **Placeholder scan.** No TBD/TODO. Two steps intentionally reference existing code to copy (`AutoFeeAuthNote`, the compact override parsing) with the grep that locates it; both are existing code, not other tasks. Task 8's e2e regex names 21 tests explicitly and tells the implementer to take the 22nd from the baseline file.
 
-**Type consistency.** `BundlePublicInputs`, `BundleWitness`, `BundleSpendWitness`, `BundleOutputWitness`, `BundleCircuitNeuter`, `ShieldedV2Rules`, `V2Envelope`, `ProofSystemId`, `EnvelopeDecodeError`, `PrewarmStats`, `V2OutputRequest` are spelled identically in every task; `DeserializeShieldedBundleForVersion(int32_t, const std::vector<uint8_t>&, ShieldedBundle*)` and `BuildShieldedValidationContext(..., CompactShieldedRules, ShieldedV2Rules)` match between Tasks 2, 4, 5, 6.
+**Type consistency.** `BundlePublicInputs`, `BundleWitness`, `BundleSpendWitness`, `BundleOutputWitness`, `BundleCircuitNeuter`, `ShieldedV2Rules` (fields `enabled`, `activation_height` only), `V2Envelope`, `ProofSystemId`, `EnvelopeDecodeError`, `PrewarmStats`, `V2OutputRequest` are spelled identically in every task; `DeserializeShieldedBundleForVersion(int32_t, const std::vector<uint8_t>&, ShieldedBundle*)` and `BuildShieldedValidationContext(..., CompactShieldedRules, ShieldedV2Rules)` match between Tasks 2, 4, 5, 6.
 
 ## Execution handoff
 
-Plan complete. Owner decisions that gate execution: approve spec §10 (Amendment A); everything else is dormant code behind `UINT32_MAX` heights and can be built and reviewed before any activation discussion. Recommended execution: subagent-driven, one fresh agent per task with review between tasks, on the `claude/shielded-v2` branch only.
+Plan revised after the owner's review. Sequence: Task 0 (exact amended statement, valid witnesses, negatives, canonical vectors, uncached verification) → independent review of those results and of spec §10 → only then Tasks 1–4 and 6–8 (dormant consensus code) → owner approval of §10 → Task 5 (wallet) → Tasks 9–10. No activation height, v1 sunset, pool reset or real-wallet migration is authorised by anything in this plan. Recommended execution: subagent-driven, one fresh agent per task with review between tasks, on the `claude/shielded-v2` branch only.

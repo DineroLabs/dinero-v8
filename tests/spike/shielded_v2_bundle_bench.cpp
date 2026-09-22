@@ -184,7 +184,7 @@ static BenchRow BenchBundle(size_t n_in, size_t n_out) {
         const double p = ms_since(t0);
         // Verifier side: rebuild the circuit STRUCTURE from public inputs only (witness zeroed).
         BundleV2 pub_only = b;
-        for (auto& sp : pub_only.spends) { sp.secret_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
+        for (auto& sp : pub_only.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
         for (auto& o : pub_only.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); }
         R1CS vcs = BuildBundleCircuitV2(pub_only);
         t0 = Clock::now();
@@ -214,7 +214,7 @@ static ProvenBundle ProveOnce(uint64_t fee_seed) {
     SpartanProof proof = r1cs_spartan_prove(cs, std::vector<Scalar>(cs.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, sctx, true);
     ProvenBundle pb; pb.proof = proof.serialize(sctx); pb.ncons = cs.num_constraints(); pb.nvars = cs.num_variables();
     pb.pub_only = b;
-    for (auto& sp : pb.pub_only.spends) { sp.secret_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
+    for (auto& sp : pb.pub_only.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
     for (auto& o : pb.pub_only.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); }
     return pb;
 }
@@ -273,11 +273,36 @@ static int SelfTest() {
 
     const auto cs = BuildBundleCircuitV2(honest);
     std::printf("  2-in-2-out constraints=%zu variables=%zu\n", cs.num_constraints(), cs.num_variables());
-    check(cs.num_constraints() < 60000, "2-in-2-out is under 60k constraints (measured 53,038; legacy per-tx total is ~2.6M)");
+    check(cs.num_constraints() < 60000, "2-in-2-out is under 60k constraints (measured 56,790 with the §10.2 hash-key legs; legacy per-tx total is ~3.3M)");
     return failures == 0 ? 0 : 1;
 }
 
+
+// Owner review 2026-09-22 finding 2: negative cases against the EXACT amended statement.
+// Each must be unsatisfiable (no valid witness exists for a party lacking `ask`).
+static int Negatives() {
+    using namespace dinero::zk::zkvm;
+    int failures = 0;
+    auto check = [&](const char* label, bool expect_satisfied, const spike::BundleV2& b) {
+        const bool sat = spike::BuildBundleCircuitV2(b).is_satisfied();
+        std::printf("%-46s satisfied=%d expected=%d %s\n", label, sat, expect_satisfied, sat == expect_satisfied ? "OK" : "FAIL");
+        if (sat != expect_satisfied) ++failures;
+    };
+    const spike::BundleV2 honest = spike::MakeHonestBundle(2, 2, 1000);
+    check("honest 2-in-2-out", true, honest);
+    { auto b = honest; b.spends[0].ask = b.spends[0].ask + Scalar::one(); check("sender/attacker: wrong ask", false, b); }
+    { auto b = honest; b.spends[0].ask = Scalar::zero(); check("full viewer: hk/nfk/d/value/rcm known, ask=0", false, b); }
+    { auto b = honest; b.spends[1].nullifier_key = b.spends[1].nullifier_key + Scalar::one(); check("wrong nullifier key (nf and pk both move)", false, b); }
+    { auto b = honest; b.spends[0].diversifier = b.spends[0].diversifier + Scalar::one(); check("wrong diversifier", false, b); }
+    { auto b = honest; b.outputs[0].value = b.outputs[0].value + Scalar::one(); check("output value +1 (balance)", false, b); }
+    { auto b = honest; b.fee += 1; check("public fee +1 (balance)", false, b); }
+    { auto b = honest; b.spends[0].leaf_index ^= 1; check("wrong leaf index (path + nf)", false, b); }
+    { auto b = honest; b.spends[0].siblings[3] = Hash{}; check("wrong merkle sibling", false, b); }
+    std::printf("negatives: %d failure(s)\n", failures);
+    return failures ? 1 : 0;
+}
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--negatives") return Negatives();
     if (argc > 1 && std::string(argv[1]) == "--selftest") return SelfTest();
     std::vector<BenchRow> rows;
     if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) rows.push_back(BaselineSpend());

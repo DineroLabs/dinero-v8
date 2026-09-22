@@ -153,23 +153,53 @@ in plan Task 0 before any gate is asserted.
 - Auth notes stay spendable only through v1 proofs. Wallets migrate them with an
   ordinary v1 transfer whose outputs pay the wallet's own v2 addresses
   (`wallet.shieldedmigratev2`). Consensus does not know about migration.
-- From `shielded_v1_sunset_height`, new blocks may not contain versions 5 or 6 with a
-  non-empty shielded bundle. The owner sets it only after migration telemetry;
-  `UINT32_MAX` until then.
+- **No v1 sunset in phase 1 (owner review 2026-09-22, finding 1).** Mainnet supports
+  three note schemes: `LegacySenderKey` (unspendable since the 110000 reset), `Auth`,
+  and `PrivateCovenant` (proof 0x07, activated at 110000, with minimum-height and
+  output restrictions enforced by the v1 validator). v2 has no covenant statement, and
+  a covenant note cannot be migrated by an ordinary transfer. Every supported scheme
+  therefore keeps its v1 spending path indefinitely. A sunset, together with either a
+  v2 covenant leg or a covenant-aware qualified migration for remaining notes, is a
+  separate later design; none is scheduled, and no sunset height exists in phase 1.
 - Historical blocks verify exactly as today.
 
 ### 10.5 Alternatives considered
 
 1. Keep the EC ownership leg in the v2 circuit: ≈ 448k constraints per spend, fails
    §2 and is not post-quantum. Rejected.
-2. Epoch-reset the pool at v2 activation (as at 61000 and 110000): no migration path
-   needed, but forces every holder to unshield before H. Not chosen; available as a
-   fallback if migration telemetry stalls.
+2. Epoch-reset the pool at v2 activation (as at 61000 and 110000). **Rejected, and not a
+   fallback for slow migration:** a reset makes remaining notes unspendable; it does not
+   migrate them (owner review 2026-09-22).
 3. Sapling-style re-randomised spend authorisation signature: still needs `α·G` in
    circuit on a non-embedded curve. Rejected for the same reason as (1).
 
 ### 10.6 Owner decisions requested
 
 1. Approve the hash-derived ownership key for v2 notes (§10.2).
-2. Approve migration by v1 self-transfer with a sunset height chosen later (§10.4).
-3. Confirm that classical ECDH note discovery stays out of scope for phases 1–2.
+2. Approve migration of `Auth` notes by v1 self-transfer, gated on v2 activation so no
+   v2 note is created before it can be spent (§10.4); covenant notes are out of
+   migration scope and the sunset is deferred with them.
+3. Confirm the security scope in §10.7.
+
+### 10.7 Security scope by phase (owner review finding 3)
+
+| property | phase 1 | phase 2 |
+|---|---|---|
+| ownership authorization (spend key relation) | Poseidon-2 preimage, hash-based | same |
+| proof soundness | Spartan sum-check + Hyrax (discrete log, classical) | sum-check + hash-based PCS |
+| proof zero-knowledge | Hyrax blinding (classical) | hash-PCS masking, design open (spike) |
+| note discovery / encryption | secp256k1 ECDH + ChaCha20-Poly1305 (classical) | unchanged (classical) |
+| viewing keys | `hk` added to the full viewing key: FVK export gains a version; seed-only restore derives `hk` from `ask` | same |
+
+Phase 1 is **not** post-quantum and must not be described as such. Phase 2 makes proof
+soundness post-quantum only if the zero-knowledge masking is also hash-based; note
+encryption remains classical in both phases and is a separate future item.
+
+### 10.8 Review status
+
+Independent core review 2026-09-22 (`MemoryMD/design/shielded-v2-amendment-review-2026-09-22.md`):
+revise before approving. Required before any runtime or wallet wiring: measure the exact
+amended statement with valid witnesses, sender/viewer-cannot-spend negatives, canonical
+encoding vectors and uncached verification; return results and remaining choices for
+independent review. No activation date, v1 sunset, pool reset or real-wallet migration
+is authorised.
