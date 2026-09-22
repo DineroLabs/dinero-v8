@@ -78,3 +78,101 @@ The old design is expected to miss several of these (it is why v2 exists); its n
 ## 7. Evidence format
 
 Per run: host description (`lscpu`, cores, memory), daemon commit, harness commit, the raw JSON, the summary table, the daemon log. Committed under `docs/benchmarks/load/<date>-<design>-<host>/`.
+
+## 8. Baseline run notes: old design, M4 Max, 2026-09-22 (single node)
+
+Harness `tests/integration/load/shielded_load.py`, daemon built from 4ed198529 (`build-spike`, Release),
+regtest with `--consensus-shielded-epoch-reset-height=1 --consensus-shielded-spend-auth-height=2
+--consensus-state-commitment-height=3` (Auth profile live from height 2, version-6 transactions).
+Evidence: `docs/benchmarks/load/2026-09-22-old-m4max/` (steady+service, 480 s) and
+`docs/benchmarks/load/2026-09-22-old-m4max-hostile/` (hostile, 240 s).
+
+### 8.1 What the harness could and could not drive
+
+- The old design's load ceiling is the wallet, not the node: one shield takes ≈7.1 s and one
+  1-in-2-out Auth transfer ≈24.6 s of proving on the M4, so the generator sustained 29 shielded
+  transactions in 480 s (12 shields, 17 transfers). The plan's 5 tx/s workload is unreachable for
+  the old design on any host; the baseline is what the node does at the rate the old design can
+  actually produce. The new design (≈0.5 s per bundle proof on the M4) can be driven far harder.
+- Single-node block acceptance hides proof cost: blocks are built from the node's own mempool, whose
+  proofs were verified on admission and cached (#770), so `generatetoaddress` took 70–103 ms per
+  block with 1–3 shielded transactions inside. The full per-block verification cost appears only
+  when a block arrives from a peer, which is the two-node variant (W2/W3), not yet built.
+- No structured `validation_ms` record exists in this build's log; block cost is the generate call.
+
+### 8.2 Steady + service results (480 s, 18 blocks, 29 shielded tx, 0 errors, 0 failure counters)
+
+| metric (ms) | n | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| wallet.shield build+submit | 12 | 7,084 | 7,208 | 7,320 | 7,320 |
+| wallet.transfer build+submit | 17 | 24,555 | 24,803 | 24,844 | 24,844 |
+| block generate (incl. validation) | 18 | 81 | 97 | 103 | 103 |
+| probe getblockcount | 76 | 1 | 1 | 1 | 2 |
+| probe getrawmempool | 76 | 0 | 0 | 1 | 1 |
+| probe wallet.shieldedbalance | 76 | 3,164 | 10,811 | 10,927 | 21,740 |
+| probe getblocktemplate | 58 | 74 | 3,075 | 3,077 | 3,083 |
+
+Daemon CPU mean 36% (p95 99% of one core), RSS max 911 MB, 74 probe replies slower than 1 s, no 503.
+
+Reading:
+- Cheap chain RPCs stay at 1 ms throughout: the old design does not starve the RPC server itself.
+- `wallet.shieldedbalance` waits behind the wallet's proving lock: p50 3.2 s, p95 10.8 s, max 21.7 s.
+  Any wallet RPC issued while the wallet proves a transfer waits up to a full transfer's proving time.
+- `getblocktemplate` shows a recurring 3.07 s stall (p95/p99) with a 74 ms median. 3.07 s is the
+  time to verify one transfer's three Auth proofs (≈1.4 + 0.8 + 0.8 s) on mempool admission, so the
+  template builder is blocked while the mempool verifies an incoming shielded transaction. This is a
+  service-path effect the v2 bundle (one ≈30 ms verification) would shrink by ≈100×, and it is
+  independent of the pool's own template cost (#805).
+- These are single-node, warm-cache, wallet-limited numbers; they are the comparison baseline, not
+  a pass/fail against §5.
+
+### 8.3 Hostile lane
+
+First attempt measured the wrong path: mutated copies of an already-mined seed were rejected at
+0–2 ms by the spent-input check (734,487 rejections in 240 s, ≈3,000/s; useful as the cheap-reject
+throughput but not as proof-verification load). The lane now builds a fresh unmined seed, clears the
+mempool, and confirms the unmutated seed is re-accepted before mutating; results below.
+
+Final hostile run (240 s, seed = a fresh unmined 46,481-byte Auth shield transaction, re-accepted by
+`testmempoolaccept` in 4 ms from the verification cache; mempool cleared via `mempool.clear`;
+mutations spread over the middle 80% of the transaction so they land inside the Spartan proof):
+
+| metric (ms) | n | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| invalid-proof decision, all | 1,597 | 5 | 514 | 520 | 552 |
+| invalid-proof decision, full verification (> 100 ms) | 459 | 511 | 518 | 524 | 552 |
+| invalid-proof decision, cheap reject (≤ 100 ms) | 1,138 | 5 | 6 | 6 | 7 |
+| probe getblockcount | 240 | 1 | 1 | 1 | 1 |
+| probe getrawmempool | 240 | 251 | 483 | 505 | 512 |
+| probe getblocktemplate | 120 | 6 | 514 | 517 | 517 |
+| probe wallet.shieldedbalance | 240 | 1 | 1 | 1 | 1 |
+
+0 accepted, 0 busy (503), 0 failure counters. Reading:
+- A corrupted commitment point fails proof deserialization in 5 ms; a corrupted scalar runs the whole
+  verifier and fails at the end after ≈511 ms (one output proof). 459 of 1,597 mutations (29%) forced a
+  full verification; the submitter's loop was serialised on the node, so this is one client's rate.
+- While a full verification runs, `getrawmempool` (p50 251 ms, p95 483 ms) and `getblocktemplate`
+  (p95 514 ms) wait for the lock the mempool holds during proof verification; chain and wallet RPCs
+  are unaffected. A fee-free crafted transaction therefore holds the mempool and template path for
+  ≈0.5 s per proof on the old design; a crafted 2-in-2-out (four proofs) would hold it ≈4.5 s per
+  submission. The new bundle verifies (and rejects) a crafted 2-in-2-out in ≈30 ms serial on this host.
+
+### 8.4 Baseline conclusion (single node, M4 Max)
+
+The old design does not starve the RPC server or destabilise the node at the load it can generate,
+but it serialises three service paths behind proof work: wallet RPCs behind wallet proving (up to
+22 s), and template + mempool RPCs behind mempool proof verification (3.1 s per valid transfer,
+0.5 s per crafted invalid proof). Block acceptance from the node's own mempool is cheap because of
+the proof cache; the cost of peer-delivered blocks, catch-up and forks is the two-node work that
+comes next. These numbers are the comparison baseline for the v2 run on the same host and for the
+small-node class; they are not a pass/fail against §5.
+
+### 8.5 Harness limitations to fix before the paired run
+
+- Two-node topology for W2/W3 and for peer-delivered blocks (full block verification cost).
+- A structured per-block validation time in the daemon log (none exists in this build); until then
+  block cost is the generate/accept call.
+- The old design's generator is wallet-bound; the paired run must drive both designs at the same
+  transaction rate (the old design's ceiling) AND the new design at its own ceiling, reported separately.
+- The workflow variant for the small-node class (GitHub runner) is not yet written; the harness is
+  self-contained Python and runs anywhere the daemon builds.

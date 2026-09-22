@@ -133,8 +133,12 @@ def tx_hex(node, txid):
     return None
 
 def mutate(hexstr, i):
-    # flip one nibble inside the trailing proof region; distinct position per i so every proof is a fresh cache miss
-    pos = len(hexstr) - 41 - (i * 7) % 3000
+    # v1 bundles end with range proof || bvk || binding signature, all checked cheaply BEFORE the Spartan
+    # proofs; the proofs occupy most of the transaction. Flip one nibble at a position spread over the
+    # middle 10%..90% of the hex (distinct per i), so mutations land inside the zk proof bytes: a corrupted
+    # compressed point fails deserialization cheaply, a corrupted scalar forces a full verification.
+    span = len(hexstr) * 8 // 10
+    pos = len(hexstr) // 10 + (i * 7919) % span
     c = hexstr[pos]; new = format((int(c, 16) ^ (1 + i % 15)) & 0xF, "x")
     return hexstr[:pos] + new + hexstr[pos + 1:]
 
@@ -190,12 +194,26 @@ def scenario_steady(node, seconds, out):
     json.dump(res, open(os.path.join(out, "steady.json"), "w"), indent=2)
     return res, seed_hex[0]
 
-def scenario_hostile(node, seconds, hexstr, out):
-    """W5: mutated-proof copies of one real Auth transaction pushed through testmempoolaccept as fast as
-    the node answers (each mutation is a fresh verification-cache miss), with the probe thread running."""
-    if not hexstr: return {"scenario": "hostile", "skipped": "no raw Auth transaction hex captured during the steady scenario"}
-    probe = Probe(node); probe.start()
-    decisions, accepted, busy = [], 0, 0
+def scenario_hostile(node, seconds, _unused, out):
+    """W5: mutated-proof copies of one real, UNMINED Auth transaction pushed through testmempoolaccept as
+    fast as the node answers. The seed is built here, captured while in the mempool, and the mempool is
+    then cleared, so every mutated copy passes the cheap checks (inputs unspent, nullifier fresh) and
+    fails only at proof verification; each mutation is a fresh verification-cache miss."""
+    r = node.rpc("wallet.shield", {"amount_una": 100_000_000}, 600)
+    hexstr = tx_hex(node, r["txid"])
+    if not hexstr: return {"scenario": "hostile", "skipped": "could not capture the seed transaction hex"}
+    cleared = None
+    for m in ("mempool.clear", "clearmempool"):
+        try: node.rpc(m, [], 60); cleared = m; break
+        except Exception: continue
+    left = node.rpc("getrawmempool", [], 30)
+    if left: return {"scenario": "hostile", "skipped": f"mempool not cleared ({cleared}); {len(left)} tx left"}
+    # sanity: the unmutated seed must be re-accepted by testmempoolaccept (proves the cheap checks pass)
+    t0 = time.perf_counter(); ok = node.rpc("testmempoolaccept", [hexstr], 300); seed_ms = (time.perf_counter() - t0) * 1000
+    seed_allowed = ok.get("allowed") if isinstance(ok, dict) else ok
+    miner = node.rpc("wallet.getnewaddress", ["taproot", "hostile-probe"], 30); miner = miner["address"] if isinstance(miner, dict) else miner
+    probe = Probe(node, template_params=[[{"address": miner}], [], [{}]]); probe.start()
+    decisions, accepted, busy, full = [], 0, 0, 0
     t_end = time.time() + seconds; i = 0
     while time.time() < t_end:
         h = mutate(hexstr, i); i += 1
@@ -205,9 +223,12 @@ def scenario_hostile(node, seconds, hexstr, out):
             if isinstance(r, dict) and r.get("allowed") is True: accepted += 1
         except BusyError: busy += 1
         except Exception: pass
-        decisions.append((time.perf_counter() - t0) * 1000)
+        dt = (time.perf_counter() - t0) * 1000; decisions.append(dt)
+        if dt > 100: full += 1
     probe.stop_flag = True; probe.join(timeout=90)
-    res = {"scenario": "hostile", "seconds": seconds, "invalid_submitted": i, "invalid_accepted(must be 0)": accepted, "busy_503": busy,
+    res = {"scenario": "hostile", "seconds": seconds, "seed_bytes": len(hexstr) // 2, "seed_reaccept_ms": seed_ms, "seed_reaccept_allowed": seed_allowed, "mempool_cleared_via": cleared,
+           "invalid_submitted": i, "invalid_accepted(must be 0)": accepted, "busy_503": busy, "decisions_over_100ms(full verifications)": full,
+           "decision_ms_over_100ms": summarize([d for d in decisions if d > 100]), "decision_ms_under_100ms": summarize([d for d in decisions if d <= 100]),
            "decision_ms": summarize(decisions), "probe": {k: summarize(v) for k, v in probe.lat.items()}, "probe_busy_503": probe.busy,
            "probe_slow_over_1s": probe.slow, "cpu_pct": summarize(probe.cpu), "rss_mb": summarize(probe.rss), "log_counters": failure_counters(node.log_path)}
     json.dump(res, open(os.path.join(out, "hostile.json"), "w"), indent=2)
@@ -226,9 +247,10 @@ def md(res_steady, res_hostile, host, design):
     L += ["", "## hostile (W5)", ""]
     if res_hostile.get("skipped"): L.append(f"skipped: {res_hostile['skipped']}")
     else:
-        L += [f"- {res_hostile['invalid_submitted']} mutated proofs in {res_hostile['seconds']} s; accepted {res_hostile['invalid_accepted(must be 0)']}; busy(503) {res_hostile['busy_503']}",
+        L += [f"- seed {res_hostile['seed_bytes']} B re-accepted by testmempoolaccept: {res_hostile['seed_reaccept_allowed']} in {res_hostile['seed_reaccept_ms']:.0f} ms (mempool cleared via {res_hostile['mempool_cleared_via']})",
+              f"- {res_hostile['invalid_submitted']} mutated proofs in {res_hostile['seconds']} s; accepted {res_hostile['invalid_accepted(must be 0)']}; busy(503) {res_hostile['busy_503']}; full verifications (>100 ms) {res_hostile['decisions_over_100ms(full verifications)']}",
               f"- probe busy(503) {res_hostile['probe_busy_503']}, probe replies >1 s {res_hostile['probe_slow_over_1s']}; CPU % mean {res_hostile['cpu_pct']['mean']:.0f}; log counters {res_hostile['log_counters']}", "",
-              "| metric (ms) | n | p50 | p95 | p99 | max |", "|---|---|---|---|---|---|", row("invalid-proof decision (testmempoolaccept)", res_hostile["decision_ms"])]
+              "| metric (ms) | n | p50 | p95 | p99 | max |", "|---|---|---|---|---|---|", row("invalid-proof decision, all", res_hostile["decision_ms"]), row("invalid-proof decision, full verification (>100 ms)", res_hostile["decision_ms_over_100ms"]), row("invalid-proof decision, cheap reject (<=100 ms)", res_hostile["decision_ms_under_100ms"])]
         for k, v in res_hostile["probe"].items(): L.append(row(f"probe {k}", v))
     return "\n".join(L) + "\n"
 
