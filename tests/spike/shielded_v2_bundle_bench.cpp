@@ -9,8 +9,15 @@
 #include "consensus/shielded/shielded_circuit.h"
 #include "consensus/shielded/shielded_tx.h"
 #include "bundle_circuit_v2.h"
+#include "crypto/evp_secp256k1.h"
+#include <secp256k1.h>
+#include "zk/zkvm/ipa.h"
+#include "zk/zkvm/r1cs_spartan.h"
+#include "zk/zkvm/transcript.h"
 
 #include <algorithm>
+#include <atomic>
+#include <future>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -153,6 +160,89 @@ static BenchRow BaselineSpend() {
     return BenchRow{"baseline_spend_cv_bound", 0, 0, bytes, median_of(prove), median_of(verify)};
 }
 
+
+// Task 3: prove/verify the v2 bundle with the existing Spartan+Hyrax (phase-1 estimate).
+static BenchRow BenchBundle(size_t n_in, size_t n_out) {
+    using namespace dinero::zk::zkvm;
+    using spike::BuildBundleCircuitV2; using spike::MakeHonestBundle; using spike::BundleV2;
+    secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
+    std::vector<double> prove, verify;
+    size_t bytes = 0, ncons = 0, nvars = 0;
+    for (int i = 0; i < 6; ++i) {
+        BundleV2 b = MakeHonestBundle(n_in, n_out, 1000 + i);   // fee varies: fresh proof each iteration
+        R1CS cs = BuildBundleCircuitV2(b);
+        if (!cs.is_satisfied()) { std::fprintf(stderr, "bundle not satisfied\n"); std::exit(2); }
+        ncons = cs.num_constraints(); nvars = cs.num_variables();
+        const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(cs.num_variables()).n_cols,
+                                                              HyraxParams::from_n(cs.num_constraints()).n_cols));
+        const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
+        auto t0 = Clock::now();
+        Transcript tp("dinero.shielded.bundle.v2.spike");
+        SpartanProof proof = r1cs_spartan_prove(cs, std::vector<Scalar>(cs.num_constraints(), Scalar::zero()),
+                                                Scalar::one(), gens, tp, sctx, true);
+        std::vector<uint8_t> ser = proof.serialize(sctx);
+        const double p = ms_since(t0);
+        // Verifier side: rebuild the circuit STRUCTURE from public inputs only (witness zeroed).
+        BundleV2 pub_only = b;
+        for (auto& sp : pub_only.spends) { sp.secret_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
+        for (auto& o : pub_only.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); }
+        R1CS vcs = BuildBundleCircuitV2(pub_only);
+        t0 = Clock::now();
+        SpartanProof parsed;
+        if (!SpartanProof::deserialize(ser, parsed, sctx)) { std::fprintf(stderr, "deserialize failed\n"); std::exit(2); }
+        Transcript tv("dinero.shielded.bundle.v2.spike");
+        const bool ok = r1cs_spartan_verify(parsed, vcs, ncons, nvars, spartan_hash_r1cs_structure(vcs), Scalar::one(), gens, tv, sctx, true);
+        const double v = ms_since(t0);
+        if (!ok) { std::fprintf(stderr, "bundle verify failed (%zu-in-%zu-out)\n", n_in, n_out); std::exit(2); }
+        if (i) { prove.push_back(p); verify.push_back(v); }
+        bytes = ser.size();
+    }
+    return BenchRow{"bundle_" + std::to_string(n_in) + "in" + std::to_string(n_out) + "out", ncons, nvars, bytes, median_of(prove), median_of(verify)};
+}
+
+
+// Task 4: batched verification estimate — 50 two-in-two-out bundles, sequential vs 8 threads.
+struct ProvenBundle { spike::BundleV2 pub_only; std::vector<uint8_t> proof; size_t ncons = 0, nvars = 0; };
+static ProvenBundle ProveOnce(uint64_t fee_seed) {
+    using namespace dinero::zk::zkvm;
+    secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
+    spike::BundleV2 b = spike::MakeHonestBundle(2, 2, 1000 + fee_seed);
+    R1CS cs = spike::BuildBundleCircuitV2(b);
+    const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(cs.num_variables()).n_cols, HyraxParams::from_n(cs.num_constraints()).n_cols));
+    const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
+    Transcript tp("dinero.shielded.bundle.v2.spike");
+    SpartanProof proof = r1cs_spartan_prove(cs, std::vector<Scalar>(cs.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, sctx, true);
+    ProvenBundle pb; pb.proof = proof.serialize(sctx); pb.ncons = cs.num_constraints(); pb.nvars = cs.num_variables();
+    pb.pub_only = b;
+    for (auto& sp : pb.pub_only.spends) { sp.secret_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
+    for (auto& o : pb.pub_only.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); }
+    return pb;
+}
+static bool VerifyOne(const ProvenBundle& pb, secp256k1_context* sctx) {
+    using namespace dinero::zk::zkvm;
+    R1CS vcs = spike::BuildBundleCircuitV2(pb.pub_only);
+    const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(pb.nvars).n_cols, HyraxParams::from_n(pb.ncons).n_cols));
+    const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
+    SpartanProof parsed; if (!SpartanProof::deserialize(pb.proof, parsed, sctx)) return false;
+    Transcript tv("dinero.shielded.bundle.v2.spike");
+    return r1cs_spartan_verify(parsed, vcs, pb.ncons, pb.nvars, spartan_hash_r1cs_structure(vcs), Scalar::one(), gens, tv, sctx, true);
+}
+static void BenchBatch(std::vector<BenchRow>& rows) {
+    secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
+    std::vector<ProvenBundle> proofs; for (int i = 0; i < 50; ++i) proofs.push_back(ProveOnce(static_cast<uint64_t>(i)));
+    auto t0 = Clock::now();
+    for (auto& pb : proofs) if (!VerifyOne(pb, sctx)) { std::fprintf(stderr, "batch verify failed\n"); std::exit(2); }
+    rows.push_back(BenchRow{"verify_50_sequential_ms", 0, 0, 0, 0, ms_since(t0)});
+    t0 = Clock::now();
+    std::atomic<size_t> next{0}; std::vector<std::future<bool>> fs;
+    for (int t = 0; t < 8; ++t) fs.push_back(std::async(std::launch::async, [&] {
+        secp256k1_context* c = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+        bool ok = true; for (size_t i; (i = next++) < proofs.size();) ok = VerifyOne(proofs[i], c) && ok;
+        secp256k1_context_destroy(c); return ok; }));
+    for (auto& f : fs) if (!f.get()) { std::fprintf(stderr, "parallel batch verify failed\n"); std::exit(2); }
+    rows.push_back(BenchRow{"verify_50_parallel8_ms", 0, 0, 0, 0, ms_since(t0)});
+}
+
 // Task 2: bundle circuit satisfiability self-test (spec §3.1 relations).
 static int SelfTest() {
     using spike::BuildBundleCircuitV2; using spike::MakeHonestBundle; using spike::BundleV2;
@@ -164,7 +254,7 @@ static int SelfTest() {
     check(BuildBundleCircuitV2(honest).is_satisfied(), "honest 2-in-2-out bundle is satisfied");
 
     BundleV2 bad_balance = honest; bad_balance.outputs[0].value = bad_balance.outputs[0].value + Scalar::one();
-    check(!BuildBundleCircuitV2(bad_balance).is_satisfied(), "output value +1 breaks balance");
+    check(!BuildBundleCircuitV2(bad_balance).is_satisfied(), "output value +1 breaks the output commitment binding");
 
     BundleV2 bad_fee = honest; bad_fee.fee += 1;
     check(!BuildBundleCircuitV2(bad_fee).is_satisfied(), "fee +1 breaks balance");
@@ -190,7 +280,11 @@ static int SelfTest() {
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--selftest") return SelfTest();
     std::vector<BenchRow> rows;
-    rows.push_back(BaselineSpend());
+    if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) rows.push_back(BaselineSpend());
+    rows.push_back(BenchBundle(1, 2));
+    rows.push_back(BenchBundle(2, 2));
+    rows.push_back(BenchBundle(4, 2));
+    if (!(argc > 1 && std::string(argv[1]) == "--no-batch")) BenchBatch(rows);
     PrintJson(rows, BUILD_TYPE_STR);
     return 0;
 }

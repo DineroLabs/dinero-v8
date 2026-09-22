@@ -1,0 +1,56 @@
+{
+ "build": "Release",
+ "rows": [
+  {
+   "label": "baseline_spend_cv_bound",
+   "constraints": 0,
+   "variables": 0,
+   "proof_bytes": 44571,
+   "prove_ms": 3207.9,
+   "verify_ms": 848.4
+  },
+  {
+   "label": "bundle_1in2out",
+   "constraints": 29121,
+   "variables": 29162,
+   "proof_bytes": 12364,
+   "prove_ms": 276.2,
+   "verify_ms": 38.6
+  },
+  {
+   "label": "bundle_2in2out",
+   "constraints": 53038,
+   "variables": 53114,
+   "proof_bytes": 18792,
+   "prove_ms": 478.8,
+   "verify_ms": 64.2
+  },
+  {
+   "label": "bundle_4in2out",
+   "constraints": 100872,
+   "variables": 101018,
+   "proof_bytes": 18488,
+   "prove_ms": 852.3,
+   "verify_ms": 118.4
+  },
+  {
+   "label": "verify_50_sequential_ms",
+   "constraints": 0,
+   "variables": 0,
+   "proof_bytes": 0,
+   "prove_ms": 0.0,
+   "verify_ms": 3960.2
+  },
+  {
+   "label": "verify_50_parallel8_ms",
+   "constraints": 0,
+   "variables": 0,
+   "proof_bytes": 0,
+   "prove_ms": 0.0,
+   "verify_ms": 583.1
+  }
+ ],
+ "machine": "Apple M4 Max",
+ "commit": "6687c7728",
+ "note": "THROWAWAY spike (spec 2026-09-22-shielded-v2-design.md \u00a77). median of 5 after 1 warm-up. baseline = one cv-bound spend proof (mainnet profile); bundle_* = whole-transaction v2 proof on existing Spartan+Hyrax (phase 1)."
+}
