@@ -438,15 +438,19 @@ def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
         produced = []
         for _ in range(blocks_per_phase): produced.append(produce_block_with_proofs(a, miner, recipient, ["transfer", "transfer", "shield", "shield"]))
         target = a.rpc("getblockcount", [])
-        b.start(connect=a.p2pport)
-        t_start = time.monotonic(); tracker = HeightTracker(b); tracker.start(); probes, rs = start_probes(b, miner)
+        t_spawn = time.monotonic(); b.start(connect=a.p2pport); t_ready = time.monotonic()
+        # Validation can begin before the RPC server accepts calls, so all times are measured from
+        # process spawn; the startup-to-RPC gap is reported so the unobserved window is explicit.
+        t_start = t_spawn; tracker = HeightTracker(b); tracker.start(); probes, rs = start_probes(b, miner)
+        h_first = b.rpc("getblockcount", [], 10)
         synced = wait_height(b, target, 1800); t_sync = time.monotonic() - t_start
         tracker.stop_flag = True; tracker.join(timeout=5); reports, resrep, raw_probe, raw_res = stop_probes(probes, rs)
         changes = [c for c in tracker.changes if c["height"] > h0]
         per_block = [{"height": c["height"], "t_since_restart_s": c["t"] - t_start} for c in changes]
         gaps = [per_block[i]["t_since_restart_s"] - per_block[i-1]["t_since_restart_s"] for i in range(1, len(per_block))]
         res["phases"]["W2_catchup_cold_proofs"] = {"blocks_produced_offline": produced, "proofs_total": sum(p["proofs_included"] for p in produced), "synced": synced,
-            "time_to_tip_s": t_sync, "b_height_timeline": per_block, "per_block_gap_s": summarize(gaps), "b_probes": reports, "b_resources": resrep,
+            "time_to_tip_s_from_spawn": t_sync, "startup_to_rpc_ready_s": t_ready - t_spawn, "height_at_first_rpc_sample": h_first, "start_height": h0,
+            "blocks_validated_before_rpc_ready": max(0, h_first - h0), "b_height_timeline": per_block, "per_block_gap_s": summarize(gaps), "b_probes": reports, "b_resources": resrep,
             "b_log_counters": failure_counters(b.log_path), "a_log_counters": failure_counters(a.log_path)}
         json.dump({"probes": raw_probe, "resources": raw_res, "heights": tracker.changes}, open(os.path.join(out, "two_node_w2.raw.json"), "w"))
         # ---- W3: B mines its own short chain offline; A extends further with proofs; B reconnects and reorgs ----
@@ -459,8 +463,9 @@ def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
         for _ in range(a_side): produced2.append(produce_block_with_proofs(a, miner, recipient, ["transfer", "transfer", "shield", "shield"]))
         if a.rpc("getblockcount", []) <= b.rpc("getblockcount", []): raise RuntimeError("harness: A's fork side is not longer than B's; no reorg possible")
         a_tip = a.rpc("getbestblockhash", [], 10); target2 = a.rpc("getblockcount", [])
-        b.stop(); b.start(connect=a.p2pport)
-        t_start = time.monotonic(); tracker = HeightTracker(b); tracker.start(); probes, rs = start_probes(b, miner)
+        b.stop(); t_spawn = time.monotonic(); b.start(connect=a.p2pport); t_ready = time.monotonic()
+        t_start = t_spawn; tracker = HeightTracker(b); tracker.start(); probes, rs = start_probes(b, miner)
+        converged_before_first_sample = (b.rpc("getbestblockhash", [], 10) == a_tip)
         converged = False
         while time.monotonic() - t_start < 1800:
             try:
@@ -470,7 +475,8 @@ def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
         t_conv = time.monotonic() - t_start
         tracker.stop_flag = True; tracker.join(timeout=5); reports, resrep, raw_probe, raw_res = stop_probes(probes, rs)
         res["phases"]["W3_reorg_onto_cold_proofs"] = {"fork_base_height": fork_base, "b_side_blocks": b_side, "a_side_blocks": produced2, "a_side_proofs": sum(p["proofs_included"] for p in produced2),
-            "b_tip_before": b_tip, "a_tip": a_tip, "converged_to_a": converged, "time_to_converge_s": t_conv,
+            "b_tip_before": b_tip, "a_tip": a_tip, "converged_to_a": converged, "time_to_converge_s_from_spawn": t_conv,
+            "startup_to_rpc_ready_s": t_ready - t_spawn, "converged_before_first_rpc_sample": converged_before_first_sample,
             "b_height_timeline": [{"height": c["height"], "t_s": c["t"] - t_start} for c in tracker.changes], "b_probes": reports, "b_resources": resrep,
             "b_log_counters": failure_counters(b.log_path), "a_log_counters": failure_counters(a.log_path)}
         json.dump({"probes": raw_probe, "resources": raw_res, "heights": tracker.changes}, open(os.path.join(out, "two_node_w3.raw.json"), "w"))
@@ -490,13 +496,13 @@ def two_node_md(res, host, design):
     L = [f"# Two-node baseline: {design}", "", f"Host: {host}", "", "## W2 catch-up: B validates blocks whose proofs it never saw", ""]
     if w2:
         L += [f"- blocks produced while B was offline: {len(w2['blocks_produced_offline'])}, proofs total {w2['proofs_total']} (per block: {[p['proofs_included'] for p in w2['blocks_produced_offline']]})",
-              f"- synced: {w2['synced']}, time to tip after restart {w2['time_to_tip_s']:.1f} s; per-block gap s: {w2['per_block_gap_s']}",
+              f"- synced: {w2['synced']}, time to tip from process spawn {w2['time_to_tip_s_from_spawn']:.1f} s (RPC ready after {w2['startup_to_rpc_ready_s']:.1f} s; {w2['blocks_validated_before_rpc_ready']} block(s) validated before the first RPC sample); per-block gap s among observed: {w2['per_block_gap_s']}",
               f"- B CPU % of one core mean {w2['b_resources']['cpu_pct_of_one_core']['mean']:.0f}; B log counters {w2['b_log_counters']}; A {w2['a_log_counters']}", "",
               "| B probe during catch-up | n ok | p50 | p95 | p99 | max | missed | > 1 s |", "|---|---|---|---|---|---|---|---|"]
         for k, p in w2["b_probes"].items(): L.append(f"| {k} | {fmt(p['latency_ms'])} | {p['missed_deadlines']} | {p['slow_over_1s']} |")
     L += ["", "## W3 reorg: B abandons its own 2 blocks for A's longer chain with cold proofs", ""]
     if w3:
-        L += [f"- fork base {w3['fork_base_height']}; A side {len(w3['a_side_blocks'])} blocks / {w3['a_side_proofs']} proofs; converged to A: {w3['converged_to_a']} in {w3['time_to_converge_s']:.1f} s",
+        L += [f"- fork base {w3['fork_base_height']}; B side {w3['b_side_blocks']} block(s); A side {len(w3['a_side_blocks'])} blocks / {w3['a_side_proofs']} proofs; converged to A: {w3['converged_to_a']} in {w3['time_to_converge_s_from_spawn']:.1f} s from process spawn (RPC ready after {w3['startup_to_rpc_ready_s']:.1f} s; converged before first RPC sample: {w3['converged_before_first_rpc_sample']})",
               f"- B height timeline: {[(c['height'], round(c['t_s'], 1)) for c in w3['b_height_timeline']]}",
               f"- B CPU % mean {w3['b_resources']['cpu_pct_of_one_core']['mean']:.0f}; B log counters {w3['b_log_counters']}", "",
               "| B probe during reorg | n ok | p50 | p95 | p99 | max | missed | > 1 s |", "|---|---|---|---|---|---|---|---|"]

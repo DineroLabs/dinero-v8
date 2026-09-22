@@ -322,3 +322,13 @@ At a 60-second block interval, a small node spends ≈29% of the interval valida
 with today's proofs and serves no template during it; a 3-block catch-up or reorg costs ≈52 s. The v2
 projection for the same blocks (4 bundles ≈ 0.3 s serial on this host, and off the activation lock with
 the bounded prewarm) remains a projection until the integrated v2 path exists.
+
+### 8.11 Corrected small-host rerun (run 35730164447 on b78e96315) and a timing-window correction
+
+Hostile: proof lanes **0 of 538** accepted (all `proof-invalid`), ciphertext control 134 of 134 accepted.
+W3 with the fork fix converged, but convergence was already true at B's first RPC sample: B validated
+A's cold blocks during its own startup, before the RPC server accepted calls, so the "0.0 s" is a
+measurement-window artefact and earlier W2 "time to tip after restart" figures were likewise measured
+from RPC readiness, not from process spawn. Corrected: the harness now measures from spawn, reports the
+startup-to-RPC gap, the number of blocks validated before the first sample, and whether convergence
+preceded the first sample. The M4 and small-host two-node numbers are re-measured with this fix below.
