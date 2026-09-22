@@ -19,6 +19,64 @@ class TransportError(Exception): pass     # connection/timeouts/HTTP errors othe
 class ProtocolError(Exception): pass      # JSON-RPC error envelopes or malformed replies
 class QualificationFailure(Exception): pass
 
+# Enforced outcome rules. A scenario that did not achieve the required coverage, or that saw serious
+# errors, FAILS qualification even if nothing was wrongly accepted. Thresholds are deliberately modest
+# so that a slow host cannot pass by doing almost nothing.
+MIN_PROOF_LANE_DECISIONS = 20        # per proof lane
+MIN_FULL_VERIFICATIONS = 3           # per proof lane: decisions slower than 100 ms (reached the verifier)
+MAX_ERROR_RATIO = 0.05               # (transport + protocol + malformed) / attempts, per lane
+FATAL_LOG_COUNTERS = ("SAFE MODE", "INVARIANT VIOLATION", "corrupt", "REORG ABORT")
+
+def enforce_hostile(counts, decisions, log_counters):
+    """Returns a list of failure reasons (empty = pass)."""
+    fails = []
+    for lane, c in counts.items():
+        attempts = sum(c[k] for k in ("decisions", "malformed", "busy503", "transport", "protocol"))
+        errors = c["malformed"] + c["transport"] + c["protocol"]
+        if attempts and errors / attempts > MAX_ERROR_RATIO: fails.append(f"{lane}: error ratio {errors}/{attempts} exceeds {MAX_ERROR_RATIO}")
+        if lane.endswith("/proof"):
+            if c["accepted"] > 0: fails.append(f"{lane}: {c['accepted']} mutated proof(s) ACCEPTED")
+            if c["decisions"] < MIN_PROOF_LANE_DECISIONS: fails.append(f"{lane}: only {c['decisions']} decisions (< {MIN_PROOF_LANE_DECISIONS})")
+            full = sum(1 for d in decisions.get(lane, []) if d["ms"] > 100)
+            if full < MIN_FULL_VERIFICATIONS: fails.append(f"{lane}: only {full} decisions reached full verification (< {MIN_FULL_VERIFICATIONS})")
+        elif lane.endswith("/ciphertext_control"):
+            if c["decisions"] and c["accepted"] == 0: fails.append(f"{lane}: control lane never accepted; layout attribution suspect")
+    for k in FATAL_LOG_COUNTERS:
+        if log_counters.get(k, 0): fails.append(f"daemon log: {k} x{log_counters[k]}")
+    return fails
+
+def enforce_steady(result):
+    fails = []
+    g, b = result["generation"], result["blocks"]
+    if g["builds_ok"] == 0: fails.append("no shielded transaction was built")
+    if b["count"] == 0: fails.append("no block was mined")
+    if b["shielded_txs_confirmed"] == 0: fails.append("no shielded transaction was confirmed in a block")
+    for k, p in result["probes"].items():
+        errs = sum(v for e, v in p["errors"].items() if e != "busy503")
+        if p["samples"] and errs / p["samples"] > MAX_ERROR_RATIO: fails.append(f"probe {k}: error ratio {errs}/{p['samples']}")
+    for k in FATAL_LOG_COUNTERS:
+        if result["log_counters"].get(k, 0): fails.append(f"daemon log: {k} x{result['log_counters'][k]}")
+    return fails
+
+def enforce_two_node(res):
+    fails = []
+    w2, w3 = res["phases"].get("W2_catchup_cold_proofs"), res["phases"].get("W3_reorg_onto_cold_proofs")
+    if not w2: fails.append("W2 did not run")
+    else:
+        if not w2["synced"]: fails.append("W2: B did not reach A's tip")
+        if w2["proofs_total"] == 0: fails.append("W2: no cold proofs were produced")
+        for side in ("a", "b"):
+            for k in FATAL_LOG_COUNTERS:
+                if w2[f"{side}_log_counters"].get(k, 0): fails.append(f"W2 {side} log: {k} x{w2[f'{side}_log_counters'][k]}")
+    if not w3: fails.append("W3 did not run")
+    else:
+        if not w3["converged_to_a"]: fails.append("W3: B did not converge to A's tip")
+        if w3["a_side_proofs"] == 0: fails.append("W3: no cold proofs on A's side")
+        for side in ("a", "b"):
+            for k in FATAL_LOG_COUNTERS:
+                if w3[f"{side}_log_counters"].get(k, 0): fails.append(f"W3 {side} log: {k} x{w3[f'{side}_log_counters'][k]}")
+    return fails
+
 def free_ports(n):
     socks, ports = [], []
     for _ in range(n):
@@ -296,6 +354,7 @@ def scenario_steady(node, seconds, out):
                              "shield_ms": summarize([b["ms"] for b in okb if b["kind"] == "shield"]), "transfer_ms": summarize([b["ms"] for b in okb if b["kind"] == "transfer"])},
               "blocks": {"count": len(blocks), "generate_ms": summarize([b["generate_ms"] for b in blocks]), "shielded_txs_confirmed": sum(b["shielded_included"] for b in blocks), "per_block": blocks},
               "probes": reports, "resources": resrep, "log_counters": failure_counters(node.log_path), "miner": miner}
+    result["qualification_failures"] = enforce_steady(result); result["qualification_failed"] = bool(result["qualification_failures"])
     json.dump(result, open(os.path.join(out, "steady.json"), "w"), indent=2)
     json.dump({"probes": raw_probe, "resources": raw_res, "builds": builds}, open(os.path.join(out, "steady.raw.json"), "w"))
     return result
@@ -366,8 +425,9 @@ def scenario_hostile(node, seconds, out, miner=None, recipient=None):
               "decision_ms_by_reason": {k: {r: summarize([d["ms"] for d in decisions[k] if d["reason"] == r]) for r in reasons[k]} for k in counts},
               "decision_ms_all": {k: summarize([d["ms"] for d in decisions[k]]) for k in counts}, "accepted_examples": accepted_examples[:5],
               "probes": reports, "resources": resrep, "log_counters": failure_counters(node.log_path),
-              "accepted_by_field": {k: {f: sum(1 for d in decisions[k] if d["verdict"] == "accepted" and d["field"] == f) for f in {d["field"] for d in decisions[k]}} for k in counts},
-              "qualification_failed": any(c["accepted"] > 0 for k, c in counts.items() if not k.endswith("ciphertext_control"))}
+              "accepted_by_field": {k: {f: sum(1 for d in decisions[k] if d["verdict"] == "accepted" and d["field"] == f) for f in {d["field"] for d in decisions[k]}} for k in counts}}
+    result["qualification_failures"] = enforce_hostile(counts, decisions, result["log_counters"])
+    result["qualification_failed"] = bool(result["qualification_failures"])
     json.dump(result, open(os.path.join(out, "hostile.json"), "w"), indent=2)
     json.dump({"probes": raw_probe, "resources": raw_res, "decisions": decisions}, open(os.path.join(out, "hostile.raw.json"), "w"))
     return result
@@ -480,7 +540,7 @@ def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
             "b_height_timeline": [{"height": c["height"], "t_s": c["t"] - t_start} for c in tracker.changes], "b_probes": reports, "b_resources": resrep,
             "b_log_counters": failure_counters(b.log_path), "a_log_counters": failure_counters(a.log_path)}
         json.dump({"probes": raw_probe, "resources": raw_res, "heights": tracker.changes}, open(os.path.join(out, "two_node_w3.raw.json"), "w"))
-        res["qualification_failed"] = (not synced) or (not converged) or any(v for v in res["phases"]["W2_catchup_cold_proofs"]["b_log_counters"].values() if False)
+        res["qualification_failures"] = enforce_two_node(res); res["qualification_failed"] = bool(res["qualification_failures"])
     finally:
         for n in (a, b):
             try: n.stop()
@@ -488,6 +548,8 @@ def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
         for n, name in ((a, "a"), (b, "b")):
             if os.path.exists(n.log_path): shutil.copy(n.log_path, os.path.join(out, f"dinerod-{name}.log"))
         shutil.rmtree(work, ignore_errors=True)
+    if "qualification_failures" not in res:   # a phase raised before the verdict: incomplete = failed
+        res["qualification_failures"] = ["scenario did not complete"]; res["qualification_failed"] = True
     json.dump(res, open(os.path.join(out, "two_node.json"), "w"), indent=2)
     return res
 
@@ -507,7 +569,7 @@ def two_node_md(res, host, design):
               f"- B CPU % mean {w3['b_resources']['cpu_pct_of_one_core']['mean']:.0f}; B log counters {w3['b_log_counters']}", "",
               "| B probe during reorg | n ok | p50 | p95 | p99 | max | missed | > 1 s |", "|---|---|---|---|---|---|---|---|"]
         for k, p in w3["b_probes"].items(): L.append(f"| {k} | {fmt(p['latency_ms'])} | {p['missed_deadlines']} | {p['slow_over_1s']} |")
-    L += ["", f"qualification failed: {res.get('qualification_failed')}"]
+    L += ["", f"qualification failed: {res.get('qualification_failed')} reasons: {res.get('qualification_failures')}"]
     return "\n".join(L) + "\n"
 
 def fmt(s):
@@ -525,7 +587,7 @@ def md(rs, rh, host, design):
         L.append(f"| probe {k} every {p['interval_s']} s | {fmt(p['latency_ms'])} | {p['missed_deadlines']} | {p['errors'] or 0}{extra} | {p['slow_over_1s']} |")
     L += ["", "## hostile (W5): mutated copies of unmined seeds through testmempoolaccept, one client", "", f"- seeds (bytes): {rh['seeds']}", f"- counts: {rh['counts']}", f"- reject reasons: {rh['reject_reasons']}",
           f"- accepted by lane/field: {rh['accepted_by_field']}",
-          f"- **qualification failed (acceptance in a proof lane): {rh['qualification_failed']}** (accepted examples: {rh['accepted_examples'][:3]})",
+          f"- **qualification failed: {rh['qualification_failed']}** reasons: {rh['qualification_failures']} (accepted examples: {rh['accepted_examples'][:3]})",
           f"- daemon CPU % of one core mean {rh['resources']['cpu_pct_of_one_core']['mean']:.0f}; log counters {rh['log_counters']}", "",
           "| decision (ms) by seed and reject reason | n | p50 | p95 | p99 | max |", "|---|---|---|---|---|---|"]
     for k, byr in rh["decision_ms_by_reason"].items():
@@ -549,8 +611,10 @@ def main():
             res = scenario_two_node(a.dinerod, a.out, flags, a.blocks_per_phase)
             open(os.path.join(a.out, "summary.md"), "w").write(two_node_md(res, a.host, a.design)); print(open(os.path.join(a.out, "summary.md")).read())
             if res.get("qualification_failed"): rc = 2
+            json.dump({"exit": rc, "two_node": res.get("qualification_failures")}, open(os.path.join(a.out, "OUTCOME.json"), "w"), indent=2)
         except Exception as e:
             open(os.path.join(a.out, "HARNESS_ERROR.txt"), "w").write(repr(e) + "\n"); rc = 1
+            json.dump({"exit": rc, "two_node": ["harness error: " + repr(e)[:200]]}, open(os.path.join(a.out, "OUTCOME.json"), "w"), indent=2)
         print(f"exit={rc}"); sys.exit(rc)
     work = tempfile.mkdtemp(prefix="dinero_load_"); rc = 0
     node = Node(a.dinerod, os.path.join(work, "nut"), ["--consensus-shielded-epoch-reset-height=1", "--consensus-shielded-spend-auth-height=2", "--consensus-state-commitment-height=3"])
@@ -561,10 +625,11 @@ def main():
             miner = node.rpc("wallet.getnewaddress", ["taproot", "loadgen"], 30); miner = miner["address"] if isinstance(miner, dict) else miner
             node.rpc("generatetoaddress", [140, miner], 600)
             rh = scenario_hostile(node, a.hostile_seconds, a.out, miner)
+            if rh["qualification_failed"]: rc = 2
         else:
             rs = scenario_steady(node, a.steady_seconds, a.out)
             rh = scenario_hostile(node, a.hostile_seconds, a.out, rs["miner"])
-        if rh["qualification_failed"]: rc = 2
+        if rh["qualification_failed"] or rs["qualification_failed"]: rc = 2
     except QualificationFailure as e:
         open(os.path.join(a.out, "QUALIFICATION_FAILED.txt"), "w").write(str(e) + "\n"); rc = 2
     except Exception as e:
@@ -577,6 +642,8 @@ def main():
         open(os.path.join(a.out, "summary.md"), "w").write(md(rs, rh, a.host, a.design)); print(open(os.path.join(a.out, "summary.md")).read())
     elif rh:
         print(json.dumps({k: rh[k] for k in ("counts", "reject_reasons", "accepted_by_field", "qualification_failed", "decision_ms_by_reason")}, indent=1))
-    print(f"exit={rc}"); sys.exit(rc)
+    outcome = {"exit": rc, "steady": (rs or {}).get("qualification_failures"), "hostile": (rh or {}).get("qualification_failures")}
+    json.dump(outcome, open(os.path.join(a.out, "OUTCOME.json"), "w"), indent=2)
+    print(f"exit={rc} outcome={json.dumps(outcome)}"); sys.exit(rc)
 
 if __name__ == "__main__": main()

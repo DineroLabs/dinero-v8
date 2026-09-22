@@ -63,7 +63,10 @@ class HostileScenarioTests(unittest.TestCase):
         self.assertTrue(res["qualification_failed"]); self.assertEqual(res["accepted_examples"][0]["reply"][0]["txid"], "evil")
     def test_rejections_keep_reasons_and_are_decisions(self):
         res, _ = self.run_hostile([[{"allowed": False, "reject-reason": "proof-invalid"}]] * 3)
-        self.assertFalse(res["qualification_failed"])
+        # A 0.3 s stub run is incomplete: it must FAIL qualification for coverage, never for acceptance.
+        self.assertTrue(res["qualification_failed"])
+        self.assertFalse(any("ACCEPTED" in f for f in res["qualification_failures"]))
+        self.assertTrue(any("decisions" in f or "full verification" in f for f in res["qualification_failures"]))
         reasons = {r for k in res["reject_reasons"] for r in res["reject_reasons"][k]}
         self.assertIn("proof-invalid", reasons)
         self.assertGreater(sum(c["decisions"] for c in res["counts"].values()), 0)
@@ -82,5 +85,50 @@ class HostileScenarioTests(unittest.TestCase):
     def test_malformed_seed_reply_is_a_qualification_failure(self):
         with self.assertRaises(L.QualificationFailure):
             self.run_hostile([], seed="nonsense")
+
+
+
+class EnforcementTests(unittest.TestCase):
+    def lanes(self, **over):
+        base = {"decisions": 100, "accepted": 0, "rejected": 100, "malformed": 0, "busy503": 0, "transport": 0, "protocol": 0}
+        c = {"shield_1proof/proof": dict(base), "shield_1proof/ciphertext_control": dict(base, accepted=20, rejected=0, decisions=20)}
+        for k, v in over.items(): c["shield_1proof/proof"][k] = v
+        return c
+    def decisions(self, n_full=10, n_cheap=90):
+        return {"shield_1proof/proof": [{"ms": 500.0} for _ in range(n_full)] + [{"ms": 5.0} for _ in range(n_cheap)]}
+    def test_healthy_run_passes(self):
+        self.assertEqual(L.enforce_hostile(self.lanes(), self.decisions(), {}), [])
+    def test_zero_decisions_with_transport_errors_fails(self):
+        c = self.lanes(decisions=0, rejected=0, transport=5000)
+        fails = L.enforce_hostile(c, {"shield_1proof/proof": []}, {})
+        self.assertTrue(any("error ratio" in f for f in fails)); self.assertTrue(any("decisions" in f for f in fails))
+    def test_no_full_verification_fails(self):
+        fails = L.enforce_hostile(self.lanes(), self.decisions(n_full=0, n_cheap=100), {})
+        self.assertTrue(any("full verification" in f for f in fails))
+    def test_acceptance_fails(self):
+        fails = L.enforce_hostile(self.lanes(accepted=1), self.decisions(), {})
+        self.assertTrue(any("ACCEPTED" in f for f in fails))
+    def test_fatal_log_counter_fails(self):
+        fails = L.enforce_hostile(self.lanes(), self.decisions(), {"REORG ABORT": 1})
+        self.assertTrue(any("REORG ABORT" in f for f in fails))
+    def test_control_lane_never_accepting_is_suspect(self):
+        c = self.lanes(); c["shield_1proof/ciphertext_control"]["accepted"] = 0
+        fails = L.enforce_hostile(c, self.decisions(), {})
+        self.assertTrue(any("control lane" in f for f in fails))
+    def test_two_node_enforces_counters_and_convergence(self):
+        ok = {"phases": {"W2_catchup_cold_proofs": {"synced": True, "proofs_total": 16, "a_log_counters": {}, "b_log_counters": {}},
+                         "W3_reorg_onto_cold_proofs": {"converged_to_a": True, "a_side_proofs": 16, "a_log_counters": {}, "b_log_counters": {}}}}
+        self.assertEqual(L.enforce_two_node(ok), [])
+        bad = {"phases": {"W2_catchup_cold_proofs": {"synced": True, "proofs_total": 16, "a_log_counters": {}, "b_log_counters": {"INVARIANT VIOLATION": 2}},
+                          "W3_reorg_onto_cold_proofs": {"converged_to_a": False, "a_side_proofs": 16, "a_log_counters": {}, "b_log_counters": {}}}}
+        fails = L.enforce_two_node(bad)
+        self.assertTrue(any("INVARIANT" in f for f in fails)); self.assertTrue(any("converge" in f for f in fails))
+        self.assertTrue(L.enforce_two_node({"phases": {}}))
+    def test_steady_requires_work_and_clean_logs(self):
+        good = {"generation": {"builds_ok": 3}, "blocks": {"count": 2, "shielded_txs_confirmed": 3}, "probes": {"x": {"samples": 10, "errors": {}}}, "log_counters": {}}
+        self.assertEqual(L.enforce_steady(good), [])
+        empty = {"generation": {"builds_ok": 0}, "blocks": {"count": 0, "shielded_txs_confirmed": 0}, "probes": {"x": {"samples": 10, "errors": {"transport": 5}}}, "log_counters": {"SAFE MODE": 1}}
+        fails = L.enforce_steady(empty)
+        self.assertGreaterEqual(len(fails), 4)
 
 if __name__ == "__main__": unittest.main()
