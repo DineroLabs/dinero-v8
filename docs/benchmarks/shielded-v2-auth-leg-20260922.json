@@ -1,0 +1,16 @@
+{
+  "date": "2026-09-22",
+  "host": "M4 Max (build-spike, Release)",
+  "tool": "tests/spike/auth_leg_cost.cpp (target spike_auth_leg_cost, throwaway)",
+  "circuit": "BuildSpendCircuit(witness, pub, cv_bound, spend_auth, private_covenant=false)",
+  "rows": [
+    {"label": "legacy",   "cv_bound": false, "spend_auth": false, "constraints": 23914,   "variables": 23952,   "inputs": 2},
+    {"label": "cv_bound", "cv_bound": true,  "spend_auth": false, "constraints": 597009,  "variables": 591308,  "inputs": 11},
+    {"label": "auth",     "cv_bound": true,  "spend_auth": true,  "constraints": 1045170, "variables": 1034984, "inputs": 11}
+  ],
+  "derived": {
+    "auth_ownership_leg_constraints": 448161,
+    "note": "auth minus cv_bound: 256-bit fixed-base secp256k1 mul + even-y + fe_pack + 2 Poseidon2"
+  },
+  "consequence": "spec §10 Amendment A: hash-derived ownership key for v2 notes"
+}

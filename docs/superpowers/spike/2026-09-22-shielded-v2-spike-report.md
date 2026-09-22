@@ -31,3 +31,26 @@ See the phase-2 file. Per opening at 2^16, rate 3: 79.6 KB, 21 ms prove, **0.48 
 
 ## What the phase-1 plan must contain
 Envelope `DZV2|id`, bundle statement exactly as `tests/spike/bundle_circuit_v2.h` (with the auth-profile nullifier key), transcript domain `dinero.shielded.bundle.v2` binding the sighash, consensus vectors + neuter tests from spec §6, the Release performance ctest at the relaxed gates above, batched verification off the ingress lock, activation/sunset heights at `UINT32_MAX`, wallet/DPI prover through the existing C++ API first (FFI crate only in phase 2).
+
+## Addendum (2026-09-22, after the go/no-go): the spike statement matches no live note
+
+While mapping the code for the phase-1 plan I checked which spend profile live mainnet
+notes use. `chainparams_impl.cpp:124` sets `shielded_spend_auth_activation_height =
+110000` with an epoch reset at the same height, so every spendable note is an
+auth-profile note whose ownership relation is `pk_d = s·G` inside the circuit. The
+spike bundle circuit used the legacy `pk = H(sk, 0)` leg. Measured with
+`tests/spike/auth_leg_cost.cpp` (throwaway, target `spike_auth_leg_cost`):
+
+| profile | constraints |
+|---|---|
+| legacy | 23,914 |
+| cv-bound | 597,009 |
+| auth | 1,045,170 |
+
+The auth ownership leg is ≈ 448k constraints per spend. The phase-1 numbers above are
+therefore reachable only with a hash-derived ownership key for v2 notes, which is now
+proposed as spec §10 (Amendment A) and is the first owner decision the phase-1 plan
+depends on. Phase-1 GO stands under that amendment; without it phase 1 is a NO-GO
+(≈ 950k constraints for 2-in-2-out, ≈ 1.5–2 s verify, not post-quantum).
+
+Raw result: `docs/benchmarks/shielded-v2-auth-leg-20260922.json`.

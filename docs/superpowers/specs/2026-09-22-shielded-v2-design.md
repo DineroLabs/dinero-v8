@@ -76,3 +76,100 @@ Spike → phase 1 on regtest → private canary (two-node) → Release-binary ca
 
 ## 9. Ownership
 Claude owns this design, the spike, the phase-1 implementation and the qualification harness on `claude/shielded-v2`. Consensus-statement review (§3.1, §5) is independent. Owner decides activation heights and merges.
+
+## 10. Amendment A — ownership key for v2 notes (2026-09-22, PENDING OWNER APPROVAL)
+
+Status: written by Claude after the spike, before phase-1 implementation. Nothing in
+phase 1 may activate without the owner approving this section. It changes §3.1
+(statement), §3.5 (coexistence) and §4 (wallet keys). It does not change the note
+commitment format, the commitment tree, the nullifier derivation, note encryption,
+or the 107-byte address payload layout.
+
+### 10.1 Why (measured)
+
+§3.1 assumed the v2 spend leg could reuse "the auth-profile key derivation active since
+height 110000" at ≈ 8.4k constraints per spend. That is wrong. The auth profile proves
+`pk_d = s·G` with a 256-bit secp256k1 fixed-base scalar multiplication inside the
+circuit (`src/consensus/shielded/shielded_circuit.cpp`, `auth_sG`), and secp256k1 is
+non-native in its own scalar field. Measured with `tests/spike/auth_leg_cost.cpp`
+(`build-spike`, Release, 2026-09-22):
+
+| spend circuit profile | constraints | variables |
+|---|---|---|
+| legacy key (`pk = H(sk, 0)`, what the spike statement used) | 23,914 | 23,952 |
+| cv-bound (mainnet 61000–109999) | 597,009 | 591,308 |
+| auth (mainnet since 110000) | 1,045,170 | 1,034,984 |
+
+The auth ownership leg alone is ≈ 448k constraints per spend (auth minus cv-bound).
+Mainnet also epoch-reset the pool at 110000 (`shielded_spend_auth_epoch_reset_height`),
+so every spendable note today is an auth note. A v2 bundle that spends two auth notes
+would be ≈ 950k constraints in one proof: fewer than today's four proofs (≈ 3.3M
+total) but ≈ 1.5–2 s to verify, an order of magnitude outside every gate in §2. It is
+also not post-quantum. The spike's phase-1 numbers (53k constraints, 65 ms) hold only
+for a hash-based ownership key.
+
+### 10.2 Decision (proposed)
+
+v2 notes use a hash-derived spend key. No elliptic-curve operation appears in the v2
+circuit.
+
+```
+hk          = Poseidon2(ask, DstToHash("DIN/v7/shielded/v2/hk"))   account-level, joins the full viewing key
+pk_d_spend  = Poseidon2(hk, d_padded)                              per address; d_padded = 11-byte d, zero-padded to 32
+nfk         = Poseidon2(nvk, d_padded)                             unchanged (DeriveDiversifiedNullifierKey)
+nfk_c       = Poseidon2(nfk, NullifierKeyTag())                    unchanged (NullifierKeyCommitment)
+pk          = Poseidon2(pk_d_spend, nfk_c)                         unchanged shape (AuthRecipientCommitmentKey)
+cm          = NoteCommitment(d, pk, value, rcm)                    unchanged
+nullifier   = Poseidon2(nfk, leaf_index)                           unchanged (ComputeNullifier)
+```
+
+Properties, same as the auth profile's: the sender learns only `pk_d_spend` and
+`nfk_c` from the address and cannot spend (Poseidon preimage); a full viewer holding
+`hk` and `nvk` derives every `pk_d_spend` and every nullifier but not `ask`; distinct
+`d` give unrelated keys, so unlinkability is unchanged. Discovery still uses
+`pk_d_enc = ivk·P_d` and the existing ChaCha20-Poly1305 note encryption; that ECDH is
+the one remaining non-PQ component and is explicitly out of scope for phase 1 and 2.
+
+In-circuit cost per spend: 3 Poseidon2 evaluations on top of the legacy leg
+(hk, pk_d_spend, nfk_c) plus one for `pk`; estimated ≈ 26k constraints, to be measured
+in plan Task 0 before any gate is asserted.
+
+### 10.3 Address and wallet
+
+- Same 107-byte payload `d || pk_d_enc || pk_d_spend || nfk_c`. New HRPs `dinz`,
+  `tdinz`, `rdinz` mark a v2 address; the decoder skips the on-curve check for
+  `pk_d_spend` under a v2 HRP (a hash output is on the curve with probability ½) and
+  keeps it for `pk_d_enc`.
+- `NoteKeyScheme::HashKeyV2 = 3` in the wallet note store. No schema change: the
+  column exists.
+- Outputs are scheme-agnostic: a v1 (auth-proof) transaction may pay a v2 address,
+  because the output circuit only proves `cm = NoteCommitment(d, pk, value, rcm)` with
+  `pk` as a witness. That is the migration path.
+
+### 10.4 Coexistence and migration (replaces the second paragraph of §3.5)
+
+- From `shielded_v2_activation_height`, transaction version 7 carries one v2 bundle
+  proof; versions 5 and 6 keep carrying v1 proofs. A transaction never carries both.
+- Auth notes stay spendable only through v1 proofs. Wallets migrate them with an
+  ordinary v1 transfer whose outputs pay the wallet's own v2 addresses
+  (`wallet.shieldedmigratev2`). Consensus does not know about migration.
+- From `shielded_v1_sunset_height`, new blocks may not contain versions 5 or 6 with a
+  non-empty shielded bundle. The owner sets it only after migration telemetry;
+  `UINT32_MAX` until then.
+- Historical blocks verify exactly as today.
+
+### 10.5 Alternatives considered
+
+1. Keep the EC ownership leg in the v2 circuit: ≈ 448k constraints per spend, fails
+   §2 and is not post-quantum. Rejected.
+2. Epoch-reset the pool at v2 activation (as at 61000 and 110000): no migration path
+   needed, but forces every holder to unshield before H. Not chosen; available as a
+   fallback if migration telemetry stalls.
+3. Sapling-style re-randomised spend authorisation signature: still needs `α·G` in
+   circuit on a non-embedded curve. Rejected for the same reason as (1).
+
+### 10.6 Owner decisions requested
+
+1. Approve the hash-derived ownership key for v2 notes (§10.2).
+2. Approve migration by v1 self-transfer with a sunset height chosen later (§10.4).
+3. Confirm that classical ECDH note discovery stays out of scope for phases 1–2.

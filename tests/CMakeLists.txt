@@ -2707,6 +2707,30 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
     endif()
   endif()
 
+  # THROWAWAY spike: per-profile constraint counts of the legacy spend circuit.
+  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/spike/auth_leg_cost.cpp)
+    add_executable(spike_auth_leg_cost
+      tests/spike/auth_leg_cost.cpp
+      tests/stubs/mempool_test_stubs.cpp
+    )
+    add_dependencies(spike_auth_leg_cost dinero_shielded)
+    target_link_libraries(spike_auth_leg_cost PRIVATE
+      dinero_shielded
+      dinero_wallet
+      wallet_test_deps
+      dinero_zk
+      sqlite3
+    )
+    target_include_directories(spike_auth_leg_cost BEFORE PRIVATE
+      ${CMAKE_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/src
+      ${CMAKE_SOURCE_DIR}/third_party/sqlite-amalgamation-3480000
+    )
+    if(APPLE)
+      target_link_libraries(spike_auth_leg_cost PRIVATE "-framework Security")
+    endif()
+  endif()
+
   # Spartan proof-system soundness regression (standalone require_zero_error).
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/zk/test_spartan_soundness.cpp)
     add_executable(test_spartan_soundness
