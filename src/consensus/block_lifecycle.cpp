@@ -172,6 +172,12 @@ bool BranchHasDataToConnectedBase(const CBlockIndex* pindex) {
     return false; // ran off the top without a connected base
 }
 
+size_t ContiguousBodyPrefix(const std::vector<CBlockIndex*>& connect_path) {
+    size_t n = 0;
+    while (n < connect_path.size() && connect_path[n] && (connect_path[n]->status & BLOCK_HAVE_DATA)) ++n;
+    return n;
+}
+
 bool BranchHasDataToFork(const CBlockIndex* candidate, const CBlockIndex* active_tip) {
     if (!candidate || !active_tip) return false;
 
