@@ -348,6 +348,20 @@ void PropagateInvalidToDescendants(CBlockIndex* pindex);
 bool IsBlockInvalid(const uint256& block_hash);
 bool HasInvalidAncestor(const CBlockIndex* pindex);
 
+// HasInvalidAncestor() caches "ancestry is clean" results so that repeated
+// calls (GetBestCandidate() runs it for every candidate on every pass) cost
+// O(new blocks) rather than O(chain height). Every site that sets
+// BLOCK_FAILED_VALID on an index entry WITHOUT going through MarkBlockInvalid()
+// must call this afterwards, or a later HasInvalidAncestor() may answer from a
+// stale cache. Cache lookups, publication and invalidation are serialized by
+// g_block_index_mutex, including calls made outside candidate selection.
+// Callers must still serialize block-graph mutations and object lifetime;
+// invalidating the cache afterwards does not make an unlocked status write safe.
+void InvalidateAncestryCache();
+// Cumulative pprev steps taken by the walk (diagnostic/test hook). Read/reset
+// only with g_block_index_mutex held or while all ancestry readers are quiescent.
+extern uint64_t g_invalid_ancestor_walk_steps;
+
 // #309: true iff every block on the branch from pindex back to the first
 // connected (BLOCK_VALID_CHAIN) ancestor has its body (BLOCK_HAVE_DATA). This is
 // the whole-branch-data precondition for treating a not-yet-validated side branch

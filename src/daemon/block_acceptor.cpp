@@ -21,6 +21,7 @@
 #include "consensus/merkle_root.h"  // Phase 11a: Canonical merkle computation
 #include "consensus/block_index.h"  // For FindBlockIndex, CBlockIndex::GetMedianTimePast (Reorg MTP fix)
 #include "consensus/block_lifecycle.h"  // BLOCK_HAVE_DATA status flag
+#include "consensus/fork_acceptance_policy.h"  // #803: fork-prior-to-checkpoint, overlay depth cap
 #include "consensus/header_chain.h"  // Fork-aware MTP: HeaderIndexEntry::GetMedianTimePast
 #include "metrics/metrics_registry.h"
 #include "primitives/block.h"
@@ -265,6 +266,26 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 
         // 5.5. Validate checkpoint (prevent reorg past checkpoint blocks)
         std::cout << "[ACCEPTOR-DEBUG] Step 5.5: Validating checkpoint..." << std::endl;
+        // Reject historical forks only once a checkpoint's exact hash is
+        // established on the active chain. Before that, a competing branch
+        // may be the checkpoint's own ancestry and must remain syncable.
+        // The enclosing activation guard keeps this ancestry stable.
+        if (!isMainChainExtension) {
+            auto* checkpoint_ctx = DaemonContext::instance();
+            auto checkpoint_cs = std::dynamic_pointer_cast<dinero::ChainstateService>(
+                checkpoint_ctx ? checkpoint_ctx->chainstate : nullptr);
+            const auto violated = consensus::ForkPriorToEstablishedCheckpoint(
+                static_cast<uint32_t>(newHeight), block_hash,
+                dinero::Params().vCheckpoints,
+                checkpoint_cs ? checkpoint_cs->GetActiveTip() : nullptr);
+            if (violated) {
+                error = "bad-fork-prior-to-checkpoint: height " + std::to_string(newHeight) +
+                        " conflicts with established checkpoint " + std::to_string(*violated);
+                dinero::metrics::MetricsRegistry::IncrementBlocksRejected("fork-prior-to-checkpoint");
+                return BlockAcceptResult::Rejected(BlockRejectCode::CHECKPOINT_VIOLATION,
+                                                  error, block_hash, newHeight);
+            }
+        }
         if (!ValidateCheckpoint(block, newHeight, error)) {
             std::cout << "[ACCEPTOR-DEBUG] REJECTED: Checkpoint violation - " << error << std::endl;
             dinero::metrics::MetricsRegistry::IncrementBlocksRejected("checkpoint-violation");
@@ -440,7 +461,23 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
                                 const uint32_t tip_h =
                                     dinero::storage::GetChainHeight(chain_db_for_utreexo);
                                 bool overlay_ok = true;
-                                for (uint32_t h = tip_h;
+                                // #803: the overlay costs O(tip - parent) undo
+                                // reads under the ingress lock. It is a
+                                // consistency pre-check only (ConnectTip
+                                // validates the branch per block if it ever
+                                // wins), so skip it for deep forks.
+                                if (!consensus::ForkAwareOverlayWithinDepth(
+                                        tip_h, static_cast<uint32_t>(parentHeight))) {
+                                    LOG_ERROR("⚠️  fork-aware overlay: skipping utreexo root "
+                                              "pre-check for side-chain block at height " +
+                                              std::to_string(newHeight) + " — fork depth " +
+                                              std::to_string(tip_h - static_cast<uint32_t>(parentHeight)) +
+                                              " exceeds " +
+                                              std::to_string(consensus::kMaxForkAwareOverlayDepth) +
+                                              " (validated at ConnectTip if the branch wins)");
+                                    overlay_ok = false;
+                                }
+                                for (uint32_t h = overlay_ok ? tip_h : static_cast<uint32_t>(parentHeight);
                                      h > static_cast<uint32_t>(parentHeight);
                                      --h) {
                                     dinero::uint256 mainchain_hash;
@@ -3225,7 +3262,9 @@ bool BlockAcceptor::ApplyTipInvalidation(const std::string& blockhash, std::stri
                     // Mark invalidated tip as failed so candidate selection does not
                     // immediately re-activate it on the next ActivateBestChain pass.
                     if (auto* invalid_idx = chainstate->FindBlockIndex(blockHashU256)) {
+                        std::lock_guard<std::recursive_mutex> index_lock(dinero::g_block_index_mutex);
                         invalid_idx->status |= dinero::BLOCK_FAILED_VALID;
+                        dinero::InvalidateAncestryCache();
                         chainstate->RemoveCandidate(invalid_idx);
                     }
 
