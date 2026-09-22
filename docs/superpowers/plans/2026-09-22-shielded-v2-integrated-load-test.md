@@ -6,7 +6,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-22-shielded-v2-design.md` (§2 targets, §3.4 verification path, §10 amendment, §10.7 security scope). Related: `docs/benchmarks/shielded-v2-task7-*` (proof-stage results), owner reviews under `MemoryMD/design/` and `MemoryMD/evidence/`.
 
-## 1. Hardware contract (proposal for the owner's decision)
+## 1. Hardware contract (owner decision 2026-09-22; see `docs/superpowers/specs/2026-09-22-shielded-v2-hardware-contract.md`)
+
+Decided: fleet reference = an idle, isolated VM matching the fleet's 8-vCPU EPYC-Milan / ~64 GB configuration
+(vCPUs, not asserted physical cores; never a live node); the GitHub 2-core runner is a separate constrained-host
+test; 20 ms / 400 ms unchanged pending fleet-reference measurement; small-host acceptance criteria need an
+explicit decision (the §5 small-host column is therefore still a proposal); the Dell is additional testing
+only. The original proposal text follows for the record.
+
+### 1a. Original proposal (superseded)
 
 The spec names two hosts: "fleet 8-core x86" for the §2 verify target and "the CI runner class" for the §6 gate. Measured so far: M4 Max (meets 20 ms / 400 ms) and the GitHub 2-core EPYC VM (71 ms / 1,567 ms). Proposed contract, one line per class, both always reported:
 

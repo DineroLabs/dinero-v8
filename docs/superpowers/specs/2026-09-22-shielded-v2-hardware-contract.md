@@ -40,3 +40,22 @@ baselines (§8 of the plan) once the spawn-timed numbers are in. Until (1) exist
 Legal block budget (8 Auth proofs / 1,000,000 shielded bytes), fresh randomness, mempool-then-block vs
 cold traffic kept apart, pre-generated transactions so proving never throttles the node under test,
 overload labelled separately, block contents read back, medians of ≥ 5 for proof-stage rows.
+
+## Owner decision (2026-09-22)
+
+Recorded verbatim in substance from the owner's review; supersedes the "Recommendation" above.
+
+1. **Fleet reference:** an idle, isolated VM matching the fleet configuration. The three fleet servers
+   expose 8 vCPUs (AMD EPYC Milan) with approximately 64 GB RAM; that does not establish eight dedicated
+   physical cores, and the reference must not be described as if it did. It must not be a live node.
+2. **Small host:** the GitHub ubuntu runner (2 cores / 4 vCPUs) stays as a separate constrained-host test.
+3. **Targets:** the 20 ms single-verify and 400 ms block-of-50 targets stay unchanged pending measurement on
+   the fleet reference. Any different acceptance criteria for the small host require an explicit decision;
+   none exists yet, so the plan's §5 small-host bounds remain a proposal.
+4. **Dell:** usable for additional testing, never described as fleet-equivalent.
+5. A passing performance run does not close the independent cryptographic review gate.
+
+Consequences for the plan: the fleet-class row of the measurement table is "unmeasured until the VM
+exists"; every x86 statement made so far is "unmet on the constrained host, unmeasured on the fleet
+reference". The load harness needs no change to run on the VM (self-contained Python, daemon built from
+the branch). Provisioning the VM is the owner's action.
