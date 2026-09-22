@@ -1,0 +1,2 @@
+hostile exit=0
+steady exit=0

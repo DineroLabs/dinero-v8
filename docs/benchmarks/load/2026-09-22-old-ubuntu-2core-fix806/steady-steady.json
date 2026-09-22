@@ -1,0 +1,238 @@
+{
+  "scenario": "steady+service",
+  "seconds": 300,
+  "start_height": 140,
+  "end_height": 148,
+  "generation": {
+    "offered_equals_achieved": true,
+    "achieved_tx_per_s": 0.02666666666666667,
+    "builds_ok": 8,
+    "builds_failed": [],
+    "shield_ms": {
+      "n": 4,
+      "p50": 17110.79409900003,
+      "p95": 17487.869816000057,
+      "p99": 17487.869816000057,
+      "max": 17487.869816000057,
+      "mean": 17152.986718750013
+    },
+    "transfer_ms": {
+      "n": 4,
+      "p50": 59451.708455999775,
+      "p95": 59698.391476000324,
+      "p99": 59698.391476000324,
+      "max": 59698.391476000324,
+      "mean": 59479.154949500014
+    }
+  },
+  "blocks": {
+    "count": 8,
+    "generate_ms": {
+      "n": 8,
+      "p50": 117.33172899994315,
+      "p95": 132.11482799988516,
+      "p99": 132.11482799988516,
+      "max": 132.11482799988516,
+      "mean": 94.66592237498617
+    },
+    "shielded_txs_confirmed": 8,
+    "per_block": [
+      {
+        "height": 141,
+        "hash": "10c9387726d6d491a0d491bb9965dc7d2676d7f397bad234c209a5458375a5d6",
+        "generate_ms": 59.552318999976706,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 142,
+        "hash": "5c997a7e8f5edf9608ba3d3f451f6fd4fe5a239ec4fdda045f2b3e8c9193ea41",
+        "generate_ms": 81.09652299981462,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 143,
+        "hash": "70c146f43c0d321ff57dc75c9db74380db2ea4a49e86c4933b80ec2314319b2c",
+        "generate_ms": 117.33172899994315,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 144,
+        "hash": "08064f9b969d8755d60895153ce9df56074f588de0f4f12084edaf49114300d9",
+        "generate_ms": 63.64219300030527,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 145,
+        "hash": "12cf069c8e951ef2f76c8880a52368fcecc90c1df00a64879de4b9949cc1da8e",
+        "generate_ms": 132.11482799988516,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 146,
+        "hash": "07a414a14ee993f85d1b6d3f3d79ab47840a25496da06d7691961f09df059f89",
+        "generate_ms": 119.61777499982418,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      },
+      {
+        "height": 147,
+        "hash": "4c4c206b8a5b594152b35bf5726af9128480aaec2550ad689539f3969c8e19f5",
+        "generate_ms": 65.04706800023996,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 1,
+          "transfer": 0
+        }
+      },
+      {
+        "height": 148,
+        "hash": "7a427174b612ecd5419901653d68f62975301d6cc16e81ae7810bbc2dab0e548",
+        "generate_ms": 118.92494399990028,
+        "mempool_before": 1,
+        "tx_count": 2,
+        "shielded_included": 1,
+        "included_kinds": {
+          "shield": 0,
+          "transfer": 1
+        }
+      }
+    ]
+  },
+  "probes": {
+    "getblockcount": {
+      "method": "getblockcount",
+      "interval_s": 1.0,
+      "samples": 308,
+      "ok": 308,
+      "errors": {},
+      "missed_deadlines": 0,
+      "latency_ms": {
+        "n": 308,
+        "p50": 1.148484000168537,
+        "p95": 1.3944060001449543,
+        "p99": 1.7516600000817562,
+        "max": 4.035801000100037,
+        "mean": 1.167585613633899
+      },
+      "slow_over_1s": 0
+    },
+    "getrawmempool": {
+      "method": "getrawmempool",
+      "interval_s": 1.0,
+      "samples": 288,
+      "ok": 288,
+      "errors": {},
+      "missed_deadlines": 20,
+      "latency_ms": {
+        "n": 288,
+        "p50": 0.9139600001617509,
+        "p95": 1.1511880002217367,
+        "p99": 6080.137484000261,
+        "max": 6772.861374000058,
+        "mean": 109.42035511112714
+      },
+      "slow_over_1s": 8
+    },
+    "wallet.shieldedbalance": {
+      "method": "wallet.shieldedbalance",
+      "interval_s": 1.0,
+      "samples": 61,
+      "ok": 61,
+      "errors": {},
+      "missed_deadlines": 247,
+      "latency_ms": {
+        "n": 61,
+        "p50": 0.9098740001718397,
+        "p95": 51967.78604400015,
+        "p99": 52262.78815800015,
+        "max": 52472.789115000065,
+        "mean": 4334.064290573787
+      },
+      "slow_over_1s": 12
+    },
+    "getblocktemplate": {
+      "method": "getblocktemplate",
+      "interval_s": 2.0,
+      "samples": 147,
+      "ok": 147,
+      "errors": {},
+      "missed_deadlines": 7,
+      "latency_ms": {
+        "n": 147,
+        "p50": 6.668650999927195,
+        "p95": 646.8531419998271,
+        "p99": 6406.171480000012,
+        "max": 6820.64880300004,
+        "mean": 209.9510338231567
+      },
+      "slow_over_1s": 7,
+      "stale_template_with_stable_tip": 0
+    }
+  },
+  "resources": {
+    "samples": 303,
+    "cpu_pct_of_one_core": {
+      "n": 303,
+      "p50": 98.4658615067236,
+      "p95": 196.2501427438,
+      "p99": 197.01494345143274,
+      "max": 197.07706219422448,
+      "mean": 103.96476645516265
+    },
+    "rss_mb": {
+      "n": 303,
+      "p50": 859,
+      "p95": 1062,
+      "p99": 1148,
+      "max": 1148,
+      "mean": 845.8118811881188
+    }
+  },
+  "log_counters": {
+    "SAFE MODE": 0,
+    "INVARIANT VIOLATION": 0,
+    "corrupt": 0,
+    "REORG ABORT": 0,
+    "RPC server busy": 0
+  },
+  "miner": "rdin1ppw2lmljy4ljglgwrjhpxm94l9dw6y3wymeljgwf530ym4dwyxdgsqehjpw",
+  "qualification_failures": [],
+  "qualification_failed": false
+}

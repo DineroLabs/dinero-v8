@@ -1,0 +1,10 @@
+Linux runnervmlun5p 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+4
+CPU(s):                                  4
+Model name:                              AMD EPYC 9V74 80-Core Processor
+Thread(s) per core:                      2
+Core(s) per socket:                      2
+               total        used        free      shared  buff/cache   available
+Mem:           15989        1288        9901          47        5192       14700
+Swap:           3071           0        3071
+143045edafb16294ce2d25f64974e753ee4ff2ae

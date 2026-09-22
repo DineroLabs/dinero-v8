@@ -428,3 +428,25 @@ the artifact, not the badge:
   small host with plain transparent blocks over P2P; it is a node finding, not a harness effect, and the
   enforcer is right to fail the run on it. Consequence for this plan: the two-node baseline on the small host
   is not qualified until #806 is understood; the timings above are observational only.
+
+### 8.16 Same small-host run with the #806 fix in the daemon (run 35754203845, temporary branch
+`claude/shielded-v2-with-806` = this lane + cherry-pick of PR #811's commit): PASSED
+
+Evidence `docs/benchmarks/load/2026-09-22-old-ubuntu-2core-fix806/`. Identical workload and host class to
+§8.15, which failed enforcement on 23 `REORG ABORT` lines in B's log during the initial P2P sync.
+
+| | without fix (35740085935) | with fix (35754203845) |
+|---|---|---|
+| enforcement | FAIL (REORG ABORT ×23, two-node exit 2) | **PASS** (all exits 0) |
+| `REORG ABORT` in B's log | 23 | **0** |
+| `read-block-failed` in B's log | 23 | **0** |
+| W2 catch-up, 2 cold 8-proof blocks | 29.1 s from spawn (RPC ready 15.5 s) | 37.4 s from spawn (RPC ready 19.8 s; 1 block validated before the first sample; observed gap 17.6 s) |
+| W3 reorg, 1 own vs 2 A blocks / 16 cold proofs | converged 27.8 s, before RPC readiness | converged 37.8 s from spawn; RPC ready after **1.8 s**; heights 143 @1.8 → 144 @19.8 → 145 @37.6 s |
+| hostile / steady | pass / pass | pass / pass |
+
+Reading: with the forward-sync gap deferral, the initial sync proceeds without a single abort or failed
+body read, and the enforced two-node baseline on the small host qualifies. The W3 timeline is now fully
+observable (RPC up at 1.8 s, then ≈18 s per cold 8-proof block), whereas without the fix the node was
+unreachable through the whole reorg; W2 still shows a 19.8 s startup gap with one block validated before
+the RPC opened, so the "no RPC during restart" finding of §8.14 stands for catch-up. This is the
+fails-without / passes-with evidence attached to PR #811; the fix itself is not merged.
