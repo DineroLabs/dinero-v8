@@ -8876,6 +8876,10 @@ void ChainstateService::ActivateBestChain() {
     }
     // Phase 41: Get best candidate from BlockIndex graph
     CBlockIndex* best_candidate = GetBestCandidate();
+    // Activation may stop at the snapshot base or an available body prefix.
+    // Retry eligibility belongs to the candidate selected from the queue, not
+    // that temporary target (which might not itself be queued).
+    CBlockIndex* const queued_candidate = best_candidate;
 
     std::cout << "🔍 [ActivateBestChain] best_candidate=" << (best_candidate ? "EXISTS" : "NULL") << std::endl;
     if (best_candidate) {
@@ -9202,6 +9206,33 @@ void ChainstateService::ActivateBestChain() {
         walk = walk->pprev;
     }
     std::reverse(connect_path.begin(), connect_path.end()); // Connect in forward order
+
+    // #806: a forward extension (nothing to disconnect) must not walk into a body
+    // gap either. A header-only ancestor can carry BLOCK_VALID_CHAIN, which lets the
+    // candidate pass eligibility; the reorg-side guard below only runs when a branch
+    // is being disconnected, so a forward sync that received block N+k before N..N+k-1
+    // tried to read a body it never had, failed ConnectTip, and entered the
+    // REORG ABORT backoff ladder. Connect the contiguous prefix of bodies that ARE
+    // present and defer the rest: the scheduler is already fetching the missing
+    // bodies and the candidate stays queued for the next pass.
+    if (disconnect_path.empty()) {
+        const size_t available = dinero::ContiguousBodyPrefix(connect_path);
+        if (available < connect_path.size()) {
+            const CBlockIndex* gap = connect_path[available];
+            if (logger_) {
+                logger_->debug("[ActivateBestChain] Deferring candidate height=" +
+                               std::to_string(best_candidate->height) + ": body gap at height " +
+                               std::to_string(gap->height) + " (header-only); connecting " +
+                               std::to_string(available) + " available block(s) first");
+            }
+            connect_path.resize(available);
+            if (connect_path.empty()) {
+                std::cout << "⏸️ [ActivateBestChain] Deferring: first missing body at height " << gap->height << std::endl;
+                return;   // nothing connectable yet; no abort, no backoff
+            }
+            best_candidate = connect_path.back();
+        }
+    }
 
     // Never move the canonical tip until the complete replacement branch is
     // locally available. BLOCK_VALID_CHAIN is not proof that a side-branch
@@ -9806,7 +9837,7 @@ void ChainstateService::ActivateBestChain() {
             // later activation tick retries it without a hot loop.
             if (best_candidate) {
                 const auto delay = activation_retries_.RecordFailure(
-                    best_candidate->hash, std::chrono::steady_clock::now());
+                    queued_candidate->hash, std::chrono::steady_clock::now());
                 if (logger_) logger_->warning(
                     "[ActivateBestChain] REORG ABORT: preserving candidate after disconnect failure; retry in " +
                     std::to_string(delay.count()) + "ms");
@@ -9994,11 +10025,11 @@ void ChainstateService::ActivateBestChain() {
             // network's best-work branch until the body was announced again.
             if (best_candidate) {
                 if (consensus_invalid && !missing_utxo) {
-                    RemoveCandidate(best_candidate);
-                    activation_retries_.Clear(best_candidate->hash);
+                    RemoveCandidate(queued_candidate);
+                    activation_retries_.Clear(queued_candidate->hash);
                 } else {
                     const auto delay = activation_retries_.RecordFailure(
-                        best_candidate->hash, std::chrono::steady_clock::now());
+                        queued_candidate->hash, std::chrono::steady_clock::now());
                     if (logger_) logger_->warning(
                         "[ActivateBestChain] REORG ABORT: preserving candidate after operational connect failure; retry in " +
                         std::to_string(delay.count()) + "ms");
@@ -10063,7 +10094,7 @@ void ChainstateService::ActivateBestChain() {
 
     // Update active tip (already done by ConnectTip, but ensure consistency)
     PublishActiveTipLocked(best_candidate, TipPublishReason::kSelfHealRealign);
-    activation_retries_.Clear(best_candidate->hash);
+    activation_retries_.Clear(queued_candidate->hash);
 
     // Read-only observability, recorded only once the reorg has actually
     // COMPLETED.
