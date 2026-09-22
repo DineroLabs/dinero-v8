@@ -7,6 +7,27 @@
 #include <cassert>
 #include <cstring>
 
+// Research-branch instrumentation (claude/shielded-v2 Task 7): per-phase verifier timing,
+// printed to stderr only when DINERO_SPARTAN_TIMING is set. Not for merge.
+#include <chrono>
+#include <thread>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+namespace {
+struct SpartanPhaseTimer {
+    const bool on = std::getenv("DINERO_SPARTAN_TIMING") != nullptr;
+    std::chrono::steady_clock::time_point t = std::chrono::steady_clock::now();
+    void lap(const char* label) {
+        if (!on) return;
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "SPARTAN_PHASE %-14s %8.3f ms\n", label,
+                     std::chrono::duration<double, std::milli>(now - t).count());
+        t = now;
+    }
+};
+}  // namespace
+
 namespace dinero {
 namespace zk {
 namespace zkvm {
@@ -364,8 +385,10 @@ SpartanProof r1cs_spartan_prove(
     const GeneratorSet& gens,
     Transcript& transcript,
     secp256k1_context* ctx,
-    bool bind_public_inputs
+    bool bind_public_inputs,
+    bool omit_error_term
 ) {
+    SpartanPhaseTimer T;
     SpartanProof proof;
 
     const std::vector<Scalar>& z = cs.witness();
@@ -401,7 +424,17 @@ SpartanProof r1cs_spartan_prove(
 
     // --- Step 1: Commit private witness and error vector ---
     proof.comm_W = hyrax_commit(z_priv,                      H_z, gens, ctx);
-    proof.comm_E = hyrax_commit(std::vector<Scalar>(E.begin(), E.end()), H_E, gens, ctx);
+    if (omit_error_term) {
+        // Profile precondition: standalone proof, u == 1, E == 0. Refuse anything else so a
+        // caller can never silently drop a real error vector.
+        if (!(u == Scalar::one())) return SpartanProof{};
+        for (const Scalar& e : E) if (!e.is_zero()) return SpartanProof{};
+        proof.has_error_term = false;
+        proof.comm_E.params = HyraxParams{};   // n_rows = n_cols = n_total = 0, no points
+        proof.comm_E.C.clear();
+    } else {
+        proof.comm_E = hyrax_commit(std::vector<Scalar>(E.begin(), E.end()), H_E, gens, ctx);
+    }
     proof.circuit_hash = spartan_hash_r1cs_structure(cs);
 
     // Bind commitments, relaxation scalar, and circuit hash to transcript.
@@ -452,6 +485,7 @@ SpartanProof r1cs_spartan_prove(
     // --- Step 5: Compute Az, Bz, Cz, Ez at rx_m ---
     // These are the oracle queries the verifier needs.
     // A_i·z for all i, then weighted by eq(rx_m, i).
+    T.lap("inner_sc");
     const std::vector<Scalar> eq_rx_m = mle_eq_vec(rx_m);  // size m_p
 
     Scalar Az = Scalar::zero();
@@ -520,9 +554,11 @@ SpartanProof r1cs_spartan_prove(
 
     // --- Step 10: Hyrax eval proof for E at rx_m ---
     // Transcript is already bound to comm_E.
-    std::vector<Scalar> E_padded(E.begin(), E.end());
-    E_padded.resize(m, Scalar::zero());
-    proof.eval_E = hyrax_eval_prove(E_padded, rx_m, H_E, gens, transcript, ctx);
+    if (!omit_error_term) {
+        std::vector<Scalar> E_padded(E.begin(), E.end());
+        E_padded.resize(m, Scalar::zero());
+        proof.eval_E = hyrax_eval_prove(E_padded, rx_m, H_E, gens, transcript, ctx);
+    }
 
     return proof;
 }
@@ -542,8 +578,10 @@ bool r1cs_spartan_verify(
     Transcript& transcript,
     secp256k1_context* ctx,
     bool bind_public_inputs,
-    bool require_zero_error
+    bool require_zero_error,
+    bool omit_error_term
 ) {
+    SpartanPhaseTimer T;
     // --- Basic sanity checks ---
     if (proof.circuit_hash.size() != 32) return false;
     // The M̃ evaluation in the inner sum-check directly verifies the proof
@@ -567,8 +605,15 @@ bool r1cs_spartan_verify(
 
     if (proof.comm_W.params.n_rows != H_z.n_rows ||
         proof.comm_W.params.n_cols != H_z.n_cols) return false;
-    if (proof.comm_E.params.n_rows != H_E.n_rows ||
-        proof.comm_E.params.n_cols != H_E.n_cols) return false;
+    if (omit_error_term) {
+        // Profile: no E term at all. The relation verified is A·z∘B·z = u·C·z with u pinned to 1
+        // by the caller; the outer sum-check final check below uses Ez_claim, which must be 0.
+        if (proof.has_error_term || !proof.comm_E.C.empty() || proof.comm_E.params.n_rows != 0 ||
+            !proof.Ez_claim.is_zero() || !(u == Scalar::one())) return false;
+    } else {
+        if (proof.comm_E.params.n_rows != H_E.n_rows ||
+            proof.comm_E.params.n_cols != H_E.n_cols) return false;
+    }
 
     // SOUNDNESS (standalone / non-folded use): the relaxed-R1CS relation is
     //   A·z ∘ B·z = u·(C·z) + E.
@@ -582,12 +627,13 @@ bool r1cs_spartan_verify(
     // Ez_claim==0 is NOT sufficient — a nonzero MLE can vanish at the single
     // random point rx. Genuine Nova folding callers (u!=1, E!=0) pass
     // require_zero_error=false.
-    if (require_zero_error) {
+    if (require_zero_error && !omit_error_term) {
         for (const Point& p : proof.comm_E.C) {
             if (!p.is_identity()) return false;
         }
     }
 
+    T.lap("sanity+Ezero");
     // --- Replay transcript: relaxation scalar, commitments, circuit hash ---
     transcript.append_scalar("spartan_u", u);
     for (const Point& p : proof.comm_W.C)
@@ -596,6 +642,7 @@ bool r1cs_spartan_verify(
         transcript.append_point("hE", p, ctx);
     transcript.append_scalar("chash", Scalar(proof.circuit_hash.data()));
 
+    T.lap("transcript");
     // --- Derive τ ---
     std::vector<Scalar> tau;
     tau.reserve(log_m);
@@ -630,6 +677,7 @@ bool r1cs_spartan_verify(
                             - proof.Ez_claim;
     if (!(eq_tau_rx * abce_at_rx == outer_final)) return false;
 
+    T.lap("outer_sc");
     // --- Append claims, derive ρ ---
     transcript.append_scalar("Az", proof.Az_claim);
     transcript.append_scalar("Bz", proof.Bz_claim);
@@ -670,28 +718,38 @@ bool r1cs_spartan_verify(
     // nonzero in that row (1 mul each instead of 2). Saves ~1 mul per B entry
     // and ~1 mul per C entry → ~840K fewer field muls for the 211K-constraint
     // taproot HMB circuit.
-    std::vector<Scalar> col_sum(n_zp, Scalar::zero());
-    for (size_t i = 0; i < nc_check; ++i) {
-        const Scalar eq_i      = eq_rx_m[i];
-        const Scalar rho_eq_i  = rho  * eq_i;   // 1 mul, amortized over all B entries in row i
-        const Scalar rho2_eq_i = rho2 * eq_i;   // 1 mul, amortized over all C entries in row i
-        for (const auto& t : constraints[i].a.terms()) {
-            if (t.var.index < n_zp)
-                col_sum[t.var.index] += t.coeff * eq_i;
+    // Row-wise evaluation: M̃(rx,ry) = Σ_i eq_rx[i] · (a_i + ρ·b_i + ρ²·c_i) with
+    // a_i = Σ_j A_ij·eq_ry[j] (same for b_i, c_i). Same multiplication count as the
+    // column-sum form, but every row is independent, so it parallelises with no shared
+    // accumulator and no per-thread 2 MB buffer. Field arithmetic is commutative and
+    // associative, so the result is bit-identical to the sequential column-sum form.
+    auto row_range = [&](size_t begin, size_t end) {
+        Scalar acc = Scalar::zero();
+        for (size_t i = begin; i < end; ++i) {
+            Scalar ai = Scalar::zero(), bi = Scalar::zero(), ci = Scalar::zero();
+            for (const auto& t : constraints[i].a.terms()) if (t.var.index < n_zp) ai += t.coeff * eq_ry[t.var.index];
+            for (const auto& t : constraints[i].b.terms()) if (t.var.index < n_zp) bi += t.coeff * eq_ry[t.var.index];
+            for (const auto& t : constraints[i].c.terms()) if (t.var.index < n_zp) ci += t.coeff * eq_ry[t.var.index];
+            acc += eq_rx_m[i] * (ai + rho * bi + rho2 * ci);
         }
-        for (const auto& t : constraints[i].b.terms()) {
-            if (t.var.index < n_zp)
-                col_sum[t.var.index] += t.coeff * rho_eq_i;   // was: (rho * t.coeff) * eq_i
-        }
-        for (const auto& t : constraints[i].c.terms()) {
-            if (t.var.index < n_zp)
-                col_sum[t.var.index] += t.coeff * rho2_eq_i;  // was: (rho2 * t.coeff) * eq_i
-        }
-    }
+        return acc;
+    };
     Scalar M_eval = Scalar::zero();
-    for (size_t j = 0; j < n_zp; ++j) {
-        M_eval += col_sum[j] * eq_ry[j];
+    const size_t nthreads = std::min<size_t>(8, std::max<size_t>(1, std::thread::hardware_concurrency()));
+    if (nc_check >= 16384 && nthreads > 1) {
+        std::vector<Scalar> partial(nthreads, Scalar::zero());
+        std::vector<std::thread> pool;
+        const size_t chunk = (nc_check + nthreads - 1) / nthreads;
+        for (size_t t = 0; t < nthreads; ++t) {
+            const size_t b = t * chunk, e = std::min(nc_check, b + chunk);
+            pool.emplace_back([&, t, b, e] { partial[t] = row_range(b, e); });
+        }
+        for (auto& th : pool) th.join();
+        for (const Scalar& p : partial) M_eval += p;
+    } else {
+        M_eval = row_range(0, nc_check);
     }
+    T.lap("M_eval");
 
     // SECURITY (CONFIRMED-CRIT-05 fix, 2026-05-30) — bind the public inputs.
     // The prover committed/opened ONLY the private witness (public slots zeroed), so
@@ -719,10 +777,14 @@ bool r1cs_spartan_verify(
     // --- Verify Hyrax eval proofs ---
     // eval_W: z̃(ry)
     if (!hyrax_eval_verify(proof.comm_W, ry, proof.eval_W, H_z, gens, transcript, ctx)) return false;
+    T.lap("hyrax_W");
 
     // eval_E: Ẽ(rx_m), and the claimed value must match Ez_claim
-    if (!hyrax_eval_verify(proof.comm_E, rx_m, proof.eval_E, H_E, gens, transcript, ctx)) return false;
-    if (!(proof.eval_E.claimed == proof.Ez_claim)) return false;
+    if (!omit_error_term) {
+        if (!hyrax_eval_verify(proof.comm_E, rx_m, proof.eval_E, H_E, gens, transcript, ctx)) return false;
+        if (!(proof.eval_E.claimed == proof.Ez_claim)) return false;
+        T.lap("hyrax_E");
+    }
 
     return true;
 }
@@ -747,8 +809,10 @@ std::vector<uint8_t> SpartanProof::serialize(secp256k1_context* ctx) const {
     // comm_W and comm_E
     auto wbytes = comm_W.serialize(ctx);
     out.insert(out.end(), wbytes.begin(), wbytes.end());
-    auto ebytes = comm_E.serialize(ctx);
-    out.insert(out.end(), ebytes.begin(), ebytes.end());
+    if (has_error_term) {
+        auto ebytes = comm_E.serialize(ctx);
+        out.insert(out.end(), ebytes.begin(), ebytes.end());
+    }
 
     // circuit_hash
     out.insert(out.end(), circuit_hash.begin(), circuit_hash.end());
@@ -773,19 +837,26 @@ std::vector<uint8_t> SpartanProof::serialize(secp256k1_context* ctx) const {
     // eval_W, eval_E
     auto ew = eval_W.serialize(ctx);
     out.insert(out.end(), ew.begin(), ew.end());
-    auto ee = eval_E.serialize(ctx);
-    out.insert(out.end(), ee.begin(), ee.end());
+    if (has_error_term) {
+        auto ee = eval_E.serialize(ctx);
+        out.insert(out.end(), ee.begin(), ee.end());
+    }
 
     return out;
 }
 
 bool SpartanProof::deserialize(const std::vector<uint8_t>& data,
-                                SpartanProof& out, secp256k1_context* ctx) {
+                                SpartanProof& out, secp256k1_context* ctx, bool omit_error_term) {
     size_t offset = 0;
+    out.has_error_term = !omit_error_term;
 
     // comm_W, comm_E
     if (!HyraxCommitment::deserialize(data, offset, out.comm_W, ctx)) return false;
-    if (!HyraxCommitment::deserialize(data, offset, out.comm_E, ctx)) return false;
+    if (!omit_error_term) {
+        if (!HyraxCommitment::deserialize(data, offset, out.comm_E, ctx)) return false;
+    } else {
+        out.comm_E = HyraxCommitment{};
+    }
 
     // circuit_hash
     if (data.size() < offset + 32) return false;
@@ -826,7 +897,12 @@ bool SpartanProof::deserialize(const std::vector<uint8_t>& data,
 
     // eval_W, eval_E
     if (!HyraxEvalProof::deserialize(data, offset, out.eval_W, ctx)) return false;
-    if (!HyraxEvalProof::deserialize(data, offset, out.eval_E, ctx)) return false;
+    if (!omit_error_term) {
+        if (!HyraxEvalProof::deserialize(data, offset, out.eval_E, ctx)) return false;
+    } else {
+        out.eval_E = HyraxEvalProof{};
+    }
+    if (offset != data.size()) return false;   // no trailing bytes in either profile
 
     return true;
 }

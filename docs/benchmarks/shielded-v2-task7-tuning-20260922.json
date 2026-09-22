@@ -1,0 +1,35 @@
+{
+  "date": "2026-09-22",
+  "host": "M4 Max, Release, build-spike (vendored deps)",
+  "branch": "claude/shielded-v2 (research; dinero_zk changes additive, legacy profile byte-identical)",
+  "statement": "spec §10.2 exact (same as shielded-v2-phase1-statement-20260922.json)",
+  "baseline_before_tuning": {"bundle_2in2out": {"proof_bytes": 19749, "prove_ms": 523.6, "verify_ms": 70.2}, "verify_50x_parallel8_ms": 643.5},
+  "verify_breakdown_before_ms": {"structure_hash_per_verify": 33.7, "matrix_eval_M": 25.9, "hyrax_W": 5.5, "hyrax_E": 3.4, "outer_sc_transcript_deser": 2.1, "circuit_structure_build_outside_timer": 13.7},
+  "changes": [
+    "structure hash treated as a per-shape constant (computed once per (n_in,n_out), never per proof)",
+    "SpartanProof profile omit_error_term: standalone proof with u==1, E==0 carries no comm_E/eval_E; prover refuses non-zero E; verifier requires Ez_claim==0 and has_error_term==false; cross-profile proofs rejected; serialize/deserialize gated by the flag, trailing bytes rejected",
+    "M~(rx,ry) evaluated row-wise (a_i,b_i,c_i dot eq_ry per row, then eq_rx-weighted sum) in parallel over 8 threads; same multiplication count, bit-identical result",
+    "cached verifier structure: copy + set_value(public inputs) 2.84 ms vs rebuild 13.33 ms (not yet wired; measured only)"
+  ],
+  "verify_breakdown_after_ms": {"deserialize": 0.58, "outer_sc_transcript": 0.86, "matrix_eval_M_8threads": 11.7, "hyrax_W": 5.1, "hyrax_E": 0.0},
+  "rows_after": [
+    {"label": "bundle_1in2out", "constraints": 30997,  "proof_bytes": 8214,  "prove_ms": 269.3, "verify_ms": 12.3},
+    {"label": "bundle_2in2out", "constraints": 56790,  "proof_bytes": 11771, "prove_ms": 485.7, "verify_ms": 17.4},
+    {"label": "bundle_4in2out", "constraints": 108376, "proof_bytes": 11698, "prove_ms": 865.2, "verify_ms": 29.7},
+    {"label": "verify_50x_2in2out_sequential_ms", "verify_ms": 1633.2, "note": "includes a 13 ms structure rebuild per verify in the bench"},
+    {"label": "verify_50x_2in2out_parallel8_ms",  "verify_ms": 317.7}
+  ],
+  "spec_gates_phase1": {
+    "proof_bytes_le_32768": {"measured": 11771, "pass": true},
+    "verify_2in2out_le_20ms": {"measured": 17.4, "pass": true, "margin": "13%; single verify uses 8 threads for the matrix evaluation, so under batch load the per-proof number rises and the block gate governs"},
+    "block_of_50_le_400ms": {"measured": 317.7, "pass": true},
+    "prove_2in2out_m4_le_600ms": {"measured": 485.7, "pass": true}
+  },
+  "soundness_checks": ["honest E-less verifies", "unsatisfied witness rejected", "non-zero E refused by prover", "with-E proof rejected by E-less verifier", "E-less proof rejected by with-E verifier", "with-E proof still verifies under legacy profile", "tampered Ez_claim rejected", "test_spartan_soundness 18/18 PASS", "CompactProductionV6Vectors (saved mainnet v6 proof): see session log"],
+  "caveats": [
+    "single-verify 17.4 ms is a warm-machine median; it depends on 8 idle cores for the matrix evaluation",
+    "the verifier still walks O(nnz) constraint terms per proof (11.7 ms); a per-shape CSR or a sparse-polynomial commitment (SPARK) would cut it further",
+    "phase-timing instrumentation (DINERO_SPARTAN_TIMING) is research-branch only; not for merge",
+    "phase 1 remains classical (Hyrax); this tuning changes nothing about the security scope in spec §10.7"
+  ]
+}

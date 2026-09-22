@@ -79,9 +79,13 @@ struct SpartanProof {
     HyraxEvalProof eval_W;   // z̃(ry) at inner sum-check challenge
     HyraxEvalProof eval_E;   // Ẽ(rx_m) at outer sum-check challenge
 
+    // Research profile (claude/shielded-v2 Task 7): a standalone proof with u == 1 and
+    // E == 0 carries no E commitment/opening at all. false ⇔ comm_E/eval_E are absent.
+    bool has_error_term = true;
+
     std::vector<uint8_t> serialize(secp256k1_context* ctx) const;
     static bool deserialize(const std::vector<uint8_t>& data, SpartanProof& out,
-                            secp256k1_context* ctx);
+                            secp256k1_context* ctx, bool omit_error_term = false);
 };
 
 // ---------------------------------------------------------------------------
@@ -109,7 +113,9 @@ SpartanProof r1cs_spartan_prove(
     // have the verifier bind the public inputs (z=(1,io,W) split). false reproduces the
     // pre-fix behavior (full-z commit, public inputs UNBOUND) — retained ONLY to validate
     // pre-activation-height history under the old consensus rule. Never use false for new proofs.
-    bool bind_public_inputs = true
+    bool bind_public_inputs = true,
+    // Research profile: E must be identically zero and u == 1; no comm_E / eval_E are produced.
+    bool omit_error_term = false
 );
 
 // ---------------------------------------------------------------------------
@@ -150,7 +156,9 @@ bool r1cs_spartan_verify(
     // malicious prover commits the residual E:=A·z∘B·z − u·C·z of an INVALID witness and
     // forges a proof of a false statement. Only genuine Nova folding callers (u!=1, E!=0)
     // may pass false.
-    bool require_zero_error = true
+    bool require_zero_error = true,
+    // Research profile: proof carries no E term; verifier requires Ez_claim == 0 and u == 1.
+    bool omit_error_term = false
 );
 
 /**

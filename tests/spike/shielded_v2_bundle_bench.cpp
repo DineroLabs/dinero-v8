@@ -17,6 +17,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <map>
+#include <mutex>
 #include <future>
 #include <chrono>
 #include <cstdio>
@@ -26,6 +28,9 @@
 
 using namespace dinero::consensus::shielded;
 using Clock = std::chrono::steady_clock;
+
+// Task 7 research profile: standalone proof without the E term (u == 1, E == 0).
+static constexpr bool kOmitErrorTerm = true;
 
 #ifndef BUILD_TYPE_STR
 #define BUILD_TYPE_STR "unknown"
@@ -179,19 +184,30 @@ static BenchRow BenchBundle(size_t n_in, size_t n_out) {
         auto t0 = Clock::now();
         Transcript tp("dinero.shielded.bundle.v2.spike");
         SpartanProof proof = r1cs_spartan_prove(cs, std::vector<Scalar>(cs.num_constraints(), Scalar::zero()),
-                                                Scalar::one(), gens, tp, sctx, true);
+                                                Scalar::one(), gens, tp, sctx, true, kOmitErrorTerm);
         std::vector<uint8_t> ser = proof.serialize(sctx);
+        if (ser.empty()) { std::fprintf(stderr, "prove failed\n"); std::exit(2); }
         const double p = ms_since(t0);
         // Verifier side: rebuild the circuit STRUCTURE from public inputs only (witness zeroed).
         BundleV2 pub_only = b;
         for (auto& sp : pub_only.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
         for (auto& o : pub_only.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); }
         R1CS vcs = BuildBundleCircuitV2(pub_only);
+        const bool timing = std::getenv("DINERO_SPARTAN_TIMING") != nullptr;
+        auto tb = Clock::now();
+        R1CS vcs_again = BuildBundleCircuitV2(pub_only);
+        if (timing) std::fprintf(stderr, "BENCH_PHASE build_vcs     %8.3f ms (n=%zu)\n", ms_since(tb), ncons);
+        // The structure hash is a per-shape constant: a node computes it once per (n_in, n_out)
+        // and never per proof. It is therefore outside the timed region (measured separately).
+        tb = Clock::now();
+        const auto chash = spartan_hash_r1cs_structure(vcs);
+        if (timing) std::fprintf(stderr, "BENCH_PHASE hash_struct   %8.3f ms (per-shape constant, not per proof)\n", ms_since(tb));
         t0 = Clock::now();
         SpartanProof parsed;
-        if (!SpartanProof::deserialize(ser, parsed, sctx)) { std::fprintf(stderr, "deserialize failed\n"); std::exit(2); }
+        if (!SpartanProof::deserialize(ser, parsed, sctx, kOmitErrorTerm)) { std::fprintf(stderr, "deserialize failed\n"); std::exit(2); }
+        if (timing) std::fprintf(stderr, "BENCH_PHASE deserialize   %8.3f ms\n", ms_since(t0));
         Transcript tv("dinero.shielded.bundle.v2.spike");
-        const bool ok = r1cs_spartan_verify(parsed, vcs, ncons, nvars, spartan_hash_r1cs_structure(vcs), Scalar::one(), gens, tv, sctx, true);
+        const bool ok = r1cs_spartan_verify(parsed, vcs, ncons, nvars, chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm);
         const double v = ms_since(t0);
         if (!ok) { std::fprintf(stderr, "bundle verify failed (%zu-in-%zu-out)\n", n_in, n_out); std::exit(2); }
         if (i) { prove.push_back(p); verify.push_back(v); }
@@ -211,7 +227,7 @@ static ProvenBundle ProveOnce(uint64_t fee_seed) {
     const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(cs.num_variables()).n_cols, HyraxParams::from_n(cs.num_constraints()).n_cols));
     const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
     Transcript tp("dinero.shielded.bundle.v2.spike");
-    SpartanProof proof = r1cs_spartan_prove(cs, std::vector<Scalar>(cs.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, sctx, true);
+    SpartanProof proof = r1cs_spartan_prove(cs, std::vector<Scalar>(cs.num_constraints(), Scalar::zero()), Scalar::one(), gens, tp, sctx, true, kOmitErrorTerm);
     ProvenBundle pb; pb.proof = proof.serialize(sctx); pb.ncons = cs.num_constraints(); pb.nvars = cs.num_variables();
     pb.pub_only = b;
     for (auto& sp : pb.pub_only.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; }
@@ -223,9 +239,16 @@ static bool VerifyOne(const ProvenBundle& pb, secp256k1_context* sctx) {
     R1CS vcs = spike::BuildBundleCircuitV2(pb.pub_only);
     const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(pb.nvars).n_cols, HyraxParams::from_n(pb.ncons).n_cols));
     const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
-    SpartanProof parsed; if (!SpartanProof::deserialize(pb.proof, parsed, sctx)) return false;
+    SpartanProof parsed; if (!SpartanProof::deserialize(pb.proof, parsed, sctx, kOmitErrorTerm)) return false;
     Transcript tv("dinero.shielded.bundle.v2.spike");
-    return r1cs_spartan_verify(parsed, vcs, pb.ncons, pb.nvars, spartan_hash_r1cs_structure(vcs), Scalar::one(), gens, tv, sctx, true);
+    // Per-shape constant, computed once (a node caches it per (n_in, n_out)); never per proof.
+    static std::map<size_t, std::vector<uint8_t>> chash_by_shape;
+    static std::mutex chash_mu;
+    std::vector<uint8_t> chash;
+    { std::lock_guard<std::mutex> lk(chash_mu); auto it = chash_by_shape.find(pb.ncons);
+      if (it == chash_by_shape.end()) it = chash_by_shape.emplace(pb.ncons, spartan_hash_r1cs_structure(vcs)).first;
+      chash = it->second; }
+    return r1cs_spartan_verify(parsed, vcs, pb.ncons, pb.nvars, chash, Scalar::one(), gens, tv, sctx, true, true, kOmitErrorTerm);
 }
 static void BenchBatch(std::vector<BenchRow>& rows) {
     secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
@@ -301,7 +324,59 @@ static int Negatives() {
     std::printf("negatives: %d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
+
+// Task 7: soundness of the E-less profile, end to end, plus the cost of reusing a cached
+// verifier structure (copy + set_value of the public inputs) versus rebuilding it.
+static int ProfileSoundness() {
+    using namespace dinero::zk::zkvm;
+    secp256k1_context* sctx = dinero::crypto::GetSecp256k1ContextSignVerify();
+    int failures = 0;
+    auto expect = [&](const char* label, bool cond) { std::printf("  [%s] %s\n", cond ? "PASS" : "FAIL", label); if (!cond) ++failures; };
+    const spike::BundleV2 honest = spike::MakeHonestBundle(2, 2, 1000);
+    R1CS cs = spike::BuildBundleCircuitV2(honest);
+    const size_t gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(cs.num_variables()).n_cols, HyraxParams::from_n(cs.num_constraints()).n_cols));
+    const GeneratorSet& gens = GeneratorSet::cached(gens_need, sctx);
+    const std::vector<Scalar> zeroE(cs.num_constraints(), Scalar::zero());
+    auto pub_only_of = [](spike::BundleV2 b) { for (auto& sp : b.spends) { sp.ask = sp.nullifier_key = sp.value = sp.randomness = sp.diversifier = Scalar::zero(); sp.leaf_index = 0; sp.siblings = {}; } for (auto& o : b.outputs) { o.value = o.public_key = o.randomness = o.diversifier = Scalar::zero(); } return b; };
+    auto verify_bytes = [&](const std::vector<uint8_t>& ser, const spike::BundleV2& pub, bool omit) {
+        R1CS vcs = spike::BuildBundleCircuitV2(pub_only_of(pub));
+        SpartanProof parsed; if (!SpartanProof::deserialize(ser, parsed, sctx, omit)) return false;
+        Transcript tv("dinero.shielded.bundle.v2.spike");
+        return r1cs_spartan_verify(parsed, vcs, vcs.num_constraints(), vcs.num_variables(), spartan_hash_r1cs_structure(vcs), Scalar::one(), gens, tv, sctx, true, true, omit);
+    };
+    // 1. honest, E-less: accepted
+    Transcript t1("dinero.shielded.bundle.v2.spike");
+    auto p1 = r1cs_spartan_prove(cs, zeroE, Scalar::one(), gens, t1, sctx, true, true).serialize(sctx);
+    expect("honest E-less proof verifies", !p1.empty() && verify_bytes(p1, honest, true));
+    // 2. unsatisfied witness (output value +1, public inputs unchanged): prover runs, verifier rejects
+    { auto bad = honest; bad.outputs[0].value = bad.outputs[0].value + Scalar::one();
+      R1CS bcs = spike::BuildBundleCircuitV2(bad);
+      Transcript t("dinero.shielded.bundle.v2.spike");
+      auto pb = r1cs_spartan_prove(bcs, zeroE, Scalar::one(), gens, t, sctx, true, true).serialize(sctx);
+      expect("unsatisfied witness: E-less proof rejected", pb.empty() || !verify_bytes(pb, bad, true)); }
+    // 3. non-zero E under the E-less profile: prover refuses
+    { auto E = zeroE; E[7] = Scalar::one(); Transcript t("dinero.shielded.bundle.v2.spike");
+      auto p = r1cs_spartan_prove(cs, E, Scalar::one(), gens, t, sctx, true, true);
+      expect("non-zero E: E-less prover refuses", p.comm_W.C.empty() && p.outer_sc.empty()); }
+    // 4. cross-profile: a legacy (with-E) proof presented to the E-less verifier, and vice versa
+    { Transcript t("dinero.shielded.bundle.v2.spike");
+      auto legacy = r1cs_spartan_prove(cs, zeroE, Scalar::one(), gens, t, sctx, true, false).serialize(sctx);
+      expect("with-E proof rejected by E-less verifier", !verify_bytes(legacy, honest, true));
+      expect("E-less proof rejected by with-E verifier", !verify_bytes(p1, honest, false));
+      expect("with-E proof still verifies under legacy profile", verify_bytes(legacy, honest, false)); }
+    // 5. tamper Ez_claim in the E-less proof (must be zero): locate by re-serialising with Ez=1
+    { SpartanProof parsed; SpartanProof::deserialize(p1, parsed, sctx, true); parsed.Ez_claim = Scalar::one();
+      expect("tampered Ez_claim rejected", !verify_bytes(parsed.serialize(sctx), honest, true)); }
+    // 6. cached-structure reuse cost: copy + set_value of the public inputs vs full rebuild
+    { const auto pub = pub_only_of(honest);
+      auto t0 = Clock::now(); R1CS built = spike::BuildBundleCircuitV2(pub); const double build_ms = ms_since(t0);
+      t0 = Clock::now(); R1CS copy = built; for (size_t i = 1; i <= copy.num_inputs(); ++i) copy.set_value(Variable{i}, built.get_value(Variable{i})); const double copy_ms = ms_since(t0);
+      std::printf("  structure rebuild %.2f ms vs copy+set_value %.2f ms (n=%zu)\n", build_ms, copy_ms, built.num_constraints()); }
+    std::printf("profile soundness: %d failure(s)\n", failures);
+    return failures ? 1 : 0;
+}
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string(argv[1]) == "--profile-soundness") return ProfileSoundness();
     if (argc > 1 && std::string(argv[1]) == "--negatives") return Negatives();
     if (argc > 1 && std::string(argv[1]) == "--selftest") return SelfTest();
     std::vector<BenchRow> rows;
