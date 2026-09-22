@@ -161,6 +161,22 @@ def cookie_for(datadir: Path) -> str:
 # headroom over the measured cost for slower CI hardware.
 RPC_TIMEOUT_SECONDS = 180
 
+# Share one request budget across urllib and the real PoW miner. HttpRpcServer
+# admits 50 connections/sec (100-token burst) before reading the HTTP request;
+# exceeding it can surface as a Linux broken pipe/reset instead of HTTP 429.
+# This is lifecycle qualification, not an RPC saturation test. Pace submissions
+# below that limit without retrying transport failures or changing assertions.
+RPC_REQUEST_INTERVAL_SECONDS = 0.04
+_next_rpc_at = 0.0
+
+
+def pace_rpc():
+    global _next_rpc_at
+    delay = _next_rpc_at - time.monotonic()
+    if delay > 0:
+        time.sleep(delay)
+    _next_rpc_at = time.monotonic() + RPC_REQUEST_INTERVAL_SECONDS
+
 
 def rpc(which, method, params=None, _retry=True):
     cookie = cookies[which]
@@ -172,6 +188,7 @@ def rpc(which, method, params=None, _retry=True):
          __import__("base64").b64encode(cookie.encode()).decode()},
     )
     try:
+        pace_rpc()
         with urllib.request.urlopen(request, timeout=RPC_TIMEOUT_SECONDS) as response:
             result = json.load(response)
     except urllib.error.HTTPError as exc:
@@ -210,6 +227,7 @@ def rpc_expect_error(which, method, params=None):
         {"Content-Type": "application/json", "Authorization": "Basic " +
          __import__("base64").b64encode(cookie.encode()).decode()},
     )
+    pace_rpc()
     with urllib.request.urlopen(request, timeout=RPC_TIMEOUT_SECONDS) as response:
         result = json.load(response)
     if result.get("error") in (None, False):
@@ -320,9 +338,15 @@ def stop(which):
         raise RuntimeError(f"{which} exited nonzero on stop: {process.returncode}")
 
 
+class QualificationMiner(DineroCoinMiner):
+    def rpc_call(self, method, params=None):
+        pace_rpc()
+        return super().rpc_call(method, params)
+
+
 def miner_for(which):
     p = ports[which]
-    return DineroCoinMiner(
+    return QualificationMiner(
         rpc_url=f"http://127.0.0.1:{p['rpc']}/",
         cookie_path=str(WORK / which / ".cookie"),
         mining_address=addresses[which],
@@ -1315,6 +1339,15 @@ finally:
     _transcript_file.flush()
     evidence_preserved = False
     try:
+        # These are the explicit stdout/stderr files opened by start(), outside
+        # each datadir. Preserve them even on failure; WORK is not uploaded by
+        # CI. Do not copy wallets, cookies or other datadir contents.
+        daemon_logs = EVIDENCE / "daemon-logs"
+        daemon_logs.mkdir(exist_ok=True)
+        for name in ports:
+            log_path = WORK / f"{name}.log"
+            if log_path.is_file():
+                shutil.copy2(log_path, daemon_logs / log_path.name)
         shutil.copytree(EVIDENCE, permanent_evidence)
         evidence_preserved = True
         print(f"[INFO] evidence preserved at: {permanent_evidence}", flush=True)
