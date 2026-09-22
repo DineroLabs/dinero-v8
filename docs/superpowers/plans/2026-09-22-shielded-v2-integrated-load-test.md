@@ -250,3 +250,42 @@ Daemon CPU mean 100% of one core (297 samples). While a full verification runs, 
 mempool and template RPCs wait for the mempool lock (p95 ≈0.9 s); chain and wallet RPCs are unaffected.
 One earlier submission produced `exception: vector` from the node on a mutated bundle (a C++ exception
 surfacing as an RPC error instead of a clean reject); recorded for a robustness issue.
+
+### 8.8 Two-node baseline: cold proofs, catch-up (W2) and reorg (W3), M4 Max
+
+Evidence `docs/benchmarks/load/2026-09-22-old-m4max-twonode/` (two_node.json, raw time series, both node
+logs). Producer node A and node under test B, both `--listen=1`, each `--connect`ing the other (the
+repository's relay-test topology). B is offline while A builds and mines each block, so B has never seen
+the proofs it validates on reconnect. Each A block carries the legal budget: 2 transfers + 2 shields =
+8 Auth proofs (receipts read back from block contents: 8 / 8 / 8).
+
+**W2 catch-up:** 3 blocks, 24 cold proofs. B reached the tip 23.6 s after restart; per block 7.8 s
+(2 Auth spend verifications ≈ 1.4 s each + 6 output verifications ≈ 0.8 s each ≈ 7.6 s, matching the
+proof-stage measurements). B ran one core at 99%. Chain, mempool and wallet RPCs stayed at 1–3 ms with
+no missed ticks: block validation does not hold the RPC server. `getblocktemplate` answered 6 calls and
+missed 6 ticks with a 7.9 s maximum: the template path is blocked for the whole validation of a block
+(the activation lock), i.e. the #799/#803 starvation vector reproduced with legitimate cold proofs.
+
+**W3 reorg:** B mined 2 blocks alone; A produced 3 blocks with 24 proofs; on reconnect B abandoned its
+chain and converged to A's tip in 23.4 s (heights 145/146/147 at 8.0 / 15.5 / 23.3 s), CPU 97%, no
+failure counters, no REORG ABORT. `getblocktemplate` answered 2 calls, missed 10 ticks, maximum 23.2 s:
+blocked for the entire reorg.
+
+| B under cold-proof load | per block | template path blocked |
+|---|---|---|
+| catch-up, 8 Auth proofs per block | 7.8 s | up to 7.9 s per block |
+| reorg, 3 blocks × 8 proofs | 7.8 s | 23.2 s continuous |
+
+Projection for the same blocks under v2, labelled as such (no integrated v2 path exists): each 8-proof
+block is 4 bundle proofs (two 1-in-2-out transfers, two shields); at the measured 30–40 ms serial per
+bundle on this host that is ≈ 0.15 s of verification per block against 7.8 s, and the plan's bounded
+prewarm (Task 6) moves even that off the activation lock. To be measured, not assumed.
+
+### 8.9 Baseline conclusion, updated
+
+Old design, at the load it can generate: chain RPCs are never starved; wallet RPCs wait behind proving
+(up to 21 s); mempool and template RPCs wait behind proof verification on admission (≈3 s per transfer,
+≈0.5–0.9 s per crafted invalid proof); and, the decisive finding, the template path is blocked for the
+entire validation of every peer-delivered block with cold proofs (7.8 s per legal 8-proof block on the
+M4, the whole 23 s of a 3-block reorg). On the small-node class these scale by the ≈2.7× per-core factor
+measured for the proof stage. These are the comparison baselines for the v2 run; they are not §5 verdicts.

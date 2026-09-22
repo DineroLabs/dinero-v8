@@ -1,0 +1,57 @@
+name: Shielded v2 load baseline (research branch, small x86 host)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/shielded-v2]
+    paths:
+      - '.github/workflows/shielded-v2-load-baseline.yml'
+      - 'tests/integration/load/**'
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: old-design baseline (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          ninja-build cmake curl perl pkg-config python3-yaml
+          libudev-dev libusb-1.0-0-dev
+      - name: Build pinned OpenSSL
+        run: OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+      - name: Configure (Release)
+        run: >-
+          cmake -S . -B build-load -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DDINERO_BUILD_QT=OFF -DENABLE_GRPC=OFF -DENABLE_TESTS=OFF -DENABLE_ZK=ON
+      - name: Build daemon
+        run: cmake --build build-load --parallel "$(nproc)" --target dinerod
+      - name: Record host
+        run: |
+          mkdir -p evidence
+          { uname -a; nproc; lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|MHz'; free -m; git rev-parse HEAD; } > evidence/host.txt
+      - name: Harness self-tests
+        run: python3 tests/integration/load/test_shielded_load_harness.py 2>&1 | tee evidence/harness-tests.log
+      - name: Hostile lane (attributed)
+        run: python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/hostile --hostile-only --hostile-seconds 240 --host "$(lscpu | grep 'Model name' | cut -d: -f2 | xargs), $(nproc) vCPU" || echo "hostile exit=$?" | tee -a evidence/exit-codes.txt
+      - name: Two-node cold proofs, catch-up and reorg
+        run: python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/twonode --two-node --blocks-per-phase 2 --host "$(lscpu | grep 'Model name' | cut -d: -f2 | xargs), $(nproc) vCPU" || echo "twonode exit=$?" | tee -a evidence/exit-codes.txt
+      - name: Steady + service (shortened)
+        run: python3 tests/integration/load/shielded_load.py --dinerod ./build-load/dinerod --out evidence/steady --steady-seconds 300 --hostile-seconds 60 --host "$(lscpu | grep 'Model name' | cut -d: -f2 | xargs), $(nproc) vCPU" || echo "steady exit=$?" | tee -a evidence/exit-codes.txt
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shielded-v2-load-baseline-${{ matrix.runner }}-${{ github.sha }}
+          path: evidence/

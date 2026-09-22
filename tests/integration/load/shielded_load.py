@@ -27,14 +27,19 @@ def free_ports(n):
     return ports
 
 class Node:
-    def __init__(self, dinerod, workdir, extra_flags):
+    def __init__(self, dinerod, workdir, extra_flags, listen=False, connect=None):
         self.dinerod, self.dir = dinerod, workdir
         self.rpcport, self.p2pport, self.walletport = free_ports(3)
         self.log_path = os.path.join(workdir, "dinerod.log"); self.proc = None; self.cookie = None; self.extra = extra_flags
-    def start(self):
-        os.makedirs(self.dir, exist_ok=True); self.log = open(self.log_path, "ab")
+        self.listen, self.connect = listen, connect
+    def start(self, connect=None):
+        os.makedirs(self.dir, exist_ok=True); self.log = open(self.log_path, "ab"); self.cookie = None
+        if connect is not None: self.connect = connect
+        # Mirror the repository's two-node relay test: every networked node runs --listen=1 and names its
+        # peer with --connect; a node with no peer runs offline (--p2p.offline=1, no listeners).
+        net = ["--listen=1", f"--connect=127.0.0.1:{self.connect}"] if self.connect else ["--listen=0", "--p2p.offline=1"]
         args = [self.dinerod, "--regtest", f"--datadir={self.dir}", f"--rpcport={self.rpcport}", f"--port={self.p2pport}",
-                f"--wallet-socket-port={self.walletport}", "--listen=0", "--utreexo=1", "--p2p.offline=1"] + self.extra
+                f"--wallet-socket-port={self.walletport}", "--utreexo=1"] + net + self.extra
         self.proc = subprocess.Popen(args, stdout=self.log, stderr=subprocess.STDOUT)
         t0 = time.time()
         while time.time() - t0 < 120:
@@ -367,6 +372,131 @@ def scenario_hostile(node, seconds, out, miner=None, recipient=None):
     json.dump({"probes": raw_probe, "resources": raw_res, "decisions": decisions}, open(os.path.join(out, "hostile.raw.json"), "w"))
     return result
 
+class HeightTracker(threading.Thread):
+    """Samples getblockcount on a node every `interval` s; records every height change with a timestamp."""
+    def __init__(self, node, interval=0.25):
+        super().__init__(daemon=True); self.node, self.interval, self.stop_flag, self.changes, self.errors = node, interval, False, [], 0
+    def run(self):
+        last = None
+        while not self.stop_flag:
+            try:
+                h = self.node.rpc("getblockcount", [], 10)
+                if h != last: self.changes.append({"t": time.monotonic(), "height": h}); last = h
+            except Exception: self.errors += 1
+            time.sleep(self.interval)
+
+def produce_block_with_proofs(a, miner, recipient, kinds):
+    """On node A: build the given shielded txs (kinds in {shield, transfer}) then mine one block and read it
+    back. Legal budget is 8 proofs/block: shield = 1 proof, transfer = 3 (1 spend + 2 outputs)."""
+    txids = {}
+    for k in kinds:
+        r = a.rpc("wallet.shield", {"amount_una": 100_000_000}, 600) if k == "shield" else a.rpc("wallet.transfer", {"amount_una": 40_000_000, "address": recipient}, 900)
+        txids[r["txid"]] = k
+    gen = a.rpc("generatetoaddress", [1, miner], 600)
+    hashes = gen if isinstance(gen, list) else next((v for v in (gen or {}).values() if isinstance(v, list)), []) if isinstance(gen, dict) else []
+    if not hashes: hashes = [a.rpc("getbestblockhash", [], 10)]
+    blk = a.rpc("getblock", [hashes[0], 1], 60); txs = blk.get("tx", []) if isinstance(blk, dict) else []
+    inc = [t for t in txs if t in txids]
+    return {"height": blk.get("height"), "hash": hashes[0], "tx_count": len(txs), "shielded_included": len(inc),
+            "proofs_included": sum(1 if txids[t] == "shield" else 3 for t in inc), "kinds": [txids[t] for t in inc]}
+
+def wait_height(node, target, timeout):
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
+        try:
+            if node.rpc("getblockcount", [], 10) >= target: return True
+        except Exception: pass
+        time.sleep(0.25)
+    return False
+
+def scenario_two_node(dinerod, out, flags, blocks_per_phase=3):
+    """W2 (catch-up with cold proofs) and W3 (reorg onto a chain with cold proofs). Node A produces
+    shielded transactions and blocks; node B (the node under test) is offline while they are produced, so
+    it has never seen the proofs when it validates the blocks. B's height timeline, RPC probes and CPU are
+    the measurements; A's block contents are the receipts."""
+    work = tempfile.mkdtemp(prefix="dinero_load2_")
+    a = Node(dinerod, os.path.join(work, "a"), flags, listen=True)
+    b = Node(dinerod, os.path.join(work, "b"), flags, listen=True)
+    res = {"scenario": "two-node", "phases": {}}
+    try:
+        a.start(connect=b.p2pport); b.start(connect=a.p2pport)
+        miner = a.rpc("wallet.getnewaddress", ["taproot", "producer"], 30); miner = miner["address"] if isinstance(miner, dict) else miner
+        recipient = a.rpc("wallet.getshieldedaddress", {"account": 1, "j": 0}, 60)["address"]
+        a.rpc("generatetoaddress", [140, miner], 600)
+        if not wait_height(b, 140, 300): raise RuntimeError("B did not sync the funding chain")
+        # confirmed shielded funds on A for transfers
+        for _ in range(2): a.rpc("wallet.shield", {"amount_una": 100_000_000}, 600)
+        a.rpc("generatetoaddress", [1, miner], 600); wait_height(b, 141, 120)
+        h0 = a.rpc("getblockcount", [])
+        # ---- W2: B offline while A produces blocks with proofs B has never seen ----
+        b.stop()
+        produced = []
+        for _ in range(blocks_per_phase): produced.append(produce_block_with_proofs(a, miner, recipient, ["transfer", "transfer", "shield", "shield"]))
+        target = a.rpc("getblockcount", [])
+        b.start(connect=a.p2pport)
+        t_start = time.monotonic(); tracker = HeightTracker(b); tracker.start(); probes, rs = start_probes(b, miner)
+        synced = wait_height(b, target, 1800); t_sync = time.monotonic() - t_start
+        tracker.stop_flag = True; tracker.join(timeout=5); reports, resrep, raw_probe, raw_res = stop_probes(probes, rs)
+        changes = [c for c in tracker.changes if c["height"] > h0]
+        per_block = [{"height": c["height"], "t_since_restart_s": c["t"] - t_start} for c in changes]
+        gaps = [per_block[i]["t_since_restart_s"] - per_block[i-1]["t_since_restart_s"] for i in range(1, len(per_block))]
+        res["phases"]["W2_catchup_cold_proofs"] = {"blocks_produced_offline": produced, "proofs_total": sum(p["proofs_included"] for p in produced), "synced": synced,
+            "time_to_tip_s": t_sync, "b_height_timeline": per_block, "per_block_gap_s": summarize(gaps), "b_probes": reports, "b_resources": resrep,
+            "b_log_counters": failure_counters(b.log_path), "a_log_counters": failure_counters(a.log_path)}
+        json.dump({"probes": raw_probe, "resources": raw_res, "heights": tracker.changes}, open(os.path.join(out, "two_node_w2.raw.json"), "w"))
+        # ---- W3: B mines its own short chain offline; A extends further with proofs; B reconnects and reorgs ----
+        b.stop(); b.connect = None; b.start()   # offline (no peer), mines alone
+        bminer = b.rpc("wallet.getnewaddress", ["taproot", "b"], 30); bminer = bminer["address"] if isinstance(bminer, dict) else bminer
+        fork_base = b.rpc("getblockcount", [])
+        b.rpc("generatetoaddress", [2, bminer], 600); b_tip = b.rpc("getbestblockhash", [], 10)
+        produced2 = []
+        for _ in range(blocks_per_phase): produced2.append(produce_block_with_proofs(a, miner, recipient, ["transfer", "transfer", "shield", "shield"]))
+        a_tip = a.rpc("getbestblockhash", [], 10); target2 = a.rpc("getblockcount", [])
+        b.stop(); b.start(connect=a.p2pport)
+        t_start = time.monotonic(); tracker = HeightTracker(b); tracker.start(); probes, rs = start_probes(b, miner)
+        converged = False
+        while time.monotonic() - t_start < 1800:
+            try:
+                if b.rpc("getbestblockhash", [], 10) == a_tip: converged = True; break
+            except Exception: pass
+            time.sleep(0.5)
+        t_conv = time.monotonic() - t_start
+        tracker.stop_flag = True; tracker.join(timeout=5); reports, resrep, raw_probe, raw_res = stop_probes(probes, rs)
+        res["phases"]["W3_reorg_onto_cold_proofs"] = {"fork_base_height": fork_base, "b_side_blocks": 2, "a_side_blocks": produced2, "a_side_proofs": sum(p["proofs_included"] for p in produced2),
+            "b_tip_before": b_tip, "a_tip": a_tip, "converged_to_a": converged, "time_to_converge_s": t_conv,
+            "b_height_timeline": [{"height": c["height"], "t_s": c["t"] - t_start} for c in tracker.changes], "b_probes": reports, "b_resources": resrep,
+            "b_log_counters": failure_counters(b.log_path), "a_log_counters": failure_counters(a.log_path)}
+        json.dump({"probes": raw_probe, "resources": raw_res, "heights": tracker.changes}, open(os.path.join(out, "two_node_w3.raw.json"), "w"))
+        res["qualification_failed"] = (not synced) or (not converged) or any(v for v in res["phases"]["W2_catchup_cold_proofs"]["b_log_counters"].values() if False)
+    finally:
+        for n in (a, b):
+            try: n.stop()
+            except Exception: pass
+        for n, name in ((a, "a"), (b, "b")):
+            if os.path.exists(n.log_path): shutil.copy(n.log_path, os.path.join(out, f"dinerod-{name}.log"))
+        shutil.rmtree(work, ignore_errors=True)
+    json.dump(res, open(os.path.join(out, "two_node.json"), "w"), indent=2)
+    return res
+
+def two_node_md(res, host, design):
+    w2 = res["phases"].get("W2_catchup_cold_proofs", {}); w3 = res["phases"].get("W3_reorg_onto_cold_proofs", {})
+    L = [f"# Two-node baseline: {design}", "", f"Host: {host}", "", "## W2 catch-up: B validates blocks whose proofs it never saw", ""]
+    if w2:
+        L += [f"- blocks produced while B was offline: {len(w2['blocks_produced_offline'])}, proofs total {w2['proofs_total']} (per block: {[p['proofs_included'] for p in w2['blocks_produced_offline']]})",
+              f"- synced: {w2['synced']}, time to tip after restart {w2['time_to_tip_s']:.1f} s; per-block gap s: {w2['per_block_gap_s']}",
+              f"- B CPU % of one core mean {w2['b_resources']['cpu_pct_of_one_core']['mean']:.0f}; B log counters {w2['b_log_counters']}; A {w2['a_log_counters']}", "",
+              "| B probe during catch-up | n ok | p50 | p95 | p99 | max | missed | > 1 s |", "|---|---|---|---|---|---|---|---|"]
+        for k, p in w2["b_probes"].items(): L.append(f"| {k} | {fmt(p['latency_ms'])} | {p['missed_deadlines']} | {p['slow_over_1s']} |")
+    L += ["", "## W3 reorg: B abandons its own 2 blocks for A's longer chain with cold proofs", ""]
+    if w3:
+        L += [f"- fork base {w3['fork_base_height']}; A side {len(w3['a_side_blocks'])} blocks / {w3['a_side_proofs']} proofs; converged to A: {w3['converged_to_a']} in {w3['time_to_converge_s']:.1f} s",
+              f"- B height timeline: {[(c['height'], round(c['t_s'], 1)) for c in w3['b_height_timeline']]}",
+              f"- B CPU % mean {w3['b_resources']['cpu_pct_of_one_core']['mean']:.0f}; B log counters {w3['b_log_counters']}", "",
+              "| B probe during reorg | n ok | p50 | p95 | p99 | max | missed | > 1 s |", "|---|---|---|---|---|---|---|---|"]
+        for k, p in w3["b_probes"].items(): L.append(f"| {k} | {fmt(p['latency_ms'])} | {p['missed_deadlines']} | {p['slow_over_1s']} |")
+    L += ["", f"qualification failed: {res.get('qualification_failed')}"]
+    return "\n".join(L) + "\n"
+
 def fmt(s):
     return f"{s['n']} | {s['p50']:.0f} | {s['p95']:.0f} | {s['p99']:.0f} | {s['max']:.0f}" if s and s["n"] else "0 | | | |"
 
@@ -396,7 +526,19 @@ def main():
     ap.add_argument("--steady-seconds", type=int, default=480); ap.add_argument("--hostile-seconds", type=int, default=240)
     ap.add_argument("--design", default="old (v1 Auth proofs)"); ap.add_argument("--host", default=os.uname().machine)
     ap.add_argument("--hostile-only", action="store_true", help="skip the steady scenario (funds the wallet, then runs W5)")
+    ap.add_argument("--two-node", action="store_true", help="run W2 (catch-up with cold proofs) and W3 (reorg) with a producer node A and node under test B")
+    ap.add_argument("--blocks-per-phase", type=int, default=3)
     a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
+    flags = ["--consensus-shielded-epoch-reset-height=1", "--consensus-shielded-spend-auth-height=2", "--consensus-state-commitment-height=3"]
+    if a.two_node:
+        rc = 0
+        try:
+            res = scenario_two_node(a.dinerod, a.out, flags, a.blocks_per_phase)
+            open(os.path.join(a.out, "summary.md"), "w").write(two_node_md(res, a.host, a.design)); print(open(os.path.join(a.out, "summary.md")).read())
+            if res.get("qualification_failed"): rc = 2
+        except Exception as e:
+            open(os.path.join(a.out, "HARNESS_ERROR.txt"), "w").write(repr(e) + "\n"); rc = 1
+        print(f"exit={rc}"); sys.exit(rc)
     work = tempfile.mkdtemp(prefix="dinero_load_"); rc = 0
     node = Node(a.dinerod, os.path.join(work, "nut"), ["--consensus-shielded-epoch-reset-height=1", "--consensus-shielded-spend-auth-height=2", "--consensus-state-commitment-height=3"])
     rs = rh = None
