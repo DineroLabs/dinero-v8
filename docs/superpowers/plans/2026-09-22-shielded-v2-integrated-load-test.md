@@ -181,3 +181,72 @@ small-node class; they are not a pass/fail against §5.
   transaction rate (the old design's ceiling) AND the new design at its own ceiling, reported separately.
 - The workflow variant for the small-node class (GitHub runner) is not yet written; the harness is
   self-contained Python and runs anywhere the daemon builds.
+
+
+### 8.6 Corrected-harness rerun of the steady scenario (independent probes, cumulative-CPU sampling)
+
+Evidence `docs/benchmarks/load/2026-09-22-old-m4max-v2/` (steady.json, steady.raw.json with the raw time series).
+480 s, achieved 0.060 tx/s (29 builds, 0 failed), 18 blocks, 29 shielded tx confirmed by reading block contents.
+Daemon CPU (Δ cumulative process time / Δ wall): mean 102% of one core, p95 108% (494 samples); the earlier instantaneous estimate (36%) under-reported it. RSS max 909 MB.
+
+| probe | n ok | p50 | p95 | p99 | max | missed ticks | > 1 s |
+|---|---|---|---|---|---|---|---|
+| getblockcount every 1 s | 500 | 1 | 1 | 1 | 3 | 0 | 0 |
+| getrawmempool every 1 s | 482 | 1 | 300 | 2779 | 2999 | 18 | 17 |
+| wallet.shieldedbalance every 1 s | 158 | 1 | 10666 | 21045 | 21285 | 342 | 54 |
+| getblocktemplate every 2 s | 250 | 9 | 2023 | 2805 | 2893 | 0 | 17 |
+
+Wallet builds: shield p50 7046 ms, transfer p50 24332 ms; block generate p50 78 ms (own mempool, cached proofs).
+Reading, now with coverage stated: the chain RPC never missed a tick; the mempool RPC missed 18 of 500 ticks
+and stalled up to 3.0 s (p99 2.8 s) while transfers were admitted; the wallet balance RPC missed 342 of 500
+ticks because each call waited behind proving (p95 10.7 s, max 21.3 s), so "1 ms" describes only the
+158 calls that got through; the template RPC (bracketed against a stable tip) stalled to 2.0 s at p95 and
+2.9 s max with no stale template observed. The old design saturates one core continuously at 0.06 tx/s.
+
+
+### 8.7 Hostile lane, attributed (corrected harness; evidence `docs/benchmarks/load/2026-09-22-old-m4max-hostile-v3/`)
+
+Seeds: one output-only shield (46,481 B, 1 proof) and one 1-in-2-out transfer (167,903 B, 3 proofs), both
+built last with nothing mined afterwards, captured while in the mempool, mempool cleared, and each
+re-accepted by `testmempoolaccept` before mutation. The harness decodes the bundle wire layout itself
+(encrypted notes are 757 bytes here, not the 611 of the spec comment: the outgoing-recovery envelope
+adds 146) and records, per submission, the byte offset and the named field hit. Two lanes: **proof**
+(mutations only inside `*_zkproof`, 4 of 5 submissions) and **ciphertext control** (only inside
+`*_encrypted_note`, 1 of 5; no consensus check covers those bytes, acceptance is the expected outcome).
+
+| lane | decisions | accepted | rejected | malformed / transport / protocol / 503 |
+|---|---|---|---|---|
+| transfer_3proofs / proof | 671 | **0** | 671 | 0 / 0 / 0 / 0 |
+| shield_1proof / proof | 671 | **0** | 671 | 0 / 0 / 0 / 0 |
+| transfer_3proofs / ciphertext control | 167 | 167 (expected) | 0 | 0 |
+| shield_1proof / ciphertext control | 167 | 167 (expected) | 0 | 0 |
+
+Every proof-lane rejection carried the node's reason `Shielded validation failed: proof-invalid`
+(stage confirmed by the node, not inferred from time). Qualification: **passed** (no acceptance in a
+proof lane). The 14 acceptances in the previous run (`2026-09-22-old-m4max-v2/`) all mapped to
+encrypted-note bytes once the real 757-byte note length was known; that run also showed the wallet
+re-spending the shield seed's coin because funding was mined after the seed was built, which the new
+seed ordering prevents.
+
+| decision time (ms) by lane / reason | n | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| transfer_3proofs/proof / proof-invalid | 671 | 11 | 931 | 946 | 1395 |
+| shield_1proof/proof / proof-invalid | 671 | 5 | 522 | 830 | 848 |
+
+Bimodal by construction: a corrupted compressed point fails proof deserialization (≈5–11 ms); a
+corrupted scalar runs the verifier to its final check (≈520 ms for one output proof, ≈930 ms when
+the spend proof is reached first in the 3-proof bundle; max 1.4 s). Bundle verification stops at the
+first failing proof, so a 3-proof crafted transaction costs at most one full verification here, not
+three; the "4.5 s per crafted 2-in-2-out" line in §8.3 was wrong and is withdrawn.
+
+| probe during hostile (one client, back to back) | n ok | p50 | p95 | p99 | max | missed | > 1 s |
+|---|---|---|---|---|---|---|---|
+| getblockcount | 301 | 1 | 1 | 1 | 3 | 0 | 0 |
+| getrawmempool | 301 | 326 | 823 | 924 | 1341 | 0 | 3 |
+| wallet.shieldedbalance | 301 | 1 | 1 | 2 | 3 | 0 | 0 |
+| getblocktemplate | 151 | 350 | 920 | 1209 | 1503 | 0 | 6 |
+
+Daemon CPU mean 100% of one core (297 samples). While a full verification runs, the
+mempool and template RPCs wait for the mempool lock (p95 ≈0.9 s); chain and wallet RPCs are unaffected.
+One earlier submission produced `exception: vector` from the node on a mutated bundle (a C++ exception
+surfacing as an RPC error instead of a clean reject); recorded for a robustness issue.

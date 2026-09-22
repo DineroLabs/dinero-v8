@@ -1,0 +1,291 @@
+{
+  "scenario": "hostile",
+  "seconds": 300,
+  "seeds": {
+    "transfer_3proofs": 167903,
+    "shield_1proof": 46481
+  },
+  "counts": {
+    "transfer_3proofs/proof": {
+      "decisions": 671,
+      "accepted": 0,
+      "rejected": 671,
+      "malformed": 0,
+      "busy503": 0,
+      "transport": 0,
+      "protocol": 0
+    },
+    "transfer_3proofs/ciphertext_control": {
+      "decisions": 167,
+      "accepted": 167,
+      "rejected": 0,
+      "malformed": 0,
+      "busy503": 0,
+      "transport": 0,
+      "protocol": 0
+    },
+    "shield_1proof/proof": {
+      "decisions": 671,
+      "accepted": 0,
+      "rejected": 671,
+      "malformed": 0,
+      "busy503": 0,
+      "transport": 0,
+      "protocol": 0
+    },
+    "shield_1proof/ciphertext_control": {
+      "decisions": 167,
+      "accepted": 167,
+      "rejected": 0,
+      "malformed": 0,
+      "busy503": 0,
+      "transport": 0,
+      "protocol": 0
+    }
+  },
+  "reject_reasons": {
+    "transfer_3proofs/proof": {
+      "txn-validation-failed: Transaction validation failed: Shielded validation failed: proof-invalid": 671
+    },
+    "transfer_3proofs/ciphertext_control": {},
+    "shield_1proof/proof": {
+      "txn-validation-failed: Transaction validation failed: Shielded validation failed: proof-invalid": 671
+    },
+    "shield_1proof/ciphertext_control": {}
+  },
+  "decision_ms_by_reason": {
+    "transfer_3proofs/proof": {
+      "txn-validation-failed: Transaction validation failed: Shielded validation failed: proof-invalid": {
+        "n": 671,
+        "p50": 11.289125017356128,
+        "p95": 930.6239580037072,
+        "p99": 945.6476250197738,
+        "max": 1395.3104590182193,
+        "mean": 252.52810920699363
+      }
+    },
+    "transfer_3proofs/ciphertext_control": {},
+    "shield_1proof/proof": {
+      "txn-validation-failed: Transaction validation failed: Shielded validation failed: proof-invalid": {
+        "n": 671,
+        "p50": 5.135916988365352,
+        "p95": 522.203125001397,
+        "p99": 829.6476249815896,
+        "max": 848.4116659965366,
+        "mean": 191.53825851737128
+      }
+    },
+    "shield_1proof/ciphertext_control": {}
+  },
+  "decision_ms_all": {
+    "transfer_3proofs/proof": {
+      "n": 671,
+      "p50": 11.289125017356128,
+      "p95": 930.6239580037072,
+      "p99": 945.6476250197738,
+      "max": 1395.3104590182193,
+      "mean": 252.52810920699363
+    },
+    "transfer_3proofs/ciphertext_control": {
+      "n": 167,
+      "p50": 9.834749973379076,
+      "p95": 10.323666967451572,
+      "p99": 10.457416996359825,
+      "max": 11.179083026945591,
+      "mean": 9.837739243489986
+    },
+    "shield_1proof/proof": {
+      "n": 671,
+      "p50": 5.135916988365352,
+      "p95": 522.203125001397,
+      "p99": 829.6476249815896,
+      "max": 848.4116659965366,
+      "mean": 191.53825851737128
+    },
+    "shield_1proof/ciphertext_control": {
+      "n": 167,
+      "p50": 3.7538339965976775,
+      "p95": 3.9732500445097685,
+      "p99": 4.034499987028539,
+      "max": 4.091834009159356,
+      "mean": 3.7587238430368997
+    }
+  },
+  "accepted_examples": [
+    {
+      "i": 8,
+      "kind": "transfer_3proofs/ciphertext_control",
+      "byte": 118017,
+      "field": "out1_encrypted_note",
+      "reply": [
+        {
+          "allowed": true,
+          "txid": "6827679cb0e04eb438e7af6ff9fbe94e452bf4e77ea004c2989c64842d39eeca"
+        }
+      ]
+    },
+    {
+      "i": 9,
+      "kind": "shield_1proof/ciphertext_control",
+      "byte": 361,
+      "field": "out0_encrypted_note",
+      "reply": [
+        {
+          "allowed": true,
+          "txid": "611d2a764eadf6a8ebe9e4d9f225e0c0e79da4a18da7c17cc59d91aa51316aed"
+        }
+      ]
+    },
+    {
+      "i": 18,
+      "kind": "transfer_3proofs/ciphertext_control",
+      "byte": 73709,
+      "field": "out0_encrypted_note",
+      "reply": [
+        {
+          "allowed": true,
+          "txid": "06b82409d13fd2ccd0761d8036187bd872ae7f7c7842d2742ba05a1f16dfa068"
+        }
+      ]
+    },
+    {
+      "i": 19,
+      "kind": "shield_1proof/ciphertext_control",
+      "byte": 823,
+      "field": "out0_encrypted_note",
+      "reply": [
+        {
+          "allowed": true,
+          "txid": "6c74e336f92df27eac898e6bb487e79588e64415db11b010d153ca60ac451836"
+        }
+      ]
+    },
+    {
+      "i": 28,
+      "kind": "transfer_3proofs/ciphertext_control",
+      "byte": 74171,
+      "field": "out0_encrypted_note",
+      "reply": [
+        {
+          "allowed": true,
+          "txid": "a7e7db234667c82749c7c031bf05333069e671be3cb3b5dccdb2979a3f2ec8b4"
+        }
+      ]
+    }
+  ],
+  "probes": {
+    "getblockcount": {
+      "method": "getblockcount",
+      "interval_s": 1.0,
+      "samples": 301,
+      "ok": 301,
+      "errors": {},
+      "missed_deadlines": 0,
+      "latency_ms": {
+        "n": 301,
+        "p50": 0.7252499926835299,
+        "p95": 1.1503329733386636,
+        "p99": 1.4672499964945018,
+        "max": 2.773791959043592,
+        "mean": 0.7587173068741231
+      },
+      "slow_over_1s": 0
+    },
+    "getrawmempool": {
+      "method": "getrawmempool",
+      "interval_s": 1.0,
+      "samples": 301,
+      "ok": 301,
+      "errors": {},
+      "missed_deadlines": 0,
+      "latency_ms": {
+        "n": 301,
+        "p50": 326.10445795580745,
+        "p95": 823.0771250091493,
+        "p99": 924.3660420179367,
+        "max": 1340.830624976661,
+        "mean": 359.66530262103515
+      },
+      "slow_over_1s": 3
+    },
+    "wallet.shieldedbalance": {
+      "method": "wallet.shieldedbalance",
+      "interval_s": 1.0,
+      "samples": 301,
+      "ok": 301,
+      "errors": {},
+      "missed_deadlines": 0,
+      "latency_ms": {
+        "n": 301,
+        "p50": 0.7520409999415278,
+        "p95": 1.2164580402895808,
+        "p99": 1.5172919956967235,
+        "max": 2.976417017634958,
+        "mean": 0.7947767222999438
+      },
+      "slow_over_1s": 0
+    },
+    "getblocktemplate": {
+      "method": "getblocktemplate",
+      "interval_s": 2.0,
+      "samples": 151,
+      "ok": 151,
+      "errors": {},
+      "missed_deadlines": 0,
+      "latency_ms": {
+        "n": 151,
+        "p50": 349.78099999716505,
+        "p95": 919.7443330194801,
+        "p99": 1208.5553330252878,
+        "max": 1502.7063330053352,
+        "mean": 421.4917221661682
+      },
+      "slow_over_1s": 6,
+      "stale_template_with_stable_tip": 0
+    }
+  },
+  "resources": {
+    "samples": 297,
+    "cpu_pct_of_one_core": {
+      "n": 297,
+      "p50": 100.09791339824976,
+      "p95": 100.86540709903076,
+      "p99": 101.2623548031284,
+      "max": 101.37349611349451,
+      "mean": 99.96641506653236
+    },
+    "rss_mb": {
+      "n": 297,
+      "p50": 566,
+      "p95": 766,
+      "p99": 830,
+      "max": 830,
+      "mean": 572.4208754208754
+    }
+  },
+  "log_counters": {
+    "SAFE MODE": 0,
+    "INVARIANT VIOLATION": 0,
+    "corrupt": 0,
+    "REORG ABORT": 0,
+    "RPC server busy": 0
+  },
+  "accepted_by_field": {
+    "transfer_3proofs/proof": {
+      "out0_zkproof": 0,
+      "spend0_zkproof": 0,
+      "out1_zkproof": 0
+    },
+    "transfer_3proofs/ciphertext_control": {
+      "out1_encrypted_note": 83,
+      "out0_encrypted_note": 84
+    },
+    "shield_1proof/proof": {
+      "out0_zkproof": 0
+    },
+    "shield_1proof/ciphertext_control": {
+      "out0_encrypted_note": 167
+    }
+  },
+  "qualification_failed": false
+}

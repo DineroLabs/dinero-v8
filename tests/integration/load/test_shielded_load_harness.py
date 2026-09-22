@@ -4,6 +4,11 @@ import os, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(__file__))
 import shielded_load as L
 
+def _vi(n): return bytes([n]) if n < 253 else b"\xfd" + n.to_bytes(2, "little")
+_bundle = ((0).to_bytes(8, "little") + _vi(1) + b"\x11" * 32 + b"\x22" * 32 + b"\x33" * 33 + _vi(1000) + b"\x44" * 1000 + _vi(2)
+           + (b"\x55" * 32 + b"\x66" * 33 + _vi(611) + b"\x77" * 611 + _vi(900) + b"\x88" * 900) * 2 + _vi(50) + b"\x99" * 50 + b"\xaa" * 33 + b"\xbb" * 64)
+SYNTHETIC_TX_HEX = (b"\x06\x00\x00\x00\x00\x01\x00\x01" + (0).to_bytes(8, "little") + _vi(len(_bundle)) + _bundle + b"\x00" * 4).hex()
+
 class StubNode:
     """Scripted RPC: responses is a list of callables or values consumed per testmempoolaccept call."""
     def __init__(self, accept_replies, seed_reply):
@@ -15,7 +20,7 @@ class StubNode:
         if method == "wallet.getshieldedaddress": return {"address": "rdins1"}
         if method == "wallet.shield": return {"txid": "aa" * 32}
         if method == "wallet.transfer": return {"txid": "bb" * 32}
-        if method == "getrawtransaction": return {"hex": "06" * 4000}
+        if method == "getrawtransaction": return {"hex": SYNTHETIC_TX_HEX}
         if method in ("mempool.clear", "generatetoaddress"): return []
         if method == "getrawmempool": return []
         if method == "getbestblockhash": return "h"
