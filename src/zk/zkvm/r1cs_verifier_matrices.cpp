@@ -4,23 +4,22 @@
 #include <thread>
 
 namespace dinero { namespace zk { namespace zkvm {
-namespace {
-size_t next_pow2_local(size_t n) { size_t p = 1; while (p < n) p <<= 1; return p; }
-
-void Append(SparseMatrixCSR& m, const LinearCombination& lc, size_t n_zp, const Scalar& one,
-            const Scalar& neg_one, R1CSVerifierMatrices& stats) {
+void AppendCsrTerms(SparseMatrixCSR& m, const LinearCombination& lc, size_t n_zp, const Scalar& one,
+                    const Scalar& neg_one, R1CSVerifierMatrices& stats) {
     for (const auto& t : lc.terms()) {
         if (t.var.index >= n_zp) continue;
         m.col.push_back(static_cast<uint32_t>(t.var.index));
         m.coeff.push_back(t.coeff);
         uint8_t k = 0;
-        if (t.coeff == one) { k = 1; ++stats.nnz_one; }
-        else if (t.coeff == neg_one) { k = 2; ++stats.nnz_neg_one; }
+        if (t.coeff == one) { k = 1; ++stats.nnz_one_; }
+        else if (t.coeff == neg_one) { k = 2; ++stats.nnz_neg_one_; }
         m.kind.push_back(k);
-        ++stats.nnz_total;
+        ++stats.nnz_total_;
     }
     m.row_ptr.push_back(static_cast<uint32_t>(m.col.size()));
 }
+namespace {
+size_t next_pow2_local(size_t n) { size_t p = 1; while (p < n) p <<= 1; return p; }
 
 inline Scalar RowDot(const SparseMatrixCSR& m, size_t i, const std::vector<Scalar>& eq_ry) {
     Scalar acc = Scalar::zero();
@@ -37,19 +36,19 @@ inline Scalar RowDot(const SparseMatrixCSR& m, size_t i, const std::vector<Scala
 }
 }  // namespace
 
-R1CSVerifierMatrices R1CSVerifierMatrices::FromR1CS(const R1CS& cs) {
+R1CSVerifierMatrices R1CSVerifierMatrices::Build(const R1CS& cs) {
     R1CSVerifierMatrices m;
-    m.num_constraints = cs.num_constraints();
-    m.num_variables = cs.num_variables();
-    m.n_zp = next_pow2_local(m.num_variables);
-    m.circuit_hash = spartan_hash_r1cs_structure(cs);
+    m.num_constraints_ = cs.num_constraints();
+    m.num_variables_ = cs.num_variables();
+    m.n_zp_ = next_pow2_local(m.num_variables_);
+    m.circuit_hash_ = spartan_hash_r1cs_structure(cs);
     const Scalar one = Scalar::one();
     const Scalar neg_one = -Scalar::one();
-    for (SparseMatrixCSR* s : {&m.a, &m.b, &m.c}) s->row_ptr.push_back(0);
+    for (SparseMatrixCSR* s : {&m.a_, &m.b_, &m.c_}) s->row_ptr.push_back(0);
     for (const auto& c : cs.constraints()) {
-        Append(m.a, c.a, m.n_zp, one, neg_one, m);
-        Append(m.b, c.b, m.n_zp, one, neg_one, m);
-        Append(m.c, c.c, m.n_zp, one, neg_one, m);
+        AppendCsrTerms(m.a_, c.a, m.n_zp_, one, neg_one, m);
+        AppendCsrTerms(m.b_, c.b, m.n_zp_, one, neg_one, m);
+        AppendCsrTerms(m.c_, c.c, m.n_zp_, one, neg_one, m);
     }
     return m;
 }
@@ -60,9 +59,9 @@ Scalar EvalMatrixCombinationCSR(const R1CSVerifierMatrices& m, const std::vector
     auto range = [&](size_t begin, size_t end) {
         Scalar acc = Scalar::zero();
         for (size_t i = begin; i < end; ++i) {
-            const Scalar ai = RowDot(m.a, i, eq_ry);
-            const Scalar bi = RowDot(m.b, i, eq_ry);
-            const Scalar ci = RowDot(m.c, i, eq_ry);
+            const Scalar ai = RowDot(m.a(), i, eq_ry);
+            const Scalar bi = RowDot(m.b(), i, eq_ry);
+            const Scalar ci = RowDot(m.c(), i, eq_ry);
             acc += eq_rx[i] * (ai + rho * bi + rho2 * ci);
         }
         return acc;

@@ -22,18 +22,38 @@ struct SparseMatrixCSR {
 };
 
 // Immutable trusted verifier context for one circuit: identity (structure hash) + matrices.
-// A verify call that receives one requires proof.circuit_hash == circuit_hash and, when the
-// caller also supplies an expected hash, expected == circuit_hash. Dimensions alone never
-// identify a circuit; two different circuits can share them.
-struct R1CSVerifierMatrices {
-    std::vector<uint8_t> circuit_hash;   // spartan_hash_r1cs_structure(cs), 32 bytes
-    SparseMatrixCSR a, b, c;
-    size_t num_constraints = 0;
-    size_t num_variables = 0;
-    size_t n_zp = 0;                 // next_pow2(num_variables): column bound used by the verifier
-    size_t nnz_total = 0, nnz_one = 0, nnz_neg_one = 0;
+// Built only through Build() from a trusted R1CS; no public mutable state. A verify call that
+// receives one requires proof.circuit_hash == circuit_hash() and, when the caller also supplies an
+// expected hash, expected == circuit_hash(). Dimensions alone never identify a circuit.
+class R1CSVerifierMatrices {
+public:
+    static R1CSVerifierMatrices Build(const R1CS& cs);
+    // Kept for existing callers; identical to Build().
+    static R1CSVerifierMatrices FromR1CS(const R1CS& cs) { return Build(cs); }
 
-    static R1CSVerifierMatrices FromR1CS(const R1CS& cs);
+    const std::vector<uint8_t>& circuit_hash() const { return circuit_hash_; }
+    const SparseMatrixCSR& a() const { return a_; }
+    const SparseMatrixCSR& b() const { return b_; }
+    const SparseMatrixCSR& c() const { return c_; }
+    size_t num_constraints() const { return num_constraints_; }
+    size_t num_variables() const { return num_variables_; }
+    size_t n_zp() const { return n_zp_; }
+    size_t nnz_total() const { return nnz_total_; }
+    size_t nnz_one() const { return nnz_one_; }
+    size_t nnz_neg_one() const { return nnz_neg_one_; }
+
+#ifdef DINERO_ZK_TEST_HOOKS
+    // Test-only: forge the identity so a test can prove the matrix evaluation itself rejects.
+    void ForgeIdentityForTests(const std::vector<uint8_t>& h) { circuit_hash_ = h; }
+#endif
+
+private:
+    R1CSVerifierMatrices() = default;
+    std::vector<uint8_t> circuit_hash_;
+    SparseMatrixCSR a_, b_, c_;
+    size_t num_constraints_ = 0, num_variables_ = 0, n_zp_ = 0;
+    size_t nnz_total_ = 0, nnz_one_ = 0, nnz_neg_one_ = 0;
+    friend void AppendCsrTerms(SparseMatrixCSR&, const LinearCombination&, size_t, const Scalar&, const Scalar&, R1CSVerifierMatrices&);
 };
 
 // M~_combined(rx, ry) = sum_i eq_rx[i] * (a_i + rho*b_i + rho^2*c_i), a_i = sum_j A_ij * eq_ry[j].

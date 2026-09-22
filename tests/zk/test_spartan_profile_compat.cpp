@@ -115,8 +115,8 @@ TEST(SpartanProfileCompat, MatrixThreadBudgetDoesNotChangeTheVerdict) {
 TEST(SpartanProfileCompat, CsrMatrixWalkGivesTheSameVerdictAsTheConstraintWalk) {
     Fixture f;
     const auto m = R1CSVerifierMatrices::FromR1CS(f.cs);
-    EXPECT_EQ(m.num_constraints, f.cs.num_constraints());
-    EXPECT_EQ(m.nnz_total, 3u * f.cs.num_constraints());
+    EXPECT_EQ(m.num_constraints(), f.cs.num_constraints());
+    EXPECT_EQ(m.nnz_total(), 3u * f.cs.num_constraints());
     for (bool omit : {false, true}) {
         auto bytes = f.prove(omit, f.cs);
         for (int tamper = 0; tamper <= 1; ++tamper) {
@@ -141,12 +141,12 @@ TEST(SpartanProfileCompat, CsrMatrixWalkGivesTheSameVerdictAsTheConstraintWalk) 
         ASSERT_EQ(twin.num_constraints(), f.cs.num_constraints());
         ASSERT_EQ(twin.num_variables(), f.cs.num_variables());
         const auto twin_ctx = R1CSVerifierMatrices::FromR1CS(twin);
-        ASSERT_NE(twin_ctx.circuit_hash, m.circuit_hash);
+        ASSERT_NE(twin_ctx.circuit_hash(), m.circuit_hash());
         SpartanProof p; ASSERT_TRUE(SpartanProof::deserialize(f.prove(false, f.cs), p, f.ctx, false));
         Transcript t("spartan.profile.compat");
         EXPECT_FALSE(r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), {}, Scalar::one(), f.gens(), t, f.ctx, true, true, false, 1, &twin_ctx));
         Transcript t2("spartan.profile.compat");
-        EXPECT_FALSE(r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), twin_ctx.circuit_hash, Scalar::one(), f.gens(), t2, f.ctx, true, true, false, 1, &m)) << "expected hash must match the context";
+        EXPECT_FALSE(r1cs_spartan_verify(p, f.cs, f.cs.num_constraints(), f.cs.num_variables(), twin_ctx.circuit_hash(), Scalar::one(), f.gens(), t2, f.ctx, true, true, false, 1, &m)) << "expected hash must match the context";
     }
     // A CSR built for a different shape is refused, never silently used.
     R1CS other; { auto x = other.alloc(Scalar::one()); other.constrain(LinearCombination(x), LinearCombination(x), LinearCombination(x), "b"); }
@@ -236,8 +236,8 @@ TEST(SpartanProfileCompat, MixedCoefficientLargeFixtureAndMatrixEvaluationReject
     const auto hashA = spartan_hash_r1cs_structure(A), hashB = spartan_hash_r1cs_structure(B);
     ASSERT_NE(hashA, hashB);
     const auto ctxA = R1CSVerifierMatrices::FromR1CS(A);
-    EXPECT_GT(ctxA.nnz_total - ctxA.nnz_one - ctxA.nnz_neg_one, 0u) << "fixture has general coefficients";
-    EXPECT_GT(ctxA.nnz_neg_one, 0u);
+    EXPECT_GT(ctxA.nnz_total() - ctxA.nnz_one() - ctxA.nnz_neg_one(), 0u) << "fixture has general coefficients";
+    EXPECT_GT(ctxA.nnz_neg_one(), 0u);
     const auto& gens = GeneratorSet::cached(std::max<size_t>(4, std::max(HyraxParams::from_n(A.num_variables()).n_cols, HyraxParams::from_n(A.num_constraints()).n_cols)), f.ctx);
     for (bool omit : {false, true}) {
         Transcript tp("spartan.profile.compat.mixed");
@@ -256,8 +256,8 @@ TEST(SpartanProfileCompat, MixedCoefficientLargeFixtureAndMatrixEvaluationReject
             EXPECT_FALSE(r1cs_spartan_verify(p, B, B.num_constraints(), B.num_variables(), {}, Scalar::one(), gens, t, f.ctx, true, true, omit, threads, nullptr)) << "walk " << omit << threads;
         }
         // Same for the CSR path: forge B's identity to A's so binding passes and M~_B rejects.
-        auto forged = R1CSVerifierMatrices::FromR1CS(B);
-        forged.circuit_hash = hashA;
+        auto forged = R1CSVerifierMatrices::Build(B);
+        forged.ForgeIdentityForTests(hashA);
         for (size_t threads : {size_t{1}, size_t{8}}) {
             Transcript t("spartan.profile.compat.mixed");
             EXPECT_FALSE(r1cs_spartan_verify(p, A, A.num_constraints(), A.num_variables(), hashA, Scalar::one(), gens, t, f.ctx, true, true, omit, threads, &forged)) << "csr " << omit << threads;

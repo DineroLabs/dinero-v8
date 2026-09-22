@@ -130,6 +130,58 @@ static BenchRow BaselineAuthSpend() {
     return BenchRow{"old_spend_auth_live", 0, 0, bytes, median_of(prove), median_of(verify)};
 }
 
+// Old design, MEASURED whole transaction: 2 live Auth spend proofs + 2 live output proofs are
+// built once, then all four are verified back to back inside ONE timed region (the way a node
+// verifies a 2-in-2-out v1 bundle: sequentially, one proof at a time). Median of 5 after 1 warm-up.
+struct OldTxProofs { std::vector<std::pair<std::vector<uint8_t>, SpendPublicInputs>> spends; std::vector<std::pair<std::vector<uint8_t>, OutputPublicInputs>> outputs; size_t bytes = 0; };
+static OldTxProofs BuildOldTx(uint8_t seed) {
+    namespace wsh = dinero::wallet::shielded;
+    OldTxProofs tx;
+    const uint64_t value = 100'000'000;
+    for (int i = 0; i < 2; ++i) {
+        std::array<uint8_t, 64> s{}; s[0] = 0x61; s[31] = static_cast<uint8_t>(seed + i);
+        const auto keys = wsh::DeriveShieldedAccount(s.data(), s.size(), 0);
+        const auto addr = wsh::DeriveDiversifiedAddress(keys, 3 + i, wsh::kHrpRegtest);
+        const auto spend_key = wsh::DeriveDiversifiedSpendKey(keys.ask, keys.ak, addr.d);
+        const auto nfk = wsh::DeriveDiversifiedNullifierKey(keys.nvk, addr.d);
+        const Hash ownership = AuthRecipientCommitmentKey(addr.pk_d_spend, wsh::NullifierKeyCommitment(nfk));
+        Hash d{}; std::memcpy(d.data(), addr.d.data(), addr.d.size());
+        const Hash randomness = MakeHash(0xE1, static_cast<uint8_t>(seed + i));
+        CommitmentTree tree; tree.Append(MakeHash(0x10, seed));
+        const uint64_t idx = tree.Append(NoteCommitment(d, ownership, ValueAsHash(value), randomness));
+        const auto path = tree.GetAuthPath(idx);
+        SpendWitness w{}; w.secret_key = spend_key.s; w.nullifier_key = nfk; w.leaf_index = idx; w.value = ValueAsHash(value);
+        w.randomness = randomness; w.d = d; w.rcv = MakeBlind(static_cast<uint8_t>(0x50 + seed + i)); w.merkle_path = path->siblings;
+        SpendPublicInputs pub{}; pub.nullifier = ComputeNullifier(nfk, idx); pub.anchor = tree.Root(); pub.cv = Commit(w.rcv, value);
+        auto proof = ProveSpend(w, pub, nullptr, true, true, true);
+        if (proof.empty()) { std::fprintf(stderr, "old tx spend prove failed\n"); std::exit(2); }
+        tx.bytes += proof.size(); tx.spends.emplace_back(std::move(proof), pub);
+    }
+    for (int j = 0; j < 2; ++j) {
+        OutputWitness w{}; w.value = ValueAsHash(value); w.public_key = MakeHash(0x71, static_cast<uint8_t>(seed + j)); w.randomness = MakeHash(0x72, static_cast<uint8_t>(seed + j)); w.d = MakeHash(0x73, 0x10); w.rcv = MakeBlind(static_cast<uint8_t>(0x60 + seed + j));
+        OutputPublicInputs pub{}; pub.commitment = NoteCommitment(w.d, w.public_key, w.value, w.randomness); pub.cv = Commit(w.rcv, value);
+        auto proof = ProveOutput(w, pub, nullptr, true, true);
+        if (proof.empty()) { std::fprintf(stderr, "old tx output prove failed\n"); std::exit(2); }
+        tx.bytes += proof.size(); tx.outputs.emplace_back(std::move(proof), pub);
+    }
+    return tx;
+}
+static BenchRow BaselineOldTxMeasured() {
+    std::vector<double> verify; size_t bytes = 0;
+    for (int rep = 0; rep < 6; ++rep) {
+        const OldTxProofs tx = BuildOldTx(static_cast<uint8_t>(rep));   // fresh proofs: no cache hits
+        auto t0 = Clock::now();
+        bool ok = true;
+        for (const auto& [p, pub] : tx.spends) ok = VerifySpend(p, pub, nullptr, true, true, true) && ok;
+        for (const auto& [p, pub] : tx.outputs) ok = VerifyOutput(p, pub, nullptr, true, true) && ok;
+        const double v = ms_since(t0);
+        if (!ok) { std::fprintf(stderr, "old tx verify failed\n"); std::exit(2); }
+        if (rep) verify.push_back(v);
+        bytes = tx.bytes;
+    }
+    return BenchRow{"old_tx_2in2out_measured_live(2auth+2out)", 0, 0, bytes, 0, median_of(verify)};
+}
+
 // Old design on the same host: one cv-bound OUTPUT proof (live profile for outputs).
 static BenchRow BaselineOutput() {
     const uint64_t value = 100'000'000;
@@ -288,7 +340,7 @@ static BenchRow BenchBundle(size_t n_in, size_t n_out) {
 // generator size. Cold initialisation (build + hash) is reported separately; per proof the
 // structure is copied and its public-input slots set (R1CS::set_value), which is what a node does.
 struct ShapeKey { size_t n_in, n_out; bool omit; bool operator<(const ShapeKey& o) const { return std::tie(n_in, n_out, omit) < std::tie(o.n_in, o.n_out, o.omit); } };
-struct ShapeData { dinero::zk::zkvm::R1CS structure; dinero::zk::zkvm::R1CSVerifierMatrices matrices; std::vector<uint8_t> chash; size_t gens_need = 0; double cold_init_ms = 0; double csr_build_ms = 0; };
+struct ShapeData { dinero::zk::zkvm::R1CS structure; dinero::zk::zkvm::R1CSVerifierMatrices matrices = dinero::zk::zkvm::R1CSVerifierMatrices::Build(dinero::zk::zkvm::R1CS{}); std::vector<uint8_t> chash; size_t gens_need = 0; double cold_init_ms = 0; double csr_build_ms = 0; };
 static std::map<ShapeKey, ShapeData> g_shapes; static std::mutex g_shapes_mu;
 static const ShapeData& ShapeFor(size_t n_in, size_t n_out) {
     using namespace dinero::zk::zkvm;
@@ -304,9 +356,9 @@ static const ShapeData& ShapeFor(size_t n_in, size_t n_out) {
     zero.sighash = Scalar::zero(); zero.fee = 0;
     d.structure = spike::BuildBundleCircuitV2(zero);
     d.chash = spartan_hash_r1cs_structure(d.structure);
-    { auto tc = Clock::now(); d.matrices = R1CSVerifierMatrices::FromR1CS(d.structure); d.csr_build_ms = ms_since(tc);
+    { auto tc = Clock::now(); d.matrices = R1CSVerifierMatrices::Build(d.structure); d.csr_build_ms = ms_since(tc);
       std::fprintf(stderr, "CSR shape %zu-in-%zu-out: nnz=%zu (+1: %zu, -1: %zu, general: %zu) build=%.1f ms\n", n_in, n_out,
-                   d.matrices.nnz_total, d.matrices.nnz_one, d.matrices.nnz_neg_one, d.matrices.nnz_total - d.matrices.nnz_one - d.matrices.nnz_neg_one, d.csr_build_ms); }
+                   d.matrices.nnz_total(), d.matrices.nnz_one(), d.matrices.nnz_neg_one(), d.matrices.nnz_total() - d.matrices.nnz_one() - d.matrices.nnz_neg_one(), d.csr_build_ms); }
     d.gens_need = std::max<size_t>(4, std::max(HyraxParams::from_n(d.structure.num_variables()).n_cols, HyraxParams::from_n(d.structure.num_constraints()).n_cols));
     d.cold_init_ms = ms_since(t0);
     return g_shapes.emplace(key, std::move(d)).first->second;
@@ -516,7 +568,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--negatives") return Negatives();
     if (argc > 1 && std::string(argv[1]) == "--selftest") return SelfTest();
     std::vector<BenchRow> rows;
-    if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) { rows.push_back(BaselineSpend()); rows.push_back(BaselineAuthSpend()); rows.push_back(BaselineOutput()); }
+    if (!(argc > 1 && std::string(argv[1]) == "--no-baseline")) { rows.push_back(BaselineSpend()); rows.push_back(BaselineAuthSpend()); rows.push_back(BaselineOutput()); rows.push_back(BaselineOldTxMeasured()); }
     rows.push_back(BenchBundle(1, 2));
     rows.push_back(BenchBundle(2, 2));
     rows.push_back(BenchBundle(4, 2));

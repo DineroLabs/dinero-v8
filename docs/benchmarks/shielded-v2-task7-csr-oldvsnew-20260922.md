@@ -108,3 +108,20 @@ for 1 / 2 / 4 / 8 workers (2 physical cores; 8 workers gain nothing over 4). On 
 design verifies a transaction ~130× faster serially and in ~20× fewer bytes than today's live
 proofs; the 20 ms / 400 ms thresholds are still not met here. Proof stage only; integrated-node
 measurements under load remain the deciding evidence.
+
+## Owner qualifications on 83f2d69ab, addressed
+
+1. **Whole-transaction measurement, not a sum of medians.** New row `old_tx_2in2out_measured_live(2auth+2out)`:
+   two live Auth spend proofs and two live output proofs are built fresh, then all four are verified
+   back to back in one timed region, the way a node verifies a v1 bundle. M4 Max, median of 5:
+   **4,285 ms, 232,932 proof bytes**, against 28.6 ms serial / 18.2 ms budget for the bundle
+   (≈150× serial). The earlier "≈4.5 s" line was the sum of per-proof medians and is superseded.
+   The Linux workflow produces the same measured row on the 2-core VM.
+2. **Immutable trusted context.** `R1CSVerifierMatrices` has no public mutable state: private
+   members, `Build(const R1CS&)` factory, const accessors; the verifier reads it through a const
+   pointer. The forged-identity test uses `ForgeIdentityForTests`, compiled only with
+   `DINERO_ZK_TEST_HOOKS` (set on the test target, never on the library or daemon).
+
+Still true: the small-runner thresholds are unmet; the next useful work is integrated-node load
+testing under an explicit hardware contract; this research stays separate from the CF /
+compact-v1 / 60-second release (#797 merged 2026-09-22, activation unset).
