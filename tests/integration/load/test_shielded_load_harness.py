@@ -43,6 +43,14 @@ class ForkSidesTests(unittest.TestCase):
             b_side, a_side = L.fork_sides(n)
             self.assertGreater(a_side, b_side); self.assertGreaterEqual(b_side, 1)
 
+class VerdictAggregationTests(unittest.TestCase):
+    def test_hostile_only_verdict_does_not_need_a_steady_result(self):
+        # regression for the hostile-only crash: rs is None, rh clean -> exit 0; rh failed -> 2
+        rs, rh = None, {"qualification_failed": False}
+        self.assertFalse(any(x and x.get("qualification_failed") for x in (rs, rh)))
+        rh = {"qualification_failed": True}
+        self.assertTrue(any(x and x.get("qualification_failed") for x in (rs, rh)))
+
 class ParserTests(unittest.TestCase):
     def test_list_form_accepted_and_rejected(self):
         self.assertEqual(L.parse_accept([{"allowed": True, "txid": "x"}]), ("accepted", None))

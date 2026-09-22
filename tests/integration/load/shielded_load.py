@@ -629,7 +629,7 @@ def main():
         else:
             rs = scenario_steady(node, a.steady_seconds, a.out)
             rh = scenario_hostile(node, a.hostile_seconds, a.out, rs["miner"])
-        if rh["qualification_failed"] or rs["qualification_failed"]: rc = 2
+        if any(x and x.get("qualification_failed") for x in (rs, rh)): rc = 2
     except QualificationFailure as e:
         open(os.path.join(a.out, "QUALIFICATION_FAILED.txt"), "w").write(str(e) + "\n"); rc = 2
     except Exception as e:

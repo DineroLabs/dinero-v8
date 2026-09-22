@@ -370,3 +370,33 @@ Scope: single client, single peer, Release build, idle M4 Max; per-block figures
 gaps between B's height changes at 250 ms sampling; cold means B never saw the transactions before the
 block. The small-host equivalent comes from run 35734908253's artifact (spawn-timed harness), to be
 assessed by its receipts, not its badge.
+
+
+### 8.14 Small-node class re-measured from process spawn (run 35734908253 on 7f28da4ae; evidence `docs/benchmarks/load/2026-09-22-old-ubuntu-2core-spawn/`)
+
+Assessed from the spawn timestamps and startup-gap receipts, not the badge (that workflow version had no enforcement step).
+
+**W2 catch-up, 2 blocks × 8 cold Auth proofs:** tip reached **36.6 s after process spawn**. The RPC server
+only became ready 19.3 s after spawn, by which time B had already validated 1 of the 2 blocks; the
+one observed inter-block gap was 17.3 s. So the earlier "17.3 s" was one subsequent block interval, and the
+complete restart-to-tip time for two cold blocks is 36.6 s (≈18 s per cold 8-proof block on this host).
+**New finding:** on the small host the RPC server is unavailable for the whole startup validation; a restarting
+node answers no RPC for 19 s here. B CPU 93% of one core; no failure counters.
+
+**W3 reorg, B's 1 block vs A's 2 blocks with 16 cold proofs:** converged **36.6 s after spawn**, and it had
+already converged when the RPC became ready (36.6 s): the entire reorg with cold proofs ran before
+any RPC could be served. No REORG ABORT, no failure counters.
+
+**Hostile (240 s):** proof lanes 0 of 498 accepted (all `proof-invalid`), ciphertext controls
+124 of 124 accepted (expected); 0 transport/protocol errors.
+
+| cold 8-proof block, old design, spawn-timed | M4 Max | small-node class |
+|---|---|---|
+| restart-to-tip, 3 blocks (M4) / 2 blocks (small) | 24.7 s | 36.6 s |
+| per cold block | 7.9 s | ≈ 18 s |
+| RPC unavailable after restart | 0.8 s | 19–37 s (until validation finished) |
+
+**Enforcement runs 35735288914 / 35735573316:** both failed in the hostile step with a clean lane (0 accepted,
+no failures) because of two defects of mine: the harness dereferenced the absent steady result in hostile-only
+mode, and the workflow's exit-code capture never ran under the shell's exit-on-error. Both fixed; the
+enforcement run that follows is the first one whose green badge can mean anything.

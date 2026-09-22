@@ -1,0 +1,10 @@
+Linux runnervmlun5p 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+4
+CPU(s):                                  4
+Model name:                              AMD EPYC 7763 64-Core Processor
+Thread(s) per core:                      2
+Core(s) per socket:                      2
+               total        used        free      shared  buff/cache   available
+Mem:           15989        1323        9862          46        5197       14666
+Swap:           3071           0        3071
+7f28da4aed911780c0c80397242c4f3b6a43ec96
