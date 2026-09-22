@@ -1,3 +1,4 @@
+#include "consensus/release_profile.h"
 #include "daemon/services/p2p_service.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/services/config_service.h"
@@ -2230,6 +2231,14 @@ bool P2PService::Start() {
             logger_interface_->warning("[P2PService] Chainstate not available - height will be 0 in handshakes");
         }
 
+        p2p_mgr_->set_release_cutoff_provider([this]() {
+            const auto& params = Params();
+            if (params.release_v8113_activation_height == UINT32_MAX) return false;
+            if (!consensus::ReleaseProfileConfigurationValid(params) || !chainstate_) return true;
+            const auto height = chainstate_->GetPublishedTipHeight();
+            return !height || consensus::ReleaseServiceCutoffActive(params, *height);
+        });
+
         // Wire service flags provider (prune-aware: NODE_NETWORK_LIMITED after snapshot)
         // Peers see our actual capability and won't request blocks we can't serve.
         {
@@ -2241,7 +2250,7 @@ bool P2PService::Start() {
             // circuit, 5 MB/s global, and 50 GB/day.
             p2p_mgr_->set_service_flags_provider([this, prune_svc,
                                                   bridge_enabled]() -> uint64_t {
-                uint64_t flags = ServiceFlags::NODE_UTREEXO;
+                uint64_t flags = ServiceFlags::NODE_UTREEXO | ServiceFlags::NODE_COMPACT_TIMING_V1;
                 if (bridge_enabled) {
                     flags |= ServiceFlags::NODE_UTREEXO_BRIDGE;
                 }

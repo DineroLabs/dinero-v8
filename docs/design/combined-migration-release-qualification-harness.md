@@ -406,6 +406,34 @@ Run standalone with
   through phase 2's own real `ok`/`ready` success condition, confirming it
   evaluates false — not a bare Python constant comparison.
 
+## RPC pacing and failure evidence (2026-09-22)
+
+Combined qualification run `35688659665` passed migration, shielded/Utreexo
+equivalence, activation, restart/reorg, spend rejection and both maturity
+template assertions, then failed with `Broken pipe` while requesting the height
+before mining the final mature block. Its artifact omitted daemon output, so it
+cannot establish the original failure's server-side cause conclusively.
+
+The harness now shares one 25-request/second budget across its ordinary RPC,
+expected-error RPC and PoW-miner calls. This keeps rapid maturity-block setup
+below HttpRpcServer's 50-request/second admission limit. The server applies that
+limit before reading a request; its early close can surface as a transport error
+instead of HTTP 429. An isolated Linux diagnostic on an older binary reproduced
+this mechanism: a 1 ms header/body scheduling gap produced 538 connection resets
+in 700 unpaced requests; all 250 paced requests succeeded. The process remained
+alive and stopped cleanly. This diagnostic is not qualification of the combined
+candidate or proof of the original CI run's precise scheduling.
+
+Transport failures still fail immediately; no new retry, weaker assertion or
+longer test deadline was added. Checks against all three actual helper paths
+confirm their shared budget, fatal single-attempt transport errors and rejection
+of unexpected RPC success. Removing pacing makes the interval check fail.
+
+Every run also preserves each started daemon's explicit stdout/stderr log in
+`evidence/.../daemon-logs/`, including failed runs. Wallet files, cookies and other
+datadir contents are excluded. Evidence-copy failures continue to fail the test
+and retain the working directory. Fresh full Linux qualification is required.
+
 ## CI wiring
 
 `tests/integration/CMakeLists.txt` registers `CombinedMigrationReleaseQualification`

@@ -161,6 +161,22 @@ def cookie_for(datadir: Path) -> str:
 # headroom over the measured cost for slower CI hardware.
 RPC_TIMEOUT_SECONDS = 180
 
+# Share one request budget across urllib and the real PoW miner. HttpRpcServer
+# admits 50 connections/sec (100-token burst) before reading the HTTP request;
+# exceeding it can surface as a Linux broken pipe/reset instead of HTTP 429.
+# This is lifecycle qualification, not an RPC saturation test. Pace submissions
+# below that limit without retrying transport failures or changing assertions.
+RPC_REQUEST_INTERVAL_SECONDS = 0.04
+_next_rpc_at = 0.0
+
+
+def pace_rpc():
+    global _next_rpc_at
+    delay = _next_rpc_at - time.monotonic()
+    if delay > 0:
+        time.sleep(delay)
+    _next_rpc_at = time.monotonic() + RPC_REQUEST_INTERVAL_SECONDS
+
 
 def rpc(which, method, params=None, _retry=True):
     cookie = cookies[which]
@@ -172,6 +188,7 @@ def rpc(which, method, params=None, _retry=True):
          __import__("base64").b64encode(cookie.encode()).decode()},
     )
     try:
+        pace_rpc()
         with urllib.request.urlopen(request, timeout=RPC_TIMEOUT_SECONDS) as response:
             result = json.load(response)
     except urllib.error.HTTPError as exc:
@@ -210,6 +227,7 @@ def rpc_expect_error(which, method, params=None):
         {"Content-Type": "application/json", "Authorization": "Basic " +
          __import__("base64").b64encode(cookie.encode()).decode()},
     )
+    pace_rpc()
     with urllib.request.urlopen(request, timeout=RPC_TIMEOUT_SECONDS) as response:
         result = json.load(response)
     if result.get("error") in (None, False):
@@ -274,8 +292,7 @@ def start(which, extra=()):
     command = [str(DINEROD), "--regtest", f"--datadir={datadir}",
                f"--rpcport={p['rpc']}", f"--port={p['p2p']}", f"--wallet-socket-port={p['wallet']}",
                "--listen=1", "--utreexo=1", "--regtest-enforce-pow",
-               f"--consensus-shielded-compact-height={BOUNDARY_HEIGHT}",
-               f"--consensus-sixty-second-height={BOUNDARY_HEIGHT}",
+               f"--consensus-release-height={BOUNDARY_HEIGHT}",
                "--consensus-shielded-epoch-reset-height=1",
                "--consensus-shielded-spend-auth-height=2",
                "--consensus-state-commitment-height=3",
@@ -284,6 +301,12 @@ def start(which, extra=()):
     processes[which] = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
     wait(lambda: rpc_ready(which), timeout=120, desc=f"{which} RPC readiness")
     cookies[which] = cookie_for(datadir)
+    info = rpc(which, "getconsensusinfo")
+    assert info["release_profile"] == "compact-v1-60s-v1", info
+    assert info["release_p2p_required_service"] == 1 << 29, info
+    for field in ("release_activation_height", "shielded_compact_activation_height",
+                  "sixty_second_activation_height"):
+        assert info[field] == BOUNDARY_HEIGHT, (field, info)
     if which not in addresses:
         addr = rpc(which, "wallet.getnewaddress")
         addresses[which] = addr["address"] if isinstance(addr, dict) else addr
@@ -315,9 +338,15 @@ def stop(which):
         raise RuntimeError(f"{which} exited nonzero on stop: {process.returncode}")
 
 
+class QualificationMiner(DineroCoinMiner):
+    def rpc_call(self, method, params=None):
+        pace_rpc()
+        return super().rpc_call(method, params)
+
+
 def miner_for(which):
     p = ports[which]
-    return DineroCoinMiner(
+    return QualificationMiner(
         rpc_url=f"http://127.0.0.1:{p['rpc']}/",
         cookie_path=str(WORK / which / ".cookie"),
         mining_address=addresses[which],
@@ -610,6 +639,26 @@ def compact_support_present():
     return True
 
 
+def qualify_release_cli():
+    cases = [([], "124", "requires REGTEST", []),
+             (["--testnet"], "124", "requires REGTEST", []),
+             (["--regtest"], "1", "invalid joint", [])]
+    cases += [(["--regtest"], value, "Invalid joint", []) for value in
+              ("", "0", "-1", "4294967295", "4294967296", "124x", "+124", " 124")]
+    cases += [(["--regtest", "--consensus-shielded-epoch-reset-height=1",
+                "--consensus-shielded-spend-auth-height=2"], "124",
+               "no individual", [option]) for option in
+              ("--consensus-sixty-second-height=124", "--consensus-shielded-compact-height=124")]
+    for index, (network, height, message, extra) in enumerate(cases):
+        result = subprocess.run([str(DINEROD), *network, *extra,
+            f"--datadir={WORK / ('release-cli-' + str(index))}",
+            f"--consensus-release-height={height}"],
+            capture_output=True, text=True, timeout=20)
+        output = result.stdout + result.stderr
+        assert result.returncode != 0 and message in output, (index, result.returncode, output)
+    print(f"[PASS] {len(cases)} joint release CLI isolation/bounds/conflict checks", flush=True)
+
+
 def parse_migrate_output(stdout: str) -> dict:
     """Parses migrate_shielded_datadir's fixed key=value line (tools/
     migrate_shielded_datadir.cpp's printf: 'ok=%s ready=%s selected_rows=%llu
@@ -676,6 +725,8 @@ def main():
     # amount unshield, which wallet.unshield's own doc says selects "the
     # smallest unspent confirmed shielded note with value >= amount",
     # deterministically leaves the larger note untouched.)
+    qualify_release_cli()
+
     print("[INFO] phase 1: nonempty pre-migration state (two notes, one consumed)", flush=True)
     start("original")
     mine("original", PREMINE_BLOCKS)
@@ -1288,6 +1339,15 @@ finally:
     _transcript_file.flush()
     evidence_preserved = False
     try:
+        # These are the explicit stdout/stderr files opened by start(), outside
+        # each datadir. Preserve them even on failure; WORK is not uploaded by
+        # CI. Do not copy wallets, cookies or other datadir contents.
+        daemon_logs = EVIDENCE / "daemon-logs"
+        daemon_logs.mkdir(exist_ok=True)
+        for name in ports:
+            log_path = WORK / f"{name}.log"
+            if log_path.is_file():
+                shutil.copy2(log_path, daemon_logs / log_path.name)
         shutil.copytree(EVIDENCE, permanent_evidence)
         evidence_preserved = True
         print(f"[INFO] evidence preserved at: {permanent_evidence}", flush=True)

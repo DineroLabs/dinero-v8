@@ -1,3 +1,5 @@
+#include "consensus/release_profile.h"
+#include "network/types.h"
 /**
  * Economics RPC Methods - Context-Aware (Week 2 Migration)
  *
@@ -426,6 +428,9 @@ din::Json rpc_context_getconsensusinfo(const ExecutionContext& ctx, const din::J
         result["target_spacing_height"] = static_cast<int64_t>(spacing_height);
         result["target_spacing_seconds"] = static_cast<int>(chainparams.TargetSpacing(spacing_height));
         result["sixty_second_activation_height"] = static_cast<int64_t>(chainparams.sixty_second_activation_height);
+        result["release_profile"] = dinero::consensus::kReleaseProfileV8113;
+        result["release_activation_height"] = static_cast<int64_t>(chainparams.release_v8113_activation_height);
+        result["release_p2p_required_service"] = static_cast<int64_t>(dinero::ServiceFlags::NODE_COMPACT_TIMING_V1);
         result["shielded_compact_supported"] = true;
         result["shielded_compact_proof_encoding"] = "DZE1/v1";
         result["shielded_compact_version"] = static_cast<int64_t>(dinero::Transaction::TX_VERSION_SHIELDED_V2);

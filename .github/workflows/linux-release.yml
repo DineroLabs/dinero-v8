@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to attach artifacts to (blank = artifacts only)'
+        description: 'Release tag to attach artifacts to (or set candidate_source for artifacts only)'
         required: false
         type: string
 
@@ -75,8 +75,8 @@ jobs:
             V="${{ inputs.release_tag }}"; V="${V#v}"
             TAG="${{ inputs.release_tag }}"
           else
-            V="0.0.0-dev"
-            TAG=""
+            echo "::error::Linux Release requires candidate_source (a full reviewed commit SHA) or release_tag, or must run on a release tag. No source/version was selected."
+            exit 1
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"

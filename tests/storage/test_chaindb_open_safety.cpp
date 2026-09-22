@@ -8,15 +8,19 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <condition_variable>
+#include <functional>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 #include <unistd.h>
 
@@ -152,6 +156,14 @@ std::vector<Case> Cases() {
         {"append_failure", {}},
         {"schema_write_failure", {}},
         {"missing_current", {}},
+        {"process_owner_without_file_lock", {}},
+        {"process_owner_preflight", {}},
+        {"process_owner_close", {}},
+        {"process_owner_failed_open", {}},
+        {"process_owner_move", {}},
+        {"process_owner_concurrent", {}},
+        {"process_owner_renamed_directory", {}},
+        {"process_owner_lock_retry", {}},
     };
 }
 
@@ -214,7 +226,145 @@ public:
     }
 };
 
+// Match the iOS Env's lack of file-lock exclusion while retaining the real
+// RocksDB engine and ChainDB open/close paths. No fake database or owner flag.
+class UnlockedEnv : public rocksdb::EnvWrapper {
+public:
+    UnlockedEnv() : EnvWrapper(rocksdb::Env::Default()) {}
+    std::function<void()> on_inspect, on_unlock;
+    bool fail_read = false;
+    unsigned fail_lock_attempts = 0;
+    unsigned lock_calls = 0, unlock_calls = 0;
+    rocksdb::Status LockFile(const std::string&, rocksdb::FileLock** lock) override {
+        ++lock_calls;
+        *lock = nullptr;
+        if (fail_lock_attempts) {
+            --fail_lock_attempts;
+            return rocksdb::Status::IOError("injected file lock failure");
+        }
+        *lock = reinterpret_cast<rocksdb::FileLock*>(new char);
+        return rocksdb::Status::OK();
+    }
+    rocksdb::Status UnlockFile(rocksdb::FileLock* lock) override {
+        ++unlock_calls;
+        if (on_unlock) on_unlock();
+        delete reinterpret_cast<char*>(lock);
+        return rocksdb::Status::OK();
+    }
+    rocksdb::Status FileExists(const std::string& path) override {
+        if (std::filesystem::path(path).filename() == "CURRENT") {
+            if (on_inspect) on_inspect();
+            if (fail_read) return rocksdb::Status::IOError("injected preflight failure");
+        }
+        return target()->FileExists(path);
+    }
+};
+
+int ProcessOwner(const std::string& name, const std::filesystem::path& root) {
+    const auto path = root / "database";
+    Seed(path, canonical, Version(4), {});
+    UnlockedEnv env, rival_env;
+    ChainDB db, rival;
+    db.setEnvForTesting(&env);
+    rival.setEnvForTesting(&rival_env);
+    std::vector<std::string> failures;
+    auto require = [&](bool ok, const char* message) { if (!ok) failures.emplace_back(message); };
+    const auto token = dinero::ChainWriteToken::CreateForTesting();
+    auto probe = [&] {
+        require(rival.init(path) != Status::Ok, "second owner admitted without a file lock");
+        // Close even a wrongly admitted owner before proceeding on a RED run.
+        rival.close();
+    };
+    if (name == "process_owner_lock_retry") {
+        env.fail_lock_attempts = 1;
+        require(db.init(path) == Status::Ok, "lock retry collided with its own process reservation");
+        require(env.lock_calls == 2, "lock failure/retry was not exercised");
+        probe();
+    } else if (name == "process_owner_failed_open") {
+        env.fail_read = true;
+        require(db.init(path) != Status::Ok, "failed preflight accepted");
+        require(env.lock_calls == 1 && env.unlock_calls == 1, "failure leaked underlying lock");
+        require(rival.init(path) == Status::Ok, "failed open leaked process ownership");
+        rival.close();
+        env.fail_read = false;
+        require(db.init(path) == Status::Ok, "failed object could not reopen");
+    } else if (name == "process_owner_concurrent") {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool inspecting = false, release = false, finished = false;
+        env.on_inspect = [&] {
+            std::unique_lock<std::mutex> lock(mutex);
+            inspecting = true; cv.notify_one();
+            cv.wait(lock, [&] { return release; });
+        };
+        Status opened = Status::Internal;
+        std::thread first([&] {
+            opened = db.init(path);
+            { std::lock_guard<std::mutex> lock(mutex); finished = true; }
+            cv.notify_one();
+        });
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            cv.wait(lock, [&] { return inspecting || finished; });
+        }
+        require(inspecting, "concurrent open did not reach the real inspection barrier");
+        probe();
+        { std::lock_guard<std::mutex> lock(mutex); release = true; }
+        cv.notify_one(); first.join();
+        env.on_inspect = {};
+        require(opened == Status::Ok, "first concurrent owner refused");
+    } else {
+        if (name == "process_owner_preflight") env.on_inspect = probe;
+        if (name == "process_owner_renamed_directory") {
+            env.on_inspect = [&] {
+                const auto renamed = root / "renamed";
+                std::filesystem::rename(path, renamed);
+                require(rival.init(renamed) != Status::Ok, "renamed directory admitted second owner");
+                rival.close();
+                std::filesystem::rename(renamed, path);
+            };
+        }
+        require(db.init(path) == Status::Ok, "first owner refused");
+        env.on_inspect = {};
+        if (name == "process_owner_without_file_lock") {
+            probe();
+            const auto alias = root / "alias";
+            std::filesystem::create_directory_symlink(path, alias);
+            require(rival.init(alias) != Status::Ok, "alias admitted second owner");
+            rival.close();
+        } else if (name == "process_owner_close") {
+            env.on_unlock = probe;
+            db.close();
+            env.on_unlock = {};
+            require(env.unlock_calls == 1, "close did not run the ownership probe");
+        } else if (name == "process_owner_move") {
+            ChainDB moved(std::move(db));
+            db.close();
+            probe();
+            require(moved.putUtreexoMeta(token, "owner_move", "preserved") == Status::Ok,
+                    "move lost writable database");
+            ChainDB assigned;
+            assigned.setEnvForTesting(&env);
+            require(assigned.init(root / "other") == Status::Ok, "independent store refused");
+            assigned = std::move(moved);
+            moved.close();
+            require(rival.init(root / "other") == Status::Ok, "move assignment leaked former owner");
+            rival.close(); probe();
+            assigned.close();
+        }
+    }
+    db.close();
+    require(rival.init(path) == Status::Ok, "completed close did not permit next owner");
+    const auto identity = rival.getUtreexoMeta("open_safety_identity");
+    require(identity.ok() && identity.value() == "utreexo", "ownership changed stored records");
+    rival.close();
+    for (const auto& message : failures) std::cout << "FAIL " << name << ": " << message << '\n';
+    if (failures.empty()) std::cout << "PASS " << name << '\n';
+    return failures.empty() ? 0 : 1;
+}
+
 int Special(const std::string& name, const std::filesystem::path& root) {
+    if (name.rfind("process_owner_", 0) == 0) return ProcessOwner(name, root);
     auto names = canonical;
     std::optional<std::string> schema = Version(4);
     if (name == "append_failure") names.pop_back();

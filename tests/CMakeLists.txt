@@ -3601,6 +3601,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_p2p_manager_ts1_integration.cpp)
   add_executable(test_p2p_manager_ts1_integration
     tests/p2p/test_p2p_manager_ts1_integration.cpp
+    tests/p2p/test_release_peer_cutoff.cpp
     src/daemon/p2p_manager.cpp
     src/network/relay_hints_eviction.cpp
     src/network/relay_registry.cpp # Required by NAT C3 relay registry member in P2PManager
@@ -12083,6 +12084,59 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_reorg_candidate_eligibility.c
   add_test(NAME ReorgCandidateEligibilityTest COMMAND test_reorg_candidate_eligibility)
 endif()
 
+# #806: forward-sync body-gap deferral (connect the available prefix, never abort into a gap).
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_forward_sync_activation_retry.cpp)
+  add_executable(test_forward_sync_activation_retry
+    tests/daemon/test_forward_sync_activation_retry.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/daemon_test_stubs.cpp
+    src/daemon/config.cpp
+  )
+  target_link_libraries(test_forward_sync_activation_retry PRIVATE
+    dinero_core dinero_chainstate dinero_consensus dinero_crypto RocksDB::rocksdb
+  )
+  link_zstd_if_needed(test_forward_sync_activation_retry)
+  if(APPLE)
+    target_link_libraries(test_forward_sync_activation_retry PRIVATE
+      "-framework Security" "-framework CoreFoundation")
+  endif()
+  target_include_directories(test_forward_sync_activation_retry PRIVATE
+    ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+  add_test(NAME ForwardSyncActivationRetry COMMAND test_forward_sync_activation_retry)
+  set_tests_properties(ForwardSyncActivationRetry PROPERTIES
+    LABELS "daemon;consensus;regression;mandatory" TIMEOUT 30)
+endif()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_forward_sync_body_gap.cpp)
+  add_executable(test_forward_sync_body_gap
+    tests/consensus/test_forward_sync_body_gap.cpp
+    src/common/logger.cpp
+    src/common/json_logger.cpp
+  )
+  target_link_libraries(test_forward_sync_body_gap PRIVATE
+    dinero_core
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    secp256k1
+  )
+  link_zstd_if_needed(test_forward_sync_body_gap)
+  target_include_directories(test_forward_sync_body_gap PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  if(APPLE)
+    target_link_libraries(test_forward_sync_body_gap PRIVATE
+      "-framework Security"
+      "-framework CoreFoundation"
+    )
+  endif()
+  add_test(NAME ForwardSyncBodyGapTest COMMAND test_forward_sync_body_gap)
+  set_tests_properties(ForwardSyncBodyGapTest PROPERTIES LABELS "consensus;mandatory")
+endif()
+
 # #803: fork-acceptance policy (bad-fork-prior-to-checkpoint + fork-aware overlay
 # depth cap). Header-only rules; no chainstate needed.
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_fork_acceptance_policy.cpp)
@@ -13449,6 +13503,7 @@ set_tests_properties(RpcRegistryRestartCycle PROPERTIES
 add_executable(test_shielded_resource_limits
   tests/consensus/test_shielded_resource_limits.cpp
   tests/consensus/test_compact_activation.cpp
+  tests/consensus/test_release_profile.cpp
   src/p2p/structural_validator.cpp)
 target_link_libraries(test_shielded_resource_limits PRIVATE
   GTest::gtest_main dinero_core dinero_shielded)

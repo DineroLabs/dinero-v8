@@ -758,6 +758,15 @@ public:
     // CRITICAL FIX (Nov 7, 2025): Query ChainDB (RocksDB), not legacy blockchain_ (SQLite)
     // RocksDB is the source of truth; SQLite (ExplorerDB) is read-only analytics
     uint32_t getBlockHeight() const;
+
+    // Value snapshot for service policy. No bare active_tip_ read and no
+    // acquisition of activation_mutex_ on a networking thread.
+    std::optional<uint32_t> GetPublishedTipHeight() const {
+        std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        if (!published_tip_valid_) return std::nullopt;
+        return published_tip_height_;
+    }
+
     std::string getBestBlockHash() const;
 
     /**
@@ -1107,6 +1116,9 @@ private:
     // Storage-layout startup regression exercises the actual loader without
     // booting network/wallet services. No public runtime mutation API is added.
     friend struct ShieldedStateStartupTestAccess;
+    // Exercises production activation/candidate retry bookkeeping without a
+    // running P2P stack. No alternate activation implementation is used.
+    friend struct ActivationRetryTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};

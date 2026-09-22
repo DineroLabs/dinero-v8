@@ -375,6 +375,12 @@ bool BranchHasDataToConnectedBase(const CBlockIndex* pindex);
 // candidate side must have a local body before canonical state is disconnected.
 bool BranchHasDataToFork(const CBlockIndex* candidate, const CBlockIndex* active_tip);
 
+// #806: number of leading entries of a forward connect path (fork+1 .. candidate, in
+// connect order) whose bodies are locally present (BLOCK_HAVE_DATA). BLOCK_VALID_CHAIN on
+// a header-only entry is not evidence of a body, so this looks only at BLOCK_HAVE_DATA.
+// A forward extension may connect exactly this prefix now and must defer the rest.
+size_t ContiguousBodyPrefix(const std::vector<CBlockIndex*>& connect_path);
+
 // In-flight tracking
 void MarkBlockInFlight(const uint256& block_hash, uint64_t peer_id);
 void MarkBlockReceived(const uint256& block_hash);

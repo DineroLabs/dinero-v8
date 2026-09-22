@@ -138,6 +138,9 @@ namespace ServiceFlags {
     constexpr uint64_t NODE_RELAY          = 1ULL << 26;  // Willing to relay circuits for NAT'd peers
     constexpr uint64_t NODE_DINERO_V2      = 1ULL << 27;  // Speaks post-verack `dineroid` + addrv2
     constexpr uint64_t NODE_BEHIND_RELAY   = 1ULL << 28;  // Self is NAT'd; reach me via relay_hints
+    // Claims support for production v6/DZE1 and the height-aware 60-second
+    // ASERT/reward rules. Negotiation is not binary attestation or consensus.
+    constexpr uint64_t NODE_COMPACT_TIMING_V1 = 1ULL << 29;
 } // namespace ServiceFlags
 
 } // namespace dinero

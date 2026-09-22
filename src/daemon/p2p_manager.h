@@ -186,7 +186,13 @@ struct PeerInfo {
           via_relay(std::move(other.via_relay)),
           relay_quic_session(std::move(other.relay_quic_session)),
           relay_quic_options(std::move(other.relay_quic_options)),
-          lifetime_state(other.lifetime_state.load()) {}
+          lifetime_state(other.lifetime_state.load()),
+          compact_timing_capable(other.compact_timing_capable.load()),
+          release_handshake_complete(other.release_handshake_complete.load()) {}
+
+    // Published by the handshake; sweeps never inspect partially parsed fields.
+    std::atomic<bool> compact_timing_capable{false};
+    std::atomic<bool> release_handshake_complete{false};
 
     // Default constructor
     PeerInfo() = default;
@@ -510,6 +516,11 @@ public:
     // P2P sync fix: Set height provider for version handshake
     void set_height_provider(HeightProvider provider) { height_provider_ = provider; }
 
+    // Set before start(). Provider must use the locally validated chain tip.
+    void set_release_cutoff_provider(std::function<bool()> provider) {
+        release_cutoff_provider_ = std::move(provider);
+    }
+
     // Set service flags provider (prune-aware: NODE_NETWORK vs NODE_NETWORK_LIMITED)
     void set_service_flags_provider(ServiceFlagsProvider provider) { service_flags_provider_ = provider; }
     void set_user_agent(const std::string& user_agent);
@@ -782,6 +793,13 @@ public:
 #ifdef DINERO_TEST_BUILD
     // #373 fd-hygiene hooks: drive the private cleanup path and observe the
     // stored fd so tests can prove close-and-invalidate (no double-close).
+    bool test_send_peer_message(PeerInfo* peer, const P2PMessage& message) { return send_peer_message(peer, message); }
+    bool test_perform_handshake(PeerInfo* peer) { return perform_handshake(peer); }
+    void test_sweep_release_compatibility() { sweep_release_compatibility(); }
+    void test_process_message(const std::string& key, const P2PMessage& message) { process_message(key, message); }
+    void test_set_release_capability(const std::string& key, bool capable, bool complete = true);
+    void test_run_outbox() { outbox_loop(); }
+    void test_stop_outbox() { shutdown_requested_.store(true); outbox_cv_.notify_all(); }
     void test_cleanup_peer(const std::string& peer_address);
     int test_peer_socket_fd(const std::string& peer_address) const;  // -2 if absent
     void test_set_running(bool running);  // lets tests reach stop()'s close loop
@@ -935,6 +953,11 @@ private:
     PeerConnectedHandler peer_connected_handler_;
     PeerDisconnectedHandler peer_disconnected_handler_;
     PeerHeightUpdatedHandler peer_height_updated_handler_;
+    std::function<bool()> release_cutoff_provider_;
+    bool release_peer_allowed(const PeerInfo& peer) const;
+    bool check_release_handshake(PeerInfo* peer);
+    bool enforce_release_compatibility(const std::string& key);
+    void sweep_release_compatibility();
     HeightProvider height_provider_;  // P2P sync fix: Get chain height for version handshake
     ServiceFlagsProvider service_flags_provider_;  // Returns advertised service flags (prune-aware)
 
