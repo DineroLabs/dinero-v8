@@ -25,8 +25,10 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <vector>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -61,6 +63,194 @@ TEST(P2PManager_TS1_Integration, BasicStartStop) {
     // TS1 EXPECTATION: No crash, no use-after-free
     // If we reach here, basic lifecycle is TS1-compliant
     SUCCEED();
+}
+
+TEST(P2PManager_TS1_Integration, ShutdownSkipsQueuedOutboundDials) {
+    P2PManager manager(0);
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool first_dial_started = false;
+    bool release_first_dial = false;
+    std::atomic<int> attempts{0};
+
+    // These stand in for two unroutable bootstrap peers. The first dial is
+    // deliberately held until stop() has requested shutdown; the second must
+    // never be started after that request, even though it was already queued.
+    manager.test_set_connection_manager_dial(
+        [&](const std::string&, uint16_t) {
+            if (++attempts == 1) {
+                std::unique_lock<std::mutex> lock(gate_mutex);
+                first_dial_started = true;
+                gate_cv.notify_all();
+                gate_cv.wait(lock, [&] { return release_first_dial; });
+            }
+            return false;
+        });
+    manager.add_seed_node("198.51.100.42", 20999);
+    manager.add_seed_node("203.0.113.42", 20999);
+    ASSERT_TRUE(manager.start());
+
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        entered = gate_cv.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return first_dial_started; });
+    }
+    if (!entered) {
+        manager.stop();
+        FAIL() << "connection manager never started its first outbound dial";
+        return;
+    }
+
+    std::thread stopper([&] { manager.stop(); });
+    const auto stop_deadline = std::chrono::steady_clock::now() +
+                               std::chrono::seconds(3);
+    while (manager.is_running() && std::chrono::steady_clock::now() < stop_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const bool stop_requested = !manager.is_running();
+    {
+        std::lock_guard<std::mutex> lock(gate_mutex);
+        release_first_dial = true;
+    }
+    gate_cv.notify_all();
+    stopper.join();
+
+    EXPECT_TRUE(stop_requested);
+    EXPECT_EQ(attempts.load(), 1) << "queued unreachable peer was dialed during shutdown";
+}
+
+TEST(P2PManager_TS1_Integration, ActiveOutboundConnectWaitCancelsOnStop) {
+    P2PManager manager(0);
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool poll_entered = false;
+    std::atomic<int> polls{0};
+    std::atomic<int> connect_result{999};
+
+    // A permanently unwritable socket models an in-flight TCP connect. The
+    // real wait helper supplies each select() timeout, making this deterministic
+    // without relying on the host network to black-hole a SYN packet.
+    manager.test_set_outbound_connect_poll(
+        [&](int, std::chrono::milliseconds timeout) {
+            ++polls;
+            {
+                std::lock_guard<std::mutex> lock(gate_mutex);
+                poll_entered = true;
+            }
+            gate_cv.notify_all();
+            std::this_thread::sleep_for(timeout);
+            return 0;
+        });
+    ASSERT_TRUE(manager.start());
+    std::thread waiter([&] {
+        connect_result.store(manager.test_wait_for_outbound_connect());
+    });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        entered = gate_cv.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return poll_entered; });
+    }
+    const auto stop_start = std::chrono::steady_clock::now();
+    manager.stop();
+    waiter.join();
+    const auto stop_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - stop_start);
+
+    EXPECT_TRUE(entered);
+    EXPECT_LT(stop_ms.count(), 1500) << "active connect waited through its 5s timeout";
+    EXPECT_EQ(connect_result.load(), -1);
+    EXPECT_LE(polls.load(), 2);
+}
+
+TEST(P2PManager_TS1_Integration, NetworkDisableCancelsActiveAndQueuedDials) {
+    P2PManager manager(0);
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool poll_entered = false;
+    bool first_dial_done = false;
+    std::atomic<int> attempts{0};
+    std::atomic<int> first_result{999};
+    manager.test_set_outbound_connect_poll(
+        [&](int, std::chrono::milliseconds timeout) {
+            {
+                std::lock_guard<std::mutex> lock(gate_mutex);
+                poll_entered = true;
+            }
+            gate_cv.notify_all();
+            std::this_thread::sleep_for(timeout);
+            return 0;
+        });
+    manager.test_set_connection_manager_dial(
+        [&](const std::string&, uint16_t) {
+            if (++attempts == 1) {
+                first_result.store(manager.test_wait_for_outbound_connect());
+                {
+                    std::lock_guard<std::mutex> lock(gate_mutex);
+                    first_dial_done = true;
+                }
+                gate_cv.notify_all();
+            }
+            return false;
+        });
+    manager.add_seed_node("198.51.100.42", 20999);
+    manager.add_seed_node("203.0.113.42", 20999);
+    ASSERT_TRUE(manager.start());
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        entered = gate_cv.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return poll_entered; });
+    }
+    const auto disable_start = std::chrono::steady_clock::now();
+    manager.set_network_active(false);
+    bool completed_before_stop = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        completed_before_stop = gate_cv.wait_for(lock, std::chrono::milliseconds(600),
+                                                 [&] { return first_dial_done; });
+    }
+    const auto disable_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - disable_start);
+    // Leave the manager running long enough to reveal a wrongly attempted
+    // second queued seed; stop() must not be what cancels this pass.
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    const int attempts_while_disabled = attempts.load();
+    manager.stop();
+
+    EXPECT_TRUE(entered);
+    EXPECT_TRUE(completed_before_stop);
+    EXPECT_LT(disable_ms.count(), 600);
+    EXPECT_EQ(first_result.load(), -1);
+    EXPECT_EQ(attempts_while_disabled, 1);
+}
+
+TEST(P2PManager_TS1_Integration, OutboundDialPassRunsNormallyWithoutStop) {
+    P2PManager manager(0);
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    std::atomic<int> attempts{0};
+    manager.test_set_connection_manager_dial(
+        [&](const std::string&, uint16_t) {
+            {
+                std::lock_guard<std::mutex> lock(gate_mutex);
+                ++attempts;
+            }
+            gate_cv.notify_all();
+            return false;
+        });
+    manager.add_seed_node("198.51.100.42", 20999);
+    manager.add_seed_node("203.0.113.42", 20999);
+    ASSERT_TRUE(manager.start());
+    bool both_attempted = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        both_attempted = gate_cv.wait_for(lock, std::chrono::seconds(3),
+                                          [&] { return attempts.load() >= 2; });
+    }
+    manager.stop();
+    EXPECT_TRUE(both_attempted);
 }
 
 TEST(P2PManager_TS1_Integration, AnchorsRemainDistinctFromDynamicSeeds) {

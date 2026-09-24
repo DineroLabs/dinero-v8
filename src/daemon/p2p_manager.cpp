@@ -4684,7 +4684,8 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
 
 bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
                                       bool is_feeler) {
-    if (!network_active_.load(std::memory_order_acquire)) {
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) {
         return false;
     }
 
@@ -4795,9 +4796,20 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
     // Create outbound connection
     int socket_fd = create_client_socket(address, port);
     if (socket_fd < 0) {
-        std::cerr << "Failed to connect to " << peer_key << std::endl;
-        mark_peer_address_attempt(resolved_ip, port, false);
+        if (!shutdown_requested_.load(std::memory_order_acquire) &&
+            network_active_.load(std::memory_order_acquire)) {
+            std::cerr << "Failed to connect to " << peer_key << std::endl;
+            mark_peer_address_attempt(resolved_ip, port, false);
+        }
         // Remove from connecting set on failure
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connecting_peers_.erase(peer_key);
+        release_feeler();
+        return false;
+    }
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) {
+        close_socket(socket_fd);
         std::lock_guard<std::mutex> lock(peers_mutex_);
         connecting_peers_.erase(peer_key);
         release_feeler();
@@ -5047,8 +5059,18 @@ void P2PManager::connection_manager_loop() {
 
         // TS2 COMPLIANT: Perform blocking connect operations outside lock
         for (const auto& seed : seeds_to_connect) {
+            if (shutdown_requested_.load(std::memory_order_acquire)) break;
+            if (!network_active_.load(std::memory_order_acquire)) break;
+#ifdef DINERO_TEST_BUILD
+            if (test_connection_manager_dial_) {
+                test_connection_manager_dial_(seed.first, seed.second);
+                continue;
+            }
+#endif
             connect_to_peer(seed.first, seed.second);
         }
+        if (shutdown_requested_.load(std::memory_order_acquire)) break;
+        if (!network_active_.load(std::memory_order_acquire)) continue;
 
         // Bitcoin-style feeler: once durable outbound capacity is full, use
         // one extra short-lived connection every two minutes to test a NEW
@@ -6896,7 +6918,38 @@ int P2PManager::create_listen_socket() {
     return socket_fd;
 }
 
+int P2PManager::wait_for_outbound_connect(int socket_fd) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!shutdown_requested_.load(std::memory_order_acquire) &&
+           network_active_.load(std::memory_order_acquire)) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) return 0;
+        const auto slice = std::min(remaining, std::chrono::microseconds(100000));
+        int result = 0;
+#ifdef DINERO_TEST_BUILD
+        if (test_outbound_connect_poll_) {
+            result = test_outbound_connect_poll_(
+                socket_fd, std::chrono::duration_cast<std::chrono::milliseconds>(slice));
+        } else
+#endif
+        {
+            fd_set write_fds;
+            FD_ZERO(&write_fds);
+            FD_SET(socket_fd, &write_fds);
+            struct timeval timeout;
+            timeout.tv_sec = static_cast<long>(slice.count() / 1000000);
+            timeout.tv_usec = static_cast<long>(slice.count() % 1000000);
+            result = select(socket_fd + 1, nullptr, &write_fds, nullptr, &timeout);
+        }
+        if (result != 0) return result;
+    }
+    return -1;
+}
+
 int P2PManager::create_client_socket(const std::string& address, uint16_t port) {
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) return -1;
     if (IsOnionAddress(address)) {
         std::string proxy_host;
         uint16_t proxy_port = 0;
@@ -6972,17 +7025,18 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
         #endif
         
         // Wait for connection with 5 second timeout
-        fd_set write_fds;
-        FD_ZERO(&write_fds);
-        FD_SET(socket_fd, &write_fds);
-        
-        struct timeval timeout;
-        timeout.tv_sec = 5;
-        timeout.tv_usec = 0;
-        
-        result = select(socket_fd + 1, NULL, &write_fds, NULL, &timeout);
+        result = wait_for_outbound_connect(socket_fd);
         if (result <= 0) {
-            std::cerr << "Connection timeout to " << address << ":" << port << std::endl;
+            if (!shutdown_requested_.load(std::memory_order_acquire) &&
+                network_active_.load(std::memory_order_acquire)) {
+                std::cerr << "Connection timeout to " << address << ":" << port << std::endl;
+            }
+            close_socket(socket_fd);
+            return -1;
+        }
+
+        if (shutdown_requested_.load(std::memory_order_acquire) ||
+            !network_active_.load(std::memory_order_acquire)) {
             close_socket(socket_fd);
             return -1;
         }
@@ -7004,6 +7058,12 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
         flags = fcntl(socket_fd, F_GETFL, 0);
         fcntl(socket_fd, F_SETFL, flags & ~O_NONBLOCK);
     #endif
+
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) {
+        close_socket(socket_fd);
+        return -1;
+    }
     
     return socket_fd;
 }
