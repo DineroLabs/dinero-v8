@@ -49,6 +49,103 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2851"/>
+        <source>Overview</source>
+        <translation>Übersicht</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3110"/>
+        <source>Wallet</source>
+        <translation>Wallet</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3179"/>
+        <source>Covenants</source>
+        <translation>Covenants</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3513"/>
+        <source>Send</source>
+        <translation>Senden</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3575"/>
+        <source>Receive</source>
+        <translation>Empfangen</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3625"/>
+        <source>Transactions</source>
+        <translation>Transaktionen</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3680"/>
+        <source>UTXOs</source>
+        <translation>UTXOs</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3689"/>
+        <source>Hardware Wallet</source>
+        <translation>Hardware-Wallet</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3695"/>
+        <source>Pay/Collect</source>
+        <translation>Zahlen/Einziehen</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3709"/>
+        <source>Payments</source>
+        <translation>Zahlungen</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3715"/>
+        <source>Escrow</source>
+        <translation>Treuhand</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3721"/>
+        <source>Marketplace</source>
+        <translation>Marktplatz</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3735"/>
+        <source>Liquidity Vault</source>
+        <translation>Liquiditäts-Vault</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3744"/>
+        <source>Pool</source>
+        <translation>Pool</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="3753"/>
+        <source>Shielded</source>
+        <translation>Abgeschirmt</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="4061"/>
+        <location filename="../src/mainwindow.cpp" line="4081"/>
+        <location filename="../src/mainwindow.cpp" line="4518"/>
+        <source>Mining</source>
+        <translation>Mining</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="4818"/>
+        <source>Utreexo Proofs</source>
+        <translation>Utreexo-Nachweise</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="4914"/>
+        <source>Peers</source>
+        <translation>Peers</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="4974"/>
+        <source>Template</source>
+        <translation>Vorlage</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="4990"/>
         <source>Language</source>
         <translation>Sprache</translation>

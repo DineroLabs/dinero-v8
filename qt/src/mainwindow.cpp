@@ -2848,7 +2848,7 @@ void MainWindow::setupUI() {
     
     overview->setMinimumHeight(1120); // Scroll area still handles smaller screens.
     overview->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
-    tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), "Overview");
+    tabs->addTab(makeScrollableTab(overview), navigationIcon(NavigationGlyph::Dashboard), tr("Overview"));
   }
 
   // === Wallet Tab ===
@@ -3107,7 +3107,7 @@ void MainWindow::setupUI() {
     
     wallet->setMinimumHeight(1800); // v7: must be tall enough for all sections to scroll
     wallet->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
-    tabs->addTab(makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), "Wallet");
+    tabs->addTab(makeScrollableTab(wallet), navigationIcon(NavigationGlyph::Wallet), tr("Wallet"));
   }
 
   // === Contracts Tab (Phase 4) ===
@@ -3176,7 +3176,7 @@ void MainWindow::setupUI() {
     lblInfo->setStyleSheet("color: #888; font-size: 11px; padding: 8px;");
     layout->addWidget(lblInfo);
 
-    tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), "Covenants");
+    tabs->addTab(makeScrollableTab(contracts), navigationIcon(NavigationGlyph::Document), tr("Covenants"));
   }
 
   // === Send Tab ===
@@ -3510,7 +3510,7 @@ void MainWindow::setupUI() {
     
     layout->addStretch();
     
-    tabs->addTab(makeScrollableTab(sendPage), navigationIcon(NavigationGlyph::Send), "Send");
+    tabs->addTab(makeScrollableTab(sendPage), navigationIcon(NavigationGlyph::Send), tr("Send"));
   }
   
   // === Receive Tab (HD Address List) ===
@@ -3572,7 +3572,7 @@ void MainWindow::setupUI() {
     });
     layout->addWidget(btnLoadAllAddresses_);
 
-    tabs->addTab(makeScrollableTab(receive), navigationIcon(NavigationGlyph::Receive), "Receive");
+    tabs->addTab(makeScrollableTab(receive), navigationIcon(NavigationGlyph::Receive), tr("Receive"));
   }
   
   // === Transactions Tab (History) ===
@@ -3622,7 +3622,7 @@ void MainWindow::setupUI() {
     // Auto-load transaction history after 5 seconds
     QTimer::singleShot(5000, this, &MainWindow::loadTransactionHistory);
     
-    tabs->addTab(transactions, navigationIcon(NavigationGlyph::Transactions), "Transactions");
+    tabs->addTab(transactions, navigationIcon(NavigationGlyph::Transactions), tr("Transactions"));
   }
   
   // === UTXOs Tab (Advanced) ===
@@ -3677,7 +3677,7 @@ void MainWindow::setupUI() {
     pageLayout->addWidget(btnNextUtxoPage_);
     layout->addLayout(pageLayout);
     
-    tabs->addTab(utxos, navigationIcon(NavigationGlyph::Link), "UTXOs");
+    tabs->addTab(utxos, navigationIcon(NavigationGlyph::Link), tr("UTXOs"));
   }
 
   // === Hardware Wallet Tab (Production-Ready) ===
@@ -3686,13 +3686,13 @@ void MainWindow::setupUI() {
     hardwareWalletWidget_ = new HardwareWalletWidget(rpc_);
     connect(hardwareWalletWidget_, &HardwareWalletWidget::transactionBroadcasted,
             this, &MainWindow::handleHardwareWalletBroadcast);
-    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), "Hardware Wallet");
+    tabs->addTab(hardwareWalletWidget_, navigationIcon(NavigationGlyph::Hardware), tr("Hardware Wallet"));
   }
 
   // === DPI Pay/Collect Tab ===
   {
     dpiWidget_ = new DpiWidget(rpc_, this);
-    tabs->addTab(dpiWidget_, navigationIcon(NavigationGlyph::Card), "Pay/Collect");
+    tabs->addTab(dpiWidget_, navigationIcon(NavigationGlyph::Card), tr("Pay/Collect"));
   }
 
 #ifdef DIN_EXPERIMENTAL_FEATURES
@@ -3706,19 +3706,19 @@ void MainWindow::setupUI() {
   // === Payments Tab ===
   {
     paymentsWidget_ = new PaymentsWidget(rpc_, ws_, this);
-    tabs->addTab(paymentsWidget_, navigationIcon(NavigationGlyph::Card), "Payments");
+    tabs->addTab(paymentsWidget_, navigationIcon(NavigationGlyph::Card), tr("Payments"));
   }
 
   // === Escrow Tab ===
   {
     escrowWidget_ = new EscrowWidget(rpc_, ws_, this);
-    tabs->addTab(escrowWidget_, navigationIcon(NavigationGlyph::Document), "Escrow");
+    tabs->addTab(escrowWidget_, navigationIcon(NavigationGlyph::Document), tr("Escrow"));
   }
 
   // === Marketplace Tab ===
   {
     marketplaceWidget_ = new MarketplaceWidget(rpc_, ws_, this);
-    tabs->addTab(marketplaceWidget_, navigationIcon(NavigationGlyph::Transactions), "Marketplace");
+    tabs->addTab(marketplaceWidget_, navigationIcon(NavigationGlyph::Transactions), tr("Marketplace"));
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -3732,7 +3732,7 @@ void MainWindow::setupUI() {
   // Explicit operator/developer builds may opt in at configure time.
   {
     vaultPanel_ = new VaultPanel(rpc_, this);
-    tabs->addTab(vaultPanel_, navigationIcon(NavigationGlyph::Shield), "Liquidity Vault");
+    tabs->addTab(vaultPanel_, navigationIcon(NavigationGlyph::Shield), tr("Liquidity Vault"));
   }
 #endif
 
@@ -3741,7 +3741,7 @@ void MainWindow::setupUI() {
   // and contributor table together exceed a laptop viewport.
   {
     poolPanel_ = new PoolPanel(rpc_, this);
-    tabs->addTab(makeScrollableTab(poolPanel_), navigationIcon(NavigationGlyph::Pool), "Pool");
+    tabs->addTab(makeScrollableTab(poolPanel_), navigationIcon(NavigationGlyph::Pool), tr("Pool"));
   }
 
   // === Shielded Tab (Phase 5 — daemon shielded pool, gated by
@@ -3750,7 +3750,7 @@ void MainWindow::setupUI() {
   // banner; on regtest it is fully functional.
   {
     shieldedWidget_ = new ShieldedWidget(rpc_, this);
-    tabs->addTab(shieldedWidget_, navigationIcon(NavigationGlyph::Shield), "Shielded");
+    tabs->addTab(shieldedWidget_, navigationIcon(NavigationGlyph::Shield), tr("Shielded"));
   }
 
   // === ⚡ Lightning Network Tab (Phase 7) ===
@@ -3758,14 +3758,14 @@ void MainWindow::setupUI() {
   // REMOVED for L1 purity - uncomment on lightning-main branch only
   // {
   //   lightningWidget_ = new dinero::LightningWidget(rpc_, this);
-  //   tabs->addTab(lightningWidget_, "⚡ Lightning");
+  //   tabs->addTab(lightningWidget_, tr("⚡ Lightning"));
   // }
 
   // === Bridge Tab (DISABLED - Not ready for production) ===
   // TODO: Re-enable when custodial provider APIs are implemented
   // {
   //   bridgeWidget_ = new BridgeWidget(rpc_, ws_, this);
-  //   tabs->addTab(bridgeWidget_, "💱 Bridge");
+  //   tabs->addTab(bridgeWidget_, tr("💱 Bridge"));
   // }
 
   // === Explorer Tab ===
@@ -4058,7 +4058,7 @@ void MainWindow::setupUI() {
             throw std::runtime_error("QML failed to load");
         }
         
-        tabs->addTab(miningWidget_, navigationIcon(NavigationGlyph::Mining), "Mining");
+        tabs->addTab(miningWidget_, navigationIcon(NavigationGlyph::Mining), tr("Mining"));
         miningTabWidget_ = miningWidget_;
     } catch (...) {
         // Fallback to simple message if QML fails
@@ -4078,7 +4078,7 @@ void MainWindow::setupUI() {
         layout->addWidget(label);
         layout->addStretch();
         auto* miningPage = makeScrollableTab(mining);
-        tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
+        tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), tr("Mining"));
         miningTabWidget_ = miningPage;
     }
 #else
@@ -4515,7 +4515,7 @@ void MainWindow::setupUI() {
     setMiningOutputCinematicEnabled(false);
     
     auto* miningPage = makeScrollableTab(mining);
-    tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), "Mining");
+    tabs->addTab(miningPage, navigationIcon(NavigationGlyph::Mining), tr("Mining"));
     miningTabWidget_ = miningPage;
 
     // Create embedded miner controller (in-process via dinero-solo-miner library)
@@ -4815,7 +4815,7 @@ void MainWindow::setupUI() {
     layout->addLayout(grid);
     layout->addStretch();
 
-    const int bridgeTabIndex = tabs->addTab(makeScrollableTab(bridge), navigationIcon(NavigationGlyph::Proof), "Utreexo Proofs");
+    const int bridgeTabIndex = tabs->addTab(makeScrollableTab(bridge), navigationIcon(NavigationGlyph::Proof), tr("Utreexo Proofs"));
     tabs->setTabVisible(bridgeTabIndex, false);  // Advanced diagnostics; surfaced on Overview.
   }
 
@@ -4911,7 +4911,7 @@ void MainWindow::setupUI() {
     btnLayout->addStretch();
     layout->addLayout(btnLayout);
 
-    const int peersTabIndex = tabs->addTab(makeScrollableTab(peers), navigationIcon(NavigationGlyph::Peers), "Peers");
+    const int peersTabIndex = tabs->addTab(makeScrollableTab(peers), navigationIcon(NavigationGlyph::Peers), tr("Peers"));
     tabs->setTabVisible(peersTabIndex, false);  // Advanced diagnostics; surfaced on Overview.
   }
 
@@ -4971,7 +4971,7 @@ void MainWindow::setupUI() {
     jsonLayout->addWidget(txtBlockTemplate_);
     layout->addWidget(jsonGroup);
 
-    const int templateTabIndex = tabs->addTab(makeScrollableTab(templateWidget), navigationIcon(NavigationGlyph::Template), "Template");
+    const int templateTabIndex = tabs->addTab(makeScrollableTab(templateWidget), navigationIcon(NavigationGlyph::Template), tr("Template"));
     tabs->setTabVisible(templateTabIndex, false);  // Advanced mining diagnostics; Mining tab covers normal use.
   }
 
