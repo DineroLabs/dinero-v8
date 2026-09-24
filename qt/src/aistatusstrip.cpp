@@ -20,7 +20,7 @@ void AiStatusStrip::setupUI()
     layout->setContentsMargins(12, 0, 12, 0);
     layout->setSpacing(0);
 
-    statusLabel_ = new QLabel("Connecting...");
+    statusLabel_ = new QLabel(tr("Connecting..."));
     statusLabel_->setStyleSheet(
         "QLabel { color: #868e96; font-size: 12px; font-weight: 500; "
         "font-family: \"Space Mono\", \"SF Mono\", Menlo, monospace; "

@@ -52,15 +52,15 @@ void EscrowWidget::setupUi()
     // ========== HEADER ==========
     auto* headerLayout = new QHBoxLayout();
 
-    titleLabel_ = new QLabel("<h2>⚖️ Smart Contract Escrow</h2>");
-    statsLabel_ = new QLabel("0 active contracts");
+    titleLabel_ = new QLabel(tr("<h2>⚖️ Smart Contract Escrow</h2>"));
+    statsLabel_ = new QLabel(tr("0 active contracts"));
     statsLabel_->setStyleSheet("color: #666; font-size: 12px;");
 
-    createButton_ = new QPushButton("➕ Create New Escrow");
+    createButton_ = new QPushButton(tr("➕ Create New Escrow"));
     createButton_->setStyleSheet("font-weight: bold; padding: 8px 16px;");
 
-    refreshButton_ = new QPushButton("🔄 Refresh");
-    exportButton_ = new QPushButton("📥 Export CSV");
+    refreshButton_ = new QPushButton(tr("🔄 Refresh"));
+    exportButton_ = new QPushButton(tr("📥 Export CSV"));
 
     headerLayout->addWidget(titleLabel_);
     headerLayout->addWidget(statsLabel_);
@@ -73,7 +73,7 @@ void EscrowWidget::setupUi()
 
     // ========== FILTER ==========
     auto* filterLayout = new QHBoxLayout();
-    filterLabel_ = new QLabel("Filter:");
+    filterLabel_ = new QLabel(tr("Filter:"));
     filterCombo_ = new QComboBox();
     filterCombo_->addItem("All Contracts", QVariant::fromValue(StatusFilter::All));
     filterCombo_->addItem("⏳ Pending", QVariant::fromValue(StatusFilter::Pending));
@@ -122,7 +122,7 @@ void EscrowWidget::setupUi()
     mainLayout->addWidget(contractsTable_);
 
     // ========== DETAILS PANEL ==========
-    detailsGroup_ = new QGroupBox("Selected Contract Details");
+    detailsGroup_ = new QGroupBox(tr("Selected Contract Details"));
     auto* detailsLayout = new QGridLayout();
 
     contractIdLabel_ = new QLabel("-");
@@ -137,14 +137,14 @@ void EscrowWidget::setupUi()
     currentHeightLabel_ = new QLabel("-");
     timeRemainingLabel_ = new QLabel("-");
 
-    copyAddressButton_ = new QPushButton("📋 Copy P2SH");
+    copyAddressButton_ = new QPushButton(tr("📋 Copy P2SH"));
     copyAddressButton_->setMaximumWidth(120);
-    showQRButton_ = new QPushButton("📱 Show QR");
+    showQRButton_ = new QPushButton(tr("📱 Show QR"));
     showQRButton_->setMaximumWidth(120);
     showQRButton_->setEnabled(false);
-    viewScriptButton_ = new QPushButton("📜 View Script");
+    viewScriptButton_ = new QPushButton(tr("📜 View Script"));
     viewScriptButton_->setMaximumWidth(120);
-    exportSighashButton_ = new QPushButton("💾 Export Sighash");
+    exportSighashButton_ = new QPushButton(tr("💾 Export Sighash"));
     exportSighashButton_->setMaximumWidth(140);
     exportSighashButton_->setEnabled(false);
 
@@ -152,44 +152,44 @@ void EscrowWidget::setupUi()
     timelockProgress_->setTextVisible(true);
 
     int row = 0;
-    detailsLayout->addWidget(new QLabel("<b>Contract ID:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Contract ID:</b>")), row, 0);
     detailsLayout->addWidget(contractIdLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>P2SH Address:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>P2SH Address:</b>")), row, 0);
     detailsLayout->addWidget(p2shAddressLabel_, row, 1);
     detailsLayout->addWidget(copyAddressButton_, row++, 2);
 
     // QR Code button row
     detailsLayout->addWidget(showQRButton_, row++, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Amount:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Amount:</b>")), row, 0);
     detailsLayout->addWidget(amountLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Status:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Status:</b>")), row, 0);
     detailsLayout->addWidget(statusLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Buyer:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Buyer:</b>")), row, 0);
     detailsLayout->addWidget(buyerLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Seller:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Seller:</b>")), row, 0);
     detailsLayout->addWidget(sellerLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Mediator:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Mediator:</b>")), row, 0);
     detailsLayout->addWidget(mediatorLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Lock TXID:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Lock TXID:</b>")), row, 0);
     detailsLayout->addWidget(lockTxidLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Refund Height:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Refund Height:</b>")), row, 0);
     detailsLayout->addWidget(refundHeightLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Current Height:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Current Height:</b>")), row, 0);
     detailsLayout->addWidget(currentHeightLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Time Remaining:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Time Remaining:</b>")), row, 0);
     detailsLayout->addWidget(timeRemainingLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Timelock Progress:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Timelock Progress:</b>")), row, 0);
     detailsLayout->addWidget(timelockProgress_, row++, 1, 1, 2);
 
     detailsLayout->addWidget(viewScriptButton_, row, 1);
@@ -201,18 +201,18 @@ void EscrowWidget::setupUi()
     // ========== ACTION BUTTONS ==========
     auto* actionLayout = new QHBoxLayout();
 
-    releaseButton_ = new QPushButton("✅ Release Funds to Seller");
+    releaseButton_ = new QPushButton(tr("✅ Release Funds to Seller"));
     releaseButton_->setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;");
     releaseButton_->setEnabled(false);
 
-    refundButton_ = new QPushButton("↩️ Refund to Buyer");
+    refundButton_ = new QPushButton(tr("↩️ Refund to Buyer"));
     refundButton_->setStyleSheet("background-color: #FF9800; color: white; font-weight: bold; padding: 10px;");
     refundButton_->setEnabled(false);
 
-    viewDetailsButton_ = new QPushButton("🔍 View Full Details");
+    viewDetailsButton_ = new QPushButton(tr("🔍 View Full Details"));
     viewDetailsButton_->setEnabled(false);
 
-    importSigsButton_ = new QPushButton("📥 Import Signatures");
+    importSigsButton_ = new QPushButton(tr("📥 Import Signatures"));
     importSigsButton_->setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 10px;");
     importSigsButton_->setEnabled(false);
 
@@ -224,7 +224,7 @@ void EscrowWidget::setupUi()
     mainLayout->addLayout(actionLayout);
 
     // ========== EVENT LOG ==========
-    auto* logLabel = new QLabel("<b>Event Log:</b>");
+    auto* logLabel = new QLabel(tr("<b>Event Log:</b>"));
     eventLog_ = new QTextEdit();
     eventLog_->setReadOnly(true);
     eventLog_->setMaximumHeight(150);
@@ -288,13 +288,13 @@ void EscrowWidget::onCreateEscrow()
 void EscrowWidget::onReleaseSelected()
 {
     if (selectedContractId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a contract first.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a contract first."));
         return;
     }
 
     auto reply = QMessageBox::question(
         this,
-        "Release Funds",
+        tr("Release Funds"),
         QString("Release funds to seller for contract %1?\n\n"
                 "This requires both buyer and seller signatures.\n"
                 "Have you verified the transaction details?")
@@ -314,7 +314,7 @@ void EscrowWidget::onReleaseSelected()
 void EscrowWidget::onRefundSelected()
 {
     if (selectedContractId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a contract first.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a contract first."));
         return;
     }
 
@@ -322,7 +322,7 @@ void EscrowWidget::onRefundSelected()
     if (currentBlockHeight_ < refundHeight) {
         QMessageBox::warning(
             this,
-            "Timelock Not Expired",
+            tr("Timelock Not Expired"),
             QString("Cannot refund yet. Current block: %1, Refund at: %2\n"
                     "Blocks remaining: %3")
                 .arg(currentBlockHeight_)
@@ -334,7 +334,7 @@ void EscrowWidget::onRefundSelected()
 
     auto reply = QMessageBox::question(
         this,
-        "Refund to Buyer",
+        tr("Refund to Buyer"),
         QString("Refund escrow to buyer for contract %1?\n\n"
                 "Timelock has expired. This will return funds to the buyer.")
             .arg(selectedContractId_),
@@ -375,7 +375,7 @@ void EscrowWidget::onCopyAddress()
     if (address != "-") {
         QApplication::clipboard()->setText(address);
         appendLog(QString("Copied P2SH address: %1").arg(address));
-        statusLabel_->setText("✅ Copied!");
+        statusLabel_->setText(tr("✅ Copied!"));
         QTimer::singleShot(2000, [this]() {
             statusLabel_->setText(formatStatus(statusLabel_->text()));
         });
@@ -395,7 +395,7 @@ void EscrowWidget::onExportCsv()
 
     QFile file(filename);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::critical(this, "Export Failed", "Could not open file for writing.");
+        QMessageBox::critical(this, tr("Export Failed"), tr("Could not open file for writing."));
         return;
     }
 
@@ -415,25 +415,25 @@ void EscrowWidget::onExportCsv()
 
     file.close();
     appendLog(QString("Exported %1 contracts to %2").arg(tableModel_->rowCount()).arg(filename));
-    QMessageBox::information(this, "Export Complete", QString("Exported %1 contracts successfully.").arg(tableModel_->rowCount()));
+    QMessageBox::information(this, tr("Export Complete"), QString("Exported %1 contracts successfully.").arg(tableModel_->rowCount()));
 }
 
 void EscrowWidget::onExportSighash()
 {
     QMessageBox::warning(
-        this, "Contract Signing Unavailable",
-        "Contract fund movement is disabled in v8.1.9. The daemon does not yet "
+        this, tr("Contract Signing Unavailable"),
+        tr("Contract fund movement is disabled in v8.1.9. The daemon does not yet "
         "produce a canonical signing package bound to the funding outpoint, action, "
-        "destination, amount, chain, and expiry.");
+        "destination, amount, chain, and expiry."));
     return;
 
     if (selectedContractId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a contract first.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a contract first."));
         return;
     }
 
     if (!contractsCache_.contains(selectedContractId_)) {
-        QMessageBox::warning(this, "Contract Not Found", "Contract details not loaded.");
+        QMessageBox::warning(this, tr("Contract Not Found"), tr("Contract details not loaded."));
         return;
     }
 
@@ -441,15 +441,15 @@ void EscrowWidget::onExportSighash()
     QString status = contract["status"].toString();
 
     if (status != "locked") {
-        QMessageBox::warning(this, "Invalid Status",
+        QMessageBox::warning(this, tr("Invalid Status"),
             "Contract must be locked to export sighash.\nCurrent status: " + status);
         return;
     }
 
     // Ask user: release or refund?
     QMessageBox msgBox(this);
-    msgBox.setWindowTitle("Export Sighash");
-    msgBox.setText("Export sighash for which action?");
+    msgBox.setWindowTitle(tr("Export Sighash"));
+    msgBox.setText(tr("Export sighash for which action?"));
     msgBox.setInformativeText("Release: Send funds to seller (requires 2 signatures)\n"
                               "Refund: Return funds to buyer (requires timelock expiry)");
     QPushButton* releaseBtn = msgBox.addButton("Release", QMessageBox::ActionRole);
@@ -466,7 +466,7 @@ void EscrowWidget::onExportSighash()
         // Check timelock for refund
         int refundHeight = contract["refund_time"].toInt();
         if (currentBlockHeight_ < refundHeight) {
-            QMessageBox::warning(this, "Timelock Not Expired",
+            QMessageBox::warning(this, tr("Timelock Not Expired"),
                 QString("Cannot refund yet. Timelock expires at block %1 (current: %2)")
                     .arg(refundHeight).arg(currentBlockHeight_));
             return;
@@ -540,13 +540,13 @@ void EscrowWidget::onExportSighash()
 void EscrowWidget::onImportSignatures()
 {
     QMessageBox::warning(
-        this, "Contract Broadcast Unavailable",
-        "Imported contract signatures cannot be broadcast in v8.1.9 because the "
-        "daemon cannot validate a bound signing package. No RPC was called.");
+        this, tr("Contract Broadcast Unavailable"),
+        tr("Imported contract signatures cannot be broadcast in v8.1.9 because the "
+        "daemon cannot validate a bound signing package. No RPC was called."));
     return;
 
     if (selectedContractId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a contract first.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a contract first."));
         return;
     }
 
@@ -561,7 +561,7 @@ void EscrowWidget::onImportSignatures()
 
     QFile file(filename);
     if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::critical(this, "Import Failed", "Could not read file.");
+        QMessageBox::critical(this, tr("Import Failed"), tr("Could not read file."));
         return;
     }
 
@@ -570,7 +570,7 @@ void EscrowWidget::onImportSignatures()
     file.close();
 
     if (error.error != QJsonParseError::NoError) {
-        QMessageBox::critical(this, "Parse Error",
+        QMessageBox::critical(this, tr("Parse Error"),
             QString("Invalid JSON: %1").arg(error.errorString()));
         return;
     }
@@ -581,7 +581,7 @@ void EscrowWidget::onImportSignatures()
     QStringList requiredFields = {"contract_id", "sighash", "is_refund"};
     for (const QString& field : requiredFields) {
         if (!sigData.contains(field)) {
-            QMessageBox::critical(this, "Invalid File",
+            QMessageBox::critical(this, tr("Invalid File"),
                 QString("Missing required field: %1").arg(field));
             return;
         }
@@ -589,7 +589,7 @@ void EscrowWidget::onImportSignatures()
 
     // Check contract ID matches
     if (sigData["contract_id"].toString() != selectedContractId_) {
-        auto reply = QMessageBox::question(this, "Contract ID Mismatch",
+        auto reply = QMessageBox::question(this, tr("Contract ID Mismatch"),
             QString("File is for contract: %1\nCurrently selected: %2\n\nContinue anyway?")
                 .arg(sigData["contract_id"].toString())
                 .arg(selectedContractId_),
@@ -604,8 +604,8 @@ void EscrowWidget::onImportSignatures()
     bool hasSellerSig = sigData.contains("sig_seller") && !sigData["sig_seller"].toString().isEmpty();
 
     if (!hasBuyerSig && !hasSellerSig) {
-        QMessageBox::critical(this, "No Signatures",
-            "No signatures found in file. Please sign the sighash first.");
+        QMessageBox::critical(this, tr("No Signatures"),
+            tr("No signatures found in file. Please sign the sighash first."));
         return;
     }
 
@@ -619,7 +619,7 @@ void EscrowWidget::onImportSignatures()
     if (hasBuyerSig) confirmMsg += QString("  ✓ Buyer: %1...\n").arg(sigData["sig_buyer"].toString().left(16));
     if (hasSellerSig) confirmMsg += QString("  ✓ Seller: %1...\n").arg(sigData["sig_seller"].toString().left(16));
 
-    auto reply = QMessageBox::question(this, "Confirm Broadcast",
+    auto reply = QMessageBox::question(this, tr("Confirm Broadcast"),
         confirmMsg, QMessageBox::Yes | QMessageBox::No);
 
     if (reply == QMessageBox::No) {
@@ -627,9 +627,9 @@ void EscrowWidget::onImportSignatures()
         return;
     }
 
-    QMessageBox::critical(this, "Contract Broadcast Disabled",
-                          "The signature package was parsed but not submitted. "
-                          "Bound contract signing is not available in v8.1.9.");
+    QMessageBox::critical(this, tr("Contract Broadcast Disabled"),
+                          tr("The signature package was parsed but not submitted. "
+                          "Bound contract signing is not available in v8.1.9."));
 }
 
 void EscrowWidget::onContractSelected(const QModelIndex& index)
@@ -744,7 +744,7 @@ void EscrowWidget::onRpcResult(const QString& method, const QJsonValue& result)
 
         QMessageBox::information(
             this,
-            "Contract Created",
+            tr("Contract Created"),
             QString("Escrow contract created successfully!\n\n"
                     "Contract ID: %1\n"
                     "P2SH Address: %2\n\n"
@@ -791,8 +791,8 @@ void EscrowWidget::onRpcResult(const QString& method, const QJsonValue& result)
 
                 // Ask if user wants to also display as QR code
                 QMessageBox msgBox(this);
-                msgBox.setWindowTitle("Export Successful");
-                msgBox.setText("Sighash exported successfully!");
+                msgBox.setWindowTitle(tr("Export Successful"));
+                msgBox.setText(tr("Sighash exported successfully!"));
                 msgBox.setInformativeText(QString("File: %1\n\n"
                                                   "Would you like to also display the sighash data as a QR code?\n"
                                                   "This allows scanning with mobile signing devices.")
@@ -808,7 +808,7 @@ void EscrowWidget::onRpcResult(const QString& method, const QJsonValue& result)
                 }
             } else {
                 appendLog(QString("❌ Failed to write file: %1").arg(pendingExportFile_));
-                QMessageBox::critical(this, "Export Failed", "Could not write to file.");
+                QMessageBox::critical(this, tr("Export Failed"), tr("Could not write to file."));
             }
 
             pendingExportFile_.clear();
@@ -827,7 +827,7 @@ void EscrowWidget::onRpcResult(const QString& method, const QJsonValue& result)
         if (obj.contains("swap_error") && !obj["swap_error"].toString().isEmpty()) {
             QString error = obj["swap_error"].toString();
             appendLog(QString("⚠️ Swap Error: %1").arg(error));
-            QMessageBox::warning(this, "Swap Failed",
+            QMessageBox::warning(this, tr("Swap Failed"),
                 QString("Contract released successfully, but currency conversion failed:\n\n"
                         "%1\n\n"
                         "The funds remain in DIN. The seller can manually convert via the Bridge.")
@@ -1019,19 +1019,19 @@ QString EscrowWidget::formatTimelock(int blockHeight, int currentHeight)
 void EscrowWidget::showCreateDialog()
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Create New Escrow Contract");
+    dialog.setWindowTitle(tr("Create New Escrow Contract"));
     dialog.setMinimumWidth(500);
 
     auto* layout = new QFormLayout(&dialog);
 
     auto* buyerEdit = new QLineEdit();
-    buyerEdit->setPlaceholderText("027... (66 hex characters)");
+    buyerEdit->setPlaceholderText(tr("027... (66 hex characters)"));
 
     auto* sellerEdit = new QLineEdit();
-    sellerEdit->setPlaceholderText("02c... (66 hex characters)");
+    sellerEdit->setPlaceholderText(tr("02c... (66 hex characters)"));
 
     auto* mediatorEdit = new QLineEdit();
-    mediatorEdit->setPlaceholderText("02f... (66 hex characters)");
+    mediatorEdit->setPlaceholderText(tr("02f... (66 hex characters)"));
 
     auto* amountSpin = new QDoubleSpinBox();
     amountSpin->setRange(0.00000001, 1000000000.0);
@@ -1044,8 +1044,8 @@ void EscrowWidget::showCreateDialog()
     outputCurrencyCombo->addItem("🪙 DIN (same currency)", "DIN");
     outputCurrencyCombo->addItem("💵 USDT (via Bridge)", "USDT");
     outputCurrencyCombo->addItem("₿ BTC (via Bridge)", "BTC");
-    outputCurrencyCombo->setToolTip("Select which currency to release to seller.\n"
-                                   "Bridge conversion uses locked exchange rate.");
+    outputCurrencyCombo->setToolTip(tr("Select which currency to release to seller.\n"
+                                   "Bridge conversion uses locked exchange rate."));
 
     auto* refundBlocksSpin = new QSpinBox();
     refundBlocksSpin->setRange(10, 100000);
@@ -1072,12 +1072,12 @@ void EscrowWidget::showCreateDialog()
 
         // Validation
         if (buyer.isEmpty() || seller.isEmpty() || mediator.isEmpty()) {
-            QMessageBox::warning(this, "Validation Error", "All public keys are required.");
+            QMessageBox::warning(this, tr("Validation Error"), tr("All public keys are required."));
             return;
         }
 
         if (buyer.length() != 66 || seller.length() != 66 || mediator.length() != 66) {
-            QMessageBox::warning(this, "Validation Error", "Public keys must be 66 hex characters (compressed).");
+            QMessageBox::warning(this, tr("Validation Error"), tr("Public keys must be 66 hex characters (compressed)."));
             return;
         }
 
@@ -1107,7 +1107,7 @@ void EscrowWidget::showCreateDialog()
 void EscrowWidget::showDetailsDialog(const QJsonObject& contract)
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Contract Details");
+    dialog.setWindowTitle(tr("Contract Details"));
     dialog.setMinimumWidth(600);
 
     auto* layout = new QVBoxLayout(&dialog);
@@ -1202,12 +1202,12 @@ void EscrowWidget::showDetailsDialog(const QJsonObject& contract)
 void EscrowWidget::showScriptDialog(const QString& redeemScript)
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Redeem Script");
+    dialog.setWindowTitle(tr("Redeem Script"));
     dialog.setMinimumWidth(700);
 
     auto* layout = new QVBoxLayout(&dialog);
 
-    layout->addWidget(new QLabel("<b>Redeem Script (Hex):</b>"));
+    layout->addWidget(new QLabel(tr("<b>Redeem Script (Hex):</b>")));
 
     auto* hexEdit = new QTextEdit();
     hexEdit->setPlainText(redeemScript);
@@ -1215,14 +1215,14 @@ void EscrowWidget::showScriptDialog(const QString& redeemScript)
     hexEdit->setMaximumHeight(100);
     layout->addWidget(hexEdit);
 
-    layout->addWidget(new QLabel("<b>Decoded Script:</b>"));
+    layout->addWidget(new QLabel(tr("<b>Decoded Script:</b>")));
 
     auto* decodedEdit = new QTextEdit();
     decodedEdit->setPlainText("(Script decoding not yet implemented)");
     decodedEdit->setReadOnly(true);
     layout->addWidget(decodedEdit);
 
-    auto* copyButton = new QPushButton("📋 Copy Script");
+    auto* copyButton = new QPushButton(tr("📋 Copy Script"));
     connect(copyButton, &QPushButton::clicked, [redeemScript]() {
         QApplication::clipboard()->setText(redeemScript);
     });
@@ -1249,7 +1249,7 @@ void EscrowWidget::onShowQRCode()
     QString p2shAddress = contract["p2sh_address"].toString();
 
     if (p2shAddress.isEmpty()) {
-        QMessageBox::warning(this, "No Address", "No P2SH address available for this contract.");
+        QMessageBox::warning(this, tr("No Address"), tr("No P2SH address available for this contract."));
         return;
     }
 
@@ -1293,7 +1293,7 @@ void EscrowWidget::showQRDialog(const QString& data, const QString& title, bool 
     QImage qrImage = QrUtil::makeQr(data, 300, 4);
 
     if (qrImage.isNull()) {
-        QMessageBox::warning(this, "QR Generation Failed", "Failed to generate QR code.");
+        QMessageBox::warning(this, tr("QR Generation Failed"), tr("Failed to generate QR code."));
         return;
     }
 
@@ -1307,7 +1307,7 @@ void EscrowWidget::showQRDialog(const QString& data, const QString& title, bool 
     auto* buttonLayout = new QHBoxLayout();
 
     // Copy button
-    auto* copyButton = new QPushButton("📋 Copy to Clipboard");
+    auto* copyButton = new QPushButton(tr("📋 Copy to Clipboard"));
     connect(copyButton, &QPushButton::clicked, [data]() {
         QApplication::clipboard()->setText(data);
     });
@@ -1315,7 +1315,7 @@ void EscrowWidget::showQRDialog(const QString& data, const QString& title, bool 
 
     // Save QR button (if allowed)
     if (allowSave) {
-        auto* saveButton = new QPushButton("💾 Save QR Image");
+        auto* saveButton = new QPushButton(tr("💾 Save QR Image"));
         connect(saveButton, &QPushButton::clicked, [this, &qrImage, &data]() {
             QString filename = QFileDialog::getSaveFileName(
                 this,
@@ -1326,9 +1326,9 @@ void EscrowWidget::showQRDialog(const QString& data, const QString& title, bool 
 
             if (!filename.isEmpty()) {
                 if (qrImage.save(filename)) {
-                    QMessageBox::information(this, "Success", "QR code saved to:\n" + filename);
+                    QMessageBox::information(this, tr("Success"), "QR code saved to:\n" + filename);
                 } else {
-                    QMessageBox::warning(this, "Error", "Failed to save QR code image.");
+                    QMessageBox::warning(this, tr("Error"), tr("Failed to save QR code image."));
                 }
             }
         });
@@ -1348,33 +1348,33 @@ void EscrowWidget::showQRDialog(const QString& data, const QString& title, bool 
 void EscrowWidget::showSighashQRDialog(const QString& jsonData, const QJsonObject& sighashData)
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Sighash QR Code - Offline Signing");
+    dialog.setWindowTitle(tr("Sighash QR Code - Offline Signing"));
     dialog.setMinimumSize(500, 700);
 
     auto* layout = new QVBoxLayout(&dialog);
 
     // Title
-    auto* titleLabel = new QLabel("<h3>📱 Sighash QR Code</h3>");
+    auto* titleLabel = new QLabel(tr("<h3>📱 Sighash QR Code</h3>"));
     titleLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(titleLabel);
 
     // Info about the transaction
-    auto* infoGroup = new QGroupBox("Transaction Details");
+    auto* infoGroup = new QGroupBox(tr("Transaction Details"));
     auto* infoLayout = new QGridLayout();
 
-    infoLayout->addWidget(new QLabel("<b>Contract ID:</b>"), 0, 0);
+    infoLayout->addWidget(new QLabel(tr("<b>Contract ID:</b>")), 0, 0);
     infoLayout->addWidget(new QLabel(sighashData["contract_id"].toString()), 0, 1);
 
-    infoLayout->addWidget(new QLabel("<b>Amount:</b>"), 1, 0);
+    infoLayout->addWidget(new QLabel(tr("<b>Amount:</b>")), 1, 0);
     infoLayout->addWidget(new QLabel(QString("%1 DIN").arg(sighashData["amount"].toDouble(), 0, 'f', 8)), 1, 1);
 
-    infoLayout->addWidget(new QLabel("<b>To Address:</b>"), 2, 0);
+    infoLayout->addWidget(new QLabel(tr("<b>To Address:</b>")), 2, 0);
     infoLayout->addWidget(new QLabel(sighashData["to_address"].toString()), 2, 1);
 
-    infoLayout->addWidget(new QLabel("<b>Action:</b>"), 3, 0);
+    infoLayout->addWidget(new QLabel(tr("<b>Action:</b>")), 3, 0);
     infoLayout->addWidget(new QLabel(sighashData["is_refund"].toBool() ? "Refund" : "Release"), 3, 1);
 
-    infoLayout->addWidget(new QLabel("<b>Sighash:</b>"), 4, 0);
+    infoLayout->addWidget(new QLabel(tr("<b>Sighash:</b>")), 4, 0);
     auto* sighashLabel = new QLabel(sighashData["sighash"].toString().left(32) + "...");
     sighashLabel->setStyleSheet("font-family: monospace; font-size: 9pt;");
     infoLayout->addWidget(sighashLabel, 4, 1);
@@ -1402,9 +1402,9 @@ void EscrowWidget::showSighashQRDialog(const QString& jsonData, const QJsonObjec
     QImage qrImage = QrUtil::makeQr(jsonData, 400, 4);
 
     if (qrImage.isNull()) {
-        QMessageBox::warning(this, "QR Generation Failed",
-            "Failed to generate QR code. The data may be too large.\n\n"
-            "Please use the JSON file export method instead.");
+        QMessageBox::warning(this, tr("QR Generation Failed"),
+            tr("Failed to generate QR code. The data may be too large.\n\n"
+            "Please use the JSON file export method instead."));
         return;
     }
 
@@ -1422,13 +1422,13 @@ void EscrowWidget::showSighashQRDialog(const QString& jsonData, const QJsonObjec
     layout->addWidget(scrollArea);
 
     // Instructions
-    auto* instructionsLabel = new QLabel(
+    auto* instructionsLabel = new QLabel(tr(
         "<b>Instructions for Offline Signing:</b><br>"
         "1. Scan this QR code with your offline signing device<br>"
         "2. Sign the sighash with your private key(s)<br>"
         "3. The signed transaction can be returned via QR or JSON file<br>"
         "4. Use '📥 Import Signatures' to complete the transaction"
-    );
+    ));
     instructionsLabel->setWordWrap(true);
     instructionsLabel->setStyleSheet("background-color: #f0f0f0; padding: 10px; border-radius: 5px;");
     layout->addWidget(instructionsLabel);
@@ -1437,14 +1437,14 @@ void EscrowWidget::showSighashQRDialog(const QString& jsonData, const QJsonObjec
     auto* buttonLayout = new QHBoxLayout();
 
     // Copy JSON button
-    auto* copyButton = new QPushButton("📋 Copy JSON");
+    auto* copyButton = new QPushButton(tr("📋 Copy JSON"));
     connect(copyButton, &QPushButton::clicked, [jsonData]() {
         QApplication::clipboard()->setText(jsonData);
     });
     buttonLayout->addWidget(copyButton);
 
     // Save QR button
-    auto* saveButton = new QPushButton("💾 Save QR Image");
+    auto* saveButton = new QPushButton(tr("💾 Save QR Image"));
     connect(saveButton, &QPushButton::clicked, [this, &qrImage]() {
         QString filename = QFileDialog::getSaveFileName(
             this,
@@ -1455,9 +1455,9 @@ void EscrowWidget::showSighashQRDialog(const QString& jsonData, const QJsonObjec
 
         if (!filename.isEmpty()) {
             if (qrImage.save(filename)) {
-                QMessageBox::information(this, "Success", "QR code saved to:\n" + filename);
+                QMessageBox::information(this, tr("Success"), "QR code saved to:\n" + filename);
             } else {
-                QMessageBox::warning(this, "Error", "Failed to save QR code image.");
+                QMessageBox::warning(this, tr("Error"), tr("Failed to save QR code image."));
             }
         }
     });
@@ -1476,29 +1476,29 @@ void EscrowWidget::showSighashQRDialog(const QString& jsonData, const QJsonObjec
 void EscrowWidget::showImportQRDialog()
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Import Signed Transaction from QR");
+    dialog.setWindowTitle(tr("Import Signed Transaction from QR"));
     dialog.setMinimumSize(500, 400);
 
     auto* layout = new QVBoxLayout(&dialog);
 
     // Title
-    auto* titleLabel = new QLabel("<h3>📱 Import Signed Transaction</h3>");
+    auto* titleLabel = new QLabel(tr("<h3>📱 Import Signed Transaction</h3>"));
     titleLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(titleLabel);
 
     // Instructions
-    auto* instructionsLabel = new QLabel(
+    auto* instructionsLabel = new QLabel(tr(
         "<b>Import Methods:</b><br><br>"
         "1. <b>Paste JSON Data:</b> Copy signed transaction JSON and paste below<br>"
         "2. <b>Load from File:</b> Use the '📥 Import Signatures' button instead<br>"
         "3. <b>Scan QR (Future):</b> Camera-based QR scanning coming soon"
-    );
+    ));
     instructionsLabel->setWordWrap(true);
     layout->addWidget(instructionsLabel);
 
     // Text area for pasting JSON
     auto* jsonEdit = new QTextEdit();
-    jsonEdit->setPlaceholderText("Paste signed transaction JSON here...");
+    jsonEdit->setPlaceholderText(tr("Paste signed transaction JSON here..."));
     jsonEdit->setMinimumHeight(150);
     layout->addWidget(jsonEdit);
 
@@ -1506,13 +1506,13 @@ void EscrowWidget::showImportQRDialog()
     auto* buttonLayout = new QHBoxLayout();
 
     // Import button
-    auto* importButton = new QPushButton("✅ Import and Broadcast");
+    auto* importButton = new QPushButton(tr("✅ Import and Broadcast"));
     importButton->setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;");
     connect(importButton, &QPushButton::clicked, [this, &dialog, jsonEdit]() {
         QString jsonData = jsonEdit->toPlainText().trimmed();
 
         if (jsonData.isEmpty()) {
-            QMessageBox::warning(&dialog, "No Data", "Please paste the signed transaction JSON.");
+            QMessageBox::warning(&dialog, tr("No Data"), tr("Please paste the signed transaction JSON."));
             return;
         }
 
@@ -1521,7 +1521,7 @@ void EscrowWidget::showImportQRDialog()
         QJsonDocument doc = QJsonDocument::fromJson(jsonData.toUtf8(), &error);
 
         if (error.error != QJsonParseError::NoError) {
-            QMessageBox::critical(&dialog, "Parse Error",
+            QMessageBox::critical(&dialog, tr("Parse Error"),
                 QString("Invalid JSON: %1").arg(error.errorString()));
             return;
         }
@@ -1532,7 +1532,7 @@ void EscrowWidget::showImportQRDialog()
         QStringList requiredFields = {"contract_id", "sighash", "is_refund"};
         for (const QString& field : requiredFields) {
             if (!sigData.contains(field)) {
-                QMessageBox::critical(&dialog, "Invalid Data",
+                QMessageBox::critical(&dialog, tr("Invalid Data"),
                     QString("Missing required field: %1").arg(field));
                 return;
             }
@@ -1543,9 +1543,9 @@ void EscrowWidget::showImportQRDialog()
         bool hasSellerSig = sigData.contains("sig_seller") && !sigData["sig_seller"].toString().isEmpty();
 
         if (!hasBuyerSig && !hasSellerSig) {
-            QMessageBox::warning(&dialog, "No Signatures",
-                "No signatures found in the JSON data.\n\n"
-                "Please ensure the transaction has been signed.");
+            QMessageBox::warning(&dialog, tr("No Signatures"),
+                tr("No signatures found in the JSON data.\n\n"
+                "Please ensure the transaction has been signed."));
             return;
         }
 
@@ -1561,18 +1561,18 @@ void EscrowWidget::showImportQRDialog()
             .arg(hasBuyerSig ? "✅ Present" : "❌ Missing")
             .arg(hasSellerSig ? "✅ Present" : "❌ Missing");
 
-        auto reply = QMessageBox::question(&dialog, "Confirm Broadcast", confirmMsg);
+        auto reply = QMessageBox::question(&dialog, tr("Confirm Broadcast"), confirmMsg);
 
         if (reply == QMessageBox::Yes) {
-            QMessageBox::critical(&dialog, "Contract Broadcast Disabled",
-                                  "The package was not submitted. Bound contract signing "
-                                  "is not available in v8.1.9.");
+            QMessageBox::critical(&dialog, tr("Contract Broadcast Disabled"),
+                                  tr("The package was not submitted. Bound contract signing "
+                                  "is not available in v8.1.9."));
         }
     });
     buttonLayout->addWidget(importButton);
 
     // Cancel button
-    auto* cancelButton = new QPushButton("Cancel");
+    auto* cancelButton = new QPushButton(tr("Cancel"));
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
     buttonLayout->addWidget(cancelButton);
 

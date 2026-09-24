@@ -44,16 +44,16 @@ void MarketplaceWidget::setupUi()
     // ========== HEADER ==========
     auto* headerLayout = new QHBoxLayout();
 
-    titleLabel_ = new QLabel("<h2>🛒 P2P Marketplace</h2>");
-    statsLabel_ = new QLabel("Loading...");
+    titleLabel_ = new QLabel(tr("<h2>🛒 P2P Marketplace</h2>"));
+    statsLabel_ = new QLabel(tr("Loading..."));
     statsLabel_->setStyleSheet("color: #666; font-size: 12px;");
 
-    createOfferButton_ = new QPushButton("➕ Create Offer");
+    createOfferButton_ = new QPushButton(tr("➕ Create Offer"));
     createOfferButton_->setStyleSheet("font-weight: bold; padding: 8px 16px; background: #51cf66; color: white;");
 
-    refreshButton_ = new QPushButton("🔄 Refresh");
-    myOffersButton_ = new QPushButton("📋 My Offers");
-    myTradesButton_ = new QPushButton("🤝 My Trades");
+    refreshButton_ = new QPushButton(tr("🔄 Refresh"));
+    myOffersButton_ = new QPushButton(tr("📋 My Offers"));
+    myTradesButton_ = new QPushButton(tr("🤝 My Trades"));
 
     headerLayout->addWidget(titleLabel_);
     headerLayout->addWidget(statsLabel_);
@@ -76,7 +76,7 @@ void MarketplaceWidget::setupUi()
     mainTabs_->addTab(createReputationTab(), "⭐ Reputation");
 
     // ========== EVENT LOG ==========
-    auto* logLabel = new QLabel("<b>Event Log:</b>");
+    auto* logLabel = new QLabel(tr("<b>Event Log:</b>"));
     eventLog_ = new QTextEdit();
     eventLog_->setReadOnly(true);
     eventLog_->setMaximumHeight(120);
@@ -97,9 +97,9 @@ QWidget* MarketplaceWidget::createBrowseTab()
     auto* filterLayout = new QHBoxLayout();
 
     searchInput_ = new QLineEdit();
-    searchInput_->setPlaceholderText("Search offers by keyword...");
+    searchInput_->setPlaceholderText(tr("Search offers by keyword..."));
 
-    searchButton_ = new QPushButton("🔍 Search");
+    searchButton_ = new QPushButton(tr("🔍 Search"));
 
     typeFilter_ = new QComboBox();
     typeFilter_->addItem("All Types", "all");
@@ -128,12 +128,12 @@ QWidget* MarketplaceWidget::createBrowseTab()
     maxPriceFilter_->setMaximum(1000000);
     maxPriceFilter_->setValue(10000);
 
-    filterLayout->addWidget(new QLabel("Search:"));
+    filterLayout->addWidget(new QLabel(tr("Search:")));
     filterLayout->addWidget(searchInput_, 2);
     filterLayout->addWidget(searchButton_);
-    filterLayout->addWidget(new QLabel("Type:"));
+    filterLayout->addWidget(new QLabel(tr("Type:")));
     filterLayout->addWidget(typeFilter_);
-    filterLayout->addWidget(new QLabel("Asset:"));
+    filterLayout->addWidget(new QLabel(tr("Asset:")));
     filterLayout->addWidget(assetFilter_);
     filterLayout->addWidget(minPriceFilter_);
     filterLayout->addWidget(maxPriceFilter_);
@@ -179,7 +179,7 @@ QWidget* MarketplaceWidget::createBrowseTab()
     layout->addWidget(offersTable_);
 
     // ========== DETAILS PANEL ==========
-    detailsGroup_ = new QGroupBox("Selected Offer Details");
+    detailsGroup_ = new QGroupBox(tr("Selected Offer Details"));
     auto* detailsLayout = new QGridLayout();
 
     offerIdLabel_ = new QLabel("-");
@@ -192,32 +192,32 @@ QWidget* MarketplaceWidget::createBrowseTab()
     sellerPubkeyLabel_ = new QLabel("-");
     sellerReputationLabel_ = new QLabel("-");
 
-    viewSellerRepButton_ = new QPushButton("📊 View Seller Reputation");
+    viewSellerRepButton_ = new QPushButton(tr("📊 View Seller Reputation"));
     viewSellerRepButton_->setMaximumWidth(180);
     viewSellerRepButton_->setEnabled(false);
 
     int row = 0;
-    detailsLayout->addWidget(new QLabel("<b>Offer ID:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Offer ID:</b>")), row, 0);
     detailsLayout->addWidget(offerIdLabel_, row++, 1, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Type:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Type:</b>")), row, 0);
     detailsLayout->addWidget(offerTypeLabel_, row, 1);
-    detailsLayout->addWidget(new QLabel("<b>Asset:</b>"), row, 2);
+    detailsLayout->addWidget(new QLabel(tr("<b>Asset:</b>")), row, 2);
     detailsLayout->addWidget(offerAssetLabel_, row++, 3);
 
-    detailsLayout->addWidget(new QLabel("<b>Amount:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Amount:</b>")), row, 0);
     detailsLayout->addWidget(offerAmountLabel_, row, 1);
-    detailsLayout->addWidget(new QLabel("<b>Price:</b>"), row, 2);
+    detailsLayout->addWidget(new QLabel(tr("<b>Price:</b>")), row, 2);
     detailsLayout->addWidget(offerPriceLabel_, row++, 3);
 
-    detailsLayout->addWidget(new QLabel("<b>Description:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Description:</b>")), row, 0);
     detailsLayout->addWidget(offerDescriptionLabel_, row++, 1, 1, 3);
 
-    detailsLayout->addWidget(new QLabel("<b>Seller:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Seller:</b>")), row, 0);
     detailsLayout->addWidget(sellerPubkeyLabel_, row, 1);
     detailsLayout->addWidget(viewSellerRepButton_, row++, 2, 1, 2);
 
-    detailsLayout->addWidget(new QLabel("<b>Seller Reputation:</b>"), row, 0);
+    detailsLayout->addWidget(new QLabel(tr("<b>Seller Reputation:</b>")), row, 0);
     detailsLayout->addWidget(sellerReputationLabel_, row++, 1, 1, 3);
 
     detailsGroup_->setLayout(detailsLayout);
@@ -226,11 +226,11 @@ QWidget* MarketplaceWidget::createBrowseTab()
     // ========== ACTION BUTTONS ==========
     auto* actionLayout = new QHBoxLayout();
 
-    acceptOfferButton_ = new QPushButton("✅ Accept Offer");
+    acceptOfferButton_ = new QPushButton(tr("✅ Accept Offer"));
     acceptOfferButton_->setStyleSheet("background-color: #51cf66; color: white; font-weight: bold; padding: 10px;");
     acceptOfferButton_->setEnabled(false);
 
-    viewOfferButton_ = new QPushButton("🔍 View Full Details");
+    viewOfferButton_ = new QPushButton(tr("🔍 View Full Details"));
     viewOfferButton_->setEnabled(false);
 
     actionLayout->addWidget(acceptOfferButton_);
@@ -249,7 +249,7 @@ QWidget* MarketplaceWidget::createMyOffersTab()
 
     // Filter by status
     auto* filterLayout = new QHBoxLayout();
-    filterLayout->addWidget(new QLabel("Status:"));
+    filterLayout->addWidget(new QLabel(tr("Status:")));
 
     myOffersStatusFilter_ = new QComboBox();
     myOffersStatusFilter_->addItem("Active", "active");
@@ -290,11 +290,11 @@ QWidget* MarketplaceWidget::createMyOffersTab()
     // Action Buttons
     auto* actionLayout = new QHBoxLayout();
 
-    cancelOfferButton_ = new QPushButton("❌ Cancel Offer");
+    cancelOfferButton_ = new QPushButton(tr("❌ Cancel Offer"));
     cancelOfferButton_->setStyleSheet("background-color: #ff6b6b; color: white; font-weight: bold; padding: 8px;");
     cancelOfferButton_->setEnabled(false);
 
-    updateOfferButton_ = new QPushButton("✏️ Update Offer");
+    updateOfferButton_ = new QPushButton(tr("✏️ Update Offer"));
     updateOfferButton_->setStyleSheet("background-color: #4c6ef5; color: white; font-weight: bold; padding: 8px;");
     updateOfferButton_->setEnabled(false);
 
@@ -315,14 +315,14 @@ QWidget* MarketplaceWidget::createMyTradesTab()
     // Filters
     auto* filterLayout = new QHBoxLayout();
 
-    filterLayout->addWidget(new QLabel("Role:"));
+    filterLayout->addWidget(new QLabel(tr("Role:")));
     tradesRoleFilter_ = new QComboBox();
     tradesRoleFilter_->addItem("All", "all");
     tradesRoleFilter_->addItem("As Buyer", "buyer");
     tradesRoleFilter_->addItem("As Seller", "seller");
     filterLayout->addWidget(tradesRoleFilter_);
 
-    filterLayout->addWidget(new QLabel("Status:"));
+    filterLayout->addWidget(new QLabel(tr("Status:")));
     tradesStatusFilter_ = new QComboBox();
     tradesStatusFilter_->addItem("All", "all");
     tradesStatusFilter_->addItem("Pending Funding", "pending_funding");
@@ -361,15 +361,15 @@ QWidget* MarketplaceWidget::createMyTradesTab()
     // Action Buttons
     auto* actionLayout = new QHBoxLayout();
 
-    completeTradeButton_ = new QPushButton("✅ Complete Trade");
+    completeTradeButton_ = new QPushButton(tr("✅ Complete Trade"));
     completeTradeButton_->setStyleSheet("background-color: #51cf66; color: white; font-weight: bold; padding: 8px;");
     completeTradeButton_->setEnabled(false);
 
-    disputeTradeButton_ = new QPushButton("⚠️ Open Dispute");
+    disputeTradeButton_ = new QPushButton(tr("⚠️ Open Dispute"));
     disputeTradeButton_->setStyleSheet("background-color: #ff922b; color: white; font-weight: bold; padding: 8px;");
     disputeTradeButton_->setEnabled(false);
 
-    viewTradeButton_ = new QPushButton("🔍 View Details");
+    viewTradeButton_ = new QPushButton(tr("🔍 View Details"));
     viewTradeButton_->setEnabled(false);
 
     actionLayout->addWidget(completeTradeButton_);
@@ -387,32 +387,32 @@ QWidget* MarketplaceWidget::createReputationTab()
     auto* widget = new QWidget();
     auto* layout = new QVBoxLayout(widget);
 
-    auto* reputationGroup = new QGroupBox("My Reputation");
+    auto* reputationGroup = new QGroupBox(tr("My Reputation"));
     auto* repLayout = new QGridLayout();
 
     reputationScoreLabel_ = new QLabel("⭐ 0.0");
     reputationScoreLabel_->setStyleSheet("font-size: 24px; font-weight: bold; color: #fab005;");
 
-    totalTradesLabel_ = new QLabel("0 total trades");
-    successfulTradesLabel_ = new QLabel("0 successful");
-    ratingDistributionLabel_ = new QLabel("No ratings yet");
+    totalTradesLabel_ = new QLabel(tr("0 total trades"));
+    successfulTradesLabel_ = new QLabel(tr("0 successful"));
+    ratingDistributionLabel_ = new QLabel(tr("No ratings yet"));
 
-    repLayout->addWidget(new QLabel("<b>Average Rating:</b>"), 0, 0);
+    repLayout->addWidget(new QLabel(tr("<b>Average Rating:</b>")), 0, 0);
     repLayout->addWidget(reputationScoreLabel_, 0, 1);
 
-    repLayout->addWidget(new QLabel("<b>Total Trades:</b>"), 1, 0);
+    repLayout->addWidget(new QLabel(tr("<b>Total Trades:</b>")), 1, 0);
     repLayout->addWidget(totalTradesLabel_, 1, 1);
 
-    repLayout->addWidget(new QLabel("<b>Successful:</b>"), 2, 0);
+    repLayout->addWidget(new QLabel(tr("<b>Successful:</b>")), 2, 0);
     repLayout->addWidget(successfulTradesLabel_, 2, 1);
 
-    repLayout->addWidget(new QLabel("<b>Rating Distribution:</b>"), 3, 0);
+    repLayout->addWidget(new QLabel(tr("<b>Rating Distribution:</b>")), 3, 0);
     repLayout->addWidget(ratingDistributionLabel_, 3, 1);
 
     reputationGroup->setLayout(repLayout);
     layout->addWidget(reputationGroup);
 
-    viewOtherReputationButton_ = new QPushButton("🔍 View Other User's Reputation");
+    viewOtherReputationButton_ = new QPushButton(tr("🔍 View Other User's Reputation"));
     layout->addWidget(viewOtherReputationButton_);
 
     layout->addStretch();
@@ -526,7 +526,7 @@ void MarketplaceWidget::onCreateOffer()
 void MarketplaceWidget::onAcceptOffer()
 {
     if (selectedOfferId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select an offer first.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select an offer first."));
         return;
     }
 
@@ -547,13 +547,13 @@ void MarketplaceWidget::onViewOfferDetails()
 void MarketplaceWidget::onCancelOffer()
 {
     if (selectedOfferId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select an offer to cancel.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select an offer to cancel."));
         return;
     }
 
     auto reply = QMessageBox::question(
         this,
-        "Cancel Offer",
+        tr("Cancel Offer"),
         QString("Cancel this offer?\n\nOffer ID: %1").arg(selectedOfferId_),
         QMessageBox::Yes | QMessageBox::No
     );
@@ -568,25 +568,25 @@ void MarketplaceWidget::onCancelOffer()
 void MarketplaceWidget::onUpdateOffer()
 {
     // TODO: Show update dialog
-    QMessageBox::information(this, "Update Offer", "Update offer dialog - coming soon!");
+    QMessageBox::information(this, tr("Update Offer"), tr("Update offer dialog - coming soon!"));
 }
 
 void MarketplaceWidget::onCompleteTrade()
 {
     // TODO: Show complete trade dialog with rating
-    QMessageBox::information(this, "Complete Trade", "Complete trade dialog - coming soon!");
+    QMessageBox::information(this, tr("Complete Trade"), tr("Complete trade dialog - coming soon!"));
 }
 
 void MarketplaceWidget::onDisputeTrade()
 {
     // TODO: Show dispute dialog
-    QMessageBox::information(this, "Open Dispute", "Dispute dialog - coming soon!");
+    QMessageBox::information(this, tr("Open Dispute"), tr("Dispute dialog - coming soon!"));
 }
 
 void MarketplaceWidget::onViewTradeDetails()
 {
     // TODO: Show trade details
-    QMessageBox::information(this, "Trade Details", "Trade details dialog - coming soon!");
+    QMessageBox::information(this, tr("Trade Details"), tr("Trade details dialog - coming soon!"));
 }
 
 void MarketplaceWidget::onRefreshTrades()
@@ -602,7 +602,7 @@ void MarketplaceWidget::onRefreshTrades()
 void MarketplaceWidget::onViewReputation()
 {
     // TODO: Show reputation dialog for a user
-    QMessageBox::information(this, "View Reputation", "Reputation viewer - coming soon!");
+    QMessageBox::information(this, tr("View Reputation"), tr("Reputation viewer - coming soon!"));
 }
 
 void MarketplaceWidget::onOfferSelected(const QModelIndex& index)
@@ -671,7 +671,7 @@ void MarketplaceWidget::onRpcResult(const QString& method, const QJsonValue& res
         appendLog(QString("✅ Offer created: %1").arg(offerId));
         QMessageBox::information(
             this,
-            "Offer Created",
+            tr("Offer Created"),
             QString("Your offer has been created successfully!\n\nOffer ID: %1").arg(offerId)
         );
 
@@ -679,7 +679,7 @@ void MarketplaceWidget::onRpcResult(const QString& method, const QJsonValue& res
     }
     else if (method == "p2p.canceloffer") {
         appendLog("✅ Offer cancelled");
-        QMessageBox::information(this, "Success", "Offer cancelled successfully!");
+        QMessageBox::information(this, tr("Success"), tr("Offer cancelled successfully!"));
         onRefreshOffers();
     }
     else if (method == "p2p.acceptoffer") {
@@ -690,7 +690,7 @@ void MarketplaceWidget::onRpcResult(const QString& method, const QJsonValue& res
         appendLog(QString("✅ Offer accepted! Trade: %1").arg(tradeId));
         QMessageBox::information(
             this,
-            "Trade Created",
+            tr("Trade Created"),
             QString("Trade created successfully!\n\n"
                     "Trade ID: %1\n"
                     "Escrow Address: %2\n\n"
@@ -836,7 +836,7 @@ QString MarketplaceWidget::formatTimestamp(int64_t timestamp)
 void MarketplaceWidget::showCreateOfferDialog()
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Create New Marketplace Offer");
+    dialog.setWindowTitle(tr("Create New Marketplace Offer"));
     dialog.setMinimumWidth(500);
 
     auto* layout = new QFormLayout(&dialog);
@@ -876,7 +876,7 @@ void MarketplaceWidget::showCreateOfferDialog()
 
     // Description
     auto* descriptionEdit = new QLineEdit();
-    descriptionEdit->setPlaceholderText("Describe your offer...");
+    descriptionEdit->setPlaceholderText(tr("Describe your offer..."));
 
     layout->addRow("Type:", typeCombo);
     layout->addRow("Asset:", assetCombo);
@@ -912,7 +912,7 @@ void MarketplaceWidget::showCreateOfferDialog()
 void MarketplaceWidget::showOfferDetailsDialog(const QJsonObject& offer)
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Offer Details");
+    dialog.setWindowTitle(tr("Offer Details"));
     dialog.setMinimumWidth(600);
 
     auto* layout = new QVBoxLayout(&dialog);
@@ -943,7 +943,7 @@ void MarketplaceWidget::showOfferDetailsDialog(const QJsonObject& offer)
 void MarketplaceWidget::showAcceptOfferDialog(const QJsonObject& offer)
 {
     QDialog dialog(this);
-    dialog.setWindowTitle("Accept Offer");
+    dialog.setWindowTitle(tr("Accept Offer"));
     dialog.setMinimumWidth(500);
 
     auto* layout = new QVBoxLayout(&dialog);

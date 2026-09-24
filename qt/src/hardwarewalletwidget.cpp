@@ -197,15 +197,15 @@ void HardwareWalletWidget::setupUI() {
     auto* mainLayout = new QVBoxLayout(this);
 
     // Title
-    auto* title = new QLabel("🔐 Hardware Wallet Integration");
+    auto* title = new QLabel(tr("🔐 Hardware Wallet Integration"));
     title->setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px; color: #d6dde6;");
     mainLayout->addWidget(title);
 
     // Description
-    auto* desc = new QLabel(
+    auto* desc = new QLabel(tr(
         "Sign transactions using hardware wallets (Coldcard, Ledger, Trezor, Keystone, etc.)\n"
         "PSBT here means Partially Signed Dinero Transaction. It is a binary signing container shown as Base64 for copy/paste, files, and QR transfer."
-    );
+    ));
     desc->setWordWrap(true);
     desc->setStyleSheet(hwSubtleLabelStyle());
     mainLayout->addWidget(desc);
@@ -231,26 +231,26 @@ void HardwareWalletWidget::setupFileBasedTab() {
     auto* layout = new QVBoxLayout(fileTab_);
 
     // Info box
-    auto* infoBox = new QGroupBox("📋 How it works");
+    auto* infoBox = new QGroupBox(tr("📋 How it works"));
     auto* infoLayout = new QVBoxLayout(infoBox);
-    auto* info = new QLabel(
+    auto* info = new QLabel(tr(
         "1. Create unsigned transaction in DineroCoin wallet\n"
         "2. Export the Partially Signed Dinero Transaction to file\n"
         "3. Sign Taproot inputs on your hardware wallet or use a connected USB session\n"
         "4. Import or finalize the signed Dinero PSBT\n"
         "5. Broadcast the extracted final transaction"
-    );
+    ));
     info->setWordWrap(true);
     infoLayout->addWidget(info);
     layout->addWidget(infoBox);
 
     // PSBT Input
-    auto* psbtGroup = new QGroupBox("Partially Signed Dinero Transaction (PSBT)");
+    auto* psbtGroup = new QGroupBox(tr("Partially Signed Dinero Transaction (PSBT)"));
     auto* psbtLayout = new QVBoxLayout(psbtGroup);
 
-    auto* psbtLabel = new QLabel("Dinero PSBT (Base64):");
+    auto* psbtLabel = new QLabel(tr("Dinero PSBT (Base64):"));
     psbtTextEdit_ = new QTextEdit;
-    psbtTextEdit_->setPlaceholderText("Paste Partially Signed Dinero Transaction here or create one from the Send tab...");
+    psbtTextEdit_->setPlaceholderText(tr("Paste Partially Signed Dinero Transaction here or create one from the Send tab..."));
     psbtTextEdit_->setMaximumHeight(100);
     connect(psbtTextEdit_, &QTextEdit::textChanged, this, [this]() {
         if (!suppressLinkedSendReset_) {
@@ -270,14 +270,14 @@ void HardwareWalletWidget::setupFileBasedTab() {
     layout->addWidget(psbtGroup);
 
     // Export Section
-    auto* exportGroup = new QGroupBox("📤 Export to Hardware Wallet");
+    auto* exportGroup = new QGroupBox(tr("📤 Export to Hardware Wallet"));
     auto* exportLayout = new QGridLayout(exportGroup);
 
-    auto* exportLabel = new QLabel("Export Path:");
+    auto* exportLabel = new QLabel(tr("Export Path:"));
     exportPathEdit_ = new QLineEdit;
-    exportPathEdit_->setPlaceholderText("/Volumes/COLDCARD/unsigned.psbt");
+    exportPathEdit_->setPlaceholderText(tr("/Volumes/COLDCARD/unsigned.psbt"));
 
-    auto* browseSaveBtn = new QPushButton("Browse...");
+    auto* browseSaveBtn = new QPushButton(tr("Browse..."));
     browseSaveBtn->setStyleSheet(hwButtonStyle());
     connect(browseSaveBtn, &QPushButton::clicked, [this]() {
         QString defaultPath = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + "/unsigned.psbt";
@@ -292,7 +292,7 @@ void HardwareWalletWidget::setupFileBasedTab() {
         }
     });
 
-    exportBtn_ = new QPushButton("Export Dinero PSBT to File");
+    exportBtn_ = new QPushButton(tr("Export Dinero PSBT to File"));
     exportBtn_->setStyleSheet(hwButtonStyle());
     connect(exportBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onExportPSBT);
 
@@ -304,14 +304,14 @@ void HardwareWalletWidget::setupFileBasedTab() {
     layout->addWidget(exportGroup);
 
     // Import Section
-    auto* importGroup = new QGroupBox("📥 Import from Hardware Wallet");
+    auto* importGroup = new QGroupBox(tr("📥 Import from Hardware Wallet"));
     auto* importLayout = new QGridLayout(importGroup);
 
-    auto* importLabel = new QLabel("Import Path:");
+    auto* importLabel = new QLabel(tr("Import Path:"));
     importPathEdit_ = new QLineEdit;
-    importPathEdit_->setPlaceholderText("/Volumes/COLDCARD/signed.psbt");
+    importPathEdit_->setPlaceholderText(tr("/Volumes/COLDCARD/signed.psbt"));
 
-    auto* browseOpenBtn = new QPushButton("Browse...");
+    auto* browseOpenBtn = new QPushButton(tr("Browse..."));
     browseOpenBtn->setStyleSheet(hwButtonStyle());
     connect(browseOpenBtn, &QPushButton::clicked, [this]() {
         QString filename = QFileDialog::getOpenFileName(
@@ -325,7 +325,7 @@ void HardwareWalletWidget::setupFileBasedTab() {
         }
     });
 
-    importBtn_ = new QPushButton("Import Signed Dinero PSBT");
+    importBtn_ = new QPushButton(tr("Import Signed Dinero PSBT"));
     importBtn_->setStyleSheet(hwButtonStyle());
     connect(importBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onImportPSBT);
 
@@ -337,26 +337,26 @@ void HardwareWalletWidget::setupFileBasedTab() {
     layout->addWidget(importGroup);
 
     // Analyze Button
-    analyzeBtn_ = new QPushButton("🔍 Analyze Dinero PSBT");
+    analyzeBtn_ = new QPushButton(tr("🔍 Analyze Dinero PSBT"));
     analyzeBtn_->setStyleSheet(hwButtonStyle());
     connect(analyzeBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onAnalyzePSBT);
     layout->addWidget(analyzeBtn_);
 
     auto* actionLayout = new QHBoxLayout;
 
-    usbSignBtn_ = new QPushButton("🔌 Sign via Connected USB");
+    usbSignBtn_ = new QPushButton(tr("🔌 Sign via Connected USB"));
     usbSignBtn_->setStyleSheet(hwButtonStyle());
-    usbSignBtn_->setToolTip("Connect a USB device with direct PSBT-signing support in the USB tab, then sign the PSBT currently loaded here.");
+    usbSignBtn_->setToolTip(tr("Connect a USB device with direct PSBT-signing support in the USB tab, then sign the PSBT currently loaded here."));
     connect(usbSignBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onUsbSignPSBT);
 
-    finalizeBtn_ = new QPushButton("✅ Finalize Dinero PSBT");
+    finalizeBtn_ = new QPushButton(tr("✅ Finalize Dinero PSBT"));
     finalizeBtn_->setStyleSheet(hwButtonStyle());
-    finalizeBtn_->setToolTip("Attempt to finalize the current Partially Signed Dinero Transaction and extract a broadcastable transaction.");
+    finalizeBtn_->setToolTip(tr("Attempt to finalize the current Partially Signed Dinero Transaction and extract a broadcastable transaction."));
     connect(finalizeBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onFinalizePSBT);
 
-    broadcastBtn_ = new QPushButton("📡 Broadcast Transaction");
+    broadcastBtn_ = new QPushButton(tr("📡 Broadcast Transaction"));
     broadcastBtn_->setStyleSheet(hwButtonStyle());
-    broadcastBtn_->setToolTip("Broadcast the last finalized or imported transaction hex.");
+    broadcastBtn_->setToolTip(tr("Broadcast the last finalized or imported transaction hex."));
     connect(broadcastBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onBroadcastTransaction);
 
     actionLayout->addWidget(usbSignBtn_);
@@ -365,7 +365,7 @@ void HardwareWalletWidget::setupFileBasedTab() {
     layout->addLayout(actionLayout);
 
     // Status
-    fileStatusLabel_ = new QLabel("Ready");
+    fileStatusLabel_ = new QLabel(tr("Ready"));
     fileStatusLabel_->setStyleSheet(hwPanelStyle());
     layout->addWidget(fileStatusLabel_);
 
@@ -382,9 +382,9 @@ void HardwareWalletWidget::setupQRCodeTab() {
     auto* layout = new QVBoxLayout(qrTab_);
 
     // Info
-    auto* infoBox = new QGroupBox("📋 QR Code Workflow");
+    auto* infoBox = new QGroupBox(tr("📋 QR Code Workflow"));
     auto* infoLayout = new QVBoxLayout(infoBox);
-    auto* info = new QLabel(
+    auto* info = new QLabel(tr(
         "Use QR codes for air-gapped signing with devices like:\n"
         "• Keystone (formerly Cobo Vault)\n"
         "• Passport by Foundation Devices\n"
@@ -393,16 +393,16 @@ void HardwareWalletWidget::setupQRCodeTab() {
         "2. Scan with hardware wallet camera\n"
         "3. Sign on device\n"
         "4. Scan signed Dinero PSBT QR code back"
-    );
+    ));
     info->setWordWrap(true);
     infoLayout->addWidget(info);
     layout->addWidget(infoBox);
 
     // PSBT Input
-    auto* psbtGroup = new QGroupBox("Partially Signed Dinero Transaction (PSBT)");
+    auto* psbtGroup = new QGroupBox(tr("Partially Signed Dinero Transaction (PSBT)"));
     auto* psbtLayout = new QVBoxLayout(psbtGroup);
     qrPsbtEdit_ = new QTextEdit;
-    qrPsbtEdit_->setPlaceholderText("Paste Partially Signed Dinero Transaction here...");
+    qrPsbtEdit_->setPlaceholderText(tr("Paste Partially Signed Dinero Transaction here..."));
     qrPsbtEdit_->setMaximumHeight(80);
     connect(qrPsbtEdit_, &QTextEdit::textChanged, this, [this]() {
         if (psbtTextEdit_) {
@@ -418,7 +418,7 @@ void HardwareWalletWidget::setupQRCodeTab() {
     layout->addWidget(psbtGroup);
 
     // QR Display Area
-    auto* displayGroup = new QGroupBox("📱 QR Code Display");
+    auto* displayGroup = new QGroupBox(tr("📱 QR Code Display"));
     auto* displayLayout = new QVBoxLayout(displayGroup);
 
     qrDisplayLabel_ = new QLabel;
@@ -426,7 +426,7 @@ void HardwareWalletWidget::setupQRCodeTab() {
     qrDisplayLabel_->setFixedSize(360, 360);
     qrDisplayLabel_->setStyleSheet(
         "border: 1px dashed #5d6570; background-color: white; color: #c8d0da;");
-    qrDisplayLabel_->setText("QR code will appear here");
+    qrDisplayLabel_->setText(tr("QR code will appear here"));
 
     auto* qrCenterLayout = new QHBoxLayout;
     qrCenterLayout->addStretch();
@@ -438,27 +438,27 @@ void HardwareWalletWidget::setupQRCodeTab() {
     // Buttons
     auto* btnLayout = new QHBoxLayout;
 
-    showQRBtn_ = new QPushButton("📤 Show QR Code");
+    showQRBtn_ = new QPushButton(tr("📤 Show QR Code"));
     showQRBtn_->setStyleSheet(hwButtonStyle());
     connect(showQRBtn_, &QPushButton::clicked, [this]() {
         renderQrForCurrentPsbt();
     });
 
-    scanQRBtn_ = new QPushButton("📥 Scan Signed QR");
+    scanQRBtn_ = new QPushButton(tr("📥 Scan Signed QR"));
     scanQRBtn_->setStyleSheet(hwButtonStyle());
     scanQRBtn_->setEnabled(false);
-    scanQRBtn_->setToolTip("Camera scanning requires additional dependencies");
+    scanQRBtn_->setToolTip(tr("Camera scanning requires additional dependencies"));
 
     btnLayout->addWidget(showQRBtn_);
     btnLayout->addWidget(scanQRBtn_);
     layout->addLayout(btnLayout);
 
     // Status
-    qrStatusLabel_ = new QLabel("Ready");
+    qrStatusLabel_ = new QLabel(tr("Ready"));
     qrStatusLabel_->setStyleSheet(hwPanelStyle());
     layout->addWidget(qrStatusLabel_);
 
-    qrSummaryLabel_ = new QLabel("Transaction summary will appear after a Dinero PSBT is analyzed.");
+    qrSummaryLabel_ = new QLabel(tr("Transaction summary will appear after a Dinero PSBT is analyzed."));
     qrSummaryLabel_->setWordWrap(true);
     qrSummaryLabel_->setStyleSheet(hwPanelStyle());
     layout->addWidget(qrSummaryLabel_);
@@ -476,14 +476,14 @@ void HardwareWalletWidget::resetQrDisplay() {
 
     if (qrDisplayLabel_) {
         qrDisplayLabel_->clear();
-        qrDisplayLabel_->setText("Analyze PSBT to show QR code");
+        qrDisplayLabel_->setText(tr("Analyze PSBT to show QR code"));
     }
     if (qrStatusLabel_) {
-        qrStatusLabel_->setText("PSBT loaded. Click Show QR Code to analyze and display the signing QR.");
+        qrStatusLabel_->setText(tr("PSBT loaded. Click Show QR Code to analyze and display the signing QR."));
         qrStatusLabel_->setStyleSheet(hwPanelStyle());
     }
     if (qrSummaryLabel_) {
-        qrSummaryLabel_->setText("Transaction summary will appear after analysis.");
+        qrSummaryLabel_->setText(tr("Transaction summary will appear after analysis."));
         qrSummaryLabel_->setStyleSheet(hwPanelStyle());
     }
 }
@@ -500,7 +500,7 @@ void HardwareWalletWidget::renderDemoQrDisplay() {
             ? QrUtil::makeQr(demoQrPayload(), qrSize, 4, /*ecLevel=*/3)
             : QrUtil::makeQrWithLogo(demoQrPayload(), logoPath, qrSize, 4);
         if (qrImage.isNull()) {
-            qrDisplayLabel_->setText("Demo QR unavailable");
+            qrDisplayLabel_->setText(tr("Demo QR unavailable"));
             return;
         }
 
@@ -521,7 +521,7 @@ void HardwareWalletWidget::renderDemoQrDisplay() {
     }
 
     if (qrSummaryLabel_) {
-        qrSummaryLabel_->setText("No transaction loaded. Scanning this demo QR reads a plain-text placeholder, not a spend request.");
+        qrSummaryLabel_->setText(tr("No transaction loaded. Scanning this demo QR reads a plain-text placeholder, not a spend request."));
         qrSummaryLabel_->setStyleSheet(hwPanelStyle());
     }
 }
@@ -540,11 +540,11 @@ void HardwareWalletWidget::renderQrForCurrentPsbt() {
     pendingQrRenderAfterAnalyze_ = true;
     currentOperation_ = "hwallet.analyzepsbt";
     if (qrStatusLabel_) {
-        qrStatusLabel_->setText("Analyzing Dinero PSBT before QR display...");
+        qrStatusLabel_->setText(tr("Analyzing Dinero PSBT before QR display..."));
         qrStatusLabel_->setStyleSheet(hwPanelStyle());
     }
     if (fileStatusLabel_) {
-        fileStatusLabel_->setText("Analyzing Dinero PSBT before QR display...");
+        fileStatusLabel_->setText(tr("Analyzing Dinero PSBT before QR display..."));
     }
 
     QJsonObject params;
@@ -592,9 +592,9 @@ void HardwareWalletWidget::setupUSBTab() {
     auto* layout = new QVBoxLayout(usbTab_);
 
     // Info
-    auto* infoBox = new QGroupBox("🔌 USB Hardware Wallets");
+    auto* infoBox = new QGroupBox(tr("🔌 USB Hardware Wallets"));
     auto* infoLayout = new QVBoxLayout(infoBox);
-    auto* info = new QLabel(
+    auto* info = new QLabel(tr(
         "Current USB status:\n"
         "• Device detection is experimental and depends on backend USB support\n"
         "• Detection currently recognizes Ledger devices and Trezor devices when available\n"
@@ -603,29 +603,29 @@ void HardwareWalletWidget::setupUSBTab() {
         "• Trezor USB signing is limited to active-wallet BIP86 Taproot PSBTs that match the loaded descriptor set\n"
         "• File / SD Card and QR flows remain the fallback signing paths\n\n"
         "Click 'Detect Devices' to check whether this daemon build can see connected USB wallets."
-    );
+    ));
     info->setWordWrap(true);
     infoLayout->addWidget(info);
     layout->addWidget(infoBox);
 
     // Device Selection
-    auto* deviceGroup = new QGroupBox("🔍 Device Detection");
+    auto* deviceGroup = new QGroupBox(tr("🔍 Device Detection"));
     auto* deviceLayout = new QGridLayout(deviceGroup);
 
-    auto* deviceLabel = new QLabel("Connected Devices:");
+    auto* deviceLabel = new QLabel(tr("Connected Devices:"));
     deviceCombo_ = new QComboBox;
     deviceCombo_->addItem("Click 'Detect Devices' to scan");
     connect(deviceCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateUsbConnectButton(); });
 
-    detectBtn_ = new QPushButton("🔄 Detect Devices");
+    detectBtn_ = new QPushButton(tr("🔄 Detect Devices"));
     detectBtn_->setStyleSheet(hwButtonStyle());
     connect(detectBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onDeviceDetect);
 
-    connectBtn_ = new QPushButton("🔌 Connect");
+    connectBtn_ = new QPushButton(tr("🔌 Connect"));
     connectBtn_->setStyleSheet(hwButtonStyle());
     connectBtn_->setEnabled(false);
-    connectBtn_->setToolTip("Open a supported USB device session after detection. Direct signing availability depends on the device family.");
+    connectBtn_->setToolTip(tr("Open a supported USB device session after detection. Direct signing availability depends on the device family."));
     connect(connectBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onDeviceConnect);
 
     deviceLayout->addWidget(deviceLabel, 0, 0);
@@ -648,27 +648,27 @@ void HardwareWalletWidget::setupUSBTab() {
     deviceInfoLabel_->setStyleSheet(hwPanelStyle());
     layout->addWidget(deviceInfoLabel_);
 
-    auto* addressGroup = new QGroupBox("🏷️ Address Verification");
+    auto* addressGroup = new QGroupBox(tr("🏷️ Address Verification"));
     auto* addressLayout = new QGridLayout(addressGroup);
 
-    auto* derivationLabel = new QLabel("Derivation Path:");
+    auto* derivationLabel = new QLabel(tr("Derivation Path:"));
     usbDerivationPathEdit_ = new QLineEdit("m/86'/1448'/0'/0/0");
     usbDerivationPathEdit_->setPlaceholderText("m/86'/1448'/0'/0/0");
     connect(usbDerivationPathEdit_, &QLineEdit::textChanged, this, [this]() {
         updateUsbAddressButtons();
     });
 
-    usbFetchAddressBtn_ = new QPushButton("📥 Get Address");
+    usbFetchAddressBtn_ = new QPushButton(tr("📥 Get Address"));
     usbFetchAddressBtn_->setStyleSheet(hwButtonStyle());
-    usbFetchAddressBtn_->setToolTip("Fetch the address for the derivation path from the active USB session.");
+    usbFetchAddressBtn_->setToolTip(tr("Fetch the address for the derivation path from the active USB session."));
     connect(usbFetchAddressBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onUsbFetchAddress);
 
-    usbVerifyAddressBtn_ = new QPushButton("👁️ Verify on Device");
+    usbVerifyAddressBtn_ = new QPushButton(tr("👁️ Verify on Device"));
     usbVerifyAddressBtn_->setStyleSheet(hwButtonStyle());
-    usbVerifyAddressBtn_->setToolTip("Ask the active device to show and confirm the address for this derivation path.");
+    usbVerifyAddressBtn_->setToolTip(tr("Ask the active device to show and confirm the address for this derivation path."));
     connect(usbVerifyAddressBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onUsbVerifyAddress);
 
-    usbAddressResultLabel_ = new QLabel("No address fetched yet.");
+    usbAddressResultLabel_ = new QLabel(tr("No address fetched yet."));
     usbAddressResultLabel_->setWordWrap(true);
     usbAddressResultLabel_->setStyleSheet(hwPanelStyle());
 
@@ -679,37 +679,37 @@ void HardwareWalletWidget::setupUSBTab() {
     addressLayout->addWidget(usbAddressResultLabel_, 2, 0, 1, 3);
     layout->addWidget(addressGroup);
 
-    auto* descriptorGroup = new QGroupBox("🧾 Watch-Only Descriptor Export");
+    auto* descriptorGroup = new QGroupBox(tr("🧾 Watch-Only Descriptor Export"));
     auto* descriptorLayout = new QGridLayout(descriptorGroup);
 
-    auto* accountPathLabel = new QLabel("Account Path:");
+    auto* accountPathLabel = new QLabel(tr("Account Path:"));
     usbAccountPathEdit_ = new QLineEdit("m/86'/1448'/0'");
     usbAccountPathEdit_->setPlaceholderText("m/86'/1448'/0'");
     connect(usbAccountPathEdit_, &QLineEdit::textChanged, this, [this]() {
         updateUsbDescriptorControls();
     });
 
-    auto* policyLabel = new QLabel("Descriptor Policy:");
+    auto* policyLabel = new QLabel(tr("Descriptor Policy:"));
     usbDescriptorPolicyCombo_ = new QComboBox;
     usbDescriptorPolicyCombo_->addItem("BIP86 Taproot", "bip86");
     usbDescriptorPolicyCombo_->addItem("BIP84 Native SegWit", "bip84");
     connect(usbDescriptorPolicyCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateUsbDescriptorControls(); });
 
-    usbExportDescriptorBtn_ = new QPushButton("🧾 Export Account Descriptors");
+    usbExportDescriptorBtn_ = new QPushButton(tr("🧾 Export Account Descriptors"));
     usbExportDescriptorBtn_->setStyleSheet(hwButtonStyle());
-    usbExportDescriptorBtn_->setToolTip("Export receive/change descriptors and the account xpub from the active USB session.");
+    usbExportDescriptorBtn_->setToolTip(tr("Export receive/change descriptors and the account xpub from the active USB session."));
     connect(usbExportDescriptorBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onUsbExportAccountDescriptor);
 
-    usbImportDescriptorBtn_ = new QPushButton("📥 Import Into Active Wallet");
+    usbImportDescriptorBtn_ = new QPushButton(tr("📥 Import Into Active Wallet"));
     usbImportDescriptorBtn_->setStyleSheet(hwButtonStyle());
-    usbImportDescriptorBtn_->setToolTip("Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors.");
+    usbImportDescriptorBtn_->setToolTip(tr("Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors."));
     connect(usbImportDescriptorBtn_, &QPushButton::clicked, this, &HardwareWalletWidget::onUsbImportAccountDescriptor);
 
     usbDescriptorResultEdit_ = new QTextEdit;
     usbDescriptorResultEdit_->setReadOnly(true);
     usbDescriptorResultEdit_->setMaximumHeight(170);
-    usbDescriptorResultEdit_->setPlaceholderText("Exported receive/change descriptors will appear here.");
+    usbDescriptorResultEdit_->setPlaceholderText(tr("Exported receive/change descriptors will appear here."));
 
     descriptorLayout->addWidget(accountPathLabel, 0, 0);
     descriptorLayout->addWidget(usbAccountPathEdit_, 0, 1, 1, 2);
@@ -721,12 +721,12 @@ void HardwareWalletWidget::setupUSBTab() {
     layout->addWidget(descriptorGroup);
 
     // Status
-    usbStatusLabel_ = new QLabel("USB capability unknown until detection runs");
+    usbStatusLabel_ = new QLabel(tr("USB capability unknown until detection runs"));
     usbStatusLabel_->setStyleSheet(hwPanelStyle());
     layout->addWidget(usbStatusLabel_);
 
     // Log
-    auto* logGroup = new QGroupBox("📝 Activity Log");
+    auto* logGroup = new QGroupBox(tr("📝 Activity Log"));
     auto* logLayout = new QVBoxLayout(logGroup);
     usbLogEdit_ = new QTextEdit;
     usbLogEdit_->setReadOnly(true);
@@ -758,7 +758,7 @@ void HardwareWalletWidget::onExportPSBT() {
         return;
     }
 
-    fileStatusLabel_->setText("Exporting PSBT...");
+    fileStatusLabel_->setText(tr("Exporting PSBT..."));
     fileProgressBar_->setVisible(true);
     fileProgressBar_->setRange(0, 0);
 
@@ -791,7 +791,7 @@ void HardwareWalletWidget::onImportPSBT() {
         return;
     }
 
-    fileStatusLabel_->setText("Importing PSBT...");
+    fileStatusLabel_->setText(tr("Importing PSBT..."));
     fileProgressBar_->setVisible(true);
     fileProgressBar_->setRange(0, 0);
 
@@ -814,7 +814,7 @@ void HardwareWalletWidget::onAnalyzePSBT() {
         return;
     }
 
-    fileStatusLabel_->setText("Analyzing PSBT...");
+    fileStatusLabel_->setText(tr("Analyzing PSBT..."));
 
     currentOperation_ = "hwallet.analyzepsbt";
 
@@ -844,7 +844,7 @@ void HardwareWalletWidget::onUsbSignPSBT() {
         return;
     }
 
-    fileStatusLabel_->setText("Requesting signature from connected USB device...");
+    fileStatusLabel_->setText(tr("Requesting signature from connected USB device..."));
     fileProgressBar_->setVisible(true);
     fileProgressBar_->setRange(0, 0);
     currentOperation_ = "hwallet.signpsbt";
@@ -863,7 +863,7 @@ void HardwareWalletWidget::onFinalizePSBT() {
         return;
     }
 
-    fileStatusLabel_->setText("Finalizing PSBT...");
+    fileStatusLabel_->setText(tr("Finalizing PSBT..."));
     fileProgressBar_->setVisible(true);
     fileProgressBar_->setRange(0, 0);
     currentOperation_ = "wallet.finalizepsbt";
@@ -876,7 +876,7 @@ void HardwareWalletWidget::onBroadcastTransaction() {
         return;
     }
 
-    fileStatusLabel_->setText("Broadcasting final transaction...");
+    fileStatusLabel_->setText(tr("Broadcasting final transaction..."));
     fileProgressBar_->setVisible(true);
     fileProgressBar_->setRange(0, 0);
     currentOperation_ = "wallet.sendrawtransaction";
@@ -888,7 +888,7 @@ void HardwareWalletWidget::onDeviceDetect() {
     QJsonArray params;  // No parameters required
     rpc_->call("hwallet.enumeratehwdevices", params);
 
-    usbStatusLabel_->setText("🔍 Detecting USB hardware wallets...");
+    usbStatusLabel_->setText(tr("🔍 Detecting USB hardware wallets..."));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Scanning for USB devices (Ledger, Trezor, etc.)");
 
     deviceCombo_->clear();
@@ -899,7 +899,7 @@ void HardwareWalletWidget::onDeviceDetect() {
 void HardwareWalletWidget::onDeviceConnect() {
     if (!connectedUsbDeviceId_.isEmpty()) {
         currentOperation_ = "hwallet.disconnecthwdevice";
-        usbStatusLabel_->setText("🔌 Disconnecting active USB session...");
+        usbStatusLabel_->setText(tr("🔌 Disconnecting active USB session..."));
         usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Disconnecting active USB session");
         rpc_->call("hwallet.disconnecthwdevice", QJsonArray{});
         return;
@@ -922,7 +922,7 @@ void HardwareWalletWidget::onDeviceConnect() {
     params["device_id"] = deviceId;
     QJsonArray arr;
     arr.append(params);
-    usbStatusLabel_->setText("🔌 Opening USB session...");
+    usbStatusLabel_->setText(tr("🔌 Opening USB session..."));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Opening USB session for " + deviceCombo_->currentText());
     rpc_->call("hwallet.connecthwdevice", arr);
     updateUsbConnectButton();
@@ -949,7 +949,7 @@ void HardwareWalletWidget::onUsbFetchAddress() {
     }
 
     currentOperation_ = "hwallet.gethwaddress";
-    usbStatusLabel_->setText("📥 Fetching address from active USB session...");
+    usbStatusLabel_->setText(tr("📥 Fetching address from active USB session..."));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Fetching address for " + derivationPath);
 
     QJsonObject params;
@@ -979,7 +979,7 @@ void HardwareWalletWidget::onUsbVerifyAddress() {
     }
 
     currentOperation_ = "hwallet.gethwaddress";
-    usbStatusLabel_->setText("👁️ Waiting for device address confirmation...");
+    usbStatusLabel_->setText(tr("👁️ Waiting for device address confirmation..."));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Requesting on-device address verification for " + derivationPath);
 
     QJsonObject params;
@@ -1005,7 +1005,7 @@ void HardwareWalletWidget::onUsbExportAccountDescriptor() {
     }
 
     currentOperation_ = "hwallet.gethwaccountdescriptor";
-    usbStatusLabel_->setText("🧾 Exporting account descriptors...");
+    usbStatusLabel_->setText(tr("🧾 Exporting account descriptors..."));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Exporting account descriptors for " + derivationPath);
 
     QJsonObject params;
@@ -1022,15 +1022,15 @@ void HardwareWalletWidget::onUsbImportAccountDescriptor() {
 
     if (QMessageBox::question(
             this,
-            "Import Watch-Only Descriptors",
-            "Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors?",
+            tr("Import Watch-Only Descriptors"),
+            tr("Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors?"),
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::Yes) != QMessageBox::Yes) {
         return;
     }
 
     currentOperation_ = "wallet.importdescriptors";
-    usbStatusLabel_->setText("📥 Importing watch-only descriptors into the active wallet...");
+    usbStatusLabel_->setText(tr("📥 Importing watch-only descriptors into the active wallet..."));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Importing exported watch-only descriptors into the active wallet");
 
     QJsonArray requests;
@@ -1113,7 +1113,7 @@ void HardwareWalletWidget::onRpcError(const QString& method, int code, const QSt
     if (method == "hwallet.analyzepsbt" && pendingQrRenderAfterAnalyze_) {
         pendingQrRenderAfterAnalyze_ = false;
         if (qrStatusLabel_) {
-            qrStatusLabel_->setText("❌ PSBT analysis failed; QR was not displayed.");
+            qrStatusLabel_->setText(tr("❌ PSBT analysis failed; QR was not displayed."));
             qrStatusLabel_->setStyleSheet(hwPanelStyle());
         }
     }
@@ -1125,14 +1125,14 @@ void HardwareWalletWidget::onRpcError(const QString& method, int code, const QSt
         method == "hwallet.gethwaccountdescriptor" ||
         method == "hwallet.signpsbt" ||
         method == "wallet.importdescriptors") {
-        usbStatusLabel_->setText("❌ USB operation failed");
+        usbStatusLabel_->setText(tr("❌ USB operation failed"));
         usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Error: " + message);
         if (method == "hwallet.signpsbt") {
-            fileStatusLabel_->setText("❌ USB signing failed");
+            fileStatusLabel_->setText(tr("❌ USB signing failed"));
         }
         updateUsbConnectButton();
     } else {
-        fileStatusLabel_->setText("❌ Operation failed");
+        fileStatusLabel_->setText(tr("❌ Operation failed"));
         updateFileActionButtons();
     }
     currentOperation_.clear();
@@ -1150,11 +1150,11 @@ void HardwareWalletWidget::handleExportResult(const QJsonObject& result) {
         }
 
         showSuccess(msg);
-        fileStatusLabel_->setText("✅ Export complete");
+        fileStatusLabel_->setText(tr("✅ Export complete"));
     } else if (result.contains("error")) {
         auto err = result["error"].toObject();
         showError(err["message"].toString());
-        fileStatusLabel_->setText("❌ Export failed");
+        fileStatusLabel_->setText(tr("❌ Export failed"));
     }
 }
 
@@ -1164,7 +1164,7 @@ void HardwareWalletWidget::handleImportResult(const QJsonObject& result) {
     } else if (result.contains("error")) {
         auto err = result["error"].toObject();
         showError(err["message"].toString());
-        fileStatusLabel_->setText("❌ Import failed");
+        fileStatusLabel_->setText(tr("❌ Import failed"));
         updateFileActionButtons();
     }
 }
@@ -1181,19 +1181,19 @@ void HardwareWalletWidget::handleAnalyzeResult(const QJsonObject& result) {
                 qrSummaryLabel_->setStyleSheet(hwPanelStyle());
             }
             renderPsbtQrImage(qrPsbtEdit_ ? qrPsbtEdit_->toPlainText().trimmed() : QString());
-            fileStatusLabel_->setText("✅ Analysis complete; QR ready");
+            fileStatusLabel_->setText(tr("✅ Analysis complete; QR ready"));
             return;
         }
 
         showSuccess(analysis);
-        fileStatusLabel_->setText("✅ Analysis complete");
+        fileStatusLabel_->setText(tr("✅ Analysis complete"));
     } else if (result.contains("error")) {
         pendingQrRenderAfterAnalyze_ = false;
         auto err = result["error"].toObject();
         showError(err["message"].toString());
-        fileStatusLabel_->setText("❌ Analysis failed");
+        fileStatusLabel_->setText(tr("❌ Analysis failed"));
         if (qrStatusLabel_) {
-            qrStatusLabel_->setText("❌ PSBT analysis failed; QR was not displayed.");
+            qrStatusLabel_->setText(tr("❌ PSBT analysis failed; QR was not displayed."));
             qrStatusLabel_->setStyleSheet(hwPanelStyle());
         }
     }
@@ -1246,7 +1246,7 @@ void HardwareWalletWidget::handleUsbSignResult(const QJsonObject& result) {
     } else if (result.contains("error")) {
         auto err = result["error"].toObject();
         showError(err["message"].toString());
-        fileStatusLabel_->setText("❌ USB signing failed");
+        fileStatusLabel_->setText(tr("❌ USB signing failed"));
         updateFileActionButtons();
     }
 }
@@ -1263,8 +1263,8 @@ void HardwareWalletWidget::handleUsbAddressResult(const QJsonObject& result) {
     const bool verifiedOnDevice = res["verified_on_device"].toBool();
 
     if (address.isEmpty()) {
-        usbStatusLabel_->setText("⚠️ No address returned");
-        usbAddressResultLabel_->setText("No address returned.");
+        usbStatusLabel_->setText(tr("⚠️ No address returned"));
+        usbAddressResultLabel_->setText(tr("No address returned."));
         return;
     }
 
@@ -1311,7 +1311,7 @@ void HardwareWalletWidget::handleUsbDescriptorResult(const QJsonObject& result) 
                 "Change descriptor:\n%6")
             .arg(policy, derivationPath, fingerprint, accountXpub, receiveDescriptorWithChecksum, changeDescriptorWithChecksum));
 
-    usbStatusLabel_->setText("✅ Account descriptors exported");
+    usbStatusLabel_->setText(tr("✅ Account descriptors exported"));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Exported "
                         + policy + " descriptors for " + derivationPath);
     updateUsbDescriptorControls();
@@ -1319,13 +1319,13 @@ void HardwareWalletWidget::handleUsbDescriptorResult(const QJsonObject& result) 
 
 void HardwareWalletWidget::handleUsbImportDescriptorResult(const QJsonValue& result) {
     if (!result.isArray()) {
-        usbStatusLabel_->setText("⚠️ Descriptor import returned an unexpected response");
+        usbStatusLabel_->setText(tr("⚠️ Descriptor import returned an unexpected response"));
         return;
     }
 
     const QJsonArray results = result.toArray();
     if (results.size() < 2) {
-        usbStatusLabel_->setText("⚠️ Descriptor import returned incomplete results");
+        usbStatusLabel_->setText(tr("⚠️ Descriptor import returned incomplete results"));
         return;
     }
 
@@ -1349,12 +1349,12 @@ void HardwareWalletWidget::handleUsbImportDescriptorResult(const QJsonValue& res
     }
 
     if (!errors.isEmpty()) {
-        usbStatusLabel_->setText("❌ Watch-only descriptor import failed");
+        usbStatusLabel_->setText(tr("❌ Watch-only descriptor import failed"));
         showError(errors.join("\n"));
         return;
     }
 
-    usbStatusLabel_->setText("✅ Watch-only descriptors imported into the active wallet");
+    usbStatusLabel_->setText(tr("✅ Watch-only descriptors imported into the active wallet"));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Imported "
                         + QString::number(successCount) + " descriptor(s) into the active wallet");
 
@@ -1370,7 +1370,7 @@ void HardwareWalletWidget::handleUsbImportDescriptorResult(const QJsonValue& res
 void HardwareWalletWidget::handleFinalizeResult(const QJsonObject& result) {
     if (result.contains("error")) {
         showError(result["error"].toString());
-        fileStatusLabel_->setText("❌ Finalize failed");
+        fileStatusLabel_->setText(tr("❌ Finalize failed"));
         pendingBroadcastHex_.clear();
         updateFileActionButtons();
         return;
@@ -1389,10 +1389,10 @@ void HardwareWalletWidget::handleFinalizeResult(const QJsonObject& result) {
     if (complete && result.contains("hex")) {
         pendingBroadcastHex_ = result["hex"].toString();
         message = "✅ PSBT finalized successfully.\n\nThe transaction is ready to broadcast.";
-        fileStatusLabel_->setText("✅ Finalized. Ready to broadcast");
+        fileStatusLabel_->setText(tr("✅ Finalized. Ready to broadcast"));
     } else {
         message = "⚠️ PSBT is still incomplete after finalization.\n\nContinue signing or combine additional PSBTs.";
-        fileStatusLabel_->setText("⚠️ Finalization incomplete");
+        fileStatusLabel_->setText(tr("⚠️ Finalization incomplete"));
     }
 
     showSuccess(message);
@@ -1403,7 +1403,7 @@ void HardwareWalletWidget::handleBroadcastResult(const QJsonObject& result) {
     if (result.contains("error")) {
         const auto err = result["error"].toObject();
         showError(err["message"].toString());
-        fileStatusLabel_->setText("❌ Broadcast failed");
+        fileStatusLabel_->setText(tr("❌ Broadcast failed"));
         updateFileActionButtons();
         return;
     }
@@ -1433,7 +1433,7 @@ void HardwareWalletWidget::handleDeviceEnumerationResult(const QJsonObject& resu
 
         if (count == 0) {
             deviceCombo_->addItem("No devices detected");
-            usbStatusLabel_->setText("⚠️ No USB hardware wallets found");
+            usbStatusLabel_->setText(tr("⚠️ No USB hardware wallets found"));
             usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] No devices detected");
             usbLogEdit_->append("Make sure your hardware wallet is connected and unlocked");
         } else {
@@ -1489,7 +1489,7 @@ void HardwareWalletWidget::handleDeviceEnumerationResult(const QJsonObject& resu
         auto err = result["error"].toObject();
         QString errorMsg = err["message"].toString();
         showError(errorMsg);
-        usbStatusLabel_->setText("❌ Device detection failed");
+        usbStatusLabel_->setText(tr("❌ Device detection failed"));
         usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] Error: " + errorMsg);
 
         deviceCombo_->clear();
@@ -1558,10 +1558,10 @@ void HardwareWalletWidget::handleDeviceDisconnectResult(const QJsonObject& resul
     exportedUsbChangeDescriptor_.clear();
     exportedUsbDescriptorPolicy_.clear();
     exportedUsbDescriptorAccount_ = 0;
-    usbStatusLabel_->setText("ℹ️ USB session closed");
+    usbStatusLabel_->setText(tr("ℹ️ USB session closed"));
     usbLogEdit_->append("[" + QDateTime::currentDateTime().toString("HH:mm:ss") + "] USB session closed");
     deviceInfoLabel_->setText(defaultUsbDeviceInfoText_);
-    usbAddressResultLabel_->setText("No address fetched yet.");
+    usbAddressResultLabel_->setText(tr("No address fetched yet."));
     usbDescriptorResultEdit_->clear();
     updateUsbConnectButton();
     updateUsbAddressButtons();
@@ -1572,14 +1572,14 @@ void HardwareWalletWidget::handleDeviceDisconnectResult(const QJsonObject& resul
 void HardwareWalletWidget::updateUsbConnectButton() {
     if (!connectedUsbDeviceId_.isEmpty()) {
         connectBtn_->setEnabled(true);
-        connectBtn_->setText("🔌 Disconnect");
-        connectBtn_->setToolTip("Close the active USB hardware-wallet session.");
+        connectBtn_->setText(tr("🔌 Disconnect"));
+        connectBtn_->setToolTip(tr("Close the active USB hardware-wallet session."));
         return;
     }
 
     const bool interactiveSupported = deviceCombo_->currentData(Qt::UserRole + 1).toBool();
     const QString note = deviceCombo_->currentData(Qt::UserRole + 2).toString();
-    connectBtn_->setText("🔌 Connect");
+    connectBtn_->setText(tr("🔌 Connect"));
     connectBtn_->setEnabled(interactiveSupported);
     connectBtn_->setToolTip(
         interactiveSupported
@@ -1628,16 +1628,16 @@ void HardwareWalletWidget::applySignedPsbtResult(const QJsonObject& result, cons
 
     if (readyToBroadcast) {
         pendingBroadcastHex_ = result["hex"].toString();
-        fileStatusLabel_->setText("✅ Signed Dinero PSBT ready to broadcast");
+        fileStatusLabel_->setText(tr("✅ Signed Dinero PSBT ready to broadcast"));
         if (!result["txid"].toString().isEmpty()) {
             message += "\n\nTXID: " + result["txid"].toString();
         }
         message += "\n\nThe transaction is ready to broadcast.";
     } else if (result["complete"].toBool()) {
-        fileStatusLabel_->setText("✅ Signed Dinero PSBT imported");
+        fileStatusLabel_->setText(tr("✅ Signed Dinero PSBT imported"));
         message += "\n\nThe Dinero PSBT is fully signed, but a final transaction hex is not available yet. Use Finalize Dinero PSBT.";
     } else {
-        fileStatusLabel_->setText("⚠️ Dinero PSBT still needs more signatures");
+        fileStatusLabel_->setText(tr("⚠️ Dinero PSBT still needs more signatures"));
         message += "\n\nThe Dinero PSBT is not fully signed yet.";
     }
 
@@ -1653,9 +1653,9 @@ void HardwareWalletWidget::applySignedPsbtResult(const QJsonObject& result, cons
 }
 
 void HardwareWalletWidget::showError(const QString& message) {
-    QMessageBox::critical(this, "Hardware Wallet Error", message, QMessageBox::Ok);
+    QMessageBox::critical(this, tr("Hardware Wallet Error"), message, QMessageBox::Ok);
 }
 
 void HardwareWalletWidget::showSuccess(const QString& message) {
-    QMessageBox::information(this, "Hardware Wallet", message, QMessageBox::Ok);
+    QMessageBox::information(this, tr("Hardware Wallet"), message, QMessageBox::Ok);
 }

@@ -26,7 +26,7 @@ BridgeWidget::BridgeWidget(RpcClient* rpc, WebSocketClient* ws, QWidget* parent)
     // Initial rate fetch
     onRefreshRate();
 
-    statusLabel->setText("Bridge ready - Auto-refresh every 15s");
+    statusLabel->setText(tr("Bridge ready - Auto-refresh every 15s"));
 }
 
 BridgeWidget::~BridgeWidget() {}
@@ -43,26 +43,26 @@ void BridgeWidget::setupUi()
     auto swapLayout = new QGridLayout(swapGroup);
 
     // Row 1: Asset pair selection
-    swapLayout->addWidget(new QLabel("From:"), 0, 0);
+    swapLayout->addWidget(new QLabel(tr("From:")), 0, 0);
     fromCombo = new QComboBox(this);
     fromCombo->addItems({"DIN", "BTC", "ETH", "USDT", "USDC"});
     swapLayout->addWidget(fromCombo, 0, 1);
 
-    swapLayout->addWidget(new QLabel("To:"), 0, 2);
+    swapLayout->addWidget(new QLabel(tr("To:")), 0, 2);
     toCombo = new QComboBox(this);
     toCombo->addItems({"USD", "EUR", "GBP", "BTC", "ETH", "USDT", "USDC"});
     swapLayout->addWidget(toCombo, 0, 3);
 
     // Row 2: Provider selection
-    swapLayout->addWidget(new QLabel("Provider:"), 1, 0);
+    swapLayout->addWidget(new QLabel(tr("Provider:")), 1, 0);
     providerCombo = new QComboBox(this);
     providerCombo->addItems({"Auto (Best Rate)", "DEX (Non-Custodial)", "Hybrid (SimpleSwap)", "Custodial (Coinbase/Binance)"});
     swapLayout->addWidget(providerCombo, 1, 1, 1, 3);
 
     // Row 3: Amount
-    swapLayout->addWidget(new QLabel("Amount:"), 2, 0);
+    swapLayout->addWidget(new QLabel(tr("Amount:")), 2, 0);
     amountEdit = new QLineEdit(this);
-    amountEdit->setPlaceholderText("Enter amount to convert");
+    amountEdit->setPlaceholderText(tr("Enter amount to convert"));
     swapLayout->addWidget(amountEdit, 2, 1, 1, 3);
 
     // Row 4: Rate display
@@ -211,7 +211,7 @@ void BridgeWidget::onConvertClicked()
     double amount = amountEdit->text().toDouble(&ok);
 
     if (!ok || amount <= 0) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter a valid amount greater than 0.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter a valid amount greater than 0."));
         return;
     }
 
@@ -265,19 +265,19 @@ void BridgeWidget::updateRateDisplay(const QJsonObject& rateInfo)
                                        .arg(formatRate(effectiveRate))
                                        .arg(to));
     } else {
-        effectiveRateLabel->setText("Effective rate: (direct conversion, minimal fees)");
+        effectiveRateLabel->setText(tr("Effective rate: (direct conversion, minimal fees)"));
     }
 
     if (rateInfo.contains("total_fee_bps")) {
         double feeBps = rateInfo["total_fee_bps"].toDouble();
         feeLabel->setText(QString("Fees: %1%").arg(feeBps / 100.0, 0, 'f', 2));
     } else {
-        feeLabel->setText("Fees: ~1.5%");
+        feeLabel->setText(tr("Fees: ~1.5%"));
     }
 
     lastUpdateLabel->setText("Last update: " + QDateTime::currentDateTime().toString("hh:mm:ss"));
     progressBar->setVisible(false);
-    statusLabel->setText("Rate updated successfully");
+    statusLabel->setText(tr("Rate updated successfully"));
 }
 
 void BridgeWidget::updateRouteDisplay(const QJsonObject& routeInfo)
@@ -286,7 +286,7 @@ void BridgeWidget::updateRouteDisplay(const QJsonObject& routeInfo)
 
     if (!routeInfo.contains("hops")) {
         routeTable->setVisible(false);
-        routeDescLabel->setText("Direct conversion (1 hop)");
+        routeDescLabel->setText(tr("Direct conversion (1 hop)"));
         return;
     }
 
@@ -340,7 +340,7 @@ void BridgeWidget::onRpcResult(const QString& method, const QJsonValue& result)
             QString to = obj.value("to").toString(toCombo->currentText());
             QString txid = obj["txid"].toString();
 
-            QMessageBox::information(this, "Conversion Successful",
+            QMessageBox::information(this, tr("Conversion Successful"),
                 QString("Conversion completed!\n\n"
                        "Received: %1 %2\n"
                        "Transaction ID: %3\n"
@@ -353,8 +353,8 @@ void BridgeWidget::onRpcResult(const QString& method, const QJsonValue& result)
             statusLabel->setText("✅ Conversion successful: " + txid);
         } else {
             QString error = obj.value("error").toString("Unknown error");
-            QMessageBox::warning(this, "Conversion Failed", "Conversion failed: " + error);
-            statusLabel->setText("❌ Conversion failed");
+            QMessageBox::warning(this, tr("Conversion Failed"), "Conversion failed: " + error);
+            statusLabel->setText(tr("❌ Conversion failed"));
         }
     }
 }
@@ -377,7 +377,7 @@ void BridgeWidget::onWebSocketEvent(const QString& topic, const QJsonObject& dat
 
         if (from == fromCombo->currentText() && to == toCombo->currentText()) {
             updateRateDisplay(data);
-            statusLabel->setText("Rate updated via WebSocket");
+            statusLabel->setText(tr("Rate updated via WebSocket"));
         }
     }
 }

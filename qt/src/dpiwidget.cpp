@@ -95,20 +95,20 @@ void DpiWidget::setupCollectTab() {
     auto* layout = new QVBoxLayout(collectWidget);
 
     // --- Create Invoice ---
-    auto* createGroup = new QGroupBox("Create DPI Invoice");
+    auto* createGroup = new QGroupBox(tr("Create DPI Invoice"));
     auto* createLayout = new QGridLayout(createGroup);
 
-    createLayout->addWidget(new QLabel("Amount (DIN):"), 0, 0);
+    createLayout->addWidget(new QLabel(tr("Amount (DIN):")), 0, 0);
     collectAmountEdit_ = new QLineEdit;
     collectAmountEdit_->setPlaceholderText("e.g. 50.0");
     createLayout->addWidget(collectAmountEdit_, 0, 1);
 
-    createLayout->addWidget(new QLabel("Memo:"), 1, 0);
+    createLayout->addWidget(new QLabel(tr("Memo:")), 1, 0);
     collectMemoEdit_ = new QLineEdit;
-    collectMemoEdit_->setPlaceholderText("e.g. Order #12345");
+    collectMemoEdit_->setPlaceholderText(tr("e.g. Order #12345"));
     createLayout->addWidget(collectMemoEdit_, 1, 1);
 
-    createLayout->addWidget(new QLabel("Expiry:"), 2, 0);
+    createLayout->addWidget(new QLabel(tr("Expiry:")), 2, 0);
     collectExpiryCombo_ = new QComboBox;
     collectExpiryCombo_->addItem("5 minutes", 300);
     collectExpiryCombo_->addItem("15 minutes", 900);
@@ -117,7 +117,7 @@ void DpiWidget::setupCollectTab() {
     collectExpiryCombo_->setCurrentIndex(1);
     createLayout->addWidget(collectExpiryCombo_, 2, 1);
 
-    createInvoiceBtn_ = new QPushButton("Create Collect Invoice");
+    createInvoiceBtn_ = new QPushButton(tr("Create Collect Invoice"));
     createInvoiceBtn_->setStyleSheet(
         "background-color: #4CAF50; color: white; padding: 8px; font-weight: bold;");
     connect(createInvoiceBtn_, &QPushButton::clicked, this, &DpiWidget::onCreateInvoice);
@@ -126,7 +126,7 @@ void DpiWidget::setupCollectTab() {
     layout->addWidget(createGroup);
 
     // --- Invoice Details (hidden until invoice created) ---
-    detailsGroup_ = new QGroupBox("Collect Invoice");
+    detailsGroup_ = new QGroupBox(tr("Collect Invoice"));
     auto* detailsLayout = new QVBoxLayout(detailsGroup_);
 
     // QR + info side by side
@@ -138,23 +138,23 @@ void DpiWidget::setupCollectTab() {
     qrRow->addWidget(invoiceQrLabel_);
 
     auto* infoGrid = new QGridLayout;
-    infoGrid->addWidget(new QLabel("Invoice ID:"), 0, 0);
+    infoGrid->addWidget(new QLabel(tr("Invoice ID:")), 0, 0);
     invoiceIdLabel_ = new QLabel("—");
     invoiceIdLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     invoiceIdLabel_->setWordWrap(true);
     infoGrid->addWidget(invoiceIdLabel_, 0, 1);
 
-    infoGrid->addWidget(new QLabel("Destination:"), 1, 0);
+    infoGrid->addWidget(new QLabel(tr("Destination:")), 1, 0);
     invoiceDestLabel_ = new QLabel("—");
     invoiceDestLabel_->setWordWrap(true);
     invoiceDestLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     infoGrid->addWidget(invoiceDestLabel_, 1, 1);
 
-    infoGrid->addWidget(new QLabel("Amount:"), 2, 0);
+    infoGrid->addWidget(new QLabel(tr("Amount:")), 2, 0);
     invoiceAmountLabel_ = new QLabel("—");
     infoGrid->addWidget(invoiceAmountLabel_, 2, 1);
 
-    infoGrid->addWidget(new QLabel("Expires:"), 3, 0);
+    infoGrid->addWidget(new QLabel(tr("Expires:")), 3, 0);
     invoiceExpiryLabel_ = new QLabel("—");
     infoGrid->addWidget(invoiceExpiryLabel_, 3, 1);
 
@@ -166,10 +166,10 @@ void DpiWidget::setupCollectTab() {
     invoiceTextEdit_ = new QTextEdit;
     invoiceTextEdit_->setReadOnly(true);
     invoiceTextEdit_->setMaximumHeight(50);
-    invoiceTextEdit_->setPlaceholderText("Invoice data will appear here...");
+    invoiceTextEdit_->setPlaceholderText(tr("Invoice data will appear here..."));
     detailsLayout->addWidget(invoiceTextEdit_);
 
-    copyInvoiceBtn_ = new QPushButton("Copy Invoice");
+    copyInvoiceBtn_ = new QPushButton(tr("Copy Invoice"));
     copyInvoiceBtn_->setStyleSheet(
         "background-color: #2196F3; color: white; padding: 6px;");
     copyInvoiceBtn_->setEnabled(false);
@@ -180,16 +180,16 @@ void DpiWidget::setupCollectTab() {
     layout->addWidget(detailsGroup_);
 
     // --- Verify Payment ---
-    auto* verifyGroup = new QGroupBox("Verify Payment Package");
+    auto* verifyGroup = new QGroupBox(tr("Verify Payment Package"));
     auto* verifyLayout = new QVBoxLayout(verifyGroup);
 
-    verifyLayout->addWidget(new QLabel("Paste payment package from sender:"));
+    verifyLayout->addWidget(new QLabel(tr("Paste payment package from sender:")));
     packageInputEdit_ = new QTextEdit;
     packageInputEdit_->setMaximumHeight(60);
-    packageInputEdit_->setPlaceholderText("Paste payment package here...");
+    packageInputEdit_->setPlaceholderText(tr("Paste payment package here..."));
     verifyLayout->addWidget(packageInputEdit_);
 
-    verifyPackageBtn_ = new QPushButton("Verify Package");
+    verifyPackageBtn_ = new QPushButton(tr("Verify Package"));
     verifyPackageBtn_->setStyleSheet(
         "background-color: #FF9800; color: white; padding: 8px; font-weight: bold;");
     verifyPackageBtn_->setEnabled(false);
@@ -232,16 +232,16 @@ void DpiWidget::setupPayTab() {
     auto* layout = new QVBoxLayout(payWidget);
 
     // --- Invoice Input ---
-    auto* inputGroup = new QGroupBox("Pay DPI Invoice");
+    auto* inputGroup = new QGroupBox(tr("Pay DPI Invoice"));
     auto* inputLayout = new QVBoxLayout(inputGroup);
 
-    inputLayout->addWidget(new QLabel("Paste or scan a DPI invoice from DineroDPI or Dinero-Qt:"));
+    inputLayout->addWidget(new QLabel(tr("Paste or scan a DPI invoice from DineroDPI or Dinero-Qt:")));
     payInvoiceInputEdit_ = new QTextEdit;
     payInvoiceInputEdit_->setMaximumHeight(60);
-    payInvoiceInputEdit_->setPlaceholderText("Paste invoice here...");
+    payInvoiceInputEdit_->setPlaceholderText(tr("Paste invoice here..."));
     inputLayout->addWidget(payInvoiceInputEdit_);
 
-    decodeInvoiceBtn_ = new QPushButton("Review Invoice");
+    decodeInvoiceBtn_ = new QPushButton(tr("Review Invoice"));
     decodeInvoiceBtn_->setStyleSheet(
         "background-color: #2196F3; color: white; padding: 8px;");
     connect(decodeInvoiceBtn_, &QPushButton::clicked, this, &DpiWidget::onDecodeInvoice);
@@ -250,31 +250,31 @@ void DpiWidget::setupPayTab() {
     layout->addWidget(inputGroup);
 
     // --- Decoded Details ---
-    auto* decodedGroup = new QGroupBox("Invoice Details");
+    auto* decodedGroup = new QGroupBox(tr("Invoice Details"));
     auto* decodedGrid = new QGridLayout(decodedGroup);
 
-    decodedGrid->addWidget(new QLabel("Amount:"), 0, 0);
+    decodedGrid->addWidget(new QLabel(tr("Amount:")), 0, 0);
     decodedAmountLabel_ = new QLabel("—");
     decodedGrid->addWidget(decodedAmountLabel_, 0, 1);
 
-    decodedGrid->addWidget(new QLabel("Destination:"), 1, 0);
+    decodedGrid->addWidget(new QLabel(tr("Destination:")), 1, 0);
     decodedDestLabel_ = new QLabel("—");
     decodedDestLabel_->setWordWrap(true);
     decodedDestLabel_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     decodedGrid->addWidget(decodedDestLabel_, 1, 1);
 
-    decodedGrid->addWidget(new QLabel("Memo:"), 2, 0);
+    decodedGrid->addWidget(new QLabel(tr("Memo:")), 2, 0);
     decodedMemoLabel_ = new QLabel("—");
     decodedGrid->addWidget(decodedMemoLabel_, 2, 1);
 
-    decodedGrid->addWidget(new QLabel("Expires:"), 3, 0);
+    decodedGrid->addWidget(new QLabel(tr("Expires:")), 3, 0);
     decodedExpiryLabel_ = new QLabel("—");
     decodedGrid->addWidget(decodedExpiryLabel_, 3, 1);
 
     layout->addWidget(decodedGroup);
 
     // --- Pay Button ---
-    payInvoiceBtn_ = new QPushButton("Pay Reviewed Invoice");
+    payInvoiceBtn_ = new QPushButton(tr("Pay Reviewed Invoice"));
     payInvoiceBtn_->setStyleSheet(
         "background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;");
     payInvoiceBtn_->setEnabled(false);
@@ -292,17 +292,17 @@ void DpiWidget::setupPayTab() {
     layout->addWidget(payTierBadge_);
 
     // --- Package Output ---
-    auto* packageGroup = new QGroupBox("Payment Package");
+    auto* packageGroup = new QGroupBox(tr("Payment Package"));
     auto* packageLayout = new QVBoxLayout(packageGroup);
 
-    packageLayout->addWidget(new QLabel("Send this to the merchant:"));
+    packageLayout->addWidget(new QLabel(tr("Send this to the merchant:")));
     packageOutputEdit_ = new QTextEdit;
     packageOutputEdit_->setReadOnly(true);
     packageOutputEdit_->setMaximumHeight(60);
-    packageOutputEdit_->setPlaceholderText("Package will appear after payment...");
+    packageOutputEdit_->setPlaceholderText(tr("Package will appear after payment..."));
     packageLayout->addWidget(packageOutputEdit_);
 
-    copyPackageBtn_ = new QPushButton("Copy Package");
+    copyPackageBtn_ = new QPushButton(tr("Copy Package"));
     copyPackageBtn_->setStyleSheet(
         "background-color: #2196F3; color: white; padding: 6px;");
     copyPackageBtn_->setEnabled(false);
@@ -331,13 +331,13 @@ void DpiWidget::setupPayTab() {
 void DpiWidget::onCreateInvoice() {
     QString amountStr = collectAmountEdit_->text().trimmed();
     if (amountStr.isEmpty()) {
-        QMessageBox::warning(this, "Input Required", "Please enter an amount.");
+        QMessageBox::warning(this, tr("Input Required"), tr("Please enter an amount."));
         return;
     }
 
     double amount = amountStr.toDouble();
     if (amount <= 0) {
-        QMessageBox::warning(this, "Invalid Amount", "Amount must be greater than 0.");
+        QMessageBox::warning(this, tr("Invalid Amount"), tr("Amount must be greater than 0."));
         return;
     }
 
@@ -347,7 +347,7 @@ void DpiWidget::onCreateInvoice() {
     params["expiry_seconds"] = collectExpiryCombo_->currentData().toInt();
 
     createInvoiceBtn_->setEnabled(false);
-    createInvoiceBtn_->setText("Creating...");
+    createInvoiceBtn_->setText(tr("Creating..."));
     rpc_->callNamed("dpi.createinvoice", params);
 }
 
@@ -358,9 +358,9 @@ void DpiWidget::onCreateInvoice() {
 void DpiWidget::onCopyInvoice() {
     if (collectInvoiceBase64_.isEmpty()) return;
     QApplication::clipboard()->setText(collectInvoiceBase64_);
-    copyInvoiceBtn_->setText("Copied!");
+    copyInvoiceBtn_->setText(tr("Copied!"));
     QTimer::singleShot(1500, this, [this]() {
-        copyInvoiceBtn_->setText("Copy Invoice");
+        copyInvoiceBtn_->setText(tr("Copy Invoice"));
     });
 }
 
@@ -371,11 +371,11 @@ void DpiWidget::onCopyInvoice() {
 void DpiWidget::onVerifyPackage() {
     QString packageB64 = packageInputEdit_->toPlainText().trimmed();
     if (packageB64.isEmpty()) {
-        QMessageBox::warning(this, "Input Required", "Paste a payment package first.");
+        QMessageBox::warning(this, tr("Input Required"), tr("Paste a payment package first."));
         return;
     }
     if (collectInvoiceBase64_.isEmpty()) {
-        QMessageBox::warning(this, "No Invoice", "Create an invoice first.");
+        QMessageBox::warning(this, tr("No Invoice"), tr("Create an invoice first."));
         return;
     }
 
@@ -384,7 +384,7 @@ void DpiWidget::onVerifyPackage() {
     params["invoice"] = collectInvoiceBase64_;
 
     verifyPackageBtn_->setEnabled(false);
-    verifyPackageBtn_->setText("Verifying...");
+    verifyPackageBtn_->setText(tr("Verifying..."));
     rpc_->callNamed("dpi.verifypackage", params);
 }
 
@@ -395,7 +395,7 @@ void DpiWidget::onVerifyPackage() {
 void DpiWidget::onDecodeInvoice() {
     QString invoiceB64 = payInvoiceInputEdit_->toPlainText().trimmed();
     if (invoiceB64.isEmpty()) {
-        QMessageBox::warning(this, "Input Required", "Paste an invoice first.");
+        QMessageBox::warning(this, tr("Input Required"), tr("Paste an invoice first."));
         return;
     }
 
@@ -405,7 +405,7 @@ void DpiWidget::onDecodeInvoice() {
     params["invoice"] = invoiceB64;
 
     decodeInvoiceBtn_->setEnabled(false);
-    decodeInvoiceBtn_->setText("Decoding...");
+    decodeInvoiceBtn_->setText(tr("Decoding..."));
     rpc_->callNamed("dpi.decodeinvoice", params);
 }
 
@@ -420,8 +420,8 @@ void DpiWidget::onPayInvoice() {
     params["invoice"] = payInvoiceBase64_;
 
     payInvoiceBtn_->setEnabled(false);
-    payInvoiceBtn_->setText("Paying...");
-    payStatusLabel_->setText("Processing payment...");
+    payInvoiceBtn_->setText(tr("Paying..."));
+    payStatusLabel_->setText(tr("Processing payment..."));
     payStatusLabel_->setStyleSheet("color: #aaa;");
     rpc_->callNamed("dpi.payinvoice", params);
 }
@@ -434,9 +434,9 @@ void DpiWidget::onCopyPackage() {
     QString pkg = packageOutputEdit_->toPlainText().trimmed();
     if (pkg.isEmpty()) return;
     QApplication::clipboard()->setText(pkg);
-    copyPackageBtn_->setText("Copied!");
+    copyPackageBtn_->setText(tr("Copied!"));
     QTimer::singleShot(1500, this, [this]() {
-        copyPackageBtn_->setText("Copy Package");
+        copyPackageBtn_->setText(tr("Copy Package"));
     });
 }
 
@@ -447,12 +447,12 @@ void DpiWidget::onCopyPackage() {
 void DpiWidget::onRpcResult(const QString& method, const QJsonValue& result) {
     if (method == "dpi.createinvoice") {
         createInvoiceBtn_->setEnabled(true);
-        createInvoiceBtn_->setText("Create Collect Invoice");
+        createInvoiceBtn_->setText(tr("Create Collect Invoice"));
 
         if (!result.isObject()) return;
         auto obj = result.toObject();
         if (obj.contains("error") && !obj["error"].toString().isEmpty()) {
-            QMessageBox::warning(this, "Invoice Error", obj["error"].toString());
+            QMessageBox::warning(this, tr("Invoice Error"), obj["error"].toString());
             return;
         }
 
@@ -486,12 +486,12 @@ void DpiWidget::onRpcResult(const QString& method, const QJsonValue& result) {
     }
     else if (method == "dpi.decodeinvoice") {
         decodeInvoiceBtn_->setEnabled(true);
-        decodeInvoiceBtn_->setText("Review Invoice");
+        decodeInvoiceBtn_->setText(tr("Review Invoice"));
 
         if (!result.isObject()) return;
         auto obj = result.toObject();
         if (obj.contains("error") && !obj["error"].toString().isEmpty()) {
-            QMessageBox::warning(this, "Decode Error", obj["error"].toString());
+            QMessageBox::warning(this, tr("Decode Error"), obj["error"].toString());
             payInvoiceBase64_.clear();
             payInvoiceBtn_->setEnabled(false);
             return;
@@ -505,7 +505,7 @@ void DpiWidget::onRpcResult(const QString& method, const QJsonValue& result) {
 
         bool expired = obj["expired"].toBool();
         if (expired) {
-            decodedExpiryLabel_->setText("EXPIRED");
+            decodedExpiryLabel_->setText(tr("EXPIRED"));
             decodedExpiryLabel_->setStyleSheet("color: #f44336; font-weight: bold;");
             payInvoiceBase64_.clear();
             payInvoiceBtn_->setEnabled(false);
@@ -518,7 +518,7 @@ void DpiWidget::onRpcResult(const QString& method, const QJsonValue& result) {
     }
     else if (method == "dpi.payinvoice") {
         payInvoiceBtn_->setEnabled(true);
-        payInvoiceBtn_->setText("Pay Reviewed Invoice");
+        payInvoiceBtn_->setText(tr("Pay Reviewed Invoice"));
 
         if (!result.isObject()) return;
         auto obj = result.toObject();
@@ -545,7 +545,7 @@ void DpiWidget::onRpcResult(const QString& method, const QJsonValue& result) {
     }
     else if (method == "dpi.verifypackage") {
         verifyPackageBtn_->setEnabled(true);
-        verifyPackageBtn_->setText("Verify Package");
+        verifyPackageBtn_->setText(tr("Verify Package"));
 
         if (!result.isObject()) return;
         auto obj = result.toObject();
@@ -681,24 +681,24 @@ void DpiWidget::onRpcError(const QString& method, int code, const QString& messa
 
     if (method == "dpi.createinvoice") {
         createInvoiceBtn_->setEnabled(true);
-        createInvoiceBtn_->setText("Create Collect Invoice");
-        QMessageBox::warning(this, "Invoice Error", err);
+        createInvoiceBtn_->setText(tr("Create Collect Invoice"));
+        QMessageBox::warning(this, tr("Invoice Error"), err);
     }
     else if (method == "dpi.decodeinvoice") {
         decodeInvoiceBtn_->setEnabled(true);
-        decodeInvoiceBtn_->setText("Review Invoice");
+        decodeInvoiceBtn_->setText(tr("Review Invoice"));
         payInvoiceBase64_.clear();
-        QMessageBox::warning(this, "Decode Error", err);
+        QMessageBox::warning(this, tr("Decode Error"), err);
     }
     else if (method == "dpi.payinvoice") {
         payInvoiceBtn_->setEnabled(true);
-        payInvoiceBtn_->setText("Pay Reviewed Invoice");
+        payInvoiceBtn_->setText(tr("Pay Reviewed Invoice"));
         payStatusLabel_->setText("Error: " + err);
         payStatusLabel_->setStyleSheet("color: #f44336;");
     }
     else if (method == "dpi.verifypackage") {
         verifyPackageBtn_->setEnabled(true);
-        verifyPackageBtn_->setText("Verify Package");
+        verifyPackageBtn_->setText(tr("Verify Package"));
         verifyResultLabel_->setText("Error: " + err);
         verifyResultLabel_->setStyleSheet("color: #f44336;");
     }
@@ -770,7 +770,7 @@ void DpiWidget::onCountdownTick() {
 
     qint64 remaining = invoiceExpiryTimestamp_ - QDateTime::currentSecsSinceEpoch();
     if (remaining <= 0) {
-        invoiceExpiryLabel_->setText("EXPIRED");
+        invoiceExpiryLabel_->setText(tr("EXPIRED"));
         invoiceExpiryLabel_->setStyleSheet("color: #f44336; font-weight: bold;");
         countdownTimer_->stop();
     } else {

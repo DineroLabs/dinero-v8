@@ -89,7 +89,7 @@ PaymentsWidget::PaymentsWidget(RpcClient* rpc, WebSocketClient* ws, QWidget* par
     // Initial fiat rate fetch
     updateFiatValues();
 
-    statusLabel->setText("DineroPay ready - Create your first invoice");
+    statusLabel->setText(tr("DineroPay ready - Create your first invoice"));
 }
 
 PaymentsWidget::~PaymentsWidget() {}
@@ -105,19 +105,19 @@ void PaymentsWidget::setupUi()
     auto invoiceGroup = new QGroupBox("Create Payment Invoice", this);
     auto invoiceLayout = new QGridLayout(invoiceGroup);
 
-    invoiceLayout->addWidget(new QLabel("Amount (DNR):"), 0, 0);
+    invoiceLayout->addWidget(new QLabel(tr("Amount (DNR):")), 0, 0);
     amountEdit = new QLineEdit(this);
     amountEdit->setPlaceholderText("e.g., 50.0");
     invoiceLayout->addWidget(amountEdit, 0, 1);
 
-    invoiceLayout->addWidget(new QLabel("Label (optional):"), 1, 0);
+    invoiceLayout->addWidget(new QLabel(tr("Label (optional):")), 1, 0);
     labelEdit = new QLineEdit(this);
-    labelEdit->setPlaceholderText("e.g., Order #12345");
+    labelEdit->setPlaceholderText(tr("e.g., Order #12345"));
     invoiceLayout->addWidget(labelEdit, 1, 1);
 
-    invoiceLayout->addWidget(new QLabel("Address (optional):"), 2, 0);
+    invoiceLayout->addWidget(new QLabel(tr("Address (optional):")), 2, 0);
     addressEdit = new QLineEdit(this);
-    addressEdit->setPlaceholderText("Leave blank for auto-generated");
+    addressEdit->setPlaceholderText(tr("Leave blank for auto-generated"));
     invoiceLayout->addWidget(addressEdit, 2, 1);
 
     createButton = new QPushButton("📄 Create Invoice", this);
@@ -133,9 +133,9 @@ void PaymentsWidget::setupUi()
     auto fiatLayout = new QHBoxLayout(fiatGroup);
 
     // Search box
-    fiatLayout->addWidget(new QLabel("Search:"));
+    fiatLayout->addWidget(new QLabel(tr("Search:")));
     currencySearch = new QLineEdit(this);
-    currencySearch->setPlaceholderText("Type to filter currencies...");
+    currencySearch->setPlaceholderText(tr("Type to filter currencies..."));
     currencySearch->setMaximumWidth(180);
     fiatLayout->addWidget(currencySearch);
 
@@ -148,7 +148,7 @@ void PaymentsWidget::setupUi()
     // Favorite/Pin button
     favoriteButton = new QPushButton("⭐", this);
     favoriteButton->setMaximumWidth(40);
-    favoriteButton->setToolTip("Add/Remove from favorites");
+    favoriteButton->setToolTip(tr("Add/Remove from favorites"));
     favoriteButton->setStyleSheet("font-size: 16px;");
     fiatLayout->addWidget(favoriteButton);
 
@@ -156,7 +156,7 @@ void PaymentsWidget::setupUi()
 
     buyButton = new QPushButton("💳 Buy DIN", this);
     buyButton->setStyleSheet("background-color: #2196F3; color: white; padding: 8px; font-weight: bold;");
-    buyButton->setToolTip("Open MoonPay/Ramp on-ramp in browser");
+    buyButton->setToolTip(tr("Open MoonPay/Ramp on-ramp in browser"));
     fiatLayout->addWidget(buyButton);
 
     mainLayout->addWidget(fiatGroup);
@@ -192,7 +192,7 @@ void PaymentsWidget::setupUi()
     qrLabel->setFixedSize(200, 200);
     qrLabel->setAlignment(Qt::AlignCenter);
     qrLabel->setStyleSheet("border: 2px solid #ccc; background-color: white;");
-    qrLabel->setText("No invoice selected");
+    qrLabel->setText(tr("No invoice selected"));
     qrLayout->addWidget(qrLabel);
 
     showQrButton = new QPushButton("📱 Show QR Code", this);
@@ -231,7 +231,7 @@ void PaymentsWidget::setupUi()
 
     // ARP Info
     arpInfoLabel = new QLabel("Loading ARP...", this);
-    arpInfoLabel->setToolTip("Anchor Reference Price - Soft price guide for early market phase");
+    arpInfoLabel->setToolTip(tr("Anchor Reference Price - Soft price guide for early market phase"));
     arpLayout->addWidget(arpInfoLabel);
 
     arpLayout->addStretch();
@@ -246,7 +246,7 @@ void PaymentsWidget::setupUi()
     // Blend Indicator
     arpBlendLabel = new QLabel("100% ARP", this);
     arpBlendLabel->setStyleSheet("color: #FF9800; font-weight: bold;");
-    arpBlendLabel->setToolTip("Shows the blend ratio of ARP vs Market price");
+    arpBlendLabel->setToolTip(tr("Shows the blend ratio of ARP vs Market price"));
     arpLayout->addWidget(arpBlendLabel);
 
     mainLayout->addWidget(arpGroup);
@@ -305,7 +305,7 @@ void PaymentsWidget::onCreateInvoice()
     double amount = amountEdit->text().toDouble(&ok);
 
     if (!ok || amount <= 0) {
-        QMessageBox::warning(this, "Invalid Amount", "Please enter a valid amount greater than 0.");
+        QMessageBox::warning(this, tr("Invalid Amount"), tr("Please enter a valid amount greater than 0."));
         return;
     }
 
@@ -339,14 +339,14 @@ void PaymentsWidget::onCheckStatus()
     QString subscriptionId = subscriptionIds_.value(address);
 
     if (subscriptionId.isEmpty()) {
-        QMessageBox::warning(this, "No Subscription", "No active subscription found for this address.");
+        QMessageBox::warning(this, tr("No Subscription"), tr("No active subscription found for this address."));
         return;
     }
 
     QJsonArray params;
     params.append(subscriptionId);
 
-    statusLabel->setText("Checking payment status...");
+    statusLabel->setText(tr("Checking payment status..."));
     callRpc("payment.status", params);
 }
 
@@ -369,7 +369,7 @@ void PaymentsWidget::onShowQrCode()
     // Copy address to clipboard
     QApplication::clipboard()->setText(address);
 
-    QMessageBox::information(this, "QR Code Generated",
+    QMessageBox::information(this, tr("QR Code Generated"),
         QString("QR code generated for payment!\n\n"
                "Address: %1\n"
                "Amount: %2 DIN\n\n"
@@ -384,11 +384,11 @@ void PaymentsWidget::onTableSelectionChanged()
     if (row < 0) {
         showQrButton->setEnabled(false);
         checkStatusButton->setEnabled(false);
-        selectedAddressLabel->setText("Address: –");
-        selectedAmountLabel->setText("Amount: –");
-        fiatValueLabel->setText("Fiat value: –");
+        selectedAddressLabel->setText(tr("Address: –"));
+        selectedAmountLabel->setText(tr("Amount: –"));
+        fiatValueLabel->setText(tr("Fiat value: –"));
         qrLabel->clear();
-        qrLabel->setText("No invoice selected");
+        qrLabel->setText(tr("No invoice selected"));
         return;
     }
 
@@ -501,8 +501,8 @@ void PaymentsWidget::onRpcResult(const QString& method, const QJsonValue& result
             addressEdit->clear();
         } else {
             QString error = obj.value("message").toString("Unknown error");
-            QMessageBox::warning(this, "Invoice Creation Failed", error);
-            statusLabel->setText("❌ Failed to create invoice");
+            QMessageBox::warning(this, tr("Invoice Creation Failed"), error);
+            statusLabel->setText(tr("❌ Failed to create invoice"));
         }
     }
     else if (method == "payment.status") {
@@ -537,20 +537,20 @@ void PaymentsWidget::onRpcResult(const QString& method, const QJsonValue& result
 
             // Format blend ratio
             if (arpConfidence_ == 0.0) {
-                arpBlendLabel->setText("100% ARP");
+                arpBlendLabel->setText(tr("100% ARP"));
                 arpBlendLabel->setStyleSheet("color: #FF9800; font-weight: bold;");
-                arpInfoLabel->setText("📌 Pure ARP (pre-launch)");
+                arpInfoLabel->setText(tr("📌 Pure ARP (pre-launch)"));
             } else if (arpConfidence_ >= 0.9) {
-                arpBlendLabel->setText("100% Market");
+                arpBlendLabel->setText(tr("100% Market"));
                 arpBlendLabel->setStyleSheet("color: #4CAF50; font-weight: bold;");
-                arpInfoLabel->setText("📈 Market-driven pricing");
+                arpInfoLabel->setText(tr("📈 Market-driven pricing"));
             } else {
                 int arpPct = static_cast<int>((1.0 - arpConfidence_) * 100);
                 int marketPct = static_cast<int>(arpConfidence_ * 100);
                 arpBlendLabel->setText(QString("%1% ARP + %2% Market")
                     .arg(arpPct).arg(marketPct));
                 arpBlendLabel->setStyleSheet("color: #2196F3; font-weight: bold;");
-                arpInfoLabel->setText("🔄 Blended pricing (transitioning)");
+                arpInfoLabel->setText(tr("🔄 Blended pricing (transitioning)"));
             }
         }
     }

@@ -36,7 +36,7 @@ void DebugConsole::setupUi() {
 
     // Toolbar
     auto* toolbar = new QHBoxLayout();
-    auto* label = new QLabel("Log Level:");
+    auto* label = new QLabel(tr("Log Level:"));
     daemonFilterCombo_ = new QComboBox();
     daemonFilterCombo_->addItem("DEBUG", (int)LogLevel::DEBUG);
     daemonFilterCombo_->addItem("INFO", (int)LogLevel::INFO);
@@ -44,10 +44,10 @@ void DebugConsole::setupUi() {
     daemonFilterCombo_->addItem("ERROR", (int)LogLevel::ERROR);
     daemonFilterCombo_->setCurrentIndex(1); // Default to INFO
 
-    pauseDaemonBtn_ = new QPushButton("Pause Scroll");
+    pauseDaemonBtn_ = new QPushButton(tr("Pause Scroll"));
     pauseDaemonBtn_->setCheckable(true);
-    clearDaemonBtn_ = new QPushButton("Clear");
-    exportDaemonBtn_ = new QPushButton("Export...");
+    clearDaemonBtn_ = new QPushButton(tr("Clear"));
+    exportDaemonBtn_ = new QPushButton(tr("Export..."));
 
     toolbar->addWidget(label);
     toolbar->addWidget(daemonFilterCombo_);
@@ -93,7 +93,7 @@ void DebugConsole::setupUi() {
 
     // Toolbar
     auto* toolbar = new QHBoxLayout();
-    auto* label = new QLabel("Log Level:");
+    auto* label = new QLabel(tr("Log Level:"));
     minerFilterCombo_ = new QComboBox();
     minerFilterCombo_->addItem("DEBUG", (int)LogLevel::DEBUG);
     minerFilterCombo_->addItem("INFO", (int)LogLevel::INFO);
@@ -101,10 +101,10 @@ void DebugConsole::setupUi() {
     minerFilterCombo_->addItem("ERROR", (int)LogLevel::ERROR);
     minerFilterCombo_->setCurrentIndex(1);
 
-    pauseMinerBtn_ = new QPushButton("Pause Scroll");
+    pauseMinerBtn_ = new QPushButton(tr("Pause Scroll"));
     pauseMinerBtn_->setCheckable(true);
-    clearMinerBtn_ = new QPushButton("Clear");
-    exportMinerBtn_ = new QPushButton("Export...");
+    clearMinerBtn_ = new QPushButton(tr("Clear"));
+    exportMinerBtn_ = new QPushButton(tr("Export..."));
 
     toolbar->addWidget(label);
     toolbar->addWidget(minerFilterCombo_);
@@ -150,7 +150,7 @@ void DebugConsole::setupUi() {
 
     // Toolbar
     auto* toolbar = new QHBoxLayout();
-    auto* label = new QLabel("Log Level:");
+    auto* label = new QLabel(tr("Log Level:"));
     guiFilterCombo_ = new QComboBox();
     guiFilterCombo_->addItem("DEBUG", (int)LogLevel::DEBUG);
     guiFilterCombo_->addItem("INFO", (int)LogLevel::INFO);
@@ -158,10 +158,10 @@ void DebugConsole::setupUi() {
     guiFilterCombo_->addItem("ERROR", (int)LogLevel::ERROR);
     guiFilterCombo_->setCurrentIndex(1);
 
-    pauseGuiBtn_ = new QPushButton("Pause Scroll");
+    pauseGuiBtn_ = new QPushButton(tr("Pause Scroll"));
     pauseGuiBtn_->setCheckable(true);
-    clearGuiBtn_ = new QPushButton("Clear");
-    exportGuiBtn_ = new QPushButton("Export...");
+    clearGuiBtn_ = new QPushButton(tr("Clear"));
+    exportGuiBtn_ = new QPushButton(tr("Export..."));
 
     toolbar->addWidget(label);
     toolbar->addWidget(guiFilterCombo_);
@@ -201,7 +201,7 @@ void DebugConsole::setupUi() {
   mainLayout->addWidget(tabWidget_);
 
   // Set window properties
-  setWindowTitle("Debug Console - Live Logs");
+  setWindowTitle(tr("Debug Console - Live Logs"));
   resize(900, 600);
 }
 
@@ -372,7 +372,7 @@ void DebugConsole::onExportLogsClicked() {
   // Write logs to file
   QFile file(fileName);
   if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-    QMessageBox::warning(this, "Export Failed",
+    QMessageBox::warning(this, tr("Export Failed"),
       QString("Could not write to file:\n%1").arg(fileName));
     return;
   }
@@ -381,7 +381,7 @@ void DebugConsole::onExportLogsClicked() {
   out << logWidget->toPlainText();
   file.close();
 
-  QMessageBox::information(this, "Export Successful",
+  QMessageBox::information(this, tr("Export Successful"),
     QString("Logs exported to:\n%1").arg(fileName));
 
   logGuiEvent(LogLevel::INFO, QString("Exported %1 logs to %2").arg(tabName).arg(fileName));

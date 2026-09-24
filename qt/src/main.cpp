@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QObject>
 #include <QStandardPaths>
 #include <QDir>
 #include <QCoreApplication>
@@ -1116,8 +1117,8 @@ static void maybeOfferMoveToApplications() {
     }
     QMessageBox box;
     box.setIcon(QMessageBox::Information);
-    box.setWindowTitle("Running from Disk Image");
-    box.setText("Dinero is running directly from the disk image.");
+    box.setWindowTitle(QObject::tr("Running from Disk Image"));
+    box.setText(QObject::tr("Dinero is running directly from the disk image."));
     box.setInformativeText(
         "For best results, drag Dinero.app into your Applications folder "
         "and launch it from there. Running from the mounted disk image can "
@@ -1146,8 +1147,8 @@ static bool confirmRpcPortSquatter() {
     }
     QMessageBox box;
     box.setIcon(QMessageBox::Warning);
-    box.setWindowTitle("Port Already in Use");
-    box.setText("Port 20998 is already in use — another Dinero process may be running.");
+    box.setWindowTitle(QObject::tr("Port Already in Use"));
+    box.setText(QObject::tr("Port 20998 is already in use — another Dinero process may be running."));
     box.setInformativeText(
         "Something is listening on the daemon RPC port (127.0.0.1:20998) but "
         "is not responding like a Dinero daemon. This is usually a leftover "
@@ -1180,7 +1181,7 @@ int main(int argc, char** argv) {
 
   // Interface language. Must run after setOrganizationName() so QSettings
   // resolves the stored preference, and before any widget is constructed so
-  // every tr() call sees the catalog. English installs nothing and falls back
+  // every QObject::tr() call sees the catalog. English installs nothing and falls back
   // to the source text. This deliberately does NOT call QLocale::setDefault():
   // amounts stay dot-decimal in every language (see qt/src/i18n.h).
   dinero::qt::i18n::InstallTranslator(app);
@@ -1270,14 +1271,14 @@ int main(int argc, char** argv) {
       daemonProcess->exitCode() == GENESIS_MISMATCH_EXIT_CODE) {
 
     QMessageBox msgBox;
-    msgBox.setWindowTitle("Incompatible Chain Data");
+    msgBox.setWindowTitle(QObject::tr("Incompatible Chain Data"));
     msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setText(
+    msgBox.setText(QObject::tr(
       "Your chain data is from an older or incompatible version of Dinero.\n\n"
       "This can happen after a chain reset or major upgrade. "
       "Your wallet will be backed up automatically before wiping.\n\n"
       "Wipe chain data and restart with a fresh sync?"
-    );
+    ));
     QPushButton* wipeBtn = msgBox.addButton("Wipe and Restart", QMessageBox::AcceptRole);
     msgBox.addButton("Quit", QMessageBox::RejectRole);
     msgBox.exec();
@@ -1301,7 +1302,7 @@ int main(int argc, char** argv) {
       daemonProcess->start(daemonPath, wipeArgs);
 
       if (!daemonProcess->waitForStarted(5000)) {
-        QMessageBox::critical(nullptr, "Error",
+        QMessageBox::critical(nullptr, QObject::tr("Error"),
           "Failed to restart daemon after wipe.\n" + daemonProcess->errorString());
         delete daemonProcess;
         return 1;
@@ -1312,7 +1313,7 @@ int main(int argc, char** argv) {
       for (int i = 0; i < 300; i++) {  // 30 seconds — wipe + init takes longer
         QThread::msleep(100);
         if (daemonProcess->state() == QProcess::NotRunning) {
-          QMessageBox::critical(nullptr, "Error",
+          QMessageBox::critical(nullptr, QObject::tr("Error"),
             "Daemon exited unexpectedly after chain wipe (exit code: "
             + QString::number(daemonProcess->exitCode()) + ").\n\n"
             + daemonFailureDetails(daemonProcess, datadir));
@@ -1342,7 +1343,7 @@ int main(int argc, char** argv) {
     const int exitCode = daemonProcess->exitCode();
     QMessageBox box;
     box.setIcon(QMessageBox::Critical);
-    box.setWindowTitle("Daemon Failed to Start");
+    box.setWindowTitle(QObject::tr("Daemon Failed to Start"));
     box.setText(QString("The Dinero daemon (dinerod) exited during startup "
                         "with exit code %1.").arg(exitCode));
     box.setInformativeText(
@@ -1395,7 +1396,7 @@ int main(int argc, char** argv) {
       qWarning() << "Daemon exited unexpectedly with code:" << exitCode;
       QMessageBox box;
       box.setIcon(QMessageBox::Critical);
-      box.setWindowTitle("Daemon Stopped Unexpectedly");
+      box.setWindowTitle(QObject::tr("Daemon Stopped Unexpectedly"));
       box.setText(QString("The Dinero daemon (dinerod) exited unexpectedly "
                           "with exit code %1.").arg(exitCode));
       box.setInformativeText(

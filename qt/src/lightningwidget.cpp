@@ -46,7 +46,7 @@ void LightningWidget::setupUI() {
     auto* mainLayout = new QVBoxLayout(this);
 
     // Title
-    auto* titleLabel = new QLabel("⚡ Lightning Network");
+    auto* titleLabel = new QLabel(tr("⚡ Lightning Network"));
     QFont titleFont = titleLabel->font();
     titleFont.setPointSize(18);
     titleFont.setBold(true);
@@ -70,21 +70,21 @@ void LightningWidget::createChannelsTab() {
     auto* layout = new QVBoxLayout(channelsWidget);
 
     // Statistics at top
-    auto* statsGroup = new QGroupBox("Channel Statistics");
+    auto* statsGroup = new QGroupBox(tr("Channel Statistics"));
     auto* statsLayout = new QGridLayout();
 
     lblActiveChannels_ = new QLabel("0");
-    lblTotalCapacity_ = new QLabel("0 DIN");
-    lblLocalBalance_ = new QLabel("0 DIN");
-    lblRemoteBalance_ = new QLabel("0 DIN");
+    lblTotalCapacity_ = new QLabel(tr("0 DIN"));
+    lblLocalBalance_ = new QLabel(tr("0 DIN"));
+    lblRemoteBalance_ = new QLabel(tr("0 DIN"));
 
-    statsLayout->addWidget(new QLabel("<b>Active Channels:</b>"), 0, 0);
+    statsLayout->addWidget(new QLabel(tr("<b>Active Channels:</b>")), 0, 0);
     statsLayout->addWidget(lblActiveChannels_, 0, 1);
-    statsLayout->addWidget(new QLabel("<b>Total Capacity:</b>"), 0, 2);
+    statsLayout->addWidget(new QLabel(tr("<b>Total Capacity:</b>")), 0, 2);
     statsLayout->addWidget(lblTotalCapacity_, 0, 3);
-    statsLayout->addWidget(new QLabel("<b>Local Balance:</b>"), 1, 0);
+    statsLayout->addWidget(new QLabel(tr("<b>Local Balance:</b>")), 1, 0);
     statsLayout->addWidget(lblLocalBalance_, 1, 1);
-    statsLayout->addWidget(new QLabel("<b>Remote Balance:</b>"), 1, 2);
+    statsLayout->addWidget(new QLabel(tr("<b>Remote Balance:</b>")), 1, 2);
     statsLayout->addWidget(lblRemoteBalance_, 1, 3);
 
     statsGroup->setLayout(statsLayout);
@@ -103,26 +103,26 @@ void LightningWidget::createChannelsTab() {
     layout->addWidget(tblChannels_);
 
     // Open channel controls
-    auto* openGroup = new QGroupBox("Open New Channel");
+    auto* openGroup = new QGroupBox(tr("Open New Channel"));
     auto* openLayout = new QGridLayout();
 
     edtPeerNodeId_ = new QLineEdit();
-    edtPeerNodeId_->setPlaceholderText("Peer Node ID (02abcdef...)");
+    edtPeerNodeId_->setPlaceholderText(tr("Peer Node ID (02abcdef...)"));
     edtChannelCapacity_ = new QLineEdit();
-    edtChannelCapacity_->setPlaceholderText("Capacity (e.g. 1.0 for 1 DIN)");
+    edtChannelCapacity_->setPlaceholderText(tr("Capacity (e.g. 1.0 for 1 DIN)"));
     edtPushAmount_ = new QLineEdit();
-    edtPushAmount_->setPlaceholderText("Push amount (optional, 0.0)");
+    edtPushAmount_->setPlaceholderText(tr("Push amount (optional, 0.0)"));
     spnMinConf_ = new QSpinBox();
     spnMinConf_->setValue(1);
     spnMinConf_->setRange(0, 999999);
 
-    openLayout->addWidget(new QLabel("Peer Node ID:"), 0, 0);
+    openLayout->addWidget(new QLabel(tr("Peer Node ID:")), 0, 0);
     openLayout->addWidget(edtPeerNodeId_, 0, 1);
-    openLayout->addWidget(new QLabel("Capacity (DIN):"), 1, 0);
+    openLayout->addWidget(new QLabel(tr("Capacity (DIN):")), 1, 0);
     openLayout->addWidget(edtChannelCapacity_, 1, 1);
-    openLayout->addWidget(new QLabel("Push Amount (DIN):"), 2, 0);
+    openLayout->addWidget(new QLabel(tr("Push Amount (DIN):")), 2, 0);
     openLayout->addWidget(edtPushAmount_, 2, 1);
-    openLayout->addWidget(new QLabel("Min Confirmations:"), 3, 0);
+    openLayout->addWidget(new QLabel(tr("Min Confirmations:")), 3, 0);
     openLayout->addWidget(spnMinConf_, 3, 1);
 
     openGroup->setLayout(openLayout);
@@ -130,10 +130,10 @@ void LightningWidget::createChannelsTab() {
 
     // Control buttons
     auto* btnLayout = new QHBoxLayout();
-    btnOpenChannel_ = new QPushButton("Open Channel");
-    btnCloseChannel_ = new QPushButton("Close Selected Channel");
-    btnForceCloseChannel_ = new QPushButton("Force Close (Emergency)");
-    btnRefreshChannels_ = new QPushButton("🔄 Refresh");
+    btnOpenChannel_ = new QPushButton(tr("Open Channel"));
+    btnCloseChannel_ = new QPushButton(tr("Close Selected Channel"));
+    btnForceCloseChannel_ = new QPushButton(tr("Force Close (Emergency)"));
+    btnRefreshChannels_ = new QPushButton(tr("🔄 Refresh"));
 
     btnForceCloseChannel_->setStyleSheet("QPushButton { background-color: #c0392b; color: white; }");
 
@@ -157,28 +157,28 @@ void LightningWidget::createInvoicesTab() {
     auto* layout = new QVBoxLayout(invoicesWidget);
 
     // Create invoice section
-    auto* createGroup = new QGroupBox("Create Invoice");
+    auto* createGroup = new QGroupBox(tr("Create Invoice"));
     auto* createLayout = new QGridLayout();
 
     edtInvoiceAmount_ = new QLineEdit();
-    edtInvoiceAmount_->setPlaceholderText("Amount in DIN (e.g. 0.001)");
+    edtInvoiceAmount_->setPlaceholderText(tr("Amount in DIN (e.g. 0.001)"));
     edtInvoiceDescription_ = new QLineEdit();
-    edtInvoiceDescription_->setPlaceholderText("Description (e.g. Coffee payment)");
+    edtInvoiceDescription_->setPlaceholderText(tr("Description (e.g. Coffee payment)"));
     spnInvoiceExpiry_ = new QSpinBox();
     spnInvoiceExpiry_->setValue(3600);
     spnInvoiceExpiry_->setRange(60, 86400);
     spnInvoiceExpiry_->setSuffix(" seconds");
 
-    createLayout->addWidget(new QLabel("Amount (DIN):"), 0, 0);
+    createLayout->addWidget(new QLabel(tr("Amount (DIN):")), 0, 0);
     createLayout->addWidget(edtInvoiceAmount_, 0, 1);
-    createLayout->addWidget(new QLabel("Description:"), 1, 0);
+    createLayout->addWidget(new QLabel(tr("Description:")), 1, 0);
     createLayout->addWidget(edtInvoiceDescription_, 1, 1);
-    createLayout->addWidget(new QLabel("Expiry:"), 2, 0);
+    createLayout->addWidget(new QLabel(tr("Expiry:")), 2, 0);
     createLayout->addWidget(spnInvoiceExpiry_, 2, 1);
 
     auto* createBtnLayout = new QHBoxLayout();
-    btnCreateInvoice_ = new QPushButton("Create Invoice");
-    btnCreateOpenInvoice_ = new QPushButton("Create Open Invoice (Flexible Amount)");
+    btnCreateInvoice_ = new QPushButton(tr("Create Invoice"));
+    btnCreateOpenInvoice_ = new QPushButton(tr("Create Open Invoice (Flexible Amount)"));
     connect(btnCreateInvoice_, &QPushButton::clicked, this, &LightningWidget::onCreateInvoice);
     connect(btnCreateOpenInvoice_, &QPushButton::clicked, this, &LightningWidget::onCreateOpenInvoice);
     createBtnLayout->addWidget(btnCreateInvoice_);
@@ -189,7 +189,7 @@ void LightningWidget::createInvoicesTab() {
     layout->addWidget(createGroup);
 
     // Invoice display with QR code
-    auto* displayGroup = new QGroupBox("Generated Invoice");
+    auto* displayGroup = new QGroupBox(tr("Generated Invoice"));
     auto* displayLayout = new QHBoxLayout();
 
     auto* qrLayout = new QVBoxLayout();
@@ -198,7 +198,7 @@ void LightningWidget::createInvoicesTab() {
     lblInvoiceQR_->setMaximumSize(200, 200);
     lblInvoiceQR_->setAlignment(Qt::AlignCenter);
     lblInvoiceQR_->setStyleSheet("QLabel { border: 2px solid #ccc; background: white; }");
-    btnGenerateQR_ = new QPushButton("Generate QR Code");
+    btnGenerateQR_ = new QPushButton(tr("Generate QR Code"));
     connect(btnGenerateQR_, &QPushButton::clicked, this, &LightningWidget::onGenerateQR);
     qrLayout->addWidget(lblInvoiceQR_);
     qrLayout->addWidget(btnGenerateQR_);
@@ -206,10 +206,10 @@ void LightningWidget::createInvoicesTab() {
     auto* invoiceLayout = new QVBoxLayout();
     edtInvoiceBolt11_ = new QLineEdit();
     edtInvoiceBolt11_->setReadOnly(true);
-    edtInvoiceBolt11_->setPlaceholderText("Invoice will appear here...");
-    btnCopyInvoice_ = new QPushButton("📋 Copy Invoice");
+    edtInvoiceBolt11_->setPlaceholderText(tr("Invoice will appear here..."));
+    btnCopyInvoice_ = new QPushButton(tr("📋 Copy Invoice"));
     connect(btnCopyInvoice_, &QPushButton::clicked, this, &LightningWidget::onCopyInvoice);
-    invoiceLayout->addWidget(new QLabel("<b>BOLT 11 Invoice:</b>"));
+    invoiceLayout->addWidget(new QLabel(tr("<b>BOLT 11 Invoice:</b>")));
     invoiceLayout->addWidget(edtInvoiceBolt11_);
     invoiceLayout->addWidget(btnCopyInvoice_);
     invoiceLayout->addStretch();
@@ -220,22 +220,22 @@ void LightningWidget::createInvoicesTab() {
     layout->addWidget(displayGroup);
 
     // Pay invoice section
-    auto* payGroup = new QGroupBox("Pay Invoice");
+    auto* payGroup = new QGroupBox(tr("Pay Invoice"));
     auto* payLayout = new QGridLayout();
 
     edtPayBolt11_ = new QLineEdit();
-    edtPayBolt11_->setPlaceholderText("Paste BOLT 11 invoice here");
+    edtPayBolt11_->setPlaceholderText(tr("Paste BOLT 11 invoice here"));
     edtPayCustomAmount_ = new QLineEdit();
-    edtPayCustomAmount_->setPlaceholderText("Custom amount (for open invoices)");
+    edtPayCustomAmount_->setPlaceholderText(tr("Custom amount (for open invoices)"));
 
-    payLayout->addWidget(new QLabel("Invoice (BOLT 11):"), 0, 0);
+    payLayout->addWidget(new QLabel(tr("Invoice (BOLT 11):")), 0, 0);
     payLayout->addWidget(edtPayBolt11_, 0, 1);
-    payLayout->addWidget(new QLabel("Custom Amount:"), 1, 0);
+    payLayout->addWidget(new QLabel(tr("Custom Amount:")), 1, 0);
     payLayout->addWidget(edtPayCustomAmount_, 1, 1);
 
     auto* payBtnLayout = new QHBoxLayout();
-    btnDecodeInvoice_ = new QPushButton("Decode Invoice");
-    btnPayInvoice_ = new QPushButton("Pay Invoice");
+    btnDecodeInvoice_ = new QPushButton(tr("Decode Invoice"));
+    btnPayInvoice_ = new QPushButton(tr("Pay Invoice"));
     btnPayInvoice_->setStyleSheet("QPushButton { background-color: #27ae60; color: white; font-weight: bold; }");
     connect(btnDecodeInvoice_, &QPushButton::clicked, this, &LightningWidget::onDecodeInvoice);
     connect(btnPayInvoice_, &QPushButton::clicked, this, &LightningWidget::onPayInvoice);
@@ -246,8 +246,8 @@ void LightningWidget::createInvoicesTab() {
     txtInvoiceDecoded_ = new QTextEdit();
     txtInvoiceDecoded_->setReadOnly(true);
     txtInvoiceDecoded_->setMaximumHeight(100);
-    txtInvoiceDecoded_->setPlaceholderText("Decoded invoice details will appear here...");
-    payLayout->addWidget(new QLabel("Decoded Info:"), 3, 0);
+    txtInvoiceDecoded_->setPlaceholderText(tr("Decoded invoice details will appear here..."));
+    payLayout->addWidget(new QLabel(tr("Decoded Info:")), 3, 0);
     payLayout->addWidget(txtInvoiceDecoded_, 3, 1);
 
     payGroup->setLayout(payLayout);
@@ -255,17 +255,17 @@ void LightningWidget::createInvoicesTab() {
 
     // Invoice list with filter
     auto* listHeader = new QHBoxLayout();
-    listHeader->addWidget(new QLabel("<b>Invoice History</b>"));
+    listHeader->addWidget(new QLabel(tr("<b>Invoice History</b>")));
     cmbInvoiceFilter_ = new QComboBox();
     cmbInvoiceFilter_->addItems({"All", "Pending", "Paid", "Expired"});
     connect(cmbInvoiceFilter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &LightningWidget::onRefreshInvoices);
-    listHeader->addWidget(new QLabel("Filter:"));
+    listHeader->addWidget(new QLabel(tr("Filter:")));
     listHeader->addWidget(cmbInvoiceFilter_);
     lblInvoiceStats_ = new QLabel();
     listHeader->addStretch();
     listHeader->addWidget(lblInvoiceStats_);
-    btnRefreshInvoices_ = new QPushButton("🔄 Refresh");
+    btnRefreshInvoices_ = new QPushButton(tr("🔄 Refresh"));
     connect(btnRefreshInvoices_, &QPushButton::clicked, this, &LightningWidget::onRefreshInvoices);
     listHeader->addWidget(btnRefreshInvoices_);
     layout->addLayout(listHeader);
@@ -297,11 +297,11 @@ void LightningWidget::createPaymentsTab() {
     cmbPaymentFilter_->addItems({"All", "Pending", "Success", "Failed"});
     connect(cmbPaymentFilter_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &LightningWidget::onRefreshPayments);
-    controlLayout->addWidget(new QLabel("Filter:"));
+    controlLayout->addWidget(new QLabel(tr("Filter:")));
     controlLayout->addWidget(cmbPaymentFilter_);
     controlLayout->addStretch();
-    btnCancelPayment_ = new QPushButton("Cancel Selected Payment");
-    btnRefreshPayments_ = new QPushButton("🔄 Refresh");
+    btnCancelPayment_ = new QPushButton(tr("Cancel Selected Payment"));
+    btnRefreshPayments_ = new QPushButton(tr("🔄 Refresh"));
     connect(btnCancelPayment_, &QPushButton::clicked, this, &LightningWidget::onCancelPayment);
     connect(btnRefreshPayments_, &QPushButton::clicked, this, &LightningWidget::onRefreshPayments);
     controlLayout->addWidget(btnCancelPayment_);
@@ -320,7 +320,7 @@ void LightningWidget::createPaymentsTab() {
     layout->addWidget(tblPayments_);
 
     // Payment details
-    auto* detailsGroup = new QGroupBox("Payment Details");
+    auto* detailsGroup = new QGroupBox(tr("Payment Details"));
     auto* detailsLayout = new QVBoxLayout();
     txtPaymentDetails_ = new QTextEdit();
     txtPaymentDetails_->setReadOnly(true);
@@ -341,24 +341,24 @@ void LightningWidget::createWatchtowerTab() {
     layout->addWidget(lblWatchtowerStats_);
 
     // Register watchtower
-    auto* registerGroup = new QGroupBox("Register Watchtower");
+    auto* registerGroup = new QGroupBox(tr("Register Watchtower"));
     auto* registerLayout = new QGridLayout();
 
     edtWatchtowerUrl_ = new QLineEdit();
-    edtWatchtowerUrl_->setPlaceholderText("Watchtower URL (e.g. wt://watchtower.dinero.com:9911)");
+    edtWatchtowerUrl_->setPlaceholderText(tr("Watchtower URL (e.g. wt://watchtower.dinero.com:9911)"));
     edtWatchtowerReward_ = new QLineEdit();
-    edtWatchtowerReward_->setPlaceholderText("Reward per appointment (unas)");
+    edtWatchtowerReward_->setPlaceholderText(tr("Reward per appointment (unas)"));
     edtWatchtowerReward_->setText("1000");
 
-    registerLayout->addWidget(new QLabel("Watchtower URL:"), 0, 0);
+    registerLayout->addWidget(new QLabel(tr("Watchtower URL:")), 0, 0);
     registerLayout->addWidget(edtWatchtowerUrl_, 0, 1);
-    registerLayout->addWidget(new QLabel("Reward (una):"), 1, 0);
+    registerLayout->addWidget(new QLabel(tr("Reward (una):")), 1, 0);
     registerLayout->addWidget(edtWatchtowerReward_, 1, 1);
 
     auto* wtBtnLayout = new QHBoxLayout();
-    btnRegisterWatchtower_ = new QPushButton("Register Watchtower");
-    btnUnregisterWatchtower_ = new QPushButton("Unregister Selected");
-    btnRefreshWatchtowers_ = new QPushButton("🔄 Refresh");
+    btnRegisterWatchtower_ = new QPushButton(tr("Register Watchtower"));
+    btnUnregisterWatchtower_ = new QPushButton(tr("Unregister Selected"));
+    btnRefreshWatchtowers_ = new QPushButton(tr("🔄 Refresh"));
     connect(btnRegisterWatchtower_, &QPushButton::clicked, this, &LightningWidget::onRegisterWatchtower);
     connect(btnUnregisterWatchtower_, &QPushButton::clicked, this, &LightningWidget::onUnregisterWatchtower);
     connect(btnRefreshWatchtowers_, &QPushButton::clicked, this, &LightningWidget::onRefreshWatchtowers);
@@ -383,7 +383,7 @@ void LightningWidget::createWatchtowerTab() {
     layout->addWidget(tblWatchtowers_);
 
     // Watchtower info
-    auto* infoGroup = new QGroupBox("Watchtower Information");
+    auto* infoGroup = new QGroupBox(tr("Watchtower Information"));
     auto* infoLayout = new QVBoxLayout();
     txtWatchtowerInfo_ = new QTextEdit();
     txtWatchtowerInfo_->setReadOnly(true);
@@ -407,33 +407,33 @@ void LightningWidget::createNetworkTab() {
     auto* layout = new QVBoxLayout(networkWidget);
 
     // Network statistics
-    auto* statsGroup = new QGroupBox("Network Statistics");
+    auto* statsGroup = new QGroupBox(tr("Network Statistics"));
     auto* statsLayout = new QGridLayout();
 
     lblTotalNodes_ = new QLabel("0");
     lblTotalChannels_ = new QLabel("0");
-    lblNetworkCapacity_ = new QLabel("0 DIN");
-    lblAvgChannelSize_ = new QLabel("0 DIN");
+    lblNetworkCapacity_ = new QLabel(tr("0 DIN"));
+    lblAvgChannelSize_ = new QLabel(tr("0 DIN"));
 
-    statsLayout->addWidget(new QLabel("<b>Total Nodes:</b>"), 0, 0);
+    statsLayout->addWidget(new QLabel(tr("<b>Total Nodes:</b>")), 0, 0);
     statsLayout->addWidget(lblTotalNodes_, 0, 1);
-    statsLayout->addWidget(new QLabel("<b>Total Channels:</b>"), 0, 2);
+    statsLayout->addWidget(new QLabel(tr("<b>Total Channels:</b>")), 0, 2);
     statsLayout->addWidget(lblTotalChannels_, 0, 3);
-    statsLayout->addWidget(new QLabel("<b>Network Capacity:</b>"), 1, 0);
+    statsLayout->addWidget(new QLabel(tr("<b>Network Capacity:</b>")), 1, 0);
     statsLayout->addWidget(lblNetworkCapacity_, 1, 1);
-    statsLayout->addWidget(new QLabel("<b>Avg Channel Size:</b>"), 1, 2);
+    statsLayout->addWidget(new QLabel(tr("<b>Avg Channel Size:</b>")), 1, 2);
     statsLayout->addWidget(lblAvgChannelSize_, 1, 3);
 
     statsGroup->setLayout(statsLayout);
     layout->addWidget(statsGroup);
 
     // Peer connection
-    auto* peerGroup = new QGroupBox("Connect to Peer");
+    auto* peerGroup = new QGroupBox(tr("Connect to Peer"));
     auto* peerLayout = new QHBoxLayout();
     edtPeerAddress_ = new QLineEdit();
-    edtPeerAddress_->setPlaceholderText("Node ID@host:port (e.g. 02abc@192.168.1.100:9735)");
-    btnConnectPeer_ = new QPushButton("Connect");
-    btnDisconnectPeer_ = new QPushButton("Disconnect Selected");
+    edtPeerAddress_->setPlaceholderText(tr("Node ID@host:port (e.g. 02abc@192.168.1.100:9735)"));
+    btnConnectPeer_ = new QPushButton(tr("Connect"));
+    btnDisconnectPeer_ = new QPushButton(tr("Disconnect Selected"));
     connect(btnConnectPeer_, &QPushButton::clicked, this, &LightningWidget::onConnectPeer);
     connect(btnDisconnectPeer_, &QPushButton::clicked, this, &LightningWidget::onDisconnectPeer);
     peerLayout->addWidget(edtPeerAddress_);
@@ -443,26 +443,26 @@ void LightningWidget::createNetworkTab() {
     layout->addWidget(peerGroup);
 
     // Route finding
-    auto* routeGroup = new QGroupBox("Find Route");
+    auto* routeGroup = new QGroupBox(tr("Find Route"));
     auto* routeLayout = new QGridLayout();
 
     edtRouteDestination_ = new QLineEdit();
-    edtRouteDestination_->setPlaceholderText("Destination Node ID");
+    edtRouteDestination_->setPlaceholderText(tr("Destination Node ID"));
     edtRouteAmount_ = new QLineEdit();
-    edtRouteAmount_->setPlaceholderText("Amount (DIN)");
-    btnFindRoute_ = new QPushButton("Find Route");
+    edtRouteAmount_->setPlaceholderText(tr("Amount (DIN)"));
+    btnFindRoute_ = new QPushButton(tr("Find Route"));
     connect(btnFindRoute_, &QPushButton::clicked, this, &LightningWidget::onFindRoute);
 
-    routeLayout->addWidget(new QLabel("Destination:"), 0, 0);
+    routeLayout->addWidget(new QLabel(tr("Destination:")), 0, 0);
     routeLayout->addWidget(edtRouteDestination_, 0, 1);
-    routeLayout->addWidget(new QLabel("Amount:"), 1, 0);
+    routeLayout->addWidget(new QLabel(tr("Amount:")), 1, 0);
     routeLayout->addWidget(edtRouteAmount_, 1, 1);
     routeLayout->addWidget(btnFindRoute_, 1, 2);
 
     txtRouteResult_ = new QTextEdit();
     txtRouteResult_->setReadOnly(true);
     txtRouteResult_->setMaximumHeight(100);
-    routeLayout->addWidget(new QLabel("Route:"), 2, 0);
+    routeLayout->addWidget(new QLabel(tr("Route:")), 2, 0);
     routeLayout->addWidget(txtRouteResult_, 2, 1, 1, 2);
 
     routeGroup->setLayout(routeLayout);
@@ -470,9 +470,9 @@ void LightningWidget::createNetworkTab() {
 
     // Node table
     auto* nodeHeader = new QHBoxLayout();
-    nodeHeader->addWidget(new QLabel("<b>Network Nodes</b>"));
+    nodeHeader->addWidget(new QLabel(tr("<b>Network Nodes</b>")));
     nodeHeader->addStretch();
-    btnRefreshNetwork_ = new QPushButton("🔄 Refresh");
+    btnRefreshNetwork_ = new QPushButton(tr("🔄 Refresh"));
     connect(btnRefreshNetwork_, &QPushButton::clicked, this, &LightningWidget::onRefreshNetworkInfo);
     nodeHeader->addWidget(btnRefreshNetwork_);
     layout->addLayout(nodeHeader);
@@ -512,14 +512,14 @@ void LightningWidget::onOpenChannel() {
     int minConf = spnMinConf_->value();
 
     if (nodeId.isEmpty() || capacityStr.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter peer node ID and capacity.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter peer node ID and capacity."));
         return;
     }
 
     bool ok;
     double capacity = capacityStr.toDouble(&ok);
     if (!ok || capacity <= 0) {
-        QMessageBox::warning(this, "Invalid Amount", "Please enter a valid capacity amount.");
+        QMessageBox::warning(this, tr("Invalid Amount"), tr("Please enter a valid capacity amount."));
         return;
     }
 
@@ -539,12 +539,12 @@ void LightningWidget::onOpenChannel() {
 
 void LightningWidget::onCloseChannel() {
     if (selectedChannelId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a channel to close.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a channel to close."));
         return;
     }
 
-    auto reply = QMessageBox::question(this, "Close Channel",
-        "Are you sure you want to close this channel?\n\nThis will create a closing transaction on-chain.",
+    auto reply = QMessageBox::question(this, tr("Close Channel"),
+        tr("Are you sure you want to close this channel?\n\nThis will create a closing transaction on-chain."),
         QMessageBox::Yes | QMessageBox::No);
 
     if (reply == QMessageBox::Yes) {
@@ -556,15 +556,15 @@ void LightningWidget::onCloseChannel() {
 
 void LightningWidget::onForceCloseChannel() {
     if (selectedChannelId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a channel to force close.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a channel to force close."));
         return;
     }
 
-    auto reply = QMessageBox::warning(this, "Force Close Channel",
-        "⚠️ WARNING: Force closing should only be used in emergencies!\n\n"
+    auto reply = QMessageBox::warning(this, tr("Force Close Channel"),
+        tr("⚠️ WARNING: Force closing should only be used in emergencies!\n\n"
         "This will broadcast your latest commitment transaction.\n"
         "You may lose funds if the peer has a newer state.\n\n"
-        "Are you absolutely sure?",
+        "Are you absolutely sure?"),
         QMessageBox::Yes | QMessageBox::No);
 
     if (reply == QMessageBox::Yes) {
@@ -592,14 +592,14 @@ void LightningWidget::onCreateInvoice() {
     int expiry = spnInvoiceExpiry_->value();
 
     if (amountStr.isEmpty() || description.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter amount and description.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter amount and description."));
         return;
     }
 
     bool ok;
     double amount = amountStr.toDouble(&ok);
     if (!ok || amount <= 0) {
-        QMessageBox::warning(this, "Invalid Amount", "Please enter a valid amount.");
+        QMessageBox::warning(this, tr("Invalid Amount"), tr("Please enter a valid amount."));
         return;
     }
 
@@ -615,7 +615,7 @@ void LightningWidget::onCreateOpenInvoice() {
     int expiry = spnInvoiceExpiry_->value();
 
     if (description.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter a description.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter a description."));
         return;
     }
 
@@ -628,12 +628,12 @@ void LightningWidget::onPayInvoice() {
     QString customAmountStr = edtPayCustomAmount_->text().trimmed();
 
     if (bolt11.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter a BOLT 11 invoice.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter a BOLT 11 invoice."));
         return;
     }
 
-    auto reply = QMessageBox::question(this, "Pay Invoice",
-        "Are you sure you want to pay this invoice?",
+    auto reply = QMessageBox::question(this, tr("Pay Invoice"),
+        tr("Are you sure you want to pay this invoice?"),
         QMessageBox::Yes | QMessageBox::No);
 
     if (reply == QMessageBox::Yes) {
@@ -658,7 +658,7 @@ void LightningWidget::onDecodeInvoice() {
     QString bolt11 = edtPayBolt11_->text().trimmed();
 
     if (bolt11.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter a BOLT 11 invoice.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter a BOLT 11 invoice."));
         return;
     }
 
@@ -668,7 +668,7 @@ void LightningWidget::onDecodeInvoice() {
 void LightningWidget::onGenerateQR() {
     QString bolt11 = edtInvoiceBolt11_->text().trimmed();
     if (bolt11.isEmpty()) {
-        QMessageBox::information(this, "No Invoice", "Create an invoice first.");
+        QMessageBox::information(this, tr("No Invoice"), tr("Create an invoice first."));
         return;
     }
 
@@ -708,7 +708,7 @@ void LightningWidget::onRefreshPayments() {
 
 void LightningWidget::onCancelPayment() {
     if (selectedPaymentHash_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a payment to cancel.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a payment to cancel."));
         return;
     }
 
@@ -721,7 +721,7 @@ void LightningWidget::onRegisterWatchtower() {
     QString rewardStr = edtWatchtowerReward_->text().trimmed();
 
     if (url.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter watchtower URL.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter watchtower URL."));
         return;
     }
 
@@ -737,7 +737,7 @@ void LightningWidget::onRegisterWatchtower() {
 
 void LightningWidget::onUnregisterWatchtower() {
     if (selectedWatchtowerId_.isEmpty()) {
-        QMessageBox::warning(this, "No Selection", "Please select a watchtower.");
+        QMessageBox::warning(this, tr("No Selection"), tr("Please select a watchtower."));
         return;
     }
 
@@ -757,7 +757,7 @@ void LightningWidget::onRefreshNetworkInfo() {
 void LightningWidget::onConnectPeer() {
     QString address = edtPeerAddress_->text().trimmed();
     if (address.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter peer address.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter peer address."));
         return;
     }
 
@@ -767,7 +767,7 @@ void LightningWidget::onConnectPeer() {
 
 void LightningWidget::onDisconnectPeer() {
     // Implementation depends on selected node
-    QMessageBox::information(this, "Not Implemented", "Peer disconnection coming soon.");
+    QMessageBox::information(this, tr("Not Implemented"), tr("Peer disconnection coming soon."));
 }
 
 void LightningWidget::onFindRoute() {
@@ -775,14 +775,14 @@ void LightningWidget::onFindRoute() {
     QString amountStr = edtRouteAmount_->text().trimmed();
 
     if (dest.isEmpty() || amountStr.isEmpty()) {
-        QMessageBox::warning(this, "Invalid Input", "Please enter destination and amount.");
+        QMessageBox::warning(this, tr("Invalid Input"), tr("Please enter destination and amount."));
         return;
     }
 
     bool ok;
     double amount = amountStr.toDouble(&ok);
     if (!ok || amount <= 0) {
-        QMessageBox::warning(this, "Invalid Amount", "Please enter a valid amount.");
+        QMessageBox::warning(this, tr("Invalid Amount"), tr("Please enter a valid amount."));
         return;
     }
 
