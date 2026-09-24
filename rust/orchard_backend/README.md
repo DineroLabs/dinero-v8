@@ -1,6 +1,6 @@
 # Staged Orchard backend
 
-This component starts runtime integration on the private v8.1.13 source base.
+This component starts runtime integration on the v8.1.13 integration source base.
 It uses upstream Orchard **0.15.5**, `BundleVersion::orchard_v2()` and the
 `FixedPostNu6_2` verification key. No proof arithmetic is implemented locally.
 The dependency graph is locked in Cargo.lock. It does not use the research
@@ -142,7 +142,7 @@ an independently derived upstream commitment vector remain open review items.
 
 The root build has been configured on native macOS with the option enabled,
 and its Orchard target compiled in a fresh directory. Both root-registered
-Orchard CTest entries passed (ten Rust cases plus C++ checks), using the
+Orchard CTest entries passed on efd2a3270 (nine Rust cases plus C++ checks), using the
 project's vendored OpenSSL 3.5.7 artifacts read-only. This is not a clean full
 daemon or full test-suite claim. The Linux root job builds the daemon too;
 inspect its exact-source artifact before claiming that gate passed.

@@ -1,6 +1,6 @@
 # Draft Orchard envelope, profile 1
 
-This is an implementation candidate on the private integration branch, not a
+This is an implementation candidate on the integration branch, not a
 frozen consensus protocol. No new bytes are routed into production admission.
 Existing transparent v7 and historical v5/v6 serialization remain untouched.
 
@@ -67,7 +67,7 @@ bounded/truncated inputs (the current fixture has 9348 truncated prefixes),
 stream consumption, fixed fee marker, matched coins and the original signature.
 Proof corruption rejects through the envelope API.
 
-The prefix is a candidate from the private disjoint-marker contract. This does
+The prefix is a candidate from the disjoint-marker design contract. This does
 not establish rejection by every old binary path, especially historical reindex.
 Actual old/new parser/admission/storage/compact-block compatibility, cross-node
 regtest activation, new proof construction, wallet flows, and final protocol
