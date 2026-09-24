@@ -61,6 +61,8 @@ jobs:
         run: |
           cargo +${{ steps.rust-pin.outputs.version }} fmt --manifest-path rust/orchard_backend/Cargo.toml -- --check
           cargo +${{ steps.rust-pin.outputs.version }} clippy --locked --release --manifest-path rust/orchard_backend/Cargo.toml --target-dir build-orchard-backend/cargo --all-targets -- -D warnings
+      - name: Check independent envelope vectors
+        run: python3 rust/orchard_backend/tests/make_envelope_vector.py --check
       - name: Build C++ and Rust together
         run: |
           cmake -S rust/orchard_backend -B build-orchard-backend -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON

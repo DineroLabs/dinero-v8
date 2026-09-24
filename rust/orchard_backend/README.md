@@ -146,3 +146,24 @@ Orchard CTest entries passed (nine Rust cases plus C++ checks), using the
 project's vendored OpenSSL 3.5.7 artifacts read-only. This is not a clean full
 daemon or full test-suite claim. The Linux root job builds the daemon too;
 inspect its exact-source artifact before claiming that gate passed.
+
+## Draft outer transaction envelope
+
+`TransactionEnvelope` now owns a bounded, canonical outer frame, transparent
+inputs/outputs, explicit fee and the parsed Orchard bundle. It derives its own
+signing context from those fields and matched previous outputs. An authorization
+result retains the exact canonical bytes, txid/wtxid and Orchard authorization;
+it is explicitly not a transparent-script or chainstate-validity result.
+
+The draft starts with numeric version 7, two zero bytes, `DNORCHTX`, profile byte
+1 and a four-byte payload length. The two zero bytes distinguish this candidate
+from ordinary transparent v7 transactions. No shared Transaction parser or live
+admission path is changed; old-binary reindex/storage exclusion is still unproven.
+This codec is **not frozen or activated**. See [transaction envelope](TRANSACTION_ENVELOPE.md).
+
+The C++ test compares the bytes and both identities with an independent Python
+serializer using the existing synthetic signed bundle. It checks exact/prefix
+framing, two concatenated frames, every truncated prefix, marker/count/size
+rejections, fee-presence, input/coin correspondence, ownership and cryptographic
+rejection. One-sided/zero-transparent flow tests establish encoding shape only;
+valid shield/send/unshield proofs and wallet flows remain unimplemented.

@@ -1,4 +1,5 @@
 #include "orchard_backend.h"
+#include "orchard_transaction.h"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -8,6 +9,8 @@
 #include <vector>
 using namespace dinero::orchard;
 static_assert(kMaxMoneyUna == DINERO_HOST_MAX_MONEY);
+static_assert(!std::is_default_constructible_v<TransactionEnvelope>);
+static_assert(!std::is_default_constructible_v<VerifiedEnvelopeAuthorization>);
 static_assert(!std::is_default_constructible_v<ParsedBundle>);
 static_assert(!std::is_default_constructible_v<VerifiedAuthorization>);
 static_assert(!std::is_default_constructible_v<SigningContext>);
@@ -46,12 +49,108 @@ template<class F> static void Invalid(F f) {
     try { f(); } catch (const std::invalid_argument&) { rejected=true; }
     Require(rejected);
 }
+static void EnvelopeTests(const std::string& base) {
+    FixtureContext fixture;
+    std::vector<EnvelopeInput> inputs;
+    std::vector<PreviousOutput> coins;
+    for (const auto& in:fixture.inputs) {
+        inputs.push_back({in.txid_wire,in.output_index,in.sequence,{0x51},{{0x12,0x34},{}}});
+        coins.push_back({in.txid_wire,in.output_index,in.amount_una,in.script_pub_key});
+    }
+    const auto bundle=Load(base+"/candidate-spend.bundle");
+    const auto digest_bytes=Load(base+"/candidate-spend.digest");
+    const auto tx=TransactionEnvelope::Create(fixture.lock_time,inputs,fixture.outputs,fixture.fee,bundle);
+    const auto digest=tx.SigningDigest(fixture.domain,coins);
+    Require(std::equal(digest.begin(),digest.end(),digest_bytes.begin()));
+    Require(tx.VerifyAuthorization(fixture.domain,coins).Orchard().SigningDigest()==digest);
+    const auto wire=tx.CanonicalBytes();
+    Require(wire==Load(base+"/candidate-envelope.bin"));
+    const auto expected_txid=Load(base+"/candidate-envelope.txid");
+    const auto expected_wtxid=Load(base+"/candidate-envelope.wtxid");
+    const auto txid=tx.Txid(), wtxid=tx.Wtxid();
+    const auto authorized=tx.VerifyAuthorization(fixture.domain,coins);
+    Require(authorized.Txid()==txid && authorized.Wtxid()==wtxid && authorized.CanonicalBytes()==wire);
+    Require(std::equal(txid.begin(),txid.end(),expected_txid.begin()));
+    Require(std::equal(wtxid.begin(),wtxid.end(),expected_wtxid.begin()));
+    auto parsed=TransactionEnvelope::DecodeExact(wire);
+    Require(parsed.CanonicalBytes()==wire && parsed.Txid()==txid && parsed.Wtxid()==wtxid);
+    Require(parsed.VerifyAuthorization(fixture.domain,coins).Orchard().SigningDigest()==digest);
+    auto stream=wire; stream.insert(stream.end(),wire.begin(),wire.end());
+    auto [first,used]=TransactionEnvelope::DecodePrefix(stream);
+    auto [second,used2]=TransactionEnvelope::DecodePrefix(std::span(stream).subspan(used));
+    Require(used==wire.size() && used2==wire.size() && first.Txid()==second.Txid());
+    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(stream); });
+    for (std::size_t n=0;n<wire.size();++n)
+        Invalid([&]{ (void)TransactionEnvelope::DecodeExact(std::span(wire).first(n)); });
+    for (std::size_t i=0;i<15;++i) {
+        auto bad=wire; bad[i]^=1;
+        Invalid([&]{ (void)TransactionEnvelope::DecodeExact(bad); });
+    }
+    for (std::size_t offset:{std::size_t(15),std::size_t(19),std::size_t(59)}) {
+        auto bad=wire; std::fill(bad.begin()+offset,bad.begin()+offset+4,0xff);
+        Invalid([&]{ (void)TransactionEnvelope::DecodeExact(bad); });
+    }
+    auto padded=wire; padded.push_back(0);
+    const auto padded_length=static_cast<std::uint32_t>(padded.size()-19);
+    for (unsigned i=0;i<4;++i) padded[15+i]=static_cast<std::uint8_t>(padded_length>>(8*i));
+    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(padded); });
+    auto wrong_fee_marker=wire;
+    wrong_fee_marker.at(wire.size()-4-bundle.size()-4-8-1)=0;
+    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(wrong_fee_marker); });
+    auto wrong_coins=coins; std::swap(wrong_coins[0],wrong_coins[1]);
+    Invalid([&]{ (void)tx.VerifyAuthorization(fixture.domain,wrong_coins); });
+    wrong_coins=coins; wrong_coins.pop_back();
+    Invalid([&]{ (void)tx.VerifyAuthorization(fixture.domain,wrong_coins); });
+    wrong_coins=coins; ++wrong_coins[0].amount_una; --wrong_coins[1].amount_una;
+    bool rejected=false;
+    try { (void)tx.VerifyAuthorization(fixture.domain,wrong_coins); }
+    catch(const BackendError& e) { rejected=e.Status()==DINERO_ORCHARD_SPEND_SIGNATURE; }
+    Require(rejected);
+    // Transparent authorization is deliberately excluded from Orchard D, but
+    // remains represented by transaction/witness identity and requires host validation.
+    auto changed_inputs=inputs; changed_inputs[0].witness[0][0]^=1;
+    auto witness_changed=TransactionEnvelope::Create(fixture.lock_time,changed_inputs,fixture.outputs,fixture.fee,bundle);
+    Require(witness_changed.Txid()==txid && witness_changed.Wtxid()!=wtxid);
+    Require(witness_changed.SigningDigest(fixture.domain,coins)==digest);
+    changed_inputs=inputs; changed_inputs[0].script_sig[0]^=1;
+    auto script_changed=TransactionEnvelope::Create(fixture.lock_time,changed_inputs,fixture.outputs,fixture.fee,bundle);
+    Require(script_changed.Txid()!=txid && script_changed.Wtxid()!=wtxid);
+    Require(script_changed.SigningDigest(fixture.domain,coins)==digest);
+    auto proof_changed=bundle; proof_changed.at(54+884*2+4+30)^=1;
+    auto proof_tx=TransactionEnvelope::Create(fixture.lock_time,inputs,fixture.outputs,fixture.fee,proof_changed);
+    Require(proof_tx.Txid()!=txid && proof_tx.SigningDigest(fixture.domain,coins)==digest);
+    rejected=false;
+    try { (void)proof_tx.VerifyAuthorization(fixture.domain,coins); }
+    catch(const BackendError& e) { rejected=e.Status()==DINERO_ORCHARD_PROOF; }
+    Require(rejected);
+    // Caller buffers are independent after construction.
+    inputs[0].sequence=0; coins[0].amount_una=0;
+    Require(tx.CanonicalBytes()==wire && tx.Txid()==txid);
+    auto duplicate=tx.Inputs(); duplicate.push_back(duplicate[0]);
+    Invalid([&]{ (void)TransactionEnvelope::Create(0,duplicate,{},0,bundle); });
+    EnvelopeInput coinbase; coinbase.output_index=0xffffffff;
+    Invalid([&]{ (void)TransactionEnvelope::Create(0,{coinbase},{},0,bundle); });
+    auto excess=tx.Inputs(); excess[0].witness.resize(101);
+    Invalid([&]{ (void)TransactionEnvelope::Create(0,excess,{},0,bundle); });
+    excess=tx.Inputs(); excess[0].script_sig.resize(10001);
+    Invalid([&]{ (void)TransactionEnvelope::Create(0,excess,{},0,bundle); });
+    Invalid([&]{ (void)TransactionEnvelope::Create(0,{},{{kMaxMoneyUna,{}}},1,bundle); });
+    // Structural encodings only, not proof validity, for the zero-transparent
+    // and one-sided flow shapes. Future builder tests must supply valid proofs.
+    for (const auto& [ins,outs] : std::vector<std::pair<std::vector<EnvelopeInput>,std::vector<TransparentOutput>>>{
+            {{},{}}, {tx.Inputs(),{}}, {{},tx.Outputs()}}) {
+        auto shape=TransactionEnvelope::Create(0,ins,outs,0,bundle);
+        Require(TransactionEnvelope::DecodeExact(shape.CanonicalBytes()).CanonicalBytes()==shape.CanonicalBytes());
+    }
+    std::cout << "Draft envelope framing, independent bytes/identities, stream consumption, bounds and transaction-bound authorization passed\n";
+}
 int main(int argc, char** argv) {
     try {
         Require(argc == 2);
         Require(dinero_orchard_max_money_v1()==kMaxMoneyUna);
         Require(dinero_orchard_max_actions_v1()==kMaxActionsV1);
         const std::string base = argv[1];
+        EnvelopeTests(base);
         auto bytes = Load(base + "/candidate-spend.bundle");
         const auto digest_bytes = Load(base + "/candidate-spend.digest");
         Require(digest_bytes.size() == 32);
