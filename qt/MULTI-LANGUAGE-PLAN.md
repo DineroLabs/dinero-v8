@@ -18,7 +18,7 @@ This tree has no translation infrastructure and almost no translation markup:
 | tr() calls present | 87 |
 | Strings from common setters | 776 |
 | Message and dialog calls | 219 |
-| Strings built by concatenation | 1,137 |
+| Strings built by concatenation | 86 |
 | Calls already using .arg() | 1,098 |
 | Fixed width or size calls | 46 |
 
@@ -94,7 +94,7 @@ The three inputs run in parallel; the string marking is the long pole and everyt
 The work in order of cost:
 
 1. **Mark the strings.** The bulk of the effort. Mechanical but needs judgment about what is user-facing, and much of it lives in one 15,820-line file.
-2. **Convert the 1,137 concatenations into format strings.** Until this happens, translators cannot reorder words, and many languages need different word order than English.
+2. **Convert the 86 concatenations into format strings.** Until this happens, translators cannot reorder words, and many languages need different word order than English.
 3. **Fix the 46 fixed-width calls.** Use German as the canary, since it expands longest.
 4. **Wire the Qt tooling and the Settings picker.** Genuinely small, and it reuses the existing preference pattern.
 5. **Translate and review.** Capacity and money rather than engineering time.
