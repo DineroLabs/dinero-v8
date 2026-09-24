@@ -16,6 +16,9 @@ using Hash = std::array<std::uint8_t, 32>;
 inline constexpr std::size_t kMaxActionsV1 = 8;
 inline constexpr std::uint32_t kTransactionVersion = 7;
 inline constexpr std::uint8_t kBundleWireProfile = 1;
+// One wire-profile identity for the outer frame, inner codec and signed D.
+// A future outer format cannot select an independent, unsigned profile.
+inline constexpr std::uint8_t kOuterEnvelopeProfile = kBundleWireProfile;
 inline constexpr std::uint8_t kOrchardPoolProfile = 1;
 inline constexpr std::uint8_t kCircuitProfile = 1;
 inline constexpr std::uint32_t kEffectCommitmentVersion = 5;

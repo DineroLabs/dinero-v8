@@ -5,11 +5,13 @@
 namespace dinero::orchard {
 // Draft, disjoint outer envelope. This is not selected by numeric version 7
 // alone. No existing Transaction parser or live admission caller is changed.
-inline constexpr std::size_t kMaxTransactionBytes = 1024 * 1024;
+inline constexpr std::size_t kMaxTransactionBytes = 100000;
 struct EnvelopeInput {
     Hash txid_wire{};
     std::uint32_t output_index = 0;
     std::uint32_t sequence = 0;
+    // Profile 1 has no scriptSig authorization: it must be empty.
+    // Host admission still has to validate native witness programs and stacks.
     std::vector<std::uint8_t> script_sig;
     std::vector<std::vector<std::uint8_t>> witness;
 };

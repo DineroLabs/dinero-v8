@@ -1,5 +1,6 @@
 #include "orchard_backend.h"
 #include "orchard_transaction.h"
+#include "consensus/limits.h"
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -9,6 +10,10 @@
 #include <vector>
 using namespace dinero::orchard;
 static_assert(kMaxMoneyUna == DINERO_HOST_MAX_MONEY);
+static_assert(kMaxTransactionBytes == dinero::consensus::MAX_TX_SIZE);
+static_assert(kMaxTransactionBytes < dinero::consensus::MAX_BLOCK_SIZE);
+static_assert(4*kMaxTransactionBytes <= dinero::consensus::MAX_TX_WEIGHT);
+static_assert(kOuterEnvelopeProfile == kBundleWireProfile);
 static_assert(!std::is_default_constructible_v<TransactionEnvelope>);
 static_assert(!std::is_default_constructible_v<VerifiedEnvelopeAuthorization>);
 static_assert(!std::is_default_constructible_v<ParsedBundle>);
@@ -49,12 +54,51 @@ template<class F> static void Invalid(F f) {
     try { f(); } catch (const std::invalid_argument&) { rejected=true; }
     Require(rejected);
 }
+// Reject-only draft-envelope regression; no chain, wallet or peer involved.
+static void EnvelopeReviewTests(const std::string& base) {
+    const auto bundle=Load(base+"/candidate-spend.bundle");
+    EnvelopeInput in; in.txid_wire[0]=1;
+    in.script_sig={0x51};
+    Invalid([&]{ (void)TransactionEnvelope::Create(0,{in},{},0,bundle); });
+    in.script_sig.clear();
+    auto bare=TransactionEnvelope::Create(0,{in},{},0,bundle);
+    // Decode must enforce the same rule, before copying the script bytes.
+    auto scripted=bare.CanonicalBytes();
+    scripted[59]=1; scripted.insert(scripted.begin()+63,0x51);
+    auto set_u32=[](auto& bytes, std::size_t offset, std::uint32_t n) {
+        for (unsigned i=0;i<4;++i) bytes[offset+i]=static_cast<std::uint8_t>(n>>(8*i));
+    };
+    set_u32(scripted,15,static_cast<std::uint32_t>(scripted.size()-19));
+    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(scripted); });
+    Invalid([&]{ (void)TransactionEnvelope::DecodePrefix(scripted); });
+    // Independently fixed host ceiling, not a boundary inferred from the implementation.
+    constexpr std::size_t host_limit=100000;
+    std::vector<TransparentOutput> padding;
+    std::size_t left=host_limit-bare.CanonicalBytes().size();
+    while (left>10012) { padding.push_back({0,std::vector<std::uint8_t>(10000)}); left-=10012; }
+    Require(left>=12);
+    padding.push_back({0,std::vector<std::uint8_t>(left-12)});
+    const auto exact=TransactionEnvelope::Create(0,{in},padding,0,bundle);
+    Require(exact.CanonicalBytes().size()==host_limit);
+    Require(TransactionEnvelope::DecodeExact(exact.CanonicalBytes()).CanonicalBytes()==exact.CanonicalBytes());
+    auto oversized=exact.CanonicalBytes();
+    const auto script_end=oversized.size()-bundle.size()-17;
+    const auto last_size=padding.back().script_pub_key.size();
+    set_u32(oversized,script_end-last_size-4,static_cast<std::uint32_t>(last_size+1));
+    oversized.insert(oversized.begin()+script_end,0);
+    set_u32(oversized,15,static_cast<std::uint32_t>(oversized.size()-19));
+    padding.back().script_pub_key.push_back(0);
+    Invalid([&]{ (void)TransactionEnvelope::Create(0,{in},padding,0,bundle); });
+    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(oversized); });
+    Invalid([&]{ (void)TransactionEnvelope::DecodePrefix(oversized); });
+    std::cout << "Envelope scriptSig rejection and exact host byte ceiling passed\n";
+}
 static void EnvelopeTests(const std::string& base) {
     FixtureContext fixture;
     std::vector<EnvelopeInput> inputs;
     std::vector<PreviousOutput> coins;
     for (const auto& in:fixture.inputs) {
-        inputs.push_back({in.txid_wire,in.output_index,in.sequence,{0x51},{{0x12,0x34},{}}});
+        inputs.push_back({in.txid_wire,in.output_index,in.sequence,{},{{0x12,0x34},{}}});
         coins.push_back({in.txid_wire,in.output_index,in.amount_una,in.script_pub_key});
     }
     const auto bundle=Load(base+"/candidate-spend.bundle");
@@ -112,10 +156,8 @@ static void EnvelopeTests(const std::string& base) {
     auto witness_changed=TransactionEnvelope::Create(fixture.lock_time,changed_inputs,fixture.outputs,fixture.fee,bundle);
     Require(witness_changed.Txid()==txid && witness_changed.Wtxid()!=wtxid);
     Require(witness_changed.SigningDigest(fixture.domain,coins)==digest);
-    changed_inputs=inputs; changed_inputs[0].script_sig[0]^=1;
-    auto script_changed=TransactionEnvelope::Create(fixture.lock_time,changed_inputs,fixture.outputs,fixture.fee,bundle);
-    Require(script_changed.Txid()!=txid && script_changed.Wtxid()!=wtxid);
-    Require(script_changed.SigningDigest(fixture.domain,coins)==digest);
+    changed_inputs=inputs; changed_inputs[0].script_sig={0x51};
+    Invalid([&]{ (void)TransactionEnvelope::Create(fixture.lock_time,changed_inputs,fixture.outputs,fixture.fee,bundle); });
     auto proof_changed=bundle; proof_changed.at(54+884*2+4+30)^=1;
     auto proof_tx=TransactionEnvelope::Create(fixture.lock_time,inputs,fixture.outputs,fixture.fee,proof_changed);
     Require(proof_tx.Txid()!=txid && proof_tx.SigningDigest(fixture.domain,coins)==digest);
@@ -150,6 +192,7 @@ int main(int argc, char** argv) {
         Require(dinero_orchard_max_money_v1()==kMaxMoneyUna);
         Require(dinero_orchard_max_actions_v1()==kMaxActionsV1);
         const std::string base = argv[1];
+        EnvelopeReviewTests(base);
         EnvelopeTests(base);
         auto bytes = Load(base + "/candidate-spend.bundle");
         const auto digest_bytes = Load(base + "/candidate-spend.digest");

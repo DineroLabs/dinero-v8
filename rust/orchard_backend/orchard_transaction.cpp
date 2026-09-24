@@ -1,17 +1,22 @@
 #include "orchard_transaction.h"
+#include "consensus/limits.h"
 #include <openssl/evp.h>
 #include <algorithm>
 #include <set>
 #include <string_view>
 
 namespace dinero::orchard {
+// Compile these checks even when component tests are disabled.
+static_assert(kMaxTransactionBytes == consensus::MAX_TX_SIZE);
+static_assert(kMaxTransactionBytes < consensus::MAX_BLOCK_SIZE);
+static_assert(4*kMaxTransactionBytes <= consensus::MAX_TX_WEIGHT);
 namespace {
 using Bytes = std::vector<std::uint8_t>;
 constexpr std::array<std::uint8_t, 15> kPrefix{
     static_cast<std::uint8_t>(kTransactionVersion),
     static_cast<std::uint8_t>(kTransactionVersion>>8),
     static_cast<std::uint8_t>(kTransactionVersion>>16),
-    static_cast<std::uint8_t>(kTransactionVersion>>24), 0,0, 'D','N','O','R','C','H','T','X', 1};
+    static_cast<std::uint8_t>(kTransactionVersion>>24), 0,0, 'D','N','O','R','C','H','T','X', kOuterEnvelopeProfile};
 constexpr std::size_t kHeaderSize = kPrefix.size() + 4;
 constexpr std::size_t kMaxInputs = 4096, kMaxOutputs = 4096;
 constexpr std::size_t kMaxScript = 10000, kMaxWitnessItems = 4096;
@@ -46,7 +51,7 @@ std::size_t Check(const std::vector<EnvelopeInput>& inputs,
         if (!outpoints.emplace(in.txid_wire,in.output_index).second) Invalid();
         if (in.output_index==0xffffffff &&
             std::all_of(in.txid_wire.begin(),in.txid_wire.end(),[](auto x){return x==0;})) Invalid();
-        if (in.script_sig.size()>kMaxScript || in.witness.size()>kMaxWitnessPerInput ||
+        if (!in.script_sig.empty() || in.witness.size()>kMaxWitnessPerInput ||
             in.witness.size()>kMaxWitnessItems-witnesses) Invalid();
         witnesses+=in.witness.size();
         Size(32+4+4+4+4,size); Size(in.script_sig.size(),size);
@@ -138,7 +143,7 @@ std::pair<TransactionEnvelope,std::size_t> TransactionEnvelope::DecodePrefix(std
     for (std::uint32_t i=0;i<ni;++i) {
         EnvelopeInput in;
         auto h=r.Take(32); std::copy(h.begin(),h.end(),in.txid_wire.begin());
-        in.output_index=r.U32(); in.script_sig=r.Blob(kMaxScript); in.sequence=r.U32();
+        in.output_index=r.U32(); in.script_sig=r.Blob(0); in.sequence=r.U32();
         const auto nw=r.U32();
         if (nw>kMaxWitnessPerInput || nw>kMaxWitnessItems-witnesses || nw>r.Remaining()/4) Invalid();
         witnesses+=nw; in.witness.reserve(nw);

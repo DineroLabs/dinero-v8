@@ -448,6 +448,27 @@ mod tests {
     }
 
     #[test]
+    fn noncanonical_signature_components_reject_during_verification() {
+        // RedPallas Signature::from is only a byte container. The pinned
+        // verifier must reject noncanonical R and S for BOTH signature roles.
+        // Bounded rejection checks on the public synthetic honest fixture.
+        for (start, expected) in [
+            (54 + 820, Status::SpendSignature),
+            (BUNDLE.len() - 64, Status::BindingSignature),
+        ] {
+            for component in [0, 32] {
+                let mut bytes = BUNDLE.to_vec();
+                bytes[start + component..start + component + 32].fill(0xff);
+                let parsed = ParsedBundle::decode(&bytes).unwrap();
+                assert_eq!(
+                    parsed.verify(DIGEST, parsed.facts.value_balance),
+                    Err(expected)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn exact_codec_rejects_trailing_and_incomplete_encodings() {
         let mut trailing = BUNDLE.to_vec();
         trailing.push(0);

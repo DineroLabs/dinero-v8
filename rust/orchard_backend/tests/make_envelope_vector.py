@@ -14,7 +14,7 @@ def blob(data):
 def envelope(with_witness):
     payload = u32(2)
     for start, vout, seq in [(32, 3, 0xfffffffd), (64, 9, 0xfffffffe)]:
-        payload += bytes(range(start, start + 32)) + u32(vout) + blob(b'\x51') + u32(seq)
+        payload += bytes(range(start, start + 32)) + u32(vout) + blob(b'') + u32(seq)
         payload += (u32(2) + blob(b'\x12\x34') + blob(b'')) if with_witness else u32(0)
     payload += u32(2) + u64(10000) + blob(bytes.fromhex('76a91411'))
     payload += u64(56000) + blob(bytes.fromhex('51202233'))

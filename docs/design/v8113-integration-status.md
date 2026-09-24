@@ -7,6 +7,8 @@ This branch collects release implementation for review and qualification against
 
 - Pinned Orchard backend, immutable C++ signing context and bounded draft outer
   transaction envelope, with exact-source component and root-build CI jobs.
+- Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
+  outer/inner signing-profile identity.
 - Explicit domain/profile checks across Rust/C++, canonical synthetic vectors,
   transaction identity and authorization-binding tests.
 - Shielded database compatibility guard for stopped-copy migration.
