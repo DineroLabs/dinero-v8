@@ -51,7 +51,15 @@ foreach(_catalog IN LISTS _catalogs)
       math(EXPR _checked "${_checked}+1")
       string(REGEX REPLACE ".*<translation[^>]*>([^<]*)</translation>.*" "\\1" _value "${_pair}")
       # Empty means unfinished, which falls back to English. That is allowed.
-      if(NOT _value STREQUAL "" AND NOT _value STREQUAL "${_term}")
+      #
+      # An English plural "s" may be dropped or added: most target languages do
+      # not form plurals that way, so "UTXO" for "UTXOs" keeps the term English
+      # and merely drops an English grammatical marker. Compare both with any
+      # trailing "s" removed, which still rejects a real translation such as
+      # "Bedingungen" for "Covenants".
+      string(REGEX REPLACE "s$" "" _term_base "${_term}")
+      string(REGEX REPLACE "s$" "" _value_base "${_value}")
+      if(NOT _value STREQUAL "" AND NOT _value_base STREQUAL "${_term_base}")
         list(APPEND _failures
              "${_catalog_name}: universal term '${_term}' was translated to '${_value}' - it must stay '${_term}' in every language")
       endif()
