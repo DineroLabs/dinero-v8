@@ -6,6 +6,9 @@
 extern "C" {
 #endif
 
+#define DINERO_ORCHARD_V1_MAX_ACTIONS 8
+
+/* ABI-v1 protocol limit. A change requires a reviewed new ABI/codec profile. */
 typedef struct DineroOrchardHandle DineroOrchardHandle;
 typedef struct {
     uint8_t effect[32];
@@ -15,8 +18,8 @@ typedef struct {
     uint32_t action_count;
     uint8_t flags;
     uint8_t reserved[3];
-    uint8_t nullifiers[8][32];
-    uint8_t commitments[8][32];
+    uint8_t nullifiers[DINERO_ORCHARD_V1_MAX_ACTIONS][32];
+    uint8_t commitments[DINERO_ORCHARD_V1_MAX_ACTIONS][32];
 } DineroOrchardFacts;
 
 /* 0 = success; stable v1 error values match the Rust Status enum. */

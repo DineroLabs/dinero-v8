@@ -4,6 +4,7 @@
 #include <utility>
 
 namespace dinero::orchard {
+static_assert(kMaxActionsV1 == DINERO_ORCHARD_V1_MAX_ACTIONS);
 static_assert(sizeof(DineroOrchardFacts) == 624);
 static_assert(offsetof(DineroOrchardFacts, value_balance) == 96);
 static_assert(offsetof(DineroOrchardFacts, nullifiers) == 112);
@@ -29,9 +30,12 @@ ParsedBundle ParsedBundle::Decode(std::span<const std::uint8_t> bytes) {
     Check(dinero_orchard_facts_v1(handle.get(), &facts));
     return ParsedBundle(std::move(handle), facts);
 }
-VerifiedAuthorization ParsedBundle::VerifyAuthorization(const Hash& digest,
-                                                        std::int64_t required_balance) const {
-    Check(dinero_orchard_verify_v1(handle_.get(), digest.data(), required_balance));
+Hash ParsedBundle::SigningDigest(const SigningContext& context) const {
+    return context.Digest(facts_);
+}
+VerifiedAuthorization ParsedBundle::VerifyAuthorization(const SigningContext& context) const {
+    const auto digest = SigningDigest(context);
+    Check(dinero_orchard_verify_v1(handle_.get(), digest.data(), context.RequiredValueBalance()));
     return VerifiedAuthorization(handle_, facts_, digest);
 }
 } // namespace dinero::orchard

@@ -20,16 +20,23 @@ candidate-transaction bridge or link any of `tools/research`.
 - C++ RAII ownership and a separately constructed `VerifiedAuthorization` result.
   Parsing cannot construct that result. The result retains the exact signing
   digest used for the check.
+- Owned immutable C++ signing context. Verification derives the draft digest
+  internally from that context and the effect exported by the same parsed bundle;
+  the C++ API has no caller-digest verification overload. Context construction
+  checks duplicate inputs, bounded sizes, monetary sums and cross-pool balance.
 
 **This is a cryptographic backend, not a Dinero transaction validator.** The
-host must derive the signing message and required balance from one immutable
-transaction plus authenticated prevouts; it must bind the exported effect into
-that message. It must also check transparent scripts, maturity, anchors,
+host must construct the signing context from the actual immutable transaction
+and authenticated prevouts, in transaction order. The C++ wrapper binds that
+context to its own parsed bundle effect; it does not authenticate the supplied
+coin metadata. The host must also check transparent scripts, maturity, anchors,
 nullifier membership, pool balance, transaction/body identity and activation.
 Raw-FFI success against a caller-supplied digest does not authenticate its origin.
 Those host and chainstate callers are not wired yet.
 
-The inner `DNORCH01` codec is still draft (8 Actions / 64 KiB limits). It is
+The inner `DNORCH01` codec is still draft (8 Actions / 64 KiB limits). The
+eight-action protocol-v1 limit is named in Rust and C/C++; changing it requires
+a protocol decision and a new ABI version, not merely wider arrays. It is
 adapted from the bounded decoder at research commit dae4a6b35; the synthetic
 signed fixture and its expected digest/effect come from that same pinned tree.
 No real wallet keys or note openings are in the fixtures. This does **not**
@@ -54,7 +61,10 @@ Native Mac Release: both CTest entries passed (C++ FFI/ownership checks and
 8 Rust tests). Cargo fmt and clippy with warnings denied passed. Tests cover an
 honest signed bundle, balance and message mismatches, each authorization check,
 codec bounds/truncation/trailing bytes, duplicate nullifiers, FFI output and
-ownership, and ABI layout. Corruption rejection tests are regression checks,
+ownership, and ABI layout. The C++ lane also compares its derived digest to an
+independently generated saved fixture, rejects 13 transaction-context changes,
+rejects a changed encrypted payload using its own newly derived digest, and
+checks signed balance direction and context resource limits. Corruption rejection tests are regression checks,
 not a cryptographic soundness or zero-knowledge proof. Linux has its own required
 `Orchard backend component` workflow; do not substitute daemon-only CI for it.
 
@@ -79,3 +89,24 @@ component change.
 - `candidate-spend.bundle`: SHA-256 `2e787f3ded6427124f56093ac55a8d4922b8ad696678f92d7dfa7adb3357e2de`.
 - `candidate-spend.digest`: SHA-256 `a2c4f9f0cfb91eac7bec548e8017fa8cf9ecdf7a74f1f68a0bab2ec961215d8e`.
 - `candidate-spend.effect`: SHA-256 `b8a94e9e16a77bed613d2eedca8b62699b7d6d84809ed2828668ffa12b0e9511`.
+
+### Draft signing context boundary
+
+The context owns copies of the network/genesis/branch domain, lock time, ordered
+resolved inputs (outpoint, sequence, amount, script), ordered transparent outputs
+and explicit fee. Version 7, fee-presence and the selected draft profile are
+fixed by this interface. The derived digest includes those fields, the action
+count and the effect commitment. The latter includes the bundle's encrypted
+payloads. Verification always derives this digest again from the immutable data;
+caller-provided digest bytes cannot select what the C++ wrapper verifies.
+
+The low-level C ABI remains a cryptographic primitive and accepts a digest. It
+must not be called directly as transaction validation. No source-tree consensus
+caller exists yet. A transaction-to-context adapter, canonical outer encoding,
+trusted chain-parameter selection, and coin-view validation are still required.
+
+The exact crate selected by Cargo.lock is the crates.io `orchard` 0.15.5 release,
+not a Git tag dependency or a patched local fork. Locked builds select the
+`orchard_v2()` bundle profile and `FixedPostNu6_2` circuit key explicitly;
+`orchard_v3()` is not used. This pin does not by itself qualify the future wallet
+flow, platforms or consensus integration.

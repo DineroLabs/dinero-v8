@@ -18,7 +18,8 @@ use std::sync::OnceLock;
 
 const MAGIC: [u8; 8] = *b"DNORCH01";
 const WIRE_VERSION: u8 = 1;
-const MAX_ACTIONS: usize = 8;
+// Draft protocol/ABI-v1 limit; do not increase without a versioned codec and ABI review.
+pub const MAX_ACTIONS: usize = 8;
 const MAX_BUNDLE_BYTES: usize = 64 * 1024;
 const MAX_MONEY: u64 = 26_542_800_000_000_000;
 const BUNDLE_VERSION: BundleVersion = BundleVersion::orchard_v2();
