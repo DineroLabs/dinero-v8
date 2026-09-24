@@ -17,7 +17,10 @@ python3). Any miss is listed and the script exits nonzero.
 
 Usage: check_ctest_integrity.py <build-dir>
 
-Scope note: this gate can only see tests that ARE registered under the
+With --require-shielded-proof-tests, the proof and compact-codec entries must
+both be registered, enabled, and labeled shielded/mandatory.
+
+Scope note: otherwise this gate can only see tests that ARE registered under the
 build's configuration. A feature flag that is OFF in CI (e.g.
 DINERO_ENABLE_QUIC) removes its tests from registration entirely — that
 blindness is a coverage-policy decision, not something this script can
@@ -25,6 +28,7 @@ detect. It is documented here so nobody mistakes a green gate for proof
 that every test in the tree compiles.
 """
 
+import argparse
 import json
 import os
 import shutil
@@ -32,11 +36,29 @@ import subprocess
 import sys
 
 
+def shielded_proof_inventory_errors(tests):
+    """Required registration is separate from executability and execution."""
+    errors = []
+    for name in ("SpartanSoundness", "CompactSpartanCodec"):
+        matches = [test for test in tests if test.get("name") == name]
+        if len(matches) != 1:
+            errors.append(f"{name}: expected one registration, got {len(matches)}")
+            continue
+        props = {p["name"]: p.get("value") for p in matches[0].get("properties", [])}
+        labels = props.get("LABELS") or []
+        if not {"shielded", "mandatory"}.issubset(labels):
+            errors.append(f"{name}: missing shielded/mandatory labels")
+        if props.get("DISABLED"):
+            errors.append(f"{name}: disabled")
+    return errors
+
+
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(__doc__, file=sys.stderr)
-        return 2
-    build_dir = sys.argv[1]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("build_dir")
+    parser.add_argument("--require-shielded-proof-tests", action="store_true")
+    args = parser.parse_args()
+    build_dir = args.build_dir
     if not os.path.isdir(build_dir):
         print(f"error: build dir not found: {build_dir}", file=sys.stderr)
         return 2
@@ -59,6 +81,14 @@ def main() -> int:
         print("error: ctest reports ZERO registered tests — refusing to pass",
               file=sys.stderr)
         return 1
+
+    if args.require_shielded_proof_tests:
+        errors = shielded_proof_inventory_errors(tests)
+        if errors:
+            print("SHIELDED TEST INVENTORY FAILURE:", file=sys.stderr)
+            for error in errors:
+                print(f"  {error}", file=sys.stderr)
+            return 1
 
     missing = []
     for test in tests:

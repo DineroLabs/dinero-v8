@@ -124,7 +124,7 @@ jobs:
       # feature flags that are OFF here (e.g. DINERO_ENABLE_QUIC) are not
       # registered at all and cannot be checked by this gate.
       - name: CTest integrity gate (registered => built)
-        run: python3 scripts/ci/check_ctest_integrity.py build-tests
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests --require-shielded-proof-tests
 
       # The execution gate's own parser self-test. It runs FIRST and needs no
       # build directory. The gate's answer is only as good as its model of how
@@ -136,6 +136,9 @@ jobs:
       # Running it as a plain step rather than registering it with CTest is
       # deliberate: a self-test for the unexecuted-test gate must not be able
       # to become an unexecuted test.
+      - name: Shielded proof registration self-test
+        run: python3 tests/cmake/test_shielded_proof_registration.py
+
       - name: Execution-gate parser self-test
         run: python3 scripts/ci/test_check_mandatory_tests_execute.py
 
@@ -843,7 +846,7 @@ jobs:
       # Same gate as the default lane, now over a registry that INCLUDES
       # the QUIC family: registered => built, in this configuration too.
       - name: CTest integrity gate (registered => built)
-        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic --require-shielded-proof-tests
 
       - name: OpenSSL version assertion (policy pin 3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-tests-quic 3.5.7

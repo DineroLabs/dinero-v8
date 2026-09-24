@@ -2698,40 +2698,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   endif()
   add_test(NAME ShieldedCvBinding COMMAND test_shielded_cv_binding)
 
-  # Spartan proof-system soundness regression (standalone require_zero_error).
-  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/zk/test_spartan_soundness.cpp)
-    add_executable(test_spartan_soundness
-      tests/zk/test_spartan_soundness.cpp
-      tests/zk/test_compact_spartan.cpp
-      src/consensus/shielded/compact_spartan_codec.cpp
-    )
-    add_dependencies(test_spartan_soundness gtest dinero_zk)
-    target_link_libraries(test_spartan_soundness PRIVATE
-      GTest::gtest
-      GTest::gtest_main
-      dinero_zk
-      dinero_crypto
-    )
-    target_include_directories(test_spartan_soundness BEFORE PRIVATE
-      ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
-      ${CMAKE_SOURCE_DIR}/include
-      ${CMAKE_SOURCE_DIR}/src
-    )
-    if(APPLE)
-      target_link_libraries(test_spartan_soundness PRIVATE "-framework Security")
-    endif()
-    add_test(NAME SpartanSoundness COMMAND test_spartan_soundness)
-    set_tests_properties(SpartanSoundness PROPERTIES
-      LABELS "zk;spartan;soundness;mandatory"
-      TIMEOUT 300
-    )
-  endif()
   set_tests_properties(ShieldedCvBinding PROPERTIES
     LABELS "shielded;consensus;cv-binding;mandatory"
     TIMEOUT 1800
   )
   message(STATUS "Shielded cv-binding tests enabled")
 endif()
+
+# Required proof/codec suites have independent targets and fail configuration
+# if either source is missing. Neither depends on the optional cv-binding file.
+include(${CMAKE_SOURCE_DIR}/tests/cmake/ShieldedProofTests.cmake)
+dinero_register_shielded_proof_tests(${CMAKE_SOURCE_DIR})
 
 # cv-binding audit 2026-07-01: ec_add_complete selector-binding regression test
 if(TARGET dinero_zk AND TARGET gtest)
