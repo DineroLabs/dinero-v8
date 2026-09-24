@@ -1443,6 +1443,14 @@ if(BUILD_TESTING)
                    -DWALLET_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../src/wallet
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_seed_phrase_never_translated.cmake)
 
+  # UTXO and Covenants are protocol vocabulary and read identically in every
+  # language. A localized rendering names a different concept, so this is a
+  # gate rather than a glossary line a translator may never read.
+  add_test(NAME QtUniversalTermsUntranslated
+           COMMAND ${CMAKE_COMMAND}
+                   -DTRANSLATIONS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/translations
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_universal_terms_untranslated.cmake)
+
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp
     src/peerheightsemantics.h

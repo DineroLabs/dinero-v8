@@ -11,22 +11,22 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1535"/>
         <source>Your Dinero wallet is ready to use</source>
-        <translation>Ihre Dinero-Geldbörse ist einsatzbereit</translation>
+        <translation>Ihre Dinero-Wallet ist einsatzbereit</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1539"/>
         <source>✅ Your wallet setup has completed.</source>
-        <translation>✅ Die Einrichtung Ihrer Geldbörse ist abgeschlossen.</translation>
+        <translation>✅ Die Einrichtung Ihrer Wallet ist abgeschlossen.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1545"/>
         <source>Wallet Name:</source>
-        <translation>Name der Geldbörse:</translation>
+        <translation>Wallet-Name:</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1550"/>
         <source>Wallet Fingerprint:</source>
-        <translation>Fingerabdruck der Geldbörse:</translation>
+        <translation>Wallet-Fingerprint:</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1555"/>
@@ -41,7 +41,7 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1585"/>
         <source>Creating wallet...</source>
-        <translation>Geldbörse wird erstellt …</translation>
+        <translation>Wallet wird erstellt …</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1590"/>
@@ -56,12 +56,12 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1621"/>
         <source>❌ Wallet restore failed</source>
-        <translation>❌ Wiederherstellung fehlgeschlagen</translation>
+        <translation>❌ Wallet-Wiederherstellung fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1633"/>
         <source>❌ Wallet creation failed</source>
-        <translation>❌ Erstellung der Geldbörse fehlgeschlagen</translation>
+        <translation>❌ Erstellung der Wallet fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1655"/>
@@ -74,7 +74,7 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1072"/>
         <source>Confirm Your Seed Phrase</source>
-        <translation>Bestätigen Sie Ihre Wiederherstellungswörter</translation>
+        <translation>Bestätigen Sie Ihre Seed-Phrase</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1073"/>
@@ -113,7 +113,7 @@ Please go back and write down your seed phrase carefully.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="710"/>
         <source>Your Seed Phrase</source>
-        <translation>Ihre Wiederherstellungswörter</translation>
+        <translation>Ihre Seed-Phrase</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="711"/>
@@ -128,7 +128,7 @@ Please go back and write down your seed phrase carefully.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="725"/>
         <source>[Seed phrase will appear here]</source>
-        <translation>[Die Wiederherstellungswörter erscheinen hier]</translation>
+        <translation>[Die Seed-Phrase erscheint hier]</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="742"/>
@@ -151,7 +151,7 @@ Please go back and write down your seed phrase carefully.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="765"/>
         <source>✅ I have written down my seed phrase on paper</source>
-        <translation>✅ Ich habe meine Wiederherstellungswörter auf Papier notiert</translation>
+        <translation>✅ Ich habe meine Seed-Phrase auf Papier notiert</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="791"/>
@@ -177,7 +177,7 @@ Click &apos;Generate Seed&apos; to try again.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="1023"/>
         <source>[Seed phrase unavailable]</source>
-        <translation>[Wiederherstellungswörter nicht verfügbar]</translation>
+        <translation>[Seed-Phrase nicht verfügbar]</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1032"/>
@@ -187,12 +187,12 @@ Click &apos;Generate Seed&apos; to try again.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="1034"/>
         <source>[Seed hidden. Click Reveal Seed]</source>
-        <translation>[Wörter verborgen. Auf „Wörter anzeigen“ klicken]</translation>
+        <translation>[Seed verborgen. Auf „Seed anzeigen“ klicken]</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1045"/>
         <source>Seed Not Ready</source>
-        <translation>Wörter noch nicht bereit</translation>
+        <translation>Seed noch nicht bereit</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1046"/>
@@ -204,7 +204,7 @@ Wait for seed generation to complete before continuing.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="1052"/>
         <source>Backup Required</source>
-        <translation>Sicherung erforderlich</translation>
+        <translation>Backup erforderlich</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1053"/>
@@ -344,12 +344,12 @@ Click the &apos;Import Taproot Key&apos; button after entering a valid descripto
     <message>
         <location filename="../src/mainwindow.cpp" line="3119"/>
         <source>Wallet</source>
-        <translation>Geldbörse</translation>
+        <translation>Wallet</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3188"/>
         <source>Covenants</source>
-        <translation>Bedingungen</translation>
+        <translation>Covenants</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3522"/>
@@ -374,7 +374,7 @@ Click the &apos;Import Taproot Key&apos; button after entering a valid descripto
     <message>
         <location filename="../src/mainwindow.cpp" line="3698"/>
         <source>Hardware Wallet</source>
-        <translation>Hardware-Geldbörse</translation>
+        <translation>Hardware-Wallet</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3704"/>
@@ -404,7 +404,7 @@ Click the &apos;Import Taproot Key&apos; button after entering a valid descripto
     <message>
         <location filename="../src/mainwindow.cpp" line="3753"/>
         <source>Pool</source>
-        <translation>Schürfpool</translation>
+        <translation>Pool</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3762"/>
@@ -416,7 +416,7 @@ Click the &apos;Import Taproot Key&apos; button after entering a valid descripto
         <location filename="../src/mainwindow.cpp" line="4090"/>
         <location filename="../src/mainwindow.cpp" line="4527"/>
         <source>Mining</source>
-        <translation>Schürfen</translation>
+        <translation>Mining</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4827"/>
@@ -426,7 +426,7 @@ Click the &apos;Import Taproot Key&apos; button after entering a valid descripto
     <message>
         <location filename="../src/mainwindow.cpp" line="4923"/>
         <source>Peers</source>
-        <translation>Gegenstellen</translation>
+        <translation>Peers</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4983"/>

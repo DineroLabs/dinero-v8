@@ -35,14 +35,15 @@ No translation catalog exists in the tree, and the shipped 8.1.12 build carries 
 
 ## Decisions already locked
 
-Six rules are settled and should not be reopened per language.
+Seven rules are settled and should not be reopened per language.
 
 1. **English is the default and the source language.** No English catalog is maintained. A string with no entry in the loaded catalog falls back to its English source automatically, which is Qt's default behaviour, so partial coverage is usable and English cannot break from a bad catalog.
 2. **Language changes only in the Settings window, with restart to apply.** This is what makes the absence of form files cheap: no per-widget refresh code is ever written.
 3. **Words only. Amounts stay dot decimal in every language**, for both display and entry. Language selection must not drive locale number formatting. A comma decimal separator is a fund-loss risk, not a cosmetic one.
 4. **No operating-system locale auto-detection.** A user in Germany sees English until they choose otherwise. Locale changes stay under the application's control.
 5. **Terms with no sensible translation stay English.** The automatic fallback only covers missing entries; a wrong or nonsensical translation still displays. Deciding that a term has no translation is a human judgment, so it belongs in a glossary.
-6. **Right-to-left languages are out of scope** for all waves. Layout mirroring is a separate project, not another entry in the language list.
+6. **Where the target language's own speakers use the English word, keep the English word.** Translation means what people actually say, not literal substitution. A dictionary-correct rendering that nobody uses reads as worse than English, because the reader has to decode it. In German that keeps Wallet, Mining, Pool, Seed, Backup, Peers and Covenants, while Send, Receive, Transactions and Settings still become Senden, Empfangen, Transaktionen and Einstellungen. This is decided **per language by that language's reviewer**, not once and applied globally: a word English-borrowed in German may have a native equivalent in French or Turkish. Two terms are fixed across **every** language and must never be translated by anyone: **UTXO** and **Covenants**. Both are protocol vocabulary with no accepted equivalent in any target language, and a localized rendering would describe a different thing. They are enforced by the `QtUniversalTermsUntranslated` gate rather than left to a translator's judgment.
+7. **Right-to-left languages are out of scope** for all waves. Layout mirroring is a separate project, not another entry in the language list.
 
 ## Language waves
 
