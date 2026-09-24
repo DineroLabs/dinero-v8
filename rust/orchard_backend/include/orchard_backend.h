@@ -14,10 +14,16 @@ using Hash = std::array<std::uint8_t, 32>;
 // Draft protocol-v1 limits. Increasing the action limit changes both the
 // accepted inner encoding and the fixed v1 ABI; it requires explicit review.
 inline constexpr std::size_t kMaxActionsV1 = 8;
+inline constexpr std::uint32_t kTransactionVersion = 7;
+inline constexpr std::uint8_t kBundleWireProfile = 1;
+inline constexpr std::uint8_t kOrchardPoolProfile = 1;
+inline constexpr std::uint8_t kCircuitProfile = 1;
+inline constexpr std::uint32_t kEffectCommitmentVersion = 5;
 inline constexpr std::uint64_t kMaxMoneyUna = 26'542'800'000'000'000ULL;
 
 struct SigningDomain {
-    std::uint8_t network_code = 0;
+    // Default is invalid, never an implicit mainnet domain.
+    std::uint8_t network_code = 0xff;
     Hash genesis_wire{};
     std::uint32_t branch_id = 0;
 };

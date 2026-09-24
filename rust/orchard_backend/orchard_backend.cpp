@@ -6,6 +6,7 @@
 
 namespace dinero::orchard {
 static_assert(kMaxActionsV1 == DINERO_ORCHARD_V1_MAX_ACTIONS);
+static_assert(sizeof(DineroOrchardProtocol) == 20);
 static_assert(sizeof(DineroOrchardFacts) == 624);
 static_assert(offsetof(DineroOrchardFacts, value_balance) == 96);
 static_assert(offsetof(DineroOrchardFacts, nullifiers) == 112);
@@ -22,6 +23,14 @@ VerifiedAuthorization::VerifiedAuthorization(std::shared_ptr<const DineroOrchard
                                              DineroOrchardFacts facts, Hash digest)
     : handle_(std::move(handle)), facts_(facts), digest_(digest) {}
 ParsedBundle ParsedBundle::Decode(std::span<const std::uint8_t> bytes) {
+    DineroOrchardProtocol profile{};
+    Check(dinero_orchard_protocol_v1(&profile));
+    if (profile.transaction_version != kTransactionVersion ||
+        profile.bundle_wire_profile != kBundleWireProfile ||
+        profile.pool_profile != kOrchardPoolProfile ||
+        profile.circuit_profile != kCircuitProfile ||
+        profile.effect_commitment_version != kEffectCommitmentVersion)
+        throw BackendError(DINERO_ORCHARD_FORMAT);
     DineroOrchardHandle* raw = nullptr;
     Check(dinero_orchard_decode_v1(bytes.data(), bytes.size(), &raw));
     std::shared_ptr<const DineroOrchardHandle> handle(raw, [](const auto* p) {

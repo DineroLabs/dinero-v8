@@ -1,6 +1,7 @@
 #include "orchard_backend.h"
 #include <openssl/evp.h>
 #include <set>
+#include <algorithm>
 #include <string_view>
 #include <utility>
 
@@ -50,7 +51,9 @@ SigningContext SigningContext::Create(SigningDomain domain, std::uint32_t lock_t
                                      const std::vector<ResolvedInput>& inputs,
                                      const std::vector<TransparentOutput>& outputs,
                                      std::uint64_t explicit_fee_una) {
-    if (domain.network_code > 2 || inputs.size() > kMaxItems || outputs.size() > kMaxItems)
+    if (domain.network_code > 2 || domain.branch_id == 0 ||
+        std::all_of(domain.genesis_wire.begin(),domain.genesis_wire.end(),[](auto b){return b==0;}) ||
+        inputs.size() > kMaxItems || outputs.size() > kMaxItems)
         throw std::invalid_argument("invalid Orchard signing context shape");
     std::uint64_t input_sum = 0, output_sum = 0;
     std::size_t size = 256; // Conservatively covers fixed framing and bundle effect.
@@ -83,7 +86,7 @@ Hash SigningContext::Digest(const DineroOrchardFacts& facts) const {
     Bytes bytes(domain.begin(), domain.end());
     bytes.push_back(0);
     bytes.push_back(domain_.network_code); Append(bytes, domain_.genesis_wire);
-    U32(bytes, domain_.branch_id); U32(bytes, 7); U32(bytes, lock_time_);
+    U32(bytes, domain_.branch_id); U32(bytes, kTransactionVersion); U32(bytes, lock_time_);
     U32(bytes, static_cast<std::uint32_t>(inputs_.size()));
     for (const auto& in : inputs_) {
         Append(bytes, in.txid_wire); U32(bytes, in.output_index); U32(bytes, in.sequence);
@@ -92,7 +95,7 @@ Hash SigningContext::Digest(const DineroOrchardFacts& facts) const {
     U32(bytes, static_cast<std::uint32_t>(outputs_.size()));
     for (const auto& out : outputs_) { U64(bytes, out.amount_una); Script(bytes, out.script_pub_key); }
     bytes.push_back(1); U64(bytes, fee_);
-    bytes.insert(bytes.end(), {1, 1, 1}); U32(bytes, facts.action_count); Append(bytes, facts.effect);
+    bytes.insert(bytes.end(), {kBundleWireProfile, kOrchardPoolProfile, kCircuitProfile}); U32(bytes, facts.action_count); Append(bytes, facts.effect);
     Hash digest{};
     unsigned int length = 0;
     if (EVP_Digest(bytes.data(), bytes.size(), digest.data(), &length, EVP_sha256(), nullptr) != 1 ||

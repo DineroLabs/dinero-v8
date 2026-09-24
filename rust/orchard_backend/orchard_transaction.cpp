@@ -8,7 +8,10 @@ namespace dinero::orchard {
 namespace {
 using Bytes = std::vector<std::uint8_t>;
 constexpr std::array<std::uint8_t, 15> kPrefix{
-    7,0,0,0, 0,0, 'D','N','O','R','C','H','T','X', 1};
+    static_cast<std::uint8_t>(kTransactionVersion),
+    static_cast<std::uint8_t>(kTransactionVersion>>8),
+    static_cast<std::uint8_t>(kTransactionVersion>>16),
+    static_cast<std::uint8_t>(kTransactionVersion>>24), 0,0, 'D','N','O','R','C','H','T','X', 1};
 constexpr std::size_t kHeaderSize = kPrefix.size() + 4;
 constexpr std::size_t kMaxInputs = 4096, kMaxOutputs = 4096;
 constexpr std::size_t kMaxScript = 10000, kMaxWitnessItems = 4096;

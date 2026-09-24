@@ -22,6 +22,7 @@ const WIRE_VERSION: u8 = 1;
 pub const MAX_ACTIONS: usize = 8;
 const MAX_BUNDLE_BYTES: usize = 64 * 1024;
 const MAX_MONEY: u64 = 26_542_800_000_000_000;
+const EFFECT_TX_VERSION: TxVersion = TxVersion::V5;
 const BUNDLE_VERSION: BundleVersion = BundleVersion::orchard_v2();
 static VERIFYING_KEY: OnceLock<VerifyingKey> = OnceLock::new();
 
@@ -41,6 +42,40 @@ pub enum Status {
     Money = 11,
     DuplicateNullifier = 12,
     BalanceMismatch = 13,
+}
+
+/// ABI-v1 selection, derived from the same versions used for commitments/keys.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProtocolProfile {
+    pub transaction_version: u32,
+    pub bundle_wire_profile: u32,
+    pub pool_profile: u32,
+    pub circuit_profile: u32,
+    pub effect_commitment_version: u32,
+}
+fn protocol_profile() -> Result<ProtocolProfile, Status> {
+    // A future profile needs an explicit ABI/codec change, never an implicit
+    // selection with the existing v1 identifier.
+    if BUNDLE_VERSION != BundleVersion::orchard_v2() {
+        return Err(Status::Format);
+    }
+    let circuit_profile = match BUNDLE_VERSION.circuit_version() {
+        orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2 => 1,
+        _ => return Err(Status::Format),
+    };
+    let effect_commitment_version = match EFFECT_TX_VERSION {
+        TxVersion::V5 => 5,
+        TxVersion::V6 => 6,
+        _ => return Err(Status::Format),
+    };
+    Ok(ProtocolProfile {
+        transaction_version: 7,
+        bundle_wire_profile: WIRE_VERSION as u32,
+        pool_profile: 1,
+        circuit_profile,
+        effect_commitment_version,
+    })
 }
 
 /// All fields come from the same owned, strictly decoded bundle. These are
@@ -69,14 +104,15 @@ pub struct ParsedBundle {
 
 impl ParsedBundle {
     fn decode(bytes: &[u8]) -> Result<Self, Status> {
+        let _ = protocol_profile()?;
         let bundle = parse_bundle(bytes)?;
         let mut facts = BundleFacts {
             effect: bundle
-                .commitment(TxVersion::V5)
+                .commitment(EFFECT_TX_VERSION)
                 .map_err(|_| Status::Format)?
                 .into(),
             authorization: bundle
-                .authorizing_commitment(TxVersion::V5)
+                .authorizing_commitment(EFFECT_TX_VERSION)
                 .map_err(|_| Status::Format)?
                 .0
                 .as_bytes()
@@ -242,6 +278,22 @@ fn boundary(f: impl FnOnce() -> Result<(), Status>) -> i32 {
             Status::Panic as i32
         }
     }
+}
+
+/// # Safety
+/// Output must be valid writable aligned storage; it is unchanged on failure.
+#[no_mangle]
+pub unsafe extern "C" fn dinero_orchard_protocol_v1(output: *mut ProtocolProfile) -> i32 {
+    if output.is_null() {
+        return Status::NullArgument as i32;
+    }
+    boundary(|| {
+        let profile = protocol_profile()?;
+        unsafe {
+            output.write(profile);
+        }
+        Ok(())
+    })
 }
 
 /// # Safety
@@ -517,6 +569,34 @@ mod tests {
             BUNDLE_VERSION.circuit_version(),
             orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2
         );
+    }
+
+    #[test]
+    fn selected_protocol_descriptor_and_null_output_are_checked() {
+        let mut output = ProtocolProfile {
+            transaction_version: 0,
+            bundle_wire_profile: 0,
+            pool_profile: 0,
+            circuit_profile: 0,
+            effect_commitment_version: 0,
+        };
+        // SAFETY: non-aliasing initialized output storage.
+        assert_eq!(unsafe { dinero_orchard_protocol_v1(&mut output) }, 0);
+        assert_eq!(
+            output,
+            ProtocolProfile {
+                transaction_version: 7,
+                bundle_wire_profile: 1,
+                pool_profile: 1,
+                circuit_profile: 1,
+                effect_commitment_version: 5
+            }
+        );
+        assert_eq!(
+            unsafe { dinero_orchard_protocol_v1(std::ptr::null_mut()) },
+            Status::NullArgument as i32
+        );
+        assert_eq!(std::mem::size_of::<ProtocolProfile>(), 20);
     }
 
     #[test]

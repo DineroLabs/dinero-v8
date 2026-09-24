@@ -219,16 +219,22 @@ int main(int argc, char** argv) {
             catch (const BackendError& e) { rejected=e.Status()==status; }
             Require(rejected);
         }
+        // O14: omitted or incomplete domains must never select mainnet implicitly.
+        Invalid([&]{ (void)SigningContext::Create({},0,{}, {},0); });
+        { auto d=FixtureContext().domain; d.genesis_wire={};
+          Invalid([&]{ (void)SigningContext::Create(d,0,{}, {},0); }); }
+        { auto d=FixtureContext().domain; d.branch_id=0;
+          Invalid([&]{ (void)SigningContext::Create(d,0,{}, {},0); }); }
         ResolvedInput ten{}; ten.amount_una=10;
-        Require(SigningContext::Create({},0,{ten},{},0).RequiredValueBalance()==-10);
-        Require(SigningContext::Create({},0,{},{{10,{}}},0).RequiredValueBalance()==10);
-        Invalid([&]{ (void)SigningContext::Create({},0,{ten,ten},{},0); });
-        Invalid([&]{ (void)SigningContext::Create({},0,{},{{kMaxMoneyUna,{}}},1); });
-        Invalid([&]{ (void)SigningContext::Create({},0,{}, {},kMaxMoneyUna+1); });
+        Require(SigningContext::Create(FixtureContext().domain,0,{ten},{},0).RequiredValueBalance()==-10);
+        Require(SigningContext::Create(FixtureContext().domain,0,{},{{10,{}}},0).RequiredValueBalance()==10);
+        Invalid([&]{ (void)SigningContext::Create(FixtureContext().domain,0,{ten,ten},{},0); });
+        Invalid([&]{ (void)SigningContext::Create(FixtureContext().domain,0,{},{{kMaxMoneyUna,{}}},1); });
+        Invalid([&]{ (void)SigningContext::Create(FixtureContext().domain,0,{}, {},kMaxMoneyUna+1); });
         Invalid([&]{ (void)SigningContext::Create({3,{},0},0,{}, {},0); });
-        Invalid([&]{ (void)SigningContext::Create({},0,{},{{0,std::vector<std::uint8_t>(10001)}},0); });
-        Invalid([&]{ (void)SigningContext::Create({},0,{},std::vector<TransparentOutput>(4097),0); });
-        Invalid([&]{ (void)SigningContext::Create({},0,{},
+        Invalid([&]{ (void)SigningContext::Create(FixtureContext().domain,0,{},{{0,std::vector<std::uint8_t>(10001)}},0); });
+        Invalid([&]{ (void)SigningContext::Create(FixtureContext().domain,0,{},std::vector<TransparentOutput>(4097),0); });
+        Invalid([&]{ (void)SigningContext::Create(FixtureContext().domain,0,{},
             std::vector<TransparentOutput>(105,{0,std::vector<std::uint8_t>(10000)}),0); });
         rejected=false;
         try { (void)ParsedBundle::Decode(bytes); } catch (const BackendError&) { rejected=true; }

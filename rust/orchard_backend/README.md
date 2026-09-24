@@ -58,7 +58,7 @@ it does not add a daemon validation caller or activate Orchard. Cross compilatio
 is deliberately rejected until toolchains are wired and qualified.
 
 Native Mac Release (Rust 1.91.1): both CTest entries passed (C++ FFI/ownership checks and
-9 Rust tests). Cargo fmt and clippy with warnings denied passed. Tests cover an
+10 Rust tests). Cargo fmt and clippy with warnings denied passed. Tests cover an
 honest signed bundle, balance and message mismatches, each authorization check,
 codec bounds/truncation/trailing bytes, duplicate nullifiers, FFI output and
 ownership, and ABI layout. The C++ lane also compares its derived digest to an
@@ -142,7 +142,7 @@ an independently derived upstream commitment vector remain open review items.
 
 The root build has been configured on native macOS with the option enabled,
 and its Orchard target compiled in a fresh directory. Both root-registered
-Orchard CTest entries passed (nine Rust cases plus C++ checks), using the
+Orchard CTest entries passed (ten Rust cases plus C++ checks), using the
 project's vendored OpenSSL 3.5.7 artifacts read-only. This is not a clean full
 daemon or full test-suite claim. The Linux root job builds the daemon too;
 inspect its exact-source artifact before claiming that gate passed.
@@ -167,3 +167,16 @@ framing, two concatenated frames, every truncated prefix, marker/count/size
 rejections, fee-presence, input/coin correspondence, ownership and cryptographic
 rejection. One-sided/zero-transparent flow tests establish encoding shape only;
 valid shield/send/unshield proofs and wallet flows remain unimplemented.
+
+### Domain and protocol selection
+
+An omitted signing domain has an invalid network sentinel. Construction rejects
+unknown networks, a zero genesis hash and branch zero. These checks prevent
+accidental default-mainnet use; the host must still select the actual chain's
+parameters rather than trusting transaction-supplied metadata.
+
+Before decoding, C++ compares the Rust-exported transaction, inner-codec, pool,
+circuit and effect-commitment profile with its named signing constants. Rust
+derives its circuit descriptor and key from the same BundleVersion, and its
+effect descriptor from the same TxVersion used by the commitment calls. ABI-v1
+refuses a bundle-version selection outside its pinned v2 profile.

@@ -22,6 +22,16 @@ typedef struct {
     uint8_t commitments[DINERO_ORCHARD_V1_MAX_ACTIONS][32];
 } DineroOrchardFacts;
 
+/* Selected profile descriptor; C++ compares every value before decoding. */
+typedef struct {
+    uint32_t transaction_version;
+    uint32_t bundle_wire_profile;
+    uint32_t pool_profile;
+    uint32_t circuit_profile;
+    uint32_t effect_commitment_version;
+} DineroOrchardProtocol;
+int32_t dinero_orchard_protocol_v1(DineroOrchardProtocol*);
+
 /* Values are checked against Rust by the component ABI test. */
 typedef enum {
     DINERO_ORCHARD_OK = 0,
