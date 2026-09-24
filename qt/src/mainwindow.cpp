@@ -1,6 +1,7 @@
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
 #include "mainwindow.h"
+#include "i18n.h"
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
 #include "responsiveuipolicy.h"
@@ -4979,6 +4980,59 @@ void MainWindow::setupUI() {
     auto *layout = new QVBoxLayout(settings);
     layout->setSpacing(12);
 
+    // Interface language. This is the ONLY place the language can be changed,
+    // and it applies on restart, which is why no widget here retranslates
+    // itself. Selecting a language changes WORDS ONLY: it never touches
+    // QLocale, so amounts keep a dot decimal separator in every language.
+    // See qt/src/i18n.h and qt/MULTI-LANGUAGE-PLAN.md.
+    {
+      auto *languageGroup = new QGroupBox(tr("Language"));
+      auto *languageLayout = new QVBoxLayout(languageGroup);
+      languageLayout->setSpacing(8);
+
+      auto *languageForm = new QFormLayout;
+      auto *languageCombo = new QComboBox;
+      for (const auto &language : dinero::qt::i18n::AvailableLanguages()) {
+        languageCombo->addItem(language.nativeName, language.code);
+      }
+      const int storedIndex =
+          languageCombo->findData(dinero::qt::i18n::CurrentLanguageCode());
+      if (storedIndex >= 0) {
+        languageCombo->setCurrentIndex(storedIndex);
+      }
+      languageForm->addRow(new QLabel(tr("Interface language:")), languageCombo);
+      languageLayout->addLayout(languageForm);
+
+      // Not translatable: a stylesheet is code, not user-facing text.
+      const QString languageNoteStyle =
+          QStringLiteral("QLabel { font-size: 11px; color: #9aa4af; }");
+
+      auto *languageNote = new QLabel(
+          tr("Untranslated text stays in English. Amounts always use a dot "
+             "decimal separator, in every language."));
+      languageNote->setWordWrap(true);
+      languageNote->setStyleSheet(languageNoteStyle);
+      languageLayout->addWidget(languageNote);
+
+      auto *languageRestartHint = new QLabel;
+      languageRestartHint->setWordWrap(true);
+      languageRestartHint->setStyleSheet(languageNoteStyle);
+      languageRestartHint->hide();
+      languageLayout->addWidget(languageRestartHint);
+
+      connect(languageCombo, &QComboBox::currentIndexChanged, this,
+              [languageCombo, languageRestartHint](int index) {
+                if (index < 0) return;
+                dinero::qt::i18n::SetLanguageCode(
+                    languageCombo->itemData(index).toString());
+                languageRestartHint->setText(
+                    tr("Language saved. Restart Dinero to apply it."));
+                languageRestartHint->show();
+              });
+
+      layout->addWidget(languageGroup);
+    }
+
     auto actualDataDir = [this]() {
       QString dataDir = rpc_ ? rpc_->datadir() : QString();
       if (dataDir.trimmed().isEmpty()) {
@@ -5269,7 +5323,7 @@ void MainWindow::setupUI() {
     }
 
     auto *developerNote = new QLabel(
-      "Use these controls when testing daemon startup, connection recovery, or local runtime health."
+      tr("Use these controls when testing daemon startup, connection recovery, or local runtime health.")
     );
     developerNote->setWordWrap(true);
     developerNote->setStyleSheet(mutedLabelStyle());
@@ -5279,8 +5333,8 @@ void MainWindow::setupUI() {
     developerPanel->setVisible(showDeveloperMenu);
     btnDeveloperToggle->setChecked(showDeveloperMenu);
     auto updateDeveloperToggle = [btnDeveloperToggle](bool expanded) {
-      btnDeveloperToggle->setText(expanded ? QStringLiteral("Hide Developer Menu")
-                                           : QStringLiteral("Show Developer Menu"));
+      btnDeveloperToggle->setText(expanded ? tr("Hide Developer Menu")
+                                           : tr("Show Developer Menu"));
     };
     updateDeveloperToggle(showDeveloperMenu);
     connect(btnDeveloperToggle, &QPushButton::toggled, this,
@@ -5432,7 +5486,7 @@ void MainWindow::setupUI() {
     layout->addWidget(note);
 
     layout->addStretch();
-    tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), "Settings");
+    tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), tr("Settings"));
   }
 
   // === Error Message Bar (at very bottom) ===

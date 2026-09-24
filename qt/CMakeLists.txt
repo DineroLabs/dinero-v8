@@ -451,6 +451,10 @@ endif()
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 message(STATUS "Found Qt6: ${Qt6_VERSION}")
 
+# Linguist is OPTIONAL on purpose: a toolchain without it still builds a
+# working English-only binary instead of failing the build.
+find_package(Qt6 QUIET COMPONENTS LinguistTools)
+
 if(BUILD_TESTING)
   find_package(Qt6 REQUIRED COMPONENTS Test)
 endif()
@@ -530,6 +534,8 @@ set(GUI_SOURCES
   src/privatecovenantwidget.cpp
   src/privatecovenantwidget.h
   src/main.cpp
+  src/i18n.cpp
+  src/i18n.h
   src/rpcclient.cpp
   src/rpcclient.h
   src/changeaddressmanager.cpp
@@ -693,6 +699,43 @@ elseif(WIN32)
   add_executable(dinero-qt WIN32 ${GUI_SOURCES} "${_dinero_qt_rc}")
 else()
   add_executable(dinero-qt ${GUI_SOURCES})
+endif()
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Interface translations  (see qt/MULTI-LANGUAGE-PLAN.md)
+# ═══════════════════════════════════════════════════════════════════════════════
+# English is the SOURCE language and deliberately has NO catalog: with no
+# translator installed, tr() returns the English source text, so any string
+# missing from a catalog falls back to English on its own.
+#
+# Catalogs are compiled to .qm and embedded under :/i18n/ so a shipped bundle
+# carries its translations inside the binary and cannot lose them to a missing
+# file. Adding a language means dropping translations/dinero_<code>.ts in and
+# rebuilding; qt/src/i18n.cpp only offers languages whose catalog is present.
+file(GLOB DINERO_QT_TS_FILES "${CMAKE_CURRENT_SOURCE_DIR}/translations/dinero_*.ts")
+if(TARGET Qt6::lrelease AND DINERO_QT_TS_FILES)
+  set(DINERO_QT_QM_FILES "")
+  foreach(_ts_file ${DINERO_QT_TS_FILES})
+    get_filename_component(_ts_name "${_ts_file}" NAME_WE)
+    set(_qm_file "${CMAKE_CURRENT_BINARY_DIR}/i18n/${_ts_name}.qm")
+    add_custom_command(
+      OUTPUT "${_qm_file}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/i18n"
+      COMMAND Qt6::lrelease "${_ts_file}" -qm "${_qm_file}"
+      DEPENDS "${_ts_file}"
+      COMMENT "lrelease ${_ts_name}.qm"
+      VERBATIM)
+    list(APPEND DINERO_QT_QM_FILES "${_qm_file}")
+  endforeach()
+  add_custom_target(dinero_qt_translations DEPENDS ${DINERO_QT_QM_FILES})
+  add_dependencies(dinero-qt dinero_qt_translations)
+  qt_add_resources(dinero-qt "dinero_i18n"
+    PREFIX "/i18n"
+    BASE "${CMAKE_CURRENT_BINARY_DIR}/i18n"
+    FILES ${DINERO_QT_QM_FILES})
+  message(STATUS "dinero-qt translations embedded: ${DINERO_QT_QM_FILES}")
+else()
+  message(STATUS "dinero-qt translations: none embedded (English-only build)")
 endif()
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1375,6 +1418,19 @@ if(BUILD_TESTING)
   target_link_libraries(test_covenant_form_policy PRIVATE Qt6::Core Qt6::Test)
   target_compile_definitions(test_covenant_form_policy PRIVATE QT_NO_KEYWORDS)
   add_test(NAME CovenantFormPolicy COMMAND test_covenant_form_policy)
+
+  # Interface-translation chain gate (see qt/MULTI-LANGUAGE-PLAN.md).
+  # Proves a finished translation applies, a marked-but-untranslated string
+  # falls back to English, and the settings key / resource path stay stable.
+  # Only registered when catalogs are actually built, so an English-only
+  # toolchain does not fail on a missing .qm.
+  if(TARGET Qt6::lrelease AND DINERO_QT_QM_FILES)
+    add_executable(test_i18n tests/test_i18n.cpp src/i18n.cpp)
+    target_link_libraries(test_i18n PRIVATE Qt6::Core)
+    add_dependencies(test_i18n dinero_qt_translations)
+    add_test(NAME QtI18nChain
+             COMMAND test_i18n "${CMAKE_CURRENT_BINARY_DIR}/i18n/dinero_de.qm")
+  endif()
 
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp

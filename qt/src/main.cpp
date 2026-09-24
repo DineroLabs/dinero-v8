@@ -48,6 +48,7 @@
 #include "mainwindow.h"
 #include "build_identity.h"
 #include "debugconsole.h"
+#include "i18n.h"
 
 #include "minercontroller.h"
 #include <solo_miner/build_identity.h>
@@ -1175,6 +1176,13 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   app.setApplicationName("Dinero");
   app.setOrganizationName("Dinero");
+
+  // Interface language. Must run after setOrganizationName() so QSettings
+  // resolves the stored preference, and before any widget is constructed so
+  // every tr() call sees the catalog. English installs nothing and falls back
+  // to the source text. This deliberately does NOT call QLocale::setDefault():
+  // amounts stay dot-decimal in every language (see qt/src/i18n.h).
+  dinero::qt::i18n::InstallTranslator(app);
 
   // Install suppressing message handler early to prevent console output
   // This will be replaced with the full Debug Console handler later
