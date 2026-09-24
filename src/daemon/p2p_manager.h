@@ -393,6 +393,9 @@ public:
     // Lifecycle
     bool start();
     void stop();
+    // Quiesce outbound work before a service performs potentially blocking
+    // teardown. Socket close, peer joins, and final persistence remain in stop().
+    void begin_shutdown();
     bool is_running() const { return running_; }
 
     // Observability: Socket readiness (for deterministic tests)
@@ -791,6 +794,48 @@ public:
         bool dry_run);
 
 #ifdef DINERO_TEST_BUILD
+    bool test_shutdown_requested() const {
+        return shutdown_requested_.load(std::memory_order_acquire);
+    }
+    // Exercise the real connection-manager pass and connect timeout without
+    // depending on host routing or a reachable external peer.
+    void test_set_connection_manager_dial(
+        std::function<bool(const std::string&, uint16_t)> dial) {
+        test_connection_manager_dial_ = std::move(dial);
+    }
+    void test_set_outbound_connect_poll(
+        std::function<int(int, std::chrono::milliseconds)> poll) {
+        test_outbound_connect_poll_ = std::move(poll);
+    }
+    void test_set_ipv4_resolver(
+        std::function<std::optional<std::string>(const std::string&)> resolver) {
+        test_ipv4_resolver_ = std::move(resolver);
+    }
+    void test_set_before_final_peers_save(std::function<void()> before_save) {
+        test_before_final_peers_save_ = std::move(before_save);
+    }
+    void test_set_before_peer_handler_start(std::function<void(int)> before_start) {
+        test_before_peer_handler_start_ = std::move(before_start);
+    }
+    bool test_is_connecting_peer(const std::string& address, uint16_t port) const {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        return connecting_peers_.count(address + ":" + std::to_string(port)) != 0;
+    }
+    void test_handle_incoming_connection(int socket_fd, const std::string& address) {
+        handle_incoming_connection(socket_fd, address);
+    }
+    std::optional<std::string> test_resolve_ipv4_for_dial(
+        const std::string& host, std::chrono::milliseconds timeout) const {
+        return resolve_ipv4_for_dial(host, timeout);
+    }
+    static unsigned test_resolver_in_flight();
+    bool test_socks5_transfer_all(int socket_fd, uint8_t* data, size_t len,
+                                  bool sending, std::chrono::milliseconds timeout) {
+        return socks5_transfer_all(socket_fd, data, len, sending,
+            std::chrono::steady_clock::now() + timeout);
+    }
+    int test_wait_for_outbound_connect() { return wait_for_outbound_connect(-1); }
+
     // #373 fd-hygiene hooks: drive the private cleanup path and observe the
     // stored fd so tests can prove close-and-invalidate (no double-close).
     bool test_send_peer_message(PeerInfo* peer, const P2PMessage& message) { return send_peer_message(peer, message); }
@@ -1192,15 +1237,27 @@ private:
 #ifdef DINERO_TEST_BUILD
     std::atomic<bool> plaintext_relay_dev_override_for_tests_{false};
     std::atomic<bool> encrypted_relay_dev_override_for_tests_{false};
+    std::function<bool(const std::string&, uint16_t)> test_connection_manager_dial_;
+    std::function<int(int, std::chrono::milliseconds)> test_outbound_connect_poll_;
+    std::function<std::optional<std::string>(const std::string&)> test_ipv4_resolver_;
+    std::function<void()> test_before_final_peers_save_;
+    std::function<void(int)> test_before_peer_handler_start_;
 #endif
 
     // Network threads
     void listen_loop();
     void connection_manager_loop();
+    int wait_for_outbound_connect(int socket_fd);
+    std::optional<std::string> resolve_ipv4_for_dial(
+        const std::string& host,
+        std::chrono::milliseconds timeout = std::chrono::seconds(5)) const;
+    bool socks5_transfer_all(int socket_fd, uint8_t* data, size_t len, bool sending,
+                             std::chrono::steady_clock::time_point deadline);
     bool connect_to_peer_impl(const std::string& address, uint16_t port,
-                              bool is_feeler);
+                              bool is_feeler,
+                              const std::optional<std::string>& pre_resolved_ip = std::nullopt);
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
-    void start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
+    bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);
     // Task 5: Decrypted-stream reader for QUIC relay virtual peers.
     // Spawned by start_peer_handler_thread (Task 6) for encrypted circuits.

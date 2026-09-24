@@ -28,6 +28,7 @@
 #include <filesystem> // Phase C (v8 peer discovery): atomic peers.dat rename
 #include <system_error>
 #include <unordered_set>
+#include <unordered_map>
 #include <array>
 
 // Platform-specific includes
@@ -501,42 +502,96 @@ dinero::p2p::NetworkAddress NetworkAddressForPeer(const std::string& address,
     return peer_addr;
 }
 
-bool SendAll(int socket_fd, const uint8_t* data, size_t len) {
-    size_t sent_total = 0;
-    while (sent_total < len) {
-#ifdef _WIN32
-        const int sent = send(socket_fd,
-                              reinterpret_cast<const char*>(data + sent_total),
-                              static_cast<int>(len - sent_total),
-                              0);
-#else
-        const ssize_t sent = send(socket_fd, data + sent_total, len - sent_total, MSG_NOSIGNAL);
-#endif
-        if (sent <= 0) {
-            return false;
-        }
-        sent_total += static_cast<size_t>(sent);
+std::optional<std::string> ResolveIpv4System(const std::string& host) {
+    struct addrinfo hints {}, *result = nullptr;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0 || !result) {
+        if (result) freeaddrinfo(result);
+        return std::nullopt;
     }
-    return true;
+    char ip[INET_ADDRSTRLEN] {};
+    const bool ok = result->ai_addr && result->ai_addrlen >= sizeof(struct sockaddr_in) &&
+        inet_ntop(AF_INET,
+            &reinterpret_cast<struct sockaddr_in*>(result->ai_addr)->sin_addr,
+            ip, sizeof(ip)) != nullptr;
+    freeaddrinfo(result);
+    if (!ok) return std::nullopt;
+    return std::string(ip);
 }
 
-bool RecvAll(int socket_fd, uint8_t* data, size_t len) {
-    size_t recv_total = 0;
-    while (recv_total < len) {
+bool SetSocketNonblockingMode(int socket_fd, bool nonblocking) {
 #ifdef _WIN32
-        const int got = recv(socket_fd,
-                             reinterpret_cast<char*>(data + recv_total),
-                             static_cast<int>(len - recv_total),
-                             0);
+    unsigned long mode = nonblocking ? 1 : 0;
+    return ioctlsocket(socket_fd, FIONBIO, &mode) == 0;
 #else
-        const ssize_t got = recv(socket_fd, data + recv_total, len - recv_total, 0);
+    const int flags = fcntl(socket_fd, F_GETFL, 0);
+    if (flags < 0) return false;
+    const int next = nonblocking ? flags | O_NONBLOCK : flags & ~O_NONBLOCK;
+    return fcntl(socket_fd, F_SETFL, next) == 0;
 #endif
-        if (got <= 0) {
-            return false;
-        }
-        recv_total += static_cast<size_t>(got);
+}
+
+// getaddrinfo has no portable cancellation API. The waiter is cancellable;
+// each worker owns only its hostname and result state, never P2PManager. A
+// process-wide cap prevents permanently stalled resolver calls from creating
+// an unbounded number of threads. Shared ownership keeps the counter alive
+// even if a detached lookup finishes during process teardown.
+std::shared_ptr<std::atomic<unsigned>> ResolverInFlightBudget() {
+    static const auto budget = std::make_shared<std::atomic<unsigned>>(0);
+    return budget;
+}
+
+std::optional<std::string> ResolveIpv4Bounded(
+    std::string host,
+    std::function<std::optional<std::string>(const std::string&)> resolver,
+    const std::function<bool()>& cancelled,
+    std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+    struct Result {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool done{false};
+        std::optional<std::string> ip;
+    };
+    auto budget = ResolverInFlightBudget();
+    unsigned count = budget->load(std::memory_order_acquire);
+    do {
+        if (count >= 4 || cancelled()) return std::nullopt;
+    } while (!budget->compare_exchange_weak(count, count + 1,
+                                             std::memory_order_acq_rel));
+
+    auto state = std::make_shared<Result>();
+    try {
+        std::thread([state, budget, host = std::move(host),
+                     resolver = std::move(resolver)]() mutable {
+            std::optional<std::string> ip;
+            try {
+                ip = resolver(host);
+            } catch (...) {
+                // A failed lookup is indistinguishable from no IPv4 result.
+            }
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                state->ip = std::move(ip);
+                state->done = true;
+            }
+            budget->fetch_sub(1, std::memory_order_acq_rel);
+            state->cv.notify_all();
+        }).detach();
+    } catch (...) {
+        budget->fetch_sub(1, std::memory_order_acq_rel);
+        return std::nullopt;
     }
-    return true;
+
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::unique_lock<std::mutex> lock(state->mutex);
+    while (!state->done && !cancelled()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return std::nullopt;
+        state->cv.wait_for(lock, std::min(std::chrono::microseconds(100000),
+            std::chrono::duration_cast<std::chrono::microseconds>(deadline - now)));
+    }
+    return cancelled() ? std::nullopt : state->ip;
 }
 
 }  // namespace
@@ -4166,10 +4221,12 @@ bool P2PManager::probe_onion_proxy(std::string* message) {
         return false;
     }
 
-    const uint8_t greeting[] = {0x05, 0x01, 0x00};
+    uint8_t greeting[] = {0x05, 0x01, 0x00};
     uint8_t greeting_reply[2] = {};
-    const bool ok = SendAll(socket_fd, greeting, sizeof(greeting)) &&
-                    RecvAll(socket_fd, greeting_reply, sizeof(greeting_reply)) &&
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    const bool ok = SetSocketNonblockingMode(socket_fd, true) &&
+                    socks5_transfer_all(socket_fd, greeting, sizeof(greeting), true, deadline) &&
+                    socks5_transfer_all(socket_fd, greeting_reply, sizeof(greeting_reply), false, deadline) &&
                     greeting_reply[0] == 0x05 && greeting_reply[1] == 0x00;
     close_socket(socket_fd);
 
@@ -4333,6 +4390,18 @@ bool P2PManager::start() {
 // All peer threads MUST be joined before erasing peers from map.
 // This prevents use-after-free by ensuring threads have exited before destruction.
 //
+void P2PManager::begin_shutdown() {
+    // Serialize the shutdown transition with handler registration. Once this
+    // returns, no new peer handler can be added to the join set.
+    {
+        std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+        shutdown_requested_.store(true, std::memory_order_release);
+    }
+    outbox_cv_.notify_all();
+    keepalive_cv_.notify_all();
+    connection_manager_cv_.notify_all();
+}
+
 // THREAD-SAFE: Multiple concurrent calls to stop() are safe (idempotent)
 void P2PManager::stop() {
     // Atomically check and transition to shutdown state
@@ -4342,6 +4411,13 @@ void P2PManager::stop() {
         return;
     }
 
+    // Signal cancellation before the final save. Disk or resolver latency in
+    // persistence must never allow an already-queued outbound dial to start.
+    begin_shutdown();
+#ifdef DINERO_TEST_BUILD
+    if (test_before_final_peers_save_) test_before_final_peers_save_();
+#endif
+
     // Phase C (v8 peer discovery): final save BEFORE threads shut down.
     // connected_peers_ and seed_nodes_ are still populated here; doing
     // this after cleanup would persist an empty set. Captures any
@@ -4350,13 +4426,6 @@ void P2PManager::stop() {
     if (!peers_file_path_.empty()) {
         save_peers_with_seeds(peers_file_path_);
     }
-
-    shutdown_requested_ = true;
-
-    // Ring 3 Phase 4e: TS3 - Wake up all waiting threads immediately
-    outbox_cv_.notify_all();              // Wake up outbox thread
-    keepalive_cv_.notify_all();           // Wake up keepalive thread
-    connection_manager_cv_.notify_all();  // Wake up connection manager thread
 
     // Interrupt all peer sockets BEFORE joining threads.
     // Peer threads block on select(1s) — closing sockets makes select() return
@@ -4682,9 +4751,36 @@ bool P2PManager::connect_to_peer(const std::string& address, uint16_t port) {
     return connect_to_peer_impl(address, port, false);
 }
 
+std::optional<std::string> P2PManager::resolve_ipv4_for_dial(
+    const std::string& host, std::chrono::milliseconds timeout) const {
+    struct in_addr ipv4 {};
+    if (inet_pton(AF_INET, host.c_str(), &ipv4) == 1) return host;
+#ifdef DINERO_TEST_BUILD
+    auto resolver = test_ipv4_resolver_ ? test_ipv4_resolver_ : ResolveIpv4System;
+#else
+    auto resolver = ResolveIpv4System;
+#endif
+    const auto result = ResolveIpv4Bounded(host, std::move(resolver), [this] {
+        return shutdown_requested_.load(std::memory_order_acquire) ||
+               !network_active_.load(std::memory_order_acquire);
+    }, timeout);
+    if (!result || inet_pton(AF_INET, result->c_str(), &ipv4) != 1) {
+        return std::nullopt;
+    }
+    return result;
+}
+
+#ifdef DINERO_TEST_BUILD
+unsigned P2PManager::test_resolver_in_flight() {
+    return ResolverInFlightBudget()->load(std::memory_order_acquire);
+}
+#endif
+
 bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
-                                      bool is_feeler) {
-    if (!network_active_.load(std::memory_order_acquire)) {
+                                      bool is_feeler,
+                                      const std::optional<std::string>& pre_resolved_ip) {
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) {
         return false;
     }
 
@@ -4743,20 +4839,12 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
     // when seed list contains both raw IP and DNS name for the same server)
     std::string resolved_ip = address;
     if (!IsOnionAddress(address)) {
-        struct sockaddr_in sa;
-        if (inet_pton(AF_INET, address.c_str(), &sa.sin_addr) <= 0) {
-            struct addrinfo hints{}, *res = nullptr;
-            hints.ai_family = AF_INET;
-            hints.ai_socktype = SOCK_STREAM;
-            if (getaddrinfo(address.c_str(), nullptr, &hints, &res) == 0 && res) {
-                char buf[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET,
-                          &((struct sockaddr_in*)res->ai_addr)->sin_addr,
-                          buf, sizeof(buf));
-                resolved_ip = buf;
-                freeaddrinfo(res);
-            }
+        const auto ip = pre_resolved_ip ? pre_resolved_ip : resolve_ipv4_for_dial(address);
+        if (!ip) {
+            release_feeler();
+            return false;
         }
+        resolved_ip = *ip;
     }
 
     if (is_peer_banned(address, port) || is_peer_banned(resolved_ip, port)) {
@@ -4793,11 +4881,24 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
     }
 
     // Create outbound connection
-    int socket_fd = create_client_socket(address, port);
+    // The dedup lookup already resolved this hostname. Dial the same numeric
+    // address instead of doing another potentially blocking DNS lookup.
+    int socket_fd = create_client_socket(resolved_ip, port);
     if (socket_fd < 0) {
-        std::cerr << "Failed to connect to " << peer_key << std::endl;
-        mark_peer_address_attempt(resolved_ip, port, false);
+        if (!shutdown_requested_.load(std::memory_order_acquire) &&
+            network_active_.load(std::memory_order_acquire)) {
+            std::cerr << "Failed to connect to " << peer_key << std::endl;
+            mark_peer_address_attempt(resolved_ip, port, false);
+        }
         // Remove from connecting set on failure
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connecting_peers_.erase(peer_key);
+        release_feeler();
+        return false;
+    }
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) {
+        close_socket(socket_fd);
         std::lock_guard<std::mutex> lock(peers_mutex_);
         connecting_peers_.erase(peer_key);
         release_feeler();
@@ -4825,7 +4926,16 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
 
     // Start peer handler thread
     // Ring 3 Phase 4c: Pass shared_ptr (copied, not moved) for TS1 compliance
-    start_peer_handler_thread(peer);
+#ifdef DINERO_TEST_BUILD
+    if (test_before_peer_handler_start_) test_before_peer_handler_start_(socket_fd);
+#endif
+    if (!start_peer_handler_thread(peer)) {
+        close_socket(socket_fd);
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connecting_peers_.erase(peer_key);
+        release_feeler();
+        return false;
+    }
 
     return true;
 }
@@ -4889,7 +4999,6 @@ void P2PManager::connection_manager_loop() {
         // bootstrap surface; addrman is the Bitcoin-style rolling address book
         // fed by addr/getaddr relay.
         // TS2 COMPLIANT: Collect connection targets inside lock, connect outside lock
-        std::vector<std::pair<std::string, uint16_t>> seeds_to_connect;
         std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
         bool durable_outbound_full = false;
         if (address_manager_) {
@@ -4899,156 +5008,243 @@ void P2PManager::connection_manager_loop() {
             addrman_candidates = address_manager_->getAddresses(
                 MAX_OUTBOUND_CONNECTIONS + dinero::p2p::kBootstrapRecoveryOutbound);
         }
+        std::vector<std::pair<std::string, uint16_t>> anchors;
+        std::vector<std::pair<std::string, uint16_t>> seeds;
+        bool has_durable_capacity = true;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
-
-            size_t active_peer_count = 0;
-            // Deduplicate by resolved endpoint, not IP alone. Multiple valid
-            // nodes can share an address while listening on different ports
-            // (common in regtest and behind port-forwarding gateways).
-            std::unordered_set<std::string> connected_endpoints;
-            for (const auto& pair : connected_peers_) {
-                if (pair.second->is_connected && pair.second->is_outbound &&
-                    !pair.second->is_feeler) {
-                    active_peer_count++;
-                    connected_endpoints.insert(
-                        AddressKey(pair.second->address, pair.second->port));
-                }
-            }
-
-            // Include candidates selected in this pass. Without this set a
-            // hardcoded IP and a DNS name resolving to that IP can consume two
-            // outbound slots before either socket finishes connecting.
-            std::unordered_set<std::string> scheduled_endpoints = connected_endpoints;
-
-            auto consider_candidate = [&](const std::string& address, uint16_t port) {
-                if (active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS) {
-                    return;
-                }
-                if (address.empty() || port == 0) {
-                    return;
-                }
-                if (IsRetiredBootstrapPeer(address, port)) {
-                    return;
-                }
-
-                std::string peer_key = address + ":" + std::to_string(port);
-
-                // Skip if already connected (by peer key)
-                auto it = connected_peers_.find(peer_key);
-                if (it != connected_peers_.end() && it->second->is_connected) {
-                    return;
-                }
-
-                // Skip if connection already in progress (prevents duplicate handlers)
-                if (connecting_peers_.count(peer_key) > 0) {
-                    return;
-                }
-
-                // Resolve DNS seeds to IP and skip if already connected to that IP
-                // (prevents duplicate connections when both a DNS seed and its
-                // raw IP appear in the seed list)
-                std::string resolved_ip = address;
-                struct sockaddr_in sa;
-                if (inet_pton(AF_INET, address.c_str(), &sa.sin_addr) <= 0) {
-                    // Not a raw IP — resolve DNS
-                    struct addrinfo hints{}, *res = nullptr;
-                    hints.ai_family = AF_INET;
-                    hints.ai_socktype = SOCK_STREAM;
-                    if (getaddrinfo(address.c_str(), nullptr, &hints, &res) == 0 && res) {
-                        char buf[INET_ADDRSTRLEN];
-                        inet_ntop(AF_INET,
-                                  &((struct sockaddr_in*)res->ai_addr)->sin_addr,
-                                  buf, sizeof(buf));
-                        resolved_ip = buf;
-                        freeaddrinfo(res);
-                    }
-                }
-                const std::string resolved_endpoint = AddressKey(resolved_ip, port);
-                if (port == listen_port_) {
-                    if ((!external_ip_.empty() && resolved_ip == external_ip_) ||
-                        dinero::network::IsLocalInterfaceIp(resolved_ip)) {
-                        return;
-                    }
-                    for (const auto& advertised : advertised_addresses_) {
-                        if (AddressKey(advertised.first, advertised.second) ==
-                            resolved_endpoint) {
-                            return;
-                        }
-                    }
-                }
-                if (scheduled_endpoints.count(resolved_endpoint) > 0) {
-                    return;  // Same endpoint already connected or scheduled via an alias
-                }
-
-                seeds_to_connect.emplace_back(address, port);
-                scheduled_endpoints.insert(resolved_endpoint);
-            };
-
-            // Bootstrap nodes introduce us to the network; they do not own
-            // permanent slots. Split the AddrMan draw by source, prefer
-            // learned peers, and use at most a small bootstrap recovery set
-            // until enough community candidates exist.
-            std::unordered_set<std::string> bootstrap_endpoints;
-            for (const auto& anchor : anchor_nodes_) {
-                bootstrap_endpoints.insert(AddressKey(anchor.first, anchor.second));
-            }
-            for (const auto& seed : seed_nodes_) {
-                bootstrap_endpoints.insert(AddressKey(seed.first, seed.second));
-            }
-            const auto is_bootstrap = [&](const std::string& address, uint16_t port) {
-                return bootstrap_endpoints.count(AddressKey(address, port)) > 0;
-            };
-
-            size_t connected_community = 0;
-            size_t connected_bootstrap = 0;
+            anchors = anchor_nodes_;
+            seeds = seed_nodes_;
+            size_t active_outbound = 0;
             for (const auto& pair : connected_peers_) {
                 const auto& peer = pair.second;
-                if (!peer->is_connected || !peer->is_outbound || peer->is_feeler) continue;
-                if (is_bootstrap(peer->address, peer->port)) {
-                    ++connected_bootstrap;
-                } else {
-                    ++connected_community;
+                if (peer->is_connected && peer->is_outbound && !peer->is_feeler) {
+                    ++active_outbound;
                 }
             }
+            has_durable_capacity = active_outbound < MAX_OUTBOUND_CONNECTIONS;
+        }
 
-            std::vector<dinero::p2p::NetworkAddress> community_candidates;
-            community_candidates.reserve(addrman_candidates.size());
+        // Dial already-known numeric/onion peers before entering any DNS
+        // waiter. A slow seed name must not starve a ready community or
+        // bootstrap IP. Resolve names only while a durable slot remains,
+        // outside peers_mutex_, and offer each result immediately.
+        std::unordered_map<std::string, std::string> resolved_candidates;
+        std::vector<std::string> names_to_resolve;
+        std::unordered_set<std::string> queued_names;
+        const auto queue_candidate = [&](const std::string& address) {
+            if (address.empty()) return;
+            if (IsOnionAddress(address)) {
+                resolved_candidates.emplace(address, address);
+                return;
+            }
+            struct in_addr ipv4 {};
+            if (inet_pton(AF_INET, address.c_str(), &ipv4) == 1) {
+                resolved_candidates.emplace(address, address);
+            } else if (queued_names.insert(address).second) {
+                names_to_resolve.push_back(address);
+            }
+        };
+        if (has_durable_capacity) {
             for (const auto& candidate : addrman_candidates) {
-                if (!is_bootstrap(candidate.ip, candidate.port)) {
-                    community_candidates.push_back(candidate);
+                queue_candidate(candidate.ip);
+            }
+            for (const auto& anchor : anchors) queue_candidate(anchor.first);
+            for (const auto& seed : seeds) queue_candidate(seed.first);
+        }
+        if (shutdown_requested_.load(std::memory_order_acquire)) break;
+        if (!network_active_.load(std::memory_order_acquire)) continue;
+        std::unordered_set<std::string> attempted_in_pass;
+        std::unordered_set<std::string> successful_in_pass;
+        std::unordered_set<std::string> successful_bootstrap_in_pass;
+        std::unordered_set<std::string> bootstrap_endpoints;
+        for (const auto& anchor : anchors) {
+            bootstrap_endpoints.insert(AddressKey(anchor.first, anchor.second));
+        }
+        for (const auto& seed : seeds) {
+            bootstrap_endpoints.insert(AddressKey(seed.first, seed.second));
+        }
+        const auto is_bootstrap = [&](const std::string& address, uint16_t port) {
+            return bootstrap_endpoints.count(AddressKey(address, port)) > 0;
+        };
+        const auto dial_available_candidates = [&] {
+            std::vector<std::pair<std::string, uint16_t>> seeds_to_connect;
+            size_t active_peer_count = 0;
+            std::unordered_set<std::string> connected_endpoints;
+            {
+                std::lock_guard<std::mutex> lock(peers_mutex_);
+
+                // Deduplicate by resolved endpoint, not IP alone. Multiple valid
+                // nodes can share an address while listening on different ports
+                // (common in regtest and behind port-forwarding gateways).
+                for (const auto& pair : connected_peers_) {
+                    if (pair.second->is_connected && pair.second->is_outbound &&
+                        !pair.second->is_feeler) {
+                        active_peer_count++;
+                        connected_endpoints.insert(
+                            AddressKey(pair.second->address, pair.second->port));
+                    }
+                }
+
+                // Include candidates selected in this pass. Without this set a
+                // hardcoded IP and a DNS name resolving to that IP can consume two
+                // outbound slots before either socket finishes connecting.
+                std::unordered_set<std::string> scheduled_endpoints = connected_endpoints;
+                scheduled_endpoints.insert(attempted_in_pass.begin(), attempted_in_pass.end());
+                size_t successful_pending = 0;
+                for (const auto& endpoint : successful_in_pass) {
+                    if (connected_endpoints.count(endpoint) == 0) ++successful_pending;
+                }
+
+                auto consider_candidate = [&](const std::string& address, uint16_t port) {
+                    if (active_peer_count + successful_pending +
+                        seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS) {
+                        return;
+                    }
+                    if (address.empty() || port == 0) {
+                        return;
+                    }
+                    if (IsRetiredBootstrapPeer(address, port)) {
+                        return;
+                    }
+
+                    std::string peer_key = address + ":" + std::to_string(port);
+
+                    // Skip if already connected (by peer key)
+                    auto it = connected_peers_.find(peer_key);
+                    if (it != connected_peers_.end() && it->second->is_connected) {
+                        return;
+                    }
+
+                    // Skip if connection already in progress (prevents duplicate handlers)
+                    if (connecting_peers_.count(peer_key) > 0) {
+                        return;
+                    }
+
+                    const auto resolved = resolved_candidates.find(address);
+                    if (resolved == resolved_candidates.end()) return;
+                    const std::string& resolved_ip = resolved->second;
+                    const std::string resolved_endpoint = AddressKey(resolved_ip, port);
+                    if (port == listen_port_) {
+                        if ((!external_ip_.empty() && resolved_ip == external_ip_) ||
+                            dinero::network::IsLocalInterfaceIp(resolved_ip)) {
+                            return;
+                        }
+                        for (const auto& advertised : advertised_addresses_) {
+                            if (AddressKey(advertised.first, advertised.second) ==
+                                resolved_endpoint) {
+                                return;
+                            }
+                        }
+                    }
+                    if (scheduled_endpoints.count(resolved_endpoint) > 0) {
+                        return;  // Same endpoint already connected or scheduled via an alias
+                    }
+
+                    seeds_to_connect.emplace_back(address, port);
+                    scheduled_endpoints.insert(resolved_endpoint);
+                    attempted_in_pass.insert(resolved_endpoint);
+                };
+
+                // Bootstrap nodes introduce us to the network; they do not own
+                // permanent slots. Split the AddrMan draw by source, prefer
+                // learned peers, and use at most a small bootstrap recovery set
+                // until enough community candidates exist.
+                size_t connected_community = 0;
+                size_t connected_bootstrap = 0;
+                for (const auto& pair : connected_peers_) {
+                    const auto& peer = pair.second;
+                    if (!peer->is_connected || !peer->is_outbound || peer->is_feeler) continue;
+                    if (is_bootstrap(peer->address, peer->port)) {
+                        ++connected_bootstrap;
+                    } else {
+                        ++connected_community;
+                    }
+                }
+
+                std::vector<dinero::p2p::NetworkAddress> community_candidates;
+                community_candidates.reserve(addrman_candidates.size());
+                for (const auto& candidate : addrman_candidates) {
+                    if (!is_bootstrap(candidate.ip, candidate.port)) {
+                        community_candidates.push_back(candidate);
+                    }
+                }
+                const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
+                    connected_community, community_candidates.size());
+
+                for (const auto& candidate : community_candidates) {
+                    consider_candidate(candidate.ip, candidate.port);
+                }
+
+                size_t bootstrap_pending = 0;
+                for (const auto& endpoint : successful_bootstrap_in_pass) {
+                    if (connected_endpoints.count(endpoint) == 0) ++bootstrap_pending;
+                }
+                size_t bootstrap_budget = autonomy.max_bootstrap_hot >
+                        connected_bootstrap + bootstrap_pending
+                    ? autonomy.max_bootstrap_hot - connected_bootstrap - bootstrap_pending
+                    : 0;
+                const auto consider_bootstrap = [&](const std::string& address, uint16_t port) {
+                    if (bootstrap_budget == 0) return;
+                    const size_t before = seeds_to_connect.size();
+                    consider_candidate(address, port);
+                    if (seeds_to_connect.size() != before) {
+                        --bootstrap_budget;
+                    }
+                };
+                for (const auto& anchor : anchors) {
+                    consider_bootstrap(anchor.first, anchor.second);
+                }
+                for (const auto& seed : seeds) {
+                    consider_bootstrap(seed.first, seed.second);
                 }
             }
-            const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
-                connected_community, community_candidates.size());
 
-            for (const auto& candidate : community_candidates) {
-                consider_candidate(candidate.ip, candidate.port);
+            // TS2 COMPLIANT: Perform blocking connect operations outside lock.
+            for (const auto& seed : seeds_to_connect) {
+                if (shutdown_requested_.load(std::memory_order_acquire)) break;
+                if (!network_active_.load(std::memory_order_acquire)) break;
+#ifdef DINERO_TEST_BUILD
+                if (test_connection_manager_dial_) {
+                    if (test_connection_manager_dial_(seed.first, seed.second)) {
+                        const auto endpoint =
+                            AddressKey(resolved_candidates.at(seed.first), seed.second);
+                        successful_in_pass.insert(endpoint);
+                        if (is_bootstrap(seed.first, seed.second)) {
+                            successful_bootstrap_in_pass.insert(endpoint);
+                        }
+                    }
+                    continue;
+                }
+#endif
+                const auto resolved = resolved_candidates.find(seed.first);
+                if (resolved == resolved_candidates.end()) continue;
+                if (connect_to_peer_impl(seed.first, seed.second, false, resolved->second)) {
+                    const auto endpoint = AddressKey(resolved->second, seed.second);
+                    successful_in_pass.insert(endpoint);
+                    if (is_bootstrap(seed.first, seed.second)) {
+                        successful_bootstrap_in_pass.insert(endpoint);
+                    }
+                }
             }
-
-            size_t bootstrap_budget = autonomy.max_bootstrap_hot > connected_bootstrap
-                ? autonomy.max_bootstrap_hot - connected_bootstrap
-                : 0;
-            const auto consider_bootstrap = [&](const std::string& address, uint16_t port) {
-                if (bootstrap_budget == 0) return;
-                const size_t before = seeds_to_connect.size();
-                consider_candidate(address, port);
-                if (seeds_to_connect.size() != before) --bootstrap_budget;
-            };
-            for (const auto& anchor : anchor_nodes_) {
-                consider_bootstrap(anchor.first, anchor.second);
-            }
-            for (const auto& seed : seed_nodes_) {
-                consider_bootstrap(seed.first, seed.second);
+            size_t successful_pending = 0;
+            for (const auto& endpoint : successful_in_pass) {
+                if (connected_endpoints.count(endpoint) == 0) ++successful_pending;
             }
             durable_outbound_full =
-                active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS;
+                active_peer_count + successful_pending >= MAX_OUTBOUND_CONNECTIONS;
+        };
+        dial_available_candidates();
+        for (const auto& name : names_to_resolve) {
+            if (durable_outbound_full || shutdown_requested_.load(std::memory_order_acquire) ||
+                !network_active_.load(std::memory_order_acquire)) break;
+            if (const auto ip = resolve_ipv4_for_dial(name)) {
+                resolved_candidates.emplace(name, *ip);
+                dial_available_candidates();
+            }
         }
-
-        // TS2 COMPLIANT: Perform blocking connect operations outside lock
-        for (const auto& seed : seeds_to_connect) {
-            connect_to_peer(seed.first, seed.second);
-        }
+        if (shutdown_requested_.load(std::memory_order_acquire)) break;
+        if (!network_active_.load(std::memory_order_acquire)) continue;
 
         // Bitcoin-style feeler: once durable outbound capacity is full, use
         // one extra short-lived connection every two minutes to test a NEW
@@ -5206,7 +5402,12 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
               << " (send timeout: " << SEND_TIMEOUT_SEC << "s)" << std::endl;
 
     // Start peer handler thread
-    start_peer_handler_thread(peer);
+#ifdef DINERO_TEST_BUILD
+    if (test_before_peer_handler_start_) test_before_peer_handler_start_(client_socket);
+#endif
+    if (!start_peer_handler_thread(peer)) {
+        close_socket(client_socket);
+    }
 }
 
 // Task 5: Decrypted-frame extraction loop for QUIC relay virtual peers.
@@ -5268,17 +5469,18 @@ void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
     }
 }
 
-void P2PManager::start_peer_handler_thread(std::shared_ptr<PeerInfo> peer) {
+bool P2PManager::start_peer_handler_thread(std::shared_ptr<PeerInfo> peer) {
     if (!peer || shutdown_requested_.load(std::memory_order_acquire)) {
-        return;
+        return false;
     }
     std::lock_guard<std::mutex> lock(peer_threads_mutex_);
     if (shutdown_requested_.load(std::memory_order_acquire)) {
-        return;
+        return false;
     }
     peer_threads_.emplace_back(
         std::make_unique<std::thread>(&P2PManager::peer_handler_loop, this, std::move(peer))
     );
+    return true;
 }
 
 // Ring 3 Phase 4c: TS1-compliant peer_handler_loop
@@ -6896,7 +7098,38 @@ int P2PManager::create_listen_socket() {
     return socket_fd;
 }
 
+int P2PManager::wait_for_outbound_connect(int socket_fd) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!shutdown_requested_.load(std::memory_order_acquire) &&
+           network_active_.load(std::memory_order_acquire)) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) return 0;
+        const auto slice = std::min(remaining, std::chrono::microseconds(100000));
+        int result = 0;
+#ifdef DINERO_TEST_BUILD
+        if (test_outbound_connect_poll_) {
+            result = test_outbound_connect_poll_(
+                socket_fd, std::chrono::duration_cast<std::chrono::milliseconds>(slice));
+        } else
+#endif
+        {
+            fd_set write_fds;
+            FD_ZERO(&write_fds);
+            FD_SET(socket_fd, &write_fds);
+            struct timeval timeout;
+            timeout.tv_sec = static_cast<long>(slice.count() / 1000000);
+            timeout.tv_usec = static_cast<long>(slice.count() % 1000000);
+            result = select(socket_fd + 1, nullptr, &write_fds, nullptr, &timeout);
+        }
+        if (result != 0) return result;
+    }
+    return -1;
+}
+
 int P2PManager::create_client_socket(const std::string& address, uint16_t port) {
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) return -1;
     if (IsOnionAddress(address)) {
         std::string proxy_host;
         uint16_t proxy_port = 0;
@@ -6913,6 +7146,16 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
         return create_socks5_client_socket(proxy_host, proxy_port, address, port);
     }
 
+    std::string numeric_address = address;
+    struct in_addr numeric_ipv4 {};
+    if (inet_pton(AF_INET, address.c_str(), &numeric_ipv4) != 1) {
+        const auto resolved = resolve_ipv4_for_dial(address);
+        if (!resolved) return -1;
+        numeric_address = *resolved;
+    }
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) return -1;
+
     int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
         return -1;
@@ -6924,36 +7167,20 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
     // ✅ TCP KEEPALIVE: Keep sockets alive through NAT/firewalls
     set_socket_keepalive(socket_fd);
 
-    // Set socket to non-blocking for timeout control
-    #ifdef _WIN32
-        unsigned long mode = 1;
-        ioctlsocket(socket_fd, FIONBIO, &mode);
-    #else
-        int flags = fcntl(socket_fd, F_GETFL, 0);
-        fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK);
-    #endif
+    // A blocking connect would bypass both the timeout and stop cancellation.
+    if (!SetSocketNonblockingMode(socket_fd, true)) {
+        close_socket(socket_fd);
+        return -1;
+    }
     
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     
-    if (inet_pton(AF_INET, address.c_str(), &server_addr.sin_addr) <= 0) {
-        // Not a raw IP address — try DNS resolution (supports seed.dinerolabs.org etc.)
-        struct addrinfo hints{}, *result = nullptr;
-        hints.ai_family = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        int err = getaddrinfo(address.c_str(), nullptr, &hints, &result);
-        if (err != 0 || !result) {
-            std::cerr << "[P2P] DNS resolution failed for " << address << ": "
-                      << gai_strerror(err) << std::endl;
-            close_socket(socket_fd);
-            return -1;
-        }
-        server_addr.sin_addr = ((struct sockaddr_in*)result->ai_addr)->sin_addr;
-        freeaddrinfo(result);
-        std::cout << "[P2P] Resolved " << address << " -> "
-                  << inet_ntoa(server_addr.sin_addr) << std::endl;
+    if (inet_pton(AF_INET, numeric_address.c_str(), &server_addr.sin_addr) != 1) {
+        close_socket(socket_fd);
+        return -1;
     }
     
     // Non-blocking connect
@@ -6972,17 +7199,18 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
         #endif
         
         // Wait for connection with 5 second timeout
-        fd_set write_fds;
-        FD_ZERO(&write_fds);
-        FD_SET(socket_fd, &write_fds);
-        
-        struct timeval timeout;
-        timeout.tv_sec = 5;
-        timeout.tv_usec = 0;
-        
-        result = select(socket_fd + 1, NULL, &write_fds, NULL, &timeout);
+        result = wait_for_outbound_connect(socket_fd);
         if (result <= 0) {
-            std::cerr << "Connection timeout to " << address << ":" << port << std::endl;
+            if (!shutdown_requested_.load(std::memory_order_acquire) &&
+                network_active_.load(std::memory_order_acquire)) {
+                std::cerr << "Connection timeout to " << address << ":" << port << std::endl;
+            }
+            close_socket(socket_fd);
+            return -1;
+        }
+
+        if (shutdown_requested_.load(std::memory_order_acquire) ||
+            !network_active_.load(std::memory_order_acquire)) {
             close_socket(socket_fd);
             return -1;
         }
@@ -6996,16 +7224,75 @@ int P2PManager::create_client_socket(const std::string& address, uint16_t port) 
         }
     }
     
-    // Set socket back to blocking mode
-    #ifdef _WIN32
-        unsigned long blocking_mode = 0;
-        ioctlsocket(socket_fd, FIONBIO, &blocking_mode);
-    #else
-        flags = fcntl(socket_fd, F_GETFL, 0);
-        fcntl(socket_fd, F_SETFL, flags & ~O_NONBLOCK);
-    #endif
+    // The peer handler expects a blocking socket. Do not hand it an
+    // accidentally nonblocking descriptor if this mode change fails.
+    if (!SetSocketNonblockingMode(socket_fd, false)) {
+        close_socket(socket_fd);
+        return -1;
+    }
+
+    if (shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) {
+        close_socket(socket_fd);
+        return -1;
+    }
     
     return socket_fd;
+}
+
+bool P2PManager::socks5_transfer_all(
+    int socket_fd, uint8_t* data, size_t len, bool sending,
+    std::chrono::steady_clock::time_point deadline) {
+    size_t offset = 0;
+    while (offset < len) {
+        if (shutdown_requested_.load(std::memory_order_acquire) ||
+            !network_active_.load(std::memory_order_acquire)) return false;
+        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining.count() <= 0) return false;
+        const auto slice = std::min(remaining, std::chrono::microseconds(100000));
+        struct timeval timeout;
+        timeout.tv_sec = static_cast<long>(slice.count() / 1000000);
+        timeout.tv_usec = static_cast<long>(slice.count() % 1000000);
+        fd_set ready;
+        FD_ZERO(&ready);
+        FD_SET(socket_fd, &ready);
+        const int selected = sending
+            ? select(socket_fd + 1, nullptr, &ready, nullptr, &timeout)
+            : select(socket_fd + 1, &ready, nullptr, nullptr, &timeout);
+        if (selected < 0) {
+#ifdef _WIN32
+            if (WSAGetLastError() == WSAEINTR) continue;
+#else
+            if (errno == EINTR) continue;
+#endif
+            return false;
+        }
+        if (selected == 0) continue;
+#ifdef _WIN32
+        const int transferred = sending
+            ? send(socket_fd, reinterpret_cast<const char*>(data + offset),
+                   static_cast<int>(len - offset), 0)
+            : recv(socket_fd, reinterpret_cast<char*>(data + offset),
+                   static_cast<int>(len - offset), 0);
+        if (transferred < 0) {
+            const int error = WSAGetLastError();
+            if (error == WSAEWOULDBLOCK || error == WSAEINTR) continue;
+            return false;
+        }
+#else
+        const ssize_t transferred = sending
+            ? send(socket_fd, data + offset, len - offset, MSG_NOSIGNAL)
+            : recv(socket_fd, data + offset, len - offset, 0);
+        if (transferred < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            return false;
+        }
+#endif
+        if (transferred == 0) return false;
+        offset += static_cast<size_t>(transferred);
+    }
+    return true;
 }
 
 int P2PManager::create_socks5_client_socket(const std::string& proxy_host,
@@ -7028,10 +7315,18 @@ int P2PManager::create_socks5_client_socket(const std::string& proxy_host,
         return -1;
     }
 
-    const uint8_t greeting[] = {0x05, 0x01, 0x00};  // SOCKS5, one method, no auth.
+    if (!SetSocketNonblockingMode(socket_fd, true)) {
+        close_socket(socket_fd);
+        return -1;
+    }
+    // One absolute budget covers the entire proxy greeting and CONNECT reply.
+    // Each select slice is at most 100ms so stop/setnetworkactive interrupts it.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+
+    uint8_t greeting[] = {0x05, 0x01, 0x00};  // SOCKS5, one method, no auth.
     uint8_t greeting_reply[2] = {};
-    if (!SendAll(socket_fd, greeting, sizeof(greeting)) ||
-        !RecvAll(socket_fd, greeting_reply, sizeof(greeting_reply)) ||
+    if (!socks5_transfer_all(socket_fd, greeting, sizeof(greeting), true, deadline) ||
+        !socks5_transfer_all(socket_fd, greeting_reply, sizeof(greeting_reply), false, deadline) ||
         greeting_reply[0] != 0x05 || greeting_reply[1] != 0x00) {
         std::cerr << "[P2P] SOCKS5 proxy rejected no-auth handshake for "
                   << target_host << ":" << target_port << std::endl;
@@ -7051,8 +7346,8 @@ int P2PManager::create_socks5_client_socket(const std::string& proxy_host,
     request.push_back(static_cast<uint8_t>(target_port & 0xff));
 
     uint8_t reply_header[4] = {};
-    if (!SendAll(socket_fd, request.data(), request.size()) ||
-        !RecvAll(socket_fd, reply_header, sizeof(reply_header)) ||
+    if (!socks5_transfer_all(socket_fd, request.data(), request.size(), true, deadline) ||
+        !socks5_transfer_all(socket_fd, reply_header, sizeof(reply_header), false, deadline) ||
         reply_header[0] != 0x05 || reply_header[1] != 0x00) {
         std::cerr << "[P2P] SOCKS5 CONNECT failed for "
                   << target_host << ":" << target_port;
@@ -7069,7 +7364,7 @@ int P2PManager::create_socks5_client_socket(const std::string& proxy_host,
         bind_len = 4;       // IPv4
     } else if (reply_header[3] == 0x03) {
         uint8_t domain_len = 0;
-        if (!RecvAll(socket_fd, &domain_len, 1)) {
+        if (!socks5_transfer_all(socket_fd, &domain_len, 1, false, deadline)) {
             close_socket(socket_fd);
             return -1;
         }
@@ -7083,12 +7378,18 @@ int P2PManager::create_socks5_client_socket(const std::string& proxy_host,
 
     std::array<uint8_t, 256> discard {};
     if (bind_len > discard.size() ||
-        !RecvAll(socket_fd, discard.data(), bind_len) ||
-        !RecvAll(socket_fd, discard.data(), 2)) {
+        !socks5_transfer_all(socket_fd, discard.data(), bind_len, false, deadline) ||
+        !socks5_transfer_all(socket_fd, discard.data(), 2, false, deadline)) {
         close_socket(socket_fd);
         return -1;
     }
 
+    if (!SetSocketNonblockingMode(socket_fd, false) ||
+        shutdown_requested_.load(std::memory_order_acquire) ||
+        !network_active_.load(std::memory_order_acquire)) {
+        close_socket(socket_fd);
+        return -1;
+    }
     std::cout << "[P2P] Connected to onion peer via SOCKS5 proxy: "
               << target_host << ":" << target_port << std::endl;
     return socket_fd;
@@ -7543,27 +7844,12 @@ void P2PManager::save_peers_with_seeds(const std::string& peers_file_path) {
         // configured seed merely because it survived a restart.
         for (const auto& seed : discovered_nodes_) {
             if (total >= PEERS_FILE_MAX_ENTRIES) break;
-            std::string ip = seed.first;
-            struct sockaddr_in sa;
-            // Onion names must never reach clearnet DNS. Preserve their
-            // canonical hostname verbatim for the SOCKS5 dial path.
-            if (!IsOnionAddress(seed.first) &&
-                inet_pton(AF_INET, seed.first.c_str(), &sa.sin_addr) <= 0) {
-                struct addrinfo hints{}, *res = nullptr;
-                hints.ai_family = AF_INET;
-                hints.ai_socktype = SOCK_STREAM;
-                if (getaddrinfo(seed.first.c_str(), nullptr, &hints, &res) == 0 && res) {
-                    char buf2[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET,
-                              &((struct sockaddr_in*)res->ai_addr)->sin_addr,
-                              buf2, sizeof(buf2));
-                    ip = buf2;
-                    freeaddrinfo(res);
-                }
-            }
-            std::string key = ip + ":" + std::to_string(seed.second);
+            // Preserve the accepted address bytes. DNS here could block
+            // shutdown under peers_mutex_ and could reinterpret a peer's
+            // advertised address during persistence.
+            const std::string key = seed.first + ":" + std::to_string(seed.second);
             if (written.count(key) == 0) {
-                buf << ip << " " << seed.second << " " << now << "\n";
+                buf << seed.first << " " << seed.second << " " << now << "\n";
                 written.insert(key);
                 ++total;
             }

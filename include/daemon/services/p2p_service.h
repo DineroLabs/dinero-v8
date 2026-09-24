@@ -314,6 +314,9 @@ public:
     static std::string GetUserAgent() { return DineroUserAgent(); }
 
 private:
+    // Allows the lifecycle regression to install a real manager and a
+    // deliberately blocked logger without initializing unrelated services.
+    friend struct P2PServiceStopTestAccess;
     // Only after scheduler/network workers have joined. Break callback and
     // dependency cycles so a stopped service graph can actually be destroyed.
     void ReleaseStoppedDependencies();
