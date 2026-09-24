@@ -7,12 +7,22 @@ on:
       - '.github/workflows/orchard-backend.yml'
       - 'CMakeLists.txt'
       - 'include/consensus/tx_validation.h'
+      - 'cmake/**'
+      - 'depends/**'
+      - '.gitmodules'
+      - 'third_party/**'
+      - 'scripts/build-openssl-vendored.sh'
   pull_request:
     paths:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'
       - 'CMakeLists.txt'
       - 'include/consensus/tx_validation.h'
+      - 'cmake/**'
+      - 'depends/**'
+      - '.gitmodules'
+      - 'third_party/**'
+      - 'scripts/build-openssl-vendored.sh'
   workflow_dispatch:
 permissions:
   contents: read
@@ -75,4 +85,80 @@ jobs:
             build-orchard-backend/Testing/Temporary/LastTest.log
             build-orchard-backend/Testing/Temporary/LastTestsFailed.log
             rust/orchard_backend/Cargo.lock
+          if-no-files-found: error
+
+  root-linux:
+    name: Orchard through root build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      RAYON_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - name: Install root build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config python3 perl ripgrep \
+            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev
+      - name: Read pinned compiler
+        id: rust-pin
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PYCODE
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+      - name: Build root prerequisites
+        run: |
+          OPENSSL_VERSION=3.5.7 bash scripts/build-openssl-vendored.sh
+          cmake -S depends -B depends/build
+          cmake --build depends/build --parallel 2
+      - name: Configure root with Orchard enabled
+        run: |
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          git rev-parse HEAD > orchard-root-source.txt
+          cmake -S . -B build-orchard-root -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DDINERO_REPRODUCIBLE_BUILD=ON \
+            -DDINERO_USE_VENDORED_DEPS=ON -DENABLE_GRPC=OFF \
+            -DDINERO_BUILD_ORCHARD_BACKEND=ON -DDINERO_ORCHARD_BUILD_TESTS=ON \
+            -DBUILD_TESTING=ON
+      - name: Build daemon and root Orchard target
+        run: |
+          cmake --build build-orchard-root --target dinerod test_orchard_backend --parallel 2
+          ./build-orchard-root/dinerod --version
+      - name: Require and execute both root Orchard lanes
+        run: |
+          ctest --test-dir build-orchard-root -R '^OrchardBackend(Cpp|Rust)$' --show-only=json-v1 > orchard-root-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          with open('orchard-root-inventory.json') as f:
+              tests = json.load(f)['tests']
+          names = [x['name'] for x in tests]
+          if sorted(names) != ['OrchardBackendCpp', 'OrchardBackendRust']:
+              raise SystemExit(f'Wrong root Orchard inventory: {names}')
+          for test in tests:
+              props = {p['name']: p['value'] for p in test.get('properties', [])}
+              if props.get('DISABLED') or 'orchard' not in props.get('LABELS', []):
+                  raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^OrchardBackend(Cpp|Rust)$' --output-on-failure --no-tests=error
+      - name: Retain root integration evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orchard-root-${{ github.sha }}
+          path: |
+            orchard-root-source.txt
+            orchard-root-inventory.json
+            build-orchard-root/CMakeCache.txt
+            build-orchard-root/Testing/Temporary/LastTest.log
+            build-orchard-root/Testing/Temporary/LastTestsFailed.log
           if-no-files-found: error

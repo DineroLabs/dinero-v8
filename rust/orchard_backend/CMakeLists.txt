@@ -13,6 +13,10 @@ if(APPLE AND CMAKE_OSX_ARCHITECTURES)
     message(FATAL_ERROR "Orchard backend currently requires the native macOS architecture")
   endif()
 endif()
+# file(STRINGS) inputs must also invalidate an existing configured build.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/rust-toolchain.toml"
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../include/consensus/tx_validation.h")
 find_program(ORCHARD_CARGO cargo HINTS "$ENV{HOME}/.cargo/bin" REQUIRED)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/rust-toolchain.toml" ORCHARD_TOOLCHAIN_LINE REGEX "^channel =")
 string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" ORCHARD_RUST_TOOLCHAIN "${ORCHARD_TOOLCHAIN_LINE}")

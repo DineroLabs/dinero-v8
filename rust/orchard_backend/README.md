@@ -132,6 +132,17 @@ The C++ lane compares Rust-exported action and monetary bounds against its own
 constants; its monetary bound is also statically compared with the host constant
 read at CMake configuration. The Rust ABI test checks all named C status values.
 The compiler is pinned to 1.91.1 and workflow actions to commit IDs. The component
-workflow still does not build the entire daemon with the option enabled, and no
-mobile/cross-platform qualification is claimed. Dependency advisory scanning and
+workflow also has a root Linux job that enables the backend, builds dinerod and
+the Orchard C++ target, and requires both Orchard test entries before running
+them. That job qualifies build coexistence, not full transaction integration.
+No mobile/cross-platform qualification is claimed. Dependency advisory scanning and
 an independently derived upstream commitment vector remain open review items.
+
+### Main-project build qualification
+
+The root build has been configured on native macOS with the option enabled,
+and its Orchard target compiled in a fresh directory. Both root-registered
+Orchard CTest entries passed (nine Rust cases plus C++ checks), using the
+project's vendored OpenSSL 3.5.7 artifacts read-only. This is not a clean full
+daemon or full test-suite claim. The Linux root job builds the daemon too;
+inspect its exact-source artifact before claiming that gate passed.
