@@ -428,29 +428,29 @@ WelcomePage::WelcomePage(RpcClient* rpc, QWidget* parent)
     , edtWalletName_(nullptr)
     , lblWalletNameHint_(nullptr)
     , lblUnloadNotice_(nullptr) {
-  setTitle("Welcome to Dinero Wallet");
-  setSubTitle("Create a new wallet or restore an existing one");
+  setTitle(tr("Welcome to Dinero Wallet"));
+  setSubTitle(tr("Create a new wallet or restore an existing one"));
 
   auto* layout = new QVBoxLayout;
 
-  auto* intro = new QLabel(
+  auto* intro = new QLabel(tr(
     "<p>Your Dinero wallet will be protected with:</p>"
     "<ul>"
     "<li><b>12-word BIP-39 seed phrase</b> (industry standard, 128-bit security)</li>"
     "<li><b>AES-256-GCM encryption</b> with Argon2id key derivation</li>"
     "<li><b>HD wallet</b> (BIP-32/86 Taproot) for unlimited addresses</li>"
     "</ul>"
-  );
+  ));
   intro->setWordWrap(true);
   layout->addWidget(intro);
 
-  auto* choiceGroup = new QGroupBox("Choose an option:");
+  auto* choiceGroup = new QGroupBox(tr("Choose an option:"));
   auto* choiceLayout = new QVBoxLayout(choiceGroup);
 
   choiceGroup_ = new QButtonGroup(this);
-  auto* radioCreate = new QRadioButton("🆕 Create a new wallet");
-  auto* radioRestore = new QRadioButton("♻️ Emergency restore from seed phrase");
-  auto* radioImportTaproot = new QRadioButton("🔑 Import Taproot descriptor (advanced)");
+  auto* radioCreate = new QRadioButton(tr("🆕 Create a new wallet"));
+  auto* radioRestore = new QRadioButton(tr("♻️ Emergency restore from seed phrase"));
+  auto* radioImportTaproot = new QRadioButton(tr("🔑 Import Taproot descriptor (advanced)"));
 
   choiceGroup_->addButton(radioCreate, PAGE_CREATE_SEED);
   choiceGroup_->addButton(radioRestore, PAGE_RESTORE_SEED);
@@ -462,20 +462,20 @@ WelcomePage::WelcomePage(RpcClient* rpc, QWidget* parent)
   choiceLayout->addWidget(radioImportTaproot);
   layout->addWidget(choiceGroup);
 
-  auto* walletNameGroup = new QGroupBox("Wallet name");
+  auto* walletNameGroup = new QGroupBox(tr("Wallet name"));
   auto* walletNameLayout = new QVBoxLayout(walletNameGroup);
 
   edtWalletName_ = new QLineEdit;
-  edtWalletName_->setPlaceholderText("default");
-  edtWalletName_->setText("default");
+  edtWalletName_->setPlaceholderText(tr("default"));
+  edtWalletName_->setText(tr("default"));
   edtWalletName_->setClearButtonEnabled(true);
   walletNameLayout->addWidget(edtWalletName_);
   registerField("walletName", edtWalletName_);
 
-  lblWalletNameHint_ = new QLabel(
+  lblWalletNameHint_ = new QLabel(tr(
     "Balances, addresses, send history, and advisory state stay scoped to this wallet only. "
     "Existing wallet names cannot be overwritten from the setup wizard."
-  );
+  ));
   lblWalletNameHint_->setWordWrap(true);
   lblWalletNameHint_->setStyleSheet("QLabel { color: #adb5bd; font-size: 11px; }");
   walletNameLayout->addWidget(lblWalletNameHint_);
@@ -551,9 +551,9 @@ void WelcomePage::updateWalletNameUi() {
 
   if (lblWalletNameHint_) {
     if (importSelected) {
-      lblWalletNameHint_->setText(
+      lblWalletNameHint_->setText(tr(
         "Taproot descriptor import uses the currently active wallet. Load a wallet first if needed."
-      );
+      ));
     } else if (provisioningLocked) {
       const QString walletName = wizard()->property("provisionedWalletName").toString();
       lblWalletNameHint_->setText(
@@ -561,10 +561,10 @@ void WelcomePage::updateWalletNameUi() {
           .arg(walletName)
       );
     } else {
-      lblWalletNameHint_->setText(
+      lblWalletNameHint_->setText(tr(
         "Balances, addresses, send history, and advisory state stay scoped to this wallet only. "
         "Existing wallet names cannot be overwritten from the setup wizard."
-      );
+      ));
     }
   }
 
@@ -600,10 +600,10 @@ bool WelcomePage::validatePage() {
     if (walletWasUnloaded || activeWalletBeforeSetup.isEmpty()) {
       QMessageBox::information(
         this,
-        "Wallet Required",
-        "Taproot descriptor import uses the currently loaded wallet.\n\n"
+        tr("Wallet Required"),
+        tr("Taproot descriptor import uses the currently loaded wallet.\n\n"
         "Load a wallet first, or cancel this setup flow and reopen it when you are ready to import."
-      );
+      ));
       return false;
     }
     return true;
@@ -612,7 +612,7 @@ bool WelcomePage::validatePage() {
   QString normalizedWalletName;
   const QString validationError = validateWalletNameInput(edtWalletName_->text(), &normalizedWalletName);
   if (!validationError.isEmpty()) {
-    QMessageBox::warning(this, "Wallet Name", validationError);
+    QMessageBox::warning(this, tr("Wallet Name"), validationError);
     edtWalletName_->setFocus();
     edtWalletName_->selectAll();
     return false;
@@ -626,7 +626,7 @@ bool WelcomePage::validatePage() {
       if (normalizedWalletName != provisionedWalletName) {
         QMessageBox::warning(
           this,
-          "Wallet Already Provisioned",
+          tr("Wallet Already Provisioned"),
           QString("This setup session already provisioned wallet '%1'. Finish or cancel the wizard to choose a different wallet.")
             .arg(provisionedWalletName)
         );
@@ -647,7 +647,7 @@ bool WelcomePage::validatePage() {
   if (existingWallets.contains(normalizedWalletName)) {
     QMessageBox::warning(
       this,
-      "Wallet Already Exists",
+      tr("Wallet Already Exists"),
       QString("A wallet named '%1' already exists.\n\nChoose a different wallet name or load the existing wallet from the selector.")
         .arg(normalizedWalletName)
     );
@@ -664,7 +664,7 @@ bool WelcomePage::validatePage() {
   if (!walletWasUnloaded && !activeWalletBeforeSetup.isEmpty()) {
     const auto reply = QMessageBox::question(
       this,
-      "Unload Current Wallet",
+      tr("Unload Current Wallet"),
       QString("Wallet '%1' is currently loaded.\n\n"
               "Dinero will unload it before create/restore so balances, addresses, and pending state cannot mix across wallets.\n\n"
               "Unload '%1' and continue?")
@@ -707,22 +707,22 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   // Configure timeout timer (30 seconds)
   rpcTimeout_->setSingleShot(true);
   rpcTimeout_->setInterval(30000);
-  setTitle("Your Seed Phrase");
-  setSubTitle("Write down these 12 words in order. Keep them safe and NEVER share them.");
+  setTitle(tr("Your Seed Phrase"));
+  setSubTitle(tr("Write down these 12 words in order. Keep them safe and NEVER share them."));
   
   auto* layout = new QVBoxLayout;
   
   // Warning banner
-  auto* warning = new QLabel(
+  auto* warning = new QLabel(tr(
     "⚠️ <b>CRITICAL:</b> Anyone with these words can access your funds. "
     "Write them on paper and store securely. Never take screenshots or save digitally."
-  );
+  ));
   warning->setStyleSheet("QLabel { background: #ff6b6b; color: white; padding: 8px; border-radius: 4px; }");
   warning->setWordWrap(true);
   layout->addWidget(warning);
   
   // Seed display (shown automatically once generated)
-  lblSeed_ = new QLabel("[Seed phrase will appear here]");
+  lblSeed_ = new QLabel(tr("[Seed phrase will appear here]"));
   lblSeed_->setAlignment(Qt::AlignCenter);
   lblSeed_->setStyleSheet(
     "QLabel { "
@@ -739,30 +739,30 @@ CreateSeedPage::CreateSeedPage(ConnectionManager* connMgr, QWidget* parent)
   layout->addWidget(lblSeed_);
   
   // Simple reveal/hide toggle (no press-and-hold)
-  btnReveal_ = new QPushButton("👁️ Reveal Seed");
+  btnReveal_ = new QPushButton(tr("👁️ Reveal Seed"));
   btnReveal_->setStyleSheet("QPushButton { padding: 12px; font-weight: bold; }");
   btnReveal_->setEnabled(false);
   connect(btnReveal_, &QPushButton::clicked, this, &CreateSeedPage::onRevealClicked);
   layout->addWidget(btnReveal_);
   
   // Compatibility info
-  auto* compatGroup = new QGroupBox("📱 Seed & Address Compatibility");
+  auto* compatGroup = new QGroupBox(tr("📱 Seed & Address Compatibility"));
   auto* compatLayout = new QVBoxLayout(compatGroup);
   compatGroup->setStyleSheet("QGroupBox { background: #e7f5ff; padding: 10px; border-radius: 8px; }");
   
-  auto* compatInfo = new QLabel(
+  auto* compatInfo = new QLabel(tr(
     "<b>Your BIP39 seed phrase works across Dinero wallets.</b><br><br>"
     "✅ <b>Taproot lane:</b> BIP86 <code>din1p...</code> addresses for mobile-friendly payments<br>"
     "✅ <b>Quantum-safe lane:</b> purpose 88 P2MR <code>din1r...</code> addresses using ML-DSA-65 in Qt<br><br>"
     "Mobile restore uses the same seed for Taproot payments. P2MR keys derive from that same seed as mobile support expands.<br><br>"
     "<i>One seed phrase, clear address lanes.</i>"
-  );
+  ));
   compatInfo->setWordWrap(true);
   compatLayout->addWidget(compatInfo);
   layout->addWidget(compatGroup);
   
   // Confirmation checkbox
-  chkCopied_ = new QCheckBox("✅ I have written down my seed phrase on paper");
+  chkCopied_ = new QCheckBox(tr("✅ I have written down my seed phrase on paper"));
   chkCopied_->setStyleSheet("QCheckBox { font-weight: bold; }");
   layout->addWidget(chkCopied_);
   
@@ -788,7 +788,7 @@ void CreateSeedPage::initializePage() {
 void CreateSeedPage::onGenerateSeed() {
   // 🛡️ Bulletproof wallet creation via ConnectionManager
   if (!connMgr_) {
-    lblSeed_->setText("❌ Error: Connection manager not available");
+    lblSeed_->setText(tr("❌ Error: Connection manager not available"));
     return;
   }
   
@@ -797,11 +797,11 @@ void CreateSeedPage::onGenerateSeed() {
   seedVisible_ = false;
   lblSeed_->setProperty("actualSeed", QString());
   btnReveal_->setEnabled(false);
-  btnReveal_->setText("👁️ Reveal Seed");
+  btnReveal_->setText(tr("👁️ Reveal Seed"));
 
   const QString walletName = currentWizardWalletName(wizard());
   if (walletName.isEmpty()) {
-    lblSeed_->setText("❌ Error: Wallet name is missing. Go back and choose a wallet name first.");
+    lblSeed_->setText(tr("❌ Error: Wallet name is missing. Go back and choose a wallet name first."));
     lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
     return;
   }
@@ -833,11 +833,11 @@ void CreateSeedPage::onGenerateSeed() {
   // Start timeout timer (30 seconds)
   rpcTimeout_->start();
   connect(rpcTimeout_, &QTimer::timeout, this, [this]() {
-    lblSeed_->setText("⏱️ Request timed out after 30 seconds.\n\n"
+    lblSeed_->setText(tr("⏱️ Request timed out after 30 seconds.\n\n"
                       "Please check that:\n"
                       "• Daemon is running\n"
                       "• ConnectionManager is connected\n\n"
-                      "Click 'Generate Seed' to try again.");
+                      "Click 'Generate Seed' to try again."));
     lblSeed_->setStyleSheet("QLabel { color: #ff6b6b; background: #ffe3e3; padding: 20px; }");
     btnReveal_->setEnabled(false);
     qWarning() << "CreateSeedPage: RPC call timed out after 30 seconds";
@@ -1020,8 +1020,8 @@ void CreateSeedPage::setSeedVisible(bool visible) {
   const QString seed = lblSeed_->property("actualSeed").toString();
   if (seed.isEmpty()) {
     seedVisible_ = false;
-    lblSeed_->setText("[Seed phrase unavailable]");
-    btnReveal_->setText("👁️ Reveal Seed");
+    lblSeed_->setText(tr("[Seed phrase unavailable]"));
+    btnReveal_->setText(tr("👁️ Reveal Seed"));
     btnReveal_->setEnabled(false);
     return;
   }
@@ -1029,10 +1029,10 @@ void CreateSeedPage::setSeedVisible(bool visible) {
   seedVisible_ = visible;
   if (seedVisible_) {
     lblSeed_->setText(formatSeedPhrase(seed));
-    btnReveal_->setText("🙈 Hide Seed");
+    btnReveal_->setText(tr("🙈 Hide Seed"));
   } else {
-    lblSeed_->setText("[Seed hidden. Click Reveal Seed]");
-    btnReveal_->setText("👁️ Reveal Seed");
+    lblSeed_->setText(tr("[Seed hidden. Click Reveal Seed]"));
+    btnReveal_->setText(tr("👁️ Reveal Seed"));
   }
 }
 
@@ -1042,16 +1042,16 @@ void CreateSeedPage::onRevealClicked() {
 
 bool CreateSeedPage::validatePage() {
   if (seedPhrase_.trimmed().isEmpty()) {
-    QMessageBox::warning(this, "Seed Not Ready",
-      "Seed phrase is not available yet.\n\n"
-      "Wait for seed generation to complete before continuing.");
+    QMessageBox::warning(this, tr("Seed Not Ready"),
+      tr("Seed phrase is not available yet.\n\n"
+      "Wait for seed generation to complete before continuing."));
     return false;
   }
 
   if (!chkCopied_->isChecked()) {
-    QMessageBox::warning(this, "Backup Required", 
-      "You must write down your seed phrase before continuing.\n\n"
-      "Without this backup, you cannot recover your wallet if your computer is lost or damaged.");
+    QMessageBox::warning(this, tr("Backup Required"), 
+      tr("You must write down your seed phrase before continuing.\n\n"
+      "Without this backup, you cannot recover your wallet if your computer is lost or damaged."));
     return false;
   }
   return true;
@@ -1069,8 +1069,8 @@ ConfirmSeedPage::ConfirmSeedPage(QWidget* parent)
     , index1_(0)
     , index2_(0)
     , index3_(0) {
-  setTitle("Confirm Your Seed Phrase");
-  setSubTitle("To ensure you wrote it down correctly, please enter 3 random words:");
+  setTitle(tr("Confirm Your Seed Phrase"));
+  setSubTitle(tr("To ensure you wrote it down correctly, please enter 3 random words:"));
   
   auto* layout = new QVBoxLayout;
   
@@ -1084,15 +1084,15 @@ ConfirmSeedPage::ConfirmSeedPage(QWidget* parent)
   edtWord2_ = new QLineEdit;
   edtWord3_ = new QLineEdit;
   
-  edtWord1_->setPlaceholderText("Enter word...");
-  edtWord2_->setPlaceholderText("Enter word...");
-  edtWord3_->setPlaceholderText("Enter word...");
+  edtWord1_->setPlaceholderText(tr("Enter word..."));
+  edtWord2_->setPlaceholderText(tr("Enter word..."));
+  edtWord3_->setPlaceholderText(tr("Enter word..."));
   
-  grid->addWidget(new QLabel("Word #"), 0, 0);
+  grid->addWidget(new QLabel(tr("Word #")), 0, 0);
   grid->addWidget(edtWord1_, 0, 1);
-  grid->addWidget(new QLabel("Word #"), 1, 0);
+  grid->addWidget(new QLabel(tr("Word #")), 1, 0);
   grid->addWidget(edtWord2_, 1, 1);
-  grid->addWidget(new QLabel("Word #"), 2, 0);
+  grid->addWidget(new QLabel(tr("Word #")), 2, 0);
   grid->addWidget(edtWord3_, 2, 1);
   
   layout->addLayout(grid);
@@ -1139,9 +1139,9 @@ bool ConfirmSeedPage::validatePage() {
   if (edtWord1_->text().trimmed().toLower() != word1 ||
       edtWord2_->text().trimmed().toLower() != word2 ||
       edtWord3_->text().trimmed().toLower() != word3) {
-    QMessageBox::warning(this, "Incorrect Words",
-      "One or more words don't match your seed phrase.\n\n"
-      "Please go back and write down your seed phrase carefully.");
+    QMessageBox::warning(this, tr("Incorrect Words"),
+      tr("One or more words don't match your seed phrase.\n\n"
+      "Please go back and write down your seed phrase carefully."));
     return false;
   }
   
@@ -1156,29 +1156,29 @@ int ConfirmSeedPage::nextId() const {
 // Page 4: Restore from Seed
 // ============================================================================
 RestoreSeedPage::RestoreSeedPage(QWidget* parent) : QWizardPage(parent) {
-  setTitle("Restore Wallet from Seed");
-  setSubTitle("Create a named wallet from an existing BIP-39 seed phrase");
+  setTitle(tr("Restore Wallet from Seed"));
+  setSubTitle(tr("Create a named wallet from an existing BIP-39 seed phrase"));
   
   auto* layout = new QVBoxLayout;
   
   // Compatibility info at top
-  auto* compatInfo = new QLabel(
+  auto* compatInfo = new QLabel(tr(
     "⚠️ <b>Recovery only:</b> Restore creates a new named wallet from your seed phrase.<br><br>"
     "Existing wallet names cannot be overwritten from this wizard.<br><br>"
     "📱 Import from iOS Wallet: enter your 12-word seed phrase below only when migrating/recovering."
-  );
+  ));
   compatInfo->setWordWrap(true);
   compatInfo->setStyleSheet("QLabel { background: #e7f5ff; padding: 10px; border-radius: 4px; }");
   layout->addWidget(compatInfo);
   
-  auto* lblInstructions = new QLabel(
+  auto* lblInstructions = new QLabel(tr(
     "Enter your seed phrase below (one word per line or all on one line, separated by spaces):"
-  );
+  ));
   lblInstructions->setWordWrap(true);
   layout->addWidget(lblInstructions);
   
   txtSeed_ = new QTextEdit;
-  txtSeed_->setPlaceholderText(
+  txtSeed_->setPlaceholderText(tr(
     "Example:\n"
     "abandon ability able about above absent absorb abstract absurd abuse access accident...\n\n"
     "Or one word per line:\n"
@@ -1186,7 +1186,7 @@ RestoreSeedPage::RestoreSeedPage(QWidget* parent) : QWizardPage(parent) {
     "ability\n"
     "able\n"
     "..."
-  );
+  ));
   txtSeed_->setMaximumHeight(150);
   connect(txtSeed_, &QTextEdit::textChanged, this, &RestoreSeedPage::onSeedChanged);
   layout->addWidget(txtSeed_);
@@ -1196,25 +1196,25 @@ RestoreSeedPage::RestoreSeedPage(QWidget* parent) : QWizardPage(parent) {
   layout->addWidget(lblStatus_);
   
   // Optional BIP-39 passphrase (25th word)
-  auto* passphraseGroup = new QGroupBox("Optional: BIP-39 Passphrase (\"25th word\")");
+  auto* passphraseGroup = new QGroupBox(tr("Optional: BIP-39 Passphrase (\"25th word\")"));
   auto* passphraseLayout = new QVBoxLayout(passphraseGroup);
   
-  auto* lblPassphrase = new QLabel(
+  auto* lblPassphrase = new QLabel(tr(
     "Advanced users only. Leave blank if you didn't use a passphrase when creating the wallet."
-  );
+  ));
   lblPassphrase->setWordWrap(true);
   lblPassphrase->setStyleSheet("QLabel { font-size: 11px; color: #888; }");
   passphraseLayout->addWidget(lblPassphrase);
   
   edtPassphrase_ = new QLineEdit;
   edtPassphrase_->setEchoMode(QLineEdit::Password);
-  edtPassphrase_->setPlaceholderText("Leave empty if not used");
+  edtPassphrase_->setPlaceholderText(tr("Leave empty if not used"));
   passphraseLayout->addWidget(edtPassphrase_);
 
   // Checksum bypass for recovery of wallets with invalid checksums
-  chkSkipChecksum_ = new QCheckBox("Skip BIP39 checksum validation (for recovery of old wallets)");
+  chkSkipChecksum_ = new QCheckBox(tr("Skip BIP39 checksum validation (for recovery of old wallets)"));
   chkSkipChecksum_->setStyleSheet("QCheckBox { font-size: 11px; color: #e67700; }");
-  chkSkipChecksum_->setToolTip("Enable this if your seed phrase was created by an older version of Dinero that may have had a checksum bug.");
+  chkSkipChecksum_->setToolTip(tr("Enable this if your seed phrase was created by an older version of Dinero that may have had a checksum bug."));
   passphraseLayout->addWidget(chkSkipChecksum_);
   
   layout->addWidget(passphraseGroup);
@@ -1238,10 +1238,10 @@ void RestoreSeedPage::onSeedChanged() {
   }
   
   if (validateBIP39Seed(seed)) {
-    lblStatus_->setText("✅ Format looks valid - Full validation on Next >");
+    lblStatus_->setText(tr("✅ Format looks valid - Full validation on Next >"));
     lblStatus_->setStyleSheet("QLabel { color: #51cf66; font-weight: bold; }");
   } else {
-    lblStatus_->setText("❌ Invalid seed phrase (must be 12/15/18/21/24 valid BIP-39 words)");
+    lblStatus_->setText(tr("❌ Invalid seed phrase (must be 12/15/18/21/24 valid BIP-39 words)"));
     lblStatus_->setStyleSheet("QLabel { color: #ff6b6b; font-weight: bold; }");
   }
 }
@@ -1278,8 +1278,8 @@ bool RestoreSeedPage::validatePage() {
   const QString walletName = currentWizardWalletName(walletWizard);
 
   if (walletName.isEmpty()) {
-    QMessageBox::warning(this, "Wallet Name",
-      "Go back and choose a wallet name before restoring.");
+    QMessageBox::warning(this, tr("Wallet Name"),
+      tr("Go back and choose a wallet name before restoring."));
     return false;
   }
 
@@ -1292,7 +1292,7 @@ bool RestoreSeedPage::validatePage() {
 
   const auto confirmRestore = QMessageBox::warning(
     this,
-    "Restore Wallet Confirmation",
+    tr("Restore Wallet Confirmation"),
     QString("Restore seed phrase into wallet '%1'?\n\n"
             "This creates a new named wallet for migration or recovery.\n"
             "If you already have this wallet locally, cancel and use Load + Unlock + Rescan instead.\n\n"
@@ -1305,9 +1305,9 @@ bool RestoreSeedPage::validatePage() {
   }
   
   if (!validateBIP39Seed(seed)) {
-    QMessageBox::warning(this, "Invalid Seed",
-      "The seed phrase you entered is not valid.\n\n"
-      "Please check that you have entered a valid 12/15/18/21/24-word BIP-39 seed phrase.");
+    QMessageBox::warning(this, tr("Invalid Seed"),
+      tr("The seed phrase you entered is not valid.\n\n"
+      "Please check that you have entered a valid 12/15/18/21/24-word BIP-39 seed phrase."));
     return false;
   }
   
@@ -1392,32 +1392,32 @@ int RestoreSeedPage::nextId() const {
 // Page 5: Set Password
 // ============================================================================
 SetPasswordPage::SetPasswordPage(QWidget* parent) : QWizardPage(parent) {
-  setTitle("Encrypt Your Wallet");
-  setSubTitle("Set a strong password to encrypt your wallet file");
+  setTitle(tr("Encrypt Your Wallet"));
+  setSubTitle(tr("Set a strong password to encrypt your wallet file"));
   
   auto* layout = new QVBoxLayout;
   
-  auto* info = new QLabel(
+  auto* info = new QLabel(tr(
     "This password encrypts your wallet file using AES-256-GCM with Argon2id key derivation.\n"
     "You'll need this password to unlock your wallet and send coins."
-  );
+  ));
   info->setWordWrap(true);
   info->setStyleSheet("QLabel { margin-bottom: 10px; }");
   layout->addWidget(info);
   
   auto* grid = new QGridLayout;
   
-  grid->addWidget(new QLabel("Password:"), 0, 0);
+  grid->addWidget(new QLabel(tr("Password:")), 0, 0);
   edtPassword1_ = new QLineEdit;
   edtPassword1_->setEchoMode(QLineEdit::Password);
-  edtPassword1_->setPlaceholderText("Enter a strong password");
+  edtPassword1_->setPlaceholderText(tr("Enter a strong password"));
   connect(edtPassword1_, &QLineEdit::textChanged, this, &SetPasswordPage::onPasswordChanged);
   grid->addWidget(edtPassword1_, 0, 1);
   
-  grid->addWidget(new QLabel("Confirm:"), 1, 0);
+  grid->addWidget(new QLabel(tr("Confirm:")), 1, 0);
   edtPassword2_ = new QLineEdit;
   edtPassword2_->setEchoMode(QLineEdit::Password);
-  edtPassword2_->setPlaceholderText("Re-enter password");
+  edtPassword2_->setPlaceholderText(tr("Re-enter password"));
   connect(edtPassword2_, &QLineEdit::textChanged, this, &SetPasswordPage::onPasswordChanged);
   grid->addWidget(edtPassword2_, 1, 1);
   
@@ -1429,9 +1429,9 @@ SetPasswordPage::SetPasswordPage(QWidget* parent) : QWizardPage(parent) {
   lblMatch_ = new QLabel();
   layout->addWidget(lblMatch_);
   
-  auto* warning = new QLabel(
+  auto* warning = new QLabel(tr(
     "⚠️ <b>Important:</b> If you forget this password, you'll need your seed phrase to restore your wallet."
-  );
+  ));
   warning->setWordWrap(true);
   warning->setStyleSheet("QLabel { background: #fab005; padding: 8px; border-radius: 4px; margin-top: 10px; }");
   layout->addWidget(warning);
@@ -1454,10 +1454,10 @@ void SetPasswordPage::onPasswordChanged() {
   // Update match indicator
   if (!confirm.isEmpty()) {
     if (password == confirm) {
-      lblMatch_->setText("✅ Passwords match");
+      lblMatch_->setText(tr("✅ Passwords match"));
       lblMatch_->setStyleSheet("QLabel { color: #51cf66; }");
     } else {
-      lblMatch_->setText("❌ Passwords don't match");
+      lblMatch_->setText(tr("❌ Passwords don't match"));
       lblMatch_->setStyleSheet("QLabel { color: #ff6b6b; }");
     }
   } else {
@@ -1504,15 +1504,15 @@ bool SetPasswordPage::validatePage() {
   QString confirm = edtPassword2_->text();
   
   if (password.length() < 8) {
-    QMessageBox::warning(this, "Weak Password",
-      "Password must be at least 8 characters long.\n\n"
-      "For security, use a strong password with letters, numbers, and symbols.");
+    QMessageBox::warning(this, tr("Weak Password"),
+      tr("Password must be at least 8 characters long.\n\n"
+      "For security, use a strong password with letters, numbers, and symbols."));
     return false;
   }
   
   if (password != confirm) {
-    QMessageBox::warning(this, "Password Mismatch",
-      "The passwords you entered don't match.\n\nPlease try again.");
+    QMessageBox::warning(this, tr("Password Mismatch"),
+      tr("The passwords you entered don't match.\n\nPlease try again."));
     edtPassword2_->clear();
     edtPassword2_->setFocus();
     return false;
@@ -1531,28 +1531,28 @@ int SetPasswordPage::nextId() const {
 CompletionPage::CompletionPage(RpcClient* rpc, QWidget* parent) 
     : QWizardPage(parent)
     , rpc_(rpc) {
-  setTitle("Wallet Setup Complete");
-  setSubTitle("Your Dinero wallet is ready to use");
+  setTitle(tr("Wallet Setup Complete"));
+  setSubTitle(tr("Your Dinero wallet is ready to use"));
   
   auto* layout = new QVBoxLayout;
   
-  auto* success = new QLabel("✅ Your wallet setup has completed.");
+  auto* success = new QLabel(tr("✅ Your wallet setup has completed."));
   success->setStyleSheet("QLabel { font-size: 16px; font-weight: bold; color: #51cf66; margin-bottom: 20px; }");
   layout->addWidget(success);
   
   auto* grid = new QGridLayout;
 
-  grid->addWidget(new QLabel("Wallet Name:"), 0, 0);
+  grid->addWidget(new QLabel(tr("Wallet Name:")), 0, 0);
   lblWalletName_ = new QLabel("-");
   lblWalletName_->setStyleSheet("QLabel { font-family: monospace; font-weight: bold; }");
   grid->addWidget(lblWalletName_, 0, 1);
   
-  grid->addWidget(new QLabel("Wallet Fingerprint:"), 1, 0);
+  grid->addWidget(new QLabel(tr("Wallet Fingerprint:")), 1, 0);
   lblFingerprint_ = new QLabel("-");
   lblFingerprint_->setStyleSheet("QLabel { font-family: monospace; font-weight: bold; }");
   grid->addWidget(lblFingerprint_, 1, 1);
   
-  grid->addWidget(new QLabel("First Address:"), 2, 0);
+  grid->addWidget(new QLabel(tr("First Address:")), 2, 0);
   lblFirstAddress_ = new QLabel("-");
   lblFirstAddress_->setStyleSheet("QLabel { font-family: monospace; }");
   lblFirstAddress_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -1564,7 +1564,7 @@ CompletionPage::CompletionPage(RpcClient* rpc, QWidget* parent)
   lblStatus_->setWordWrap(true);
   layout->addWidget(lblStatus_);
   
-  auto* reminder = new QLabel(
+  auto* reminder = new QLabel(tr(
     "<p><b>Important Reminders:</b></p>"
     "<ul>"
     "<li>Keep your seed phrase safe and offline</li>"
@@ -1572,7 +1572,7 @@ CompletionPage::CompletionPage(RpcClient* rpc, QWidget* parent)
     "<li>Make multiple backups stored in different locations</li>"
     "<li>Your password encrypts the wallet file, but the seed phrase is the ultimate backup</li>"
     "</ul>"
-  );
+  ));
   reminder->setWordWrap(true);
   reminder->setStyleSheet("QLabel { background: #e9ecef; padding: 10px; border-radius: 4px; margin-top: 20px; }");
   layout->addWidget(reminder);
@@ -1582,12 +1582,12 @@ CompletionPage::CompletionPage(RpcClient* rpc, QWidget* parent)
 }
 
 void CompletionPage::initializePage() {
-  lblStatus_->setText("Creating wallet...");
+  lblStatus_->setText(tr("Creating wallet..."));
 
   // Get data from previous pages
   auto* wizard = qobject_cast<WalletWizard*>(this->wizard());
   if (!wizard) {
-    lblStatus_->setText("❌ Error: Wizard not found");
+    lblStatus_->setText(tr("❌ Error: Wizard not found"));
     return;
   }
 
@@ -1597,7 +1597,7 @@ void CompletionPage::initializePage() {
   auto* passwordPage = qobject_cast<SetPasswordPage*>(wizard->page(WalletWizard::Page_SetPassword));
 
   if (!createPage || !restorePage || !passwordPage) {
-    lblStatus_->setText("❌ Error: Pages not found");
+    lblStatus_->setText(tr("❌ Error: Pages not found"));
     return;
   }
 
@@ -1618,7 +1618,7 @@ void CompletionPage::initializePage() {
     }
 
     if (fingerprint.isEmpty() || firstAddress.isEmpty()) {
-      lblStatus_->setText("❌ Wallet restore failed");
+      lblStatus_->setText(tr("❌ Wallet restore failed"));
       return;
     }
   } else {
@@ -1630,7 +1630,7 @@ void CompletionPage::initializePage() {
     }
 
     if (fingerprint.isEmpty() || firstAddress.isEmpty()) {
-      lblStatus_->setText("❌ Wallet creation failed");
+      lblStatus_->setText(tr("❌ Wallet creation failed"));
       return;
     }
   }
@@ -1652,7 +1652,7 @@ void CompletionPage::initializePage() {
   QString password = passwordPage->getPassword();
 
   if (password.isEmpty()) {
-    lblStatus_->setText("❌ No password provided");
+    lblStatus_->setText(tr("❌ No password provided"));
     return;
   }
 
@@ -1740,7 +1740,7 @@ WalletWizard::WalletWizard(ConnectionManager* connMgr, RpcClient* rpc, QWidget* 
     : QWizard(parent)
     , connMgr_(connMgr)
     , rpc_(rpc) {
-  setWindowTitle("Dinero Wallet Setup");
+  setWindowTitle(tr("Dinero Wallet Setup"));
   setWizardStyle(QWizard::ModernStyle);
   setOption(QWizard::HaveHelpButton, false);
   setMinimumSize(700, 500);
@@ -1805,7 +1805,7 @@ void WalletWizard::onFinished(int result) {
   if (!rollbackProvisionedWallet(this, &rollbackError) && !rollbackError.isEmpty()) {
     QMessageBox::warning(
       this,
-      "Wallet Setup Rollback Failed",
+      tr("Wallet Setup Rollback Failed"),
       "Dinero could not fully roll back the wallet setup session.\n\n" + rollbackError
     );
   }
@@ -1818,23 +1818,23 @@ ImportTaprootPage::ImportTaprootPage(ConnectionManager* connMgr, QWidget* parent
     : QWizardPage(parent)
     , connMgr_(connMgr)
     , importSucceeded_(false) {
-  setTitle("Import Taproot Descriptor");
-  setSubTitle("Import a Taproot private key using descriptor format");
+  setTitle(tr("Import Taproot Descriptor"));
+  setSubTitle(tr("Import a Taproot private key using descriptor format"));
 
   auto* layout = new QVBoxLayout;
 
   // Warning banner
-  auto* warning = new QLabel(
+  auto* warning = new QLabel(tr(
     "<p style='background: #ff922b; color: white; padding: 8px; border-radius: 4px;'>"
     "⚠️ <b>Advanced Feature:</b> Only use this if you have a Taproot descriptor "
     "(e.g., from mining setup or another wallet). For most users, restoring from "
     "a seed phrase is recommended.</p>"
-  );
+  ));
   warning->setWordWrap(true);
   layout->addWidget(warning);
 
   // Descriptor input
-  auto* descLabel = new QLabel("<b>Taproot Descriptor:</b>");
+  auto* descLabel = new QLabel(tr("<b>Taproot Descriptor:</b>"));
   layout->addWidget(descLabel);
 
   edtDescriptor_ = new QLineEdit;
@@ -1854,17 +1854,17 @@ ImportTaprootPage::ImportTaprootPage(ConnectionManager* connMgr, QWidget* parent
   layout->addWidget(formatHelp);
 
   // Optional label
-  auto* labelLabel = new QLabel("<b>Label (optional):</b>");
+  auto* labelLabel = new QLabel(tr("<b>Label (optional):</b>"));
   layout->addWidget(labelLabel);
 
   edtLabel_ = new QLineEdit;
-  edtLabel_->setPlaceholderText("e.g., Mining rewards, Cold storage");
+  edtLabel_->setPlaceholderText(tr("e.g., Mining rewards, Cold storage"));
   layout->addWidget(edtLabel_);
 
   layout->addSpacing(10);
 
   // Import button
-  btnImport_ = new QPushButton("Import Taproot Key");
+  btnImport_ = new QPushButton(tr("Import Taproot Key"));
   btnImport_->setStyleSheet(
     "QPushButton { background: #228be6; color: white; font-weight: bold; padding: 10px 20px; }"
     "QPushButton:disabled { background: #868e96; }"
@@ -1888,20 +1888,20 @@ ImportTaprootPage::ImportTaprootPage(ConnectionManager* connMgr, QWidget* parent
 
   // Note about mandatory rescan
   // Security requirement note
-  auto* unlockNote = new QLabel(
+  auto* unlockNote = new QLabel(tr(
     "<p style='font-size: 10px; color: #e03131; margin-top: 10px;'>"
     "<b>Security:</b> Your wallet must be <b>unlocked</b> to import private keys. "
     "If your wallet is encrypted, unlock it first from the main toolbar.</p>"
-  );
+  ));
   unlockNote->setWordWrap(true);
   layout->addWidget(unlockNote);
 
-  auto* rescanNote = new QLabel(
+  auto* rescanNote = new QLabel(tr(
     "<p style='font-size: 10px; color: #666;'>"
     "<b>Note:</b> Importing a Taproot descriptor will automatically trigger a blockchain "
     "rescan to find any existing transactions. This may take some time depending on "
     "blockchain size.</p>"
-  );
+  ));
   rescanNote->setWordWrap(true);
   layout->addWidget(rescanNote);
 
@@ -1923,9 +1923,9 @@ void ImportTaprootPage::initializePage() {
 bool ImportTaprootPage::validatePage() {
   // Only allow proceeding if import succeeded
   if (!importSucceeded_) {
-    QMessageBox::warning(const_cast<ImportTaprootPage*>(this), "Import Required",
-      "Please import a valid Taproot descriptor before continuing.\n\n"
-      "Click the 'Import Taproot Key' button after entering a valid descriptor.");
+    QMessageBox::warning(const_cast<ImportTaprootPage*>(this), tr("Import Required"),
+      tr("Please import a valid Taproot descriptor before continuing.\n\n"
+      "Click the 'Import Taproot Key' button after entering a valid descriptor."));
     return false;
   }
   return true;
@@ -1969,13 +1969,13 @@ void ImportTaprootPage::onImportClicked() {
   QString label = getLabel();
 
   if (descriptor.isEmpty()) {
-    lblStatus_->setText("<span style='color: #e03131;'>Please enter a Taproot descriptor</span>");
+    lblStatus_->setText(tr("<span style='color: #e03131;'>Please enter a Taproot descriptor</span>"));
     return;
   }
 
   // Disable button during import
   btnImport_->setEnabled(false);
-  lblStatus_->setText("<span style='color: #228be6;'>Importing... (this may take a moment for rescan)</span>");
+  lblStatus_->setText(tr("<span style='color: #228be6;'>Importing... (this may take a moment for rescan)</span>"));
 
   // Call the RPC
   QJsonObject params;
@@ -2008,7 +2008,7 @@ void ImportTaprootPage::onImportClicked() {
         lblAddress_->setVisible(true);
 
         // Re-enable button but change text
-        btnImport_->setText("Import Complete");
+        btnImport_->setText(tr("Import Complete"));
         btnImport_->setEnabled(false);
 
         // Notify the wizard that we can proceed

@@ -1434,6 +1434,15 @@ if(BUILD_TESTING)
              COMMAND test_i18n "${CMAKE_CURRENT_BINARY_DIR}/i18n/dinero_de.qm")
   endif()
 
+  # A recovery phrase must stay English in every interface language: a BIP39
+  # phrase only restores against the wordlist it was generated from, so a
+  # translated phrase is a fund-loss defect, not a cosmetic one.
+  add_test(NAME QtSeedPhraseNeverTranslated
+           COMMAND ${CMAKE_COMMAND}
+                   -DQT_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src
+                   -DWALLET_SRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/../src/wallet
+                   -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_seed_phrase_never_translated.cmake)
+
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp
     src/peerheightsemantics.h

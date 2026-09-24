@@ -2431,6 +2431,15 @@ void MainWindow::setupUI() {
   // Tab widget
   auto *tabs = new QTabWidget;
   tabs->setIconSize(QSize(18, 18));
+  // Keep navigation labels readable once translated. By default QTabBar elides
+  // tab text to make every tab fit, which already clipped English ("Over...",
+  // "Hardwar...") and gets much worse in languages that run longer than
+  // English: German turns "Send" into "Senden" and "Settings" into
+  // "Einstellungen", leaving "Sen..." and "Ein...". Showing the full label and
+  // scrolling when they no longer fit keeps the bar usable in every language,
+  // which a truncating bar is not. See qt/MULTI-LANGUAGE-PLAN.md.
+  tabs->tabBar()->setElideMode(Qt::ElideNone);
+  tabs->setUsesScrollButtons(true);
   mainTabs_ = tabs;
   connect(tabs, &QTabWidget::currentChanged, this, [this](int index) {
     updateMiningFocusDimState();

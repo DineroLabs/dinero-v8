@@ -2,21 +2,309 @@
 <!DOCTYPE TS>
 <TS version="2.1" language="de_DE">
 <context>
+    <name>CompletionPage</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1534"/>
+        <source>Wallet Setup Complete</source>
+        <translation>Einrichtung abgeschlossen</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1535"/>
+        <source>Your Dinero wallet is ready to use</source>
+        <translation>Ihre Dinero-Geldbörse ist einsatzbereit</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1539"/>
+        <source>✅ Your wallet setup has completed.</source>
+        <translation>✅ Die Einrichtung Ihrer Geldbörse ist abgeschlossen.</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1545"/>
+        <source>Wallet Name:</source>
+        <translation>Name der Geldbörse:</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1550"/>
+        <source>Wallet Fingerprint:</source>
+        <translation>Fingerabdruck der Geldbörse:</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1555"/>
+        <source>First Address:</source>
+        <translation>Erste Adresse:</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1567"/>
+        <source>&lt;p&gt;&lt;b&gt;Important Reminders:&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Keep your seed phrase safe and offline&lt;/li&gt;&lt;li&gt;Never share your seed phrase with anyone&lt;/li&gt;&lt;li&gt;Make multiple backups stored in different locations&lt;/li&gt;&lt;li&gt;Your password encrypts the wallet file, but the seed phrase is the ultimate backup&lt;/li&gt;&lt;/ul&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1585"/>
+        <source>Creating wallet...</source>
+        <translation>Geldbörse wird erstellt …</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1590"/>
+        <source>❌ Error: Wizard not found</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1600"/>
+        <source>❌ Error: Pages not found</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1621"/>
+        <source>❌ Wallet restore failed</source>
+        <translation>❌ Wiederherstellung fehlgeschlagen</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1633"/>
+        <source>❌ Wallet creation failed</source>
+        <translation>❌ Erstellung der Geldbörse fehlgeschlagen</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1655"/>
+        <source>❌ No password provided</source>
+        <translation>❌ Kein Passwort angegeben</translation>
+    </message>
+</context>
+<context>
+    <name>ConfirmSeedPage</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1072"/>
+        <source>Confirm Your Seed Phrase</source>
+        <translation>Bestätigen Sie Ihre Wiederherstellungswörter</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1073"/>
+        <source>To ensure you wrote it down correctly, please enter 3 random words:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1087"/>
+        <location filename="../src/walletwizard.cpp" line="1088"/>
+        <location filename="../src/walletwizard.cpp" line="1089"/>
+        <source>Enter word...</source>
+        <translation>Wort eingeben …</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1091"/>
+        <location filename="../src/walletwizard.cpp" line="1093"/>
+        <location filename="../src/walletwizard.cpp" line="1095"/>
+        <source>Word #</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1142"/>
+        <source>Incorrect Words</source>
+        <translation>Falsche Wörter</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1143"/>
+        <source>One or more words don&apos;t match your seed phrase.
+
+Please go back and write down your seed phrase carefully.</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>CreateSeedPage</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="710"/>
+        <source>Your Seed Phrase</source>
+        <translation>Ihre Wiederherstellungswörter</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="711"/>
+        <source>Write down these 12 words in order. Keep them safe and NEVER share them.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="716"/>
+        <source>⚠️ &lt;b&gt;CRITICAL:&lt;/b&gt; Anyone with these words can access your funds. Write them on paper and store securely. Never take screenshots or save digitally.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="725"/>
+        <source>[Seed phrase will appear here]</source>
+        <translation>[Die Wiederherstellungswörter erscheinen hier]</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="742"/>
+        <location filename="../src/walletwizard.cpp" line="800"/>
+        <location filename="../src/walletwizard.cpp" line="1024"/>
+        <location filename="../src/walletwizard.cpp" line="1035"/>
+        <source>👁️ Reveal Seed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="749"/>
+        <source>📱 Seed &amp; Address Compatibility</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="753"/>
+        <source>&lt;b&gt;Your BIP39 seed phrase works across Dinero wallets.&lt;/b&gt;&lt;br&gt;&lt;br&gt;✅ &lt;b&gt;Taproot lane:&lt;/b&gt; BIP86 &lt;code&gt;din1p...&lt;/code&gt; addresses for mobile-friendly payments&lt;br&gt;✅ &lt;b&gt;Quantum-safe lane:&lt;/b&gt; purpose 88 P2MR &lt;code&gt;din1r...&lt;/code&gt; addresses using ML-DSA-65 in Qt&lt;br&gt;&lt;br&gt;Mobile restore uses the same seed for Taproot payments. P2MR keys derive from that same seed as mobile support expands.&lt;br&gt;&lt;br&gt;&lt;i&gt;One seed phrase, clear address lanes.&lt;/i&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="765"/>
+        <source>✅ I have written down my seed phrase on paper</source>
+        <translation>✅ Ich habe meine Wiederherstellungswörter auf Papier notiert</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="791"/>
+        <source>❌ Error: Connection manager not available</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="804"/>
+        <source>❌ Error: Wallet name is missing. Go back and choose a wallet name first.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="836"/>
+        <source>⏱️ Request timed out after 30 seconds.
+
+Please check that:
+• Daemon is running
+• ConnectionManager is connected
+
+Click &apos;Generate Seed&apos; to try again.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1023"/>
+        <source>[Seed phrase unavailable]</source>
+        <translation>[Wiederherstellungswörter nicht verfügbar]</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1032"/>
+        <source>🙈 Hide Seed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1034"/>
+        <source>[Seed hidden. Click Reveal Seed]</source>
+        <translation>[Wörter verborgen. Auf „Wörter anzeigen“ klicken]</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1045"/>
+        <source>Seed Not Ready</source>
+        <translation>Wörter noch nicht bereit</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1046"/>
+        <source>Seed phrase is not available yet.
+
+Wait for seed generation to complete before continuing.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1052"/>
+        <source>Backup Required</source>
+        <translation>Sicherung erforderlich</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1053"/>
+        <source>You must write down your seed phrase before continuing.
+
+Without this backup, you cannot recover your wallet if your computer is lost or damaged.</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>ImportTaprootPage</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1821"/>
+        <source>Import Taproot Descriptor</source>
+        <translation>Taproot-Deskriptor importieren</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1822"/>
+        <source>Import a Taproot private key using descriptor format</source>
+        <translation>Einen privaten Taproot-Schlüssel im Deskriptorformat importieren</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1827"/>
+        <source>&lt;p style=&apos;background: #ff922b; color: white; padding: 8px; border-radius: 4px;&apos;&gt;⚠️ &lt;b&gt;Advanced Feature:&lt;/b&gt; Only use this if you have a Taproot descriptor (e.g., from mining setup or another wallet). For most users, restoring from a seed phrase is recommended.&lt;/p&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1837"/>
+        <source>&lt;b&gt;Taproot Descriptor:&lt;/b&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1857"/>
+        <source>&lt;b&gt;Label (optional):&lt;/b&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1861"/>
+        <source>e.g., Mining rewards, Cold storage</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1867"/>
+        <source>Import Taproot Key</source>
+        <translation>Taproot-Schlüssel importieren</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1891"/>
+        <source>&lt;p style=&apos;font-size: 10px; color: #e03131; margin-top: 10px;&apos;&gt;&lt;b&gt;Security:&lt;/b&gt; Your wallet must be &lt;b&gt;unlocked&lt;/b&gt; to import private keys. If your wallet is encrypted, unlock it first from the main toolbar.&lt;/p&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1899"/>
+        <source>&lt;p style=&apos;font-size: 10px; color: #666;&apos;&gt;&lt;b&gt;Note:&lt;/b&gt; Importing a Taproot descriptor will automatically trigger a blockchain rescan to find any existing transactions. This may take some time depending on blockchain size.&lt;/p&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1926"/>
+        <source>Import Required</source>
+        <translation>Import erforderlich</translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1927"/>
+        <source>Please import a valid Taproot descriptor before continuing.
+
+Click the &apos;Import Taproot Key&apos; button after entering a valid descriptor.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1972"/>
+        <source>&lt;span style=&apos;color: #e03131;&apos;&gt;Please enter a Taproot descriptor&lt;/span&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1978"/>
+        <source>&lt;span style=&apos;color: #228be6;&apos;&gt;Importing... (this may take a moment for rescan)&lt;/span&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="2011"/>
+        <source>Import Complete</source>
+        <translation>Import abgeschlossen</translation>
+    </message>
+</context>
+<context>
     <name>MainWindow</name>
     <message>
         <location filename="../src/mainwindow.cpp" line="2326"/>
         <source>&amp;Network</source>
-        <translation type="unfinished"></translation>
+        <translation>&amp;Netzwerk</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2327"/>
         <source>Enable router port mapping (UPnP/NAT-PMP)</source>
-        <translation type="unfinished"></translation>
+        <translation>Router-Portweiterleitung aktivieren (UPnP/NAT-PMP)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2332"/>
         <source>Router port mapping</source>
-        <translation type="unfinished"></translation>
+        <translation>Router-Portweiterleitung</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2334"/>
@@ -31,7 +319,7 @@
     <message>
         <location filename="../src/mainwindow.cpp" line="2340"/>
         <source>&amp;Help</source>
-        <translation type="unfinished"></translation>
+        <translation>&amp;Hilfe</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2341"/>
@@ -49,171 +337,451 @@
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2851"/>
+        <location filename="../src/mainwindow.cpp" line="2860"/>
         <source>Overview</source>
         <translation>Übersicht</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3110"/>
+        <location filename="../src/mainwindow.cpp" line="3119"/>
         <source>Wallet</source>
-        <translation>Wallet</translation>
+        <translation>Geldbörse</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3179"/>
+        <location filename="../src/mainwindow.cpp" line="3188"/>
         <source>Covenants</source>
-        <translation>Covenants</translation>
+        <translation>Bedingungen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3513"/>
+        <location filename="../src/mainwindow.cpp" line="3522"/>
         <source>Send</source>
         <translation>Senden</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3575"/>
+        <location filename="../src/mainwindow.cpp" line="3584"/>
         <source>Receive</source>
         <translation>Empfangen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3625"/>
+        <location filename="../src/mainwindow.cpp" line="3634"/>
         <source>Transactions</source>
         <translation>Transaktionen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3680"/>
+        <location filename="../src/mainwindow.cpp" line="3689"/>
         <source>UTXOs</source>
         <translation>UTXOs</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3689"/>
+        <location filename="../src/mainwindow.cpp" line="3698"/>
         <source>Hardware Wallet</source>
-        <translation>Hardware-Wallet</translation>
+        <translation>Hardware-Geldbörse</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3695"/>
+        <location filename="../src/mainwindow.cpp" line="3704"/>
         <source>Pay/Collect</source>
         <translation>Zahlen/Einziehen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3709"/>
+        <location filename="../src/mainwindow.cpp" line="3718"/>
         <source>Payments</source>
         <translation>Zahlungen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3715"/>
+        <location filename="../src/mainwindow.cpp" line="3724"/>
         <source>Escrow</source>
         <translation>Treuhand</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3721"/>
+        <location filename="../src/mainwindow.cpp" line="3730"/>
         <source>Marketplace</source>
         <translation>Marktplatz</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3735"/>
+        <location filename="../src/mainwindow.cpp" line="3744"/>
         <source>Liquidity Vault</source>
         <translation>Liquiditäts-Vault</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3744"/>
+        <location filename="../src/mainwindow.cpp" line="3753"/>
         <source>Pool</source>
-        <translation>Pool</translation>
+        <translation>Schürfpool</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3753"/>
+        <location filename="../src/mainwindow.cpp" line="3762"/>
         <source>Shielded</source>
         <translation>Abgeschirmt</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4061"/>
-        <location filename="../src/mainwindow.cpp" line="4081"/>
-        <location filename="../src/mainwindow.cpp" line="4518"/>
+        <location filename="../src/mainwindow.cpp" line="4070"/>
+        <location filename="../src/mainwindow.cpp" line="4090"/>
+        <location filename="../src/mainwindow.cpp" line="4527"/>
         <source>Mining</source>
-        <translation>Mining</translation>
+        <translation>Schürfen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4818"/>
+        <location filename="../src/mainwindow.cpp" line="4827"/>
         <source>Utreexo Proofs</source>
         <translation>Utreexo-Nachweise</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4914"/>
+        <location filename="../src/mainwindow.cpp" line="4923"/>
         <source>Peers</source>
-        <translation>Peers</translation>
+        <translation>Gegenstellen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4974"/>
+        <location filename="../src/mainwindow.cpp" line="4983"/>
         <source>Template</source>
         <translation>Vorlage</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4990"/>
+        <location filename="../src/mainwindow.cpp" line="4999"/>
         <source>Language</source>
         <translation>Sprache</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5004"/>
+        <location filename="../src/mainwindow.cpp" line="5013"/>
         <source>Interface language:</source>
         <translation>Sprache der Benutzeroberfläche:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5012"/>
+        <location filename="../src/mainwindow.cpp" line="5021"/>
         <source>Untranslated text stays in English. Amounts always use a dot decimal separator, in every language.</source>
         <translation>Nicht übersetzter Text bleibt auf Englisch. Beträge verwenden in jeder Sprache immer einen Punkt als Dezimaltrennzeichen.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5028"/>
+        <location filename="../src/mainwindow.cpp" line="5037"/>
         <source>Restart Dinero Now</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5041"/>
+        <location filename="../src/mainwindow.cpp" line="5050"/>
         <source>Language saved. Restart Dinero to apply it.</source>
         <translation>Sprache gespeichert. Starten Sie Dinero neu, um sie anzuwenden.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5051"/>
+        <location filename="../src/mainwindow.cpp" line="5060"/>
         <source>Restart Dinero</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5052"/>
+        <location filename="../src/mainwindow.cpp" line="5061"/>
         <source>Restart Dinero now to apply the new language?</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5054"/>
+        <location filename="../src/mainwindow.cpp" line="5063"/>
         <source>The wallet and its built-in node shut down cleanly and start again. Any sync or mining in progress pauses until Dinero is back up.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5058"/>
+        <location filename="../src/mainwindow.cpp" line="5067"/>
         <source>Restart Now</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5059"/>
+        <location filename="../src/mainwindow.cpp" line="5068"/>
         <source>Later</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5360"/>
+        <location filename="../src/mainwindow.cpp" line="5369"/>
         <source>Use these controls when testing daemon startup, connection recovery, or local runtime health.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5370"/>
+        <location filename="../src/mainwindow.cpp" line="5379"/>
         <source>Hide Developer Menu</source>
         <translation>Entwicklermenü ausblenden</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5371"/>
+        <location filename="../src/mainwindow.cpp" line="5380"/>
         <source>Show Developer Menu</source>
         <translation>Entwicklermenü anzeigen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5523"/>
+        <location filename="../src/mainwindow.cpp" line="5532"/>
         <source>Settings</source>
         <translation>Einstellungen</translation>
+    </message>
+</context>
+<context>
+    <name>RestoreSeedPage</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1159"/>
+        <source>Restore Wallet from Seed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1160"/>
+        <source>Create a named wallet from an existing BIP-39 seed phrase</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1165"/>
+        <source>⚠️ &lt;b&gt;Recovery only:&lt;/b&gt; Restore creates a new named wallet from your seed phrase.&lt;br&gt;&lt;br&gt;Existing wallet names cannot be overwritten from this wizard.&lt;br&gt;&lt;br&gt;📱 Import from iOS Wallet: enter your 12-word seed phrase below only when migrating/recovering.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1174"/>
+        <source>Enter your seed phrase below (one word per line or all on one line, separated by spaces):</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1181"/>
+        <source>Example:
+abandon ability able about above absent absorb abstract absurd abuse access accident...
+
+Or one word per line:
+abandon
+ability
+able
+...</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1199"/>
+        <source>Optional: BIP-39 Passphrase (&quot;25th word&quot;)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1202"/>
+        <source>Advanced users only. Leave blank if you didn&apos;t use a passphrase when creating the wallet.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1211"/>
+        <source>Leave empty if not used</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1215"/>
+        <source>Skip BIP39 checksum validation (for recovery of old wallets)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1217"/>
+        <source>Enable this if your seed phrase was created by an older version of Dinero that may have had a checksum bug.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1241"/>
+        <source>✅ Format looks valid - Full validation on Next &gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1244"/>
+        <source>❌ Invalid seed phrase (must be 12/15/18/21/24 valid BIP-39 words)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1281"/>
+        <source>Wallet Name</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1282"/>
+        <source>Go back and choose a wallet name before restoring.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1295"/>
+        <source>Restore Wallet Confirmation</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1308"/>
+        <source>Invalid Seed</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1309"/>
+        <source>The seed phrase you entered is not valid.
+
+Please check that you have entered a valid 12/15/18/21/24-word BIP-39 seed phrase.</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>SetPasswordPage</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1395"/>
+        <source>Encrypt Your Wallet</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1396"/>
+        <source>Set a strong password to encrypt your wallet file</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1400"/>
+        <source>This password encrypts your wallet file using AES-256-GCM with Argon2id key derivation.
+You&apos;ll need this password to unlock your wallet and send coins.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1410"/>
+        <source>Password:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1413"/>
+        <source>Enter a strong password</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1417"/>
+        <source>Confirm:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1420"/>
+        <source>Re-enter password</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1432"/>
+        <source>⚠️ &lt;b&gt;Important:&lt;/b&gt; If you forget this password, you&apos;ll need your seed phrase to restore your wallet.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1457"/>
+        <source>✅ Passwords match</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1460"/>
+        <source>❌ Passwords don&apos;t match</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1507"/>
+        <source>Weak Password</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1508"/>
+        <source>Password must be at least 8 characters long.
+
+For security, use a strong password with letters, numbers, and symbols.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1514"/>
+        <source>Password Mismatch</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1515"/>
+        <source>The passwords you entered don&apos;t match.
+
+Please try again.</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>WalletWizard</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1743"/>
+        <source>Dinero Wallet Setup</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="1808"/>
+        <source>Wallet Setup Rollback Failed</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
+    <name>WelcomePage</name>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="431"/>
+        <source>Welcome to Dinero Wallet</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="432"/>
+        <source>Create a new wallet or restore an existing one</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="436"/>
+        <source>&lt;p&gt;Your Dinero wallet will be protected with:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;12-word BIP-39 seed phrase&lt;/b&gt; (industry standard, 128-bit security)&lt;/li&gt;&lt;li&gt;&lt;b&gt;AES-256-GCM encryption&lt;/b&gt; with Argon2id key derivation&lt;/li&gt;&lt;li&gt;&lt;b&gt;HD wallet&lt;/b&gt; (BIP-32/86 Taproot) for unlimited addresses&lt;/li&gt;&lt;/ul&gt;</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="447"/>
+        <source>Choose an option:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="451"/>
+        <source>🆕 Create a new wallet</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="452"/>
+        <source>♻️ Emergency restore from seed phrase</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="453"/>
+        <source>🔑 Import Taproot descriptor (advanced)</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="465"/>
+        <source>Wallet name</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="469"/>
+        <location filename="../src/walletwizard.cpp" line="470"/>
+        <source>default</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="475"/>
+        <location filename="../src/walletwizard.cpp" line="564"/>
+        <source>Balances, addresses, send history, and advisory state stay scoped to this wallet only. Existing wallet names cannot be overwritten from the setup wizard.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="554"/>
+        <source>Taproot descriptor import uses the currently active wallet. Load a wallet first if needed.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="603"/>
+        <source>Wallet Required</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="604"/>
+        <source>Taproot descriptor import uses the currently loaded wallet.
+
+Load a wallet first, or cancel this setup flow and reopen it when you are ready to import.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="615"/>
+        <source>Wallet Name</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="629"/>
+        <source>Wallet Already Provisioned</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="650"/>
+        <source>Wallet Already Exists</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/walletwizard.cpp" line="667"/>
+        <source>Unload Current Wallet</source>
+        <translation type="unfinished"></translation>
     </message>
 </context>
 <context>
