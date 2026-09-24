@@ -814,6 +814,16 @@ public:
     void test_set_before_final_peers_save(std::function<void()> before_save) {
         test_before_final_peers_save_ = std::move(before_save);
     }
+    void test_set_before_peer_handler_start(std::function<void(int)> before_start) {
+        test_before_peer_handler_start_ = std::move(before_start);
+    }
+    bool test_is_connecting_peer(const std::string& address, uint16_t port) const {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        return connecting_peers_.count(address + ":" + std::to_string(port)) != 0;
+    }
+    void test_handle_incoming_connection(int socket_fd, const std::string& address) {
+        handle_incoming_connection(socket_fd, address);
+    }
     std::optional<std::string> test_resolve_ipv4_for_dial(
         const std::string& host, std::chrono::milliseconds timeout) const {
         return resolve_ipv4_for_dial(host, timeout);
@@ -1231,6 +1241,7 @@ private:
     std::function<int(int, std::chrono::milliseconds)> test_outbound_connect_poll_;
     std::function<std::optional<std::string>(const std::string&)> test_ipv4_resolver_;
     std::function<void()> test_before_final_peers_save_;
+    std::function<void(int)> test_before_peer_handler_start_;
 #endif
 
     // Network threads
@@ -1246,7 +1257,7 @@ private:
                               bool is_feeler,
                               const std::optional<std::string>& pre_resolved_ip = std::nullopt);
     // Ring 3 Phase 4c: Changed to shared_ptr for TS1 compliance
-    void start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
+    bool start_peer_handler_thread(std::shared_ptr<PeerInfo> peer);
     void peer_handler_loop(std::shared_ptr<PeerInfo> peer);
     // Task 5: Decrypted-stream reader for QUIC relay virtual peers.
     // Spawned by start_peer_handler_thread (Task 6) for encrypted circuits.

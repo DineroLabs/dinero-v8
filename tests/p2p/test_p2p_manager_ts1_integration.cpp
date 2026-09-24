@@ -78,6 +78,113 @@ TEST(P2PManager_TS1_Integration, BasicStartStop) {
     SUCCEED();
 }
 
+TEST(P2PManager_TS1_Integration, ShutdownBetweenConnectAndHandlerClosesSocket) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(listener, 0);
+    sockaddr_in bind_addr{};
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind_addr.sin_port = 0;
+    ASSERT_EQ(bind(listener, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)), 0);
+    ASSERT_EQ(listen(listener, 1), 0);
+    socklen_t addr_len = sizeof(bind_addr);
+    ASSERT_EQ(getsockname(listener, reinterpret_cast<sockaddr*>(&bind_addr), &addr_len), 0);
+    const uint16_t port = ntohs(bind_addr.sin_port);
+
+    P2PManager manager(0);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool connected = false;
+    bool release = false;
+    int dial_fd = -1;
+    bool result = true;
+    manager.test_set_before_peer_handler_start([&](int fd) {
+        std::unique_lock<std::mutex> lock(mutex);
+        dial_fd = fd;
+        connected = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    });
+    std::thread dialer([&] { result = manager.connect_to_peer("127.0.0.1", port); });
+    bool reached_gate = false;
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        reached_gate = cv.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return connected; });
+    }
+    manager.begin_shutdown();
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+    }
+    cv.notify_all();
+    dialer.join();
+    close(listener);
+    if (!reached_gate) {
+        FAIL() << "outbound connection never reached handler-start gate";
+        return;
+    }
+    const bool fd_open = fcntl(dial_fd, F_GETFD) >= 0;
+    const bool guard_left = manager.test_is_connecting_peer("127.0.0.1", port);
+    if (fd_open) close(dial_fd);  // Keep the RED test from leaking a descriptor.
+    EXPECT_FALSE(result) << "refused handler start must not report a connected peer";
+    EXPECT_FALSE(fd_open) << "refused handler start leaked its connected socket";
+    EXPECT_FALSE(guard_left) << "refused handler start left a connecting guard";
+}
+
+TEST(P2PManager_TS1_Integration, ShutdownBeforeInboundHandlerClosesAcceptedSocket) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(listener, 0);
+    sockaddr_in bind_addr{};
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind_addr.sin_port = 0;
+    ASSERT_EQ(bind(listener, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)), 0);
+    ASSERT_EQ(listen(listener, 1), 0);
+    socklen_t addr_len = sizeof(bind_addr);
+    ASSERT_EQ(getsockname(listener, reinterpret_cast<sockaddr*>(&bind_addr), &addr_len), 0);
+    int client = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(client, 0);
+    ASSERT_EQ(connect(client, reinterpret_cast<sockaddr*>(&bind_addr), sizeof(bind_addr)), 0);
+    const int accepted = AcceptWithin(listener, std::chrono::seconds(3));
+    ASSERT_GE(accepted, 0);
+
+    P2PManager manager(0);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool at_gate = false;
+    bool release = false;
+    manager.test_set_before_peer_handler_start([&](int fd) {
+        EXPECT_EQ(fd, accepted);
+        std::unique_lock<std::mutex> lock(mutex);
+        at_gate = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release; });
+    });
+    std::thread inbound([&] {
+        manager.test_handle_incoming_connection(accepted, "127.0.0.1");
+    });
+    bool reached_gate = false;
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        reached_gate = cv.wait_for(lock, std::chrono::seconds(3),
+                                   [&] { return at_gate; });
+    }
+    manager.begin_shutdown();
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        release = true;
+    }
+    cv.notify_all();
+    inbound.join();
+    const bool fd_open = fcntl(accepted, F_GETFD) >= 0;
+    if (fd_open) close(accepted);
+    close(client);
+    close(listener);
+    ASSERT_TRUE(reached_gate) << "inbound connection never reached handler-start gate";
+    EXPECT_FALSE(fd_open) << "refused inbound handler leaked its accepted socket";
+}
+
 TEST(P2PManager_TS1_Integration, ShutdownSkipsQueuedOutboundDials) {
     P2PManager manager(0);
     std::mutex gate_mutex;

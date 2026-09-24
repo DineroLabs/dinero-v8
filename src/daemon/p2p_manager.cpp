@@ -4391,7 +4391,12 @@ bool P2PManager::start() {
 // This prevents use-after-free by ensuring threads have exited before destruction.
 //
 void P2PManager::begin_shutdown() {
-    shutdown_requested_.store(true, std::memory_order_release);
+    // Serialize the shutdown transition with handler registration. Once this
+    // returns, no new peer handler can be added to the join set.
+    {
+        std::lock_guard<std::mutex> lock(peer_threads_mutex_);
+        shutdown_requested_.store(true, std::memory_order_release);
+    }
     outbox_cv_.notify_all();
     keepalive_cv_.notify_all();
     connection_manager_cv_.notify_all();
@@ -4921,7 +4926,16 @@ bool P2PManager::connect_to_peer_impl(const std::string& address, uint16_t port,
 
     // Start peer handler thread
     // Ring 3 Phase 4c: Pass shared_ptr (copied, not moved) for TS1 compliance
-    start_peer_handler_thread(peer);
+#ifdef DINERO_TEST_BUILD
+    if (test_before_peer_handler_start_) test_before_peer_handler_start_(socket_fd);
+#endif
+    if (!start_peer_handler_thread(peer)) {
+        close_socket(socket_fd);
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        connecting_peers_.erase(peer_key);
+        release_feeler();
+        return false;
+    }
 
     return true;
 }
@@ -5388,7 +5402,12 @@ void P2PManager::handle_incoming_connection(int client_socket, const std::string
               << " (send timeout: " << SEND_TIMEOUT_SEC << "s)" << std::endl;
 
     // Start peer handler thread
-    start_peer_handler_thread(peer);
+#ifdef DINERO_TEST_BUILD
+    if (test_before_peer_handler_start_) test_before_peer_handler_start_(client_socket);
+#endif
+    if (!start_peer_handler_thread(peer)) {
+        close_socket(client_socket);
+    }
 }
 
 // Task 5: Decrypted-frame extraction loop for QUIC relay virtual peers.
@@ -5450,17 +5469,18 @@ void P2PManager::run_relay_quic_reader_loop(std::shared_ptr<PeerInfo> peer) {
     }
 }
 
-void P2PManager::start_peer_handler_thread(std::shared_ptr<PeerInfo> peer) {
+bool P2PManager::start_peer_handler_thread(std::shared_ptr<PeerInfo> peer) {
     if (!peer || shutdown_requested_.load(std::memory_order_acquire)) {
-        return;
+        return false;
     }
     std::lock_guard<std::mutex> lock(peer_threads_mutex_);
     if (shutdown_requested_.load(std::memory_order_acquire)) {
-        return;
+        return false;
     }
     peer_threads_.emplace_back(
         std::make_unique<std::thread>(&P2PManager::peer_handler_loop, this, std::move(peer))
     );
+    return true;
 }
 
 // Ring 3 Phase 4c: TS1-compliant peer_handler_loop
