@@ -2367,6 +2367,11 @@ void P2PService::ReleaseStoppedDependencies() {
 }
 
 void P2PService::Stop() {
+    // The scheduler, Tor and port-mapping teardown below can take time. Do
+    // not allow an in-flight outbound DNS/connect/SOCKS operation or the next
+    // queued seed to continue throughout that interval. Full socket/peer
+    // cleanup and final persistence still happen in P2PManager::stop().
+    if (p2p_mgr_) p2p_mgr_->begin_shutdown();
     StopSchedulerTickLoop();
 
     if (!p2p_mgr_) {

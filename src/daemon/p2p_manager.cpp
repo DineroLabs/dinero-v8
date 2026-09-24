@@ -4390,6 +4390,13 @@ bool P2PManager::start() {
 // All peer threads MUST be joined before erasing peers from map.
 // This prevents use-after-free by ensuring threads have exited before destruction.
 //
+void P2PManager::begin_shutdown() {
+    shutdown_requested_.store(true, std::memory_order_release);
+    outbox_cv_.notify_all();
+    keepalive_cv_.notify_all();
+    connection_manager_cv_.notify_all();
+}
+
 // THREAD-SAFE: Multiple concurrent calls to stop() are safe (idempotent)
 void P2PManager::stop() {
     // Atomically check and transition to shutdown state
@@ -4401,10 +4408,7 @@ void P2PManager::stop() {
 
     // Signal cancellation before the final save. Disk or resolver latency in
     // persistence must never allow an already-queued outbound dial to start.
-    shutdown_requested_.store(true, std::memory_order_release);
-    outbox_cv_.notify_all();
-    keepalive_cv_.notify_all();
-    connection_manager_cv_.notify_all();
+    begin_shutdown();
 #ifdef DINERO_TEST_BUILD
     if (test_before_final_peers_save_) test_before_final_peers_save_();
 #endif
@@ -4981,7 +4985,6 @@ void P2PManager::connection_manager_loop() {
         // bootstrap surface; addrman is the Bitcoin-style rolling address book
         // fed by addr/getaddr relay.
         // TS2 COMPLIANT: Collect connection targets inside lock, connect outside lock
-        std::vector<std::pair<std::string, uint16_t>> seeds_to_connect;
         std::vector<dinero::p2p::NetworkAddress> addrman_candidates;
         bool durable_outbound_full = false;
         if (address_manager_) {
@@ -4993,7 +4996,6 @@ void P2PManager::connection_manager_loop() {
         }
         std::vector<std::pair<std::string, uint16_t>> anchors;
         std::vector<std::pair<std::string, uint16_t>> seeds;
-        std::unordered_set<std::string> already_dialed_keys;
         bool has_durable_capacity = true;
         {
             std::lock_guard<std::mutex> lock(peers_mutex_);
@@ -5002,186 +5004,230 @@ void P2PManager::connection_manager_loop() {
             size_t active_outbound = 0;
             for (const auto& pair : connected_peers_) {
                 const auto& peer = pair.second;
-                if (peer->is_connected) already_dialed_keys.insert(pair.first);
                 if (peer->is_connected && peer->is_outbound && !peer->is_feeler) {
                     ++active_outbound;
                 }
             }
-            already_dialed_keys.insert(connecting_peers_.begin(), connecting_peers_.end());
             has_durable_capacity = active_outbound < MAX_OUTBOUND_CONNECTIONS;
         }
 
-        // Resolve outside peers_mutex_. DNS may stall for an unbounded period
-        // inside getaddrinfo, so the cancellable waiter owns only a hostname
-        // and a result. Keep one result per name for this pass; use the same
-        // numeric address later for dedup and the actual dial.
+        // Dial already-known numeric/onion peers before entering any DNS
+        // waiter. A slow seed name must not starve a ready community or
+        // bootstrap IP. Resolve names only while a durable slot remains,
+        // outside peers_mutex_, and offer each result immediately.
         std::unordered_map<std::string, std::string> resolved_candidates;
-        const auto resolve_candidate = [&](const std::string& address, uint16_t port) {
-            if (resolved_candidates.count(address) != 0 ||
-                address.empty() ||
-                already_dialed_keys.count(AddressKey(address, port)) != 0 ||
-                shutdown_requested_.load(std::memory_order_acquire) ||
-                !network_active_.load(std::memory_order_acquire)) return;
+        std::vector<std::string> names_to_resolve;
+        std::unordered_set<std::string> queued_names;
+        const auto queue_candidate = [&](const std::string& address) {
+            if (address.empty()) return;
             if (IsOnionAddress(address)) {
                 resolved_candidates.emplace(address, address);
                 return;
             }
-            if (const auto ip = resolve_ipv4_for_dial(address)) {
-                resolved_candidates.emplace(address, *ip);
+            struct in_addr ipv4 {};
+            if (inet_pton(AF_INET, address.c_str(), &ipv4) == 1) {
+                resolved_candidates.emplace(address, address);
+            } else if (queued_names.insert(address).second) {
+                names_to_resolve.push_back(address);
             }
         };
         if (has_durable_capacity) {
             for (const auto& candidate : addrman_candidates) {
-                resolve_candidate(candidate.ip, candidate.port);
+                queue_candidate(candidate.ip);
             }
-            for (const auto& anchor : anchors) resolve_candidate(anchor.first, anchor.second);
-            for (const auto& seed : seeds) resolve_candidate(seed.first, seed.second);
+            for (const auto& anchor : anchors) queue_candidate(anchor.first);
+            for (const auto& seed : seeds) queue_candidate(seed.first);
         }
         if (shutdown_requested_.load(std::memory_order_acquire)) break;
         if (!network_active_.load(std::memory_order_acquire)) continue;
-        {
-            std::lock_guard<std::mutex> lock(peers_mutex_);
-
+        std::unordered_set<std::string> attempted_in_pass;
+        std::unordered_set<std::string> successful_in_pass;
+        std::unordered_set<std::string> successful_bootstrap_in_pass;
+        std::unordered_set<std::string> bootstrap_endpoints;
+        for (const auto& anchor : anchors) {
+            bootstrap_endpoints.insert(AddressKey(anchor.first, anchor.second));
+        }
+        for (const auto& seed : seeds) {
+            bootstrap_endpoints.insert(AddressKey(seed.first, seed.second));
+        }
+        const auto is_bootstrap = [&](const std::string& address, uint16_t port) {
+            return bootstrap_endpoints.count(AddressKey(address, port)) > 0;
+        };
+        const auto dial_available_candidates = [&] {
+            std::vector<std::pair<std::string, uint16_t>> seeds_to_connect;
             size_t active_peer_count = 0;
-            // Deduplicate by resolved endpoint, not IP alone. Multiple valid
-            // nodes can share an address while listening on different ports
-            // (common in regtest and behind port-forwarding gateways).
             std::unordered_set<std::string> connected_endpoints;
-            for (const auto& pair : connected_peers_) {
-                if (pair.second->is_connected && pair.second->is_outbound &&
-                    !pair.second->is_feeler) {
-                    active_peer_count++;
-                    connected_endpoints.insert(
-                        AddressKey(pair.second->address, pair.second->port));
-                }
-            }
+            {
+                std::lock_guard<std::mutex> lock(peers_mutex_);
 
-            // Include candidates selected in this pass. Without this set a
-            // hardcoded IP and a DNS name resolving to that IP can consume two
-            // outbound slots before either socket finishes connecting.
-            std::unordered_set<std::string> scheduled_endpoints = connected_endpoints;
-
-            auto consider_candidate = [&](const std::string& address, uint16_t port) {
-                if (active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS) {
-                    return;
-                }
-                if (address.empty() || port == 0) {
-                    return;
-                }
-                if (IsRetiredBootstrapPeer(address, port)) {
-                    return;
+                // Deduplicate by resolved endpoint, not IP alone. Multiple valid
+                // nodes can share an address while listening on different ports
+                // (common in regtest and behind port-forwarding gateways).
+                for (const auto& pair : connected_peers_) {
+                    if (pair.second->is_connected && pair.second->is_outbound &&
+                        !pair.second->is_feeler) {
+                        active_peer_count++;
+                        connected_endpoints.insert(
+                            AddressKey(pair.second->address, pair.second->port));
+                    }
                 }
 
-                std::string peer_key = address + ":" + std::to_string(port);
-
-                // Skip if already connected (by peer key)
-                auto it = connected_peers_.find(peer_key);
-                if (it != connected_peers_.end() && it->second->is_connected) {
-                    return;
+                // Include candidates selected in this pass. Without this set a
+                // hardcoded IP and a DNS name resolving to that IP can consume two
+                // outbound slots before either socket finishes connecting.
+                std::unordered_set<std::string> scheduled_endpoints = connected_endpoints;
+                scheduled_endpoints.insert(attempted_in_pass.begin(), attempted_in_pass.end());
+                size_t successful_pending = 0;
+                for (const auto& endpoint : successful_in_pass) {
+                    if (connected_endpoints.count(endpoint) == 0) ++successful_pending;
                 }
 
-                // Skip if connection already in progress (prevents duplicate handlers)
-                if (connecting_peers_.count(peer_key) > 0) {
-                    return;
-                }
-
-                const auto resolved = resolved_candidates.find(address);
-                if (resolved == resolved_candidates.end()) return;
-                const std::string& resolved_ip = resolved->second;
-                const std::string resolved_endpoint = AddressKey(resolved_ip, port);
-                if (port == listen_port_) {
-                    if ((!external_ip_.empty() && resolved_ip == external_ip_) ||
-                        dinero::network::IsLocalInterfaceIp(resolved_ip)) {
+                auto consider_candidate = [&](const std::string& address, uint16_t port) {
+                    if (active_peer_count + successful_pending +
+                        seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS) {
                         return;
                     }
-                    for (const auto& advertised : advertised_addresses_) {
-                        if (AddressKey(advertised.first, advertised.second) ==
-                            resolved_endpoint) {
+                    if (address.empty() || port == 0) {
+                        return;
+                    }
+                    if (IsRetiredBootstrapPeer(address, port)) {
+                        return;
+                    }
+
+                    std::string peer_key = address + ":" + std::to_string(port);
+
+                    // Skip if already connected (by peer key)
+                    auto it = connected_peers_.find(peer_key);
+                    if (it != connected_peers_.end() && it->second->is_connected) {
+                        return;
+                    }
+
+                    // Skip if connection already in progress (prevents duplicate handlers)
+                    if (connecting_peers_.count(peer_key) > 0) {
+                        return;
+                    }
+
+                    const auto resolved = resolved_candidates.find(address);
+                    if (resolved == resolved_candidates.end()) return;
+                    const std::string& resolved_ip = resolved->second;
+                    const std::string resolved_endpoint = AddressKey(resolved_ip, port);
+                    if (port == listen_port_) {
+                        if ((!external_ip_.empty() && resolved_ip == external_ip_) ||
+                            dinero::network::IsLocalInterfaceIp(resolved_ip)) {
                             return;
                         }
+                        for (const auto& advertised : advertised_addresses_) {
+                            if (AddressKey(advertised.first, advertised.second) ==
+                                resolved_endpoint) {
+                                return;
+                            }
+                        }
+                    }
+                    if (scheduled_endpoints.count(resolved_endpoint) > 0) {
+                        return;  // Same endpoint already connected or scheduled via an alias
+                    }
+
+                    seeds_to_connect.emplace_back(address, port);
+                    scheduled_endpoints.insert(resolved_endpoint);
+                    attempted_in_pass.insert(resolved_endpoint);
+                };
+
+                // Bootstrap nodes introduce us to the network; they do not own
+                // permanent slots. Split the AddrMan draw by source, prefer
+                // learned peers, and use at most a small bootstrap recovery set
+                // until enough community candidates exist.
+                size_t connected_community = 0;
+                size_t connected_bootstrap = 0;
+                for (const auto& pair : connected_peers_) {
+                    const auto& peer = pair.second;
+                    if (!peer->is_connected || !peer->is_outbound || peer->is_feeler) continue;
+                    if (is_bootstrap(peer->address, peer->port)) {
+                        ++connected_bootstrap;
+                    } else {
+                        ++connected_community;
                     }
                 }
-                if (scheduled_endpoints.count(resolved_endpoint) > 0) {
-                    return;  // Same endpoint already connected or scheduled via an alias
+
+                std::vector<dinero::p2p::NetworkAddress> community_candidates;
+                community_candidates.reserve(addrman_candidates.size());
+                for (const auto& candidate : addrman_candidates) {
+                    if (!is_bootstrap(candidate.ip, candidate.port)) {
+                        community_candidates.push_back(candidate);
+                    }
+                }
+                const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
+                    connected_community, community_candidates.size());
+
+                for (const auto& candidate : community_candidates) {
+                    consider_candidate(candidate.ip, candidate.port);
                 }
 
-                seeds_to_connect.emplace_back(address, port);
-                scheduled_endpoints.insert(resolved_endpoint);
-            };
-
-            // Bootstrap nodes introduce us to the network; they do not own
-            // permanent slots. Split the AddrMan draw by source, prefer
-            // learned peers, and use at most a small bootstrap recovery set
-            // until enough community candidates exist.
-            std::unordered_set<std::string> bootstrap_endpoints;
-            for (const auto& anchor : anchors) {
-                bootstrap_endpoints.insert(AddressKey(anchor.first, anchor.second));
-            }
-            for (const auto& seed : seeds) {
-                bootstrap_endpoints.insert(AddressKey(seed.first, seed.second));
-            }
-            const auto is_bootstrap = [&](const std::string& address, uint16_t port) {
-                return bootstrap_endpoints.count(AddressKey(address, port)) > 0;
-            };
-
-            size_t connected_community = 0;
-            size_t connected_bootstrap = 0;
-            for (const auto& pair : connected_peers_) {
-                const auto& peer = pair.second;
-                if (!peer->is_connected || !peer->is_outbound || peer->is_feeler) continue;
-                if (is_bootstrap(peer->address, peer->port)) {
-                    ++connected_bootstrap;
-                } else {
-                    ++connected_community;
+                size_t bootstrap_pending = 0;
+                for (const auto& endpoint : successful_bootstrap_in_pass) {
+                    if (connected_endpoints.count(endpoint) == 0) ++bootstrap_pending;
+                }
+                size_t bootstrap_budget = autonomy.max_bootstrap_hot >
+                        connected_bootstrap + bootstrap_pending
+                    ? autonomy.max_bootstrap_hot - connected_bootstrap - bootstrap_pending
+                    : 0;
+                const auto consider_bootstrap = [&](const std::string& address, uint16_t port) {
+                    if (bootstrap_budget == 0) return;
+                    const size_t before = seeds_to_connect.size();
+                    consider_candidate(address, port);
+                    if (seeds_to_connect.size() != before) {
+                        --bootstrap_budget;
+                    }
+                };
+                for (const auto& anchor : anchors) {
+                    consider_bootstrap(anchor.first, anchor.second);
+                }
+                for (const auto& seed : seeds) {
+                    consider_bootstrap(seed.first, seed.second);
                 }
             }
 
-            std::vector<dinero::p2p::NetworkAddress> community_candidates;
-            community_candidates.reserve(addrman_candidates.size());
-            for (const auto& candidate : addrman_candidates) {
-                if (!is_bootstrap(candidate.ip, candidate.port)) {
-                    community_candidates.push_back(candidate);
+            // TS2 COMPLIANT: Perform blocking connect operations outside lock.
+            for (const auto& seed : seeds_to_connect) {
+                if (shutdown_requested_.load(std::memory_order_acquire)) break;
+                if (!network_active_.load(std::memory_order_acquire)) break;
+#ifdef DINERO_TEST_BUILD
+                if (test_connection_manager_dial_) {
+                    if (test_connection_manager_dial_(seed.first, seed.second)) {
+                        const auto endpoint =
+                            AddressKey(resolved_candidates.at(seed.first), seed.second);
+                        successful_in_pass.insert(endpoint);
+                        if (is_bootstrap(seed.first, seed.second)) {
+                            successful_bootstrap_in_pass.insert(endpoint);
+                        }
+                    }
+                    continue;
+                }
+#endif
+                const auto resolved = resolved_candidates.find(seed.first);
+                if (resolved == resolved_candidates.end()) continue;
+                if (connect_to_peer_impl(seed.first, seed.second, false, resolved->second)) {
+                    const auto endpoint = AddressKey(resolved->second, seed.second);
+                    successful_in_pass.insert(endpoint);
+                    if (is_bootstrap(seed.first, seed.second)) {
+                        successful_bootstrap_in_pass.insert(endpoint);
+                    }
                 }
             }
-            const auto autonomy = dinero::p2p::EvaluateBootstrapAutonomy(
-                connected_community, community_candidates.size());
-
-            for (const auto& candidate : community_candidates) {
-                consider_candidate(candidate.ip, candidate.port);
-            }
-
-            size_t bootstrap_budget = autonomy.max_bootstrap_hot > connected_bootstrap
-                ? autonomy.max_bootstrap_hot - connected_bootstrap
-                : 0;
-            const auto consider_bootstrap = [&](const std::string& address, uint16_t port) {
-                if (bootstrap_budget == 0) return;
-                const size_t before = seeds_to_connect.size();
-                consider_candidate(address, port);
-                if (seeds_to_connect.size() != before) --bootstrap_budget;
-            };
-            for (const auto& anchor : anchors) {
-                consider_bootstrap(anchor.first, anchor.second);
-            }
-            for (const auto& seed : seeds) {
-                consider_bootstrap(seed.first, seed.second);
+            size_t successful_pending = 0;
+            for (const auto& endpoint : successful_in_pass) {
+                if (connected_endpoints.count(endpoint) == 0) ++successful_pending;
             }
             durable_outbound_full =
-                active_peer_count + seeds_to_connect.size() >= MAX_OUTBOUND_CONNECTIONS;
-        }
-
-        // TS2 COMPLIANT: Perform blocking connect operations outside lock
-        for (const auto& seed : seeds_to_connect) {
-            if (shutdown_requested_.load(std::memory_order_acquire)) break;
-            if (!network_active_.load(std::memory_order_acquire)) break;
-#ifdef DINERO_TEST_BUILD
-            if (test_connection_manager_dial_) {
-                test_connection_manager_dial_(seed.first, seed.second);
-                continue;
+                active_peer_count + successful_pending >= MAX_OUTBOUND_CONNECTIONS;
+        };
+        dial_available_candidates();
+        for (const auto& name : names_to_resolve) {
+            if (durable_outbound_full || shutdown_requested_.load(std::memory_order_acquire) ||
+                !network_active_.load(std::memory_order_acquire)) break;
+            if (const auto ip = resolve_ipv4_for_dial(name)) {
+                resolved_candidates.emplace(name, *ip);
+                dial_available_candidates();
             }
-#endif
-            const auto resolved = resolved_candidates.find(seed.first);
-            if (resolved == resolved_candidates.end()) continue;
-            connect_to_peer_impl(seed.first, seed.second, false, resolved->second);
         }
         if (shutdown_requested_.load(std::memory_order_acquire)) break;
         if (!network_active_.load(std::memory_order_acquire)) continue;

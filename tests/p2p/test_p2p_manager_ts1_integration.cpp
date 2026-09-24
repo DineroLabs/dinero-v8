@@ -31,6 +31,7 @@
 #include <mutex>
 #include <vector>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -40,6 +41,17 @@
 #endif
 
 namespace dinero::p2p::integration::test {
+
+// Keep mock listeners bounded even when the dial path fails before connect.
+// A blocking accept() would hide a regression by hanging the test teardown.
+int AcceptWithin(int listener, std::chrono::seconds timeout) {
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(listener, &readable);
+    timeval wait{static_cast<time_t>(timeout.count()), 0};
+    if (select(listener + 1, &readable, nullptr, nullptr, &wait) != 1) return -1;
+    return accept(listener, nullptr, nullptr);
+}
 
 // ============================================================================
 // TS1 Integration Tests (Production P2PManager)
@@ -218,6 +230,68 @@ TEST(P2PManager_TS1_Integration, SlowSeedResolverCannotHoldStop) {
     EXPECT_EQ(dials.load(), 0) << "resolved seed was dialed after shutdown";
 }
 
+TEST(P2PManager_TS1_Integration, NumericPeerDialsBeforeSlowDnsSeed) {
+    P2PManager manager(0);
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool resolver_entered = false;
+    bool release_resolver = false;
+    bool resolver_finished = false;
+    bool numeric_dialed = false;
+    bool dns_dialed = false;
+    manager.test_set_ipv4_resolver([&](const std::string&) -> std::optional<std::string> {
+        std::unique_lock<std::mutex> lock(mutex);
+        resolver_entered = true;
+        cv.notify_all();
+        cv.wait(lock, [&] { return release_resolver; });
+        resolver_finished = true;
+        cv.notify_all();
+        return "127.0.0.1";
+    });
+    manager.test_set_connection_manager_dial([&](const std::string& host, uint16_t) {
+        if (host == "198.51.100.42") {
+            std::lock_guard<std::mutex> lock(mutex);
+            numeric_dialed = true;
+            cv.notify_all();
+        } else if (host == "slow-seed.example.invalid") {
+            std::lock_guard<std::mutex> lock(mutex);
+            dns_dialed = true;
+            cv.notify_all();
+        }
+        return false;
+    });
+    manager.add_seed_node("198.51.100.42", 20999);
+    manager.add_seed_node("slow-seed.example.invalid", 20999);
+    ASSERT_TRUE(manager.start());
+
+    bool dial_before_resolver_release = false;
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        cv.wait_for(lock, std::chrono::seconds(2), [&] { return resolver_entered; });
+        dial_before_resolver_release = numeric_dialed;
+        release_resolver = true;
+    }
+    cv.notify_all();
+    bool dns_eventually_dialed = false;
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        dns_eventually_dialed = cv.wait_for(lock, std::chrono::seconds(2),
+                                            [&] { return dns_dialed; });
+    }
+    manager.stop();
+    bool worker_finished = false;
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        worker_finished = cv.wait_for(lock, std::chrono::seconds(3),
+                                      [&] { return resolver_finished; });
+    }
+    EXPECT_TRUE(worker_finished);
+    EXPECT_TRUE(dial_before_resolver_release)
+        << "a slow DNS seed stalled a ready numeric outbound peer";
+    EXPECT_TRUE(dns_eventually_dialed)
+        << "a failed numeric attempt consumed the remaining bootstrap slot";
+}
+
 TEST(P2PManager_TS1_Integration, ResolverDeadlineAndProcessCap) {
     P2PManager manager(0);
     const auto drained_deadline = std::chrono::steady_clock::now() +
@@ -343,7 +417,7 @@ TEST(P2PManager_TS1_Integration, SilentSocksProxyCannotHoldStop) {
     bool greeting_seen = false;
     bool release_proxy = false;
     std::thread proxy([&] {
-        int accepted = accept(listener, nullptr, nullptr);
+        int accepted = AcceptWithin(listener, std::chrono::seconds(3));
         if (accepted < 0) return;
         struct timeval timeout{2, 0};
         setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -412,7 +486,7 @@ TEST(P2PManager_TS1_Integration, ResponsiveSocksProxyStillConnects) {
     bool release_proxy = false;
     bool proxy_ok = false;
     std::thread proxy([&] {
-        int accepted = accept(listener, nullptr, nullptr);
+        int accepted = AcceptWithin(listener, std::chrono::seconds(3));
         if (accepted < 0) return;
         struct timeval timeout{3, 0};
         setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));

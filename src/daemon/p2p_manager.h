@@ -393,6 +393,9 @@ public:
     // Lifecycle
     bool start();
     void stop();
+    // Quiesce outbound work before a service performs potentially blocking
+    // teardown. Socket close, peer joins, and final persistence remain in stop().
+    void begin_shutdown();
     bool is_running() const { return running_; }
 
     // Observability: Socket readiness (for deterministic tests)

@@ -28,6 +28,23 @@ add_test(NAME P2PHeaderParserAlignment COMMAND test_p2p_header_parser)
 set_tests_properties(P2PHeaderParserAlignment PROPERTIES
   LABELS "unit;p2p;serialization;utreexo;mandatory" TIMEOUT 10)
 
+# Exercise the production P2PService and P2PManager objects, with teardown
+# deliberately blocked before manager.stop(). A late cancellation signal would
+# allow another outbound connection during that interval.
+if(NOT WIN32)
+  add_executable(test_p2p_service_shutdown_order
+    tests/services/test_p2p_service_shutdown_order.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/daemon_test_stubs.cpp
+    src/daemon/config.cpp)
+  target_link_libraries(test_p2p_service_shutdown_order PRIVATE
+    dinero_core GTest::gtest_main)
+  link_zstd_if_needed(test_p2p_service_shutdown_order)
+  add_test(NAME P2PServiceShutdownOrder COMMAND test_p2p_service_shutdown_order)
+  set_tests_properties(P2PServiceShutdownOrder PROPERTIES
+    LABELS "unit;p2p;shutdown;mandatory" TIMEOUT 30)
+endif()
+
 # Exercise the real daemon lifecycle with weak ownership observations, so
 # cycles fail ordinary builds as well as LeakSanitizer. Reuse the daemon's
 # platform sources and link settings; only its process entry point is replaced.
