@@ -29,6 +29,40 @@ void OpenCase(bool separated, const std::optional<std::string>& marker, bool acc
     CHECK(Inspect(temp.path) == before);
 }
 
+void DefaultNameTenthRefusal() {
+    TempDir temp;
+    Seed(temp.path, true, ready, false, {}, false, false, false);
+    const auto before = Raw(temp.path, {}, false).rows();
+    ChainDB db;
+    CHECK(db.init(temp.path) != Status::Ok);
+    CHECK(db.countShieldedNullifiers().status() == Status::Internal);
+    CHECK(Raw(temp.path, {}, false).rows() == before);
+}
+
+void ComparatorOrderingParity() {
+    const auto* named = dinero::storage::ShieldedStateComparator();
+    const auto* bytewise = rocksdb::BytewiseComparator();
+    CHECK(std::string(named->Name()) != bytewise->Name());
+    std::vector<std::string> keys{"", "Mshielded_frontier",
+                                  std::string("N\0", 2), std::string("\xff", 1)};
+    for (unsigned byte = 0; byte < 256; ++byte)
+        keys.push_back(std::string("N\0", 2) + static_cast<char>(byte));
+    for (const auto& a : keys) {
+        auto named_successor = a, bytewise_successor = a;
+        named->FindShortSuccessor(&named_successor);
+        bytewise->FindShortSuccessor(&bytewise_successor);
+        CHECK(named_successor == bytewise_successor);
+        for (const auto& b : keys) {
+            CHECK(named->Compare(a, b) == bytewise->Compare(a, b));
+            CHECK(named->Equal(a, b) == bytewise->Equal(a, b));
+            auto named_separator = a, bytewise_separator = a;
+            named->FindShortestSeparator(&named_separator, b);
+            bytewise->FindShortestSeparator(&bytewise_separator, b);
+            CHECK(named_separator == bytewise_separator);
+        }
+    }
+}
+
 void RecoveryAndWrites() {
     TempDir temp; Seed(temp.path);
     auto expected = Inspect(temp.path);
@@ -149,6 +183,8 @@ std::vector<Case> Cases() {
     std::vector<Case> cases{
         {"legacy9", [] { OpenCase(false, std::nullopt, true); }},
         {"ready10", [] { OpenCase(true, ready, true); }},
+        {"default_name_tenth_refusal", DefaultNameTenthRefusal},
+        {"comparator_ordering_parity", ComparatorOrderingParity},
         {"permuted10", [] { OpenCase(true, ready, true, true); }},
         {"no_layout_marker", [] { OpenCase(true, std::nullopt, false); }},
         {"missing_cf", [] { OpenCase(false, ready, false); }},

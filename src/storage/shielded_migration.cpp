@@ -1,4 +1,5 @@
 #include "storage/shielded_migration.h"
+#include "storage/shielded_cf_comparator.h"
 #include "storage/forest_restore.h"
 #include "consensus/utreexo_accumulator.h"
 #include "shielded_migration_internal.h"
@@ -151,7 +152,11 @@ struct Store {
         Require(names.size() == expected.size() && std::set<std::string>(names.begin(), names.end()) == expected,
                 "unsupported family layout");
         std::vector<rocksdb::ColumnFamilyDescriptor> descriptors;
-        for (const auto& name : names) descriptors.emplace_back(name, options);
+        for (const auto& name : names) {
+            rocksdb::ColumnFamilyOptions cf_options(options);
+            if (name == kFamily) cf_options = ShieldedStateColumnFamilyOptions(std::move(cf_options));
+            descriptors.emplace_back(name, std::move(cf_options));
+        }
         std::vector<rocksdb::ColumnFamilyHandle*> handles; rocksdb::DB* pointer = nullptr;
         const auto status = read_only
             ? rocksdb::DB::OpenForReadOnly(options, path.string(), descriptors, &handles, &pointer)
@@ -546,7 +551,7 @@ static ShieldedMigrationResult RunMigration(const fs::path& original_path, const
         if (!started) { publish("PREPARING"); hit("after_prepare"); }
         if (!candidate.families.count(kFamily)) {
             identity_check(); rocksdb::ColumnFamilyHandle* handle = nullptr;
-            const auto status = candidate.db->CreateColumnFamily(rocksdb::ColumnFamilyOptions(), kFamily, &handle);
+            const auto status = candidate.db->CreateColumnFamily(ShieldedStateColumnFamilyOptions(), kFamily, &handle);
             if (handle) candidate.families.emplace(kFamily, handle);
             Check(status, "create destination family"); hit("after_create");
         }
