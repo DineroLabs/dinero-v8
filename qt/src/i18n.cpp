@@ -35,6 +35,8 @@ constexpr Candidate kCandidates[] = {
     {"vi", "Ti\xE1\xBA\xBFng Vi\xE1\xBB\x87t"},
     // Wave 3
     {"bs", "Bosanski"},
+    // Wave 4
+    {"sv", "Svenska"},
 };
 
 bool CatalogExists(const QString& code) {
