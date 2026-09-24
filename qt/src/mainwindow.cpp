@@ -1,6 +1,7 @@
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
 #include "mainwindow.h"
+#include "apprestart.h"
 #include "i18n.h"
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -5020,15 +5021,48 @@ void MainWindow::setupUI() {
       languageRestartHint->hide();
       languageLayout->addWidget(languageRestartHint);
 
+      // Offered only once a change is actually pending, so the button never
+      // invites a pointless restart. The restart itself is ordered carefully
+      // in apprestart.h: quit -> graceful daemon shutdown -> relaunch, with
+      // the replacement waiting for this process to release the datadir lock.
+      auto *languageRestartButton = new QPushButton(tr("Restart Dinero Now"));
+      languageRestartButton->hide();
+      auto *languageRestartRow = new QHBoxLayout;
+      languageRestartRow->addWidget(languageRestartButton);
+      languageRestartRow->addStretch(1);
+      languageLayout->addLayout(languageRestartRow);
+
       connect(languageCombo, &QComboBox::currentIndexChanged, this,
-              [languageCombo, languageRestartHint](int index) {
+              [languageCombo, languageRestartHint, languageRestartButton](int index) {
                 if (index < 0) return;
                 dinero::qt::i18n::SetLanguageCode(
                     languageCombo->itemData(index).toString());
                 languageRestartHint->setText(
                     tr("Language saved. Restart Dinero to apply it."));
                 languageRestartHint->show();
+                languageRestartButton->show();
               });
+
+      connect(languageRestartButton, &QPushButton::clicked, this, [this]() {
+        // Restarting stops the embedded node, so confirm rather than yanking
+        // the wallet out from under a sync or a mining run.
+        QMessageBox confirm(this);
+        confirm.setIcon(QMessageBox::Question);
+        confirm.setWindowTitle(tr("Restart Dinero"));
+        confirm.setText(tr("Restart Dinero now to apply the new language?"));
+        confirm.setInformativeText(
+            tr("The wallet and its built-in node shut down cleanly and start "
+               "again. Any sync or mining in progress pauses until Dinero is "
+               "back up."));
+        QPushButton *confirmRestart =
+            confirm.addButton(tr("Restart Now"), QMessageBox::AcceptRole);
+        confirm.addButton(tr("Later"), QMessageBox::RejectRole);
+        confirm.setDefaultButton(confirmRestart);
+        confirm.exec();
+        if (confirm.clickedButton() == confirmRestart) {
+          dinero::qt::apprestart::RequestRestart();
+        }
+      });
 
       layout->addWidget(languageGroup);
     }

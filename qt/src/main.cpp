@@ -48,6 +48,7 @@
 #include "mainwindow.h"
 #include "build_identity.h"
 #include "debugconsole.h"
+#include "apprestart.h"
 #include "i18n.h"
 
 #include "minercontroller.h"
@@ -1215,7 +1216,26 @@ int main(int argc, char** argv) {
   static QLockFile* singleInstanceLock =
       new QLockFile(QDir(datadir).filePath(QStringLiteral(".dinero-qt.lock")));
   singleInstanceLock->setStaleLockTime(0);
-  if (!singleInstanceLock->tryLock(0)) {
+  bool acquiredSingleInstanceLock = singleInstanceLock->tryLock(0);
+  if (!acquiredSingleInstanceLock &&
+      dinero::qt::apprestart::StartedAwaitingRestart(args)) {
+    // This process is the replacement half of an in-place restart. The
+    // outgoing instance is still shutting its daemon down and has not released
+    // the lock yet, so refusing immediately would abort the user's restart with
+    // a misleading "already running" dialog. Wait, bounded.
+    QElapsedTimer restartLockWait;
+    restartLockWait.start();
+    while (!acquiredSingleInstanceLock &&
+           restartLockWait.elapsed() < dinero::qt::apprestart::LockWaitMilliseconds()) {
+      QThread::msleep(200);
+      acquiredSingleInstanceLock = singleInstanceLock->tryLock(0);
+    }
+    if (!acquiredSingleInstanceLock) {
+      qWarning() << "restart: previous instance still holds the lock after"
+                 << dinero::qt::apprestart::LockWaitMilliseconds() << "ms";
+    }
+  }
+  if (!acquiredSingleInstanceLock) {
     qWarning() << "Another dinero-qt instance already holds the lock for"
                << datadir << "- refusing to start a second instance";
     QMessageBox box;
@@ -1419,6 +1439,22 @@ int main(int argc, char** argv) {
   if (daemonProcess) {
     gracefulShutdownDaemon(daemonProcess);
     delete daemonProcess;
+  }
+
+  // In-place restart, requested from Settings when the interface language
+  // changes. This runs AFTER the daemon shutdown above, so the RPC and P2P
+  // ports are already free; the replacement additionally waits for this
+  // process to release the single-instance lock (see apprestart.h). Starting
+  // it any earlier reproduces the port race main.cpp documents above.
+  if (dinero::qt::apprestart::RestartRequested()) {
+    const QString program = QCoreApplication::applicationFilePath();
+    const QStringList relaunchArgs =
+        dinero::qt::apprestart::RelaunchArguments(args);
+    qInfo() << "restart: relaunching" << program << relaunchArgs;
+    if (!QProcess::startDetached(program, relaunchArgs)) {
+      qWarning() << "restart: relaunch failed; Dinero has exited and must be "
+                    "started manually";
+    }
   }
 
   return ret;

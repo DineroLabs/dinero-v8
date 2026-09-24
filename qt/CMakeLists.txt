@@ -536,6 +536,8 @@ set(GUI_SOURCES
   src/main.cpp
   src/i18n.cpp
   src/i18n.h
+  src/apprestart.cpp
+  src/apprestart.h
   src/rpcclient.cpp
   src/rpcclient.h
   src/changeaddressmanager.cpp
@@ -1425,7 +1427,7 @@ if(BUILD_TESTING)
   # Only registered when catalogs are actually built, so an English-only
   # toolchain does not fail on a missing .qm.
   if(TARGET Qt6::lrelease AND DINERO_QT_QM_FILES)
-    add_executable(test_i18n tests/test_i18n.cpp src/i18n.cpp)
+    add_executable(test_i18n tests/test_i18n.cpp src/i18n.cpp src/apprestart.cpp)
     target_link_libraries(test_i18n PRIVATE Qt6::Core)
     add_dependencies(test_i18n dinero_qt_translations)
     add_test(NAME QtI18nChain

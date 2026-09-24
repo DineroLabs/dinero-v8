@@ -11,6 +11,7 @@
 // NDEBUG and would silently pass in a Release build.
 
 #include "../src/i18n.h"
+#include "../src/apprestart.h"
 
 #include <QCoreApplication>
 #include <QFileInfo>
@@ -105,6 +106,45 @@ int main(int argc, char** argv) {
              QCoreApplication::translate("MainWindow",
                                          "this string is not in any catalog"),
              QStringLiteral("this string is not in any catalog"));
+
+  // ---- restart contract -----------------------------------------------
+  // The language picker offers an in-place restart. These properties are what
+  // keep it from colliding with the outgoing instance: the replacement must
+  // carry the wait flag exactly once and must keep the SAME datadir, or it
+  // restarts onto a different wallet or bounces off the single-instance lock.
+  std::printf("\n-- restart contract --\n");
+  {
+    namespace restart = dinero::qt::apprestart;
+    const QStringList original{QStringLiteral("/Applications/dinero-qt"),
+                               QStringLiteral("-datadir=/tmp/wallet a"),
+                               QStringLiteral("--some-flag")};
+    const QStringList relaunch = restart::RelaunchArguments(original);
+
+    Check("program path is dropped from the relaunch arguments",
+          !relaunch.contains(QStringLiteral("/Applications/dinero-qt")));
+    Check("datadir is preserved",
+          relaunch.contains(QStringLiteral("-datadir=/tmp/wallet a")));
+    Check("other arguments are preserved",
+          relaunch.contains(QStringLiteral("--some-flag")));
+    CheckEqual("wait flag present exactly once",
+               QString::number(relaunch.count(restart::AwaitingRestartFlag())),
+               QStringLiteral("1"));
+    Check("replacement is detected as awaiting restart",
+          restart::StartedAwaitingRestart(relaunch));
+
+    // Restarting twice must not accumulate the flag.
+    QStringList second = restart::RelaunchArguments(
+        QStringList{QStringLiteral("/Applications/dinero-qt")} + relaunch);
+    CheckEqual("flag still appears once after a second restart",
+               QString::number(second.count(restart::AwaitingRestartFlag())),
+               QStringLiteral("1"));
+    Check("a normal start is NOT treated as awaiting restart",
+          !restart::StartedAwaitingRestart(
+              QStringList{QStringLiteral("/Applications/dinero-qt"),
+                          QStringLiteral("-datadir=/tmp/x")}));
+    Check("lock wait is long enough for a daemon stop",
+          restart::LockWaitMilliseconds() >= 10000);
+  }
 
   std::printf("\n== %s ==\n", g_failures == 0 ? "ALL CHECKS PASSED"
                                               : "FAILURES PRESENT");

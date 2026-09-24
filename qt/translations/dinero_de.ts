@@ -4,87 +4,117 @@
 <context>
     <name>MainWindow</name>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2325"/>
+        <location filename="../src/mainwindow.cpp" line="2326"/>
         <source>&amp;Network</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2326"/>
+        <location filename="../src/mainwindow.cpp" line="2327"/>
         <source>Enable router port mapping (UPnP/NAT-PMP)</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2331"/>
+        <location filename="../src/mainwindow.cpp" line="2332"/>
         <source>Router port mapping</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2333"/>
+        <location filename="../src/mainwindow.cpp" line="2334"/>
         <source>Router port mapping will be enabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2335"/>
+        <location filename="../src/mainwindow.cpp" line="2336"/>
         <source>Router port mapping will be disabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2339"/>
+        <location filename="../src/mainwindow.cpp" line="2340"/>
         <source>&amp;Help</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2340"/>
+        <location filename="../src/mainwindow.cpp" line="2341"/>
         <source>&amp;About Dinero</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2343"/>
+        <location filename="../src/mainwindow.cpp" line="2344"/>
         <source>&lt;h3&gt;Dinero Wallet&lt;/h3&gt;&lt;p&gt;Version: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Real Money For Free People.&lt;br&gt;Post-quantum, utreexo-native, fair-launched.&lt;/p&gt;&lt;hr&gt;&lt;p style=&apos;color:#888;font-size:90%;&apos;&gt;Built from &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href=&apos;https://dinero-coin.com&apos;&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href=&apos;https://github.com/DineroLabs&apos;&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2356"/>
+        <location filename="../src/mainwindow.cpp" line="2357"/>
         <source>About Dinero</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4989"/>
+        <location filename="../src/mainwindow.cpp" line="4990"/>
         <source>Language</source>
         <translation>Sprache</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5003"/>
+        <location filename="../src/mainwindow.cpp" line="5004"/>
         <source>Interface language:</source>
         <translation>Sprache der Benutzeroberfläche:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5011"/>
+        <location filename="../src/mainwindow.cpp" line="5012"/>
         <source>Untranslated text stays in English. Amounts always use a dot decimal separator, in every language.</source>
         <translation>Nicht übersetzter Text bleibt auf Englisch. Beträge verwenden in jeder Sprache immer einen Punkt als Dezimaltrennzeichen.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5029"/>
+        <location filename="../src/mainwindow.cpp" line="5028"/>
+        <source>Restart Dinero Now</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="5041"/>
         <source>Language saved. Restart Dinero to apply it.</source>
         <translation>Sprache gespeichert. Starten Sie Dinero neu, um sie anzuwenden.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5326"/>
+        <location filename="../src/mainwindow.cpp" line="5051"/>
+        <source>Restart Dinero</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="5052"/>
+        <source>Restart Dinero now to apply the new language?</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="5054"/>
+        <source>The wallet and its built-in node shut down cleanly and start again. Any sync or mining in progress pauses until Dinero is back up.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="5058"/>
+        <source>Restart Now</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="5059"/>
+        <source>Later</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="5360"/>
         <source>Use these controls when testing daemon startup, connection recovery, or local runtime health.</source>
         <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5336"/>
+        <location filename="../src/mainwindow.cpp" line="5370"/>
         <source>Hide Developer Menu</source>
         <translation>Entwicklermenü ausblenden</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5337"/>
+        <location filename="../src/mainwindow.cpp" line="5371"/>
         <source>Show Developer Menu</source>
         <translation>Entwicklermenü anzeigen</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5489"/>
+        <location filename="../src/mainwindow.cpp" line="5523"/>
         <source>Settings</source>
         <translation>Einstellungen</translation>
     </message>
