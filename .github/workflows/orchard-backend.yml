@@ -1,0 +1,66 @@
+name: Orchard backend component
+on:
+  push:
+    branches: [codex/orchard-runtime-integration]
+    paths:
+      - 'rust/orchard_backend/**'
+      - '.github/workflows/orchard-backend.yml'
+      - 'CMakeLists.txt'
+  pull_request:
+    branches: [main, dinero-main]
+    paths:
+      - 'rust/orchard_backend/**'
+      - '.github/workflows/orchard-backend.yml'
+      - 'CMakeLists.txt'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: orchard-backend-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RAYON_NUM_THREADS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Record exact source and compiler
+        run: |
+          git rev-parse HEAD
+          rustc --version
+          cmake --version
+      - name: Format and lint pinned dependency graph
+        run: |
+          cargo fmt --manifest-path rust/orchard_backend/Cargo.toml -- --check
+          cargo clippy --locked --release --manifest-path rust/orchard_backend/Cargo.toml --target-dir build-orchard-backend/cargo --all-targets -- -D warnings
+      - name: Build C++ and Rust together
+        run: |
+          cmake -S rust/orchard_backend -B build-orchard-backend -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+          cmake --build build-orchard-backend --parallel 2
+      - name: Require both executable test lanes
+        run: |
+          ctest --test-dir build-orchard-backend --show-only=json-v1 > orchard-test-inventory.json
+          python3 - <<'PY'
+          import json
+          tests = {x['name'] for x in json.load(open('orchard-test-inventory.json'))['tests']}
+          if tests != {'OrchardBackendCpp', 'OrchardBackendRust'}:
+              raise SystemExit(f'wrong Orchard test inventory: {tests}')
+          PY
+          ctest --test-dir build-orchard-backend --output-on-failure --no-tests=error
+      - name: Retain component evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchard-backend-${{ github.sha }}
+          path: |
+            orchard-test-inventory.json
+            build-orchard-backend/Testing/Temporary/LastTest.log
+            build-orchard-backend/Testing/Temporary/LastTestsFailed.log
+            rust/orchard_backend/Cargo.lock
+          if-no-files-found: error

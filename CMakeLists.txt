@@ -1323,3 +1323,11 @@ include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.txt)
 
 # Optional in-tree component switches live in cmake/.
 include(cmake/OptionalComponents.cmake)
+
+# Staged Orchard backend: independently build/test the real cryptographic
+# library while transaction, wallet and chainstate integration is unfinished.
+# Enabling this builds the component; it does not activate a transaction type.
+option(DINERO_BUILD_ORCHARD_BACKEND "Build the staged Orchard backend" OFF)
+if(DINERO_BUILD_ORCHARD_BACKEND)
+  add_subdirectory(rust/orchard_backend)
+endif()

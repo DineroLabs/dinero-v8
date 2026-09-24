@@ -1,0 +1,15 @@
+[package]
+name = "dinero-orchard-backend"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+orchard = "=0.15.5"
+nonempty = "=0.11.0"
+
+[profile.release]
+panic = "unwind"
