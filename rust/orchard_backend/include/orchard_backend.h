@@ -85,12 +85,12 @@ private:
 
 class ParsedBundle {
 public:
-    static ParsedBundle Decode(std::span<const std::uint8_t> bytes);
+    [[nodiscard]] static ParsedBundle Decode(std::span<const std::uint8_t> bytes);
     const DineroOrchardFacts& UnverifiedFacts() const noexcept { return facts_; }
     // Derives D from the owned context and THIS bundle's effect. No public
     // C++ verification overload accepts a caller-supplied digest or balance.
     Hash SigningDigest(const SigningContext& context) const;
-    VerifiedAuthorization VerifyAuthorization(const SigningContext& context) const;
+    [[nodiscard]] VerifiedAuthorization VerifyAuthorization(const SigningContext& context) const;
 private:
     ParsedBundle(std::shared_ptr<const DineroOrchardHandle> handle,
                  DineroOrchardFacts facts);

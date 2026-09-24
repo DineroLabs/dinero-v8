@@ -7,6 +7,7 @@
 #include <type_traits>
 #include <vector>
 using namespace dinero::orchard;
+static_assert(kMaxMoneyUna == DINERO_HOST_MAX_MONEY);
 static_assert(!std::is_default_constructible_v<ParsedBundle>);
 static_assert(!std::is_default_constructible_v<VerifiedAuthorization>);
 static_assert(!std::is_default_constructible_v<SigningContext>);
@@ -48,6 +49,8 @@ template<class F> static void Invalid(F f) {
 int main(int argc, char** argv) {
     try {
         Require(argc == 2);
+        Require(dinero_orchard_max_money_v1()==kMaxMoneyUna);
+        Require(dinero_orchard_max_actions_v1()==kMaxActionsV1);
         const std::string base = argv[1];
         auto bytes = Load(base + "/candidate-spend.bundle");
         const auto digest_bytes = Load(base + "/candidate-spend.digest");
@@ -73,7 +76,7 @@ int main(int argc, char** argv) {
             Require(parsed.SigningDigest(changed)!=digest);
             bool rejected=false;
             try { (void)parsed.VerifyAuthorization(changed); }
-            catch (const BackendError& e) { rejected=e.Status()==7; }
+            catch (const BackendError& e) { rejected=e.Status()==DINERO_ORCHARD_SPEND_SIGNATURE; }
             Require(rejected); ++mutation_checks;
         };
         { FixtureContext f; f.domain.network_code=1; reject_context(f); }
@@ -97,11 +100,26 @@ int main(int argc, char** argv) {
         Require(changed_bundle.SigningDigest(context)!=digest);
         bool rejected=false;
         try { (void)changed_bundle.VerifyAuthorization(context); }
-        catch (const BackendError& e) { rejected=e.Status()==7; }
+        catch (const BackendError& e) { rejected=e.Status()==DINERO_ORCHARD_SPEND_SIGNATURE; }
         Require(rejected);
         { FixtureContext f; ++f.fee; rejected=false;
           try { (void)parsed.VerifyAuthorization(f.Build()); }
-          catch (const BackendError& e) { rejected=e.Status()==13; } Require(rejected); }
+          catch (const BackendError& e) { rejected=e.Status()==DINERO_ORCHARD_BALANCE_MISMATCH; } Require(rejected); }
+        // Each cryptographic stage must be enforced through the C++ path too.
+        const auto original_bytes=Load(base+"/candidate-spend.bundle");
+        for (const auto& [offset, status] : std::vector<std::pair<std::size_t,int>>{
+                {54+820,DINERO_ORCHARD_SPEND_SIGNATURE},
+                {original_bytes.size()-1,DINERO_ORCHARD_BINDING_SIGNATURE},
+                {54+884*2+4+30,DINERO_ORCHARD_PROOF}}) {
+            auto altered=original_bytes;
+            altered.at(offset)^=1;
+            auto candidate=ParsedBundle::Decode(altered);
+            Require(candidate.SigningDigest(context)==digest);
+            rejected=false;
+            try { (void)candidate.VerifyAuthorization(context); }
+            catch (const BackendError& e) { rejected=e.Status()==status; }
+            Require(rejected);
+        }
         ResolvedInput ten{}; ten.amount_una=10;
         Require(SigningContext::Create({},0,{ten},{},0).RequiredValueBalance()==-10);
         Require(SigningContext::Create({},0,{},{{10,{}}},0).RequiredValueBalance()==10);

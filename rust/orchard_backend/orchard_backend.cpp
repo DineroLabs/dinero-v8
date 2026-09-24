@@ -1,5 +1,6 @@
 #include "orchard_backend.h"
 #include <cstddef>
+#include <exception>
 #include <string>
 #include <utility>
 
@@ -24,7 +25,10 @@ ParsedBundle ParsedBundle::Decode(std::span<const std::uint8_t> bytes) {
     DineroOrchardHandle* raw = nullptr;
     Check(dinero_orchard_decode_v1(bytes.data(), bytes.size(), &raw));
     std::shared_ptr<const DineroOrchardHandle> handle(raw, [](const auto* p) {
-        dinero_orchard_free_v1(const_cast<DineroOrchardHandle*>(p));
+        // shared_ptr destruction cannot report a cleanup failure. Fail
+        // closed rather than silently continuing after a Rust destructor panic.
+        if (dinero_orchard_free_v1(const_cast<DineroOrchardHandle*>(p)) != 0)
+            std::terminate();
     });
     DineroOrchardFacts facts{};
     Check(dinero_orchard_facts_v1(handle.get(), &facts));

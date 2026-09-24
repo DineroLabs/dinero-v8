@@ -57,8 +57,8 @@ The whole-project option `DINERO_BUILD_ORCHARD_BACKEND=ON` adds this target;
 it does not add a daemon validation caller or activate Orchard. Cross compilation
 is deliberately rejected until toolchains are wired and qualified.
 
-Native Mac Release: both CTest entries passed (C++ FFI/ownership checks and
-8 Rust tests). Cargo fmt and clippy with warnings denied passed. Tests cover an
+Native Mac Release (Rust 1.91.1): both CTest entries passed (C++ FFI/ownership checks and
+9 Rust tests). Cargo fmt and clippy with warnings denied passed. Tests cover an
 honest signed bundle, balance and message mismatches, each authorization check,
 codec bounds/truncation/trailing bytes, duplicate nullifiers, FFI output and
 ownership, and ABI layout. The C++ lane also compares its derived digest to an
@@ -67,6 +67,9 @@ rejects a changed encrypted payload using its own newly derived digest, and
 checks signed balance direction and context resource limits. Corruption rejection tests are regression checks,
 not a cryptographic soundness or zero-knowledge proof. Linux has its own required
 `Orchard backend component` workflow; do not substitute daemon-only CI for it.
+This is a qualification requirement, not a claim about GitHub branch-protection
+settings. The workflow covers all PR base branches and pushes to main,
+dinero-main and codex branches when component or host money-limit inputs change.
 
 ## Next integration slices
 
@@ -110,3 +113,25 @@ not a Git tag dependency or a patched local fork. Locked builds select the
 `orchard_v2()` bundle profile and `FixedPostNu6_2` circuit key explicitly;
 `orchard_v3()` is not used. This pin does not by itself qualify the future wallet
 flow, platforms or consensus integration.
+
+### Review hardening
+
+The key version is derived from the selected bundle version. The Rust facts
+export test starts with zeroed output and checks all fields, rather than
+pre-seeding the expected result. Both Rust and C++ lanes reject corrupted proof,
+spend-signature and binding-signature bytes. Both lanes remain mandatory.
+
+Free consumes its handle exactly once and now returns a status, including on a
+caught destructor panic. Raw callers must never retry it. The C++ RAII deleter
+terminates on a cleanup failure rather than continuing with unknown state; no
+such panic is known in the pinned dependency graph. A synthetic destructor test
+checks the shared boundary. Unwind containment does not catch process aborts,
+out-of-memory aborts, invalid foreign pointers or double frees.
+
+The C++ lane compares Rust-exported action and monetary bounds against its own
+constants; its monetary bound is also statically compared with the host constant
+read at CMake configuration. The Rust ABI test checks all named C status values.
+The compiler is pinned to 1.91.1 and workflow actions to commit IDs. The component
+workflow still does not build the entire daemon with the option enabled, and no
+mobile/cross-platform qualification is claimed. Dependency advisory scanning and
+an independently derived upstream commitment vector remain open review items.

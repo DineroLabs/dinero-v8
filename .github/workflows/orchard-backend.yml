@@ -1,17 +1,18 @@
 name: Orchard backend component
 on:
   push:
-    branches: [codex/orchard-runtime-integration]
+    branches: [main, dinero-main, 'codex/**']
     paths:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'
       - 'CMakeLists.txt'
+      - 'include/consensus/tx_validation.h'
   pull_request:
-    branches: [main, dinero-main]
     paths:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'
       - 'CMakeLists.txt'
+      - 'include/consensus/tx_validation.h'
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,9 +27,18 @@ jobs:
       CARGO_BUILD_JOBS: '2'
       RAYON_NUM_THREADS: '2'
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read pinned compiler
+        id: rust-pin
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PYCODE
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable action, explicit compiler below
         with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
           components: rustfmt, clippy
       - name: Install native crypto dependency
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
@@ -39,8 +49,8 @@ jobs:
           cmake --version
       - name: Format and lint pinned dependency graph
         run: |
-          cargo fmt --manifest-path rust/orchard_backend/Cargo.toml -- --check
-          cargo clippy --locked --release --manifest-path rust/orchard_backend/Cargo.toml --target-dir build-orchard-backend/cargo --all-targets -- -D warnings
+          cargo +${{ steps.rust-pin.outputs.version }} fmt --manifest-path rust/orchard_backend/Cargo.toml -- --check
+          cargo +${{ steps.rust-pin.outputs.version }} clippy --locked --release --manifest-path rust/orchard_backend/Cargo.toml --target-dir build-orchard-backend/cargo --all-targets -- -D warnings
       - name: Build C++ and Rust together
         run: |
           cmake -S rust/orchard_backend -B build-orchard-backend -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
@@ -57,7 +67,7 @@ jobs:
           ctest --test-dir build-orchard-backend --output-on-failure --no-tests=error
       - name: Retain component evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: orchard-backend-${{ github.sha }}
           path: |

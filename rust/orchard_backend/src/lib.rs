@@ -6,7 +6,7 @@
 use nonempty::NonEmpty;
 use orchard::{
     bundle::{Authorized, BundleVersion, Flags, TxVersion},
-    circuit::{OrchardCircuitVersion, VerifyingKey},
+    circuit::VerifyingKey,
     note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext},
     primitives::redpallas::{self, Binding, SpendAuth},
     value::ValueCommitment,
@@ -115,8 +115,8 @@ impl ParsedBundle {
             .binding_validating_key()
             .verify(digest, self.bundle.authorization().binding_signature())
             .map_err(|_| Status::BindingSignature)?;
-        let vk = VERIFYING_KEY
-            .get_or_init(|| VerifyingKey::build(OrchardCircuitVersion::FixedPostNu6_2));
+        let vk =
+            VERIFYING_KEY.get_or_init(|| VerifyingKey::build(BUNDLE_VERSION.circuit_version()));
         self.bundle.verify_proof(vk).map_err(|_| Status::Proof)
     }
 }
@@ -234,7 +234,13 @@ fn boundary(f: impl FnOnce() -> Result<(), Status>) -> i32 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(())) => 0,
         Ok(Err(status)) => status as i32,
-        Err(_) => Status::Panic as i32,
+        Err(payload) => {
+            // Dropping an arbitrary panic payload can itself panic. Avoid a
+            // second unwind escaping this C boundary; leaking a panic payload
+            // is preferable to unwinding through foreign code.
+            std::mem::forget(payload);
+            Status::Panic as i32
+        }
     }
 }
 
@@ -310,12 +316,32 @@ pub unsafe extern "C" fn dinero_orchard_verify_v1(
 /// `handle` is null or a live handle returned by decode; it must not be used
 /// concurrently or again after this call. Null is accepted for RAII cleanup.
 #[no_mangle]
-pub unsafe extern "C" fn dinero_orchard_free_v1(handle: *mut ParsedBundle) {
-    if !handle.is_null() {
-        unsafe {
-            drop(Box::from_raw(handle));
+pub unsafe extern "C" fn dinero_orchard_free_v1(handle: *mut ParsedBundle) -> i32 {
+    // The handle is consumed even if a destructor panics. Never retry free.
+    unsafe { free_owned(handle) }
+}
+
+unsafe fn free_owned<T>(handle: *mut T) -> i32 {
+    boundary(|| {
+        if !handle.is_null() {
+            unsafe {
+                drop(Box::from_raw(handle));
+            }
         }
-    }
+        Ok(())
+    })
+}
+
+/// Protocol-v1 monetary bound, exposed for the C++/host consistency gate.
+#[no_mangle]
+pub extern "C" fn dinero_orchard_max_money_v1() -> u64 {
+    MAX_MONEY
+}
+
+/// Protocol-v1 action bound, exposed for the cross-language consistency gate.
+#[no_mangle]
+pub extern "C" fn dinero_orchard_max_actions_v1() -> u32 {
+    MAX_ACTIONS as u32
 }
 
 #[cfg(test)]
@@ -449,9 +475,12 @@ mod tests {
             );
             assert!(!handle.is_null());
             bytes.fill(0);
-            let mut output = (*handle).facts;
+            // Every field has a valid all-zero representation; deliberately do
+            // not seed output from the expected facts.
+            let mut output: BundleFacts = std::mem::zeroed();
             assert_eq!(dinero_orchard_facts_v1(handle, &mut output), 0);
             assert_eq!(output.effect, *EFFECT);
+            assert_eq!(output, (*handle).facts);
             assert_eq!(
                 dinero_orchard_verify_v1(handle, DIGEST.as_ptr(), output.value_balance),
                 0
@@ -468,18 +497,63 @@ mod tests {
                 Status::NullArgument as i32
             );
             assert_eq!(before, output);
-            dinero_orchard_free_v1(handle);
-            dinero_orchard_free_v1(std::ptr::null_mut());
+            assert_eq!(dinero_orchard_free_v1(handle), 0);
+            assert_eq!(dinero_orchard_free_v1(std::ptr::null_mut()), 0);
         }
     }
 
     #[test]
+    fn destructor_panic_is_contained_and_handle_consumed() {
+        struct PanicsOnDrop;
+        impl Drop for PanicsOnDrop {
+            fn drop(&mut self) {
+                panic!("test destructor containment");
+            }
+        }
+        let handle = Box::into_raw(Box::new(PanicsOnDrop));
+        // SAFETY: one owned allocation is consumed once, including on panic.
+        assert_eq!(unsafe { free_owned(handle) }, Status::Panic as i32);
+        assert_eq!(
+            BUNDLE_VERSION.circuit_version(),
+            orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2
+        );
+    }
+
+    #[test]
     fn abi_layout_and_unwind_boundary_are_fixed() {
+        let header = include_str!("../include/orchard_backend_ffi.h");
+        for (name, status) in [
+            ("NULL_ARGUMENT", Status::NullArgument),
+            ("LIMIT", Status::Limit),
+            ("TRUNCATED", Status::Truncated),
+            ("FORMAT", Status::Format),
+            ("ENCODING", Status::Encoding),
+            ("PROOF", Status::Proof),
+            ("SPEND_SIGNATURE", Status::SpendSignature),
+            ("BINDING_SIGNATURE", Status::BindingSignature),
+            ("PANIC", Status::Panic),
+            ("TRAILING_BYTES", Status::TrailingBytes),
+            ("MONEY", Status::Money),
+            ("DUPLICATE_NULLIFIER", Status::DuplicateNullifier),
+            ("BALANCE_MISMATCH", Status::BalanceMismatch),
+        ] {
+            assert!(header.contains(&format!("DINERO_ORCHARD_{} = {},", name, status as i32)));
+        }
         assert_eq!(std::mem::size_of::<BundleFacts>(), 624);
         assert_eq!(std::mem::offset_of!(BundleFacts, value_balance), 96);
         assert_eq!(std::mem::offset_of!(BundleFacts, nullifiers), 112);
         assert_eq!(
             boundary(|| panic!("test panic containment")),
+            Status::Panic as i32
+        );
+        struct PanickingPayload;
+        impl Drop for PanickingPayload {
+            fn drop(&mut self) {
+                panic!("payload drop must not cross boundary");
+            }
+        }
+        assert_eq!(
+            boundary(|| std::panic::panic_any(PanickingPayload)),
             Status::Panic as i32
         );
     }
