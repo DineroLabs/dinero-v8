@@ -65,6 +65,9 @@ if(APPLE)
 elseif(UNIX)
   target_link_libraries(dinero_orchard_backend PUBLIC m)
 endif()
+find_package(SQLite3 REQUIRED)
+add_library(dinero_orchard_wallet_storage STATIC orchard_wallet_storage.cpp)
+target_link_libraries(dinero_orchard_wallet_storage PUBLIC dinero_orchard_backend SQLite::SQLite3)
 option(DINERO_ORCHARD_BUILD_TESTS "Build Orchard component qualification tests" ON)
 
 # Typed host reader: Orchard never becomes an ordinary Transaction. The root
@@ -132,6 +135,9 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_executable(test_orchard_wallet_spend tests/wallet_spend.cpp)
   target_link_libraries(test_orchard_wallet_spend PRIVATE dinero_orchard_backend)
   add_test(NAME OrchardWalletSpend COMMAND test_orchard_wallet_spend)
+  add_executable(test_orchard_wallet_storage tests/wallet_storage.cpp)
+  target_link_libraries(test_orchard_wallet_storage PRIVATE dinero_orchard_wallet_storage)
+  add_test(NAME OrchardWalletStorage COMMAND test_orchard_wallet_storage)
   add_executable(test_orchard_transaction_reader "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_transaction_reader.cpp")
   target_link_libraries(test_orchard_transaction_reader PRIVATE dinero_transaction_reader)
   if(TARGET dinero_consensus_core)
@@ -185,6 +191,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardWalletKeys OrchardWalletShield OrchardWalletSpend OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardWalletKeys OrchardWalletShield OrchardWalletSpend OrchardWalletStorage OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()
