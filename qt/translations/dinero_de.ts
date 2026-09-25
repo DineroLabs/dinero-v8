@@ -2351,6 +2351,26 @@ Eine Validierung erfordert dessen authentifizierte Blockchain-RPC.</translation>
         <translation>🔐 HD-Wallet</translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2877"/>
+        <source>Single wallet mode: use one default wallet. Restore is emergency-only.</source>
+        <translation>Einzel-Wallet-Modus: Es wird ein Standard-Wallet verwendet. Die Wiederherstellung ist nur für Notfälle.</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2878"/>
+        <source>Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support</source>
+        <translation>Erstellen Sie ein sicheres BIP-39-HD-Wallet mit Taproot und quantensicheren Adressen</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2881"/>
+        <source>🆕 Create Wallet / Emergency Restore</source>
+        <translation>🆕 Wallet erstellen / Notfallwiederherstellung</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2882"/>
+        <source>🆕 Create/Restore Wallet</source>
+        <translation>🆕 Wallet erstellen/wiederherstellen</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Wallet erneut scannen</translation>

@@ -2874,12 +2874,12 @@ void MainWindow::setupUI() {
     walletIntroLayout->setSpacing(8);
     auto *lblWalletInfo = new QLabel(
       singleWalletMode_
-        ? "Single wallet mode: use one default wallet. Restore is emergency-only."
-        : "Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support");
+        ? tr("Single wallet mode: use one default wallet. Restore is emergency-only.")
+        : tr("Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support"));
     lblWalletInfo->setWordWrap(true);
     auto *btnCreateWallet = new QPushButton(singleWalletMode_
-      ? "🆕 Create Wallet / Emergency Restore"
-      : "🆕 Create/Restore Wallet");
+      ? tr("🆕 Create Wallet / Emergency Restore")
+      : tr("🆕 Create/Restore Wallet"));
     btnCreateWallet->setStyleSheet(chromeButtonStyle());
     connect(btnCreateWallet, &QPushButton::clicked, this, &MainWindow::onCreateWallet);
     btnRescanWallet_ = new QPushButton(tr("🔄 Rescan Wallet"));

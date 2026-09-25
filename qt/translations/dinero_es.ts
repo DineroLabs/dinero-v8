@@ -2351,6 +2351,26 @@ La validación requiere el RPC autenticado de ese nodo.</translation>
         <translation>🔐 Billetera HD</translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2877"/>
+        <source>Single wallet mode: use one default wallet. Restore is emergency-only.</source>
+        <translation>Modo de monedero único: usa un solo monedero predeterminado. La restauración es solo para emergencias.</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2878"/>
+        <source>Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support</source>
+        <translation>Cree un monedero HD BIP-39 seguro con compatibilidad con Taproot y direcciones resistentes a la computación cuántica</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2881"/>
+        <source>🆕 Create Wallet / Emergency Restore</source>
+        <translation>🆕 Crear monedero / restauración de emergencia</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2882"/>
+        <source>🆕 Create/Restore Wallet</source>
+        <translation>🆕 Crear/restaurar monedero</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Reescanear la billetera</translation>

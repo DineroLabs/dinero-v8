@@ -2351,6 +2351,26 @@ Validation requires that node&apos;s authenticated blockchain RPC.</source>
         <translation>🔐 HD-кошелёк</translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2877"/>
+        <source>Single wallet mode: use one default wallet. Restore is emergency-only.</source>
+        <translation>Режим одного кошелька: используется один кошелёк по умолчанию. Восстановление — только для аварийных случаев.</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2878"/>
+        <source>Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support</source>
+        <translation>Создайте надёжный HD-кошелёк BIP-39 с поддержкой Taproot и квантово-устойчивых адресов</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2881"/>
+        <source>🆕 Create Wallet / Emergency Restore</source>
+        <translation>🆕 Создать кошелёк / аварийное восстановление</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2882"/>
+        <source>🆕 Create/Restore Wallet</source>
+        <translation>🆕 Создать/восстановить кошелёк</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Пересканировать кошелёк</translation>

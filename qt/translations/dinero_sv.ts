@@ -2351,6 +2351,26 @@ Validering kräver den nodens autentiserade blockkedje-RPC.</translation>
         <translation>🔐 HD-plånbok</translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2877"/>
+        <source>Single wallet mode: use one default wallet. Restore is emergency-only.</source>
+        <translation>Läge med en enda plånbok: en standardplånbok används. Återställning är endast för nödfall.</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2878"/>
+        <source>Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support</source>
+        <translation>Skapa en säker BIP-39 HD-plånbok med stöd för Taproot och kvantsäkra adresser</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2881"/>
+        <source>🆕 Create Wallet / Emergency Restore</source>
+        <translation>🆕 Skapa plånbok / nödåterställning</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2882"/>
+        <source>🆕 Create/Restore Wallet</source>
+        <translation>🆕 Skapa/återställ plånbok</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Skanna om plånboken</translation>

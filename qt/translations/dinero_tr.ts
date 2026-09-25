@@ -2351,6 +2351,26 @@ Doğrulama, o düğümün kimliği doğrulanmış blok zinciri RPC&apos;sini ger
         <translation>🔐 HD cüzdan</translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2877"/>
+        <source>Single wallet mode: use one default wallet. Restore is emergency-only.</source>
+        <translation>Tek cüzdan kipi: tek bir öntanımlı cüzdan kullanılır. Geri yükleme yalnızca acil durumlar içindir.</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2878"/>
+        <source>Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support</source>
+        <translation>Taproot ve kuantuma dayanıklı adres desteğiyle güvenli bir BIP-39 HD cüzdanı oluşturun</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2881"/>
+        <source>🆕 Create Wallet / Emergency Restore</source>
+        <translation>🆕 Cüzdan oluştur / acil geri yükleme</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2882"/>
+        <source>🆕 Create/Restore Wallet</source>
+        <translation>🆕 Cüzdan oluştur/geri yükle</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Cüzdanı yeniden tara</translation>

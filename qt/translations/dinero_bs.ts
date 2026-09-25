@@ -1965,12 +1965,12 @@ Kliknite „Uvezi Taproot ključ“ nakon unosa ispravnog descriptora.</translat
         <source>This can take up to ~3 minutes on first start.
 Please wait — do NOT close or restart. The wallet opens automatically once the node is ready.</source>
         <translation>Ovo može potrajati do oko 3 minute pri prvom pokretanju.
-Sačekajte i NEMOJTE zatvarati ni ponovo pokretati. Novčanik se otvara sam kada čvor bude spreman.</translation>
+Sačekajte i NEMOJTE zatvarati ni ponovo pokretati. Novčanik se otvara sam kada node bude spreman.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2057"/>
         <source>Almost there — the node is taking a little longer than usual.</source>
-        <translation>Skoro smo tu – čvoru treba malo više vremena nego obično.</translation>
+        <translation>Skoro smo tu – node-u treba malo više vremena nego obično.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2058"/>
@@ -2201,7 +2201,7 @@ Sačekajte i NEMOJTE zatvarati ni ponovo pokretati. Novčanik se otvara sam kada
     <message>
         <location filename="../src/mainwindow.cpp" line="2615"/>
         <source>Newest blocks from your node. Double-click one to open it in the explorer.</source>
-        <translation>Najnoviji blokovi s vašeg čvora. Dvaput kliknite na blok da ga otvorite u pregledaču.</translation>
+        <translation>Najnoviji blokovi s vašeg node-a. Dvaput kliknite na blok da ga otvorite u pregledaču.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2621"/>
@@ -2216,7 +2216,7 @@ Sačekajte i NEMOJTE zatvarati ni ponovo pokretati. Novčanik se otvara sam kada
     <message>
         <location filename="../src/mainwindow.cpp" line="2644"/>
         <source>Node operation</source>
-        <translation>Rad čvora</translation>
+        <translation>Rad node-a</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2705"/>
@@ -2289,22 +2289,22 @@ Sačekajte i NEMOJTE zatvarati ni ponovo pokretati. Novčanik se otvara sam kada
     <message>
         <location filename="../src/mainwindow.cpp" line="2767"/>
         <source>Waiting for local node</source>
-        <translation>Čekam lokalni čvor</translation>
+        <translation>Čekam lokalni node</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2782"/>
         <source>Transactions currently held by this local node</source>
-        <translation>Transakcije koje ovaj lokalni čvor trenutno drži</translation>
+        <translation>Transakcije koje ovaj lokalni node trenutno drži</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2787"/>
         <source>🌐 Peers</source>
-        <translation>🌐 Čvorovi</translation>
+        <translation>🌐 Peer-ovi</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2789"/>
         <source>0 peers</source>
-        <translation>0 čvorova</translation>
+        <translation>0 peer-ova</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2791"/>
@@ -2321,9 +2321,9 @@ Sačekajte i NEMOJTE zatvarati ni ponovo pokretati. Novčanik se otvara sam kada
         <source>Observed through this local node&apos;s P2P connection.
 This is not the remote node&apos;s active validated tip.
 Validation requires that node&apos;s authenticated blockchain RPC.</source>
-        <translation>Posmatrano kroz P2P vezu ovog lokalnog čvora.
-Ovo nije aktivni potvrđeni vrh udaljenog čvora.
-Za provjeru je potreban autentifikovani RPC tog čvora.</translation>
+        <translation>Posmatrano kroz P2P vezu ovog lokalnog node-a.
+Ovo nije aktivni potvrđeni vrh udaljenog node-a.
+Za provjeru je potreban autentifikovani RPC tog node-a.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2833"/>
@@ -2351,6 +2351,26 @@ Za provjeru je potreban autentifikovani RPC tog čvora.</translation>
         <translation>🔐 HD novčanik</translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2877"/>
+        <source>Single wallet mode: use one default wallet. Restore is emergency-only.</source>
+        <translation>Način rada s jednim novčanikom: koristi se jedan zadani novčanik. Vraćanje je samo za hitne slučajeve.</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2878"/>
+        <source>Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support</source>
+        <translation>Kreirajte siguran BIP-39 HD novčanik s podrškom za Taproot i kvantno sigurne adrese</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2881"/>
+        <source>🆕 Create Wallet / Emergency Restore</source>
+        <translation>🆕 Kreiraj novčanik / hitno vraćanje</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2882"/>
+        <source>🆕 Create/Restore Wallet</source>
+        <translation>🆕 Kreiraj/vrati novčanik</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Ponovo skeniraj novčanik</translation>
@@ -2373,7 +2393,7 @@ Za provjeru je potreban autentifikovani RPC tog čvora.</translation>
     <message>
         <location filename="../src/mainwindow.cpp" line="2913"/>
         <source>&lt;b&gt;One seed, two address lanes.&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;BIP39 seed phrase&lt;/b&gt; restores the same wallet across Dinero Qt and mobile. &lt;b&gt;BIP86 Taproot&lt;/b&gt; addresses (&lt;code&gt;din1p...&lt;/code&gt;) are the mobile-friendly payment lane. &lt;b&gt;Purpose 88 P2MR&lt;/b&gt; addresses (&lt;code&gt;din1r...&lt;/code&gt;) are the quantum-safe lane using ML-DSA-65 signatures.&lt;br&gt;&lt;br&gt;✅ Desktop (Qt Wallet) - full node, mining, Taproot, P2MR quantum-safe receive/spend&lt;br&gt;✅ Mobile (iOS Wallet) - seed-compatible Taproot payments; P2MR keys derive from the same seed as mobile support expands</source>
-        <translation>&lt;b&gt;Jedan seed, dvije trake adresa.&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;BIP39 seed fraza&lt;/b&gt; vraća isti novčanik i u Dinero Qt-u i na mobitelu. &lt;b&gt;BIP86 Taproot&lt;/b&gt; adrese (&lt;code&gt;din1p…&lt;/code&gt;) su traka za plaćanja pogodna za mobitel. &lt;b&gt;P2MR adrese s namjenom 88&lt;/b&gt; (&lt;code&gt;din1r…&lt;/code&gt;) su kvantno sigurna traka koja koristi ML-DSA-65 potpise.&lt;br&gt;&lt;br&gt;✅ Računar (Qt novčanik) – puni čvor, Rudari, Taproot, kvantno sigurno P2MR primanje i trošenje&lt;br&gt;✅ Mobitel (iOS novčanik) – Taproot plaćanja kompatibilna sa seedom; P2MR ključevi se izvode iz istog seeda kako se podrška za mobitel bude širila</translation>
+        <translation>&lt;b&gt;Jedan seed, dvije trake adresa.&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;BIP39 seed fraza&lt;/b&gt; vraća isti novčanik i u Dinero Qt-u i na mobitelu. &lt;b&gt;BIP86 Taproot&lt;/b&gt; adrese (&lt;code&gt;din1p…&lt;/code&gt;) su traka za plaćanja pogodna za mobitel. &lt;b&gt;P2MR adrese s namjenom 88&lt;/b&gt; (&lt;code&gt;din1r…&lt;/code&gt;) su kvantno sigurna traka koja koristi ML-DSA-65 potpise.&lt;br&gt;&lt;br&gt;✅ Računar (Qt novčanik) – puni node, Rudari, Taproot, kvantno sigurno P2MR primanje i trošenje&lt;br&gt;✅ Mobitel (iOS novčanik) – Taproot plaćanja kompatibilna sa seedom; P2MR ključevi se izvode iz istog seeda kako se podrška za mobitel bude širila</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2924"/>
@@ -2904,7 +2924,7 @@ Iznosi i primaoci su javni. Za plaćanja jednom ili dvoje unaprijed određenih z
 Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).
 Pool (SV2) = Noise-encrypted pool mining. Choose Shared rewards
 for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
-        <translation>Samostalno = kopajte direktno svojim čvorom.
+        <translation>Samostalno = kopajte direktno svojim node-om.
 Pool (Stratum V1) = šaljite shareove V1 poolu (staro, nešifrovano).
 Pool (SV2) = Rudari u poolu sa Noise šifrovanjem. Odaberite dijeljene nagrade
 za PPLNS isplate ili samostalne nagrade za coinbase u vlasništvu rudara.</translation>
@@ -3137,7 +3157,7 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="4739"/>
         <source>Live daemon diagnostics for Utreexo proof caching and proof serving. This is not the asset bridge; it shows whether this node can serve compact proof data to stateless/mobile peers.</source>
-        <translation>Dijagnostika daemona uživo za keširanje i posluživanje Utreexo dokaza. Ovo nije most za sredstva; pokazuje može li ovaj čvor posluživati sažete podatke dokaza čvorovima bez stanja i mobilnim čvorovima.</translation>
+        <translation>Dijagnostika daemona uživo za keširanje i posluživanje Utreexo dokaza. Ovo nije most za sredstva; pokazuje može li ovaj node posluživati sažete podatke dokaza nodeovima bez stanja i mobilnim nodeovima.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4747"/>
@@ -3232,12 +3252,12 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="4838"/>
         <source>🌐 Connected Peers</source>
-        <translation>🌐 Povezani čvorovi</translation>
+        <translation>🌐 Povezani peer-ovi</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4844"/>
         <source>Refresh peer list from daemon</source>
-        <translation>Osvježi listu čvorova iz daemona</translation>
+        <translation>Osvježi listu peer-ova iz daemona</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4852"/>
@@ -3277,7 +3297,7 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="4898"/>
         <source>Disconnect from selected peer</source>
-        <translation>Prekini vezu s odabranim čvorom</translation>
+        <translation>Prekini vezu s odabranim peer-om</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4902"/>
@@ -3287,7 +3307,7 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="4903"/>
         <source>Ban selected peer (blocks reconnection)</source>
-        <translation>Zabrani odabrani čvor (sprječava ponovno povezivanje)</translation>
+        <translation>Zabrani odabrani peer (sprječava ponovno povezivanje)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4908"/>
@@ -3297,7 +3317,7 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="4909"/>
         <source>Disconnect and reconnect all peers (refreshes peer heights)</source>
-        <translation>Prekini i ponovo poveži sve čvorove (osvježava njihove visine)</translation>
+        <translation>Prekini i ponovo poveži sve peer-ove (osvježava njihove visine)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4914"/>
@@ -3307,12 +3327,12 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="4915"/>
         <source>Copy P2P status, port mapping, advertised addresses, and peers</source>
-        <translation>Kopiraj P2P status, mapiranje portova, objavljene adrese i čvorove</translation>
+        <translation>Kopiraj P2P status, mapiranje portova, objavljene adrese i peer-ove</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4923"/>
         <source>Peers</source>
-        <translation>Čvorovi</translation>
+        <translation>Peer-ovi</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4934"/>
@@ -3392,7 +3412,7 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="5063"/>
         <source>The wallet and its built-in node shut down cleanly and start again. Any sync or mining in progress pauses until Dinero is back up.</source>
-        <translation>Novčanik i njegov ugrađeni čvor se uredno gase i ponovo pokreću. Sinhronizacija ili Rudari u toku se pauziraju dok se Dinero ne vrati.</translation>
+        <translation>Novčanik i njegov ugrađeni node se uredno gase i ponovo pokreću. Sinhronizacija ili Rudari u toku se pauziraju dok se Dinero ne vrati.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5067"/>
@@ -3412,7 +3432,7 @@ Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ak
     <message>
         <location filename="../src/mainwindow.cpp" line="5149"/>
         <source>📁 Node Runtime</source>
-        <translation>📁 Rad čvora</translation>
+        <translation>📁 Rad node-a</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5174"/>
@@ -3608,7 +3628,7 @@ This is optional because the node can resync from the network.
 Continue?</source>
         <translation>Podaci lanca mogu biti veliki i kopiranje može trajati nekoliko minuta.
 
-Ovo je opcionalno jer se čvor može ponovo sinhronizovati s mreže.
+Ovo je opcionalno jer se node može ponovo sinhronizovati s mreže.
 
 Nastaviti?</translation>
     </message>
@@ -3857,7 +3877,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="7188"/>
         <source>Local node returned an invalid response</source>
-        <translation>Lokalni čvor je vratio neispravan odgovor</translation>
+        <translation>Lokalni node je vratio neispravan odgovor</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7321"/>
@@ -3872,7 +3892,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="7364"/>
         <source>Dinero Core currently reports peer activity timestamps, not per-peer ping latency.</source>
-        <translation>Dinero Core trenutno prijavljuje vremenske oznake aktivnosti čvorova, a ne ping kašnjenje po čvoru.</translation>
+        <translation>Dinero Core trenutno prijavljuje vremenske oznake aktivnosti peer-ova, a ne ping kašnjenje po peer-u.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7454"/>
@@ -3978,7 +3998,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="8088"/>
         <source>Local node did not answer</source>
-        <translation>Lokalni čvor nije odgovorio</translation>
+        <translation>Lokalni node nije odgovorio</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8178"/>
@@ -4544,7 +4564,7 @@ Može potrajati i zaključati neke radnje novčanika dok se ne završi.</transla
         <source>This send failed because selected inputs are not present in the node&apos;s current UTXO set.
 
 Run wallet rescan now?</source>
-        <translation>Slanje nije uspjelo jer odabrani ulazi nisu u trenutnom UTXO skupu čvora.
+        <translation>Slanje nije uspjelo jer odabrani ulazi nisu u trenutnom UTXO skupu node-a.
 
 Pokrenuti ponovno skeniranje novčanika sada?</translation>
     </message>
@@ -5226,7 +5246,7 @@ Ostavite primaoca praznim da zaštitite u vlastitu privatnu traku.</translation>
     <message>
         <location filename="../src/mainwindow.cpp" line="15130"/>
         <source>Timelock funding requires an upgraded node with contextual lock enforcement active.</source>
-        <translation>Finansiranje s timelockom traži nadograđen čvor s aktivnom primjenom kontekstualnih zaključavanja.</translation>
+        <translation>Finansiranje s timelockom traži nadograđen node s aktivnom primjenom kontekstualnih zaključavanja.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15138"/>
@@ -5291,52 +5311,52 @@ Would you like to unlock your wallet now?</source>
         <location filename="../src/mainwindow.cpp" line="15454"/>
         <location filename="../src/mainwindow.cpp" line="15486"/>
         <source>No Peer Selected</source>
-        <translation>Nijedan čvor nije odabran</translation>
+        <translation>Nijedan peer nije odabran</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15454"/>
         <source>Please select a peer to disconnect.</source>
-        <translation>Odaberite čvor za prekid veze.</translation>
+        <translation>Odaberite peer za prekid veze.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15463"/>
         <source>Disconnect Peer</source>
-        <translation>Prekini vezu s čvorom</translation>
+        <translation>Prekini vezu s peer-om</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15486"/>
         <source>Please select a peer to manage.</source>
-        <translation>Odaberite čvor za upravljanje.</translation>
+        <translation>Odaberite peer za upravljanje.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15496"/>
         <source>Peer Address Missing</source>
-        <translation>Nedostaje adresa čvora</translation>
+        <translation>Nedostaje adresa peer-a</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15496"/>
         <source>The selected peer does not have a usable address.</source>
-        <translation>Odabrani čvor nema upotrebljivu adresu.</translation>
+        <translation>Odabrani peer nema upotrebljivu adresu.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15521"/>
         <source>Block Bootstrap Peer</source>
-        <translation>Blokiraj početni čvor</translation>
+        <translation>Blokiraj početni peer</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15531"/>
         <source>Block Peer</source>
-        <translation>Blokiraj čvor</translation>
+        <translation>Blokiraj peer</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15571"/>
         <source>No Peers</source>
-        <translation>Nema čvorova</translation>
+        <translation>Nema peer-ova</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15571"/>
         <source>No peers connected to reconnect.</source>
-        <translation>Nema povezanih čvorova za ponovno povezivanje.</translation>
+        <translation>Nema povezanih peer-ova za ponovno povezivanje.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15603"/>
@@ -5451,7 +5471,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/mainwindow.cpp" line="16123"/>
         <source>No peers</source>
-        <translation>Nema čvorova</translation>
+        <translation>Nema peer-ova</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16257"/>
@@ -5978,7 +5998,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="135"/>
         <source>&lt;p style=&apos;margin-top:0;&apos;&gt;A Dinero pool pays every contributing miner &lt;b&gt;directly in the block&apos;s coinbase&lt;/b&gt;, split by share weight, the moment a block is found.&lt;/p&gt;&lt;ul style=&apos;margin-left:-18px;&apos;&gt;&lt;li&gt;&lt;b&gt;You never hold your miners&apos; coins.&lt;/b&gt; No balances, no payout run, nothing to lose or be blamed for losing.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Your fee is provable.&lt;/b&gt; It is an output in the block — any miner can verify what you took, without trusting you.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You stop depending on someone else&apos;s server&lt;/b&gt;, and you choose which transactions go in your blocks.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You can pool with people who never have to trust you&lt;/b&gt; — sharing variance without anyone holding anyone&apos;s funds.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Hosting a pool means running a full node too: the pool gets block templates from your node and submits found blocks through it. That is the point — every pool operator is a node operator.&lt;/p&gt;&lt;p style=&apos;color:#9fb3c8;&apos;&gt;Setup is one command on a Linux server. See &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; in the dinero-sv2 repository.&lt;/p&gt;</source>
-        <translation>&lt;p style=&apos;margin-top:0;&apos;&gt;Dinero pool plaća svakom rudaru koji doprinosi &lt;b&gt;direktno u coinbaseu bloka&lt;/b&gt;, podijeljeno po težini shareova, u trenutku kada se blok pronađe.&lt;/p&gt;&lt;ul style=&apos;margin-left:-18px;&apos;&gt;&lt;li&gt;&lt;b&gt;Nikada ne držite novčiće svojih rudara.&lt;/b&gt; Nema stanja, nema isplatnih ciklusa, nema šta da se izgubi ni za šta da vas okrive.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Vaša naknada je dokaziva.&lt;/b&gt; To je izlaz u bloku — svaki rudar može provjeriti koliko ste uzeli, bez povjerenja u vas.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Prestajete ovisiti o tuđem serveru&lt;/b&gt; i sami birate koje transakcije idu u vaše blokove.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Možete se udružiti s ljudima koji vam nikada ne moraju vjerovati&lt;/b&gt; — dijelite varijansu, a niko ne drži ničija sredstva.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Vođenje poola znači i vođenje punog čvora: pool dobija šablone blokova od vašeg čvora i preko njega šalje pronađene blokove. U tome i jeste poenta — svaki operater poola je i operater čvora.&lt;/p&gt;&lt;p style=&apos;color:#9fb3c8;&apos;&gt;Postavljanje je jedna komanda na Linux serveru. Vidi &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; u dinero-sv2 repozitoriju.&lt;/p&gt;</translation>
+        <translation>&lt;p style=&apos;margin-top:0;&apos;&gt;Dinero pool plaća svakom rudaru koji doprinosi &lt;b&gt;direktno u coinbaseu bloka&lt;/b&gt;, podijeljeno po težini shareova, u trenutku kada se blok pronađe.&lt;/p&gt;&lt;ul style=&apos;margin-left:-18px;&apos;&gt;&lt;li&gt;&lt;b&gt;Nikada ne držite novčiće svojih rudara.&lt;/b&gt; Nema stanja, nema isplatnih ciklusa, nema šta da se izgubi ni za šta da vas okrive.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Vaša naknada je dokaziva.&lt;/b&gt; To je izlaz u bloku — svaki rudar može provjeriti koliko ste uzeli, bez povjerenja u vas.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Prestajete ovisiti o tuđem serveru&lt;/b&gt; i sami birate koje transakcije idu u vaše blokove.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Možete se udružiti s ljudima koji vam nikada ne moraju vjerovati&lt;/b&gt; — dijelite varijansu, a niko ne drži ničija sredstva.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Vođenje poola znači i vođenje punog node-a: pool dobija šablone blokova od vašeg node-a i preko njega šalje pronađene blokove. U tome i jeste poenta — svaki operater poola je i operater node-a.&lt;/p&gt;&lt;p style=&apos;color:#9fb3c8;&apos;&gt;Postavljanje je jedna komanda na Linux serveru. Vidi &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; u dinero-sv2 repozitoriju.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="161"/>
@@ -6171,7 +6191,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="377"/>
         <source>Read from your node, not from the pool — so it is still right when the pool is down, and it cannot be overstated by a pool reporting on itself.&lt;br/&gt;&lt;b&gt;Lifetime&lt;/b&gt; is every fee ever paid to this address and only ever rises. &lt;b&gt;Unspent&lt;/b&gt; is what is still sitting there, so it falls when you move funds out.</source>
-        <translation>Čita se s vašeg čvora, a ne s poola — pa je tačno i kada je pool nedostupan, i pool ne može preuveličati podatke o sebi.&lt;br/&gt;&lt;b&gt;Ukupno&lt;/b&gt; je svaka naknada ikada plaćena na ovu adresu i samo raste. &lt;b&gt;Nepotrošeno&lt;/b&gt; je ono što je još tu, pa pada kada sredstva pomjerite.</translation>
+        <translation>Čita se s vašeg node-a, a ne s poola — pa je tačno i kada je pool nedostupan, i pool ne može preuveličati podatke o sebi.&lt;br/&gt;&lt;b&gt;Ukupno&lt;/b&gt; je svaka naknada ikada plaćena na ovu adresu i samo raste. &lt;b&gt;Nepotrošeno&lt;/b&gt; je ono što je još tu, pa pada kada sredstva pomjerite.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="388"/>
@@ -6286,17 +6306,17 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="1192"/>
         <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Unexpected history reply from the node.&lt;/span&gt;</source>
-        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Neočekivan odgovor o historiji od čvora.&lt;/span&gt;</translation>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Neočekivan odgovor o historiji od node-a.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1253"/>
         <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Unexpected reply from the node.&lt;/span&gt;</source>
-        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Neočekivan odgovor od čvora.&lt;/span&gt;</translation>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Neočekivan odgovor od node-a.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1265"/>
         <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;The node did not return a valid confirmed unspent balance.&lt;/span&gt;</source>
-        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Čvor nije vratio ispravno potvrđeno nepotrošeno stanje.&lt;/span&gt;</translation>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Node nije vratio ispravno potvrđeno nepotrošeno stanje.&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
@@ -7413,7 +7433,7 @@ Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kad
     <message>
         <location filename="../src/lightningwidget.cpp" line="110"/>
         <source>Peer Node ID (02abcdef...)</source>
-        <translation>ID čvora (02abcdef…)</translation>
+        <translation>Peer node ID (02abcdef…)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="112"/>
@@ -7428,7 +7448,7 @@ Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kad
     <message>
         <location filename="../src/lightningwidget.cpp" line="119"/>
         <source>Peer Node ID:</source>
-        <translation>ID čvora:</translation>
+        <translation>Peer node ID:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="121"/>
@@ -7637,7 +7657,7 @@ Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kad
     <message>
         <location filename="../src/lightningwidget.cpp" line="418"/>
         <source>&lt;b&gt;Total Nodes:&lt;/b&gt;</source>
-        <translation>&lt;b&gt;Ukupno čvorova:&lt;/b&gt;</translation>
+        <translation>&lt;b&gt;Ukupno node-ova:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="420"/>
@@ -7657,12 +7677,12 @@ Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kad
     <message>
         <location filename="../src/lightningwidget.cpp" line="431"/>
         <source>Connect to Peer</source>
-        <translation>Poveži se s čvorom</translation>
+        <translation>Poveži se s peer-om</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="434"/>
         <source>Node ID@host:port (e.g. 02abc@192.168.1.100:9735)</source>
-        <translation>ID čvora@host:port (npr. 02abc@192.168.1.100:9735)</translation>
+        <translation>ID node-a@host:port (npr. 02abc@192.168.1.100:9735)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="435"/>
@@ -7683,7 +7703,7 @@ Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kad
     <message>
         <location filename="../src/lightningwidget.cpp" line="450"/>
         <source>Destination Node ID</source>
-        <translation>ID odredišnog čvora</translation>
+        <translation>ID odredišnog node-a</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="452"/>
@@ -7708,7 +7728,7 @@ Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kad
     <message>
         <location filename="../src/lightningwidget.cpp" line="473"/>
         <source>&lt;b&gt;Network Nodes&lt;/b&gt;</source>
-        <translation>&lt;b&gt;Čvorovi mreže&lt;/b&gt;</translation>
+        <translation>&lt;b&gt;Node-ovi mreže&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="515"/>
@@ -7725,7 +7745,7 @@ Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kad
     <message>
         <location filename="../src/lightningwidget.cpp" line="515"/>
         <source>Please enter peer node ID and capacity.</source>
-        <translation>Unesite ID čvora i kapacitet.</translation>
+        <translation>Unesite peer node ID i kapacitet.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="522"/>
@@ -7846,7 +7866,7 @@ Jeste li potpuno sigurni?</translation>
     <message>
         <location filename="../src/lightningwidget.cpp" line="760"/>
         <source>Please enter peer address.</source>
-        <translation>Unesite adresu čvora.</translation>
+        <translation>Unesite adresu peer-a.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770"/>
@@ -7856,7 +7876,7 @@ Jeste li potpuno sigurni?</translation>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770"/>
         <source>Peer disconnection coming soon.</source>
-        <translation>Prekidanje veze s čvorom stiže uskoro.</translation>
+        <translation>Prekidanje veze s peer-om stiže uskoro.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="778"/>
@@ -7912,7 +7932,7 @@ Jeste li potpuno sigurni?</translation>
         <location filename="../src/overviewconnectivitycard.cpp" line="83"/>
         <location filename="../src/overviewconnectivitycard.cpp" line="191"/>
         <source>Make this node available to other Dinero nodes within safe limits.</source>
-        <translation>Učinite ovaj čvor dostupnim drugim Dinero čvorovima u sigurnim granicama.</translation>
+        <translation>Učinite ovaj node dostupnim drugim Dinero node-ovima u sigurnim granicama.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="94"/>
@@ -7948,7 +7968,7 @@ Jeste li potpuno sigurni?</translation>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="190"/>
         <source>Relay service is enabled and will activate when this node is eligible.</source>
-        <translation>Servis prosljeđivanja je uključen i aktivirat će se kada ovaj čvor bude odgovarao uvjetima.</translation>
+        <translation>Servis prosljeđivanja je uključen i aktivirat će se kada ovaj node bude odgovarao uvjetima.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="203"/>
@@ -8049,7 +8069,7 @@ Jeste li potpuno sigurni?</translation>
     <message>
         <location filename="../src/contributionsection.cpp" line="97"/>
         <source>Peers via gossip:</source>
-        <translation>Čvorovi preko gossipa:</translation>
+        <translation>Peer-ovi preko gossipa:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="105"/>
@@ -8059,7 +8079,7 @@ Jeste li potpuno sigurni?</translation>
     <message>
         <location filename="../src/contributionsection.cpp" line="117"/>
         <source>Optional contribution indicator—not a security rating. Nodes behind NAT remain secure.</source>
-        <translation>Opcionalni pokazatelj doprinosa, ne ocjena sigurnosti. Čvorovi iza NAT-a ostaju sigurni.</translation>
+        <translation>Opcionalni pokazatelj doprinosa, ne ocjena sigurnosti. Node-ovi iza NAT-a ostaju sigurni.</translation>
     </message>
 </context>
 <context>
@@ -8091,22 +8111,22 @@ Jeste li potpuno sigurni?</translation>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="152"/>
         <source>Copied peer details</source>
-        <translation>Detalji čvora su kopirani</translation>
+        <translation>Detalji peer-a su kopirani</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="157"/>
         <source>No peer selected</source>
-        <translation>Nijedan čvor nije odabran</translation>
+        <translation>Nijedan peer nije odabran</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="160"/>
         <source>Disconnect peer?</source>
-        <translation>Prekinuti vezu s čvorom?</translation>
+        <translation>Prekinuti vezu s peer-om?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="161"/>
         <source>Disconnect %1 from this node? The daemon may reconnect later.</source>
-        <translation>Prekinuti vezu s %1 na ovom čvoru? Daemon se možda kasnije ponovo poveže.</translation>
+        <translation>Prekinuti vezu s %1 na ovom node-u? Daemon se možda kasnije ponovo poveže.</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="163"/>
@@ -8135,12 +8155,12 @@ Jeste li potpuno sigurni?</translation>
 This is one of your configured bootstrap peers. Ban only if you are debugging.</source>
         <translation>
 
-Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otklanjate greške.</translation>
+Ovo je jedan od vaših podešenih početnih peer-ova. Zabranite ga samo ako otklanjate greške.</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="181"/>
         <source>Ban peer?</source>
-        <translation>Zabraniti čvor?</translation>
+        <translation>Zabraniti peer?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="182"/>
@@ -8337,7 +8357,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/identitysection.cpp" line="137"/>
         <source>○ Offline — the node is not accepting connections.</source>
-        <translation>○ Van mreže – čvor ne prihvata veze.</translation>
+        <translation>○ Van mreže – node ne prihvata veze.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="140"/>
@@ -8382,7 +8402,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/mynodedashboard.cpp" line="54"/>
         <source>Show technical node, peer, relay, and discovery diagnostics.</source>
-        <translation>Prikaži tehničku dijagnostiku čvora, čvorova u mreži, prosljeđivanja i otkrivanja.</translation>
+        <translation>Prikaži tehničku dijagnostiku node-a, peer-ova, prosljeđivanja i otkrivanja.</translation>
     </message>
     <message>
         <location filename="../src/mynodedashboard.cpp" line="82"/>
@@ -8396,7 +8416,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/networksection.cpp" line="28"/>
         <source>Network diagnostics (your node&apos;s view)</source>
-        <translation>Dijagnostika mreže (pogled vašeg čvora)</translation>
+        <translation>Dijagnostika mreže (pogled vašeg node-a)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="64"/>
@@ -8423,7 +8443,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/networksection.cpp" line="71"/>
         <source>Uses this node&apos;s existing authenticated RPC session and local node cookie; no additional credentials are required. Automatic uses only Dinero&apos;s included Tor component.</source>
-        <translation>Koristi postojeću autentifikovanu RPC sesiju ovog čvora i lokalni kolačić čvora; dodatni podaci za prijavu nisu potrebni. Automatski način koristi samo ugrađenu Tor komponentu Dinera.</translation>
+        <translation>Koristi postojeću autentifikovanu RPC sesiju ovog node-a i lokalni kolačić node-a; dodatni podaci za prijavu nisu potrebni. Automatski način koristi samo ugrađenu Tor komponentu Dinera.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="78"/>
@@ -8468,7 +8488,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/networksection.cpp" line="108"/>
         <source>Circuits per peer</source>
-        <translation>Krugova po čvoru</translation>
+        <translation>Krugova po peer-u</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="108"/>
@@ -8478,7 +8498,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/networksection.cpp" line="109"/>
         <source>Requests per peer/minute</source>
-        <translation>Zahtjeva po čvoru u minuti</translation>
+        <translation>Zahtjeva po peer-u u minuti</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="120"/>
@@ -8493,22 +8513,22 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/networksection.cpp" line="150"/>
         <source>peer estimate  %1</source>
-        <translation>procjena čvorova  %1</translation>
+        <translation>procjena peer-ova  %1</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="170"/>
         <source>● In sync with the peer estimate</source>
-        <translation>● Usklađeno s procjenom čvorova</translation>
+        <translation>● Usklađeno s procjenom peer-ova</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="171"/>
         <source>● %1 block(s) behind the peer estimate</source>
-        <translation>● %1 blokova iza procjene čvorova</translation>
+        <translation>● %1 blokova iza procjene peer-ova</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="172"/>
         <source>● %1 block(s) ahead of the peer estimate; peers may still be catching up</source>
-        <translation>● %1 blokova ispred procjene čvorova; čvorovi možda još sustižu</translation>
+        <translation>● %1 blokova ispred procjene peer-ova; peer-ovi možda još sustižu</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="194"/>
@@ -8566,7 +8586,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/peerssection.cpp" line="124"/>
         <source>This peer is %1 blocks behind your current network estimate.</source>
-        <translation>Ovaj čvor zaostaje %1 blokova za vašom trenutnom procjenom mreže.</translation>
+        <translation>Ovaj peer zaostaje %1 blokova za vašom trenutnom procjenom mreže.</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="180"/>
@@ -8576,7 +8596,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/peerssection.cpp" line="181"/>
         <source>Copy peer details</source>
-        <translation>Kopiraj detalje čvora</translation>
+        <translation>Kopiraj detalje peer-a</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="183"/>
@@ -8586,7 +8606,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/peerssection.cpp" line="185"/>
         <source>Disconnect peer</source>
-        <translation>Prekini vezu s čvorom</translation>
+        <translation>Prekini vezu s peer-om</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="186"/>
@@ -8604,12 +8624,12 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/topologysection.cpp" line="82"/>
         <source>Topology — waiting for peers</source>
-        <translation>Topologija – čekam čvorove</translation>
+        <translation>Topologija – čekam peer-ove</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="109"/>
         <source>Topology — %1 nodes / %2 paths</source>
-        <translation>Topologija – %1 čvorova / %2 putanja</translation>
+        <translation>Topologija – %1 node-ova / %2 putanja</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="154"/>
@@ -8634,7 +8654,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/topologysection.cpp" line="216"/>
         <source>Disconnect peer</source>
-        <translation>Prekini vezu s čvorom</translation>
+        <translation>Prekini vezu s peer-om</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="217"/>

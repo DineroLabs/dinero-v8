@@ -2351,6 +2351,26 @@ Walidacja wymaga uwierzytelnionego RPC łańcucha bloków tego węzła.</transla
         <translation>🔐 Portfel HD</translation>
     </message>
     <message>
+        <location filename="../src/mainwindow.cpp" line="2877"/>
+        <source>Single wallet mode: use one default wallet. Restore is emergency-only.</source>
+        <translation>Tryb jednego portfela: używany jest jeden domyślny portfel. Odtwarzanie służy wyłącznie do sytuacji awaryjnych.</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2878"/>
+        <source>Create a secure BIP-39 HD wallet with Taproot and quantum-safe address support</source>
+        <translation>Utwórz bezpieczny portfel HD BIP-39 z obsługą Taproot i adresów kwantowo bezpiecznych</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2881"/>
+        <source>🆕 Create Wallet / Emergency Restore</source>
+        <translation>🆕 Utwórz portfel / odtwarzanie awaryjne</translation>
+    </message>
+    <message>
+        <location filename="../src/mainwindow.cpp" line="2882"/>
+        <source>🆕 Create/Restore Wallet</source>
+        <translation>🆕 Utwórz/odtwórz portfel</translation>
+    </message>
+    <message>
         <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Przeskanuj portfel ponownie</translation>
