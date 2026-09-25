@@ -1,5 +1,6 @@
 #include "consensus/orchard_block_staging.h"
 #include "storage/chain_db.h"
+#include "storage/block_storage.h"
 #include <set>
 #include <exception>
 #include <map>
@@ -160,8 +161,19 @@ OrchardBlockContext ParentContext(const OrchardBlockContext& current,const Block
 }
 }
 OrchardBlockCandidate ReadStoredOrchardBlock(const ChainDB& db,const uint256& hash,
-    bool require_witness_commitment) {
-    const auto bytes=db.getBlockEncoding(hash);
+    bool require_witness_commitment,const BlockStorage* archival_blocks) {
+    auto bytes=db.getBlockEncoding(hash);
+    // Missing embedded bytes may use the indexed flatfile. Never hide an I/O
+    // error or corrupt embedded body by silently selecting another source.
+    if(bytes.status()==Status::NotFound && archival_blocks) {
+        const auto metadata=db.getHeaderMetadata(hash);
+        if(!metadata.ok())throw OrchardStateLookupError(metadata.status());
+        if(metadata->data_size==0)throw OrchardStateLookupError(Status::NotFound);
+        const auto raw=archival_blocks->readBlockBytes(
+            FilePosition(metadata->file_number,metadata->data_pos,metadata->data_size));
+        if(!raw.ok())throw OrchardStateLookupError(raw.status());
+        bytes=std::vector<uint8_t>(raw->begin(),raw->end());
+    }
     if(!bytes.ok())throw OrchardStateLookupError(bytes.status());
     const auto block=[&] {
         try{return OrchardBlockCandidate::DecodeExact(*bytes);}

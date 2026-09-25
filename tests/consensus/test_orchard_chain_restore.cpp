@@ -3,6 +3,7 @@
 #include "consensus/orchard_block_staging.h"
 #include "../storage/shielded_store_fixture.h"
 #include "consensus/chainparams.h"
+#include "storage/block_storage.h"
 using namespace shielded_store_fixture;
 using dinero::wallet::OrchardAccountState;
 using dinero::wallet::RestoreOrchardAccountFromChainUnderLock;
@@ -129,6 +130,35 @@ static void Run(const char* fixtures, bool same_block) {
     LookupReject(Status::Corruption,[&]{(void)restore();});
     owner_row(std::string("bad"));LookupReject(Status::Corruption,[&]{(void)restore();});
     owner_row(std::nullopt);CHECK(restore().Scan().BalanceUna()==5000);
+    // Move the typed body to the actual durable flatfile path. Reopen and
+    // recover both ordinary historical and same-block prevout variants.
+    BlockStorage blocks;CHECK(blocks.init(temp.path)==Status::Ok);
+    const std::string wire(body.WireBytes().begin(),body.WireBytes().end());
+    const auto position=RequiredValue(blocks.writeBlockBytes(context.block_hash,wire));
+    auto metadata=RequiredValue(db.getHeaderMetadata(context.block_hash));
+    metadata.file_number=position.file_number;metadata.data_pos=position.offset;metadata.data_size=position.size;
+    CHECK(db.putHeaderMetadata(token,context.block_hash,metadata)==Status::Ok);
+    CHECK(db.deleteBlock(token,context.block_hash)==Status::Ok);
+    LookupReject(Status::NotFound,[&]{(void)restore();});
+    blocks.close();CHECK(blocks.init(temp.path)==Status::Ok);
+    const auto flatRestore=[&]{return RestoreOrchardAccountFromChainUnderLock(db,&blocks,encoded,f.domain,fvk,20001);};
+    CHECK(flatRestore().Scan().BalanceUna()==5000);
+    CHECK(blocks.readBlock(position).status()==Status::Serialization);
+    // A valid storage checksum/header is not a transaction Merkle check.
+    auto changed_outputs=f.outputs;changed_outputs[0].amount_una++;
+    const auto changed=TransactionEnvelope::Create(f.lock,f.inputs,changed_outputs,f.fee,f.bundle).CanonicalBytes();
+    auto damaged=body.WireBytes();const auto& original=auth[0].Orchard().CanonicalBytes();
+    CHECK(changed.size()==original.size());
+    const auto at=std::search(damaged.begin(),damaged.end(),original.begin(),original.end());CHECK(at!=damaged.end());
+    std::copy(changed.begin(),changed.end(),at);
+    const auto bad_pos=RequiredValue(blocks.writeBlockBytes(context.block_hash,std::string(damaged.begin(),damaged.end())));
+    metadata.data_pos=bad_pos.offset;metadata.data_size=bad_pos.size;metadata.file_number=bad_pos.file_number;
+    CHECK(db.putHeaderMetadata(token,context.block_hash,metadata)==Status::Ok);
+    LookupReject(Status::Corruption,[&]{(void)flatRestore();});
+    metadata.data_pos=position.offset;metadata.data_size=position.size;metadata.file_number=position.file_number;
+    CHECK(db.putHeaderMetadata(token,context.block_hash,metadata)==Status::Ok);
+    CHECK(flatRestore().Scan().BalanceUna()==5000);
+    blocks.close();
     db.close();LookupReject(Status::Internal,[&]{(void)restore();});
 }
 int main(int argc,char** argv) {try{

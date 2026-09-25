@@ -206,7 +206,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary --parallel 2
+          cmake --build build-orchard-root --target dinerod test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute all root Orchard lanes
         run: |
@@ -223,7 +223,21 @@ jobs:
               if props.get('DISABLED') or 'orchard' not in props.get('LABELS', []):
                   raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
           PYCODE
-          ctest --test-dir build-orchard-root -R '^(OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardWalletScan|OrchardLegacyBoundary)$' --output-on-failure --no-tests=error
+          ctest --test-dir build-orchard-root -R '^(OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardWalletScan|OrchardLegacyBoundary)$' --output-on-failure --no-tests=error --output-log orchard-root-execution.log
+      - name: Require and execute shared flatfile compatibility lanes
+        run: |
+          ctest --test-dir build-orchard-root -R '^(BlockStorageRoundTrip|ArchivalBlockReader)$' --show-only=json-v1 > orchard-flatfile-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-flatfile-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['ArchivalBlockReader', 'BlockStorageRoundTrip']:
+              raise SystemExit('Missing shared flatfile compatibility test')
+          for test in tests:
+              props = {p['name']: p['value'] for p in test.get('properties', [])}
+              if props.get('DISABLED'):
+                  raise SystemExit('Disabled shared flatfile compatibility test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(BlockStorageRoundTrip|ArchivalBlockReader)$' --output-on-failure --no-tests=error --output-log orchard-flatfile-execution.log
       - name: Retain root integration evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -232,6 +246,9 @@ jobs:
           path: |
             orchard-root-source.txt
             orchard-root-inventory.json
+            orchard-root-execution.log
+            orchard-flatfile-inventory.json
+            orchard-flatfile-execution.log
             build-orchard-root/CMakeCache.txt
             build-orchard-root/Testing/Temporary/LastTest.log
             build-orchard-root/Testing/Temporary/LastTestsFailed.log

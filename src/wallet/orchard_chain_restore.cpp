@@ -46,7 +46,7 @@ public:
     }
     OrchardBlockCandidate OrchardBody(const uint256& hash, uint32_t height) const {
         if (height < activation_ || Height(hash) != height) Corrupt();
-        auto body = ReadStoredOrchardBlock(db_, hash, true);
+        auto body = ReadStoredOrchardBlock(db_, hash, true, blocks_);
         if (body.Header().SerializeForHash() != Read(db_.getHeader(hash)).SerializeForHash()) Corrupt();
         return body;
     }

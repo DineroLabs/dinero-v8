@@ -5,13 +5,14 @@
 #include "consensus/orchard_forest_transition.h"
 
 namespace rocksdb { class WriteBatch; }
-namespace dinero { class ChainDB; class ChainWriteToken; }
+namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
 
 namespace dinero::consensus {
 // Typed stored-body read. Checks exact framing, key/header identity, transaction
 // and witness commitments, and size. Not replay/PoW/proof/transaction validity.
 [[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(
-    const ChainDB&, const uint256& hash, bool require_witness_commitment);
+    const ChainDB&, const uint256& hash, bool require_witness_commitment,
+    const BlockStorage* archival_blocks = nullptr);
 // Startup consistency check under the writer lock, after restoring the forest
 // against authenticated selected headers. Validates the exact local body,
 // markers, commit record, frontier and reversibility of current-tip rows/undo.

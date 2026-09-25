@@ -15,7 +15,7 @@ namespace dinero::wallet {
 // Requires archival bodies and active txindex coverage. Missing/pruned data and
 // corruption are local lookup failures. No writes, repairs, relay, or activation.
 [[nodiscard]] OrchardAccountState RestoreOrchardAccountFromChainUnderLock(
-    const ChainDB&, const BlockStorage* historical_blocks,
+    const ChainDB&, const BlockStorage* archival_blocks,
     const orchard::WalletStateBytes&, orchard::SigningDomain,
     const orchard::FullViewingKeyBytes&, uint32_t activation_height);
 } // namespace dinero::wallet

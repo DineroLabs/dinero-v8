@@ -40,8 +40,10 @@ current height.
 
 This adapter requires active transaction-index coverage and archival original
 bodies. Historical bodies may use the archival BlockStorage reader; new typed
-bodies currently come from ChainDB's staged body storage. Post-activation flatfile
-and pruned-node recovery are not implemented. It is not a wallet rescan driver,
+bodies prefer ChainDB's staged body storage and can fall back to indexed flatfile
+bytes when the embedded body is absent. A corrupt embedded body or local I/O
+error is not hidden by fallback. Both sources pass the same typed header/body
+identity and witness checks. Pruned-node recovery is not implemented. It is not a wallet rescan driver,
 stateless recovery path, consensus replay, or repair tool. The runtime domain and
 branch selection remain host obligations.
 
@@ -53,3 +55,9 @@ nullifier owners, mismatched checkpoints and closed-database errors. These store
 are authenticated-content fixtures, not mined/full-consensus chain fixtures.
 Root CI requires this registration and actual execution alongside the existing
 Orchard tests. Release qualification still requires live node lifecycle tests.
+
+The flatfile regression removes the embedded body, closes/reopens BlockStorage,
+and restores the same account from exact persisted Orchard bytes, including
+same-block previous outputs. It also stores a body with the correct header and
+valid storage checksum but changed transaction contents; the typed reader rejects
+the Merkle mismatch. Legacy `Block::Deserialize` continues to reject Orchard.
