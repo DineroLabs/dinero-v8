@@ -135,3 +135,58 @@ conditionally. Every other context in the catalogs is live code.
 Before a final pass, regenerate the catalogs against current `dinero-main` so
 that newly added strings appear and removed ones drop out. A catalog generated
 from an older base can carry strings that no longer exist.
+
+## Regeneration, 2026-09-25
+
+Done, and the result was no drift. The command, run from `qt/`:
+
+```
+lupdate src -ts translations/dinero_*.ts
+```
+
+`lupdate` reported **0 new and 1565 already existing** for all nine catalogs,
+and produced no `vanished` or `obsolete` entries. The nine `qt/` sources were
+already identical to `dinero-main` — the only upstream commits not yet merged
+were p2p shutdown fixes that touch no Qt file — so there was nothing for the
+regeneration to pick up.
+
+Two things did come out of it, and both are worth knowing next time.
+
+**Run `lupdate` without `-no-obsolete` first.** `-no-obsolete` deletes any
+entry `lupdate` cannot locate, and it exits 0 while doing so. If the scan scope
+is wrong by one directory it silently destroys every translation in all nine
+catalogs and the build still succeeds. Run it plain, confirm nothing landed as
+`vanished`, and only then prune. The scan scope is `qt/src` and the working
+directory must be `qt/`, so that `<location>` stays `../src/...`; an absolute
+or `../../qt/src/...` path means the invocation was wrong and the whole diff is
+noise.
+
+**The catalogs are now in canonical `lupdate` formatting.** They had been
+written by `qt/tools/apply_by_index.py`, which serialises through Python's
+ElementTree and emits `<location ... />` and
+`<translation type="unfinished"></translation>` where `lupdate` writes
+`<location .../>` and `<translation type="unfinished"/>`. That difference alone
+accounted for a ~4,000-line diff per catalog with no semantic change. A
+`(context, source) -> (type, text)` comparison across all nine before and after
+showed zero differences other than the fills below. Normalising once means the
+next regeneration produces a small, reviewable diff instead of burying real
+changes in whitespace. If the Python appliers are used again, re-run `lupdate`
+afterwards to restore canonical form.
+
+The regeneration also surfaced thirteen genuinely missed UI strings that the
+earlier per-catalog checks could not see, because those checks only inspected
+*finished* translations and these were sitting `unfinished` among the URLs and
+unit labels that legitimately stay English:
+
+| catalog | entries filled |
+| --- | --- |
+| bs | `0 hashes`, `din1p... (Taproot only)`, both `din1p... (Taproot) or din1r... (…)` placeholders, `din1p… new fee address`, `din1p… Taproot address` |
+| de | `din1p... (Taproot) or din1r... (Quantum-Safe)` |
+| pl, ru, sv, tr, zh_CN | `Total: 0.00000000 DIN` |
+| pt_BR | `Browse...` (the `MainWindow` one; the `HardwareWalletWidget` string of the same text was already done) |
+
+Counting an unfinished entry as "a URL or a unit label" without listing it is
+how these were missed the first time. The remaining unfinished entries per
+catalog have now each been read individually and are URLs, filesystem paths,
+address prefixes, unit labels, bare numerics, `–`, `withdrawal_id` and the
+`DineroAI` product name.

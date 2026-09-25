@@ -4,164 +4,164 @@
 <context>
     <name>AiPanel</name>
     <message>
-        <location filename="../src/aipanel.cpp" line="165" />
+        <location filename="../src/aipanel.cpp" line="165"/>
         <source>DineroAI Setup</source>
         <translation>Configuração do DineroAI</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="172" />
+        <location filename="../src/aipanel.cpp" line="172"/>
         <source>Choose your AI provider</source>
         <translation>Escolha seu provedor de IA</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="245" />
+        <location filename="../src/aipanel.cpp" line="245"/>
         <source>API Key</source>
         <translation>Chave de API</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="248" />
+        <location filename="../src/aipanel.cpp" line="248"/>
         <source>Paste your API key here…</source>
         <translation>Cole sua chave de API aqui …</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="265" />
+        <location filename="../src/aipanel.cpp" line="265"/>
         <source>Claude CLI path (blank = auto-detect)</source>
         <translation>Caminho da CLI do Claude (vazio = detectar automaticamente)</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="272" />
+        <location filename="../src/aipanel.cpp" line="272"/>
         <source>/opt/homebrew/bin/claude</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="300" />
+        <location filename="../src/aipanel.cpp" line="300"/>
         <source>Server URL  /  Model name</source>
         <translation>URL do servidor  /  nome do modelo</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="303" />
-        <location filename="../src/aipanel.cpp" line="408" />
+        <location filename="../src/aipanel.cpp" line="303"/>
+        <location filename="../src/aipanel.cpp" line="408"/>
         <source>http://localhost:11434</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="309" />
+        <location filename="../src/aipanel.cpp" line="309"/>
         <source>llama3.2</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="323" />
+        <location filename="../src/aipanel.cpp" line="323"/>
         <source>Base address (wDIN required)</source>
         <translation>Endereço na Base (requer wDIN)</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="326" />
+        <location filename="../src/aipanel.cpp" line="326"/>
         <source>0x…  (must hold wDIN v2 to unlock)</source>
         <translation>0x…  (precisa ter wDIN v2 para desbloquear)</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="331" />
-        <source>&lt;a href='https://bridge.dinero-coin.com' style='color:#5c7cfa;'&gt;Bridge DIN → wDIN&lt;/a&gt; · contract: 0x0C979…1119</source>
-        <translation type="unfinished" />
+        <location filename="../src/aipanel.cpp" line="331"/>
+        <source>&lt;a href=&apos;https://bridge.dinero-coin.com&apos; style=&apos;color:#5c7cfa;&apos;&gt;Bridge DIN → wDIN&lt;/a&gt; · contract: 0x0C979…1119</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="352" />
+        <location filename="../src/aipanel.cpp" line="352"/>
         <source>Save &amp; Start</source>
         <translation>Salvar e iniciar</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="396" />
+        <location filename="../src/aipanel.cpp" line="396"/>
         <source>Get free key at aistudio.google.com</source>
         <translation>Obtenha uma chave gratuita em aistudio.google.com</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="397" />
+        <location filename="../src/aipanel.cpp" line="397"/>
         <source>Get free key at console.groq.com</source>
         <translation>Obtenha uma chave gratuita em console.groq.com</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="398" />
+        <location filename="../src/aipanel.cpp" line="398"/>
         <source>Uses your Anthropic API key</source>
         <translation>Usa sua chave de API da Anthropic</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="399" />
+        <location filename="../src/aipanel.cpp" line="399"/>
         <source>Uses claude CLI on this machine</source>
         <translation>Usa a CLI do claude nesta máquina</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="400" />
+        <location filename="../src/aipanel.cpp" line="400"/>
         <source>Requires Ollama running locally (ollama.ai)</source>
         <translation>Requer o Ollama em execução local (ollama.ai)</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="401" />
+        <location filename="../src/aipanel.cpp" line="401"/>
         <source>pip install mlx-lm  |  python -m mlx_lm.server --model &lt;model&gt;</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="406" />
+        <location filename="../src/aipanel.cpp" line="406"/>
         <source>http://localhost:8080</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="421" />
+        <location filename="../src/aipanel.cpp" line="421"/>
         <source>Enter your Base address (0x…) to verify wDIN balance</source>
         <translation>Informe seu endereço na Base (0x…) para verificar o saldo de wDIN</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="426" />
+        <location filename="../src/aipanel.cpp" line="426"/>
         <source>Checking wDIN balance…</source>
         <translation>Verificando o saldo de wDIN …</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="515" />
+        <location filename="../src/aipanel.cpp" line="515"/>
         <source>No wDIN found on this address. Bridge DIN → wDIN at bridge.dinero-coin.com</source>
         <translation>Nenhum wDIN neste endereço. Converta DIN → wDIN em bridge.dinero-coin.com</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="565" />
+        <location filename="../src/aipanel.cpp" line="565"/>
         <source>DineroAI</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="585" />
+        <location filename="../src/aipanel.cpp" line="585"/>
         <source>AI Settings</source>
         <translation>Configurações de IA</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="594" />
+        <location filename="../src/aipanel.cpp" line="594"/>
         <source>Clear</source>
         <translation>Limpar</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="706" />
+        <location filename="../src/aipanel.cpp" line="706"/>
         <source>Ask anything crypto…</source>
         <translation>Pergunte qualquer coisa sobre cripto …</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="718" />
+        <location filename="../src/aipanel.cpp" line="718"/>
         <source>Attach image (vision models)</source>
         <translation>Anexar imagem (modelos com visão)</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="728" />
-        <location filename="../src/aipanel.cpp" line="943" />
+        <location filename="../src/aipanel.cpp" line="728"/>
+        <location filename="../src/aipanel.cpp" line="943"/>
         <source>Mic</source>
         <translation>Microfone</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="738" />
+        <location filename="../src/aipanel.cpp" line="738"/>
         <source>Send</source>
         <translation>Enviar</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="751" />
+        <location filename="../src/aipanel.cpp" line="751"/>
         <source>DineroAI — your crypto assistant</source>
         <translation>DineroAI — seu assistente de cripto</translation>
     </message>
     <message>
-        <location filename="../src/aipanel.cpp" line="927" />
+        <location filename="../src/aipanel.cpp" line="927"/>
         <source>Stop</source>
         <translation>Parar</translation>
     </message>
@@ -169,7 +169,7 @@
 <context>
     <name>AiStatusStrip</name>
     <message>
-        <location filename="../src/aistatusstrip.cpp" line="23" />
+        <location filename="../src/aistatusstrip.cpp" line="23"/>
         <source>Connecting...</source>
         <translation>Conectando…</translation>
     </message>
@@ -177,82 +177,82 @@
 <context>
     <name>BridgeWidget</name>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="29" />
+        <location filename="../src/bridgewidget.cpp" line="29"/>
         <source>Bridge ready - Auto-refresh every 15s</source>
         <translation>Ponte pronta - atualização automática a cada 15 s</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="46" />
+        <location filename="../src/bridgewidget.cpp" line="46"/>
         <source>From:</source>
         <translation>De:</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="51" />
+        <location filename="../src/bridgewidget.cpp" line="51"/>
         <source>To:</source>
         <translation>Para:</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="57" />
+        <location filename="../src/bridgewidget.cpp" line="57"/>
         <source>Provider:</source>
         <translation>Provedor:</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="63" />
+        <location filename="../src/bridgewidget.cpp" line="63"/>
         <source>Amount:</source>
         <translation>Valor:</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="65" />
+        <location filename="../src/bridgewidget.cpp" line="65"/>
         <source>Enter amount to convert</source>
         <translation>Informe o valor a converter</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="214" />
+        <location filename="../src/bridgewidget.cpp" line="214"/>
         <source>Invalid Input</source>
         <translation>Entrada inválida</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="214" />
+        <location filename="../src/bridgewidget.cpp" line="214"/>
         <source>Please enter a valid amount greater than 0.</source>
         <translation>Informe um valor válido maior que 0.</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="268" />
+        <location filename="../src/bridgewidget.cpp" line="268"/>
         <source>Effective rate: (direct conversion, minimal fees)</source>
         <translation>Taxa efetiva: (conversão direta, tarifas mínimas)</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="275" />
+        <location filename="../src/bridgewidget.cpp" line="275"/>
         <source>Fees: ~1.5%</source>
         <translation>Tarifas: ~1,5 %</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="280" />
+        <location filename="../src/bridgewidget.cpp" line="280"/>
         <source>Rate updated successfully</source>
         <translation>Cotação atualizada com sucesso</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="289" />
+        <location filename="../src/bridgewidget.cpp" line="289"/>
         <source>Direct conversion (1 hop)</source>
         <translation>Conversão direta (1 salto)</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="343" />
+        <location filename="../src/bridgewidget.cpp" line="343"/>
         <source>Conversion Successful</source>
         <translation>Conversão bem-sucedida</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="356" />
+        <location filename="../src/bridgewidget.cpp" line="356"/>
         <source>Conversion Failed</source>
         <translation>A conversão falhou</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="357" />
+        <location filename="../src/bridgewidget.cpp" line="357"/>
         <source>❌ Conversion failed</source>
         <translation>❌ A conversão falhou</translation>
     </message>
     <message>
-        <location filename="../src/bridgewidget.cpp" line="380" />
+        <location filename="../src/bridgewidget.cpp" line="380"/>
         <source>Rate updated via WebSocket</source>
         <translation>Cotação atualizada via WebSocket</translation>
     </message>
@@ -260,67 +260,67 @@
 <context>
     <name>CompletionPage</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1534" />
+        <location filename="../src/walletwizard.cpp" line="1534"/>
         <source>Wallet Setup Complete</source>
         <translation>Configuração concluída</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1535" />
+        <location filename="../src/walletwizard.cpp" line="1535"/>
         <source>Your Dinero wallet is ready to use</source>
         <translation>Sua carteira Dinero está pronta para uso</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1539" />
+        <location filename="../src/walletwizard.cpp" line="1539"/>
         <source>✅ Your wallet setup has completed.</source>
         <translation>✅ A configuração da sua carteira foi concluída.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1545" />
+        <location filename="../src/walletwizard.cpp" line="1545"/>
         <source>Wallet Name:</source>
         <translation>Nome da carteira:</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1550" />
+        <location filename="../src/walletwizard.cpp" line="1550"/>
         <source>Wallet Fingerprint:</source>
         <translation>Impressão digital da carteira:</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1555" />
+        <location filename="../src/walletwizard.cpp" line="1555"/>
         <source>First Address:</source>
         <translation>Primeiro endereço:</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1567" />
+        <location filename="../src/walletwizard.cpp" line="1567"/>
         <source>&lt;p&gt;&lt;b&gt;Important Reminders:&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Keep your seed phrase safe and offline&lt;/li&gt;&lt;li&gt;Never share your seed phrase with anyone&lt;/li&gt;&lt;li&gt;Make multiple backups stored in different locations&lt;/li&gt;&lt;li&gt;Your password encrypts the wallet file, but the seed phrase is the ultimate backup&lt;/li&gt;&lt;/ul&gt;</source>
         <translation>&lt;p&gt;&lt;b&gt;Lembretes importantes:&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Guarde sua frase semente em local seguro e off-line&lt;/li&gt;&lt;li&gt;Nunca compartilhe sua frase semente com ninguém&lt;/li&gt;&lt;li&gt;Faça várias cópias e guarde-as em lugares diferentes&lt;/li&gt;&lt;li&gt;A senha criptografa o arquivo da carteira, mas a frase semente é a cópia definitiva&lt;/li&gt;&lt;/ul&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1585" />
+        <location filename="../src/walletwizard.cpp" line="1585"/>
         <source>Creating wallet...</source>
         <translation>Criando carteira…</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1590" />
+        <location filename="../src/walletwizard.cpp" line="1590"/>
         <source>❌ Error: Wizard not found</source>
         <translation>❌ Erro: assistente não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1600" />
+        <location filename="../src/walletwizard.cpp" line="1600"/>
         <source>❌ Error: Pages not found</source>
         <translation>❌ Erro: páginas não encontradas</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1621" />
+        <location filename="../src/walletwizard.cpp" line="1621"/>
         <source>❌ Wallet restore failed</source>
         <translation>❌ Falha ao restaurar a carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1633" />
+        <location filename="../src/walletwizard.cpp" line="1633"/>
         <source>❌ Wallet creation failed</source>
         <translation>❌ Falha ao criar a carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1655" />
+        <location filename="../src/walletwizard.cpp" line="1655"/>
         <source>❌ No password provided</source>
         <translation>❌ Nenhuma senha informada</translation>
     </message>
@@ -328,37 +328,37 @@
 <context>
     <name>ConfirmSeedPage</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1072" />
+        <location filename="../src/walletwizard.cpp" line="1072"/>
         <source>Confirm Your Seed Phrase</source>
         <translation>Confirme sua frase semente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1073" />
+        <location filename="../src/walletwizard.cpp" line="1073"/>
         <source>To ensure you wrote it down correctly, please enter 3 random words:</source>
         <translation>Para confirmar que você a anotou corretamente, informe 3 palavras aleatórias:</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1087" />
-        <location filename="../src/walletwizard.cpp" line="1088" />
-        <location filename="../src/walletwizard.cpp" line="1089" />
+        <location filename="../src/walletwizard.cpp" line="1087"/>
+        <location filename="../src/walletwizard.cpp" line="1088"/>
+        <location filename="../src/walletwizard.cpp" line="1089"/>
         <source>Enter word...</source>
         <translation>Digite a palavra…</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1091" />
-        <location filename="../src/walletwizard.cpp" line="1093" />
-        <location filename="../src/walletwizard.cpp" line="1095" />
+        <location filename="../src/walletwizard.cpp" line="1091"/>
+        <location filename="../src/walletwizard.cpp" line="1093"/>
+        <location filename="../src/walletwizard.cpp" line="1095"/>
         <source>Word #</source>
         <translation>Palavra n.º </translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1142" />
+        <location filename="../src/walletwizard.cpp" line="1142"/>
         <source>Incorrect Words</source>
         <translation>Palavras incorretas</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1143" />
-        <source>One or more words don't match your seed phrase.
+        <location filename="../src/walletwizard.cpp" line="1143"/>
+        <source>One or more words don&apos;t match your seed phrase.
 
 Please go back and write down your seed phrase carefully.</source>
         <translation>Uma ou mais palavras não conferem com sua frase semente.
@@ -369,67 +369,67 @@ Volte e anote sua frase semente com cuidado.</translation>
 <context>
     <name>CreateSeedPage</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="710" />
+        <location filename="../src/walletwizard.cpp" line="710"/>
         <source>Your Seed Phrase</source>
         <translation>Sua frase semente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="711" />
+        <location filename="../src/walletwizard.cpp" line="711"/>
         <source>Write down these 12 words in order. Keep them safe and NEVER share them.</source>
         <translation>Anote estas 12 palavras em ordem. Guarde-as em segurança e NUNCA as compartilhe.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="716" />
+        <location filename="../src/walletwizard.cpp" line="716"/>
         <source>⚠️ &lt;b&gt;CRITICAL:&lt;/b&gt; Anyone with these words can access your funds. Write them on paper and store securely. Never take screenshots or save digitally.</source>
         <translation>⚠️ &lt;b&gt;CRÍTICO:&lt;/b&gt; Qualquer pessoa com estas palavras pode acessar seus fundos. Anote-as em papel e guarde-as em segurança. Nunca tire capturas de tela nem as salve em formato digital.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="725" />
+        <location filename="../src/walletwizard.cpp" line="725"/>
         <source>[Seed phrase will appear here]</source>
         <translation>[A frase semente aparecerá aqui]</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="742" />
-        <location filename="../src/walletwizard.cpp" line="800" />
-        <location filename="../src/walletwizard.cpp" line="1024" />
-        <location filename="../src/walletwizard.cpp" line="1035" />
+        <location filename="../src/walletwizard.cpp" line="742"/>
+        <location filename="../src/walletwizard.cpp" line="800"/>
+        <location filename="../src/walletwizard.cpp" line="1024"/>
+        <location filename="../src/walletwizard.cpp" line="1035"/>
         <source>👁️ Reveal Seed</source>
         <translation>👁️ Mostrar a semente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="749" />
+        <location filename="../src/walletwizard.cpp" line="749"/>
         <source>📱 Seed &amp; Address Compatibility</source>
         <translation>📱 Compatibilidade de semente e endereços</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="753" />
+        <location filename="../src/walletwizard.cpp" line="753"/>
         <source>&lt;b&gt;Your BIP39 seed phrase works across Dinero wallets.&lt;/b&gt;&lt;br&gt;&lt;br&gt;✅ &lt;b&gt;Taproot lane:&lt;/b&gt; BIP86 &lt;code&gt;din1p...&lt;/code&gt; addresses for mobile-friendly payments&lt;br&gt;✅ &lt;b&gt;Quantum-safe lane:&lt;/b&gt; purpose 88 P2MR &lt;code&gt;din1r...&lt;/code&gt; addresses using ML-DSA-65 in Qt&lt;br&gt;&lt;br&gt;Mobile restore uses the same seed for Taproot payments. P2MR keys derive from that same seed as mobile support expands.&lt;br&gt;&lt;br&gt;&lt;i&gt;One seed phrase, clear address lanes.&lt;/i&gt;</source>
         <translation>&lt;b&gt;Sua frase semente BIP39 funciona em todas as carteiras Dinero.&lt;/b&gt;&lt;br&gt;&lt;br&gt;✅ &lt;b&gt;Via Taproot:&lt;/b&gt; endereços BIP86 &lt;code&gt;din1p…&lt;/code&gt; para pagamentos no celular&lt;br&gt;✅ &lt;b&gt;Via resistente a quântica:&lt;/b&gt; endereços P2MR com propósito 88 &lt;code&gt;din1r…&lt;/code&gt; usando ML-DSA-65 no Qt&lt;br&gt;&lt;br&gt;A restauração no celular usa a mesma semente para pagamentos Taproot. As chaves P2MR derivam dessa mesma semente conforme o suporte a celular cresce.&lt;br&gt;&lt;br&gt;&lt;i&gt;Uma frase semente, vias de endereço bem separadas.&lt;/i&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="765" />
+        <location filename="../src/walletwizard.cpp" line="765"/>
         <source>✅ I have written down my seed phrase on paper</source>
         <translation>✅ Anotei minha frase semente em papel</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="791" />
+        <location filename="../src/walletwizard.cpp" line="791"/>
         <source>❌ Error: Connection manager not available</source>
         <translation>❌ Erro: o gerenciador de conexão não está disponível</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="804" />
+        <location filename="../src/walletwizard.cpp" line="804"/>
         <source>❌ Error: Wallet name is missing. Go back and choose a wallet name first.</source>
         <translation>❌ Erro: falta o nome da carteira. Volte e escolha um nome primeiro.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="836" />
+        <location filename="../src/walletwizard.cpp" line="836"/>
         <source>⏱️ Request timed out after 30 seconds.
 
 Please check that:
 • Daemon is running
 • ConnectionManager is connected
 
-Click 'Generate Seed' to try again.</source>
+Click &apos;Generate Seed&apos; to try again.</source>
         <translation>⏱️ A solicitação expirou após 30 segundos.
 
 Verifique se:
@@ -439,27 +439,27 @@ Verifique se:
 Clique em «Gerar semente» para tentar novamente.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1023" />
+        <location filename="../src/walletwizard.cpp" line="1023"/>
         <source>[Seed phrase unavailable]</source>
         <translation>[Frase semente indisponível]</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1032" />
+        <location filename="../src/walletwizard.cpp" line="1032"/>
         <source>🙈 Hide Seed</source>
         <translation>🙈 Ocultar a semente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1034" />
+        <location filename="../src/walletwizard.cpp" line="1034"/>
         <source>[Seed hidden. Click Reveal Seed]</source>
         <translation>[Semente oculta. Clique em Mostrar a semente]</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1045" />
+        <location filename="../src/walletwizard.cpp" line="1045"/>
         <source>Seed Not Ready</source>
         <translation>A semente ainda não está pronta</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1046" />
+        <location filename="../src/walletwizard.cpp" line="1046"/>
         <source>Seed phrase is not available yet.
 
 Wait for seed generation to complete before continuing.</source>
@@ -468,12 +468,12 @@ Wait for seed generation to complete before continuing.</source>
 Aguarde a geração terminar antes de continuar.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1052" />
+        <location filename="../src/walletwizard.cpp" line="1052"/>
         <source>Backup Required</source>
         <translation>Backup obrigatório</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1053" />
+        <location filename="../src/walletwizard.cpp" line="1053"/>
         <source>You must write down your seed phrase before continuing.
 
 Without this backup, you cannot recover your wallet if your computer is lost or damaged.</source>
@@ -485,242 +485,242 @@ Sem essa cópia você não conseguirá recuperar a carteira se o computador for 
 <context>
     <name>DpiWidget</name>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="98" />
+        <location filename="../src/dpiwidget.cpp" line="98"/>
         <source>Create DPI Invoice</source>
         <translation>Criar fatura DPI</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="101" />
+        <location filename="../src/dpiwidget.cpp" line="101"/>
         <source>Amount (DIN):</source>
         <translation>Valor (DIN):</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="106" />
-        <location filename="../src/dpiwidget.cpp" line="266" />
+        <location filename="../src/dpiwidget.cpp" line="106"/>
+        <location filename="../src/dpiwidget.cpp" line="266"/>
         <source>Memo:</source>
         <translation>Memorando:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="108" />
+        <location filename="../src/dpiwidget.cpp" line="108"/>
         <source>e.g. Order #12345</source>
         <translation>ex.: pedido n.º 12345</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="111" />
+        <location filename="../src/dpiwidget.cpp" line="111"/>
         <source>Expiry:</source>
         <translation>Validade:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="120" />
-        <location filename="../src/dpiwidget.cpp" line="450" />
-        <location filename="../src/dpiwidget.cpp" line="684" />
+        <location filename="../src/dpiwidget.cpp" line="120"/>
+        <location filename="../src/dpiwidget.cpp" line="450"/>
+        <location filename="../src/dpiwidget.cpp" line="684"/>
         <source>Create Collect Invoice</source>
         <translation>Criar fatura de cobrança</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="129" />
+        <location filename="../src/dpiwidget.cpp" line="129"/>
         <source>Collect Invoice</source>
         <translation>Fatura de cobrança</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="141" />
+        <location filename="../src/dpiwidget.cpp" line="141"/>
         <source>Invoice ID:</source>
         <translation>ID da fatura:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="147" />
-        <location filename="../src/dpiwidget.cpp" line="260" />
+        <location filename="../src/dpiwidget.cpp" line="147"/>
+        <location filename="../src/dpiwidget.cpp" line="260"/>
         <source>Destination:</source>
         <translation>Destino:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="153" />
-        <location filename="../src/dpiwidget.cpp" line="256" />
+        <location filename="../src/dpiwidget.cpp" line="153"/>
+        <location filename="../src/dpiwidget.cpp" line="256"/>
         <source>Amount:</source>
         <translation>Valor:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="157" />
-        <location filename="../src/dpiwidget.cpp" line="270" />
+        <location filename="../src/dpiwidget.cpp" line="157"/>
+        <location filename="../src/dpiwidget.cpp" line="270"/>
         <source>Expires:</source>
         <translation>Expira:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="169" />
+        <location filename="../src/dpiwidget.cpp" line="169"/>
         <source>Invoice data will appear here...</source>
         <translation>Os dados da fatura aparecerão aqui …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="172" />
-        <location filename="../src/dpiwidget.cpp" line="363" />
+        <location filename="../src/dpiwidget.cpp" line="172"/>
+        <location filename="../src/dpiwidget.cpp" line="363"/>
         <source>Copy Invoice</source>
         <translation>Copiar fatura</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="183" />
+        <location filename="../src/dpiwidget.cpp" line="183"/>
         <source>Verify Payment Package</source>
         <translation>Verificar pacote de pagamento</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="186" />
+        <location filename="../src/dpiwidget.cpp" line="186"/>
         <source>Paste payment package from sender:</source>
         <translation>Cole o pacote de pagamento do remetente:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="189" />
+        <location filename="../src/dpiwidget.cpp" line="189"/>
         <source>Paste payment package here...</source>
         <translation>Cole o pacote de pagamento aqui …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="192" />
-        <location filename="../src/dpiwidget.cpp" line="548" />
-        <location filename="../src/dpiwidget.cpp" line="701" />
+        <location filename="../src/dpiwidget.cpp" line="192"/>
+        <location filename="../src/dpiwidget.cpp" line="548"/>
+        <location filename="../src/dpiwidget.cpp" line="701"/>
         <source>Verify Package</source>
         <translation>Verificar pacote</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="235" />
+        <location filename="../src/dpiwidget.cpp" line="235"/>
         <source>Pay DPI Invoice</source>
         <translation>Pagar fatura DPI</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="238" />
+        <location filename="../src/dpiwidget.cpp" line="238"/>
         <source>Paste or scan a DPI invoice from DineroDPI or Dinero-Qt:</source>
         <translation>Cole ou escaneie uma fatura DPI do DineroDPI ou do Dinero-Qt:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="241" />
+        <location filename="../src/dpiwidget.cpp" line="241"/>
         <source>Paste invoice here...</source>
         <translation>Cole a fatura aqui …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="244" />
-        <location filename="../src/dpiwidget.cpp" line="489" />
-        <location filename="../src/dpiwidget.cpp" line="689" />
+        <location filename="../src/dpiwidget.cpp" line="244"/>
+        <location filename="../src/dpiwidget.cpp" line="489"/>
+        <location filename="../src/dpiwidget.cpp" line="689"/>
         <source>Review Invoice</source>
         <translation>Revisar fatura</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="253" />
+        <location filename="../src/dpiwidget.cpp" line="253"/>
         <source>Invoice Details</source>
         <translation>Detalhes da fatura</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="277" />
-        <location filename="../src/dpiwidget.cpp" line="521" />
-        <location filename="../src/dpiwidget.cpp" line="695" />
+        <location filename="../src/dpiwidget.cpp" line="277"/>
+        <location filename="../src/dpiwidget.cpp" line="521"/>
+        <location filename="../src/dpiwidget.cpp" line="695"/>
         <source>Pay Reviewed Invoice</source>
         <translation>Pagar a fatura revisada</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="295" />
+        <location filename="../src/dpiwidget.cpp" line="295"/>
         <source>Payment Package</source>
         <translation>Pacote de pagamento</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="298" />
+        <location filename="../src/dpiwidget.cpp" line="298"/>
         <source>Send this to the merchant:</source>
         <translation>Envie isto ao lojista:</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="302" />
+        <location filename="../src/dpiwidget.cpp" line="302"/>
         <source>Package will appear after payment...</source>
         <translation>O pacote aparecerá após o pagamento …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="305" />
-        <location filename="../src/dpiwidget.cpp" line="439" />
+        <location filename="../src/dpiwidget.cpp" line="305"/>
+        <location filename="../src/dpiwidget.cpp" line="439"/>
         <source>Copy Package</source>
         <translation>Copiar pacote</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="334" />
-        <location filename="../src/dpiwidget.cpp" line="374" />
-        <location filename="../src/dpiwidget.cpp" line="398" />
+        <location filename="../src/dpiwidget.cpp" line="334"/>
+        <location filename="../src/dpiwidget.cpp" line="374"/>
+        <location filename="../src/dpiwidget.cpp" line="398"/>
         <source>Input Required</source>
         <translation>Entrada obrigatória</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="334" />
+        <location filename="../src/dpiwidget.cpp" line="334"/>
         <source>Please enter an amount.</source>
         <translation>Informe um valor.</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="340" />
+        <location filename="../src/dpiwidget.cpp" line="340"/>
         <source>Invalid Amount</source>
         <translation>Valor inválido</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="340" />
+        <location filename="../src/dpiwidget.cpp" line="340"/>
         <source>Amount must be greater than 0.</source>
         <translation>O valor deve ser maior que 0.</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="350" />
+        <location filename="../src/dpiwidget.cpp" line="350"/>
         <source>Creating...</source>
         <translation>Criando …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="361" />
-        <location filename="../src/dpiwidget.cpp" line="437" />
+        <location filename="../src/dpiwidget.cpp" line="361"/>
+        <location filename="../src/dpiwidget.cpp" line="437"/>
         <source>Copied!</source>
         <translation>Copiado.</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="374" />
+        <location filename="../src/dpiwidget.cpp" line="374"/>
         <source>Paste a payment package first.</source>
         <translation>Cole primeiro um pacote de pagamento.</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="378" />
+        <location filename="../src/dpiwidget.cpp" line="378"/>
         <source>No Invoice</source>
         <translation>Sem fatura</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="378" />
+        <location filename="../src/dpiwidget.cpp" line="378"/>
         <source>Create an invoice first.</source>
         <translation>Crie primeiro uma fatura.</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="387" />
+        <location filename="../src/dpiwidget.cpp" line="387"/>
         <source>Verifying...</source>
         <translation>Verificando …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="398" />
+        <location filename="../src/dpiwidget.cpp" line="398"/>
         <source>Paste an invoice first.</source>
         <translation>Cole primeiro uma fatura.</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="408" />
+        <location filename="../src/dpiwidget.cpp" line="408"/>
         <source>Decoding...</source>
         <translation>Decodificando …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="423" />
+        <location filename="../src/dpiwidget.cpp" line="423"/>
         <source>Paying...</source>
         <translation>Pagando …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="424" />
+        <location filename="../src/dpiwidget.cpp" line="424"/>
         <source>Processing payment...</source>
         <translation>Processando o pagamento …</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="455" />
-        <location filename="../src/dpiwidget.cpp" line="685" />
+        <location filename="../src/dpiwidget.cpp" line="455"/>
+        <location filename="../src/dpiwidget.cpp" line="685"/>
         <source>Invoice Error</source>
         <translation>Erro na fatura</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="494" />
-        <location filename="../src/dpiwidget.cpp" line="691" />
+        <location filename="../src/dpiwidget.cpp" line="494"/>
+        <location filename="../src/dpiwidget.cpp" line="691"/>
         <source>Decode Error</source>
         <translation>Erro de decodificação</translation>
     </message>
     <message>
-        <location filename="../src/dpiwidget.cpp" line="508" />
-        <location filename="../src/dpiwidget.cpp" line="773" />
+        <location filename="../src/dpiwidget.cpp" line="508"/>
+        <location filename="../src/dpiwidget.cpp" line="773"/>
         <source>EXPIRED</source>
         <translation>EXPIRADA</translation>
     </message>
@@ -728,474 +728,474 @@ Sem essa cópia você não conseguirá recuperar a carteira se o computador for 
 <context>
     <name>EscrowWidget</name>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="55" />
+        <location filename="../src/escrowwidget.cpp" line="55"/>
         <source>&lt;h2&gt;⚖️ Smart Contract Escrow&lt;/h2&gt;</source>
         <translation>&lt;h2&gt;⚖️ Custódia por contrato inteligente&lt;/h2&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="56" />
+        <location filename="../src/escrowwidget.cpp" line="56"/>
         <source>0 active contracts</source>
         <translation>0 contratos ativos</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="59" />
+        <location filename="../src/escrowwidget.cpp" line="59"/>
         <source>➕ Create New Escrow</source>
         <translation>➕ Criar nova custódia</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="62" />
+        <location filename="../src/escrowwidget.cpp" line="62"/>
         <source>🔄 Refresh</source>
         <translation>🔄 Atualizar</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="63" />
+        <location filename="../src/escrowwidget.cpp" line="63"/>
         <source>📥 Export CSV</source>
         <translation>📥 Exportar CSV</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="76" />
+        <location filename="../src/escrowwidget.cpp" line="76"/>
         <source>Filter:</source>
         <translation>Filtro:</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="125" />
+        <location filename="../src/escrowwidget.cpp" line="125"/>
         <source>Selected Contract Details</source>
         <translation>Detalhes do contrato selecionado</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="140" />
+        <location filename="../src/escrowwidget.cpp" line="140"/>
         <source>📋 Copy P2SH</source>
         <translation>📋 Copiar o P2SH</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="142" />
+        <location filename="../src/escrowwidget.cpp" line="142"/>
         <source>📱 Show QR</source>
         <translation>📱 Mostrar QR</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="145" />
+        <location filename="../src/escrowwidget.cpp" line="145"/>
         <source>📜 View Script</source>
         <translation>📜 Ver script</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="147" />
+        <location filename="../src/escrowwidget.cpp" line="147"/>
         <source>💾 Export Sighash</source>
         <translation>💾 Exportar sighash</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="155" />
-        <location filename="../src/escrowwidget.cpp" line="1365" />
+        <location filename="../src/escrowwidget.cpp" line="155"/>
+        <location filename="../src/escrowwidget.cpp" line="1365"/>
         <source>&lt;b&gt;Contract ID:&lt;/b&gt;</source>
         <translation>&lt;b&gt;ID do contrato:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="158" />
+        <location filename="../src/escrowwidget.cpp" line="158"/>
         <source>&lt;b&gt;P2SH Address:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Endereço P2SH:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="165" />
-        <location filename="../src/escrowwidget.cpp" line="1368" />
+        <location filename="../src/escrowwidget.cpp" line="165"/>
+        <location filename="../src/escrowwidget.cpp" line="1368"/>
         <source>&lt;b&gt;Amount:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Valor:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="168" />
+        <location filename="../src/escrowwidget.cpp" line="168"/>
         <source>&lt;b&gt;Status:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Situação:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="171" />
+        <location filename="../src/escrowwidget.cpp" line="171"/>
         <source>&lt;b&gt;Buyer:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Comprador:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="174" />
+        <location filename="../src/escrowwidget.cpp" line="174"/>
         <source>&lt;b&gt;Seller:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Vendedor:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="177" />
+        <location filename="../src/escrowwidget.cpp" line="177"/>
         <source>&lt;b&gt;Mediator:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Mediador:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="180" />
+        <location filename="../src/escrowwidget.cpp" line="180"/>
         <source>&lt;b&gt;Lock TXID:&lt;/b&gt;</source>
         <translation>&lt;b&gt;TXID do bloqueio:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="183" />
+        <location filename="../src/escrowwidget.cpp" line="183"/>
         <source>&lt;b&gt;Refund Height:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Altura do reembolso:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="186" />
+        <location filename="../src/escrowwidget.cpp" line="186"/>
         <source>&lt;b&gt;Current Height:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Altura atual:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="189" />
+        <location filename="../src/escrowwidget.cpp" line="189"/>
         <source>&lt;b&gt;Time Remaining:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Tempo restante:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="192" />
+        <location filename="../src/escrowwidget.cpp" line="192"/>
         <source>&lt;b&gt;Timelock Progress:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Progresso do timelock:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="204" />
+        <location filename="../src/escrowwidget.cpp" line="204"/>
         <source>✅ Release Funds to Seller</source>
         <translation>✅ Liberar fundos ao vendedor</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="208" />
+        <location filename="../src/escrowwidget.cpp" line="208"/>
         <source>↩️ Refund to Buyer</source>
         <translation>↩️ Reembolsar o comprador</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="212" />
+        <location filename="../src/escrowwidget.cpp" line="212"/>
         <source>🔍 View Full Details</source>
         <translation>🔍 Ver todos os detalhes</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="215" />
+        <location filename="../src/escrowwidget.cpp" line="215"/>
         <source>📥 Import Signatures</source>
         <translation>📥 Importar assinaturas</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="227" />
+        <location filename="../src/escrowwidget.cpp" line="227"/>
         <source>&lt;b&gt;Event Log:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Registro de eventos:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="291" />
-        <location filename="../src/escrowwidget.cpp" line="317" />
-        <location filename="../src/escrowwidget.cpp" line="431" />
-        <location filename="../src/escrowwidget.cpp" line="549" />
+        <location filename="../src/escrowwidget.cpp" line="291"/>
+        <location filename="../src/escrowwidget.cpp" line="317"/>
+        <location filename="../src/escrowwidget.cpp" line="431"/>
+        <location filename="../src/escrowwidget.cpp" line="549"/>
         <source>No Selection</source>
         <translation>Nenhuma seleção</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="291" />
-        <location filename="../src/escrowwidget.cpp" line="317" />
-        <location filename="../src/escrowwidget.cpp" line="431" />
-        <location filename="../src/escrowwidget.cpp" line="549" />
+        <location filename="../src/escrowwidget.cpp" line="291"/>
+        <location filename="../src/escrowwidget.cpp" line="317"/>
+        <location filename="../src/escrowwidget.cpp" line="431"/>
+        <location filename="../src/escrowwidget.cpp" line="549"/>
         <source>Please select a contract first.</source>
         <translation>Selecione primeiro um contrato.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="297" />
+        <location filename="../src/escrowwidget.cpp" line="297"/>
         <source>Release Funds</source>
         <translation>Liberar fundos</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="325" />
-        <location filename="../src/escrowwidget.cpp" line="469" />
+        <location filename="../src/escrowwidget.cpp" line="325"/>
+        <location filename="../src/escrowwidget.cpp" line="469"/>
         <source>Timelock Not Expired</source>
         <translation>O timelock ainda não venceu</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="337" />
+        <location filename="../src/escrowwidget.cpp" line="337"/>
         <source>Refund to Buyer</source>
         <translation>Reembolsar o comprador</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="378" />
+        <location filename="../src/escrowwidget.cpp" line="378"/>
         <source>✅ Copied!</source>
         <translation>✅ Copiado.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="398" />
-        <location filename="../src/escrowwidget.cpp" line="811" />
+        <location filename="../src/escrowwidget.cpp" line="398"/>
+        <location filename="../src/escrowwidget.cpp" line="811"/>
         <source>Export Failed</source>
         <translation>Falha na exportação</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="398" />
+        <location filename="../src/escrowwidget.cpp" line="398"/>
         <source>Could not open file for writing.</source>
         <translation>Não foi possível abrir o arquivo para escrita.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="418" />
+        <location filename="../src/escrowwidget.cpp" line="418"/>
         <source>Export Complete</source>
         <translation>Exportação concluída</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="424" />
+        <location filename="../src/escrowwidget.cpp" line="424"/>
         <source>Contract Signing Unavailable</source>
         <translation>Assinatura de contrato indisponível</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="425" />
+        <location filename="../src/escrowwidget.cpp" line="425"/>
         <source>Contract fund movement is disabled in v8.1.9. The daemon does not yet produce a canonical signing package bound to the funding outpoint, action, destination, amount, chain, and expiry.</source>
         <translation>A movimentação de fundos do contrato está desativada na v8.1.9. O daemon ainda não produz um pacote de assinatura canônico vinculado ao ponto de financiamento, à ação, ao destino, ao valor, à cadeia e ao vencimento.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="436" />
+        <location filename="../src/escrowwidget.cpp" line="436"/>
         <source>Contract Not Found</source>
         <translation>Contrato não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="436" />
+        <location filename="../src/escrowwidget.cpp" line="436"/>
         <source>Contract details not loaded.</source>
         <translation>Os detalhes do contrato não foram carregados.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="444" />
+        <location filename="../src/escrowwidget.cpp" line="444"/>
         <source>Invalid Status</source>
         <translation>Situação inválida</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="451" />
+        <location filename="../src/escrowwidget.cpp" line="451"/>
         <source>Export Sighash</source>
         <translation>Exportar sighash</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="452" />
+        <location filename="../src/escrowwidget.cpp" line="452"/>
         <source>Export sighash for which action?</source>
         <translation>Exportar o sighash para qual ação?</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="543" />
+        <location filename="../src/escrowwidget.cpp" line="543"/>
         <source>Contract Broadcast Unavailable</source>
         <translation>Transmissão de contrato indisponível</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="544" />
+        <location filename="../src/escrowwidget.cpp" line="544"/>
         <source>Imported contract signatures cannot be broadcast in v8.1.9 because the daemon cannot validate a bound signing package. No RPC was called.</source>
         <translation>As assinaturas de contrato importadas não podem ser transmitidas na v8.1.9 porque o daemon não consegue validar um pacote de assinatura vinculado. Nenhum RPC foi chamado.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="564" />
+        <location filename="../src/escrowwidget.cpp" line="564"/>
         <source>Import Failed</source>
         <translation>Falha na importação</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="564" />
+        <location filename="../src/escrowwidget.cpp" line="564"/>
         <source>Could not read file.</source>
         <translation>Não foi possível ler o arquivo.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="573" />
-        <location filename="../src/escrowwidget.cpp" line="1524" />
+        <location filename="../src/escrowwidget.cpp" line="573"/>
+        <location filename="../src/escrowwidget.cpp" line="1524"/>
         <source>Parse Error</source>
         <translation>Erro de análise</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="584" />
+        <location filename="../src/escrowwidget.cpp" line="584"/>
         <source>Invalid File</source>
         <translation>Arquivo inválido</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="592" />
+        <location filename="../src/escrowwidget.cpp" line="592"/>
         <source>Contract ID Mismatch</source>
         <translation>O ID do contrato não confere</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="607" />
-        <location filename="../src/escrowwidget.cpp" line="1546" />
+        <location filename="../src/escrowwidget.cpp" line="607"/>
+        <location filename="../src/escrowwidget.cpp" line="1546"/>
         <source>No Signatures</source>
         <translation>Sem assinaturas</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="608" />
+        <location filename="../src/escrowwidget.cpp" line="608"/>
         <source>No signatures found in file. Please sign the sighash first.</source>
         <translation>Nenhuma assinatura encontrada no arquivo. Assine primeiro o sighash.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="622" />
-        <location filename="../src/escrowwidget.cpp" line="1564" />
+        <location filename="../src/escrowwidget.cpp" line="622"/>
+        <location filename="../src/escrowwidget.cpp" line="1564"/>
         <source>Confirm Broadcast</source>
         <translation>Confirmar a transmissão</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="630" />
-        <location filename="../src/escrowwidget.cpp" line="1567" />
+        <location filename="../src/escrowwidget.cpp" line="630"/>
+        <location filename="../src/escrowwidget.cpp" line="1567"/>
         <source>Contract Broadcast Disabled</source>
         <translation>Transmissão de contrato desativada</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="631" />
+        <location filename="../src/escrowwidget.cpp" line="631"/>
         <source>The signature package was parsed but not submitted. Bound contract signing is not available in v8.1.9.</source>
         <translation>O pacote de assinaturas foi analisado, mas não enviado. A assinatura vinculada de contratos não está disponível na v8.1.9.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="747" />
+        <location filename="../src/escrowwidget.cpp" line="747"/>
         <source>Contract Created</source>
         <translation>Contrato criado</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="794" />
+        <location filename="../src/escrowwidget.cpp" line="794"/>
         <source>Export Successful</source>
         <translation>Exportação bem-sucedida</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="795" />
+        <location filename="../src/escrowwidget.cpp" line="795"/>
         <source>Sighash exported successfully!</source>
         <translation>O sighash foi exportado com sucesso.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="811" />
+        <location filename="../src/escrowwidget.cpp" line="811"/>
         <source>Could not write to file.</source>
         <translation>Não foi possível escrever no arquivo.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="830" />
+        <location filename="../src/escrowwidget.cpp" line="830"/>
         <source>Swap Failed</source>
         <translation>Falha na troca</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1022" />
+        <location filename="../src/escrowwidget.cpp" line="1022"/>
         <source>Create New Escrow Contract</source>
         <translation>Criar novo contrato de custódia</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1028" />
+        <location filename="../src/escrowwidget.cpp" line="1028"/>
         <source>027... (66 hex characters)</source>
         <translation>027… (66 caracteres hexadecimais)</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1031" />
+        <location filename="../src/escrowwidget.cpp" line="1031"/>
         <source>02c... (66 hex characters)</source>
         <translation>02c… (66 caracteres hexadecimais)</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1034" />
+        <location filename="../src/escrowwidget.cpp" line="1034"/>
         <source>02f... (66 hex characters)</source>
         <translation>02f… (66 caracteres hexadecimais)</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1047" />
+        <location filename="../src/escrowwidget.cpp" line="1047"/>
         <source>Select which currency to release to seller.
 Bridge conversion uses locked exchange rate.</source>
         <translation>Escolha a moeda que será liberada ao vendedor.
 A conversão pela ponte usa uma cotação travada.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1075" />
-        <location filename="../src/escrowwidget.cpp" line="1080" />
+        <location filename="../src/escrowwidget.cpp" line="1075"/>
+        <location filename="../src/escrowwidget.cpp" line="1080"/>
         <source>Validation Error</source>
         <translation>Erro de validação</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1075" />
+        <location filename="../src/escrowwidget.cpp" line="1075"/>
         <source>All public keys are required.</source>
         <translation>Todas as chaves públicas são obrigatórias.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1080" />
+        <location filename="../src/escrowwidget.cpp" line="1080"/>
         <source>Public keys must be 66 hex characters (compressed).</source>
         <translation>As chaves públicas devem ter 66 caracteres hexadecimais (comprimidas).</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1110" />
+        <location filename="../src/escrowwidget.cpp" line="1110"/>
         <source>Contract Details</source>
         <translation>Detalhes do contrato</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1205" />
+        <location filename="../src/escrowwidget.cpp" line="1205"/>
         <source>Redeem Script</source>
         <translation>Script de resgate</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1210" />
+        <location filename="../src/escrowwidget.cpp" line="1210"/>
         <source>&lt;b&gt;Redeem Script (Hex):&lt;/b&gt;</source>
         <translation>&lt;b&gt;Script de resgate (hex):&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1218" />
+        <location filename="../src/escrowwidget.cpp" line="1218"/>
         <source>&lt;b&gt;Decoded Script:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Script decodificado:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1225" />
+        <location filename="../src/escrowwidget.cpp" line="1225"/>
         <source>📋 Copy Script</source>
         <translation>📋 Copiar o script</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1252" />
+        <location filename="../src/escrowwidget.cpp" line="1252"/>
         <source>No Address</source>
         <translation>Sem endereço</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1252" />
+        <location filename="../src/escrowwidget.cpp" line="1252"/>
         <source>No P2SH address available for this contract.</source>
         <translation>Não há endereço P2SH disponível para este contrato.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1296" />
-        <location filename="../src/escrowwidget.cpp" line="1405" />
+        <location filename="../src/escrowwidget.cpp" line="1296"/>
+        <location filename="../src/escrowwidget.cpp" line="1405"/>
         <source>QR Generation Failed</source>
         <translation>Falha ao gerar o QR</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1296" />
+        <location filename="../src/escrowwidget.cpp" line="1296"/>
         <source>Failed to generate QR code.</source>
         <translation>Não foi possível gerar o código QR.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1310" />
+        <location filename="../src/escrowwidget.cpp" line="1310"/>
         <source>📋 Copy to Clipboard</source>
         <translation>📋 Copiar para a área de transferência</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1318" />
-        <location filename="../src/escrowwidget.cpp" line="1447" />
+        <location filename="../src/escrowwidget.cpp" line="1318"/>
+        <location filename="../src/escrowwidget.cpp" line="1447"/>
         <source>💾 Save QR Image</source>
         <translation>💾 Salvar a imagem do QR</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1329" />
-        <location filename="../src/escrowwidget.cpp" line="1458" />
+        <location filename="../src/escrowwidget.cpp" line="1329"/>
+        <location filename="../src/escrowwidget.cpp" line="1458"/>
         <source>Success</source>
         <translation>Sucesso</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1331" />
-        <location filename="../src/escrowwidget.cpp" line="1460" />
+        <location filename="../src/escrowwidget.cpp" line="1331"/>
+        <location filename="../src/escrowwidget.cpp" line="1460"/>
         <source>Error</source>
         <translation>Erro</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1331" />
-        <location filename="../src/escrowwidget.cpp" line="1460" />
+        <location filename="../src/escrowwidget.cpp" line="1331"/>
+        <location filename="../src/escrowwidget.cpp" line="1460"/>
         <source>Failed to save QR code image.</source>
         <translation>Não foi possível salvar a imagem do código QR.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1351" />
+        <location filename="../src/escrowwidget.cpp" line="1351"/>
         <source>Sighash QR Code - Offline Signing</source>
         <translation>Código QR do sighash - assinatura off-line</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1357" />
+        <location filename="../src/escrowwidget.cpp" line="1357"/>
         <source>&lt;h3&gt;📱 Sighash QR Code&lt;/h3&gt;</source>
         <translation>&lt;h3&gt;📱 Código QR do sighash&lt;/h3&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1362" />
+        <location filename="../src/escrowwidget.cpp" line="1362"/>
         <source>Transaction Details</source>
         <translation>Detalhes da transação</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1371" />
+        <location filename="../src/escrowwidget.cpp" line="1371"/>
         <source>&lt;b&gt;To Address:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Endereço de destino:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1374" />
+        <location filename="../src/escrowwidget.cpp" line="1374"/>
         <source>&lt;b&gt;Action:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Ação:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1377" />
+        <location filename="../src/escrowwidget.cpp" line="1377"/>
         <source>&lt;b&gt;Sighash:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Sighash:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1406" />
+        <location filename="../src/escrowwidget.cpp" line="1406"/>
         <source>Failed to generate QR code. The data may be too large.
 
 Please use the JSON file export method instead.</source>
@@ -1204,57 +1204,57 @@ Please use the JSON file export method instead.</source>
 Use a exportação em arquivo JSON.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1425" />
-        <source>&lt;b&gt;Instructions for Offline Signing:&lt;/b&gt;&lt;br&gt;1. Scan this QR code with your offline signing device&lt;br&gt;2. Sign the sighash with your private key(s)&lt;br&gt;3. The signed transaction can be returned via QR or JSON file&lt;br&gt;4. Use '📥 Import Signatures' to complete the transaction</source>
+        <location filename="../src/escrowwidget.cpp" line="1425"/>
+        <source>&lt;b&gt;Instructions for Offline Signing:&lt;/b&gt;&lt;br&gt;1. Scan this QR code with your offline signing device&lt;br&gt;2. Sign the sighash with your private key(s)&lt;br&gt;3. The signed transaction can be returned via QR or JSON file&lt;br&gt;4. Use &apos;📥 Import Signatures&apos; to complete the transaction</source>
         <translation>&lt;b&gt;Instruções para assinatura off-line:&lt;/b&gt;&lt;br&gt;1. Escaneie este código QR com seu dispositivo de assinatura off-line&lt;br&gt;2. Assine o sighash com sua chave ou chaves privadas&lt;br&gt;3. A transação assinada pode voltar por QR ou por arquivo JSON&lt;br&gt;4. Use «📥 Importar assinaturas» para concluir a transação</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1440" />
+        <location filename="../src/escrowwidget.cpp" line="1440"/>
         <source>📋 Copy JSON</source>
         <translation>📋 Copiar o JSON</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1479" />
+        <location filename="../src/escrowwidget.cpp" line="1479"/>
         <source>Import Signed Transaction from QR</source>
         <translation>Importar transação assinada de um QR</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1485" />
+        <location filename="../src/escrowwidget.cpp" line="1485"/>
         <source>&lt;h3&gt;📱 Import Signed Transaction&lt;/h3&gt;</source>
         <translation>&lt;h3&gt;📱 Importar transação assinada&lt;/h3&gt;</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1490" />
-        <source>&lt;b&gt;Import Methods:&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;Paste JSON Data:&lt;/b&gt; Copy signed transaction JSON and paste below&lt;br&gt;2. &lt;b&gt;Load from File:&lt;/b&gt; Use the '📥 Import Signatures' button instead&lt;br&gt;3. &lt;b&gt;Scan QR (Future):&lt;/b&gt; Camera-based QR scanning coming soon</source>
+        <location filename="../src/escrowwidget.cpp" line="1490"/>
+        <source>&lt;b&gt;Import Methods:&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;Paste JSON Data:&lt;/b&gt; Copy signed transaction JSON and paste below&lt;br&gt;2. &lt;b&gt;Load from File:&lt;/b&gt; Use the &apos;📥 Import Signatures&apos; button instead&lt;br&gt;3. &lt;b&gt;Scan QR (Future):&lt;/b&gt; Camera-based QR scanning coming soon</source>
         <translation>&lt;b&gt;Formas de importar:&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;Colar JSON:&lt;/b&gt; copie o JSON da transação assinada e cole abaixo&lt;br&gt;2. &lt;b&gt;Carregar de arquivo:&lt;/b&gt; use o botão «📥 Importar assinaturas»&lt;br&gt;3. &lt;b&gt;Escanear QR (em breve):&lt;/b&gt; a leitura por câmera chegará em breve</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1501" />
+        <location filename="../src/escrowwidget.cpp" line="1501"/>
         <source>Paste signed transaction JSON here...</source>
         <translation>Cole aqui o JSON da transação assinada …</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1509" />
+        <location filename="../src/escrowwidget.cpp" line="1509"/>
         <source>✅ Import and Broadcast</source>
         <translation>✅ Importar e transmitir</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1515" />
+        <location filename="../src/escrowwidget.cpp" line="1515"/>
         <source>No Data</source>
         <translation>Sem dados</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1515" />
+        <location filename="../src/escrowwidget.cpp" line="1515"/>
         <source>Please paste the signed transaction JSON.</source>
         <translation>Cole o JSON da transação assinada.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1535" />
+        <location filename="../src/escrowwidget.cpp" line="1535"/>
         <source>Invalid Data</source>
         <translation>Dados inválidos</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1547" />
+        <location filename="../src/escrowwidget.cpp" line="1547"/>
         <source>No signatures found in the JSON data.
 
 Please ensure the transaction has been signed.</source>
@@ -1263,12 +1263,12 @@ Please ensure the transaction has been signed.</source>
 Confirme que a transação foi assinada.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1568" />
+        <location filename="../src/escrowwidget.cpp" line="1568"/>
         <source>The package was not submitted. Bound contract signing is not available in v8.1.9.</source>
         <translation>O pacote não foi enviado. A assinatura vinculada de contratos não está disponível na v8.1.9.</translation>
     </message>
     <message>
-        <location filename="../src/escrowwidget.cpp" line="1575" />
+        <location filename="../src/escrowwidget.cpp" line="1575"/>
         <source>Cancel</source>
         <translation>Cancelar</translation>
     </message>
@@ -1276,24 +1276,24 @@ Confirme que a transação foi assinada.</translation>
 <context>
     <name>HardwareWalletWidget</name>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="200" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="200"/>
         <source>🔐 Hardware Wallet Integration</source>
         <translation>🔐 Integração com carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="205" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="205"/>
         <source>Sign transactions using hardware wallets (Coldcard, Ledger, Trezor, Keystone, etc.)
 PSBT here means Partially Signed Dinero Transaction. It is a binary signing container shown as Base64 for copy/paste, files, and QR transfer.</source>
         <translation>Assine transações com carteiras de hardware (Coldcard, Ledger, Trezor, Keystone e outras).
 PSBT aqui significa transação Dinero parcialmente assinada. É um contêiner binário de assinatura exibido em Base64 para copiar e colar, para arquivos e para transferência por QR.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="234" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="234"/>
         <source>📋 How it works</source>
         <translation>📋 Como funciona</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="236" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="236"/>
         <source>1. Create unsigned transaction in DineroCoin wallet
 2. Export the Partially Signed Dinero Transaction to file
 3. Sign Taproot inputs on your hardware wallet or use a connected USB session
@@ -1306,115 +1306,115 @@ PSBT aqui significa transação Dinero parcialmente assinada. É um contêiner b
 5. Transmita a transação final extraída</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="248" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="402" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="248"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="402"/>
         <source>Partially Signed Dinero Transaction (PSBT)</source>
         <translation>Transação Dinero parcialmente assinada (PSBT)</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="251" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="251"/>
         <source>Dinero PSBT (Base64):</source>
         <translation>PSBT Dinero (Base64):</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="253" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="253"/>
         <source>Paste Partially Signed Dinero Transaction here or create one from the Send tab...</source>
         <translation>Cole aqui a transação Dinero parcialmente assinada, ou crie uma na aba Enviar …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="273" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="273"/>
         <source>📤 Export to Hardware Wallet</source>
         <translation>📤 Exportar para a carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="276" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="276"/>
         <source>Export Path:</source>
         <translation>Caminho de exportação:</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="278" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="278"/>
         <source>/Volumes/COLDCARD/unsigned.psbt</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="280" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="314" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="280"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="314"/>
         <source>Browse...</source>
         <translation>Procurar …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="295" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="295"/>
         <source>Export Dinero PSBT to File</source>
         <translation>Exportar a PSBT Dinero para arquivo</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="307" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="307"/>
         <source>📥 Import from Hardware Wallet</source>
         <translation>📥 Importar da carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="310" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="310"/>
         <source>Import Path:</source>
         <translation>Caminho de importação:</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="312" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="312"/>
         <source>/Volumes/COLDCARD/signed.psbt</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="328" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="328"/>
         <source>Import Signed Dinero PSBT</source>
         <translation>Importar PSBT Dinero assinada</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="340" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="340"/>
         <source>🔍 Analyze Dinero PSBT</source>
         <translation>🔍 Analisar a PSBT Dinero</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="347" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="347"/>
         <source>🔌 Sign via Connected USB</source>
         <translation>🔌 Assinar pelo USB conectado</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="349" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="349"/>
         <source>Connect a USB device with direct PSBT-signing support in the USB tab, then sign the PSBT currently loaded here.</source>
         <translation>Conecte na aba USB um dispositivo com suporte a assinatura direta de PSBT e assine a PSBT carregada aqui.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="352" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="352"/>
         <source>✅ Finalize Dinero PSBT</source>
         <translation>✅ Finalizar a PSBT Dinero</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="354" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="354"/>
         <source>Attempt to finalize the current Partially Signed Dinero Transaction and extract a broadcastable transaction.</source>
         <translation>Tentar finalizar a transação Dinero parcialmente assinada atual e extrair uma transação pronta para transmissão.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="357" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="357"/>
         <source>📡 Broadcast Transaction</source>
         <translation>📡 Transmitir a transação</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="359" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="359"/>
         <source>Broadcast the last finalized or imported transaction hex.</source>
         <translation>Transmitir o último hexadecimal de transação finalizado ou importado.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="368" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="457" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="368"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="457"/>
         <source>Ready</source>
         <translation>Pronto</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="385" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="385"/>
         <source>📋 QR Code Workflow</source>
         <translation>📋 Fluxo com código QR</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="387" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="387"/>
         <source>Use QR codes for air-gapped signing with devices like:
 • Keystone (formerly Cobo Vault)
 • Passport by Foundation Devices
@@ -1435,78 +1435,78 @@ PSBT aqui significa transação Dinero parcialmente assinada. É um contêiner b
 4. Escaneie de volta o QR da PSBT Dinero assinada</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="405" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="405"/>
         <source>Paste Partially Signed Dinero Transaction here...</source>
         <translation>Cole aqui a transação Dinero parcialmente assinada …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="421" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="421"/>
         <source>📱 QR Code Display</source>
         <translation>📱 Exibição do código QR</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="429" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="429"/>
         <source>QR code will appear here</source>
         <translation>O código QR aparecerá aqui</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="441" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="441"/>
         <source>📤 Show QR Code</source>
         <translation>📤 Mostrar o código QR</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="447" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="447"/>
         <source>📥 Scan Signed QR</source>
         <translation>📥 Escanear o QR assinado</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="450" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="450"/>
         <source>Camera scanning requires additional dependencies</source>
         <translation>A leitura pela câmera requer dependências adicionais</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="461" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="461"/>
         <source>Transaction summary will appear after a Dinero PSBT is analyzed.</source>
         <translation>O resumo da transação aparecerá depois que uma PSBT Dinero for analisada.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="479" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="479"/>
         <source>Analyze PSBT to show QR code</source>
         <translation>Analise a PSBT para exibir o código QR</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="482" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="482"/>
         <source>PSBT loaded. Click Show QR Code to analyze and display the signing QR.</source>
         <translation>PSBT carregada. Clique em Mostrar o código QR para analisá-la e exibir o QR de assinatura.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="486" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="486"/>
         <source>Transaction summary will appear after analysis.</source>
         <translation>O resumo da transação aparecerá após a análise.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="503" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="503"/>
         <source>Demo QR unavailable</source>
         <translation>QR de demonstração indisponível</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="524" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="524"/>
         <source>No transaction loaded. Scanning this demo QR reads a plain-text placeholder, not a spend request.</source>
         <translation>Nenhuma transação carregada. Escanear este QR de demonstração lê um texto de exemplo, não um pedido de gasto.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="543" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="547" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="543"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="547"/>
         <source>Analyzing Dinero PSBT before QR display...</source>
         <translation>Analisando a PSBT Dinero antes de exibir o QR …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="595" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="595"/>
         <source>🔌 USB Hardware Wallets</source>
         <translation>🔌 Carteiras de hardware por USB</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="597" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="597"/>
         <source>Current USB status:
 • Device detection is experimental and depends on backend USB support
 • Detection currently recognizes Ledger devices and Trezor devices when available
@@ -1515,7 +1515,7 @@ PSBT aqui significa transação Dinero parcialmente assinada. É um contêiner b
 • Trezor USB signing is limited to active-wallet BIP86 Taproot PSBTs that match the loaded descriptor set
 • File / SD Card and QR flows remain the fallback signing paths
 
-Click 'Detect Devices' to check whether this daemon build can see connected USB wallets.</source>
+Click &apos;Detect Devices&apos; to check whether this daemon build can see connected USB wallets.</source>
         <translation>Situação atual do USB:
 • A detecção de dispositivos é experimental e depende do suporte a USB no backend
 • A detecção reconhece por ora dispositivos Ledger e Trezor, quando disponíveis
@@ -1527,346 +1527,346 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
 Clique em «Detectar dispositivos» para verificar se esta compilação do daemon enxerga carteiras USB conectadas.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="612" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="612"/>
         <source>🔍 Device Detection</source>
         <translation>🔍 Detecção de dispositivos</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="615" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="615"/>
         <source>Connected Devices:</source>
         <translation>Dispositivos conectados:</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="621" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="621"/>
         <source>🔄 Detect Devices</source>
         <translation>🔄 Detectar dispositivos</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="625" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="1582" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="625"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="1582"/>
         <source>🔌 Connect</source>
         <translation>🔌 Conectar</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="628" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="628"/>
         <source>Open a supported USB device session after detection. Direct signing availability depends on the device family.</source>
         <translation>Abra uma sessão com um dispositivo USB compatível após a detecção. A assinatura direta depende da família do dispositivo.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="651" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="651"/>
         <source>🏷️ Address Verification</source>
         <translation>🏷️ Verificação de endereço</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="654" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="654"/>
         <source>Derivation Path:</source>
         <translation>Caminho de derivação:</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="661" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="661"/>
         <source>📥 Get Address</source>
         <translation>📥 Obter endereço</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="663" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="663"/>
         <source>Fetch the address for the derivation path from the active USB session.</source>
         <translation>Obter o endereço do caminho de derivação a partir da sessão USB ativa.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="666" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="666"/>
         <source>👁️ Verify on Device</source>
         <translation>👁️ Verificar no dispositivo</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="668" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="668"/>
         <source>Ask the active device to show and confirm the address for this derivation path.</source>
         <translation>Pedir ao dispositivo ativo que exiba e confirme o endereço deste caminho de derivação.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="671" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="1564" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="671"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="1564"/>
         <source>No address fetched yet.</source>
         <translation>Nenhum endereço obtido ainda.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="682" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="682"/>
         <source>🧾 Watch-Only Descriptor Export</source>
         <translation>🧾 Exportar descritores somente-leitura</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="685" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="685"/>
         <source>Account Path:</source>
         <translation>Caminho da conta:</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="692" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="692"/>
         <source>Descriptor Policy:</source>
         <translation>Política do descritor:</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="699" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="699"/>
         <source>🧾 Export Account Descriptors</source>
         <translation>🧾 Exportar os descritores da conta</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="701" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="701"/>
         <source>Export receive/change descriptors and the account xpub from the active USB session.</source>
         <translation>Exportar os descritores de recebimento e troco e a xpub da conta a partir da sessão USB ativa.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="704" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="704"/>
         <source>📥 Import Into Active Wallet</source>
         <translation>📥 Importar para a carteira ativa</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="706" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="706"/>
         <source>Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors.</source>
         <translation>Importar os descritores de recebimento e troco exportados para a carteira carregada como descritores somente-leitura.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="712" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="712"/>
         <source>Exported receive/change descriptors will appear here.</source>
         <translation>Os descritores de recebimento e troco exportados aparecerão aqui.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="724" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="724"/>
         <source>USB capability unknown until detection runs</source>
         <translation>Capacidade do USB desconhecida até que a detecção seja executada</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="729" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="729"/>
         <source>📝 Activity Log</source>
         <translation>📝 Registro de atividade</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="761" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="761"/>
         <source>Exporting PSBT...</source>
         <translation>Exportando a PSBT …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="794" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="794"/>
         <source>Importing PSBT...</source>
         <translation>Importando a PSBT …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="817" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="817"/>
         <source>Analyzing PSBT...</source>
         <translation>Analisando a PSBT …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="847" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="847"/>
         <source>Requesting signature from connected USB device...</source>
         <translation>Solicitando a assinatura ao dispositivo USB conectado …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="866" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="866"/>
         <source>Finalizing PSBT...</source>
         <translation>Finalizando a PSBT …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="879" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="879"/>
         <source>Broadcasting final transaction...</source>
         <translation>Transmitindo a transação final …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="891" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="891"/>
         <source>🔍 Detecting USB hardware wallets...</source>
         <translation>🔍 Detectando carteiras de hardware por USB …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="902" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="902"/>
         <source>🔌 Disconnecting active USB session...</source>
         <translation>🔌 Encerrando a sessão USB ativa …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="925" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="925"/>
         <source>🔌 Opening USB session...</source>
         <translation>🔌 Abrindo a sessão USB …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="952" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="952"/>
         <source>📥 Fetching address from active USB session...</source>
         <translation>📥 Obtendo o endereço da sessão USB ativa …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="982" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="982"/>
         <source>👁️ Waiting for device address confirmation...</source>
         <translation>👁️ Aguardando a confirmação do endereço no dispositivo …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1008" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1008"/>
         <source>🧾 Exporting account descriptors...</source>
         <translation>🧾 Exportando os descritores da conta …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1025" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1025"/>
         <source>Import Watch-Only Descriptors</source>
         <translation>Importar descritores somente-leitura</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1026" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1026"/>
         <source>Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors?</source>
         <translation>Importar os descritores de recebimento e troco exportados para a carteira carregada como descritores somente-leitura?</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1033" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1033"/>
         <source>📥 Importing watch-only descriptors into the active wallet...</source>
         <translation>📥 Importando descritores somente-leitura para a carteira ativa …</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1116" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="1196" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1116"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="1196"/>
         <source>❌ PSBT analysis failed; QR was not displayed.</source>
         <translation>❌ A análise da PSBT falhou; o QR não foi exibido.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1128" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1128"/>
         <source>❌ USB operation failed</source>
         <translation>❌ A operação USB falhou</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1131" />
-        <location filename="../src/hardwarewalletwidget.cpp" line="1249" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1131"/>
+        <location filename="../src/hardwarewalletwidget.cpp" line="1249"/>
         <source>❌ USB signing failed</source>
         <translation>❌ A assinatura por USB falhou</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1135" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1135"/>
         <source>❌ Operation failed</source>
         <translation>❌ A operação falhou</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1153" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1153"/>
         <source>✅ Export complete</source>
         <translation>✅ Exportação concluída</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1157" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1157"/>
         <source>❌ Export failed</source>
         <translation>❌ Falha na exportação</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1167" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1167"/>
         <source>❌ Import failed</source>
         <translation>❌ Falha na importação</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1184" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1184"/>
         <source>✅ Analysis complete; QR ready</source>
         <translation>✅ Análise concluída; QR pronto</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1189" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1189"/>
         <source>✅ Analysis complete</source>
         <translation>✅ Análise concluída</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1194" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1194"/>
         <source>❌ Analysis failed</source>
         <translation>❌ A análise falhou</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1266" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1266"/>
         <source>⚠️ No address returned</source>
         <translation>⚠️ Nenhum endereço retornado</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1267" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1267"/>
         <source>No address returned.</source>
         <translation>Nenhum endereço retornado.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1314" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1314"/>
         <source>✅ Account descriptors exported</source>
         <translation>✅ Descritores da conta exportados</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1322" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1322"/>
         <source>⚠️ Descriptor import returned an unexpected response</source>
         <translation>⚠️ A importação de descritores retornou uma resposta inesperada</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1328" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1328"/>
         <source>⚠️ Descriptor import returned incomplete results</source>
         <translation>⚠️ A importação de descritores retornou resultados incompletos</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1352" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1352"/>
         <source>❌ Watch-only descriptor import failed</source>
         <translation>❌ Falha ao importar os descritores somente-leitura</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1357" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1357"/>
         <source>✅ Watch-only descriptors imported into the active wallet</source>
         <translation>✅ Descritores somente-leitura importados para a carteira ativa</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1373" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1373"/>
         <source>❌ Finalize failed</source>
         <translation>❌ Falha na finalização</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1392" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1392"/>
         <source>✅ Finalized. Ready to broadcast</source>
         <translation>✅ Finalizada. Pronta para transmitir</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1395" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1395"/>
         <source>⚠️ Finalization incomplete</source>
         <translation>⚠️ Finalização incompleta</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1406" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1406"/>
         <source>❌ Broadcast failed</source>
         <translation>❌ Falha na transmissão</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1436" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1436"/>
         <source>⚠️ No USB hardware wallets found</source>
         <translation>⚠️ Nenhuma carteira de hardware por USB encontrada</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1492" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1492"/>
         <source>❌ Device detection failed</source>
         <translation>❌ Falha na detecção de dispositivos</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1561" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1561"/>
         <source>ℹ️ USB session closed</source>
         <translation>ℹ️ Sessão USB encerrada</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1575" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1575"/>
         <source>🔌 Disconnect</source>
         <translation>🔌 Desconectar</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1576" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1576"/>
         <source>Close the active USB hardware-wallet session.</source>
         <translation>Encerrar a sessão USB ativa com a carteira de hardware.</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1631" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1631"/>
         <source>✅ Signed Dinero PSBT ready to broadcast</source>
         <translation>✅ PSBT Dinero assinada e pronta para transmitir</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1637" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1637"/>
         <source>✅ Signed Dinero PSBT imported</source>
         <translation>✅ PSBT Dinero assinada importada</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1640" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1640"/>
         <source>⚠️ Dinero PSBT still needs more signatures</source>
         <translation>⚠️ A PSBT Dinero ainda precisa de mais assinaturas</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1656" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1656"/>
         <source>Hardware Wallet Error</source>
         <translation>Erro da carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/hardwarewalletwidget.cpp" line="1660" />
+        <location filename="../src/hardwarewalletwidget.cpp" line="1660"/>
         <source>Hardware Wallet</source>
         <translation>Carteira de hardware</translation>
     </message>
@@ -1874,76 +1874,76 @@ Clique em «Detectar dispositivos» para verificar se esta compilação do daemo
 <context>
     <name>ImportTaprootPage</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1821" />
+        <location filename="../src/walletwizard.cpp" line="1821"/>
         <source>Import Taproot Descriptor</source>
         <translation>Importar descritor Taproot</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1822" />
+        <location filename="../src/walletwizard.cpp" line="1822"/>
         <source>Import a Taproot private key using descriptor format</source>
         <translation>Importe uma chave privada Taproot no formato de descritor</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1827" />
-        <source>&lt;p style='background: #ff922b; color: white; padding: 8px; border-radius: 4px;'&gt;⚠️ &lt;b&gt;Advanced Feature:&lt;/b&gt; Only use this if you have a Taproot descriptor (e.g., from mining setup or another wallet). For most users, restoring from a seed phrase is recommended.&lt;/p&gt;</source>
-        <translation>&lt;p style='background: #ff922b; color: white; padding: 8px; border-radius: 4px;'&gt;⚠️ &lt;b&gt;Recurso avançado:&lt;/b&gt; use isto apenas se você tiver um descritor Taproot (por exemplo, de uma configuração de Mining ou de outra carteira). Para a maioria dos usuários, recomenda-se restaurar a partir de uma frase semente.&lt;/p&gt;</translation>
+        <location filename="../src/walletwizard.cpp" line="1827"/>
+        <source>&lt;p style=&apos;background: #ff922b; color: white; padding: 8px; border-radius: 4px;&apos;&gt;⚠️ &lt;b&gt;Advanced Feature:&lt;/b&gt; Only use this if you have a Taproot descriptor (e.g., from mining setup or another wallet). For most users, restoring from a seed phrase is recommended.&lt;/p&gt;</source>
+        <translation>&lt;p style=&apos;background: #ff922b; color: white; padding: 8px; border-radius: 4px;&apos;&gt;⚠️ &lt;b&gt;Recurso avançado:&lt;/b&gt; use isto apenas se você tiver um descritor Taproot (por exemplo, de uma configuração de Mining ou de outra carteira). Para a maioria dos usuários, recomenda-se restaurar a partir de uma frase semente.&lt;/p&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1837" />
+        <location filename="../src/walletwizard.cpp" line="1837"/>
         <source>&lt;b&gt;Taproot Descriptor:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Descritor Taproot:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1857" />
+        <location filename="../src/walletwizard.cpp" line="1857"/>
         <source>&lt;b&gt;Label (optional):&lt;/b&gt;</source>
         <translation>&lt;b&gt;Rótulo (opcional):&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1861" />
+        <location filename="../src/walletwizard.cpp" line="1861"/>
         <source>e.g., Mining rewards, Cold storage</source>
         <translation>ex.: recompensas de Mining, armazenamento a frio</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1867" />
+        <location filename="../src/walletwizard.cpp" line="1867"/>
         <source>Import Taproot Key</source>
         <translation>Importar chave Taproot</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1891" />
-        <source>&lt;p style='font-size: 10px; color: #e03131; margin-top: 10px;'&gt;&lt;b&gt;Security:&lt;/b&gt; Your wallet must be &lt;b&gt;unlocked&lt;/b&gt; to import private keys. If your wallet is encrypted, unlock it first from the main toolbar.&lt;/p&gt;</source>
-        <translation>&lt;p style='font-size: 10px; color: #e03131; margin-top: 10px;'&gt;&lt;b&gt;Segurança:&lt;/b&gt; sua carteira precisa estar &lt;b&gt;desbloqueada&lt;/b&gt; para importar chaves privadas. Se estiver criptografada, desbloqueie-a antes na barra principal.&lt;/p&gt;</translation>
+        <location filename="../src/walletwizard.cpp" line="1891"/>
+        <source>&lt;p style=&apos;font-size: 10px; color: #e03131; margin-top: 10px;&apos;&gt;&lt;b&gt;Security:&lt;/b&gt; Your wallet must be &lt;b&gt;unlocked&lt;/b&gt; to import private keys. If your wallet is encrypted, unlock it first from the main toolbar.&lt;/p&gt;</source>
+        <translation>&lt;p style=&apos;font-size: 10px; color: #e03131; margin-top: 10px;&apos;&gt;&lt;b&gt;Segurança:&lt;/b&gt; sua carteira precisa estar &lt;b&gt;desbloqueada&lt;/b&gt; para importar chaves privadas. Se estiver criptografada, desbloqueie-a antes na barra principal.&lt;/p&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1899" />
-        <source>&lt;p style='font-size: 10px; color: #666;'&gt;&lt;b&gt;Note:&lt;/b&gt; Importing a Taproot descriptor will automatically trigger a blockchain rescan to find any existing transactions. This may take some time depending on blockchain size.&lt;/p&gt;</source>
-        <translation>&lt;p style='font-size: 10px; color: #666;'&gt;&lt;b&gt;Observação:&lt;/b&gt; importar um descritor Taproot dispara automaticamente uma nova varredura da blockchain para encontrar transações existentes. Isso pode demorar, dependendo do tamanho da cadeia.&lt;/p&gt;</translation>
+        <location filename="../src/walletwizard.cpp" line="1899"/>
+        <source>&lt;p style=&apos;font-size: 10px; color: #666;&apos;&gt;&lt;b&gt;Note:&lt;/b&gt; Importing a Taproot descriptor will automatically trigger a blockchain rescan to find any existing transactions. This may take some time depending on blockchain size.&lt;/p&gt;</source>
+        <translation>&lt;p style=&apos;font-size: 10px; color: #666;&apos;&gt;&lt;b&gt;Observação:&lt;/b&gt; importar um descritor Taproot dispara automaticamente uma nova varredura da blockchain para encontrar transações existentes. Isso pode demorar, dependendo do tamanho da cadeia.&lt;/p&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1926" />
+        <location filename="../src/walletwizard.cpp" line="1926"/>
         <source>Import Required</source>
         <translation>Importação obrigatória</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1927" />
+        <location filename="../src/walletwizard.cpp" line="1927"/>
         <source>Please import a valid Taproot descriptor before continuing.
 
-Click the 'Import Taproot Key' button after entering a valid descriptor.</source>
+Click the &apos;Import Taproot Key&apos; button after entering a valid descriptor.</source>
         <translation>Importe um descritor Taproot válido antes de continuar.
 
 Clique em «Importar chave Taproot» após inserir um descritor válido.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1972" />
-        <source>&lt;span style='color: #e03131;'&gt;Please enter a Taproot descriptor&lt;/span&gt;</source>
-        <translation>&lt;span style='color: #e03131;'&gt;Informe um descritor Taproot&lt;/span&gt;</translation>
+        <location filename="../src/walletwizard.cpp" line="1972"/>
+        <source>&lt;span style=&apos;color: #e03131;&apos;&gt;Please enter a Taproot descriptor&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color: #e03131;&apos;&gt;Informe um descritor Taproot&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1978" />
-        <source>&lt;span style='color: #228be6;'&gt;Importing... (this may take a moment for rescan)&lt;/span&gt;</source>
-        <translation>&lt;span style='color: #228be6;'&gt;Importando … (a nova varredura pode levar um momento)&lt;/span&gt;</translation>
+        <location filename="../src/walletwizard.cpp" line="1978"/>
+        <source>&lt;span style=&apos;color: #228be6;&apos;&gt;Importing... (this may take a moment for rescan)&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color: #228be6;&apos;&gt;Importando … (a nova varredura pode levar um momento)&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="2011" />
+        <location filename="../src/walletwizard.cpp" line="2011"/>
         <source>Import Complete</source>
         <translation>Importação concluída</translation>
     </message>
@@ -1951,551 +1951,551 @@ Clique em «Importar chave Taproot» após inserir um descritor válido.</transl
 <context>
     <name>MainWindow</name>
     <message>
-        <location filename="../src/mainwindow.cpp" line="1947" />
+        <location filename="../src/mainwindow.cpp" line="1947"/>
         <source>Dinero Cryptocurrency Wallet - Real Money For Free People</source>
         <translation>Carteira de criptomoeda Dinero - dinheiro de verdade para gente livre</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2025" />
+        <location filename="../src/mainwindow.cpp" line="2025"/>
         <source>Starting Dinero…</source>
         <translation>Iniciando o Dinero …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2052" />
+        <location filename="../src/mainwindow.cpp" line="2052"/>
         <source>This can take up to ~3 minutes on first start.
 Please wait — do NOT close or restart. The wallet opens automatically once the node is ready.</source>
         <translation>Na primeira execução isso pode levar até cerca de 3 minutos.
 Aguarde e NÃO feche nem reinicie. A carteira abre sozinha quando o nó estiver pronto.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2057" />
+        <location filename="../src/mainwindow.cpp" line="2057"/>
         <source>Almost there — the node is taking a little longer than usual.</source>
         <translation>Quase lá — o nó está demorando um pouco mais que o normal.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2058" />
+        <location filename="../src/mainwindow.cpp" line="2058"/>
         <source>Still starting… please keep waiting and do NOT close or restart.</source>
         <translation>Ainda iniciando … continue aguardando e NÃO feche nem reinicie.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2100" />
-        <location filename="../src/mainwindow.cpp" line="2105" />
-        <location filename="../src/mainwindow.cpp" line="6747" />
-        <location filename="../src/mainwindow.cpp" line="8429" />
-        <location filename="../src/mainwindow.cpp" line="16605" />
-        <location filename="../src/mainwindow.cpp" line="16858" />
+        <location filename="../src/mainwindow.cpp" line="2100"/>
+        <location filename="../src/mainwindow.cpp" line="2105"/>
+        <location filename="../src/mainwindow.cpp" line="6747"/>
+        <location filename="../src/mainwindow.cpp" line="8429"/>
+        <location filename="../src/mainwindow.cpp" line="16605"/>
+        <location filename="../src/mainwindow.cpp" line="16858"/>
         <source>Connected</source>
         <translation>Conectado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2110" />
+        <location filename="../src/mainwindow.cpp" line="2110"/>
         <source>Connection issue</source>
         <translation>Problema de conexão</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2126" />
+        <location filename="../src/mainwindow.cpp" line="2126"/>
         <source>🔄 Retrying blockchain scan...</source>
         <translation>🔄 Repetindo a varredura da blockchain …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2203" />
-        <location filename="../src/mainwindow.cpp" line="13762" />
+        <location filename="../src/mainwindow.cpp" line="2203"/>
+        <location filename="../src/mainwindow.cpp" line="13762"/>
         <source>Daemon stopped</source>
         <translation>Daemon parado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2326" />
+        <location filename="../src/mainwindow.cpp" line="2326"/>
         <source>&amp;Network</source>
         <translation>&amp;Rede</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2327" />
+        <location filename="../src/mainwindow.cpp" line="2327"/>
         <source>Enable router port mapping (UPnP/NAT-PMP)</source>
         <translation>Ativar o mapeamento de portas no roteador (UPnP/NAT-PMP)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2332" />
+        <location filename="../src/mainwindow.cpp" line="2332"/>
         <source>Router port mapping</source>
         <translation>Mapeamento de portas no roteador</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2334" />
+        <location filename="../src/mainwindow.cpp" line="2334"/>
         <source>Router port mapping will be enabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
         <translation>O mapeamento de portas no roteador será ativado no próximo reinício do daemon (Arquivo → Sair e reabra o Dinero).</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2336" />
+        <location filename="../src/mainwindow.cpp" line="2336"/>
         <source>Router port mapping will be disabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
         <translation>O mapeamento de portas no roteador será desativado no próximo reinício do daemon (Arquivo → Sair e reabra o Dinero).</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2340" />
+        <location filename="../src/mainwindow.cpp" line="2340"/>
         <source>&amp;Help</source>
         <translation>A&amp;juda</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2341" />
+        <location filename="../src/mainwindow.cpp" line="2341"/>
         <source>&amp;About Dinero</source>
         <translation>&amp;Sobre o Dinero</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2344" />
-        <source>&lt;h3&gt;Dinero Wallet&lt;/h3&gt;&lt;p&gt;Version: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Real Money For Free People.&lt;br&gt;Post-quantum, utreexo-native, fair-launched.&lt;/p&gt;&lt;hr&gt;&lt;p style='color:#888;font-size:90%;'&gt;Built from &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href='https://dinero-coin.com'&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href='https://github.com/DineroLabs'&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</source>
-        <translation>&lt;h3&gt;Carteira Dinero&lt;/h3&gt;&lt;p&gt;Versão: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Dinheiro de verdade para gente livre.&lt;br&gt;Pós-quântica, nativa de utreexo, de lançamento justo.&lt;/p&gt;&lt;hr&gt;&lt;p style='color:#888;font-size:90%;'&gt;Construída a partir de &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href='https://dinero-coin.com'&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href='https://github.com/DineroLabs'&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</translation>
+        <location filename="../src/mainwindow.cpp" line="2344"/>
+        <source>&lt;h3&gt;Dinero Wallet&lt;/h3&gt;&lt;p&gt;Version: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Real Money For Free People.&lt;br&gt;Post-quantum, utreexo-native, fair-launched.&lt;/p&gt;&lt;hr&gt;&lt;p style=&apos;color:#888;font-size:90%;&apos;&gt;Built from &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href=&apos;https://dinero-coin.com&apos;&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href=&apos;https://github.com/DineroLabs&apos;&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</source>
+        <translation>&lt;h3&gt;Carteira Dinero&lt;/h3&gt;&lt;p&gt;Versão: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Dinheiro de verdade para gente livre.&lt;br&gt;Pós-quântica, nativa de utreexo, de lançamento justo.&lt;/p&gt;&lt;hr&gt;&lt;p style=&apos;color:#888;font-size:90%;&apos;&gt;Construída a partir de &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href=&apos;https://dinero-coin.com&apos;&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href=&apos;https://github.com/DineroLabs&apos;&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2357" />
+        <location filename="../src/mainwindow.cpp" line="2357"/>
         <source>About Dinero</source>
         <translation>Sobre o Dinero</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2380" />
-        <location filename="../src/mainwindow.cpp" line="7644" />
-        <location filename="../src/mainwindow.cpp" line="14310" />
-        <location filename="../src/mainwindow.cpp" line="16661" />
+        <location filename="../src/mainwindow.cpp" line="2380"/>
+        <location filename="../src/mainwindow.cpp" line="7644"/>
+        <location filename="../src/mainwindow.cpp" line="14310"/>
+        <location filename="../src/mainwindow.cpp" line="16661"/>
         <source>Wallet: none</source>
         <translation>Carteira: nenhuma</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2386" />
-        <location filename="../src/mainwindow.cpp" line="7646" />
-        <location filename="../src/mainwindow.cpp" line="14312" />
-        <location filename="../src/mainwindow.cpp" line="16663" />
+        <location filename="../src/mainwindow.cpp" line="2386"/>
+        <location filename="../src/mainwindow.cpp" line="7646"/>
+        <location filename="../src/mainwindow.cpp" line="14312"/>
+        <location filename="../src/mainwindow.cpp" line="16663"/>
         <source>No wallet loaded. Create or restore a wallet to get started.</source>
         <translation>Nenhuma carteira carregada. Crie ou restaure uma carteira para começar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2397" />
-        <location filename="../src/mainwindow.cpp" line="14094" />
+        <location filename="../src/mainwindow.cpp" line="2397"/>
+        <location filename="../src/mainwindow.cpp" line="14094"/>
         <source>Select a wallet to load</source>
         <translation>Selecione uma carteira para carregar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2401" />
+        <location filename="../src/mainwindow.cpp" line="2401"/>
         <source>Load Wallet</source>
         <translation>Carregar carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2404" />
+        <location filename="../src/mainwindow.cpp" line="2404"/>
         <source>Load selected wallet</source>
         <translation>Carregar a carteira selecionada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2413" />
-        <location filename="../src/mainwindow.cpp" line="13931" />
-        <location filename="../src/mainwindow.cpp" line="13989" />
-        <location filename="../src/mainwindow.cpp" line="14020" />
-        <location filename="../src/mainwindow.cpp" line="14339" />
-        <location filename="../src/mainwindow.cpp" line="14376" />
+        <location filename="../src/mainwindow.cpp" line="2413"/>
+        <location filename="../src/mainwindow.cpp" line="13931"/>
+        <location filename="../src/mainwindow.cpp" line="13989"/>
+        <location filename="../src/mainwindow.cpp" line="14020"/>
+        <location filename="../src/mainwindow.cpp" line="14339"/>
+        <location filename="../src/mainwindow.cpp" line="14376"/>
         <source>Locked | Unlock</source>
         <translation>Bloqueada | Desbloquear</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2418" />
-        <location filename="../src/mainwindow.cpp" line="14396" />
+        <location filename="../src/mainwindow.cpp" line="2418"/>
+        <location filename="../src/mainwindow.cpp" line="14396"/>
         <source>Unlock wallet to enable Taproot signing and transactions</source>
         <translation>Desbloqueie a carteira para habilitar a assinatura Taproot e as transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2421" />
-        <location filename="../src/mainwindow.cpp" line="14569" />
+        <location filename="../src/mainwindow.cpp" line="2421"/>
+        <location filename="../src/mainwindow.cpp" line="14569"/>
         <source>Encrypt Wallet</source>
         <translation>Criptografar a carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2515" />
+        <location filename="../src/mainwindow.cpp" line="2515"/>
         <source>Network Info</source>
         <translation>Informações da rede</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2519" />
+        <location filename="../src/mainwindow.cpp" line="2519"/>
         <source>Height: -</source>
         <translation>Altura: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2520" />
+        <location filename="../src/mainwindow.cpp" line="2520"/>
         <source>Headers: -</source>
         <translation>Cabeçalhos: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2521" />
-        <location filename="../src/mainwindow.cpp" line="4854" />
+        <location filename="../src/mainwindow.cpp" line="2521"/>
+        <location filename="../src/mainwindow.cpp" line="4854"/>
         <source>Connections: -</source>
         <translation>Conexões: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2522" />
+        <location filename="../src/mainwindow.cpp" line="2522"/>
         <source>Mempool: -</source>
         <translation>Mempool: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2523" />
+        <location filename="../src/mainwindow.cpp" line="2523"/>
         <source>Halving Epoch: -</source>
         <translation>Época de halving: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2524" />
+        <location filename="../src/mainwindow.cpp" line="2524"/>
         <source>Supply: -</source>
         <translation>Emissão: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2525" />
+        <location filename="../src/mainwindow.cpp" line="2525"/>
         <source>Next Reward: -</source>
         <translation>Próxima recompensa: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2544" />
+        <location filename="../src/mainwindow.cpp" line="2544"/>
         <source>v7 Consensus Health</source>
         <translation>Saúde do consenso v7</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2553" />
+        <location filename="../src/mainwindow.cpp" line="2553"/>
         <source>Utreexo Validation</source>
         <translation>Validação Utreexo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2559" />
+        <location filename="../src/mainwindow.cpp" line="2559"/>
         <source>Health: --</source>
         <translation>Saúde: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2561" />
+        <location filename="../src/mainwindow.cpp" line="2561"/>
         <source>Role: --</source>
         <translation>Função: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2563" />
+        <location filename="../src/mainwindow.cpp" line="2563"/>
         <source>State: --</source>
         <translation>Estado: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2565" />
+        <location filename="../src/mainwindow.cpp" line="2565"/>
         <source>Storage: --</source>
         <translation>Armazenamento: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2574" />
+        <location filename="../src/mainwindow.cpp" line="2574"/>
         <source>Post-Quantum</source>
         <translation>Pós-quântico</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2580" />
+        <location filename="../src/mainwindow.cpp" line="2580"/>
         <source>PQ Ratio: --</source>
         <translation>Proporção PQ: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2582" />
+        <location filename="../src/mainwindow.cpp" line="2582"/>
         <source>P2MR UTXOs: --</source>
         <translation>UTXOs P2MR: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2584" />
+        <location filename="../src/mainwindow.cpp" line="2584"/>
         <source>Active: ML-DSA-65</source>
         <translation>Ativo: ML-DSA-65</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2606" />
+        <location filename="../src/mainwindow.cpp" line="2606"/>
         <source>Latest Blocks</source>
         <translation>Blocos mais recentes</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2615" />
+        <location filename="../src/mainwindow.cpp" line="2615"/>
         <source>Newest blocks from your node. Double-click one to open it in the explorer.</source>
         <translation>Os blocos mais recentes do seu nó. Dê um duplo clique em um deles para abri-lo no explorador.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2621" />
+        <location filename="../src/mainwindow.cpp" line="2621"/>
         <source>Open Explorer</source>
         <translation>Abrir o explorador</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2623" />
+        <location filename="../src/mainwindow.cpp" line="2623"/>
         <source>Search blocks, transactions and addresses in a separate window.</source>
         <translation>Pesquise blocos, transações e endereços em uma janela separada.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2644" />
+        <location filename="../src/mainwindow.cpp" line="2644"/>
         <source>Node operation</source>
         <translation>Operação do nó</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2705" />
+        <location filename="../src/mainwindow.cpp" line="2705"/>
         <source>Resources &amp; mining</source>
         <translation>Recursos e Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2720" />
+        <location filename="../src/mainwindow.cpp" line="2720"/>
         <source>Temp: --</source>
         <translation>Temp.: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2721" />
+        <location filename="../src/mainwindow.cpp" line="2721"/>
         <source>Power: --</source>
         <translation>Consumo: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2732" />
+        <location filename="../src/mainwindow.cpp" line="2732"/>
         <source>Local: 0 H/s</source>
         <translation>Local: 0 H/s</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2733" />
+        <location filename="../src/mainwindow.cpp" line="2733"/>
         <source>Network: 0 H/s</source>
         <translation>Rede: 0 H/s</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2738" />
+        <location filename="../src/mainwindow.cpp" line="2738"/>
         <source>Miner: Idle</source>
         <translation>Minerador: ocioso</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2739" />
+        <location filename="../src/mainwindow.cpp" line="2739"/>
         <source>Mining: --</source>
         <translation>Mining: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2740" />
+        <location filename="../src/mainwindow.cpp" line="2740"/>
         <source>GPU: --</source>
         <translation>GPU: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2741" />
-        <location filename="../src/mainwindow.cpp" line="9524" />
+        <location filename="../src/mainwindow.cpp" line="2741"/>
+        <location filename="../src/mainwindow.cpp" line="9524"/>
         <source>GPU Load: --</source>
         <translation>Carga da GPU: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2742" />
-        <location filename="../src/mainwindow.cpp" line="9528" />
+        <location filename="../src/mainwindow.cpp" line="2742"/>
+        <location filename="../src/mainwindow.cpp" line="9528"/>
         <source>GPU Mem: --</source>
         <translation>Memória da GPU: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2743" />
-        <location filename="../src/mainwindow.cpp" line="9532" />
+        <location filename="../src/mainwindow.cpp" line="2743"/>
+        <location filename="../src/mainwindow.cpp" line="9532"/>
         <source>GPU Temp/Fan: --</source>
         <translation>Temp./ventoinha da GPU: --</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2760" />
+        <location filename="../src/mainwindow.cpp" line="2760"/>
         <source>📦 Mempool</source>
         <translation>📦 Mempool</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2765" />
+        <location filename="../src/mainwindow.cpp" line="2765"/>
         <source>Loading…</source>
         <translation>Carregando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2767" />
+        <location filename="../src/mainwindow.cpp" line="2767"/>
         <source>Waiting for local node</source>
         <translation>Aguardando o nó local</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2782" />
+        <location filename="../src/mainwindow.cpp" line="2782"/>
         <source>Transactions currently held by this local node</source>
         <translation>Transações que este nó local mantém no momento</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2787" />
+        <location filename="../src/mainwindow.cpp" line="2787"/>
         <source>🌐 Peers</source>
         <translation>🌐 Pares</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2789" />
+        <location filename="../src/mainwindow.cpp" line="2789"/>
         <source>0 peers</source>
         <translation>0 pares</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2791" />
-        <location filename="../src/mainwindow.cpp" line="5201" />
-        <location filename="../src/mainwindow.cpp" line="7318" />
-        <location filename="../src/mainwindow.cpp" line="16669" />
-        <location filename="../src/mainwindow.cpp" line="16836" />
+        <location filename="../src/mainwindow.cpp" line="2791"/>
+        <location filename="../src/mainwindow.cpp" line="5201"/>
+        <location filename="../src/mainwindow.cpp" line="7318"/>
+        <location filename="../src/mainwindow.cpp" line="16669"/>
+        <location filename="../src/mainwindow.cpp" line="16836"/>
         <source>Disconnected</source>
         <translation>Desconectado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2805" />
-        <location filename="../src/mainwindow.cpp" line="4883" />
-        <source>Observed through this local node's P2P connection.
-This is not the remote node's active validated tip.
-Validation requires that node's authenticated blockchain RPC.</source>
+        <location filename="../src/mainwindow.cpp" line="2805"/>
+        <location filename="../src/mainwindow.cpp" line="4883"/>
+        <source>Observed through this local node&apos;s P2P connection.
+This is not the remote node&apos;s active validated tip.
+Validation requires that node&apos;s authenticated blockchain RPC.</source>
         <translation>Observado pela conexão P2P deste nó local.
 Esta não é a ponta validada ativa do nó remoto.
 A validação exige o RPC autenticado daquele nó.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2833" />
+        <location filename="../src/mainwindow.cpp" line="2833"/>
         <source>⚠️ Recent Alerts</source>
         <translation>⚠️ Alertas recentes</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2841" />
+        <location filename="../src/mainwindow.cpp" line="2841"/>
         <source>No recent alerts</source>
         <translation>Sem alertas recentes</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2848" />
+        <location filename="../src/mainwindow.cpp" line="2848"/>
         <source>📊 Export Metrics (JSON/CSV)</source>
         <translation>📊 Exportar métricas (JSON/CSV)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2860" />
+        <location filename="../src/mainwindow.cpp" line="2860"/>
         <source>Overview</source>
         <translation>Visão geral</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2869" />
+        <location filename="../src/mainwindow.cpp" line="2869"/>
         <source>🔐 HD Wallet</source>
         <translation>🔐 Carteira HD</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2885" />
+        <location filename="../src/mainwindow.cpp" line="2885"/>
         <source>🔄 Rescan Wallet</source>
         <translation>🔄 Varrer a carteira novamente</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2887" />
+        <location filename="../src/mainwindow.cpp" line="2887"/>
         <source>If balance/history looks wrong, rescan blockchain for this wallet.</source>
         <translation>Se o saldo ou o histórico parecerem errados, varra a blockchain novamente para esta carteira.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2896" />
+        <location filename="../src/mainwindow.cpp" line="2896"/>
         <source>Wallet:</source>
         <translation>Carteira:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2909" />
+        <location filename="../src/mainwindow.cpp" line="2909"/>
         <source>📱 Seed &amp; Address Compatibility</source>
         <translation>📱 Compatibilidade de semente e endereços</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2913" />
+        <location filename="../src/mainwindow.cpp" line="2913"/>
         <source>&lt;b&gt;One seed, two address lanes.&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;BIP39 seed phrase&lt;/b&gt; restores the same wallet across Dinero Qt and mobile. &lt;b&gt;BIP86 Taproot&lt;/b&gt; addresses (&lt;code&gt;din1p...&lt;/code&gt;) are the mobile-friendly payment lane. &lt;b&gt;Purpose 88 P2MR&lt;/b&gt; addresses (&lt;code&gt;din1r...&lt;/code&gt;) are the quantum-safe lane using ML-DSA-65 signatures.&lt;br&gt;&lt;br&gt;✅ Desktop (Qt Wallet) - full node, mining, Taproot, P2MR quantum-safe receive/spend&lt;br&gt;✅ Mobile (iOS Wallet) - seed-compatible Taproot payments; P2MR keys derive from the same seed as mobile support expands</source>
         <translation>&lt;b&gt;Uma semente, duas vias de endereço.&lt;/b&gt;&lt;br&gt;&lt;br&gt;A &lt;b&gt;frase semente BIP39&lt;/b&gt; restaura a mesma carteira no Dinero Qt e no celular. Os endereços &lt;b&gt;Taproot BIP86&lt;/b&gt; (&lt;code&gt;din1p…&lt;/code&gt;) são a via de pagamento para celular. Os endereços &lt;b&gt;P2MR com propósito 88&lt;/b&gt; (&lt;code&gt;din1r…&lt;/code&gt;) são a via resistente a quântica, com assinaturas ML-DSA-65.&lt;br&gt;&lt;br&gt;✅ Desktop (carteira Qt) - nó completo, Mining, Taproot e recebimento e gasto P2MR resistente a quântica&lt;br&gt;✅ Celular (carteira iOS) - pagamentos Taproot compatíveis com a semente; as chaves P2MR derivam da mesma semente conforme o suporte a celular cresce</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2924" />
+        <location filename="../src/mainwindow.cpp" line="2924"/>
         <source>🧾 Seed Backup / Mobile Restore</source>
         <translation>🧾 Cópia da semente / restauração no celular</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2926" />
+        <location filename="../src/mainwindow.cpp" line="2926"/>
         <source>Show seed-backup guidance. Hardened wallets may not allow seed phrase re-export after setup.</source>
         <translation>Mostrar orientações sobre a cópia da semente. Carteiras endurecidas podem não permitir exportar a frase semente novamente após a configuração.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2933" />
+        <location filename="../src/mainwindow.cpp" line="2933"/>
         <source>💰 Balance</source>
         <translation>💰 Saldo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2937" />
-        <location filename="../src/mainwindow.cpp" line="2999" />
-        <location filename="../src/mainwindow.cpp" line="3004" />
+        <location filename="../src/mainwindow.cpp" line="2937"/>
+        <location filename="../src/mainwindow.cpp" line="2999"/>
+        <location filename="../src/mainwindow.cpp" line="3004"/>
         <source>0.00 DIN</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2940" />
+        <location filename="../src/mainwindow.cpp" line="2940"/>
         <source>Total wallet balance: public and shielded funds, including covenant-locked value. See Shielded for funds available for ordinary private payments.</source>
         <translation>Saldo total da carteira: fundos públicos e blindados, incluindo valor travado em covenants. Veja Blindado para os fundos disponíveis para pagamentos privados comuns.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2944" />
-        <location filename="../src/mainwindow.cpp" line="2960" />
-        <location filename="../src/mainwindow.cpp" line="2979" />
-        <location filename="../src/mainwindow.cpp" line="2993" />
-        <location filename="../src/mainwindow.cpp" line="5899" />
-        <location filename="../src/mainwindow.cpp" line="14200" />
+        <location filename="../src/mainwindow.cpp" line="2944"/>
+        <location filename="../src/mainwindow.cpp" line="2960"/>
+        <location filename="../src/mainwindow.cpp" line="2979"/>
+        <location filename="../src/mainwindow.cpp" line="2993"/>
+        <location filename="../src/mainwindow.cpp" line="5899"/>
+        <location filename="../src/mainwindow.cpp" line="14200"/>
         <source>0.00000000 DIN</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2955" />
+        <location filename="../src/mainwindow.cpp" line="2955"/>
         <source>Transparent / public</source>
         <translation>Transparente / público</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2959" />
+        <location filename="../src/mainwindow.cpp" line="2959"/>
         <source>Taproot:</source>
         <translation>Taproot:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2962" />
+        <location filename="../src/mainwindow.cpp" line="2962"/>
         <source>Public Taproot spendable balance</source>
         <translation>Saldo Taproot público disponível para gasto</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2965" />
+        <location filename="../src/mainwindow.cpp" line="2965"/>
         <source>P2MR quantum-safe:</source>
         <translation>P2MR resistente a quântica:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2977" />
+        <location filename="../src/mainwindow.cpp" line="2977"/>
         <source>Percentage of transparent spendable funds held in P2MR outputs</source>
         <translation>Percentual dos fundos transparentes disponíveis que estão em saídas P2MR</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2988" />
+        <location filename="../src/mainwindow.cpp" line="2988"/>
         <source>Shielded / private</source>
         <translation>Blindado / privado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2992" />
+        <location filename="../src/mainwindow.cpp" line="2992"/>
         <source>Private:</source>
         <translation>Privado:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2995" />
+        <location filename="../src/mainwindow.cpp" line="2995"/>
         <source>Confirmed shielded note balance</source>
         <translation>Saldo confirmado de notas blindadas</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="2998" />
+        <location filename="../src/mainwindow.cpp" line="2998"/>
         <source>Pending:</source>
         <translation>Pendente:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3003" />
+        <location filename="../src/mainwindow.cpp" line="3003"/>
         <source>Mining:</source>
         <translation>Mining:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3006" />
+        <location filename="../src/mainwindow.cpp" line="3006"/>
         <source>Recently mined coins (available after 100 confirmations)</source>
         <translation>Moedas mineradas recentemente (disponíveis após 100 confirmações)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3039" />
+        <location filename="../src/mainwindow.cpp" line="3039"/>
         <source>Consolidate</source>
         <translation>Consolidar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3041" />
+        <location filename="../src/mainwindow.cpp" line="3041"/>
         <source>Combine many small UTXOs into fewer larger ones to reduce fees and improve performance</source>
         <translation>Junte muitos UTXOs pequenos em poucos maiores para reduzir tarifas e melhorar o desempenho</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3050" />
+        <location filename="../src/mainwindow.cpp" line="3050"/>
         <source>Taproot assets held in this wallet</source>
         <translation>Ativos Taproot mantidos nesta carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3055" />
+        <location filename="../src/mainwindow.cpp" line="3055"/>
         <source>Receive Address</source>
         <translation>Endereço de recebimento</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3061" />
-        <location filename="../src/mainwindow.cpp" line="3207" />
-        <location filename="../src/mainwindow.cpp" line="4113" />
+        <location filename="../src/mainwindow.cpp" line="3061"/>
+        <location filename="../src/mainwindow.cpp" line="3207"/>
+        <location filename="../src/mainwindow.cpp" line="4113"/>
         <source>Mode:</source>
         <translation>Modo:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3069" />
+        <location filename="../src/mainwindow.cpp" line="3069"/>
         <source>Taproot: fast, small signatures (secp256k1)
 Quantum-Safe: ML-DSA-65 post-quantum signatures
 
@@ -2508,129 +2508,129 @@ Privacidade é um modo de envio, não um tipo de endereço.
 Escolha privado ou transparente na aba Enviar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3087" />
+        <location filename="../src/mainwindow.cpp" line="3087"/>
         <source>din1...</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3091" />
+        <location filename="../src/mainwindow.cpp" line="3091"/>
         <source>Generate Public Address</source>
         <translation>Gerar endereço público</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3092" />
+        <location filename="../src/mainwindow.cpp" line="3092"/>
         <source>Validate</source>
         <translation>Validar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3093" />
+        <location filename="../src/mainwindow.cpp" line="3093"/>
         <source>Copy</source>
         <translation>Copiar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3119" />
+        <location filename="../src/mainwindow.cpp" line="3119"/>
         <source>Wallet</source>
         <translation>Carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3135" />
+        <location filename="../src/mainwindow.cpp" line="3135"/>
         <source>Public Contracts</source>
         <translation>Contratos públicos</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3138" />
-        <location filename="../src/mainwindow.cpp" line="14174" />
-        <location filename="../src/mainwindow.cpp" line="14211" />
+        <location filename="../src/mainwindow.cpp" line="3138"/>
+        <location filename="../src/mainwindow.cpp" line="14174"/>
+        <location filename="../src/mainwindow.cpp" line="14211"/>
         <source>Loading...</source>
         <translation>Carregando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3159" />
+        <location filename="../src/mainwindow.cpp" line="3159"/>
         <source>Refresh</source>
         <translation>Atualizar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3166" />
+        <location filename="../src/mainwindow.cpp" line="3166"/>
         <source>+ New Contract</source>
         <translation>+ Novo contrato</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3168" />
+        <location filename="../src/mainwindow.cpp" line="3168"/>
         <source>Create and fund a covenant here</source>
         <translation>Crie e financie um covenant aqui</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3178" />
+        <location filename="../src/mainwindow.cpp" line="3178"/>
         <source>Contracts are programmable spending rules attached to your funds. Vaults lock funds to a specific template. Timelocks release after a duration. Create, fund, track and spend public covenants here. Public covenants require a matching recovery descriptor. Private covenants recover from encrypted funding notes and require separate network activation.</source>
         <translation>Contratos são regras de gasto programáveis ligadas aos seus fundos. Cofres travam fundos em um modelo específico. Timelocks os liberam após um prazo. Aqui você cria, financia, acompanha e gasta covenants públicos. Covenants públicos exigem um descritor de recuperação correspondente. Os privados se recuperam a partir de notas de financiamento criptografadas e exigem ativação de rede à parte.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3188" />
+        <location filename="../src/mainwindow.cpp" line="3188"/>
         <source>Covenants</source>
         <translation>Covenants</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3201" />
+        <location filename="../src/mainwindow.cpp" line="3201"/>
         <source>📤 Send / Convert</source>
         <translation>📤 Enviar / converter</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3214" />
+        <location filename="../src/mainwindow.cpp" line="3214"/>
         <source>Public payments use transparent funds. Private payments and conversions open the Shielded composer, subject to network activation. Covenants currently use public or private funds through their respective covenant controls.</source>
         <translation>Pagamentos públicos usam fundos transparentes. Pagamentos e conversões privados abrem o compositor Blindado, sujeito à ativação na rede. Os covenants usam hoje fundos públicos ou privados pelos seus respectivos controles.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3244" />
+        <location filename="../src/mainwindow.cpp" line="3244"/>
         <source>Recipient:</source>
         <translation>Destinatário:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3247" />
+        <location filename="../src/mainwindow.cpp" line="3247"/>
         <source>din1p... (Taproot) or din1r... (Quantum-Safe)</source>
         <translation>din1p… (Taproot) ou din1r… (resistente a quântica)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3251" />
+        <location filename="../src/mainwindow.cpp" line="3251"/>
         <source>Amount (DIN):</source>
         <translation>Valor (DIN):</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3264" />
+        <location filename="../src/mainwindow.cpp" line="3264"/>
         <source>Max</source>
         <translation>Máx.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3271" />
+        <location filename="../src/mainwindow.cpp" line="3271"/>
         <source>Fee Priority:</source>
         <translation>Prioridade da tarifa:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3279" />
+        <location filename="../src/mainwindow.cpp" line="3279"/>
         <source>Select transaction priority (confirmation target)</source>
         <translation>Escolha a prioridade da transação (meta de confirmação)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3291" />
+        <location filename="../src/mainwindow.cpp" line="3291"/>
         <source>una/vB</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3298" />
+        <location filename="../src/mainwindow.cpp" line="3298"/>
         <source>Est: ~0.00001 DIN</source>
         <translation>Est.: ~0.00001 DIN</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3309" />
+        <location filename="../src/mainwindow.cpp" line="3309"/>
         <source>Template:</source>
         <translation>Modelo:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3317" />
+        <location filename="../src/mainwindow.cpp" line="3317"/>
         <source>Pending Core contextual lock enforcement verification</source>
         <translation>Aguardando a verificação da aplicação de travas contextuais no Core</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3322" />
+        <location filename="../src/mainwindow.cpp" line="3322"/>
         <source>Simple Lock: funds locked to a spending template
 Timelock: unavailable pending Core lock enforcement
 Payroll: batch payment to multiple recipients (CTV)
@@ -2641,41 +2641,41 @@ Folha de pagamento: pagamento em lote a vários destinatários (CTV)
 Recuperação e scripts personalizados não estão disponíveis</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3336" />
+        <location filename="../src/mainwindow.cpp" line="3336"/>
         <source>Your funds will be locked to a specific withdrawal destination.
 Only the preset recipient can receive them.</source>
         <translation>Seus fundos ficarão travados para um destino de saque específico.
 Somente o destinatário predefinido poderá recebê-los.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3346" />
+        <location filename="../src/mainwindow.cpp" line="3346"/>
         <source>Unavailable in this build. Recovery contracts require a descriptor-backed
 multi-path Taproot profile. The former prototype was not safe for funds.</source>
         <translation>Indisponível nesta compilação. Contratos de recuperação exigem um perfil Taproot
 de múltiplos caminhos apoiado em descritores. O protótipo anterior não era seguro para fundos.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3354" />
+        <location filename="../src/mainwindow.cpp" line="3354"/>
         <source>Recovery key:</source>
         <translation>Chave de recuperação:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3356" />
+        <location filename="../src/mainwindow.cpp" line="3356"/>
         <source>Paste your recovery key here (64 characters)</source>
         <translation>Cole aqui sua chave de recuperação (64 caracteres)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3368" />
+        <location filename="../src/mainwindow.cpp" line="3368"/>
         <source>Lock duration:</source>
         <translation>Duração da trava:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3378" />
+        <location filename="../src/mainwindow.cpp" line="3378"/>
         <source>Uses the 2-minute block target. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.</source>
         <translation>Usa a meta de 2 minutos por bloco. A trava começa na confirmação do financiamento e é medida em blocos, não em tempo real.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3387" />
+        <location filename="../src/mainwindow.cpp" line="3387"/>
         <source>Payroll: batch payment locked to multiple recipients.
 The CTV template commits to the exact output set.
 Amounts and recipients are public. Choose Private covenants for payments to one or two fixed shielded recipients.</source>
@@ -2684,222 +2684,222 @@ O modelo CTV se compromete com o conjunto exato de saídas.
 Valores e destinatários são públicos. Para pagamentos a um ou dois destinatários blindados fixos, escolha covenants privados.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3410" />
+        <location filename="../src/mainwindow.cpp" line="3410"/>
         <source>+ Add Recipient</source>
         <translation>+ Adicionar destinatário</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3419" />
+        <location filename="../src/mainwindow.cpp" line="3419"/>
         <source>- Remove Last</source>
         <translation>- Remover o último</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3426" />
+        <location filename="../src/mainwindow.cpp" line="3426"/>
         <source>Total: 0.00000000 DIN</source>
         <translation>Total: 0.00000000 DIN</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3461" />
+        <location filename="../src/mainwindow.cpp" line="3461"/>
         <source>Enter Tapscript hex...</source>
         <translation>Informe o Tapscript em hexadecimal …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3483" />
-        <location filename="../src/mainwindow.cpp" line="6434" />
+        <location filename="../src/mainwindow.cpp" line="3483"/>
+        <location filename="../src/mainwindow.cpp" line="6434"/>
         <source>📤 Send Transaction</source>
         <translation>📤 Enviar a transação</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3485" />
+        <location filename="../src/mainwindow.cpp" line="3485"/>
         <source>Sign and broadcast with software wallet</source>
         <translation>Assinar e transmitir com a carteira de software</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3490" />
+        <location filename="../src/mainwindow.cpp" line="3490"/>
         <source>🔐 Hardware Wallet PSBT</source>
         <translation>🔐 PSBT de carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3507" />
+        <location filename="../src/mainwindow.cpp" line="3507"/>
         <source>Transaction Result</source>
         <translation>Resultado da transação</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3512" />
+        <location filename="../src/mainwindow.cpp" line="3512"/>
         <source>Transaction details will appear here after sending...</source>
         <translation>Os detalhes da transação aparecerão aqui após o envio …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3522" />
-        <location filename="../src/mainwindow.cpp" line="5828" />
+        <location filename="../src/mainwindow.cpp" line="3522"/>
+        <location filename="../src/mainwindow.cpp" line="5828"/>
         <source>Send</source>
         <translation>Enviar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3531" />
+        <location filename="../src/mainwindow.cpp" line="3531"/>
         <source>📥 Receive</source>
         <translation>📥 Receber</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3549" />
+        <location filename="../src/mainwindow.cpp" line="3549"/>
         <source>Derive a new address of the currently selected type</source>
         <translation>Derivar um novo endereço do tipo selecionado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3577" />
+        <location filename="../src/mainwindow.cpp" line="3577"/>
         <source>📋 Reload</source>
         <translation>📋 Recarregar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3584" />
+        <location filename="../src/mainwindow.cpp" line="3584"/>
         <source>Receive</source>
         <translation>Receber</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3593" />
+        <location filename="../src/mainwindow.cpp" line="3593"/>
         <source>📜 Transaction History</source>
         <translation>📜 Histórico de transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3598" />
+        <location filename="../src/mainwindow.cpp" line="3598"/>
         <source>View:</source>
         <translation>Exibir:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3611" />
-        <location filename="../src/mainwindow.cpp" line="3649" />
-        <location filename="../src/mainwindow.cpp" line="4843" />
-        <location filename="../src/mainwindow.cpp" line="4939" />
+        <location filename="../src/mainwindow.cpp" line="3611"/>
+        <location filename="../src/mainwindow.cpp" line="3649"/>
+        <location filename="../src/mainwindow.cpp" line="4843"/>
+        <location filename="../src/mainwindow.cpp" line="4939"/>
         <source>🔄 Refresh</source>
         <translation>🔄 Atualizar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3634" />
+        <location filename="../src/mainwindow.cpp" line="3634"/>
         <source>Transactions</source>
         <translation>Transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3644" />
+        <location filename="../src/mainwindow.cpp" line="3644"/>
         <source>🔗 Unspent Outputs (UTXOs)</source>
         <translation>🔗 Saídas não gastas (UTXOs)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3670" />
+        <location filename="../src/mainwindow.cpp" line="3670"/>
         <source>Open this tab to load unspent outputs.</source>
         <translation>Abra esta aba para carregar as saídas não gastas.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3671" />
+        <location filename="../src/mainwindow.cpp" line="3671"/>
         <source>Previous</source>
         <translation>Anterior</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3672" />
+        <location filename="../src/mainwindow.cpp" line="3672"/>
         <source>Next</source>
         <translation>Próximo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3689" />
+        <location filename="../src/mainwindow.cpp" line="3689"/>
         <source>UTXOs</source>
         <translation>UTXO</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3698" />
-        <location filename="../src/mainwindow.cpp" line="15273" />
+        <location filename="../src/mainwindow.cpp" line="3698"/>
+        <location filename="../src/mainwindow.cpp" line="15273"/>
         <source>Hardware Wallet</source>
         <translation>Carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3704" />
+        <location filename="../src/mainwindow.cpp" line="3704"/>
         <source>Pay/Collect</source>
         <translation>Pagar/Receber</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3718" />
+        <location filename="../src/mainwindow.cpp" line="3718"/>
         <source>Payments</source>
         <translation>Pagamentos</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3724" />
+        <location filename="../src/mainwindow.cpp" line="3724"/>
         <source>Escrow</source>
         <translation>Custódia</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3730" />
+        <location filename="../src/mainwindow.cpp" line="3730"/>
         <source>Marketplace</source>
         <translation>Mercado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3744" />
+        <location filename="../src/mainwindow.cpp" line="3744"/>
         <source>Liquidity Vault</source>
         <translation>Cofre de liquidez</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3753" />
+        <location filename="../src/mainwindow.cpp" line="3753"/>
         <source>Pool</source>
         <translation>Pool</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3762" />
+        <location filename="../src/mainwindow.cpp" line="3762"/>
         <source>Shielded</source>
         <translation>Blindado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3816" />
+        <location filename="../src/mainwindow.cpp" line="3816"/>
         <source>Chain Explorer</source>
         <translation>Explorador da cadeia</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3821" />
+        <location filename="../src/mainwindow.cpp" line="3821"/>
         <source>Search block height, transaction hash, block hash, or din1/tdin1/rdin1 address...</source>
         <translation>Busque por altura de bloco, hash de transação, hash de bloco ou endereço din1/tdin1/rdin1 …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3823" />
+        <location filename="../src/mainwindow.cpp" line="3823"/>
         <source>Search</source>
         <translation>Buscar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3830" />
+        <location filename="../src/mainwindow.cpp" line="3830"/>
         <source>Search a block, transaction, or address. Latest blocks load from the connected daemon.</source>
         <translation>Busque um bloco, uma transação ou um endereço. Os blocos mais recentes são carregados do daemon conectado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3846" />
+        <location filename="../src/mainwindow.cpp" line="3846"/>
         <source>Best Block: -</source>
         <translation>Melhor bloco: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3885" />
+        <location filename="../src/mainwindow.cpp" line="3885"/>
         <source>Double-click a row to open block detail in the explorer.</source>
         <translation>Dê um duplo clique em uma linha para abrir o detalhe do bloco no explorador.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="3908" />
+        <location filename="../src/mainwindow.cpp" line="3908"/>
         <source>Explorer Detail</source>
         <translation>Detalhe do explorador</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4014" />
+        <location filename="../src/mainwindow.cpp" line="4014"/>
         <source>Dinero Chain Explorer</source>
         <translation>Explorador da cadeia Dinero</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4070" />
-        <location filename="../src/mainwindow.cpp" line="4090" />
-        <location filename="../src/mainwindow.cpp" line="4527" />
+        <location filename="../src/mainwindow.cpp" line="4070"/>
+        <location filename="../src/mainwindow.cpp" line="4090"/>
+        <location filename="../src/mainwindow.cpp" line="4527"/>
         <source>Mining</source>
         <translation>Mineração</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4077" />
+        <location filename="../src/mainwindow.cpp" line="4077"/>
         <source>&lt;h2&gt;⛏️ Mining&lt;/h2&gt;&lt;p&gt;&lt;b&gt;Use command-line miner:&lt;/b&gt;&lt;/p&gt;&lt;p&gt;1. Generate address in Wallet tab&lt;/p&gt;&lt;p&gt;2. Run in terminal:&lt;/p&gt;&lt;pre&gt;./build/dinero-miner --rpc http://127.0.0.1:20998/ \
   --address YOUR_ADDRESS --threads 8&lt;/pre&gt;</source>
         <translation>&lt;h2&gt;⛏️ Mining&lt;/h2&gt;&lt;p&gt;&lt;b&gt;Use o minerador de linha de comando:&lt;/b&gt;&lt;/p&gt;&lt;p&gt;1. Gere um endereço na aba Carteira&lt;/p&gt;&lt;p&gt;2. Execute no terminal:&lt;/p&gt;&lt;pre&gt;./build/dinero-miner --rpc http://127.0.0.1:20998/ \
   --address SEU_ENDERECO --threads 8&lt;/pre&gt;</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4124" />
+        <location filename="../src/mainwindow.cpp" line="4124"/>
         <source>Solo = mine directly with your node.
 Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).
 Pool (SV2) = Noise-encrypted pool mining. Choose Shared rewards
@@ -2910,697 +2910,697 @@ Pool (SV2) = Mining em pool com criptografia Noise. Escolha recompensas comparti
 para pagamentos PPLNS ou recompensas solo para um coinbase do próprio minerador.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4131" />
+        <location filename="../src/mainwindow.cpp" line="4131"/>
         <source>Pool Endpoint:</source>
         <translation>Endpoint do Pool:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4145" />
+        <location filename="../src/mainwindow.cpp" line="4145"/>
         <source>Endpoint currently overridden by DINERO_STRATUM_ENDPOINT environment variable.</source>
         <translation>O endpoint está sendo substituído pela variável de ambiente DINERO_STRATUM_ENDPOINT.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4158" />
-        <location filename="../src/mainwindow.cpp" line="9909" />
-        <location filename="../src/mainwindow.cpp" line="9993" />
+        <location filename="../src/mainwindow.cpp" line="4158"/>
+        <location filename="../src/mainwindow.cpp" line="9909"/>
+        <location filename="../src/mainwindow.cpp" line="9993"/>
         <source>Start Local</source>
         <translation>Iniciar local</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4162" />
-        <location filename="../src/mainwindow.cpp" line="9910" />
-        <location filename="../src/mainwindow.cpp" line="9994" />
+        <location filename="../src/mainwindow.cpp" line="4162"/>
+        <location filename="../src/mainwindow.cpp" line="9910"/>
+        <location filename="../src/mainwindow.cpp" line="9994"/>
         <source>Start a localhost dinero-stratum server and use it as this pool endpoint.</source>
         <translation>Inicie um servidor dinero-stratum local e use-o como endpoint deste Pool.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4169" />
+        <location filename="../src/mainwindow.cpp" line="4169"/>
         <source>SV2 Pool:</source>
         <translation>Pool SV2:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4180" />
+        <location filename="../src/mainwindow.cpp" line="4180"/>
         <source>SV2 endpoint currently overridden by DINERO_SV2_POOL environment variable.</source>
         <translation>O endpoint SV2 está sendo substituído pela variável de ambiente DINERO_SV2_POOL.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4193" />
+        <location filename="../src/mainwindow.cpp" line="4193"/>
         <source>SV2 Pubkey:</source>
         <translation>Chave pública SV2:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4203" />
+        <location filename="../src/mainwindow.cpp" line="4203"/>
         <source>64-hex-char static public key of the SV2 pool. Pinned on connect — leave blank only for first-contact TOFU (not recommended).</source>
         <translation>Chave pública estática do Pool SV2, com 64 caracteres hexadecimais. Fixada ao conectar; deixe em branco apenas no primeiro contato pelo princípio TOFU (não recomendado).</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4217" />
+        <location filename="../src/mainwindow.cpp" line="4217"/>
         <source>Backend:</source>
         <translation>Backend:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4237" />
+        <location filename="../src/mainwindow.cpp" line="4237"/>
         <source>CPU = dinero-sv2-miner (all cores hashing).
 GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</source>
         <translation>CPU = dinero-sv2-miner (todos os núcleos calculando hashes).
 GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4251" />
+        <location filename="../src/mainwindow.cpp" line="4251"/>
         <source>Rewards:</source>
         <translation>Recompensas:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4266" />
-        <source>Pool Shared = each accepted share contributes to the pool's PPLNS window.
+        <location filename="../src/mainwindow.cpp" line="4266"/>
+        <source>Pool Shared = each accepted share contributes to the pool&apos;s PPLNS window.
 Pool Solo = the miner owns the block coinbase, but receives nothing unless it finds a block.</source>
         <translation>Pool compartilhado = cada share aceito conta para a janela PPLNS do Pool.
 Pool solo = o minerador é dono do coinbase do bloco, mas não recebe nada a menos que encontre um.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4283" />
+        <location filename="../src/mainwindow.cpp" line="4283"/>
         <source>Miner:</source>
         <translation>Minerador:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4310" />
+        <location filename="../src/mainwindow.cpp" line="4310"/>
         <source>Choose the solo mining engine</source>
         <translation>Escolha o motor de Mining solo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4315" />
+        <location filename="../src/mainwindow.cpp" line="4315"/>
         <source>Worker:</source>
         <translation>Worker:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4320" />
+        <location filename="../src/mainwindow.cpp" line="4320"/>
         <source>Path to dinero-stratum-worker binary...</source>
         <translation>Caminho do binário dinero-stratum-worker …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4326" />
+        <location filename="../src/mainwindow.cpp" line="4326"/>
         <source>Browse...</source>
-        <translation type="unfinished" />
+        <translation>Procurar …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4337" />
+        <location filename="../src/mainwindow.cpp" line="4337"/>
         <source>Address:</source>
         <translation>Endereço:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4339" />
+        <location filename="../src/mainwindow.cpp" line="4339"/>
         <source>din1p... (Taproot only)</source>
         <translation>din1p… (somente Taproot)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4343" />
+        <location filename="../src/mainwindow.cpp" line="4343"/>
         <source>Use Wallet</source>
         <translation>Usar a carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4346" />
+        <location filename="../src/mainwindow.cpp" line="4346"/>
         <source>Fill mining address from your wallet (requires unlocked wallet)</source>
         <translation>Preencher o endereço de Mining a partir da sua carteira (exige carteira desbloqueada)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4349" />
+        <location filename="../src/mainwindow.cpp" line="4349"/>
         <source>Threads:</source>
         <translation>Threads:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4371" />
-        <location filename="../src/mainwindow.cpp" line="4701" />
-        <location filename="../src/mainwindow.cpp" line="7106" />
-        <location filename="../src/mainwindow.cpp" line="8244" />
-        <location filename="../src/mainwindow.cpp" line="9615" />
-        <location filename="../src/mainwindow.cpp" line="11789" />
-        <location filename="../src/mainwindow.cpp" line="12052" />
-        <location filename="../src/mainwindow.cpp" line="12606" />
-        <location filename="../src/mainwindow.cpp" line="12738" />
-        <location filename="../src/mainwindow.cpp" line="16617" />
+        <location filename="../src/mainwindow.cpp" line="4371"/>
+        <location filename="../src/mainwindow.cpp" line="4701"/>
+        <location filename="../src/mainwindow.cpp" line="7106"/>
+        <location filename="../src/mainwindow.cpp" line="8244"/>
+        <location filename="../src/mainwindow.cpp" line="9615"/>
+        <location filename="../src/mainwindow.cpp" line="11789"/>
+        <location filename="../src/mainwindow.cpp" line="12052"/>
+        <location filename="../src/mainwindow.cpp" line="12606"/>
+        <location filename="../src/mainwindow.cpp" line="12738"/>
+        <location filename="../src/mainwindow.cpp" line="16617"/>
         <source>Start Mining</source>
         <translation>Iniciar o Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4375" />
+        <location filename="../src/mainwindow.cpp" line="4375"/>
         <source>Start daemon first to enable mining</source>
         <translation>Inicie primeiro o daemon para habilitar o Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4383" />
+        <location filename="../src/mainwindow.cpp" line="4383"/>
         <source>Stop</source>
         <translation>Parar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4400" />
+        <location filename="../src/mainwindow.cpp" line="4400"/>
         <source>Blocks:</source>
         <translation>Blocos:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4403" />
-        <location filename="../src/mainwindow.cpp" line="4949" />
+        <location filename="../src/mainwindow.cpp" line="4403"/>
+        <location filename="../src/mainwindow.cpp" line="4949"/>
         <source>Height:</source>
         <translation>Altura:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4408" />
-        <location filename="../src/mainwindow.cpp" line="4964" />
+        <location filename="../src/mainwindow.cpp" line="4408"/>
+        <location filename="../src/mainwindow.cpp" line="4964"/>
         <source>Difficulty:</source>
         <translation>Dificuldade:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4416" />
+        <location filename="../src/mainwindow.cpp" line="4416"/>
         <source>MH/s:</source>
         <translation>MH/s:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4421" />
+        <location filename="../src/mainwindow.cpp" line="4421"/>
         <source>Run:</source>
         <translation>Execução:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4425" />
-        <location filename="../src/mainwindow.cpp" line="4682" />
+        <location filename="../src/mainwindow.cpp" line="4425"/>
+        <location filename="../src/mainwindow.cpp" line="4682"/>
         <source>Session finds</source>
         <translation>Achados da sessão</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4434" />
+        <location filename="../src/mainwindow.cpp" line="4434"/>
         <source>Blocks found this session</source>
         <translation>Blocos encontrados nesta sessão</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4477" />
-        <location filename="../src/mainwindow.cpp" line="12656" />
+        <location filename="../src/mainwindow.cpp" line="4477"/>
+        <location filename="../src/mainwindow.cpp" line="12656"/>
         <source>Shares: 0</source>
         <translation>Shares: 0</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4515" />
+        <location filename="../src/mainwindow.cpp" line="4515"/>
         <source>Mining output will appear here when you start mining...</source>
         <translation>A saída do Mining aparecerá aqui quando você iniciá-lo …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4690" />
-        <location filename="../src/mainwindow.cpp" line="7102" />
-        <location filename="../src/mainwindow.cpp" line="9603" />
-        <location filename="../src/mainwindow.cpp" line="11858" />
-        <location filename="../src/mainwindow.cpp" line="12226" />
-        <location filename="../src/mainwindow.cpp" line="12662" />
+        <location filename="../src/mainwindow.cpp" line="4690"/>
+        <location filename="../src/mainwindow.cpp" line="7102"/>
+        <location filename="../src/mainwindow.cpp" line="9603"/>
+        <location filename="../src/mainwindow.cpp" line="11858"/>
+        <location filename="../src/mainwindow.cpp" line="12226"/>
+        <location filename="../src/mainwindow.cpp" line="12662"/>
         <source>Stop Mining</source>
         <translation>Parar o Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4692" />
-        <location filename="../src/mainwindow.cpp" line="7104" />
-        <location filename="../src/mainwindow.cpp" line="9605" />
-        <location filename="../src/mainwindow.cpp" line="12228" />
+        <location filename="../src/mainwindow.cpp" line="4692"/>
+        <location filename="../src/mainwindow.cpp" line="7104"/>
+        <location filename="../src/mainwindow.cpp" line="9605"/>
+        <location filename="../src/mainwindow.cpp" line="12228"/>
         <source>Click to stop mining</source>
         <translation>Clique para parar o Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4703" />
-        <location filename="../src/mainwindow.cpp" line="7108" />
-        <location filename="../src/mainwindow.cpp" line="8246" />
-        <location filename="../src/mainwindow.cpp" line="9617" />
-        <location filename="../src/mainwindow.cpp" line="11791" />
-        <location filename="../src/mainwindow.cpp" line="12054" />
-        <location filename="../src/mainwindow.cpp" line="12740" />
+        <location filename="../src/mainwindow.cpp" line="4703"/>
+        <location filename="../src/mainwindow.cpp" line="7108"/>
+        <location filename="../src/mainwindow.cpp" line="8246"/>
+        <location filename="../src/mainwindow.cpp" line="9617"/>
+        <location filename="../src/mainwindow.cpp" line="11791"/>
+        <location filename="../src/mainwindow.cpp" line="12054"/>
+        <location filename="../src/mainwindow.cpp" line="12740"/>
         <source>Click to start mining</source>
         <translation>Clique para iniciar o Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4735" />
+        <location filename="../src/mainwindow.cpp" line="4735"/>
         <source>Utreexo Proof Service</source>
         <translation>Serviço de provas Utreexo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4739" />
+        <location filename="../src/mainwindow.cpp" line="4739"/>
         <source>Live daemon diagnostics for Utreexo proof caching and proof serving. This is not the asset bridge; it shows whether this node can serve compact proof data to stateless/mobile peers.</source>
         <translation>Diagnóstico ao vivo do daemon para cache e entrega de provas Utreexo. Isto não é a ponte de ativos; mostra se este nó consegue servir dados de prova compactos a pares sem estado ou móveis.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4747" />
+        <location filename="../src/mainwindow.cpp" line="4747"/>
         <source>Waiting for Utreexo proof metrics...</source>
         <translation>Aguardando as métricas de provas Utreexo …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4769" />
+        <location filename="../src/mainwindow.cpp" line="4769"/>
         <source>Status:</source>
         <translation>Status:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4772" />
+        <location filename="../src/mainwindow.cpp" line="4772"/>
         <source>Requests:</source>
         <translation>Solicitações:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4775" />
+        <location filename="../src/mainwindow.cpp" line="4775"/>
         <source>Queue:</source>
         <translation>Fila:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4778" />
+        <location filename="../src/mainwindow.cpp" line="4778"/>
         <source>Cache Hits:</source>
         <translation>Acertos de cache:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4781" />
+        <location filename="../src/mainwindow.cpp" line="4781"/>
         <source>Cache Misses:</source>
         <translation>Falhas de cache:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4784" />
+        <location filename="../src/mainwindow.cpp" line="4784"/>
         <source>Hit Rate:</source>
         <translation>Taxa de acertos:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4787" />
+        <location filename="../src/mainwindow.cpp" line="4787"/>
         <source>Block Cache:</source>
         <translation>Cache de blocos:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4790" />
+        <location filename="../src/mainwindow.cpp" line="4790"/>
         <source>Tx Cache:</source>
         <translation>Cache de transações:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4793" />
+        <location filename="../src/mainwindow.cpp" line="4793"/>
         <source>Indexed History:</source>
         <translation>Histórico indexado:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4796" />
+        <location filename="../src/mainwindow.cpp" line="4796"/>
         <source>Evictions / TTL:</source>
         <translation>Descartes / TTL:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4799" />
+        <location filename="../src/mainwindow.cpp" line="4799"/>
         <source>Proof Workers:</source>
         <translation>Workers de prova:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4802" />
+        <location filename="../src/mainwindow.cpp" line="4802"/>
         <source>Active Generations:</source>
         <translation>Gerações ativas:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4805" />
+        <location filename="../src/mainwindow.cpp" line="4805"/>
         <source>Proof Latency:</source>
         <translation>Latência das provas:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4808" />
+        <location filename="../src/mainwindow.cpp" line="4808"/>
         <source>Queue Wait:</source>
         <translation>Espera na fila:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4811" />
+        <location filename="../src/mainwindow.cpp" line="4811"/>
         <source>Priority Routing:</source>
         <translation>Roteamento prioritário:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4814" />
+        <location filename="../src/mainwindow.cpp" line="4814"/>
         <source>Tasks:</source>
         <translation>Tarefas:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4827" />
+        <location filename="../src/mainwindow.cpp" line="4827"/>
         <source>Utreexo Proofs</source>
         <translation>Provas Utreexo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4838" />
+        <location filename="../src/mainwindow.cpp" line="4838"/>
         <source>🌐 Connected Peers</source>
         <translation>🌐 Pares conectados</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4844" />
+        <location filename="../src/mainwindow.cpp" line="4844"/>
         <source>Refresh peer list from daemon</source>
         <translation>Atualizar a lista de pares a partir do daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4852" />
+        <location filename="../src/mainwindow.cpp" line="4852"/>
         <source>Network Status</source>
         <translation>Situação da rede</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4855" />
+        <location filename="../src/mainwindow.cpp" line="4855"/>
         <source>Listening: -</source>
         <translation>Escutando: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4856" />
+        <location filename="../src/mainwindow.cpp" line="4856"/>
         <source>Port mapping: -</source>
         <translation>Mapeamento de portas: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4857" />
+        <location filename="../src/mainwindow.cpp" line="4857"/>
         <source>Relay: -</source>
         <translation>Retransmissão: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4858" />
+        <location filename="../src/mainwindow.cpp" line="4858"/>
         <source>Advertised: -</source>
         <translation>Anunciado: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4859" />
+        <location filename="../src/mainwindow.cpp" line="4859"/>
         <source>Reachability: checking</source>
         <translation>Alcançabilidade: verificando</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4897" />
+        <location filename="../src/mainwindow.cpp" line="4897"/>
         <source>❌ Disconnect</source>
         <translation>❌ Desconectar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4898" />
+        <location filename="../src/mainwindow.cpp" line="4898"/>
         <source>Disconnect from selected peer</source>
         <translation>Desconectar do par selecionado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4902" />
+        <location filename="../src/mainwindow.cpp" line="4902"/>
         <source>🚫 Ban</source>
         <translation>🚫 Banir</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4903" />
+        <location filename="../src/mainwindow.cpp" line="4903"/>
         <source>Ban selected peer (blocks reconnection)</source>
         <translation>Banir o par selecionado (impede a reconexão)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4908" />
+        <location filename="../src/mainwindow.cpp" line="4908"/>
         <source>🔄 Reconnect All</source>
         <translation>🔄 Reconectar todos</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4909" />
+        <location filename="../src/mainwindow.cpp" line="4909"/>
         <source>Disconnect and reconnect all peers (refreshes peer heights)</source>
         <translation>Desconectar e reconectar todos os pares (atualiza as alturas deles)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4914" />
+        <location filename="../src/mainwindow.cpp" line="4914"/>
         <source>📋 Copy Diagnostics</source>
         <translation>📋 Copiar o diagnóstico</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4915" />
+        <location filename="../src/mainwindow.cpp" line="4915"/>
         <source>Copy P2P status, port mapping, advertised addresses, and peers</source>
         <translation>Copiar situação P2P, mapeamento de portas, endereços anunciados e pares</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4923" />
+        <location filename="../src/mainwindow.cpp" line="4923"/>
         <source>Peers</source>
         <translation>Peers</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4934" />
+        <location filename="../src/mainwindow.cpp" line="4934"/>
         <source>📋 Block Template</source>
         <translation>📋 Modelo de bloco</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4940" />
+        <location filename="../src/mainwindow.cpp" line="4940"/>
         <source>Fetch latest block template from daemon</source>
         <translation>Obter o modelo de bloco mais recente do daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4946" />
+        <location filename="../src/mainwindow.cpp" line="4946"/>
         <source>Template Stats</source>
         <translation>Estatísticas do modelo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4954" />
+        <location filename="../src/mainwindow.cpp" line="4954"/>
         <source>Transactions:</source>
         <translation>Transações:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4959" />
+        <location filename="../src/mainwindow.cpp" line="4959"/>
         <source>Total Fees:</source>
         <translation>Tarifas totais:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4974" />
+        <location filename="../src/mainwindow.cpp" line="4974"/>
         <source>Raw Template (JSON)</source>
         <translation>Modelo bruto (JSON)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4979" />
-        <source>Click 'Refresh' to fetch block template...</source>
+        <location filename="../src/mainwindow.cpp" line="4979"/>
+        <source>Click &apos;Refresh&apos; to fetch block template...</source>
         <translation>Clique em «Atualizar» para obter o modelo de bloco …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4983" />
+        <location filename="../src/mainwindow.cpp" line="4983"/>
         <source>Template</source>
         <translation>Modelo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="4999" />
+        <location filename="../src/mainwindow.cpp" line="4999"/>
         <source>Language</source>
         <translation>Idioma</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5013" />
+        <location filename="../src/mainwindow.cpp" line="5013"/>
         <source>Interface language:</source>
         <translation>Idioma da interface:</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5021" />
+        <location filename="../src/mainwindow.cpp" line="5021"/>
         <source>Untranslated text stays in English. Amounts always use a dot decimal separator, in every language.</source>
         <translation>O texto não traduzido permanece em inglês. Os valores sempre usam ponto como separador decimal, em todos os idiomas.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5037" />
+        <location filename="../src/mainwindow.cpp" line="5037"/>
         <source>Restart Dinero Now</source>
         <translation>Reiniciar o Dinero agora</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5050" />
+        <location filename="../src/mainwindow.cpp" line="5050"/>
         <source>Language saved. Restart Dinero to apply it.</source>
         <translation>Idioma salvo. Reinicie o Dinero para aplicar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5060" />
+        <location filename="../src/mainwindow.cpp" line="5060"/>
         <source>Restart Dinero</source>
         <translation>Reiniciar o Dinero</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5061" />
+        <location filename="../src/mainwindow.cpp" line="5061"/>
         <source>Restart Dinero now to apply the new language?</source>
         <translation>Reiniciar o Dinero agora para aplicar o novo idioma?</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5063" />
+        <location filename="../src/mainwindow.cpp" line="5063"/>
         <source>The wallet and its built-in node shut down cleanly and start again. Any sync or mining in progress pauses until Dinero is back up.</source>
         <translation>A carteira e seu nó embutido são encerrados de forma limpa e iniciados novamente. Qualquer sincronização ou Mining em andamento é pausado até o Dinero voltar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5067" />
+        <location filename="../src/mainwindow.cpp" line="5067"/>
         <source>Restart Now</source>
         <translation>Reiniciar agora</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5068" />
+        <location filename="../src/mainwindow.cpp" line="5068"/>
         <source>Later</source>
         <translation>Mais tarde</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5142" />
+        <location filename="../src/mainwindow.cpp" line="5142"/>
         <source>⚙️ Settings &amp; Backup</source>
         <translation>⚙️ Configurações e cópia de segurança</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5149" />
+        <location filename="../src/mainwindow.cpp" line="5149"/>
         <source>📁 Node Runtime</source>
         <translation>📁 Execução do nó</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5174" />
+        <location filename="../src/mainwindow.cpp" line="5174"/>
         <source>Start Daemon</source>
         <translation>Iniciar o daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5177" />
+        <location filename="../src/mainwindow.cpp" line="5177"/>
         <source>Start local dinerod daemon</source>
         <translation>Iniciar o daemon dinerod local</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5180" />
-        <location filename="../src/mainwindow.cpp" line="13686" />
+        <location filename="../src/mainwindow.cpp" line="5180"/>
+        <location filename="../src/mainwindow.cpp" line="13686"/>
         <source>Stop Daemon</source>
         <translation>Parar o daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5183" />
+        <location filename="../src/mainwindow.cpp" line="5183"/>
         <source>Stop local dinerod daemon</source>
         <translation>Parar o daemon dinerod local</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5188" />
+        <location filename="../src/mainwindow.cpp" line="5188"/>
         <source>dinerod path (optional)...</source>
         <translation>caminho do dinerod (opcional) …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5192" />
+        <location filename="../src/mainwindow.cpp" line="5192"/>
         <source>Custom path to dinerod binary (optional)</source>
         <translation>Caminho personalizado para o binário dinerod (opcional)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5195" />
+        <location filename="../src/mainwindow.cpp" line="5195"/>
         <source>Browse Daemon…</source>
         <translation>Procurar o daemon …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5198" />
+        <location filename="../src/mainwindow.cpp" line="5198"/>
         <source>Select a custom dinerod binary</source>
         <translation>Escolha um binário dinerod personalizado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5206" />
+        <location filename="../src/mainwindow.cpp" line="5206"/>
         <source>Network: -</source>
         <translation>Rede: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5211" />
+        <location filename="../src/mainwindow.cpp" line="5211"/>
         <source>Core: -</source>
         <translation>Core: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5216" />
+        <location filename="../src/mainwindow.cpp" line="5216"/>
         <source>DB: -</source>
         <translation>BD: -</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5249" />
+        <location filename="../src/mainwindow.cpp" line="5249"/>
         <source>📂 Open Data Directory</source>
         <translation>📂 Abrir o diretório de dados</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5256" />
+        <location filename="../src/mainwindow.cpp" line="5256"/>
         <source>⛓️ Open Chain Database</source>
         <translation>⛓️ Abrir o banco de dados da cadeia</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5264" />
+        <location filename="../src/mainwindow.cpp" line="5264"/>
         <source>Reset Daemon Path</source>
         <translation>Redefinir o caminho do daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5266" />
+        <location filename="../src/mainwindow.cpp" line="5266"/>
         <source>Return to the bundled or system dinerod on the next daemon start.</source>
         <translation>Voltar ao dinerod embutido ou do sistema no próximo início do daemon.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5269" />
+        <location filename="../src/mainwindow.cpp" line="5269"/>
         <source>Daemon Path Reset</source>
         <translation>Caminho do daemon redefinido</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5270" />
+        <location filename="../src/mainwindow.cpp" line="5270"/>
         <source>Dinero-Qt will use the bundled or system dinerod the next time the daemon is started.</source>
         <translation>O Dinero-Qt usará o dinerod embutido ou o do sistema na próxima vez que o daemon for iniciado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5279" />
+        <location filename="../src/mainwindow.cpp" line="5279"/>
         <source>Network &amp; Privacy</source>
         <translation>Rede e privacidade</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5300" />
+        <location filename="../src/mainwindow.cpp" line="5300"/>
         <source>🧪 Developer Menu</source>
         <translation>🧪 Menu do desenvolvedor</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5304" />
+        <location filename="../src/mainwindow.cpp" line="5304"/>
         <source>Advanced local daemon controls, reconnect tools, and runtime diagnostics. Hidden by default so the main wallet stays calm.</source>
         <translation>Controles avançados do daemon local, ferramentas de reconexão e diagnóstico de execução. Ocultos por padrão para que a carteira principal permaneça simples.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5332" />
+        <location filename="../src/mainwindow.cpp" line="5332"/>
         <source>Reconnect</source>
         <translation>Reconectar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5333" />
+        <location filename="../src/mainwindow.cpp" line="5333"/>
         <source>Force reconnection (reload cookie &amp; retry)</source>
         <translation>Forçar a reconexão (recarregar o cookie e tentar de novo)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5337" />
+        <location filename="../src/mainwindow.cpp" line="5337"/>
         <source>Reconnecting...</source>
         <translation>Reconectando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5369" />
+        <location filename="../src/mainwindow.cpp" line="5369"/>
         <source>Use these controls when testing daemon startup, connection recovery, or local runtime health.</source>
         <translation>Use estes controles ao testar o início do daemon, a recuperação da conexão ou a saúde da execução local.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5379" />
+        <location filename="../src/mainwindow.cpp" line="5379"/>
         <source>Hide Developer Menu</source>
         <translation>Ocultar menu do desenvolvedor</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5380" />
+        <location filename="../src/mainwindow.cpp" line="5380"/>
         <source>Show Developer Menu</source>
         <translation>Mostrar menu do desenvolvedor</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5394" />
+        <location filename="../src/mainwindow.cpp" line="5394"/>
         <source>💾 Backup</source>
         <translation>💾 Cópia de segurança</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5398" />
+        <location filename="../src/mainwindow.cpp" line="5398"/>
         <source>&lt;b&gt;Wallet backup:&lt;/b&gt; copies wallet databases, HD wallet state, and wallet registry from the live daemon data directory. &lt;b&gt;Chain backup:&lt;/b&gt; optional; it can be large and can always be rebuilt by syncing again.</source>
         <translation>&lt;b&gt;Cópia da carteira:&lt;/b&gt; copia os bancos de dados da carteira, o estado da carteira HD e o registro de carteiras do diretório de dados do daemon em uso. &lt;b&gt;Cópia da cadeia:&lt;/b&gt; opcional; pode ser grande e sempre pode ser reconstruída sincronizando de novo.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5411" />
+        <location filename="../src/mainwindow.cpp" line="5411"/>
         <source>💼 Backup Wallet Data</source>
         <translation>💼 Copiar os dados da carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5413" />
+        <location filename="../src/mainwindow.cpp" line="5413"/>
         <source>Backup wallets/, hd_wallet/, and wallet_registry.db files from the daemon data directory.</source>
         <translation>Copiar os arquivos wallets/, hd_wallet/ e wallet_registry.db do diretório de dados do daemon.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5423" />
-        <location filename="../src/mainwindow.cpp" line="5457" />
-        <location filename="../src/mainwindow.cpp" line="5487" />
-        <location filename="../src/mainwindow.cpp" line="5510" />
+        <location filename="../src/mainwindow.cpp" line="5423"/>
+        <location filename="../src/mainwindow.cpp" line="5457"/>
+        <location filename="../src/mainwindow.cpp" line="5487"/>
+        <location filename="../src/mainwindow.cpp" line="5510"/>
         <source>Backup Failed</source>
         <translation>Falha na cópia de segurança</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5455" />
-        <location filename="../src/mainwindow.cpp" line="5508" />
+        <location filename="../src/mainwindow.cpp" line="5455"/>
+        <location filename="../src/mainwindow.cpp" line="5508"/>
         <source>Backup Complete</source>
         <translation>Cópia de segurança concluída</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5463" />
+        <location filename="../src/mainwindow.cpp" line="5463"/>
         <source>Copies wallets/, hd_wallet/, wallet registry, and the local SV2 pool key.</source>
         <translation>Copia wallets/, hd_wallet/, o registro de carteiras e a chave local do Pool SV2.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5468" />
+        <location filename="../src/mainwindow.cpp" line="5468"/>
         <source>⛓️ Backup Chain Data</source>
         <translation>⛓️ Copiar os dados da cadeia</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5470" />
+        <location filename="../src/mainwindow.cpp" line="5470"/>
         <source>Backup blockchain/, blocks/, and headers/ from the daemon data directory.</source>
         <translation>Copiar blockchain/, blocks/ e headers/ do diretório de dados do daemon.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5473" />
+        <location filename="../src/mainwindow.cpp" line="5473"/>
         <source>Backup Chain Data</source>
         <translation>Cópia dos dados da cadeia</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5474" />
+        <location filename="../src/mainwindow.cpp" line="5474"/>
         <source>Chain data can be large and may take several minutes to copy.
 
 This is optional because the node can resync from the network.
@@ -3613,503 +3613,503 @@ Isso é opcional porque o nó pode sincronizar novamente pela rede.
 Continuar?</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5516" />
+        <location filename="../src/mainwindow.cpp" line="5516"/>
         <source>Copies blockchain/, blocks/, and headers/. Wallet backup is the critical one.</source>
         <translation>Copia blockchain/, blocks/ e headers/. A cópia da carteira é a essencial.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5524" />
+        <location filename="../src/mainwindow.cpp" line="5524"/>
         <source>Backups are created as timestamped folders. For the cleanest filesystem snapshot, stop mining first and avoid closing the app during the copy.</source>
         <translation>As cópias são criadas como pastas com data e hora. Para a imagem mais limpa do sistema de arquivos, pare o Mining primeiro e não feche o aplicativo durante a cópia.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5532" />
+        <location filename="../src/mainwindow.cpp" line="5532"/>
         <source>Settings</source>
         <translation>Configurações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5682" />
-        <source>Path: m/88'/1448'/0'/0/i | din1r</source>
-        <translation type="unfinished" />
+        <location filename="../src/mainwindow.cpp" line="5682"/>
+        <source>Path: m/88&apos;/1448&apos;/0&apos;/0/i | din1r</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5683" />
+        <location filename="../src/mainwindow.cpp" line="5683"/>
         <source>Purpose 88 P2MR lane.
 Quantum-safe ML-DSA-65 receive addresses derive from the same BIP39 seed.</source>
         <translation>Via P2MR com propósito 88.
 Endereços de recebimento ML-DSA-65 resistentes a quântica derivam da mesma semente BIP39.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5687" />
-        <source>Path: m/86'/1448'/0'/0/i | din1p</source>
-        <translation type="unfinished" />
+        <location filename="../src/mainwindow.cpp" line="5687"/>
+        <source>Path: m/86&apos;/1448&apos;/0&apos;/0/i | din1p</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5688" />
+        <location filename="../src/mainwindow.cpp" line="5688"/>
         <source>BIP86 Taproot lane.
 Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
         <translation>Via Taproot BIP86.
 Endereços de recebimento adequados ao celular derivam da mesma semente BIP39.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5731" />
+        <location filename="../src/mainwindow.cpp" line="5731"/>
         <source>New P2MR Address</source>
         <translation>Novo endereço P2MR</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5732" />
+        <location filename="../src/mainwindow.cpp" line="5732"/>
         <source>Generate a quantum-safe ML-DSA-65 receive address (din1r...)</source>
         <translation>Gerar um endereço de recebimento ML-DSA-65 resistente a quântica (din1r…)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5735" />
-        <location filename="../src/mainwindow.cpp" line="14740" />
+        <location filename="../src/mainwindow.cpp" line="5735"/>
+        <location filename="../src/mainwindow.cpp" line="14740"/>
         <source>New Taproot Address</source>
         <translation>Novo endereço Taproot</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5736" />
+        <location filename="../src/mainwindow.cpp" line="5736"/>
         <source>Generate a new Taproot receive address (din1p...)</source>
         <translation>Gerar um novo endereço de recebimento Taproot (din1p…)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5799" />
+        <location filename="../src/mainwindow.cpp" line="5799"/>
         <source>din1p... (Taproot) or din1r... (P2MR public)</source>
         <translation>din1p… (Taproot) ou din1r… (P2MR público)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5801" />
+        <location filename="../src/mainwindow.cpp" line="5801"/>
         <source>dins1... (shielded)</source>
         <translation>dins1… (blindado)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5803" />
+        <location filename="../src/mainwindow.cpp" line="5803"/>
         <source>dins1... (shielded destination)</source>
         <translation>dins1… (destino blindado)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5805" />
+        <location filename="../src/mainwindow.cpp" line="5805"/>
         <source>Fresh wallet Taproot address will be generated</source>
         <translation>Será gerado um novo endereço Taproot da carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5807" />
+        <location filename="../src/mainwindow.cpp" line="5807"/>
         <source>din1p... or din1r...</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5813" />
+        <location filename="../src/mainwindow.cpp" line="5813"/>
         <source>Open private send / convert</source>
         <translation>Abrir envio privado / conversão</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5814" />
+        <location filename="../src/mainwindow.cpp" line="5814"/>
         <source>Continue in Shielded. Availability depends on network activation.</source>
         <translation>Continue em Blindado. A disponibilidade depende da ativação na rede.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5816" />
+        <location filename="../src/mainwindow.cpp" line="5816"/>
         <source>Create Contract</source>
         <translation>Criar contrato</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5817" />
+        <location filename="../src/mainwindow.cpp" line="5817"/>
         <source>Create an on-chain contract lock with spending rules</source>
         <translation>Criar uma trava de contrato na cadeia com regras de gasto</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5819" />
+        <location filename="../src/mainwindow.cpp" line="5819"/>
         <source>Send Privately</source>
         <translation>Enviar de forma privada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5820" />
+        <location filename="../src/mainwindow.cpp" line="5820"/>
         <source>Spend shielded notes to a shielded address</source>
         <translation>Gastar notas blindadas para um endereço blindado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5822" />
+        <location filename="../src/mainwindow.cpp" line="5822"/>
         <source>Send to Shielded</source>
         <translation>Enviar para Blindado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5823" />
+        <location filename="../src/mainwindow.cpp" line="5823"/>
         <source>Fund a shielded dins1 address from your transparent balance</source>
         <translation>Financiar um endereço blindado dins1 com o seu saldo transparente</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5825" />
+        <location filename="../src/mainwindow.cpp" line="5825"/>
         <source>Convert to Public</source>
         <translation>Converter em público</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5826" />
+        <location filename="../src/mainwindow.cpp" line="5826"/>
         <source>Unshield selected private value to a fresh wallet Taproot address</source>
         <translation>Desblindar o valor privado selecionado para um novo endereço Taproot da carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5829" />
+        <location filename="../src/mainwindow.cpp" line="5829"/>
         <source>Send DIN transparently from public Taproot/P2MR funds</source>
         <translation>Enviar DIN de forma transparente a partir de fundos públicos Taproot/P2MR</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5853" />
+        <location filename="../src/mainwindow.cpp" line="5853"/>
         <source>Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.</source>
         <translation>Abra Blindado para enviar de forma privada ou converter fundos. O daemon informa se a ativação está disponível. Use Covenants para controles de contrato privado quando estiverem ativos.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5855" />
+        <location filename="../src/mainwindow.cpp" line="5855"/>
         <source>Create an on-chain contract with spending rules.</source>
         <translation>Criar um contrato na cadeia com regras de gasto.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5857" />
+        <location filename="../src/mainwindow.cpp" line="5857"/>
         <source>Spend shielded balance privately. Recipient must be a dins1 shielded address.</source>
         <translation>Gastar o saldo blindado de forma privada. O destinatário precisa ser um endereço blindado dins1.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5860" />
+        <location filename="../src/mainwindow.cpp" line="5860"/>
         <source>Send transparent balance into a shielded address. Recipient must be a dins1 shielded address.</source>
         <translation>Enviar saldo transparente para um endereço blindado. O destinatário precisa ser um endereço blindado dins1.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5863" />
+        <location filename="../src/mainwindow.cpp" line="5863"/>
         <source>Convert shielded balance to public Taproot. The daemon sends it to a fresh wallet address.</source>
         <translation>Converter o saldo blindado em Taproot público. O daemon o envia para um novo endereço da carteira.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5866" />
+        <location filename="../src/mainwindow.cpp" line="5866"/>
         <source>Send DIN publicly from transparent Taproot/P2MR funds.</source>
         <translation>Enviar DIN publicamente a partir de fundos transparentes Taproot/P2MR.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5952" />
+        <location filename="../src/mainwindow.cpp" line="5952"/>
         <source>Generating...</source>
         <translation>Gerando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5986" />
+        <location filename="../src/mainwindow.cpp" line="5986"/>
         <source>✅ New address generated successfully!</source>
         <translation>✅ Novo endereço gerado com sucesso.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="5999" />
+        <location filename="../src/mainwindow.cpp" line="5999"/>
         <source>⚠️ Address generation returned empty result</source>
         <translation>⚠️ A geração do endereço retornou um resultado vazio</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6028" />
+        <location filename="../src/mainwindow.cpp" line="6028"/>
         <source>🕶️ Private receive addresses are wallet-generated private addresses. Copy the address directly or view its underlying Taproot details above.</source>
         <translation>🕶️ Endereços privados de recebimento são endereços privados gerados pela carteira. Copie o endereço diretamente ou veja acima os detalhes Taproot subjacentes.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6040" />
+        <location filename="../src/mainwindow.cpp" line="6040"/>
         <source>Address copied to clipboard!</source>
         <translation>Endereço copiado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6175" />
+        <location filename="../src/mainwindow.cpp" line="6175"/>
         <source>Database is healthy.</source>
         <translation>O banco de dados está saudável.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6178" />
+        <location filename="../src/mainwindow.cpp" line="6178"/>
         <source>DB issue</source>
         <translation>Problema no banco de dados</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6285" />
+        <location filename="../src/mainwindow.cpp" line="6285"/>
         <source>Supply: unavailable</source>
         <translation>Emissão: indisponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6396" />
+        <location filename="../src/mainwindow.cpp" line="6396"/>
         <source>✅ Wallet scan complete</source>
         <translation>✅ Varredura da carteira concluída</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6412" />
+        <location filename="../src/mainwindow.cpp" line="6412"/>
         <source>Wallet Scan Failed</source>
         <translation>Falha na varredura da carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6502" />
-        <location filename="../src/mainwindow.cpp" line="6614" />
+        <location filename="../src/mainwindow.cpp" line="6502"/>
+        <location filename="../src/mainwindow.cpp" line="6614"/>
         <source>✅ Transaction sent successfully!</source>
         <translation>✅ Transação enviada com sucesso.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="6526" />
+        <location filename="../src/mainwindow.cpp" line="6526"/>
         <source>✅ Transaction created and signed! Broadcasting...</source>
         <translation>✅ Transação criada e assinada. Transmitindo …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7182" />
+        <location filename="../src/mainwindow.cpp" line="7182"/>
         <source>Mempool: N/A</source>
         <translation>Mempool: n/d</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7187" />
-        <location filename="../src/mainwindow.cpp" line="7194" />
+        <location filename="../src/mainwindow.cpp" line="7187"/>
+        <location filename="../src/mainwindow.cpp" line="7194"/>
         <source>Mempool unavailable</source>
         <translation>Mempool indisponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7188" />
+        <location filename="../src/mainwindow.cpp" line="7188"/>
         <source>Local node returned an invalid response</source>
         <translation>O nó local retornou uma resposta inválida</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7321" />
+        <location filename="../src/mainwindow.cpp" line="7321"/>
         <source>Poor connectivity</source>
         <translation>Conectividade ruim</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7324" />
+        <location filename="../src/mainwindow.cpp" line="7324"/>
         <source>Good connectivity</source>
         <translation>Boa conectividade</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7364" />
+        <location filename="../src/mainwindow.cpp" line="7364"/>
         <source>Dinero Core currently reports peer activity timestamps, not per-peer ping latency.</source>
         <translation>O Dinero Core informa hoje os horários de atividade dos pares, não a latência de ping por par.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7454" />
-        <location filename="../src/mainwindow.cpp" line="8480" />
-        <location filename="../src/mainwindow.cpp" line="16928" />
+        <location filename="../src/mainwindow.cpp" line="7454"/>
+        <location filename="../src/mainwindow.cpp" line="8480"/>
+        <location filename="../src/mainwindow.cpp" line="16928"/>
         <source>✅ Fully synced!</source>
         <translation>✅ Totalmente sincronizado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7469" />
-        <location filename="../src/mainwindow.cpp" line="7657" />
+        <location filename="../src/mainwindow.cpp" line="7469"/>
+        <location filename="../src/mainwindow.cpp" line="7657"/>
         <source>No wallet loaded</source>
         <translation>Nenhuma carteira carregada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7471" />
-        <location filename="../src/mainwindow.cpp" line="7659" />
+        <location filename="../src/mainwindow.cpp" line="7471"/>
+        <location filename="../src/mainwindow.cpp" line="7659"/>
         <source>No active wallet is loaded.</source>
         <translation>Nenhuma carteira ativa está carregada.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7582" />
+        <location filename="../src/mainwindow.cpp" line="7582"/>
         <source>Switching wallet</source>
         <translation>Trocando de carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7610" />
-        <location filename="../src/mainwindow.cpp" line="8197" />
+        <location filename="../src/mainwindow.cpp" line="7610"/>
+        <location filename="../src/mainwindow.cpp" line="8197"/>
         <source>Wallet Load Failed</source>
         <translation>Falha ao carregar a carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7663" />
+        <location filename="../src/mainwindow.cpp" line="7663"/>
         <source>Wallet unload failed</source>
         <translation>Falha ao descarregar a carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7735" />
+        <location filename="../src/mainwindow.cpp" line="7735"/>
         <source>Consolidation</source>
         <translation>Consolidação</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7736" />
+        <location filename="../src/mainwindow.cpp" line="7736"/>
         <source>Nothing to consolidate — no eligible UTXOs.</source>
         <translation>Não há nada a consolidar — não há UTXOs elegíveis.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7742" />
+        <location filename="../src/mainwindow.cpp" line="7742"/>
         <source>Confirm Consolidation</source>
         <translation>Confirmar a consolidação</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7771" />
-        <location filename="../src/mainwindow.cpp" line="8162" />
+        <location filename="../src/mainwindow.cpp" line="7771"/>
+        <location filename="../src/mainwindow.cpp" line="8162"/>
         <source>Consolidation Failed</source>
         <translation>Falha na consolidação</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7778" />
+        <location filename="../src/mainwindow.cpp" line="7778"/>
         <source>Consolidation Complete</source>
         <translation>Consolidação concluída</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7790" />
+        <location filename="../src/mainwindow.cpp" line="7790"/>
         <source>Contract Inspection</source>
         <translation>Inspeção do contrato</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7793" />
+        <location filename="../src/mainwindow.cpp" line="7793"/>
         <source>Verified Contract Descriptor</source>
         <translation>Descritor de contrato verificado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7918" />
-        <location filename="../src/mainwindow.cpp" line="8014" />
-        <location filename="../src/mainwindow.cpp" line="15899" />
+        <location filename="../src/mainwindow.cpp" line="7918"/>
+        <location filename="../src/mainwindow.cpp" line="8014"/>
+        <location filename="../src/mainwindow.cpp" line="15899"/>
         <source>(no label)</source>
         <translation>(sem rótulo)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7919" />
-        <location filename="../src/mainwindow.cpp" line="8015" />
-        <location filename="../src/mainwindow.cpp" line="15901" />
+        <location filename="../src/mainwindow.cpp" line="7919"/>
+        <location filename="../src/mainwindow.cpp" line="8015"/>
+        <location filename="../src/mainwindow.cpp" line="15901"/>
         <source>Double-click to add a label</source>
         <translation>Dê um duplo clique para adicionar um rótulo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="7942" />
-        <location filename="../src/mainwindow.cpp" line="8038" />
+        <location filename="../src/mainwindow.cpp" line="7942"/>
+        <location filename="../src/mainwindow.cpp" line="8038"/>
         <source>📋 Copy</source>
         <translation>📋 Copiar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8086" />
+        <location filename="../src/mainwindow.cpp" line="8086"/>
         <source>Mempool: unavailable</source>
         <translation>Mempool: indisponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8087" />
+        <location filename="../src/mainwindow.cpp" line="8087"/>
         <source>Unavailable</source>
         <translation>Indisponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8088" />
+        <location filename="../src/mainwindow.cpp" line="8088"/>
         <source>Local node did not answer</source>
         <translation>O nó local não respondeu</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8178" />
+        <location filename="../src/mainwindow.cpp" line="8178"/>
         <source>Retrying wallet load</source>
         <translation>Tentando carregar a carteira novamente</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8225" />
+        <location filename="../src/mainwindow.cpp" line="8225"/>
         <source>Mining Address Not Eligible</source>
         <translation>Endereço de Mining não elegível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8275" />
+        <location filename="../src/mainwindow.cpp" line="8275"/>
         <source>Welcome to Dinero</source>
         <translation>Bem-vindo ao Dinero</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8277" />
+        <location filename="../src/mainwindow.cpp" line="8277"/>
         <source>&lt;h2&gt;🚀 Welcome to Dinero!&lt;/h2&gt;</source>
         <translation>&lt;h2&gt;🚀 Bem-vindo ao Dinero&lt;/h2&gt;</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8373" />
-        <location filename="../src/mainwindow.cpp" line="8382" />
+        <location filename="../src/mainwindow.cpp" line="8373"/>
+        <location filename="../src/mainwindow.cpp" line="8382"/>
         <source>Daemon start failed</source>
         <translation>Falha ao iniciar o daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8392" />
-        <location filename="../src/mainwindow.cpp" line="13610" />
+        <location filename="../src/mainwindow.cpp" line="8392"/>
+        <location filename="../src/mainwindow.cpp" line="13610"/>
         <source>Starting daemon...</source>
         <translation>Iniciando o daemon …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8400" />
-        <location filename="../src/mainwindow.cpp" line="16846" />
+        <location filename="../src/mainwindow.cpp" line="8400"/>
+        <location filename="../src/mainwindow.cpp" line="16846"/>
         <source>Connecting...</source>
         <translation>Conectando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8404" />
-        <location filename="../src/mainwindow.cpp" line="13450" />
+        <location filename="../src/mainwindow.cpp" line="8404"/>
+        <location filename="../src/mainwindow.cpp" line="13450"/>
         <source>Daemon Not Found</source>
         <translation>Daemon não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8411" />
+        <location filename="../src/mainwindow.cpp" line="8411"/>
         <source>Daemon not found</source>
         <translation>Daemon não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8415" />
-        <location filename="../src/mainwindow.cpp" line="13829" />
+        <location filename="../src/mainwindow.cpp" line="8415"/>
+        <location filename="../src/mainwindow.cpp" line="13829"/>
         <source>Daemon not running</source>
         <translation>O daemon não está em execução</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8431" />
+        <location filename="../src/mainwindow.cpp" line="8431"/>
         <source>Connected to local daemon.</source>
         <translation>Conectado ao daemon local.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8603" />
+        <location filename="../src/mainwindow.cpp" line="8603"/>
         <source>Disabled</source>
         <translation>Desativado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8606" />
+        <location filename="../src/mainwindow.cpp" line="8606"/>
         <source>Enabled / Backpressure</source>
         <translation>Ativado / contrapressão</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8609" />
+        <location filename="../src/mainwindow.cpp" line="8609"/>
         <source>Enabled / Serving</source>
         <translation>Ativado / servindo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8612" />
+        <location filename="../src/mainwindow.cpp" line="8612"/>
         <source>Enabled / Warm</source>
         <translation>Ativado / aquecido</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8615" />
+        <location filename="../src/mainwindow.cpp" line="8615"/>
         <source>Enabled / Idle</source>
         <translation>Ativado / ocioso</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="8717" />
+        <location filename="../src/mainwindow.cpp" line="8717"/>
         <source>New address generated!</source>
         <translation>Novo endereço gerado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9336" />
+        <location filename="../src/mainwindow.cpp" line="9336"/>
         <source>Temp: unavailable</source>
         <translation>Temp.: indisponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9390" />
+        <location filename="../src/mainwindow.cpp" line="9390"/>
         <source>System-wide GPU telemetry. It may be active even when the selected miner is CPU.</source>
         <translation>Telemetria de GPU de todo o sistema. Pode estar ativa mesmo quando o minerador escolhido é a CPU.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9397" />
+        <location filename="../src/mainwindow.cpp" line="9397"/>
         <source>System-wide GPU memory from macOS AGX PerformanceStatistics</source>
         <translation>Memória de GPU de todo o sistema, conforme o AGX PerformanceStatistics do macOS</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9399" />
+        <location filename="../src/mainwindow.cpp" line="9399"/>
         <source>GPU Load: unavailable</source>
         <translation>Carga da GPU: indisponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9400" />
+        <location filename="../src/mainwindow.cpp" line="9400"/>
         <source>GPU Mem: unavailable</source>
         <translation>Memória da GPU: indisponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9415" />
+        <location filename="../src/mainwindow.cpp" line="9415"/>
         <source>GPU thermal telemetry</source>
         <translation>Telemetria térmica da GPU</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9687" />
-        <location filename="../src/mainwindow.cpp" line="14673" />
-        <location filename="../src/mainwindow.cpp" line="14840" />
-        <location filename="../src/mainwindow.cpp" line="15302" />
+        <location filename="../src/mainwindow.cpp" line="9687"/>
+        <location filename="../src/mainwindow.cpp" line="14673"/>
+        <location filename="../src/mainwindow.cpp" line="14840"/>
+        <location filename="../src/mainwindow.cpp" line="15302"/>
         <source>Wallet Locked</source>
         <translation>Carteira bloqueada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9688" />
+        <location filename="../src/mainwindow.cpp" line="9688"/>
         <source>Your wallet must be unlocked to use wallet addresses for mining.
 
 Would you like to unlock your wallet now?</source>
@@ -4118,29 +4118,29 @@ Would you like to unlock your wallet now?</source>
 Deseja desbloqueá-la agora?</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9714" />
-        <location filename="../src/mainwindow.cpp" line="11579" />
+        <location filename="../src/mainwindow.cpp" line="9714"/>
+        <location filename="../src/mainwindow.cpp" line="11579"/>
         <source>Address Not Eligible for Mining</source>
         <translation>Endereço não elegível para Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9730" />
+        <location filename="../src/mainwindow.cpp" line="9730"/>
         <source>Mining Address Set</source>
         <translation>Endereço de Mining definido</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9733" />
+        <location filename="../src/mainwindow.cpp" line="9733"/>
         <source>No Wallet Address</source>
         <translation>Sem endereço de carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9734" />
+        <location filename="../src/mainwindow.cpp" line="9734"/>
         <source>No addresses found in your wallet.
 
 Please generate a new Taproot address first:
 1. Go to Receive tab
-2. Click 'New Transparent Address' to generate a Taproot address
-3. Return here and click 'Use Wallet' again</source>
+2. Click &apos;New Transparent Address&apos; to generate a Taproot address
+3. Return here and click &apos;Use Wallet&apos; again</source>
         <translation>Nenhum endereço encontrado na sua carteira.
 
 Gere primeiro um novo endereço Taproot:
@@ -4149,43 +4149,43 @@ Gere primeiro um novo endereço Taproot:
 3. Volte aqui e clique de novo em «Usar a carteira»</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9816" />
+        <location filename="../src/mainwindow.cpp" line="9816"/>
         <source>Wrong SV2 Miner</source>
         <translation>Minerador SV2 incorreto</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9856" />
+        <location filename="../src/mainwindow.cpp" line="9856"/>
         <source>Daemon Required</source>
         <translation>É necessário o daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9857" />
+        <location filename="../src/mainwindow.cpp" line="9857"/>
         <source>Start and connect the daemon before starting the local Stratum server.</source>
         <translation>Inicie e conecte o daemon antes de iniciar o servidor Stratum local.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9869" />
-        <location filename="../src/mainwindow.cpp" line="15619" />
+        <location filename="../src/mainwindow.cpp" line="9869"/>
+        <location filename="../src/mainwindow.cpp" line="15619"/>
         <source>Mining Address Required</source>
         <translation>É necessário um endereço de Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9870" />
+        <location filename="../src/mainwindow.cpp" line="9870"/>
         <source>Set a Taproot or P2MR mining address before starting the local Stratum server.</source>
         <translation>Defina um endereço de Mining Taproot ou P2MR antes de iniciar o servidor Stratum local.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9878" />
+        <location filename="../src/mainwindow.cpp" line="9878"/>
         <source>RPC Cookie Missing</source>
         <translation>Falta o cookie de RPC</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9885" />
+        <location filename="../src/mainwindow.cpp" line="9885"/>
         <source>Stratum Server Not Found</source>
         <translation>Servidor Stratum não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9886" />
+        <location filename="../src/mainwindow.cpp" line="9886"/>
         <source>Could not find dinero-stratum.
 
 Build the Stratum server or set DINERO_STRATUM_PATH.</source>
@@ -4194,97 +4194,97 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
 Compile o servidor Stratum ou defina DINERO_STRATUM_PATH.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9917" />
-        <location filename="../src/mainwindow.cpp" line="9998" />
+        <location filename="../src/mainwindow.cpp" line="9917"/>
+        <location filename="../src/mainwindow.cpp" line="9998"/>
         <source>Pool mode ready (Stratum stopped)</source>
         <translation>Modo Pool pronto (Stratum parado)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9960" />
+        <location filename="../src/mainwindow.cpp" line="9960"/>
         <source>Stratum Server Failed</source>
         <translation>Falha no servidor Stratum</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9966" />
+        <location filename="../src/mainwindow.cpp" line="9966"/>
         <source>Stop Local</source>
         <translation>Parar local</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9967" />
+        <location filename="../src/mainwindow.cpp" line="9967"/>
         <source>Stop the localhost Stratum server.</source>
         <translation>Parar o servidor Stratum local.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="9970" />
+        <location filename="../src/mainwindow.cpp" line="9970"/>
         <source>Local Stratum ready</source>
         <translation>Stratum local pronto</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="10860" />
+        <location filename="../src/mainwindow.cpp" line="10860"/>
         <source>No block submissions yet</source>
         <translation>Nenhum bloco enviado ainda</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="10937" />
+        <location filename="../src/mainwindow.cpp" line="10937"/>
         <source>Hashrate reported by external miner (self-reported)</source>
         <translation>Taxa de hash informada pelo minerador externo (autodeclarada)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11284" />
+        <location filename="../src/mainwindow.cpp" line="11284"/>
         <source>Coinbase output is fully mature and spendable</source>
         <translation>A saída coinbase está totalmente madura e pode ser gasta</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11286" />
+        <location filename="../src/mainwindow.cpp" line="11286"/>
         <source>Regular transaction (not coinbase)</source>
         <translation>Transação comum (não coinbase)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11373" />
+        <location filename="../src/mainwindow.cpp" line="11373"/>
         <source>Recovery descriptor and watch script are persisted in the active wallet.</source>
         <translation>O descritor de recuperação e o script de observação ficam salvos na carteira ativa.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11376" />
+        <location filename="../src/mainwindow.cpp" line="11376"/>
         <source>Inspect</source>
         <translation>Inspecionar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11471" />
+        <location filename="../src/mainwindow.cpp" line="11471"/>
         <source>Withdraw</source>
         <translation>Sacar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11473" />
+        <location filename="../src/mainwindow.cpp" line="11473"/>
         <source>Spend from this contract (requires satisfying the covenant conditions)</source>
         <translation>Gastar a partir deste contrato (exige cumprir as condições do covenant)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11488" />
+        <location filename="../src/mainwindow.cpp" line="11488"/>
         <source>Confirm Contract Spend</source>
         <translation>Confirmar o gasto do contrato</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11504" />
+        <location filename="../src/mainwindow.cpp" line="11504"/>
         <source>Legacy Contract Record</source>
         <translation>Registro de contrato antigo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11505" />
+        <location filename="../src/mainwindow.cpp" line="11505"/>
         <source>This transaction-history record has no recovery descriptor. The wallet will not guess its spending conditions. Import the original descriptor before attempting a spend.</source>
         <translation>Este registro do histórico de transações não tem descritor de recuperação. A carteira não vai adivinhar suas condições de gasto. Importe o descritor original antes de tentar um gasto.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11541" />
+        <location filename="../src/mainwindow.cpp" line="11541"/>
         <source>Daemon Not Connected</source>
         <translation>Daemon não conectado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11542" />
+        <location filename="../src/mainwindow.cpp" line="11542"/>
         <source>Cannot start mining - daemon is not connected!
 
 Please start the daemon first:
-1. Click 'Start Daemon' button
+1. Click &apos;Start Daemon&apos; button
 2. Wait for connection to establish
 3. Then try starting the miner again.</source>
         <translation>Não é possível iniciar o Mining - o daemon não está conectado.
@@ -4295,21 +4295,21 @@ Inicie primeiro o daemon:
 3. Tente iniciar o minerador de novo.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11552" />
+        <location filename="../src/mainwindow.cpp" line="11552"/>
         <source>No Mining Address</source>
         <translation>Sem endereço de Mining</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11553" />
+        <location filename="../src/mainwindow.cpp" line="11553"/>
         <source>Please set a mining address first!
 
 Steps to set up mining:
 1. Go to the Receive tab
 2. Unlock your wallet (if encrypted)
-3. Click 'New Transparent Address' to generate a Taproot address
-4. Return here and click 'Use Wallet'
+3. Click &apos;New Transparent Address&apos; to generate a Taproot address
+4. Return here and click &apos;Use Wallet&apos;
 
-Mining rewards will be sent to your wallet's Taproot address.</source>
+Mining rewards will be sent to your wallet&apos;s Taproot address.</source>
         <translation>Defina primeiro um endereço de Mining.
 
 Passos para configurar:
@@ -4321,49 +4321,49 @@ Passos para configurar:
 As recompensas de Mining irão para o endereço Taproot da sua carteira.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11653" />
-        <location filename="../src/mainwindow.cpp" line="11741" />
-        <location filename="../src/mainwindow.cpp" line="11988" />
-        <location filename="../src/mainwindow.cpp" line="12746" />
+        <location filename="../src/mainwindow.cpp" line="11653"/>
+        <location filename="../src/mainwindow.cpp" line="11741"/>
+        <location filename="../src/mainwindow.cpp" line="11988"/>
+        <location filename="../src/mainwindow.cpp" line="12746"/>
         <source>0.00 MH/s</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11678" />
-        <location filename="../src/mainwindow.cpp" line="11890" />
-        <location filename="../src/mainwindow.cpp" line="12305" />
+        <location filename="../src/mainwindow.cpp" line="11678"/>
+        <location filename="../src/mainwindow.cpp" line="11890"/>
+        <location filename="../src/mainwindow.cpp" line="12305"/>
         <source>Already Mining</source>
         <translation>O Mining já está em execução</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11678" />
+        <location filename="../src/mainwindow.cpp" line="11678"/>
         <source>GPU mining is already running!</source>
         <translation>O Mining por GPU já está em execução.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11717" />
+        <location filename="../src/mainwindow.cpp" line="11717"/>
         <source>GPU Miner Not Found</source>
         <translation>Minerador de GPU não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11742" />
-        <location filename="../src/mainwindow.cpp" line="11989" />
+        <location filename="../src/mainwindow.cpp" line="11742"/>
+        <location filename="../src/mainwindow.cpp" line="11989"/>
         <source>0 hashes</source>
         <translation>0 hashes</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11743" />
+        <location filename="../src/mainwindow.cpp" line="11743"/>
         <source>⛏️ GPU Initializing...</source>
         <translation>⛏️ Inicializando a GPU …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11815" />
-        <location filename="../src/mainwindow.cpp" line="12093" />
+        <location filename="../src/mainwindow.cpp" line="11815"/>
+        <location filename="../src/mainwindow.cpp" line="12093"/>
         <source>Pool Endpoint Required</source>
         <translation>É necessário o endpoint do Pool</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11816" />
+        <location filename="../src/mainwindow.cpp" line="11816"/>
         <source>CUDA GPU mining on Windows uses the Stratum miner.
 
 Set the Pool Endpoint in the Mining tab, for example:
@@ -4374,38 +4374,38 @@ Defina o endpoint do Pool na aba Mining, por exemplo:
 127.0.0.1:3333</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11851" />
+        <location filename="../src/mainwindow.cpp" line="11851"/>
         <source>GPU Miner Failed</source>
         <translation>Falha no minerador de GPU</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11864" />
+        <location filename="../src/mainwindow.cpp" line="11864"/>
         <source>CUDA Mining Active</source>
         <translation>Mining com CUDA ativo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11866" />
+        <location filename="../src/mainwindow.cpp" line="11866"/>
         <source>GPU Mining Active</source>
         <translation>Mining por GPU ativo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11890" />
-        <location filename="../src/mainwindow.cpp" line="12305" />
+        <location filename="../src/mainwindow.cpp" line="11890"/>
+        <location filename="../src/mainwindow.cpp" line="12305"/>
         <source>Mining is already running!</source>
         <translation>O Mining já está em execução.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11974" />
+        <location filename="../src/mainwindow.cpp" line="11974"/>
         <source>Miner Not Found</source>
         <translation>Minerador não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="11990" />
+        <location filename="../src/mainwindow.cpp" line="11990"/>
         <source>⛏️ Initializing...</source>
         <translation>⛏️ Inicializando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12094" />
+        <location filename="../src/mainwindow.cpp" line="12094"/>
         <source>Pool mode requires a Stratum endpoint.
 
 Set it in the Mining tab (Pool Endpoint), for example:
@@ -4416,36 +4416,36 @@ Defina-o na aba Mining (endpoint do Pool), por exemplo:
 127.0.0.1:3333</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12103" />
+        <location filename="../src/mainwindow.cpp" line="12103"/>
         <source>Pool mode ready (set endpoint)</source>
         <translation>Modo Pool pronto (defina o endpoint)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12274" />
+        <location filename="../src/mainwindow.cpp" line="12274"/>
         <source>Failed to Start</source>
         <translation>Falha ao iniciar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12311" />
+        <location filename="../src/mainwindow.cpp" line="12311"/>
         <source>Address Not Decodable</source>
         <translation>Endereço não decodificável</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12312" />
+        <location filename="../src/mainwindow.cpp" line="12312"/>
         <source>Could not convert mining address to a scriptPubKey.
 
-SV2 pool mining requires a Taproot (din1p…) or P2MR (din1r…) bech32m address. Generate one in the Receive tab, then click 'Use Wallet'.</source>
+SV2 pool mining requires a Taproot (din1p…) or P2MR (din1r…) bech32m address. Generate one in the Receive tab, then click &apos;Use Wallet&apos;.</source>
         <translation>Não foi possível converter o endereço de Mining em um scriptPubKey.
 
 O Mining em Pool SV2 exige um endereço bech32m Taproot (din1p…) ou P2MR (din1r…). Gere um na aba Receber e clique em «Usar a carteira».</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12325" />
+        <location filename="../src/mainwindow.cpp" line="12325"/>
         <source>Taproot Address Required</source>
         <translation>É necessário um endereço Taproot</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12326" />
+        <location filename="../src/mainwindow.cpp" line="12326"/>
         <source>Pool Shared credits its PPLNS ledger to a Taproot (din1p...) address.
 
 Select a Taproot mining address, or choose Pool Solo to keep using this address.</source>
@@ -4454,72 +4454,72 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
 Escolha um endereço de Mining Taproot, ou escolha Pool solo para continuar com este.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12637" />
+        <location filename="../src/mainwindow.cpp" line="12637"/>
         <source>SV2 Miner Failed to Start</source>
         <translation>O minerador SV2 não iniciou</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12757" />
+        <location filename="../src/mainwindow.cpp" line="12757"/>
         <source>Wallet Switch In Progress</source>
         <translation>Troca de carteira em andamento</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12758" />
+        <location filename="../src/mainwindow.cpp" line="12758"/>
         <source>Wait for the current wallet switch to finish before creating or restoring another wallet.</source>
         <translation>Aguarde a troca de carteira atual terminar antes de criar ou restaurar outra.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12763" />
+        <location filename="../src/mainwindow.cpp" line="12763"/>
         <source>Send In Progress</source>
         <translation>Envio em andamento</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12764" />
+        <location filename="../src/mainwindow.cpp" line="12764"/>
         <source>A send is in progress. Wait for it to finish before creating or restoring another wallet.</source>
         <translation>Há um envio em andamento. Aguarde ele terminar antes de criar ou restaurar outra carteira.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12769" />
+        <location filename="../src/mainwindow.cpp" line="12769"/>
         <source>Wallet Scan In Progress</source>
         <translation>Varredura da carteira em andamento</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12770" />
+        <location filename="../src/mainwindow.cpp" line="12770"/>
         <source>Wait for the current wallet scan to finish before creating or restoring another wallet.</source>
         <translation>Aguarde a varredura da carteira atual terminar antes de criar ou restaurar outra.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12817" />
+        <location filename="../src/mainwindow.cpp" line="12817"/>
         <source>Reloading previous wallet</source>
         <translation>Recarregando a carteira anterior</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12830" />
+        <location filename="../src/mainwindow.cpp" line="12830"/>
         <source>Rescan in Progress</source>
         <translation>Nova varredura em andamento</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12831" />
+        <location filename="../src/mainwindow.cpp" line="12831"/>
         <source>Wallet blockchain scan is already running.</source>
         <translation>A varredura da blockchain para a carteira já está em execução.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12848" />
+        <location filename="../src/mainwindow.cpp" line="12848"/>
         <source>No Wallet Loaded</source>
         <translation>Nenhuma carteira carregada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12849" />
+        <location filename="../src/mainwindow.cpp" line="12849"/>
         <source>Load or create your wallet first, then run rescan.</source>
         <translation>Carregue ou crie sua carteira primeiro e depois execute a nova varredura.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12855" />
+        <location filename="../src/mainwindow.cpp" line="12855"/>
         <source>Rescan Wallet</source>
         <translation>Varrer a carteira novamente</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12856" />
+        <location filename="../src/mainwindow.cpp" line="12856"/>
         <source>Rescan blockchain for wallet balances and transaction history?
 
 Use this when balance/history appears missing.
@@ -4530,18 +4530,18 @@ Use isto quando o saldo ou o histórico parecerem faltar.
 Pode demorar e trava algumas ações da carteira até terminar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12942" />
+        <location filename="../src/mainwindow.cpp" line="12942"/>
         <source>❌ Wallet out of sync with chain: selected inputs are not in active UTXO set. Rescan wallet and retry.</source>
         <translation>❌ Carteira fora de sincronia com a cadeia: as entradas escolhidas não estão no conjunto UTXO ativo. Varra a carteira novamente e tente de novo.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12957" />
+        <location filename="../src/mainwindow.cpp" line="12957"/>
         <source>Wallet Out Of Sync</source>
         <translation>Carteira fora de sincronia</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12958" />
-        <source>This send failed because selected inputs are not present in the node's current UTXO set.
+        <location filename="../src/mainwindow.cpp" line="12958"/>
+        <source>This send failed because selected inputs are not present in the node&apos;s current UTXO set.
 
 Run wallet rescan now?</source>
         <translation>Este envio falhou porque as entradas escolhidas não estão no conjunto UTXO atual do nó.
@@ -4549,18 +4549,18 @@ Run wallet rescan now?</source>
 Varrer a carteira agora?</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="12974" />
+        <location filename="../src/mainwindow.cpp" line="12974"/>
         <source>Wallet Scan Deferred</source>
         <translation>Varredura da carteira adiada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13019" />
-        <location filename="../src/mainwindow.cpp" line="13028" />
+        <location filename="../src/mainwindow.cpp" line="13019"/>
+        <location filename="../src/mainwindow.cpp" line="13028"/>
         <source>Seed Backup</source>
         <translation>Cópia da semente</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13020" />
+        <location filename="../src/mainwindow.cpp" line="13020"/>
         <source>No wallet is loaded.
 
 Create or restore a wallet first. The BIP39 seed phrase is shown during setup and should be written down offline.</source>
@@ -4569,7 +4569,7 @@ Create or restore a wallet first. The BIP39 seed phrase is shown during setup an
 Crie ou restaure uma primeiro. A frase semente BIP39 é exibida durante a configuração e deve ser anotada off-line.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13029" />
+        <location filename="../src/mainwindow.cpp" line="13029"/>
         <source>Wallet seed export, when supported by the daemon, requires the wallet to be unlocked first.
 
 Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
@@ -4578,48 +4578,48 @@ Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
 Desbloqueie-a e abra novamente Cópia da semente / restauração no celular.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13039" />
+        <location filename="../src/mainwindow.cpp" line="13039"/>
         <source>Seed Backup / Mobile Restore</source>
         <translation>Cópia da semente / restauração no celular</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13050" />
+        <location filename="../src/mainwindow.cpp" line="13050"/>
         <source>Seed phrase re-export is not available for this wallet.</source>
         <translation>A reexportação da frase semente não está disponível para esta carteira.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13055" />
+        <location filename="../src/mainwindow.cpp" line="13055"/>
         <source>Dinero can restore from the BIP39 phrase you wrote down during setup, but this wallet storage cannot reconstruct those words later. The original phrase is converted into wallet seed material, and that conversion is one-way unless a future daemon explicitly stores an encrypted mnemonic backup.</source>
         <translation>O Dinero pode restaurar a partir da frase BIP39 que você anotou durante a configuração, mas este armazenamento de carteira não consegue reconstruir essas palavras depois. A frase original é convertida em material de semente da carteira, e essa conversão é de mão única, a menos que um daemon futuro guarde explicitamente uma cópia criptografada do mnemônico.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13061" />
+        <location filename="../src/mainwindow.cpp" line="13061"/>
         <source>Restore Paths</source>
         <translation>Caminhos de restauração</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13063" />
+        <location filename="../src/mainwindow.cpp" line="13063"/>
         <source>Use the original paper seed backup for mobile restore.
 
-Taproot payments: m/86'/1448'/0'/0/i, din1p...
-Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...</source>
+Taproot payments: m/86&apos;/1448&apos;/0&apos;/0/i, din1p...
+Quantum-safe P2MR: m/88&apos;/1448&apos;/0&apos;/0/i, din1r...</source>
         <translation>Use a cópia original em papel da semente para restaurar no celular.
 
-Pagamentos Taproot: m/86'/1448'/0'/0/i, din1p…
-P2MR resistente a quântica: m/88'/1448'/0'/0/i, din1r…</translation>
+Pagamentos Taproot: m/86&apos;/1448&apos;/0&apos;/0/i, din1p…
+P2MR resistente a quântica: m/88&apos;/1448&apos;/0&apos;/0/i, din1r…</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13089" />
+        <location filename="../src/mainwindow.cpp" line="13089"/>
         <source>OK</source>
         <translation>OK</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13102" />
+        <location filename="../src/mainwindow.cpp" line="13102"/>
         <source>Critical Security Warning</source>
         <translation>Aviso de segurança crítico</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13103" />
+        <location filename="../src/mainwindow.cpp" line="13103"/>
         <source>You are about to view your seed phrase.
 
 Anyone with this phrase can access your funds.
@@ -4632,123 +4632,123 @@ Qualquer pessoa com esta frase pode acessar seus fundos.
 Anote-a em papel, guarde-a off-line e nunca a compartilhe.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13116" />
+        <location filename="../src/mainwindow.cpp" line="13116"/>
         <source>Seed Phrase</source>
         <translation>Frase semente</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13121" />
+        <location filename="../src/mainwindow.cpp" line="13121"/>
         <source>&lt;b&gt;Write this phrase down on paper.&lt;/b&gt;&lt;br&gt;Do not screenshot it, upload it, paste it into chat, or store it in cloud notes.</source>
         <translation>&lt;b&gt;Escreva esta frase em papel.&lt;/b&gt;&lt;br&gt;Não tire capturas de tela, não a envie para lugar nenhum, não a cole em conversas e não a guarde em notas na nuvem.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13130" />
+        <location filename="../src/mainwindow.cpp" line="13130"/>
         <source>BIP39 Recovery Phrase</source>
         <translation>Frase de recuperação BIP39</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13149" />
+        <location filename="../src/mainwindow.cpp" line="13149"/>
         <source>Restore path notes:
-• Taproot payments: m/86'/1448'/0'/0/i, din1p...
-• Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...
+• Taproot payments: m/86&apos;/1448&apos;/0&apos;/0/i, din1p...
+• Quantum-safe P2MR: m/88&apos;/1448&apos;/0&apos;/0/i, din1r...
 </source>
         <translation>Notas sobre os caminhos de restauração:
-• Pagamentos Taproot: m/86'/1448'/0'/0/i, din1p…
-• P2MR resistente a quântica: m/88'/1448'/0'/0/i, din1r…
+• Pagamentos Taproot: m/86&apos;/1448&apos;/0&apos;/0/i, din1p…
+• P2MR resistente a quântica: m/88&apos;/1448&apos;/0&apos;/0/i, din1r…
 </translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13163" />
+        <location filename="../src/mainwindow.cpp" line="13163"/>
         <source>Close</source>
         <translation>Fechar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13219" />
-        <location filename="../src/mainwindow.cpp" line="14600" />
-        <location filename="../src/mainwindow.cpp" line="14630" />
-        <location filename="../src/mainwindow.cpp" line="14667" />
-        <location filename="../src/mainwindow.cpp" line="15701" />
-        <location filename="../src/mainwindow.cpp" line="15806" />
+        <location filename="../src/mainwindow.cpp" line="13219"/>
+        <location filename="../src/mainwindow.cpp" line="14600"/>
+        <location filename="../src/mainwindow.cpp" line="14630"/>
+        <location filename="../src/mainwindow.cpp" line="14667"/>
+        <location filename="../src/mainwindow.cpp" line="15701"/>
+        <location filename="../src/mainwindow.cpp" line="15806"/>
         <source>Error</source>
         <translation>Erro</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13283" />
+        <location filename="../src/mainwindow.cpp" line="13283"/>
         <source>Still Waiting for Daemon</source>
         <translation>Ainda aguardando o daemon</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13284" />
+        <location filename="../src/mainwindow.cpp" line="13284"/>
         <source>Dinero has been waiting 180 seconds for the daemon (dinerod) and is still not connected — the daemon may have failed.</source>
         <translation>O Dinero está esperando o daemon (dinerod) há 180 segundos e ainda não se conectou — pode ser que o daemon tenha falhado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13347" />
+        <location filename="../src/mainwindow.cpp" line="13347"/>
         <source>Dinero P2P Networking</source>
         <translation>Rede P2P do Dinero</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13374" />
+        <location filename="../src/mainwindow.cpp" line="13374"/>
         <source>Daemon Running</source>
         <translation>Daemon em execução</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13374" />
+        <location filename="../src/mainwindow.cpp" line="13374"/>
         <source>Daemon is already running!</source>
         <translation>O daemon já está em execução.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13390" />
+        <location filename="../src/mainwindow.cpp" line="13390"/>
         <source>Invalid Daemon Path</source>
         <translation>Caminho do daemon inválido</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13476" />
+        <location filename="../src/mainwindow.cpp" line="13476"/>
         <source>Port Already in Use</source>
         <translation>A porta já está em uso</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13477" />
+        <location filename="../src/mainwindow.cpp" line="13477"/>
         <source>Port 20998 is already in use — another Dinero process may be running.</source>
         <translation>A porta 20998 já está em uso — pode haver outro processo do Dinero em execução.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13543" />
+        <location filename="../src/mainwindow.cpp" line="13543"/>
         <source>Starting daemon… (retry)</source>
         <translation>Iniciando o daemon … (nova tentativa)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13571" />
+        <location filename="../src/mainwindow.cpp" line="13571"/>
         <source>Starting daemon…</source>
         <translation>Iniciando o daemon …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13602" />
+        <location filename="../src/mainwindow.cpp" line="13602"/>
         <source>Start Failed</source>
         <translation>Falha ao iniciar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13632" />
-        <location filename="../src/mainwindow.cpp" line="13660" />
+        <location filename="../src/mainwindow.cpp" line="13632"/>
+        <location filename="../src/mainwindow.cpp" line="13660"/>
         <source>Daemon Started</source>
         <translation>Daemon iniciado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13656" />
+        <location filename="../src/mainwindow.cpp" line="13656"/>
         <source>Daemon started, waiting for RPC</source>
         <translation>Daemon iniciado, aguardando o RPC</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13661" />
+        <location filename="../src/mainwindow.cpp" line="13661"/>
         <source>Daemon started but RPC not ready yet.
 
-Wait a few more seconds and click 'Reconnect' if needed.</source>
+Wait a few more seconds and click &apos;Reconnect&apos; if needed.</source>
         <translation>O daemon iniciou, mas o RPC ainda não está pronto.
 
 Aguarde mais alguns segundos e clique em «Reconectar» se precisar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13687" />
+        <location filename="../src/mainwindow.cpp" line="13687"/>
         <source>Are you sure you want to stop the daemon?
 
 This will:
@@ -4767,54 +4767,54 @@ Isso vai:
 Continuar?</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13765" />
+        <location filename="../src/mainwindow.cpp" line="13765"/>
         <source>Daemon Stopped</source>
         <translation>Daemon parado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13766" />
+        <location filename="../src/mainwindow.cpp" line="13766"/>
         <source>✅ All daemon processes stopped
 
 Database files unlocked.
-Click 'Start Daemon' when ready to restart.</source>
+Click &apos;Start Daemon&apos; when ready to restart.</source>
         <translation>✅ Todos os processos do daemon foram parados
 
 Os arquivos do banco de dados estão desbloqueados.
 Clique em «Iniciar o daemon» quando quiser reiniciar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13823" />
+        <location filename="../src/mainwindow.cpp" line="13823"/>
         <source>Daemon running</source>
         <translation>Daemon em execução</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13886" />
+        <location filename="../src/mainwindow.cpp" line="13886"/>
         <source>Unlocking...</source>
         <translation>Desbloqueando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13918" />
-        <location filename="../src/mainwindow.cpp" line="13977" />
-        <location filename="../src/mainwindow.cpp" line="14335" />
-        <location filename="../src/mainwindow.cpp" line="14372" />
+        <location filename="../src/mainwindow.cpp" line="13918"/>
+        <location filename="../src/mainwindow.cpp" line="13977"/>
+        <location filename="../src/mainwindow.cpp" line="14335"/>
+        <location filename="../src/mainwindow.cpp" line="14372"/>
         <source>Unlocked | Lock</source>
         <translation>Desbloqueada | Bloquear</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13920" />
-        <location filename="../src/mainwindow.cpp" line="13979" />
+        <location filename="../src/mainwindow.cpp" line="13920"/>
+        <location filename="../src/mainwindow.cpp" line="13979"/>
         <source>Wallet is not encrypted. Encrypt wallet for stronger security.</source>
         <translation>A carteira não está criptografada. Criptografe-a para mais segurança.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13922" />
-        <location filename="../src/mainwindow.cpp" line="13980" />
+        <location filename="../src/mainwindow.cpp" line="13922"/>
+        <location filename="../src/mainwindow.cpp" line="13980"/>
         <source>Wallet Unencrypted</source>
         <translation>Carteira sem criptografia</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13923" />
-        <location filename="../src/mainwindow.cpp" line="13981" />
+        <location filename="../src/mainwindow.cpp" line="13923"/>
+        <location filename="../src/mainwindow.cpp" line="13981"/>
         <source>ℹ️ Wallet is not encrypted.
 
 No unlock is required.
@@ -4825,26 +4825,26 @@ Não é preciso desbloquear.
 Use Criptografar a carteira para proteger as chaves privadas.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13927" />
-        <location filename="../src/mainwindow.cpp" line="13985" />
+        <location filename="../src/mainwindow.cpp" line="13927"/>
+        <location filename="../src/mainwindow.cpp" line="13985"/>
         <source>Unlock Failed</source>
         <translation>Falha ao desbloquear</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13950" />
-        <location filename="../src/mainwindow.cpp" line="14337" />
-        <location filename="../src/mainwindow.cpp" line="14374" />
+        <location filename="../src/mainwindow.cpp" line="13950"/>
+        <location filename="../src/mainwindow.cpp" line="14337"/>
+        <location filename="../src/mainwindow.cpp" line="14374"/>
         <source>Wallet unlocked. Click to lock and secure private keys.</source>
         <translation>Carteira desbloqueada. Clique para bloqueá-la e proteger as chaves privadas.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13955" />
-        <location filename="../src/mainwindow.cpp" line="14648" />
+        <location filename="../src/mainwindow.cpp" line="13955"/>
+        <location filename="../src/mainwindow.cpp" line="14648"/>
         <source>Success</source>
         <translation>Sucesso</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13956" />
+        <location filename="../src/mainwindow.cpp" line="13956"/>
         <source>✅ Wallet unlocked successfully!
 
 • Taproot signing is now enabled
@@ -4857,20 +4857,20 @@ Use Criptografar a carteira para proteger as chaves privadas.</translation>
 • Agora você pode gastar saídas P2TR e assinar transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="13991" />
-        <location filename="../src/mainwindow.cpp" line="14022" />
-        <location filename="../src/mainwindow.cpp" line="14341" />
-        <location filename="../src/mainwindow.cpp" line="14378" />
+        <location filename="../src/mainwindow.cpp" line="13991"/>
+        <location filename="../src/mainwindow.cpp" line="14022"/>
+        <location filename="../src/mainwindow.cpp" line="14341"/>
+        <location filename="../src/mainwindow.cpp" line="14378"/>
         <source>Wallet locked. Click to unlock for Taproot signing.</source>
         <translation>Carteira bloqueada. Clique para desbloqueá-la e assinar com Taproot.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14028" />
+        <location filename="../src/mainwindow.cpp" line="14028"/>
         <source>Locked</source>
         <translation>Bloqueada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14029" />
+        <location filename="../src/mainwindow.cpp" line="14029"/>
         <source>🔒 Wallet locked successfully!
 
 • Taproot signing is now disabled
@@ -4883,179 +4883,179 @@ Use Criptografar a carteira para proteger as chaves privadas.</translation>
 • Desbloqueie-a para gastar ou assinar transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14077" />
+        <location filename="../src/mainwindow.cpp" line="14077"/>
         <source>Switching...</source>
         <translation>Trocando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14078" />
+        <location filename="../src/mainwindow.cpp" line="14078"/>
         <source>Switching active wallet...</source>
         <translation>Trocando a carteira ativa …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14090" />
-        <location filename="../src/mainwindow.cpp" line="14093" />
-        <location filename="../src/mainwindow.cpp" line="14099" />
+        <location filename="../src/mainwindow.cpp" line="14090"/>
+        <location filename="../src/mainwindow.cpp" line="14093"/>
+        <location filename="../src/mainwindow.cpp" line="14099"/>
         <source>Open Wallet</source>
         <translation>Abrir carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14091" />
+        <location filename="../src/mainwindow.cpp" line="14091"/>
         <source>No wallets found</source>
         <translation>Nenhuma carteira encontrada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14096" />
+        <location filename="../src/mainwindow.cpp" line="14096"/>
         <source>Reload Wallet</source>
         <translation>Recarregar a carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14102" />
+        <location filename="../src/mainwindow.cpp" line="14102"/>
         <source>Switch Wallet</source>
         <translation>Trocar de carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14204" />
+        <location filename="../src/mainwindow.cpp" line="14204"/>
         <source>ℹ️ Select or unlock a wallet to send transactions</source>
         <translation>ℹ️ Selecione ou desbloqueie uma carteira para enviar transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14245" />
+        <location filename="../src/mainwindow.cpp" line="14245"/>
         <source>Wallet Switch Blocked</source>
         <translation>Troca de carteira bloqueada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14246" />
+        <location filename="../src/mainwindow.cpp" line="14246"/>
         <source>A send is in progress. Wait for it to complete before switching wallets.</source>
         <translation>Há um envio em andamento. Aguarde ele terminar antes de trocar de carteira.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14252" />
+        <location filename="../src/mainwindow.cpp" line="14252"/>
         <source>Wallet Selection</source>
         <translation>Seleção de carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14252" />
+        <location filename="../src/mainwindow.cpp" line="14252"/>
         <source>Select a wallet to load first.</source>
         <translation>Selecione primeiro uma carteira para carregar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14318" />
+        <location filename="../src/mainwindow.cpp" line="14318"/>
         <source>Wallet loaded</source>
         <translation>Carteira carregada</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14389" />
+        <location filename="../src/mainwindow.cpp" line="14389"/>
         <source>Wallet lock/unlock disabled during blockchain rescan</source>
         <translation>Bloquear e desbloquear a carteira ficam indisponíveis durante a nova varredura</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14394" />
+        <location filename="../src/mainwindow.cpp" line="14394"/>
         <source>Lock wallet to secure private keys</source>
         <translation>Bloquear a carteira para proteger as chaves privadas</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14430" />
+        <location filename="../src/mainwindow.cpp" line="14430"/>
         <source>Create or load the default wallet first</source>
         <translation>Crie ou carregue primeiro a carteira padrão</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14432" />
+        <location filename="../src/mainwindow.cpp" line="14432"/>
         <source>Rescan already running</source>
         <translation>A nova varredura já está em execução</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14434" />
+        <location filename="../src/mainwindow.cpp" line="14434"/>
         <source>Rescan blockchain for wallet funds/history</source>
         <translation>Varrer a blockchain em busca de fundos e histórico da carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14442" />
-        <location filename="../src/mainwindow.cpp" line="14454" />
-        <location filename="../src/mainwindow.cpp" line="14495" />
-        <location filename="../src/mainwindow.cpp" line="14542" />
+        <location filename="../src/mainwindow.cpp" line="14442"/>
+        <location filename="../src/mainwindow.cpp" line="14454"/>
+        <location filename="../src/mainwindow.cpp" line="14495"/>
+        <location filename="../src/mainwindow.cpp" line="14542"/>
         <source>Create or load a wallet first</source>
         <translation>Crie ou carregue primeiro uma carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14444" />
-        <location filename="../src/mainwindow.cpp" line="14456" />
-        <location filename="../src/mainwindow.cpp" line="14545" />
+        <location filename="../src/mainwindow.cpp" line="14444"/>
+        <location filename="../src/mainwindow.cpp" line="14456"/>
+        <location filename="../src/mainwindow.cpp" line="14545"/>
         <source>Wait for blockchain rescan to complete</source>
         <translation>Aguarde a nova varredura da blockchain terminar</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14446" />
+        <location filename="../src/mainwindow.cpp" line="14446"/>
         <source>Unlock wallet to send transactions</source>
         <translation>Desbloqueie a carteira para enviar transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14448" />
+        <location filename="../src/mainwindow.cpp" line="14448"/>
         <source>Send DIN to another address</source>
         <translation>Enviar DIN para outro endereço</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14458" />
+        <location filename="../src/mainwindow.cpp" line="14458"/>
         <source>Unlock wallet to prepare a hardware-wallet send</source>
         <translation>Desbloqueie a carteira para preparar um envio por carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14460" />
+        <location filename="../src/mainwindow.cpp" line="14460"/>
         <source>Hardware-wallet signing is currently wired only for public Taproot transfers</source>
         <translation>A assinatura por carteira de hardware está ligada hoje apenas a transferências Taproot públicas</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14497" />
+        <location filename="../src/mainwindow.cpp" line="14497"/>
         <source>Unlock wallet to generate new addresses</source>
         <translation>Desbloqueie a carteira para gerar novos endereços</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14499" />
+        <location filename="../src/mainwindow.cpp" line="14499"/>
         <source>Generate a new quantum-safe P2MR receiving address (din1r...)</source>
         <translation>Gerar um novo endereço de recebimento P2MR resistente a quântica (din1r…)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14501" />
+        <location filename="../src/mainwindow.cpp" line="14501"/>
         <source>Generate a new Taproot receiving address (din1p...)</source>
         <translation>Gerar um novo endereço de recebimento Taproot (din1p…)</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14508" />
+        <location filename="../src/mainwindow.cpp" line="14508"/>
         <source>ℹ️ Create or restore a wallet to send transactions</source>
         <translation>ℹ️ Crie ou restaure uma carteira para enviar transações</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14511" />
+        <location filename="../src/mainwindow.cpp" line="14511"/>
         <source>🔄 Blockchain rescan in progress... Please wait.</source>
         <translation>🔄 Nova varredura da blockchain em andamento … Aguarde.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14514" />
+        <location filename="../src/mainwindow.cpp" line="14514"/>
         <source>🔒 Wallet is locked. Unlock to send transactions.</source>
         <translation>🔒 A carteira está bloqueada. Desbloqueie-a para enviar transações.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14525" />
+        <location filename="../src/mainwindow.cpp" line="14525"/>
         <source>✅ Wallet unlocked. Ready to send transactions.</source>
         <translation>✅ Carteira desbloqueada. Pronta para enviar transações.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14548" />
+        <location filename="../src/mainwindow.cpp" line="14548"/>
         <source>Unlock wallet to use your Taproot address</source>
         <translation>Desbloqueie a carteira para usar seu endereço Taproot</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14551" />
+        <location filename="../src/mainwindow.cpp" line="14551"/>
         <source>Fill mining address from your wallet</source>
         <translation>Preencher o endereço de Mining a partir da sua carteira</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14570" />
+        <location filename="../src/mainwindow.cpp" line="14570"/>
         <source>⚠️  You are about to encrypt your wallet.
 
 • You will need a password to unlock and spend coins
 • Your wallet will be locked after encryption
-• SAVE YOUR 12-WORD SEED PHRASE - it's the only backup!
+• SAVE YOUR 12-WORD SEED PHRASE - it&apos;s the only backup!
 
 Make sure you have written down your seed phrase.
 
@@ -5071,34 +5071,34 @@ Confirme que você a anotou.
 Deseja continuar?</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14600" />
+        <location filename="../src/mainwindow.cpp" line="14600"/>
         <source>Passwords do not match!</source>
         <translation>As senhas não conferem.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14606" />
+        <location filename="../src/mainwindow.cpp" line="14606"/>
         <source>Weak Password</source>
         <translation>Senha fraca</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14607" />
+        <location filename="../src/mainwindow.cpp" line="14607"/>
         <source>Password should be at least 8 characters for security.
 Consider using a longer, stronger password.</source>
         <translation>Por segurança, a senha deveria ter pelo menos 8 caracteres.
 Considere uma senha mais longa e forte.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14644" />
+        <location filename="../src/mainwindow.cpp" line="14644"/>
         <source>Encrypted | Unlock</source>
         <translation>Criptografada | Desbloquear</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14646" />
+        <location filename="../src/mainwindow.cpp" line="14646"/>
         <source>Wallet encrypted and locked. Click to unlock for Taproot signing.</source>
         <translation>Carteira criptografada e bloqueada. Clique para desbloqueá-la e assinar com Taproot.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14649" />
+        <location filename="../src/mainwindow.cpp" line="14649"/>
         <source>✅ Wallet encrypted successfully!
 
 • Your wallet is now locked and protected
@@ -5115,19 +5115,19 @@ Considere uma senha mais longa e forte.</translation>
 🚨 IMPORTANTE: confirme que guardou sua frase semente de 12 palavras.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14674" />
+        <location filename="../src/mainwindow.cpp" line="14674"/>
         <source>Please unlock your wallet first to derive new addresses.</source>
         <translation>Desbloqueie primeiro sua carteira para derivar novos endereços.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14713" />
-        <location filename="../src/mainwindow.cpp" line="14719" />
-        <location filename="../src/mainwindow.cpp" line="14754" />
+        <location filename="../src/mainwindow.cpp" line="14713"/>
+        <location filename="../src/mainwindow.cpp" line="14719"/>
+        <location filename="../src/mainwindow.cpp" line="14754"/>
         <source>Address Generation Failed</source>
         <translation>Falha ao gerar o endereço</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14720" />
+        <location filename="../src/mainwindow.cpp" line="14720"/>
         <source>❌ Address generation returned an empty address.
 
 Please verify wallet state and try again.</source>
@@ -5136,130 +5136,130 @@ Please verify wallet state and try again.</source>
 Verifique o estado da carteira e tente de novo.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14734" />
+        <location filename="../src/mainwindow.cpp" line="14734"/>
         <source>New Quantum-Safe Address</source>
         <translation>Novo endereço resistente a quântica</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14772" />
+        <location filename="../src/mainwindow.cpp" line="14772"/>
         <source>❌ Error: Recipient address is required</source>
         <translation>❌ Erro: o endereço do destinatário é obrigatório</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14781" />
+        <location filename="../src/mainwindow.cpp" line="14781"/>
         <source>A public withdrawal destination is required for this covenant.</source>
         <translation>Este covenant exige um destino de saque público.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14786" />
+        <location filename="../src/mainwindow.cpp" line="14786"/>
         <source>❌ Error: Amount must be greater than 0</source>
         <translation>❌ Erro: o valor precisa ser maior que 0</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14830" />
+        <location filename="../src/mainwindow.cpp" line="14830"/>
         <source>❌ Error: Shield destination must be a shielded dins1 address.
 Leave recipient blank to shield to your own private lane.</source>
         <translation>❌ Erro: o destino do blindamento precisa ser um endereço blindado dins1.
 Deixe o destinatário em branco para blindar na sua própria via privada.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14838" />
+        <location filename="../src/mainwindow.cpp" line="14838"/>
         <source>❌ Error: Wallet is locked. Please unlock it first.</source>
         <translation>❌ Erro: a carteira está bloqueada. Desbloqueie-a primeiro.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14841" />
+        <location filename="../src/mainwindow.cpp" line="14841"/>
         <source>Please unlock your wallet before sending transactions.</source>
         <translation>Desbloqueie sua carteira antes de enviar transações.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14877" />
+        <location filename="../src/mainwindow.cpp" line="14877"/>
         <source>🔄 Creating PSBT for hardware wallet...</source>
         <translation>🔄 Criando a PSBT para a carteira de hardware …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14922" />
+        <location filename="../src/mainwindow.cpp" line="14922"/>
         <source>❌ Error: Failed to prepare hardware-wallet signing flow</source>
         <translation>❌ Erro: não foi possível preparar o fluxo de assinatura por carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14943" />
+        <location filename="../src/mainwindow.cpp" line="14943"/>
         <source>❌ Hardware-wallet PSBT cannot spend P2MR inputs yet.</source>
         <translation>❌ A PSBT de carteira de hardware ainda não consegue gastar entradas P2MR.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="14963" />
+        <location filename="../src/mainwindow.cpp" line="14963"/>
         <source>✅ Hardware-wallet send prepared. Continue in the Hardware Wallet tab.</source>
         <translation>✅ Envio por carteira de hardware preparado. Continue na aba Carteira de hardware.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15031" />
+        <location filename="../src/mainwindow.cpp" line="15031"/>
         <source>✅ Hardware-wallet transaction sent successfully!</source>
         <translation>✅ Transação por carteira de hardware enviada com sucesso.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15064" />
+        <location filename="../src/mainwindow.cpp" line="15064"/>
         <source>Unsupported send mode. Select a public payment or open the Shielded composer.</source>
         <translation>Modo de envio não suportado. Escolha um pagamento público ou abra o compositor Blindado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15076" />
+        <location filename="../src/mainwindow.cpp" line="15076"/>
         <source>🔄 Processing transaction...</source>
         <translation>🔄 Processando a transação …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15081" />
+        <location filename="../src/mainwindow.cpp" line="15081"/>
         <source>Processing...</source>
         <translation>Processando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15083" />
+        <location filename="../src/mainwindow.cpp" line="15083"/>
         <source>Sending transaction...</source>
         <translation>Enviando a transação …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15115" />
-        <location filename="../src/mainwindow.cpp" line="15143" />
+        <location filename="../src/mainwindow.cpp" line="15115"/>
+        <location filename="../src/mainwindow.cpp" line="15143"/>
         <source>❌ Contract amount is too small after the fixed spend fee.</source>
         <translation>❌ O valor do contrato é pequeno demais depois da tarifa fixa de gasto.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15130" />
+        <location filename="../src/mainwindow.cpp" line="15130"/>
         <source>Timelock funding requires an upgraded node with contextual lock enforcement active.</source>
         <translation>O financiamento com timelock exige um nó atualizado com a aplicação de travas contextuais ativa.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15138" />
+        <location filename="../src/mainwindow.cpp" line="15138"/>
         <source>❌ Relative timelock must be between 1 and 65,535 blocks.</source>
         <translation>❌ O timelock relativo precisa estar entre 1 e 65.535 blocos.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15186" />
+        <location filename="../src/mainwindow.cpp" line="15186"/>
         <source>❌ Unknown contract template; refusing to create a fallback script.</source>
         <translation>❌ Modelo de contrato desconhecido; não será criado um script alternativo.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15205" />
+        <location filename="../src/mainwindow.cpp" line="15205"/>
         <source>Review Public Contract</source>
         <translation>Revisar o contrato público</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15274" />
+        <location filename="../src/mainwindow.cpp" line="15274"/>
         <source>Hardware-wallet signing is currently wired only for public Taproot transfers.</source>
         <translation>A assinatura por carteira de hardware está ligada hoje apenas a transferências Taproot públicas.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15286" />
+        <location filename="../src/mainwindow.cpp" line="15286"/>
         <source>Hardware Wallet PSBT</source>
         <translation>PSBT de carteira de hardware</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15287" />
+        <location filename="../src/mainwindow.cpp" line="15287"/>
         <source>P2MR is a Dinero quantum-safe address type. Current hardware-wallet PSBT signing is Taproot/BIP86 only, so use the normal Send button for P2MR transfers.</source>
         <translation>P2MR é um tipo de endereço do Dinero resistente a quântica. A assinatura PSBT por carteira de hardware hoje é só Taproot/BIP86, então use o botão Enviar normal para transferências P2MR.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15303" />
+        <location filename="../src/mainwindow.cpp" line="15303"/>
         <source>Your wallet must be unlocked to consolidate UTXOs.
 
 Would you like to unlock your wallet now?</source>
@@ -5268,83 +5268,83 @@ Would you like to unlock your wallet now?</source>
 Deseja desbloqueá-la agora?</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15324" />
+        <location filename="../src/mainwindow.cpp" line="15324"/>
         <source>Consolidate UTXOs</source>
         <translation>Consolidar UTXOs</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15352" />
+        <location filename="../src/mainwindow.cpp" line="15352"/>
         <source>Consolidating...</source>
         <translation>Consolidando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15405" />
+        <location filename="../src/mainwindow.cpp" line="15405"/>
         <source>Enter custom fee in una/vB</source>
         <translation>Informe uma tarifa personalizada em una/vB</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15421" />
+        <location filename="../src/mainwindow.cpp" line="15421"/>
         <source>Estimating...</source>
         <translation>Estimando …</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15454" />
-        <location filename="../src/mainwindow.cpp" line="15486" />
+        <location filename="../src/mainwindow.cpp" line="15454"/>
+        <location filename="../src/mainwindow.cpp" line="15486"/>
         <source>No Peer Selected</source>
         <translation>Nenhum par selecionado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15454" />
+        <location filename="../src/mainwindow.cpp" line="15454"/>
         <source>Please select a peer to disconnect.</source>
         <translation>Selecione um par para desconectar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15463" />
+        <location filename="../src/mainwindow.cpp" line="15463"/>
         <source>Disconnect Peer</source>
         <translation>Desconectar o par</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15486" />
+        <location filename="../src/mainwindow.cpp" line="15486"/>
         <source>Please select a peer to manage.</source>
         <translation>Selecione um par para gerenciar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15496" />
+        <location filename="../src/mainwindow.cpp" line="15496"/>
         <source>Peer Address Missing</source>
         <translation>Falta o endereço do par</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15496" />
+        <location filename="../src/mainwindow.cpp" line="15496"/>
         <source>The selected peer does not have a usable address.</source>
         <translation>O par selecionado não tem um endereço utilizável.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15521" />
+        <location filename="../src/mainwindow.cpp" line="15521"/>
         <source>Block Bootstrap Peer</source>
         <translation>Bloquear par de inicialização</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15531" />
+        <location filename="../src/mainwindow.cpp" line="15531"/>
         <source>Block Peer</source>
         <translation>Bloquear o par</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15571" />
+        <location filename="../src/mainwindow.cpp" line="15571"/>
         <source>No Peers</source>
         <translation>Sem pares</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15571" />
+        <location filename="../src/mainwindow.cpp" line="15571"/>
         <source>No peers connected to reconnect.</source>
         <translation>Não há pares conectados para reconectar.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15603" />
+        <location filename="../src/mainwindow.cpp" line="15603"/>
         <source>Diagnostics copied to clipboard</source>
         <translation>Diagnóstico copiado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15620" />
+        <location filename="../src/mainwindow.cpp" line="15620"/>
         <source>To request a block template, enter a Taproot mining address first.
 
 Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/tdin1p/rdin1p) address by default.</source>
@@ -5353,22 +5353,22 @@ Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/t
 Dica: Carteira → Receber → Novo endereço transparente gera por padrão um endereço Taproot (din1p/tdin1p/rdin1p).</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15641" />
+        <location filename="../src/mainwindow.cpp" line="15641"/>
         <source>Empty Address</source>
         <translation>Endereço vazio</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15641" />
+        <location filename="../src/mainwindow.cpp" line="15641"/>
         <source>Please enter an address to generate QR code.</source>
         <translation>Informe um endereço para gerar o código QR.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15649" />
+        <location filename="../src/mainwindow.cpp" line="15649"/>
         <source>Invalid Address</source>
         <translation>Endereço inválido</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15650" />
+        <location filename="../src/mainwindow.cpp" line="15650"/>
         <source>Invalid Dinero address format.
 
 Enter a Dinero transparent or shielded address.</source>
@@ -5377,32 +5377,32 @@ Enter a Dinero transparent or shielded address.</source>
 Informe um endereço Dinero transparente ou blindado.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15658" />
+        <location filename="../src/mainwindow.cpp" line="15658"/>
         <source>QR Generation Failed</source>
         <translation>Falha ao gerar o QR</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15658" />
+        <location filename="../src/mainwindow.cpp" line="15658"/>
         <source>Failed to generate QR code.</source>
         <translation>Não foi possível gerar o código QR.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15685" />
+        <location filename="../src/mainwindow.cpp" line="15685"/>
         <source>QR Code Generated</source>
         <translation>Código QR gerado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15701" />
+        <location filename="../src/mainwindow.cpp" line="15701"/>
         <source>Failed to open file for reading.</source>
         <translation>Não foi possível abrir o arquivo para leitura.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15740" />
+        <location filename="../src/mainwindow.cpp" line="15740"/>
         <source>No Valid Addresses</source>
         <translation>Nenhum endereço válido</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15741" />
+        <location filename="../src/mainwindow.cpp" line="15741"/>
         <source>No valid Dinero addresses found in CSV file.
 
 Expected format:
@@ -5413,83 +5413,83 @@ Formato esperado:
 Rótulo,Endereço</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15746" />
+        <location filename="../src/mainwindow.cpp" line="15746"/>
         <source>Confirm Import</source>
         <translation>Confirmar a importação</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15783" />
+        <location filename="../src/mainwindow.cpp" line="15783"/>
         <source>Import Complete</source>
         <translation>Importação concluída</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15806" />
+        <location filename="../src/mainwindow.cpp" line="15806"/>
         <source>Failed to open file for writing.</source>
         <translation>Não foi possível abrir o arquivo para escrita.</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15838" />
+        <location filename="../src/mainwindow.cpp" line="15838"/>
         <source>Export Complete</source>
         <translation>Exportação concluída</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="15922" />
+        <location filename="../src/mainwindow.cpp" line="15922"/>
         <source>Label Error</source>
         <translation>Erro no rótulo</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16078" />
+        <location filename="../src/mainwindow.cpp" line="16078"/>
         <source>✅ Synced</source>
         <translation>✅ Sincronizado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16120" />
-        <location filename="../src/mainwindow.cpp" line="16253" />
+        <location filename="../src/mainwindow.cpp" line="16120"/>
+        <location filename="../src/mainwindow.cpp" line="16253"/>
         <source>P2P disabled</source>
         <translation>P2P desativado</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16123" />
+        <location filename="../src/mainwindow.cpp" line="16123"/>
         <source>No peers</source>
         <translation>Sem pares</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16257" />
+        <location filename="../src/mainwindow.cpp" line="16257"/>
         <source>Direct inbound</source>
         <translation>Entrada direta</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16261" />
+        <location filename="../src/mainwindow.cpp" line="16261"/>
         <source>Tor available</source>
         <translation>Tor disponível</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16265" />
+        <location filename="../src/mainwindow.cpp" line="16265"/>
         <source>Outbound only</source>
         <translation>Somente saída</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16514" />
+        <location filename="../src/mainwindow.cpp" line="16514"/>
         <source>Export Failed</source>
         <translation>Falha na exportação</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16514" />
+        <location filename="../src/mainwindow.cpp" line="16514"/>
         <source>Could not open file for writing</source>
         <translation>Não foi possível abrir o arquivo para escrita</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16573" />
+        <location filename="../src/mainwindow.cpp" line="16573"/>
         <source>Export Successful</source>
         <translation>Exportação bem-sucedida</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16615" />
+        <location filename="../src/mainwindow.cpp" line="16615"/>
         <source>Start mining to this address</source>
         <translation>Iniciar o Mining para este endereço</translation>
     </message>
     <message>
-        <location filename="../src/mainwindow.cpp" line="16880" />
+        <location filename="../src/mainwindow.cpp" line="16880"/>
         <source>Connection failed</source>
         <translation>Falha na conexão</translation>
     </message>
@@ -5497,314 +5497,314 @@ Rótulo,Endereço</translation>
 <context>
     <name>MarketplaceWidget</name>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="47" />
+        <location filename="../src/marketplacewidget.cpp" line="47"/>
         <source>&lt;h2&gt;🛒 P2P Marketplace&lt;/h2&gt;</source>
         <translation>&lt;h2&gt;🛒 Mercado P2P&lt;/h2&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="48" />
+        <location filename="../src/marketplacewidget.cpp" line="48"/>
         <source>Loading...</source>
         <translation>Carregando...</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="51" />
+        <location filename="../src/marketplacewidget.cpp" line="51"/>
         <source>➕ Create Offer</source>
         <translation>➕ Criar oferta</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="54" />
+        <location filename="../src/marketplacewidget.cpp" line="54"/>
         <source>🔄 Refresh</source>
         <translation>🔄 Atualizar</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="55" />
+        <location filename="../src/marketplacewidget.cpp" line="55"/>
         <source>📋 My Offers</source>
         <translation>📋 Minhas ofertas</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="56" />
+        <location filename="../src/marketplacewidget.cpp" line="56"/>
         <source>🤝 My Trades</source>
         <translation>🤝 Minhas negociações</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="79" />
+        <location filename="../src/marketplacewidget.cpp" line="79"/>
         <source>&lt;b&gt;Event Log:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Registro de eventos:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="100" />
+        <location filename="../src/marketplacewidget.cpp" line="100"/>
         <source>Search offers by keyword...</source>
         <translation>Pesquisar ofertas por palavra-chave...</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="102" />
+        <location filename="../src/marketplacewidget.cpp" line="102"/>
         <source>🔍 Search</source>
         <translation>🔍 Pesquisar</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="131" />
+        <location filename="../src/marketplacewidget.cpp" line="131"/>
         <source>Search:</source>
         <translation>Pesquisar:</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="134" />
+        <location filename="../src/marketplacewidget.cpp" line="134"/>
         <source>Type:</source>
         <translation>Tipo:</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="136" />
+        <location filename="../src/marketplacewidget.cpp" line="136"/>
         <source>Asset:</source>
         <translation>Ativo:</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="182" />
+        <location filename="../src/marketplacewidget.cpp" line="182"/>
         <source>Selected Offer Details</source>
         <translation>Detalhes da oferta selecionada</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="195" />
+        <location filename="../src/marketplacewidget.cpp" line="195"/>
         <source>📊 View Seller Reputation</source>
         <translation>📊 Ver reputação do vendedor</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="200" />
+        <location filename="../src/marketplacewidget.cpp" line="200"/>
         <source>&lt;b&gt;Offer ID:&lt;/b&gt;</source>
         <translation>&lt;b&gt;ID da oferta:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="203" />
+        <location filename="../src/marketplacewidget.cpp" line="203"/>
         <source>&lt;b&gt;Type:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Tipo:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="205" />
+        <location filename="../src/marketplacewidget.cpp" line="205"/>
         <source>&lt;b&gt;Asset:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Ativo:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="208" />
+        <location filename="../src/marketplacewidget.cpp" line="208"/>
         <source>&lt;b&gt;Amount:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Quantia:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="210" />
+        <location filename="../src/marketplacewidget.cpp" line="210"/>
         <source>&lt;b&gt;Price:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Preço:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="213" />
+        <location filename="../src/marketplacewidget.cpp" line="213"/>
         <source>&lt;b&gt;Description:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Descrição:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="216" />
+        <location filename="../src/marketplacewidget.cpp" line="216"/>
         <source>&lt;b&gt;Seller:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Vendedor:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="220" />
+        <location filename="../src/marketplacewidget.cpp" line="220"/>
         <source>&lt;b&gt;Seller Reputation:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Reputação do vendedor:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="229" />
+        <location filename="../src/marketplacewidget.cpp" line="229"/>
         <source>✅ Accept Offer</source>
         <translation>✅ Aceitar oferta</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="233" />
+        <location filename="../src/marketplacewidget.cpp" line="233"/>
         <source>🔍 View Full Details</source>
         <translation>🔍 Ver detalhes completos</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="252" />
-        <location filename="../src/marketplacewidget.cpp" line="325" />
+        <location filename="../src/marketplacewidget.cpp" line="252"/>
+        <location filename="../src/marketplacewidget.cpp" line="325"/>
         <source>Status:</source>
         <translation>Estado:</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="293" />
+        <location filename="../src/marketplacewidget.cpp" line="293"/>
         <source>❌ Cancel Offer</source>
         <translation>❌ Cancelar oferta</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="297" />
+        <location filename="../src/marketplacewidget.cpp" line="297"/>
         <source>✏️ Update Offer</source>
         <translation>✏️ Atualizar oferta</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="318" />
+        <location filename="../src/marketplacewidget.cpp" line="318"/>
         <source>Role:</source>
         <translation>Função:</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="364" />
+        <location filename="../src/marketplacewidget.cpp" line="364"/>
         <source>✅ Complete Trade</source>
         <translation>✅ Concluir negociação</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="368" />
+        <location filename="../src/marketplacewidget.cpp" line="368"/>
         <source>⚠️ Open Dispute</source>
         <translation>⚠️ Abrir disputa</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="372" />
+        <location filename="../src/marketplacewidget.cpp" line="372"/>
         <source>🔍 View Details</source>
         <translation>🔍 Ver detalhes</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="390" />
+        <location filename="../src/marketplacewidget.cpp" line="390"/>
         <source>My Reputation</source>
         <translation>Minha reputação</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="396" />
+        <location filename="../src/marketplacewidget.cpp" line="396"/>
         <source>0 total trades</source>
         <translation>0 negociações no total</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="397" />
+        <location filename="../src/marketplacewidget.cpp" line="397"/>
         <source>0 successful</source>
         <translation>0 bem-sucedidas</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="398" />
+        <location filename="../src/marketplacewidget.cpp" line="398"/>
         <source>No ratings yet</source>
         <translation>Ainda sem avaliações</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="400" />
+        <location filename="../src/marketplacewidget.cpp" line="400"/>
         <source>&lt;b&gt;Average Rating:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Avaliação média:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="403" />
+        <location filename="../src/marketplacewidget.cpp" line="403"/>
         <source>&lt;b&gt;Total Trades:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Total de negociações:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="406" />
+        <location filename="../src/marketplacewidget.cpp" line="406"/>
         <source>&lt;b&gt;Successful:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Bem-sucedidas:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="409" />
+        <location filename="../src/marketplacewidget.cpp" line="409"/>
         <source>&lt;b&gt;Rating Distribution:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Distribuição das avaliações:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="415" />
-        <source>🔍 View Other User's Reputation</source>
+        <location filename="../src/marketplacewidget.cpp" line="415"/>
+        <source>🔍 View Other User&apos;s Reputation</source>
         <translation>🔍 Ver a reputação de outro usuário</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="529" />
-        <location filename="../src/marketplacewidget.cpp" line="550" />
+        <location filename="../src/marketplacewidget.cpp" line="529"/>
+        <location filename="../src/marketplacewidget.cpp" line="550"/>
         <source>No Selection</source>
         <translation>Nenhuma seleção</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="529" />
+        <location filename="../src/marketplacewidget.cpp" line="529"/>
         <source>Please select an offer first.</source>
         <translation>Selecione uma oferta primeiro.</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="550" />
+        <location filename="../src/marketplacewidget.cpp" line="550"/>
         <source>Please select an offer to cancel.</source>
         <translation>Selecione uma oferta para cancelar.</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="556" />
+        <location filename="../src/marketplacewidget.cpp" line="556"/>
         <source>Cancel Offer</source>
         <translation>Cancelar oferta</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="571" />
+        <location filename="../src/marketplacewidget.cpp" line="571"/>
         <source>Update Offer</source>
         <translation>Atualizar oferta</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="571" />
+        <location filename="../src/marketplacewidget.cpp" line="571"/>
         <source>Update offer dialog - coming soon!</source>
         <translation>Diálogo de atualização de oferta — em breve!</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="577" />
+        <location filename="../src/marketplacewidget.cpp" line="577"/>
         <source>Complete Trade</source>
         <translation>Concluir negociação</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="577" />
+        <location filename="../src/marketplacewidget.cpp" line="577"/>
         <source>Complete trade dialog - coming soon!</source>
         <translation>Diálogo de conclusão de negociação — em breve!</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="583" />
+        <location filename="../src/marketplacewidget.cpp" line="583"/>
         <source>Open Dispute</source>
         <translation>Abrir disputa</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="583" />
+        <location filename="../src/marketplacewidget.cpp" line="583"/>
         <source>Dispute dialog - coming soon!</source>
         <translation>Diálogo de disputa — em breve!</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="589" />
+        <location filename="../src/marketplacewidget.cpp" line="589"/>
         <source>Trade Details</source>
         <translation>Detalhes da negociação</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="589" />
+        <location filename="../src/marketplacewidget.cpp" line="589"/>
         <source>Trade details dialog - coming soon!</source>
         <translation>Diálogo de detalhes da negociação — em breve!</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="605" />
+        <location filename="../src/marketplacewidget.cpp" line="605"/>
         <source>View Reputation</source>
         <translation>Ver reputação</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="605" />
+        <location filename="../src/marketplacewidget.cpp" line="605"/>
         <source>Reputation viewer - coming soon!</source>
         <translation>Visualizador de reputação — em breve!</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="674" />
+        <location filename="../src/marketplacewidget.cpp" line="674"/>
         <source>Offer Created</source>
         <translation>Oferta criada</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="682" />
+        <location filename="../src/marketplacewidget.cpp" line="682"/>
         <source>Success</source>
         <translation>Sucesso</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="682" />
+        <location filename="../src/marketplacewidget.cpp" line="682"/>
         <source>Offer cancelled successfully!</source>
         <translation>Oferta cancelada com sucesso!</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="693" />
+        <location filename="../src/marketplacewidget.cpp" line="693"/>
         <source>Trade Created</source>
         <translation>Negociação criada</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="839" />
+        <location filename="../src/marketplacewidget.cpp" line="839"/>
         <source>Create New Marketplace Offer</source>
         <translation>Criar nova oferta no mercado</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="879" />
+        <location filename="../src/marketplacewidget.cpp" line="879"/>
         <source>Describe your offer...</source>
         <translation>Descreva sua oferta...</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="915" />
+        <location filename="../src/marketplacewidget.cpp" line="915"/>
         <source>Offer Details</source>
         <translation>Detalhes da oferta</translation>
     </message>
     <message>
-        <location filename="../src/marketplacewidget.cpp" line="946" />
+        <location filename="../src/marketplacewidget.cpp" line="946"/>
         <source>Accept Offer</source>
         <translation>Aceitar oferta</translation>
     </message>
@@ -5812,148 +5812,148 @@ Rótulo,Endereço</translation>
 <context>
     <name>PaymentsWidget</name>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="92" />
+        <location filename="../src/paymentswidget.cpp" line="92"/>
         <source>DineroPay ready - Create your first invoice</source>
         <translation>DineroPay pronto — crie sua primeira fatura</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="108" />
+        <location filename="../src/paymentswidget.cpp" line="108"/>
         <source>Amount (DNR):</source>
         <translation>Quantia (DNR):</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="113" />
+        <location filename="../src/paymentswidget.cpp" line="113"/>
         <source>Label (optional):</source>
         <translation>Rótulo (opcional):</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="115" />
+        <location filename="../src/paymentswidget.cpp" line="115"/>
         <source>e.g., Order #12345</source>
         <translation>ex.: Pedido nº 12345</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="118" />
+        <location filename="../src/paymentswidget.cpp" line="118"/>
         <source>Address (optional):</source>
         <translation>Endereço (opcional):</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="120" />
+        <location filename="../src/paymentswidget.cpp" line="120"/>
         <source>Leave blank for auto-generated</source>
         <translation>Deixe em branco para gerar automaticamente</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="136" />
+        <location filename="../src/paymentswidget.cpp" line="136"/>
         <source>Search:</source>
         <translation>Pesquisar:</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="138" />
+        <location filename="../src/paymentswidget.cpp" line="138"/>
         <source>Type to filter currencies...</source>
         <translation>Digite para filtrar as moedas...</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="151" />
+        <location filename="../src/paymentswidget.cpp" line="151"/>
         <source>Add/Remove from favorites</source>
         <translation>Adicionar/remover dos favoritos</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="159" />
+        <location filename="../src/paymentswidget.cpp" line="159"/>
         <source>Open MoonPay/Ramp on-ramp in browser</source>
         <translation>Abrir a rampa de entrada MoonPay/Ramp no navegador</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="195" />
-        <location filename="../src/paymentswidget.cpp" line="391" />
+        <location filename="../src/paymentswidget.cpp" line="195"/>
+        <location filename="../src/paymentswidget.cpp" line="391"/>
         <source>No invoice selected</source>
         <translation>Nenhuma fatura selecionada</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="234" />
+        <location filename="../src/paymentswidget.cpp" line="234"/>
         <source>Anchor Reference Price - Soft price guide for early market phase</source>
         <translation>Preço de referência âncora — guia de preço flexível para a fase inicial do mercado</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="249" />
+        <location filename="../src/paymentswidget.cpp" line="249"/>
         <source>Shows the blend ratio of ARP vs Market price</source>
         <translation>Mostra a proporção da mistura entre o PRA e o preço de mercado</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="308" />
+        <location filename="../src/paymentswidget.cpp" line="308"/>
         <source>Invalid Amount</source>
         <translation>Quantia inválida</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="308" />
+        <location filename="../src/paymentswidget.cpp" line="308"/>
         <source>Please enter a valid amount greater than 0.</source>
         <translation>Insira uma quantia válida maior que 0.</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="342" />
+        <location filename="../src/paymentswidget.cpp" line="342"/>
         <source>No Subscription</source>
         <translation>Sem assinatura</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="342" />
+        <location filename="../src/paymentswidget.cpp" line="342"/>
         <source>No active subscription found for this address.</source>
         <translation>Nenhuma assinatura ativa encontrada para este endereço.</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="349" />
+        <location filename="../src/paymentswidget.cpp" line="349"/>
         <source>Checking payment status...</source>
         <translation>Verificando o estado do pagamento...</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="372" />
+        <location filename="../src/paymentswidget.cpp" line="372"/>
         <source>QR Code Generated</source>
         <translation>Código QR gerado</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="387" />
+        <location filename="../src/paymentswidget.cpp" line="387"/>
         <source>Address: –</source>
         <translation>Endereço: –</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="388" />
+        <location filename="../src/paymentswidget.cpp" line="388"/>
         <source>Amount: –</source>
         <translation>Quantia: –</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="389" />
+        <location filename="../src/paymentswidget.cpp" line="389"/>
         <source>Fiat value: –</source>
         <translation>Valor em moeda fiduciária: –</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="504" />
+        <location filename="../src/paymentswidget.cpp" line="504"/>
         <source>Invoice Creation Failed</source>
         <translation>Falha ao criar a fatura</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="505" />
+        <location filename="../src/paymentswidget.cpp" line="505"/>
         <source>❌ Failed to create invoice</source>
         <translation>❌ Falha ao criar a fatura</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="540" />
+        <location filename="../src/paymentswidget.cpp" line="540"/>
         <source>100% ARP</source>
         <translation>100% PRA</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="542" />
+        <location filename="../src/paymentswidget.cpp" line="542"/>
         <source>📌 Pure ARP (pre-launch)</source>
         <translation>📌 PRA puro (pré-lançamento)</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="544" />
+        <location filename="../src/paymentswidget.cpp" line="544"/>
         <source>100% Market</source>
         <translation>100% mercado</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="546" />
+        <location filename="../src/paymentswidget.cpp" line="546"/>
         <source>📈 Market-driven pricing</source>
         <translation>📈 Preço definido pelo mercado</translation>
     </message>
     <message>
-        <location filename="../src/paymentswidget.cpp" line="553" />
+        <location filename="../src/paymentswidget.cpp" line="553"/>
         <source>🔄 Blended pricing (transitioning)</source>
         <translation>🔄 Preço misto (em transição)</translation>
     </message>
@@ -5961,403 +5961,403 @@ Rótulo,Endereço</translation>
 <context>
     <name>PoolPanel</name>
     <message>
-        <location filename="../src/poolpanel.cpp" line="120" />
+        <location filename="../src/poolpanel.cpp" line="120"/>
         <source>&lt;h2&gt;👥 Pool&lt;/h2&gt;</source>
         <translation>&lt;h2&gt;👥 Pool&lt;/h2&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="126" />
+        <location filename="../src/poolpanel.cpp" line="126"/>
         <source>Hosting a pool</source>
         <translation>Hospedar um pool</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="128" />
-        <source>&lt;span style='font-size:18px; font-weight:700;'&gt;Bring the cockpit online.&lt;/span&gt; Run your own pool, connect miners, and earn a transparent operator fee.</source>
-        <translation>&lt;span style='font-size:18px; font-weight:700;'&gt;Ligue a cabine de comando.&lt;/span&gt; Execute seu próprio pool, conecte mineradores e receba uma taxa de operador transparente.</translation>
+        <location filename="../src/poolpanel.cpp" line="128"/>
+        <source>&lt;span style=&apos;font-size:18px; font-weight:700;&apos;&gt;Bring the cockpit online.&lt;/span&gt; Run your own pool, connect miners, and earn a transparent operator fee.</source>
+        <translation>&lt;span style=&apos;font-size:18px; font-weight:700;&apos;&gt;Ligue a cabine de comando.&lt;/span&gt; Execute seu próprio pool, conecte mineradores e receba uma taxa de operador transparente.</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="135" />
-        <source>&lt;p style='margin-top:0;'&gt;A Dinero pool pays every contributing miner &lt;b&gt;directly in the block's coinbase&lt;/b&gt;, split by share weight, the moment a block is found.&lt;/p&gt;&lt;ul style='margin-left:-18px;'&gt;&lt;li&gt;&lt;b&gt;You never hold your miners' coins.&lt;/b&gt; No balances, no payout run, nothing to lose or be blamed for losing.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Your fee is provable.&lt;/b&gt; It is an output in the block — any miner can verify what you took, without trusting you.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You stop depending on someone else's server&lt;/b&gt;, and you choose which transactions go in your blocks.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You can pool with people who never have to trust you&lt;/b&gt; — sharing variance without anyone holding anyone's funds.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Hosting a pool means running a full node too: the pool gets block templates from your node and submits found blocks through it. That is the point — every pool operator is a node operator.&lt;/p&gt;&lt;p style='color:#9fb3c8;'&gt;Setup is one command on a Linux server. See &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; in the dinero-sv2 repository.&lt;/p&gt;</source>
-        <translation>&lt;p style='margin-top:0;'&gt;Um pool Dinero paga cada minerador contribuinte &lt;b&gt;diretamente na coinbase do bloco&lt;/b&gt;, dividida pelo peso das shares, no instante em que um bloco é encontrado.&lt;/p&gt;&lt;ul style='margin-left:-18px;'&gt;&lt;li&gt;&lt;b&gt;Você nunca guarda as moedas dos seus mineradores.&lt;/b&gt; Sem saldos, sem rodada de pagamento, nada a perder nem a ser culpado por perder.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Sua taxa é comprovável.&lt;/b&gt; É uma saída no bloco — qualquer minerador pode verificar o que você recebeu, sem confiar em você.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Você deixa de depender do servidor de outra pessoa&lt;/b&gt; e escolhe quais transações entram nos seus blocos.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Você pode formar um pool com pessoas que nunca precisam confiar em você&lt;/b&gt; — compartilhando a variância sem que ninguém guarde os fundos de ninguém.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Hospedar um pool significa executar também um nó completo: o pool obtém os modelos de bloco do seu nó e envia por ele os blocos encontrados. Esse é justamente o ponto — todo operador de pool é um operador de nó.&lt;/p&gt;&lt;p style='color:#9fb3c8;'&gt;A configuração é um único comando em um servidor Linux. Consulte &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; no repositório dinero-sv2.&lt;/p&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="135"/>
+        <source>&lt;p style=&apos;margin-top:0;&apos;&gt;A Dinero pool pays every contributing miner &lt;b&gt;directly in the block&apos;s coinbase&lt;/b&gt;, split by share weight, the moment a block is found.&lt;/p&gt;&lt;ul style=&apos;margin-left:-18px;&apos;&gt;&lt;li&gt;&lt;b&gt;You never hold your miners&apos; coins.&lt;/b&gt; No balances, no payout run, nothing to lose or be blamed for losing.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Your fee is provable.&lt;/b&gt; It is an output in the block — any miner can verify what you took, without trusting you.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You stop depending on someone else&apos;s server&lt;/b&gt;, and you choose which transactions go in your blocks.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You can pool with people who never have to trust you&lt;/b&gt; — sharing variance without anyone holding anyone&apos;s funds.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Hosting a pool means running a full node too: the pool gets block templates from your node and submits found blocks through it. That is the point — every pool operator is a node operator.&lt;/p&gt;&lt;p style=&apos;color:#9fb3c8;&apos;&gt;Setup is one command on a Linux server. See &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; in the dinero-sv2 repository.&lt;/p&gt;</source>
+        <translation>&lt;p style=&apos;margin-top:0;&apos;&gt;Um pool Dinero paga cada minerador contribuinte &lt;b&gt;diretamente na coinbase do bloco&lt;/b&gt;, dividida pelo peso das shares, no instante em que um bloco é encontrado.&lt;/p&gt;&lt;ul style=&apos;margin-left:-18px;&apos;&gt;&lt;li&gt;&lt;b&gt;Você nunca guarda as moedas dos seus mineradores.&lt;/b&gt; Sem saldos, sem rodada de pagamento, nada a perder nem a ser culpado por perder.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Sua taxa é comprovável.&lt;/b&gt; É uma saída no bloco — qualquer minerador pode verificar o que você recebeu, sem confiar em você.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Você deixa de depender do servidor de outra pessoa&lt;/b&gt; e escolhe quais transações entram nos seus blocos.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Você pode formar um pool com pessoas que nunca precisam confiar em você&lt;/b&gt; — compartilhando a variância sem que ninguém guarde os fundos de ninguém.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Hospedar um pool significa executar também um nó completo: o pool obtém os modelos de bloco do seu nó e envia por ele os blocos encontrados. Esse é justamente o ponto — todo operador de pool é um operador de nó.&lt;/p&gt;&lt;p style=&apos;color:#9fb3c8;&apos;&gt;A configuração é um único comando em um servidor Linux. Consulte &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; no repositório dinero-sv2.&lt;/p&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="161" />
+        <location filename="../src/poolpanel.cpp" line="161"/>
         <source>Your pool</source>
         <translation>Seu pool</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="163" />
-        <location filename="../src/poolpanel.cpp" line="457" />
-        <source>Point this at your pool's read-only status endpoint. It is loopback-only on the pool host by design, so from another machine open an SSH tunnel first:&lt;br/&gt;&lt;code&gt;ssh -N -L 4445:127.0.0.1:4445 you@your.host&lt;/code&gt;</source>
+        <location filename="../src/poolpanel.cpp" line="163"/>
+        <location filename="../src/poolpanel.cpp" line="457"/>
+        <source>Point this at your pool&apos;s read-only status endpoint. It is loopback-only on the pool host by design, so from another machine open an SSH tunnel first:&lt;br/&gt;&lt;code&gt;ssh -N -L 4445:127.0.0.1:4445 you@your.host&lt;/code&gt;</source>
         <translation>Aponte isto para o endpoint de estado somente leitura do seu pool. Por design, ele é acessível apenas via loopback no host do pool, então, a partir de outra máquina, abra primeiro um túnel SSH:&lt;br/&gt;&lt;code&gt;ssh -N -L 4445:127.0.0.1:4445 voce@seu.host&lt;/code&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="180" />
+        <location filename="../src/poolpanel.cpp" line="180"/>
         <source>http://127.0.0.1:4445</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="187" />
+        <location filename="../src/poolpanel.cpp" line="187"/>
         <source>contents of /etc/dinero-sv2/ops-token</source>
         <translation>conteúdo de /etc/dinero-sv2/ops-token</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="190" />
+        <location filename="../src/poolpanel.cpp" line="190"/>
         <source>Connect</source>
         <translation>Conectar</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="196" />
-        <location filename="../src/poolpanel.cpp" line="235" />
-        <location filename="../src/poolpanel.cpp" line="236" />
-        <location filename="../src/poolpanel.cpp" line="237" />
-        <location filename="../src/poolpanel.cpp" line="238" />
-        <location filename="../src/poolpanel.cpp" line="239" />
-        <location filename="../src/poolpanel.cpp" line="240" />
-        <location filename="../src/poolpanel.cpp" line="282" />
-        <location filename="../src/poolpanel.cpp" line="398" />
-        <location filename="../src/poolpanel.cpp" line="404" />
+        <location filename="../src/poolpanel.cpp" line="196"/>
+        <location filename="../src/poolpanel.cpp" line="235"/>
+        <location filename="../src/poolpanel.cpp" line="236"/>
+        <location filename="../src/poolpanel.cpp" line="237"/>
+        <location filename="../src/poolpanel.cpp" line="238"/>
+        <location filename="../src/poolpanel.cpp" line="239"/>
+        <location filename="../src/poolpanel.cpp" line="240"/>
+        <location filename="../src/poolpanel.cpp" line="282"/>
+        <location filename="../src/poolpanel.cpp" line="398"/>
+        <location filename="../src/poolpanel.cpp" line="404"/>
         <source>–</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="201" />
+        <location filename="../src/poolpanel.cpp" line="201"/>
         <source>About trustless pooled mining</source>
         <translation>Sobre a mineração em pool sem confiança</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="209" />
+        <location filename="../src/poolpanel.cpp" line="209"/>
         <source>Live status</source>
         <translation>Estado ao vivo</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="229" />
+        <location filename="../src/poolpanel.cpp" line="229"/>
         <source>OFFLINE</source>
         <translation>DESLIGADO</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="231" />
+        <location filename="../src/poolpanel.cpp" line="231"/>
         <source>Not connected</source>
         <translation>Não conectado</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="241" />
-        <location filename="../src/poolpanel.cpp" line="242" />
-        <location filename="../src/poolpanel.cpp" line="322" />
-        <location filename="../src/poolpanel.cpp" line="323" />
+        <location filename="../src/poolpanel.cpp" line="241"/>
+        <location filename="../src/poolpanel.cpp" line="242"/>
+        <location filename="../src/poolpanel.cpp" line="322"/>
+        <location filename="../src/poolpanel.cpp" line="323"/>
         <source>Unavailable</source>
         <translation>Indisponível</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="243" />
+        <location filename="../src/poolpanel.cpp" line="243"/>
         <source>Connected sessions:</source>
         <translation>Sessões conectadas:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="245" />
+        <location filename="../src/poolpanel.cpp" line="245"/>
         <source>Operator fee:</source>
         <translation>Taxa do operador:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="259" />
+        <location filename="../src/poolpanel.cpp" line="259"/>
         <source>PPLNS window:</source>
         <translation>Janela PPLNS:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="264" />
+        <location filename="../src/poolpanel.cpp" line="264"/>
         <source>Template producer:</source>
         <translation>Produtor de modelos:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="266" />
+        <location filename="../src/poolpanel.cpp" line="266"/>
         <source>Shares (since pool restart):</source>
         <translation>Shares (desde o reinício do pool):</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="267" />
+        <location filename="../src/poolpanel.cpp" line="267"/>
         <source>Blocks found (since pool restart):</source>
         <translation>Blocos encontrados (desde o reinício do pool):</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="275" />
+        <location filename="../src/poolpanel.cpp" line="275"/>
         <source>Daemon:</source>
         <translation>Daemon:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="277" />
+        <location filename="../src/poolpanel.cpp" line="277"/>
         <source>Stratum:</source>
         <translation>Stratum:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="285" />
+        <location filename="../src/poolpanel.cpp" line="285"/>
         <source>Fee paid to:</source>
         <translation>Taxa paga a:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="290" />
+        <location filename="../src/poolpanel.cpp" line="290"/>
         <source>din1p… new fee address</source>
         <translation>din1p… novo endereço de taxa</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="292" />
+        <location filename="../src/poolpanel.cpp" line="292"/>
         <source>Change</source>
         <translation>Alterar</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="294" />
+        <location filename="../src/poolpanel.cpp" line="294"/>
         <source>Change to:</source>
         <translation>Alterar para:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="311" />
+        <location filename="../src/poolpanel.cpp" line="311"/>
         <source>Change fee</source>
         <translation>Alterar taxa</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="314" />
+        <location filename="../src/poolpanel.cpp" line="314"/>
         <source>Set operator fee:</source>
         <translation>Definir a taxa do operador:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="324" />
+        <location filename="../src/poolpanel.cpp" line="324"/>
         <source>None reported</source>
         <translation>Nada reportado</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="326" />
+        <location filename="../src/poolpanel.cpp" line="326"/>
         <source>Last accepted share:</source>
         <translation>Última share aceita:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="328" />
+        <location filename="../src/poolpanel.cpp" line="328"/>
         <source>Last block result:</source>
         <translation>Resultado do último bloco:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="330" />
+        <location filename="../src/poolpanel.cpp" line="330"/>
         <source>Rejection reasons:</source>
         <translation>Motivos de rejeição:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="333" />
+        <location filename="../src/poolpanel.cpp" line="333"/>
         <source>Share activity history (stored locally)</source>
         <translation>Histórico de atividade de shares (armazenado localmente)</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="338" />
+        <location filename="../src/poolpanel.cpp" line="338"/>
         <source>5 min</source>
         <translation>5 min</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="339" />
+        <location filename="../src/poolpanel.cpp" line="339"/>
         <source>1 hour</source>
         <translation>1 hora</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="340" />
+        <location filename="../src/poolpanel.cpp" line="340"/>
         <source>24 hours</source>
         <translation>24 horas</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="364" />
+        <location filename="../src/poolpanel.cpp" line="364"/>
         <source>PPLNS contributors (not connected sessions)</source>
         <translation>Contribuintes PPLNS (não são sessões conectadas)</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="375" />
+        <location filename="../src/poolpanel.cpp" line="375"/>
         <source>Fee earnings (verified on-chain)</source>
         <translation>Ganhos de taxa (verificados na cadeia)</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="377" />
+        <location filename="../src/poolpanel.cpp" line="377"/>
         <source>Read from your node, not from the pool — so it is still right when the pool is down, and it cannot be overstated by a pool reporting on itself.&lt;br/&gt;&lt;b&gt;Lifetime&lt;/b&gt; is every fee ever paid to this address and only ever rises. &lt;b&gt;Unspent&lt;/b&gt; is what is still sitting there, so it falls when you move funds out.</source>
         <translation>Lido do seu nó, não do pool — portanto continua correto quando o pool está fora do ar e não pode ser exagerado por um pool que reporta sobre si mesmo.&lt;br/&gt;&lt;b&gt;Vitalício&lt;/b&gt; é toda taxa já paga a este endereço e só aumenta. &lt;b&gt;Não gasto&lt;/b&gt; é o que ainda está lá, portanto diminui quando você retira fundos.</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="388" />
+        <location filename="../src/poolpanel.cpp" line="388"/>
         <source>Fee address:</source>
         <translation>Endereço de taxa:</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="390" />
+        <location filename="../src/poolpanel.cpp" line="390"/>
         <source>the din1p... you passed as --payout-address</source>
         <translation>o din1p... que você passou como --payout-address</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="392" />
+        <location filename="../src/poolpanel.cpp" line="392"/>
         <source>Check</source>
         <translation>Verificar</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="473" />
-        <source>&lt;span style='color:#e06c75;'&gt;Use HTTPS, or plain HTTP only through a loopback/SSH-tunnel endpoint such as 127.0.0.1.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;Use HTTPS, ou HTTP simples apenas através de um endpoint de loopback/túnel SSH, como 127.0.0.1.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="473"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Use HTTPS, or plain HTTP only through a loopback/SSH-tunnel endpoint such as 127.0.0.1.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Use HTTPS, ou HTTP simples apenas através de um endpoint de loopback/túnel SSH, como 127.0.0.1.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="536" />
+        <location filename="../src/poolpanel.cpp" line="536"/>
         <source>Change fee address</source>
         <translation>Alterar o endereço de taxa</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="580" />
-        <source>&lt;span style='color:#d8a37b;'&gt;Connect to the pool before changing its fee.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;Conecte-se ao pool antes de alterar sua taxa.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="580"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Connect to the pool before changing its fee.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Conecte-se ao pool antes de alterar sua taxa.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="585" />
+        <location filename="../src/poolpanel.cpp" line="585"/>
         <source>That is already the live operator fee.</source>
         <translation>Essa já é a taxa de operador ativa.</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="590" />
+        <location filename="../src/poolpanel.cpp" line="590"/>
         <source>Change operator fee</source>
         <translation>Alterar a taxa do operador</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="605" />
-        <source>&lt;span style='color:#e06c75;'&gt;Not sent: the local fee-policy journal could not be saved.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;Não enviado: não foi possível salvar o diário local de políticas de taxa.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="605"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Not sent: the local fee-policy journal could not be saved.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Não enviado: não foi possível salvar o diário local de políticas de taxa.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="619" />
+        <location filename="../src/poolpanel.cpp" line="619"/>
         <source>Review accepted locally; asking the pool to apply the fee policy…</source>
         <translation>Revisão aceita localmente; solicitando ao pool que aplique a política de taxa…</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="629" />
-        <source>&lt;span style='color:#d8a37b;'&gt;Runtime fee changes are disabled on this pool. Re-run its installer with &lt;code&gt;--allow-fee-change&lt;/code&gt;.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;As alterações de taxa em tempo de execução estão desativadas neste pool. Execute novamente seu instalador com &lt;code&gt;--allow-fee-change&lt;/code&gt;.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="629"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Runtime fee changes are disabled on this pool. Re-run its installer with &lt;code&gt;--allow-fee-change&lt;/code&gt;.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;As alterações de taxa em tempo de execução estão desativadas neste pool. Execute novamente seu instalador com &lt;code&gt;--allow-fee-change&lt;/code&gt;.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="632" />
-        <source>&lt;span style='color:#e06c75;'&gt;Rejected: wrong ops token.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;Rejeitado: token de operações incorreto.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="632"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Rejected: wrong ops token.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Rejeitado: token de operações incorreto.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="641" />
-        <source>&lt;span style='color:#e06c75;'&gt;Safety conflict: the pool did not confirm the exact fee you reviewed. Further changes are locked pending inspection.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;Conflito de segurança: o pool não confirmou a taxa exata que você revisou. Novas alterações ficam bloqueadas até a inspeção.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="641"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Safety conflict: the pool did not confirm the exact fee you reviewed. Further changes are locked pending inspection.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Conflito de segurança: o pool não confirmou a taxa exata que você revisou. Novas alterações ficam bloqueadas até a inspeção.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="646" />
-        <source>&lt;span style='color:#8fbf7f;'&gt;Operator fee changed for the next template and persisted across restart.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#8fbf7f;'&gt;Taxa do operador alterada para o próximo modelo e mantida após o reinício.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="646"/>
+        <source>&lt;span style=&apos;color:#8fbf7f;&apos;&gt;Operator fee changed for the next template and persisted across restart.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#8fbf7f;&apos;&gt;Taxa do operador alterada para o próximo modelo e mantida após o reinício.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="727" />
-        <source>&lt;span style='color:#d8a37b;'&gt;Fee-change outcome uncertain. Reconnecting to reconcile the live policy.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;Resultado da alteração de taxa incerto. Reconectando para reconciliar a política ativa.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="727"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Fee-change outcome uncertain. Reconnecting to reconcile the live policy.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Resultado da alteração de taxa incerto. Reconectando para reconciliar a política ativa.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1134" />
-        <source>&lt;span style='color:#d8a37b;'&gt;A previous fee change has an uncertain outcome. Connect to reconcile it.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;Uma alteração de taxa anterior tem resultado incerto. Conecte-se para reconciliá-la.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1134"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;A previous fee change has an uncertain outcome. Connect to reconcile it.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Uma alteração de taxa anterior tem resultado incerto. Conecte-se para reconciliá-la.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1144" />
-        <source>&lt;span style='color:#7bd88f;'&gt;Reconciled: the requested operator fee is live.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#7bd88f;'&gt;Reconciliado: a taxa de operador solicitada está ativa.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1144"/>
+        <source>&lt;span style=&apos;color:#7bd88f;&apos;&gt;Reconciled: the requested operator fee is live.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#7bd88f;&apos;&gt;Reconciliado: a taxa de operador solicitada está ativa.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1148" />
-        <source>&lt;span style='color:#d8a37b;'&gt;Reconciled: the previous operator fee remains live.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;Reconciliado: a taxa de operador anterior continua ativa.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1148"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Reconciled: the previous operator fee remains live.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Reconciliado: a taxa de operador anterior continua ativa.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1152" />
-        <source>&lt;span style='color:#e06c75;'&gt;Fee-policy reconciliation conflict. Inspect the pool before changing it again.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;Conflito na reconciliação da política de taxa. Inspecione o pool antes de alterá-la novamente.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1152"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Fee-policy reconciliation conflict. Inspect the pool before changing it again.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Conflito na reconciliação da política de taxa. Inspecione o pool antes de alterá-la novamente.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1164" />
-        <source>&lt;span style='color:#d8a37b;'&gt;Enter your fee address.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;Insira seu endereço de taxa.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1164"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Enter your fee address.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;Insira seu endereço de taxa.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1174" />
+        <location filename="../src/poolpanel.cpp" line="1174"/>
         <source>reading the chain… (this walks the block history and can take a few seconds)</source>
         <translation>lendo a cadeia… (isto percorre o histórico de blocos e pode levar alguns segundos)</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1175" />
+        <location filename="../src/poolpanel.cpp" line="1175"/>
         <source>checking the chain…</source>
         <translation>verificando a cadeia…</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1192" />
-        <source>&lt;span style='color:#e06c75;'&gt;Unexpected history reply from the node.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;Resposta de histórico inesperada do nó.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1192"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Unexpected history reply from the node.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Resposta de histórico inesperada do nó.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1253" />
-        <source>&lt;span style='color:#e06c75;'&gt;Unexpected reply from the node.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;Resposta inesperada do nó.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1253"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;Unexpected reply from the node.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;Resposta inesperada do nó.&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/poolpanel.cpp" line="1265" />
-        <source>&lt;span style='color:#e06c75;'&gt;The node did not return a valid confirmed unspent balance.&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#e06c75;'&gt;O nó não retornou um saldo confirmado não gasto válido.&lt;/span&gt;</translation>
+        <location filename="../src/poolpanel.cpp" line="1265"/>
+        <source>&lt;span style=&apos;color:#e06c75;&apos;&gt;The node did not return a valid confirmed unspent balance.&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#e06c75;&apos;&gt;O nó não retornou um saldo confirmado não gasto válido.&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
     <name>PrivateCovenantWidget</name>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="24" />
+        <location filename="../src/privatecovenantwidget.cpp" line="24"/>
         <source>Private covenants pay one or two fixed shielded recipients. Amounts and recipients are hidden; the earliest spend height and fee are public. Your wallet recovers the encrypted contract from its funding note. A public funding source reveals the amount entering the shielded pool.</source>
         <translation>Os covenants privados pagam um ou dois destinatários blindados fixos. As quantias e os destinatários ficam ocultos; a altura mínima de gasto e a taxa são públicas. Sua carteira recupera o contrato criptografado a partir de sua nota de financiamento. Uma fonte de financiamento pública revela a quantia que entra no pool blindado.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="26" />
+        <location filename="../src/privatecovenantwidget.cpp" line="26"/>
         <source>Waiting for network capability</source>
         <translation>Aguardando a capacidade da rede</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="33" />
+        <location filename="../src/privatecovenantwidget.cpp" line="33"/>
         <source>Your shielded address; its wallet will control the contract</source>
         <translation>Seu endereço blindado; a carteira dele controlará o contrato</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="35" />
+        <location filename="../src/privatecovenantwidget.cpp" line="35"/>
         <source>Use my shielded address</source>
         <translation>Usar meu endereço blindado</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="41" />
+        <location filename="../src/privatecovenantwidget.cpp" line="41"/>
         <source>Select or load a wallet first.</source>
         <translation>Selecione ou carregue uma carteira primeiro.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="42" />
+        <location filename="../src/privatecovenantwidget.cpp" line="42"/>
         <source>Getting your shielded address…</source>
         <translation>Obtendo seu endereço blindado…</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="47" />
+        <location filename="../src/privatecovenantwidget.cpp" line="47"/>
         <source>Absolute block height, not a duration. Zero permits spending after confirmation.</source>
         <translation>Altura de bloco absoluta, não uma duração. Zero permite o gasto após a confirmação.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="50" />
+        <location filename="../src/privatecovenantwidget.cpp" line="50"/>
         <source>Reserved in the contract. The exact payment outputs cannot be reduced later to raise this fee. Funding fee is additional and estimated by the daemon.</source>
         <translation>Reservado no contrato. As saídas de pagamento exatas não podem ser reduzidas depois para aumentar esta taxa. A taxa de financiamento é adicional e estimada pelo daemon.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="53" />
+        <location filename="../src/privatecovenantwidget.cpp" line="53"/>
         <source>Exact fee paid to fund this contract. If below relay policy, the daemon rejects the transaction without raising the fee.</source>
         <translation>Taxa exata paga para financiar este contrato. Se estiver abaixo da política de retransmissão, o daemon rejeita a transação sem aumentar a taxa.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="62" />
+        <location filename="../src/privatecovenantwidget.cpp" line="62"/>
         <source>Refresh private contracts</source>
         <translation>Atualizar contratos privados</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="69" />
+        <location filename="../src/privatecovenantwidget.cpp" line="69"/>
         <source>Resolve uncertain submission</source>
         <translation>Resolver envio incerto</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="70" />
+        <location filename="../src/privatecovenantwidget.cpp" line="70"/>
         <source>First check transaction history and refresh recovered contracts. The previous transaction may already have reached the network.
 
 Only continue after checking its outcome. This clears the local hold; it does not resubmit anything. A new funding operation creates a new contract and could duplicate a previously accepted payment.</source>
@@ -6366,62 +6366,62 @@ Only continue after checking its outcome. This clears the local hold; it does no
 Só continue depois de verificar o resultado. Isto libera a retenção local; não reenvia nada. Uma nova operação de financiamento cria um novo contrato e poderia duplicar um pagamento aceito anteriormente.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="75" />
+        <location filename="../src/privatecovenantwidget.cpp" line="75"/>
         <source>Cannot save resolution; the hold remains.</source>
         <translation>Não é possível salvar a resolução; a retenção permanece.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="78" />
+        <location filename="../src/privatecovenantwidget.cpp" line="78"/>
         <source>Previous outcome reviewed. Compose a new operation if needed; nothing was resubmitted.</source>
         <translation>Resultado anterior revisado. Componha uma nova operação se necessário; nada foi reenviado.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="110" />
+        <location filename="../src/privatecovenantwidget.cpp" line="110"/>
         <source>Your shielded address is ready.</source>
         <translation>Seu endereço blindado está pronto.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="131" />
+        <location filename="../src/privatecovenantwidget.cpp" line="131"/>
         <source>No transaction ID returned. Outcome uncertain; check recovered contracts before taking further action.</source>
         <translation>Nenhum ID de transação retornado. Resultado incerto; verifique os contratos recuperados antes de tomar outras medidas.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="175" />
+        <location filename="../src/privatecovenantwidget.cpp" line="175"/>
         <source>Review payment</source>
         <translation>Revisar pagamento</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="185" />
+        <location filename="../src/privatecovenantwidget.cpp" line="185"/>
         <source>Enter a contract owner and positive funding and reserved spend fees.</source>
         <translation>Insira um proprietário de contrato e taxas positivas de financiamento e de gasto reservado.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="192" />
+        <location filename="../src/privatecovenantwidget.cpp" line="192"/>
         <source>Complete each recipient row with a positive amount of at most 8 decimals.</source>
         <translation>Preencha cada linha de destinatário com uma quantia positiva de no máximo 8 casas decimais.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="196" />
+        <location filename="../src/privatecovenantwidget.cpp" line="196"/>
         <source>Enter one or two valid payments within the amount range.</source>
         <translation>Insira um ou dois pagamentos válidos dentro da faixa de quantia.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="201" />
+        <location filename="../src/privatecovenantwidget.cpp" line="201"/>
         <source>Review private covenant</source>
         <translation>Revisar covenant privado</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="214" />
+        <location filename="../src/privatecovenantwidget.cpp" line="214"/>
         <source>Review private covenant payment</source>
         <translation>Revisar pagamento de covenant privado</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="221" />
+        <location filename="../src/privatecovenantwidget.cpp" line="221"/>
         <source>Cannot save the operation journal; nothing submitted.</source>
         <translation>Não é possível salvar o diário da operação; nada foi enviado.</translation>
     </message>
     <message>
-        <location filename="../src/privatecovenantwidget.cpp" line="222" />
+        <location filename="../src/privatecovenantwidget.cpp" line="222"/>
         <source>Building and submitting proof. Please wait…</source>
         <translation>Construindo e enviando a prova. Aguarde…</translation>
     </message>
@@ -6429,32 +6429,32 @@ Só continue depois de verificar o resultado. Isto libera a retenção local; n�
 <context>
     <name>QObject</name>
     <message>
-        <location filename="../src/main.cpp" line="1120" />
+        <location filename="../src/main.cpp" line="1120"/>
         <source>Running from Disk Image</source>
         <translation>Executando a partir da imagem de disco</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1121" />
+        <location filename="../src/main.cpp" line="1121"/>
         <source>Dinero is running directly from the disk image.</source>
         <translation>O Dinero está sendo executado diretamente a partir da imagem de disco.</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1150" />
+        <location filename="../src/main.cpp" line="1150"/>
         <source>Port Already in Use</source>
         <translation>Porta já em uso</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1151" />
+        <location filename="../src/main.cpp" line="1151"/>
         <source>Port 20998 is already in use — another Dinero process may be running.</source>
         <translation>A porta 20998 já está em uso — outro processo do Dinero pode estar em execução.</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1274" />
+        <location filename="../src/main.cpp" line="1274"/>
         <source>Incompatible Chain Data</source>
         <translation>Dados da cadeia incompatíveis</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1276" />
+        <location filename="../src/main.cpp" line="1276"/>
         <source>Your chain data is from an older or incompatible version of Dinero.
 
 This can happen after a chain reset or major upgrade. Your wallet will be backed up automatically before wiping.
@@ -6467,18 +6467,18 @@ Isso pode acontecer após uma reinicialização da cadeia ou uma atualização i
 Apagar os dados da cadeia e reiniciar com uma sincronização nova?</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1305" />
-        <location filename="../src/main.cpp" line="1316" />
+        <location filename="../src/main.cpp" line="1305"/>
+        <location filename="../src/main.cpp" line="1316"/>
         <source>Error</source>
         <translation>Erro</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1346" />
+        <location filename="../src/main.cpp" line="1346"/>
         <source>Daemon Failed to Start</source>
         <translation>Falha ao iniciar o daemon</translation>
     </message>
     <message>
-        <location filename="../src/main.cpp" line="1399" />
+        <location filename="../src/main.cpp" line="1399"/>
         <source>Daemon Stopped Unexpectedly</source>
         <translation>O daemon parou inesperadamente</translation>
     </message>
@@ -6486,27 +6486,27 @@ Apagar os dados da cadeia e reiniciar com uma sincronização nova?</translation
 <context>
     <name>RestoreSeedPage</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1159" />
+        <location filename="../src/walletwizard.cpp" line="1159"/>
         <source>Restore Wallet from Seed</source>
         <translation>Restaurar carteira a partir da semente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1160" />
+        <location filename="../src/walletwizard.cpp" line="1160"/>
         <source>Create a named wallet from an existing BIP-39 seed phrase</source>
         <translation>Criar uma carteira nomeada a partir de uma frase semente BIP-39 existente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1165" />
+        <location filename="../src/walletwizard.cpp" line="1165"/>
         <source>⚠️ &lt;b&gt;Recovery only:&lt;/b&gt; Restore creates a new named wallet from your seed phrase.&lt;br&gt;&lt;br&gt;Existing wallet names cannot be overwritten from this wizard.&lt;br&gt;&lt;br&gt;📱 Import from iOS Wallet: enter your 12-word seed phrase below only when migrating/recovering.</source>
         <translation>⚠️ &lt;b&gt;Apenas recuperação:&lt;/b&gt; a restauração cria uma nova carteira nomeada a partir da sua frase semente.&lt;br&gt;&lt;br&gt;Nomes de carteiras existentes não podem ser sobrescritos por este assistente.&lt;br&gt;&lt;br&gt;📱 Importar da carteira iOS: insira sua frase semente de 12 palavras abaixo somente ao migrar/recuperar.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1174" />
+        <location filename="../src/walletwizard.cpp" line="1174"/>
         <source>Enter your seed phrase below (one word per line or all on one line, separated by spaces):</source>
         <translation>Insira sua frase semente abaixo (uma palavra por linha ou todas em uma linha, separadas por espaços):</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1181" />
+        <location filename="../src/walletwizard.cpp" line="1181"/>
         <source>Example:
 abandon ability able about above absent absorb abstract absurd abuse access accident...
 
@@ -6525,62 +6525,62 @@ able
 ...</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1199" />
-        <source>Optional: BIP-39 Passphrase ("25th word")</source>
-        <translation>Opcional: senha BIP-39 ("25ª palavra")</translation>
+        <location filename="../src/walletwizard.cpp" line="1199"/>
+        <source>Optional: BIP-39 Passphrase (&quot;25th word&quot;)</source>
+        <translation>Opcional: senha BIP-39 (&quot;25ª palavra&quot;)</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1202" />
-        <source>Advanced users only. Leave blank if you didn't use a passphrase when creating the wallet.</source>
+        <location filename="../src/walletwizard.cpp" line="1202"/>
+        <source>Advanced users only. Leave blank if you didn&apos;t use a passphrase when creating the wallet.</source>
         <translation>Apenas para usuários avançados. Deixe em branco se você não usou uma senha ao criar a carteira.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1211" />
+        <location filename="../src/walletwizard.cpp" line="1211"/>
         <source>Leave empty if not used</source>
         <translation>Deixe vazio se não for usado</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1215" />
+        <location filename="../src/walletwizard.cpp" line="1215"/>
         <source>Skip BIP39 checksum validation (for recovery of old wallets)</source>
         <translation>Ignorar a validação da soma de verificação BIP39 (para recuperar carteiras antigas)</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1217" />
+        <location filename="../src/walletwizard.cpp" line="1217"/>
         <source>Enable this if your seed phrase was created by an older version of Dinero that may have had a checksum bug.</source>
         <translation>Ative isto se sua frase semente foi criada por uma versão mais antiga do Dinero que pode ter tido um erro na soma de verificação.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1241" />
+        <location filename="../src/walletwizard.cpp" line="1241"/>
         <source>✅ Format looks valid - Full validation on Next &gt;</source>
         <translation>✅ O formato parece válido — validação completa em Avançar &gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1244" />
+        <location filename="../src/walletwizard.cpp" line="1244"/>
         <source>❌ Invalid seed phrase (must be 12/15/18/21/24 valid BIP-39 words)</source>
         <translation>❌ Frase semente inválida (deve ter 12/15/18/21/24 palavras BIP-39 válidas)</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1281" />
+        <location filename="../src/walletwizard.cpp" line="1281"/>
         <source>Wallet Name</source>
         <translation>Nome da carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1282" />
+        <location filename="../src/walletwizard.cpp" line="1282"/>
         <source>Go back and choose a wallet name before restoring.</source>
         <translation>Volte e escolha um nome de carteira antes de restaurar.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1295" />
+        <location filename="../src/walletwizard.cpp" line="1295"/>
         <source>Restore Wallet Confirmation</source>
         <translation>Confirmação de restauração da carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1308" />
+        <location filename="../src/walletwizard.cpp" line="1308"/>
         <source>Invalid Seed</source>
         <translation>Semente inválida</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1309" />
+        <location filename="../src/walletwizard.cpp" line="1309"/>
         <source>The seed phrase you entered is not valid.
 
 Please check that you have entered a valid 12/15/18/21/24-word BIP-39 seed phrase.</source>
@@ -6592,64 +6592,64 @@ Verifique se você inseriu uma frase semente BIP-39 válida de 12/15/18/21/24 pa
 <context>
     <name>SetPasswordPage</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1395" />
+        <location filename="../src/walletwizard.cpp" line="1395"/>
         <source>Encrypt Your Wallet</source>
         <translation>Criptografar sua carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1396" />
+        <location filename="../src/walletwizard.cpp" line="1396"/>
         <source>Set a strong password to encrypt your wallet file</source>
         <translation>Defina uma senha forte para criptografar o arquivo da sua carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1400" />
+        <location filename="../src/walletwizard.cpp" line="1400"/>
         <source>This password encrypts your wallet file using AES-256-GCM with Argon2id key derivation.
-You'll need this password to unlock your wallet and send coins.</source>
+You&apos;ll need this password to unlock your wallet and send coins.</source>
         <translation>Esta senha criptografa o arquivo da sua carteira usando AES-256-GCM com derivação de chave Argon2id.
 Você precisará desta senha para desbloquear sua carteira e enviar moedas.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1410" />
+        <location filename="../src/walletwizard.cpp" line="1410"/>
         <source>Password:</source>
         <translation>Senha:</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1413" />
+        <location filename="../src/walletwizard.cpp" line="1413"/>
         <source>Enter a strong password</source>
         <translation>Insira uma senha forte</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1417" />
+        <location filename="../src/walletwizard.cpp" line="1417"/>
         <source>Confirm:</source>
         <translation>Confirmar:</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1420" />
+        <location filename="../src/walletwizard.cpp" line="1420"/>
         <source>Re-enter password</source>
         <translation>Insira a senha novamente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1432" />
-        <source>⚠️ &lt;b&gt;Important:&lt;/b&gt; If you forget this password, you'll need your seed phrase to restore your wallet.</source>
+        <location filename="../src/walletwizard.cpp" line="1432"/>
+        <source>⚠️ &lt;b&gt;Important:&lt;/b&gt; If you forget this password, you&apos;ll need your seed phrase to restore your wallet.</source>
         <translation>⚠️ &lt;b&gt;Importante:&lt;/b&gt; se você esquecer esta senha, precisará da sua frase semente para restaurar sua carteira.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1457" />
+        <location filename="../src/walletwizard.cpp" line="1457"/>
         <source>✅ Passwords match</source>
         <translation>✅ As senhas coincidem</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1460" />
-        <source>❌ Passwords don't match</source>
+        <location filename="../src/walletwizard.cpp" line="1460"/>
+        <source>❌ Passwords don&apos;t match</source>
         <translation>❌ As senhas não coincidem</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1507" />
+        <location filename="../src/walletwizard.cpp" line="1507"/>
         <source>Weak Password</source>
         <translation>Senha fraca</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1508" />
+        <location filename="../src/walletwizard.cpp" line="1508"/>
         <source>Password must be at least 8 characters long.
 
 For security, use a strong password with letters, numbers, and symbols.</source>
@@ -6658,13 +6658,13 @@ For security, use a strong password with letters, numbers, and symbols.</source>
 Por segurança, use uma senha forte com letras, números e símbolos.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1514" />
+        <location filename="../src/walletwizard.cpp" line="1514"/>
         <source>Password Mismatch</source>
         <translation>Senhas diferentes</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1515" />
-        <source>The passwords you entered don't match.
+        <location filename="../src/walletwizard.cpp" line="1515"/>
+        <source>The passwords you entered don&apos;t match.
 
 Please try again.</source>
         <translation>As senhas que você inseriu não coincidem.
@@ -6675,339 +6675,339 @@ Tente novamente.</translation>
 <context>
     <name>ShieldedWidget</name>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="81" />
+        <location filename="../src/shieldedwidget.cpp" line="81"/>
         <source>Checking shielded pool status…</source>
         <translation>Verificando o estado do pool blindado…</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="91" />
+        <location filename="../src/shieldedwidget.cpp" line="91"/>
         <source>Shielded Balance</source>
         <translation>Saldo blindado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="94" />
+        <location filename="../src/shieldedwidget.cpp" line="94"/>
         <source>Balance:</source>
         <translation>Saldo:</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="98" />
+        <location filename="../src/shieldedwidget.cpp" line="98"/>
         <source>Balance (una):</source>
         <translation>Saldo (una):</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="101" />
+        <location filename="../src/shieldedwidget.cpp" line="101"/>
         <source>Confirmed notes:</source>
         <translation>Notas confirmadas:</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="104" />
+        <location filename="../src/shieldedwidget.cpp" line="104"/>
         <source>Pending notes:</source>
         <translation>Notas pendentes:</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="107" />
+        <location filename="../src/shieldedwidget.cpp" line="107"/>
         <source>Tree size:</source>
         <translation>Tamanho da árvore:</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="111" />
+        <location filename="../src/shieldedwidget.cpp" line="111"/>
         <source>Refresh</source>
         <translation>Atualizar</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="117" />
+        <location filename="../src/shieldedwidget.cpp" line="117"/>
         <source>Receive Address</source>
         <translation>Endereço de recebimento</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="130" />
+        <location filename="../src/shieldedwidget.cpp" line="130"/>
         <source>Copy</source>
         <translation>Copiar</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="133" />
+        <location filename="../src/shieldedwidget.cpp" line="133"/>
         <source>New (j+1)</source>
         <translation>Novo (j+1)</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="140" />
+        <location filename="../src/shieldedwidget.cpp" line="140"/>
         <source>Issued addresses:</source>
         <translation>Endereços emitidos:</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="161" />
+        <location filename="../src/shieldedwidget.cpp" line="161"/>
         <source>Shield (transparent → shielded)</source>
         <translation>Blindar (transparente → blindado)</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="164" />
-        <location filename="../src/shieldedwidget.cpp" line="196" />
+        <location filename="../src/shieldedwidget.cpp" line="164"/>
+        <location filename="../src/shieldedwidget.cpp" line="196"/>
         <source>Amount (DIN):</source>
         <translation>Quantia (DIN):</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="168" />
-        <location filename="../src/shieldedwidget.cpp" line="210" />
-        <location filename="../src/shieldedwidget.cpp" line="247" />
+        <location filename="../src/shieldedwidget.cpp" line="168"/>
+        <location filename="../src/shieldedwidget.cpp" line="210"/>
+        <location filename="../src/shieldedwidget.cpp" line="247"/>
         <source>Fee (una):</source>
         <translation>Taxa (una):</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="170" />
-        <location filename="../src/shieldedwidget.cpp" line="212" />
-        <location filename="../src/shieldedwidget.cpp" line="249" />
+        <location filename="../src/shieldedwidget.cpp" line="170"/>
+        <location filename="../src/shieldedwidget.cpp" line="212"/>
+        <location filename="../src/shieldedwidget.cpp" line="249"/>
         <source>Auto-sized</source>
         <translation>Dimensionada automaticamente</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="173" />
-        <location filename="../src/shieldedwidget.cpp" line="623" />
-        <location filename="../src/shieldedwidget.cpp" line="633" />
+        <location filename="../src/shieldedwidget.cpp" line="173"/>
+        <location filename="../src/shieldedwidget.cpp" line="623"/>
+        <location filename="../src/shieldedwidget.cpp" line="633"/>
         <source>Shield</source>
         <translation>Blindar</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="187" />
+        <location filename="../src/shieldedwidget.cpp" line="187"/>
         <source>Send shielded</source>
         <translation>Enviar blindado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="191" />
+        <location filename="../src/shieldedwidget.cpp" line="191"/>
         <source>Recipient:</source>
         <translation>Destinatário:</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="193" />
+        <location filename="../src/shieldedwidget.cpp" line="193"/>
         <source>shielded address</source>
         <translation>endereço blindado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="203" />
+        <location filename="../src/shieldedwidget.cpp" line="203"/>
         <source>Amount (una):</source>
         <translation>Quantia (una):</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="216" />
+        <location filename="../src/shieldedwidget.cpp" line="216"/>
         <source>Memo (≤512B):</source>
         <translation>Memorando (≤512B):</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="218" />
+        <location filename="../src/shieldedwidget.cpp" line="218"/>
         <source>optional UTF-8 memo</source>
         <translation>memorando UTF-8 opcional</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="222" />
-        <location filename="../src/shieldedwidget.cpp" line="685" />
-        <location filename="../src/shieldedwidget.cpp" line="698" />
+        <location filename="../src/shieldedwidget.cpp" line="222"/>
+        <location filename="../src/shieldedwidget.cpp" line="685"/>
+        <location filename="../src/shieldedwidget.cpp" line="698"/>
         <source>Send</source>
         <translation>Enviar</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="236" />
+        <location filename="../src/shieldedwidget.cpp" line="236"/>
         <source>Unshield note (shielded → transparent)</source>
         <translation>Desblindar nota (blindado → transparente)</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="240" />
+        <location filename="../src/shieldedwidget.cpp" line="240"/>
         <source>Minimum note (DIN):</source>
         <translation>Nota mínima (DIN):</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="243" />
+        <location filename="../src/shieldedwidget.cpp" line="243"/>
         <source>The daemon selects the smallest confirmed shielded note at least this large. The full selected note minus fee is sent to a fresh wallet Taproot address.</source>
         <translation>O daemon seleciona a menor nota blindada confirmada com pelo menos este tamanho. A nota selecionada completa, menos a taxa, é enviada a um novo endereço Taproot da carteira.</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="252" />
-        <location filename="../src/shieldedwidget.cpp" line="768" />
-        <location filename="../src/shieldedwidget.cpp" line="778" />
+        <location filename="../src/shieldedwidget.cpp" line="252"/>
+        <location filename="../src/shieldedwidget.cpp" line="768"/>
+        <location filename="../src/shieldedwidget.cpp" line="778"/>
         <source>Unshield</source>
         <translation>Desblindar</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="261" />
-        <location filename="../src/shieldedwidget.cpp" line="399" />
+        <location filename="../src/shieldedwidget.cpp" line="261"/>
+        <location filename="../src/shieldedwidget.cpp" line="399"/>
         <source>To: fresh wallet Taproot address generated by daemon at submit time</source>
         <translation>Para: novo endereço Taproot da carteira gerado pelo daemon no momento do envio</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="271" />
+        <location filename="../src/shieldedwidget.cpp" line="271"/>
         <source>Shielded Notes</source>
         <translation>Notas blindadas</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="293" />
+        <location filename="../src/shieldedwidget.cpp" line="293"/>
         <source>Activity</source>
         <translation>Atividade</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="324" />
+        <location filename="../src/shieldedwidget.cpp" line="324"/>
         <source>✅ Private payments enabled by the daemon</source>
         <translation>✅ Pagamentos privados habilitados pelo daemon</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="329" />
+        <location filename="../src/shieldedwidget.cpp" line="329"/>
         <source>🔒 Wallet is locked — unlock wallet to continue with private payments.</source>
         <translation>🔒 A carteira está bloqueada — desbloqueie-a para continuar com pagamentos privados.</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="617" />
-        <location filename="../src/shieldedwidget.cpp" line="679" />
-        <location filename="../src/shieldedwidget.cpp" line="762" />
+        <location filename="../src/shieldedwidget.cpp" line="617"/>
+        <location filename="../src/shieldedwidget.cpp" line="679"/>
+        <location filename="../src/shieldedwidget.cpp" line="762"/>
         <source>Wallet is locked — unlock wallet to continue.</source>
         <translation>A carteira está bloqueada — desbloqueie-a para continuar.</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="624" />
-        <location filename="../src/shieldedwidget.cpp" line="686" />
-        <location filename="../src/shieldedwidget.cpp" line="769" />
+        <location filename="../src/shieldedwidget.cpp" line="624"/>
+        <location filename="../src/shieldedwidget.cpp" line="686"/>
+        <location filename="../src/shieldedwidget.cpp" line="769"/>
         <source>Previous uncertain attempt cleared — review before submitting again.</source>
         <translation>Tentativa incerta anterior descartada — revise antes de enviar novamente.</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="632" />
+        <location filename="../src/shieldedwidget.cpp" line="632"/>
         <source>ready for a new shield operation</source>
         <translation>pronto para uma nova operação de blindagem</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="640" />
-        <location filename="../src/shieldedwidget.cpp" line="785" />
+        <location filename="../src/shieldedwidget.cpp" line="640"/>
+        <location filename="../src/shieldedwidget.cpp" line="785"/>
         <source>invalid amount</source>
         <translation>quantia inválida</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="648" />
-        <location filename="../src/shieldedwidget.cpp" line="723" />
-        <location filename="../src/shieldedwidget.cpp" line="793" />
+        <location filename="../src/shieldedwidget.cpp" line="648"/>
+        <location filename="../src/shieldedwidget.cpp" line="723"/>
+        <location filename="../src/shieldedwidget.cpp" line="793"/>
         <source>invalid fee</source>
         <translation>taxa inválida</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="654" />
+        <location filename="../src/shieldedwidget.cpp" line="654"/>
         <source>Review Shield Operation</source>
         <translation>Revisar operação de blindagem</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="663" />
-        <location filename="../src/shieldedwidget.cpp" line="738" />
-        <location filename="../src/shieldedwidget.cpp" line="809" />
+        <location filename="../src/shieldedwidget.cpp" line="663"/>
+        <location filename="../src/shieldedwidget.cpp" line="738"/>
+        <location filename="../src/shieldedwidget.cpp" line="809"/>
         <source>could not persist authorization; nothing submitted</source>
         <translation>não foi possível persistir a autorização; nada foi enviado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="670" />
-        <location filename="../src/shieldedwidget.cpp" line="753" />
-        <location filename="../src/shieldedwidget.cpp" line="816" />
+        <location filename="../src/shieldedwidget.cpp" line="670"/>
+        <location filename="../src/shieldedwidget.cpp" line="753"/>
+        <location filename="../src/shieldedwidget.cpp" line="816"/>
         <source>proving and submitting…</source>
         <translation>provando e enviando…</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="697" />
+        <location filename="../src/shieldedwidget.cpp" line="697"/>
         <source>ready for a new private payment</source>
         <translation>pronto para um novo pagamento privado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="705" />
+        <location filename="../src/shieldedwidget.cpp" line="705"/>
         <source>enter recipient address</source>
         <translation>insira o endereço do destinatário</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="710" />
+        <location filename="../src/shieldedwidget.cpp" line="710"/>
         <source>recipient is not a valid address for the active network</source>
         <translation>o destinatário não é um endereço válido para a rede ativa</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="716" />
+        <location filename="../src/shieldedwidget.cpp" line="716"/>
         <source>invalid amount_una</source>
         <translation>amount_una inválido</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="730" />
+        <location filename="../src/shieldedwidget.cpp" line="730"/>
         <source>Review Private Payment</source>
         <translation>Revisar pagamento privado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="742" />
+        <location filename="../src/shieldedwidget.cpp" line="742"/>
         <source>could not persist submission state; nothing submitted</source>
         <translation>não foi possível persistir o estado do envio; nada foi enviado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="777" />
+        <location filename="../src/shieldedwidget.cpp" line="777"/>
         <source>ready for a new unshield operation</source>
         <translation>pronto para uma nova operação de desblindagem</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="799" />
+        <location filename="../src/shieldedwidget.cpp" line="799"/>
         <source>Review Unshield Operation</source>
         <translation>Revisar operação de desblindagem</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="933" />
+        <location filename="../src/shieldedwidget.cpp" line="933"/>
         <source>New Shield Operation</source>
         <translation>Nova operação de blindagem</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="985" />
+        <location filename="../src/shieldedwidget.cpp" line="985"/>
         <source>New Unshield Operation</source>
         <translation>Nova operação de desblindagem</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1038" />
+        <location filename="../src/shieldedwidget.cpp" line="1038"/>
         <source>outcome uncertain — refresh notes and transaction history before retrying</source>
         <translation>resultado incerto — atualize as notas e o histórico de transações antes de tentar novamente</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1043" />
+        <location filename="../src/shieldedwidget.cpp" line="1043"/>
         <source>outcome uncertain — inspect transaction history before starting another shield</source>
         <translation>resultado incerto — inspecione o histórico de transações antes de iniciar outra blindagem</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1048" />
+        <location filename="../src/shieldedwidget.cpp" line="1048"/>
         <source>outcome uncertain — inspect notes and transaction history before retrying</source>
         <translation>resultado incerto — inspecione as notas e o histórico de transações antes de tentar novamente</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1064" />
-        <location filename="../src/shieldedwidget.cpp" line="1076" />
-        <location filename="../src/shieldedwidget.cpp" line="1107" />
-        <location filename="../src/shieldedwidget.cpp" line="1135" />
-        <location filename="../src/shieldedwidget.cpp" line="1205" />
+        <location filename="../src/shieldedwidget.cpp" line="1064"/>
+        <location filename="../src/shieldedwidget.cpp" line="1076"/>
+        <location filename="../src/shieldedwidget.cpp" line="1107"/>
+        <location filename="../src/shieldedwidget.cpp" line="1135"/>
+        <location filename="../src/shieldedwidget.cpp" line="1205"/>
         <source>Review and Retry</source>
         <translation>Revisar e tentar novamente</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1088" />
-        <location filename="../src/shieldedwidget.cpp" line="1147" />
-        <location filename="../src/shieldedwidget.cpp" line="1154" />
+        <location filename="../src/shieldedwidget.cpp" line="1088"/>
+        <location filename="../src/shieldedwidget.cpp" line="1147"/>
+        <location filename="../src/shieldedwidget.cpp" line="1154"/>
         <source>Proving and submitting…</source>
         <translation>Provando e enviando…</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1108" />
-        <location filename="../src/shieldedwidget.cpp" line="1138" />
+        <location filename="../src/shieldedwidget.cpp" line="1108"/>
+        <location filename="../src/shieldedwidget.cpp" line="1138"/>
         <source>New Private Payment</source>
         <translation>Novo pagamento privado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1130" />
-        <location filename="../src/shieldedwidget.cpp" line="1200" />
+        <location filename="../src/shieldedwidget.cpp" line="1130"/>
+        <location filename="../src/shieldedwidget.cpp" line="1200"/>
         <source>Review Outcome</source>
         <translation>Revisar resultado</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1131" />
-        <location filename="../src/shieldedwidget.cpp" line="1201" />
+        <location filename="../src/shieldedwidget.cpp" line="1131"/>
+        <location filename="../src/shieldedwidget.cpp" line="1201"/>
         <source>Previous outcome is uncertain — inspect notes and transaction history, then click Review Outcome to clear this warning. Nothing will be sent by that click.</source>
         <translation>O resultado anterior é incerto — inspecione as notas e o histórico de transações e clique em Revisar resultado para descartar este aviso. Esse clique não envia nada.</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1136" />
+        <location filename="../src/shieldedwidget.cpp" line="1136"/>
         <source>previous private payment was rejected; review before explicit retry</source>
         <translation>o pagamento privado anterior foi rejeitado; revise antes de tentar novamente de forma explícita</translation>
     </message>
     <message>
-        <location filename="../src/shieldedwidget.cpp" line="1206" />
+        <location filename="../src/shieldedwidget.cpp" line="1206"/>
         <source>previous operation was rejected; review before retrying</source>
         <translation>a operação anterior foi rejeitada; revise antes de tentar novamente</translation>
     </message>
@@ -7015,211 +7015,211 @@ Tente novamente.</translation>
 <context>
     <name>VaultPanel</name>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="152" />
+        <location filename="../src/vaultpanel.cpp" line="152"/>
         <source>Last request: —</source>
         <translation>Última solicitação: —</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="164" />
-        <source>&lt;span style='color:#d8a37b;'&gt;rebinding to active wallet…&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;revinculando à carteira ativa…&lt;/span&gt;</translation>
+        <location filename="../src/vaultpanel.cpp" line="164"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;rebinding to active wallet…&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;revinculando à carteira ativa…&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="214" />
+        <location filename="../src/vaultpanel.cpp" line="214"/>
         <source>&lt;h2&gt;🏦 Liquidity Vault&lt;/h2&gt;</source>
         <translation>&lt;h2&gt;🏦 Cofre de liquidez&lt;/h2&gt;</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="215" />
+        <location filename="../src/vaultpanel.cpp" line="215"/>
         <source>🔄 Refresh</source>
         <translation>🔄 Atualizar</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="222" />
-        <source>Custodial deposit / withdrawal ledger backed by the daemon's Track-C vault service. Distinct from on-chain script vaults (see Contracts tab). When the daemon starts with an active wallet and no vault address configured, it auto-binds to your wallet's primary address and tracks deposits there; credits open at K=10 confirmations, settle at K=20. This is a separate vault ledger—not your normal wallet balance. Only new payments received at the Vault Deposit Address after binding are credited; existing wallet funds are never imported automatically.</source>
+        <location filename="../src/vaultpanel.cpp" line="222"/>
+        <source>Custodial deposit / withdrawal ledger backed by the daemon&apos;s Track-C vault service. Distinct from on-chain script vaults (see Contracts tab). When the daemon starts with an active wallet and no vault address configured, it auto-binds to your wallet&apos;s primary address and tracks deposits there; credits open at K=10 confirmations, settle at K=20. This is a separate vault ledger—not your normal wallet balance. Only new payments received at the Vault Deposit Address after binding are credited; existing wallet funds are never imported automatically.</source>
         <translation>Livro de depósitos/saques sob custódia, suportado pelo serviço de cofre Track-C do daemon. Diferente dos cofres de script na cadeia (veja a aba Contratos). Quando o daemon inicia com uma carteira ativa e nenhum endereço de cofre configurado, ele se vincula automaticamente ao endereço principal da sua carteira e rastreia os depósitos ali; os créditos abrem em K=10 confirmações e liquidam em K=20. Este é um livro de cofre separado — não é o saldo normal da sua carteira. Apenas os novos pagamentos recebidos no endereço de depósito do cofre após a vinculação são creditados; os fundos existentes da carteira nunca são importados automaticamente.</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="237" />
+        <location filename="../src/vaultpanel.cpp" line="237"/>
         <source>Vault Summary</source>
         <translation>Resumo do cofre</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="239" />
+        <location filename="../src/vaultpanel.cpp" line="239"/>
         <source>unknown</source>
         <translation>desconhecido</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="240" />
+        <location filename="../src/vaultpanel.cpp" line="240"/>
         <source>connecting…</source>
         <translation>conectando…</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="241" />
-        <location filename="../src/vaultpanel.cpp" line="244" />
-        <location filename="../src/vaultpanel.cpp" line="245" />
-        <location filename="../src/vaultpanel.cpp" line="246" />
-        <location filename="../src/vaultpanel.cpp" line="247" />
-        <location filename="../src/vaultpanel.cpp" line="248" />
-        <location filename="../src/vaultpanel.cpp" line="269" />
-        <location filename="../src/vaultpanel.cpp" line="270" />
-        <location filename="../src/vaultpanel.cpp" line="271" />
-        <location filename="../src/vaultpanel.cpp" line="272" />
-        <location filename="../src/vaultpanel.cpp" line="273" />
-        <location filename="../src/vaultpanel.cpp" line="331" />
+        <location filename="../src/vaultpanel.cpp" line="241"/>
+        <location filename="../src/vaultpanel.cpp" line="244"/>
+        <location filename="../src/vaultpanel.cpp" line="245"/>
+        <location filename="../src/vaultpanel.cpp" line="246"/>
+        <location filename="../src/vaultpanel.cpp" line="247"/>
+        <location filename="../src/vaultpanel.cpp" line="248"/>
+        <location filename="../src/vaultpanel.cpp" line="269"/>
+        <location filename="../src/vaultpanel.cpp" line="270"/>
+        <location filename="../src/vaultpanel.cpp" line="271"/>
+        <location filename="../src/vaultpanel.cpp" line="272"/>
+        <location filename="../src/vaultpanel.cpp" line="273"/>
+        <location filename="../src/vaultpanel.cpp" line="331"/>
         <source>–</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="249" />
+        <location filename="../src/vaultpanel.cpp" line="249"/>
         <source>Runtime:</source>
         <translation>Tempo de execução:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="251" />
+        <location filename="../src/vaultpanel.cpp" line="251"/>
         <source>Connection:</source>
         <translation>Conexão:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="253" />
+        <location filename="../src/vaultpanel.cpp" line="253"/>
         <source>Withdrawal queue:</source>
         <translation>Fila de saques:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="255" />
+        <location filename="../src/vaultpanel.cpp" line="255"/>
         <source>Settling:</source>
         <translation>Liquidando:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="257" />
+        <location filename="../src/vaultpanel.cpp" line="257"/>
         <source>Vault Deposit Address:</source>
         <translation>Endereço de depósito do cofre:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="262" />
+        <location filename="../src/vaultpanel.cpp" line="262"/>
         <source>Vault Balance</source>
         <translation>Saldo do cofre</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="296" />
+        <location filename="../src/vaultpanel.cpp" line="296"/>
         <source>Withdrawal</source>
         <translation>Saque</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="308" />
+        <location filename="../src/vaultpanel.cpp" line="308"/>
         <source>din1p… Taproot address</source>
         <translation>din1p… endereço Taproot</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="314" />
+        <location filename="../src/vaultpanel.cpp" line="314"/>
         <source>Review Withdrawal</source>
         <translation>Revisar saque</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="320" />
+        <location filename="../src/vaultpanel.cpp" line="320"/>
         <source>Last request: –</source>
         <translation>Última solicitação: –</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="325" />
+        <location filename="../src/vaultpanel.cpp" line="325"/>
         <source>Status of:</source>
         <translation>Estado de:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="327" />
+        <location filename="../src/vaultpanel.cpp" line="327"/>
         <source>withdrawal_id</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="329" />
+        <location filename="../src/vaultpanel.cpp" line="329"/>
         <source>Check</source>
         <translation>Verificar</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="337" />
+        <location filename="../src/vaultpanel.cpp" line="337"/>
         <source>Advanced / Operator Details</source>
         <translation>Detalhes avançados / de operador</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="347" />
+        <location filename="../src/vaultpanel.cpp" line="347"/>
         <source>Manual withdrawal status lookup:</source>
         <translation>Consulta manual do estado do saque:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="350" />
+        <location filename="../src/vaultpanel.cpp" line="350"/>
         <source>Activity:</source>
         <translation>Atividade:</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="422" />
+        <location filename="../src/vaultpanel.cpp" line="422"/>
         <source>Invalid Vault Amount</source>
         <translation>Quantia do cofre inválida</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="423" />
+        <location filename="../src/vaultpanel.cpp" line="423"/>
         <source>Enter a positive DIN amount with no more than 8 decimal places.</source>
         <translation>Insira uma quantia positiva em DIN com no máximo 8 casas decimais.</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="427" />
+        <location filename="../src/vaultpanel.cpp" line="427"/>
         <source>Invalid Vault Destination</source>
         <translation>Destino do cofre inválido</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="428" />
+        <location filename="../src/vaultpanel.cpp" line="428"/>
         <source>Enter a Taproot Dinero address beginning with din1p…</source>
         <translation>Insira um endereço Taproot do Dinero que comece com din1p…</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="432" />
+        <location filename="../src/vaultpanel.cpp" line="432"/>
         <source>Insufficient Vault Balance</source>
         <translation>Saldo insuficiente no cofre</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="439" />
+        <location filename="../src/vaultpanel.cpp" line="439"/>
         <source>Review Vault Withdrawal</source>
         <translation>Revisar saque do cofre</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="473" />
-        <source>&lt;span style='color:#7bd88f;'&gt;active&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#7bd88f;'&gt;ativo&lt;/span&gt;</translation>
+        <location filename="../src/vaultpanel.cpp" line="473"/>
+        <source>&lt;span style=&apos;color:#7bd88f;&apos;&gt;active&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#7bd88f;&apos;&gt;ativo&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="517" />
-        <source>&lt;span style='color:#d8a37b;'&gt;not bound&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;não vinculado&lt;/span&gt;</translation>
+        <location filename="../src/vaultpanel.cpp" line="517"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;not bound&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;não vinculado&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="644" />
-        <source>&lt;span style='color:#d8a37b;'&gt;waiting for daemon…&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;aguardando o daemon…&lt;/span&gt;</translation>
+        <location filename="../src/vaultpanel.cpp" line="644"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;waiting for daemon…&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;aguardando o daemon…&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="647" />
-        <source>&lt;span style='color:#d8a37b;'&gt;starting…&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;iniciando…&lt;/span&gt;</translation>
+        <location filename="../src/vaultpanel.cpp" line="647"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;starting…&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;iniciando…&lt;/span&gt;</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="654" />
-        <source>&lt;span style='color:#d8a37b;'&gt;disabled&lt;/span&gt; (set vault=1)</source>
-        <translation>&lt;span style='color:#d8a37b;'&gt;desativado&lt;/span&gt; (defina vault=1)</translation>
+        <location filename="../src/vaultpanel.cpp" line="654"/>
+        <source>&lt;span style=&apos;color:#d8a37b;&apos;&gt;disabled&lt;/span&gt; (set vault=1)</source>
+        <translation>&lt;span style=&apos;color:#d8a37b;&apos;&gt;desativado&lt;/span&gt; (defina vault=1)</translation>
     </message>
     <message>
-        <location filename="../src/vaultpanel.cpp" line="729" />
-        <source>&lt;span style='color:#7bd88f;'&gt;connected&lt;/span&gt;</source>
-        <translation>&lt;span style='color:#7bd88f;'&gt;conectado&lt;/span&gt;</translation>
+        <location filename="../src/vaultpanel.cpp" line="729"/>
+        <source>&lt;span style=&apos;color:#7bd88f;&apos;&gt;connected&lt;/span&gt;</source>
+        <translation>&lt;span style=&apos;color:#7bd88f;&apos;&gt;conectado&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
     <name>WalletWizard</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1743" />
+        <location filename="../src/walletwizard.cpp" line="1743"/>
         <source>Dinero Wallet Setup</source>
         <translation>Configuração da carteira Dinero</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="1808" />
+        <location filename="../src/walletwizard.cpp" line="1808"/>
         <source>Wallet Setup Rollback Failed</source>
         <translation>Falha ao reverter a configuração da carteira</translation>
     </message>
@@ -7227,69 +7227,69 @@ Tente novamente.</translation>
 <context>
     <name>WelcomePage</name>
     <message>
-        <location filename="../src/walletwizard.cpp" line="431" />
+        <location filename="../src/walletwizard.cpp" line="431"/>
         <source>Welcome to Dinero Wallet</source>
         <translation>Bem-vindo à carteira Dinero</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="432" />
+        <location filename="../src/walletwizard.cpp" line="432"/>
         <source>Create a new wallet or restore an existing one</source>
         <translation>Crie uma nova carteira ou restaure uma existente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="436" />
+        <location filename="../src/walletwizard.cpp" line="436"/>
         <source>&lt;p&gt;Your Dinero wallet will be protected with:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;12-word BIP-39 seed phrase&lt;/b&gt; (industry standard, 128-bit security)&lt;/li&gt;&lt;li&gt;&lt;b&gt;AES-256-GCM encryption&lt;/b&gt; with Argon2id key derivation&lt;/li&gt;&lt;li&gt;&lt;b&gt;HD wallet&lt;/b&gt; (BIP-32/86 Taproot) for unlimited addresses&lt;/li&gt;&lt;/ul&gt;</source>
         <translation>&lt;p&gt;Sua carteira Dinero será protegida com:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;frase semente BIP-39 de 12 palavras&lt;/b&gt; (padrão do setor, segurança de 128 bits)&lt;/li&gt;&lt;li&gt;&lt;b&gt;criptografia AES-256-GCM&lt;/b&gt; com derivação de chave Argon2id&lt;/li&gt;&lt;li&gt;&lt;b&gt;carteira HD&lt;/b&gt; (BIP-32/86 Taproot) para endereços ilimitados&lt;/li&gt;&lt;/ul&gt;</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="447" />
+        <location filename="../src/walletwizard.cpp" line="447"/>
         <source>Choose an option:</source>
         <translation>Escolha uma opção:</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="451" />
+        <location filename="../src/walletwizard.cpp" line="451"/>
         <source>🆕 Create a new wallet</source>
         <translation>🆕 Criar uma nova carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="452" />
+        <location filename="../src/walletwizard.cpp" line="452"/>
         <source>♻️ Emergency restore from seed phrase</source>
         <translation>♻️ Restauração de emergência a partir da frase semente</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="453" />
+        <location filename="../src/walletwizard.cpp" line="453"/>
         <source>🔑 Import Taproot descriptor (advanced)</source>
         <translation>🔑 Importar descritor Taproot (avançado)</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="465" />
+        <location filename="../src/walletwizard.cpp" line="465"/>
         <source>Wallet name</source>
         <translation>Nome da carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="469" />
-        <location filename="../src/walletwizard.cpp" line="470" />
+        <location filename="../src/walletwizard.cpp" line="469"/>
+        <location filename="../src/walletwizard.cpp" line="470"/>
         <source>default</source>
         <translation>padrão</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="475" />
-        <location filename="../src/walletwizard.cpp" line="564" />
+        <location filename="../src/walletwizard.cpp" line="475"/>
+        <location filename="../src/walletwizard.cpp" line="564"/>
         <source>Balances, addresses, send history, and advisory state stay scoped to this wallet only. Existing wallet names cannot be overwritten from the setup wizard.</source>
         <translation>Saldos, endereços, histórico de envios e estado consultivo permanecem restritos somente a esta carteira. Nomes de carteiras existentes não podem ser sobrescritos pelo assistente de configuração.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="554" />
+        <location filename="../src/walletwizard.cpp" line="554"/>
         <source>Taproot descriptor import uses the currently active wallet. Load a wallet first if needed.</source>
         <translation>A importação de descritor Taproot usa a carteira ativa no momento. Carregue uma carteira primeiro, se necessário.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="603" />
+        <location filename="../src/walletwizard.cpp" line="603"/>
         <source>Wallet Required</source>
         <translation>Carteira obrigatória</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="604" />
+        <location filename="../src/walletwizard.cpp" line="604"/>
         <source>Taproot descriptor import uses the currently loaded wallet.
 
 Load a wallet first, or cancel this setup flow and reopen it when you are ready to import.</source>
@@ -7298,22 +7298,22 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
 Carregue uma carteira primeiro ou cancele esta configuração e reabra-a quando estiver pronto para importar.</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="615" />
+        <location filename="../src/walletwizard.cpp" line="615"/>
         <source>Wallet Name</source>
         <translation>Nome da carteira</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="629" />
+        <location filename="../src/walletwizard.cpp" line="629"/>
         <source>Wallet Already Provisioned</source>
         <translation>Carteira já provisionada</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="650" />
+        <location filename="../src/walletwizard.cpp" line="650"/>
         <source>Wallet Already Exists</source>
         <translation>A carteira já existe</translation>
     </message>
     <message>
-        <location filename="../src/walletwizard.cpp" line="667" />
+        <location filename="../src/walletwizard.cpp" line="667"/>
         <source>Unload Current Wallet</source>
         <translation>Descarregar a carteira atual</translation>
     </message>
@@ -7321,45 +7321,45 @@ Carregue uma carteira primeiro ou cancele esta configuração e reabra-a quando 
 <context>
     <name>dinero::DebugConsole</name>
     <message>
-        <location filename="../src/debugconsole.cpp" line="39" />
-        <location filename="../src/debugconsole.cpp" line="96" />
-        <location filename="../src/debugconsole.cpp" line="153" />
+        <location filename="../src/debugconsole.cpp" line="39"/>
+        <location filename="../src/debugconsole.cpp" line="96"/>
+        <location filename="../src/debugconsole.cpp" line="153"/>
         <source>Log Level:</source>
         <translation>Nível de registro:</translation>
     </message>
     <message>
-        <location filename="../src/debugconsole.cpp" line="47" />
-        <location filename="../src/debugconsole.cpp" line="104" />
-        <location filename="../src/debugconsole.cpp" line="161" />
+        <location filename="../src/debugconsole.cpp" line="47"/>
+        <location filename="../src/debugconsole.cpp" line="104"/>
+        <location filename="../src/debugconsole.cpp" line="161"/>
         <source>Pause Scroll</source>
         <translation>Pausar a rolagem</translation>
     </message>
     <message>
-        <location filename="../src/debugconsole.cpp" line="49" />
-        <location filename="../src/debugconsole.cpp" line="106" />
-        <location filename="../src/debugconsole.cpp" line="163" />
+        <location filename="../src/debugconsole.cpp" line="49"/>
+        <location filename="../src/debugconsole.cpp" line="106"/>
+        <location filename="../src/debugconsole.cpp" line="163"/>
         <source>Clear</source>
         <translation>Limpar</translation>
     </message>
     <message>
-        <location filename="../src/debugconsole.cpp" line="50" />
-        <location filename="../src/debugconsole.cpp" line="107" />
-        <location filename="../src/debugconsole.cpp" line="164" />
+        <location filename="../src/debugconsole.cpp" line="50"/>
+        <location filename="../src/debugconsole.cpp" line="107"/>
+        <location filename="../src/debugconsole.cpp" line="164"/>
         <source>Export...</source>
         <translation>Exportar...</translation>
     </message>
     <message>
-        <location filename="../src/debugconsole.cpp" line="204" />
+        <location filename="../src/debugconsole.cpp" line="204"/>
         <source>Debug Console - Live Logs</source>
         <translation>Console de depuração — registros ao vivo</translation>
     </message>
     <message>
-        <location filename="../src/debugconsole.cpp" line="375" />
+        <location filename="../src/debugconsole.cpp" line="375"/>
         <source>Export Failed</source>
         <translation>Falha na exportação</translation>
     </message>
     <message>
-        <location filename="../src/debugconsole.cpp" line="384" />
+        <location filename="../src/debugconsole.cpp" line="384"/>
         <source>Export Successful</source>
         <translation>Exportação bem-sucedida</translation>
     </message>
@@ -7367,398 +7367,398 @@ Carregue uma carteira primeiro ou cancele esta configuração e reabra-a quando 
 <context>
     <name>dinero::LightningWidget</name>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="49" />
+        <location filename="../src/lightningwidget.cpp" line="49"/>
         <source>⚡ Lightning Network</source>
         <translation>⚡ Lightning Network</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="73" />
+        <location filename="../src/lightningwidget.cpp" line="73"/>
         <source>Channel Statistics</source>
         <translation>Estatísticas dos canais</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="77" />
-        <location filename="../src/lightningwidget.cpp" line="78" />
-        <location filename="../src/lightningwidget.cpp" line="79" />
-        <location filename="../src/lightningwidget.cpp" line="415" />
-        <location filename="../src/lightningwidget.cpp" line="416" />
+        <location filename="../src/lightningwidget.cpp" line="77"/>
+        <location filename="../src/lightningwidget.cpp" line="78"/>
+        <location filename="../src/lightningwidget.cpp" line="79"/>
+        <location filename="../src/lightningwidget.cpp" line="415"/>
+        <location filename="../src/lightningwidget.cpp" line="416"/>
         <source>0 DIN</source>
-        <translation type="unfinished" />
+        <translation type="unfinished"></translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="81" />
+        <location filename="../src/lightningwidget.cpp" line="81"/>
         <source>&lt;b&gt;Active Channels:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Canais ativos:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="83" />
+        <location filename="../src/lightningwidget.cpp" line="83"/>
         <source>&lt;b&gt;Total Capacity:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Capacidade total:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="85" />
+        <location filename="../src/lightningwidget.cpp" line="85"/>
         <source>&lt;b&gt;Local Balance:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Saldo local:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="87" />
+        <location filename="../src/lightningwidget.cpp" line="87"/>
         <source>&lt;b&gt;Remote Balance:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Saldo remoto:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="106" />
+        <location filename="../src/lightningwidget.cpp" line="106"/>
         <source>Open New Channel</source>
         <translation>Abrir novo canal</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="110" />
+        <location filename="../src/lightningwidget.cpp" line="110"/>
         <source>Peer Node ID (02abcdef...)</source>
         <translation>ID do nó par (02abcdef...)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="112" />
+        <location filename="../src/lightningwidget.cpp" line="112"/>
         <source>Capacity (e.g. 1.0 for 1 DIN)</source>
         <translation>Capacidade (ex.: 1,0 para 1 DIN)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="114" />
+        <location filename="../src/lightningwidget.cpp" line="114"/>
         <source>Push amount (optional, 0.0)</source>
         <translation>Quantia de push (opcional, 0,0)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="119" />
+        <location filename="../src/lightningwidget.cpp" line="119"/>
         <source>Peer Node ID:</source>
         <translation>ID do nó par:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="121" />
+        <location filename="../src/lightningwidget.cpp" line="121"/>
         <source>Capacity (DIN):</source>
         <translation>Capacidade (DIN):</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="123" />
+        <location filename="../src/lightningwidget.cpp" line="123"/>
         <source>Push Amount (DIN):</source>
         <translation>Quantia de push (DIN):</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="125" />
+        <location filename="../src/lightningwidget.cpp" line="125"/>
         <source>Min Confirmations:</source>
         <translation>Confirmações mínimas:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="133" />
+        <location filename="../src/lightningwidget.cpp" line="133"/>
         <source>Open Channel</source>
         <translation>Abrir canal</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="134" />
+        <location filename="../src/lightningwidget.cpp" line="134"/>
         <source>Close Selected Channel</source>
         <translation>Fechar o canal selecionado</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="135" />
+        <location filename="../src/lightningwidget.cpp" line="135"/>
         <source>Force Close (Emergency)</source>
         <translation>Fechamento forçado (emergência)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="136" />
-        <location filename="../src/lightningwidget.cpp" line="268" />
-        <location filename="../src/lightningwidget.cpp" line="304" />
-        <location filename="../src/lightningwidget.cpp" line="361" />
-        <location filename="../src/lightningwidget.cpp" line="475" />
+        <location filename="../src/lightningwidget.cpp" line="136"/>
+        <location filename="../src/lightningwidget.cpp" line="268"/>
+        <location filename="../src/lightningwidget.cpp" line="304"/>
+        <location filename="../src/lightningwidget.cpp" line="361"/>
+        <location filename="../src/lightningwidget.cpp" line="475"/>
         <source>🔄 Refresh</source>
         <translation>🔄 Atualizar</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="160" />
-        <location filename="../src/lightningwidget.cpp" line="180" />
+        <location filename="../src/lightningwidget.cpp" line="160"/>
+        <location filename="../src/lightningwidget.cpp" line="180"/>
         <source>Create Invoice</source>
         <translation>Criar fatura</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="164" />
+        <location filename="../src/lightningwidget.cpp" line="164"/>
         <source>Amount in DIN (e.g. 0.001)</source>
         <translation>Quantia em DIN (ex.: 0,001)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="166" />
+        <location filename="../src/lightningwidget.cpp" line="166"/>
         <source>Description (e.g. Coffee payment)</source>
         <translation>Descrição (ex.: pagamento do café)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="172" />
+        <location filename="../src/lightningwidget.cpp" line="172"/>
         <source>Amount (DIN):</source>
         <translation>Quantia (DIN):</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="174" />
+        <location filename="../src/lightningwidget.cpp" line="174"/>
         <source>Description:</source>
         <translation>Descrição:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="176" />
+        <location filename="../src/lightningwidget.cpp" line="176"/>
         <source>Expiry:</source>
         <translation>Validade:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="181" />
+        <location filename="../src/lightningwidget.cpp" line="181"/>
         <source>Create Open Invoice (Flexible Amount)</source>
         <translation>Criar fatura aberta (quantia flexível)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="192" />
+        <location filename="../src/lightningwidget.cpp" line="192"/>
         <source>Generated Invoice</source>
         <translation>Fatura gerada</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="201" />
+        <location filename="../src/lightningwidget.cpp" line="201"/>
         <source>Generate QR Code</source>
         <translation>Gerar código QR</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="209" />
+        <location filename="../src/lightningwidget.cpp" line="209"/>
         <source>Invoice will appear here...</source>
         <translation>A fatura aparecerá aqui...</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="210" />
+        <location filename="../src/lightningwidget.cpp" line="210"/>
         <source>📋 Copy Invoice</source>
         <translation>📋 Copiar fatura</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="212" />
+        <location filename="../src/lightningwidget.cpp" line="212"/>
         <source>&lt;b&gt;BOLT 11 Invoice:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Fatura BOLT 11:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="223" />
-        <location filename="../src/lightningwidget.cpp" line="238" />
-        <location filename="../src/lightningwidget.cpp" line="635" />
+        <location filename="../src/lightningwidget.cpp" line="223"/>
+        <location filename="../src/lightningwidget.cpp" line="238"/>
+        <location filename="../src/lightningwidget.cpp" line="635"/>
         <source>Pay Invoice</source>
         <translation>Pagar fatura</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="227" />
+        <location filename="../src/lightningwidget.cpp" line="227"/>
         <source>Paste BOLT 11 invoice here</source>
         <translation>Cole aqui a fatura BOLT 11</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="229" />
+        <location filename="../src/lightningwidget.cpp" line="229"/>
         <source>Custom amount (for open invoices)</source>
         <translation>Quantia personalizada (para faturas abertas)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="231" />
+        <location filename="../src/lightningwidget.cpp" line="231"/>
         <source>Invoice (BOLT 11):</source>
         <translation>Fatura (BOLT 11):</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="233" />
+        <location filename="../src/lightningwidget.cpp" line="233"/>
         <source>Custom Amount:</source>
         <translation>Quantia personalizada:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="237" />
+        <location filename="../src/lightningwidget.cpp" line="237"/>
         <source>Decode Invoice</source>
         <translation>Decodificar fatura</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="249" />
+        <location filename="../src/lightningwidget.cpp" line="249"/>
         <source>Decoded invoice details will appear here...</source>
         <translation>Os detalhes da fatura decodificada aparecerão aqui...</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="250" />
+        <location filename="../src/lightningwidget.cpp" line="250"/>
         <source>Decoded Info:</source>
         <translation>Informações decodificadas:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="258" />
+        <location filename="../src/lightningwidget.cpp" line="258"/>
         <source>&lt;b&gt;Invoice History&lt;/b&gt;</source>
         <translation>&lt;b&gt;Histórico de faturas&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="263" />
-        <location filename="../src/lightningwidget.cpp" line="300" />
+        <location filename="../src/lightningwidget.cpp" line="263"/>
+        <location filename="../src/lightningwidget.cpp" line="300"/>
         <source>Filter:</source>
         <translation>Filtro:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="303" />
+        <location filename="../src/lightningwidget.cpp" line="303"/>
         <source>Cancel Selected Payment</source>
         <translation>Cancelar o pagamento selecionado</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="323" />
+        <location filename="../src/lightningwidget.cpp" line="323"/>
         <source>Payment Details</source>
         <translation>Detalhes do pagamento</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="344" />
-        <location filename="../src/lightningwidget.cpp" line="359" />
+        <location filename="../src/lightningwidget.cpp" line="344"/>
+        <location filename="../src/lightningwidget.cpp" line="359"/>
         <source>Register Watchtower</source>
         <translation>Registrar watchtower</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="348" />
+        <location filename="../src/lightningwidget.cpp" line="348"/>
         <source>Watchtower URL (e.g. wt://watchtower.dinero.com:9911)</source>
         <translation>URL do watchtower (ex.: wt://watchtower.dinero.com:9911)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="350" />
+        <location filename="../src/lightningwidget.cpp" line="350"/>
         <source>Reward per appointment (unas)</source>
         <translation>Recompensa por compromisso (unas)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="353" />
+        <location filename="../src/lightningwidget.cpp" line="353"/>
         <source>Watchtower URL:</source>
         <translation>URL do watchtower:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="355" />
+        <location filename="../src/lightningwidget.cpp" line="355"/>
         <source>Reward (una):</source>
         <translation>Recompensa (una):</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="360" />
+        <location filename="../src/lightningwidget.cpp" line="360"/>
         <source>Unregister Selected</source>
         <translation>Cancelar o registro do selecionado</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="386" />
+        <location filename="../src/lightningwidget.cpp" line="386"/>
         <source>Watchtower Information</source>
         <translation>Informações do watchtower</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="410" />
+        <location filename="../src/lightningwidget.cpp" line="410"/>
         <source>Network Statistics</source>
         <translation>Estatísticas da rede</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="418" />
+        <location filename="../src/lightningwidget.cpp" line="418"/>
         <source>&lt;b&gt;Total Nodes:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Total de nós:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="420" />
+        <location filename="../src/lightningwidget.cpp" line="420"/>
         <source>&lt;b&gt;Total Channels:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Total de canais:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="422" />
+        <location filename="../src/lightningwidget.cpp" line="422"/>
         <source>&lt;b&gt;Network Capacity:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Capacidade da rede:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="424" />
+        <location filename="../src/lightningwidget.cpp" line="424"/>
         <source>&lt;b&gt;Avg Channel Size:&lt;/b&gt;</source>
         <translation>&lt;b&gt;Tamanho médio do canal:&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="431" />
+        <location filename="../src/lightningwidget.cpp" line="431"/>
         <source>Connect to Peer</source>
         <translation>Conectar a um par</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="434" />
+        <location filename="../src/lightningwidget.cpp" line="434"/>
         <source>Node ID@host:port (e.g. 02abc@192.168.1.100:9735)</source>
         <translation>ID do nó@host:porta (ex.: 02abc@192.168.1.100:9735)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="435" />
+        <location filename="../src/lightningwidget.cpp" line="435"/>
         <source>Connect</source>
         <translation>Conectar</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="436" />
+        <location filename="../src/lightningwidget.cpp" line="436"/>
         <source>Disconnect Selected</source>
         <translation>Desconectar o selecionado</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="446" />
-        <location filename="../src/lightningwidget.cpp" line="453" />
+        <location filename="../src/lightningwidget.cpp" line="446"/>
+        <location filename="../src/lightningwidget.cpp" line="453"/>
         <source>Find Route</source>
         <translation>Encontrar rota</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="450" />
+        <location filename="../src/lightningwidget.cpp" line="450"/>
         <source>Destination Node ID</source>
         <translation>ID do nó de destino</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="452" />
+        <location filename="../src/lightningwidget.cpp" line="452"/>
         <source>Amount (DIN)</source>
         <translation>Quantia (DIN)</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="456" />
+        <location filename="../src/lightningwidget.cpp" line="456"/>
         <source>Destination:</source>
         <translation>Destino:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="458" />
+        <location filename="../src/lightningwidget.cpp" line="458"/>
         <source>Amount:</source>
         <translation>Quantia:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="465" />
+        <location filename="../src/lightningwidget.cpp" line="465"/>
         <source>Route:</source>
         <translation>Rota:</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="473" />
+        <location filename="../src/lightningwidget.cpp" line="473"/>
         <source>&lt;b&gt;Network Nodes&lt;/b&gt;</source>
         <translation>&lt;b&gt;Nós da rede&lt;/b&gt;</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="515" />
-        <location filename="../src/lightningwidget.cpp" line="595" />
-        <location filename="../src/lightningwidget.cpp" line="618" />
-        <location filename="../src/lightningwidget.cpp" line="631" />
-        <location filename="../src/lightningwidget.cpp" line="661" />
-        <location filename="../src/lightningwidget.cpp" line="724" />
-        <location filename="../src/lightningwidget.cpp" line="760" />
-        <location filename="../src/lightningwidget.cpp" line="778" />
+        <location filename="../src/lightningwidget.cpp" line="515"/>
+        <location filename="../src/lightningwidget.cpp" line="595"/>
+        <location filename="../src/lightningwidget.cpp" line="618"/>
+        <location filename="../src/lightningwidget.cpp" line="631"/>
+        <location filename="../src/lightningwidget.cpp" line="661"/>
+        <location filename="../src/lightningwidget.cpp" line="724"/>
+        <location filename="../src/lightningwidget.cpp" line="760"/>
+        <location filename="../src/lightningwidget.cpp" line="778"/>
         <source>Invalid Input</source>
         <translation>Entrada inválida</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="515" />
+        <location filename="../src/lightningwidget.cpp" line="515"/>
         <source>Please enter peer node ID and capacity.</source>
         <translation>Insira o ID do nó par e a capacidade.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="522" />
-        <location filename="../src/lightningwidget.cpp" line="602" />
-        <location filename="../src/lightningwidget.cpp" line="785" />
+        <location filename="../src/lightningwidget.cpp" line="522"/>
+        <location filename="../src/lightningwidget.cpp" line="602"/>
+        <location filename="../src/lightningwidget.cpp" line="785"/>
         <source>Invalid Amount</source>
         <translation>Quantia inválida</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="522" />
+        <location filename="../src/lightningwidget.cpp" line="522"/>
         <source>Please enter a valid capacity amount.</source>
         <translation>Insira uma quantia de capacidade válida.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="542" />
-        <location filename="../src/lightningwidget.cpp" line="559" />
-        <location filename="../src/lightningwidget.cpp" line="711" />
-        <location filename="../src/lightningwidget.cpp" line="740" />
+        <location filename="../src/lightningwidget.cpp" line="542"/>
+        <location filename="../src/lightningwidget.cpp" line="559"/>
+        <location filename="../src/lightningwidget.cpp" line="711"/>
+        <location filename="../src/lightningwidget.cpp" line="740"/>
         <source>No Selection</source>
         <translation>Nenhuma seleção</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="542" />
+        <location filename="../src/lightningwidget.cpp" line="542"/>
         <source>Please select a channel to close.</source>
         <translation>Selecione um canal para fechar.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="546" />
+        <location filename="../src/lightningwidget.cpp" line="546"/>
         <source>Close Channel</source>
         <translation>Fechar canal</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="547" />
+        <location filename="../src/lightningwidget.cpp" line="547"/>
         <source>Are you sure you want to close this channel?
 
 This will create a closing transaction on-chain.</source>
@@ -7767,17 +7767,17 @@ This will create a closing transaction on-chain.</source>
 Isso criará uma transação de fechamento na cadeia.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="559" />
+        <location filename="../src/lightningwidget.cpp" line="559"/>
         <source>Please select a channel to force close.</source>
         <translation>Selecione um canal para fechamento forçado.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="563" />
+        <location filename="../src/lightningwidget.cpp" line="563"/>
         <source>Force Close Channel</source>
         <translation>Fechamento forçado do canal</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="564" />
+        <location filename="../src/lightningwidget.cpp" line="564"/>
         <source>⚠️ WARNING: Force closing should only be used in emergencies!
 
 This will broadcast your latest commitment transaction.
@@ -7792,74 +7792,74 @@ Você pode perder fundos se o par tiver um estado mais recente.
 Tem absoluta certeza?</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="595" />
+        <location filename="../src/lightningwidget.cpp" line="595"/>
         <source>Please enter amount and description.</source>
         <translation>Insira a quantia e a descrição.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="602" />
-        <location filename="../src/lightningwidget.cpp" line="785" />
+        <location filename="../src/lightningwidget.cpp" line="602"/>
+        <location filename="../src/lightningwidget.cpp" line="785"/>
         <source>Please enter a valid amount.</source>
         <translation>Insira uma quantia válida.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="618" />
+        <location filename="../src/lightningwidget.cpp" line="618"/>
         <source>Please enter a description.</source>
         <translation>Insira uma descrição.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="631" />
-        <location filename="../src/lightningwidget.cpp" line="661" />
+        <location filename="../src/lightningwidget.cpp" line="631"/>
+        <location filename="../src/lightningwidget.cpp" line="661"/>
         <source>Please enter a BOLT 11 invoice.</source>
         <translation>Insira uma fatura BOLT 11.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="636" />
+        <location filename="../src/lightningwidget.cpp" line="636"/>
         <source>Are you sure you want to pay this invoice?</source>
         <translation>Tem certeza de que deseja pagar esta fatura?</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="671" />
+        <location filename="../src/lightningwidget.cpp" line="671"/>
         <source>No Invoice</source>
         <translation>Nenhuma fatura</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="671" />
+        <location filename="../src/lightningwidget.cpp" line="671"/>
         <source>Create an invoice first.</source>
         <translation>Crie uma fatura primeiro.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="711" />
+        <location filename="../src/lightningwidget.cpp" line="711"/>
         <source>Please select a payment to cancel.</source>
         <translation>Selecione um pagamento para cancelar.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="724" />
+        <location filename="../src/lightningwidget.cpp" line="724"/>
         <source>Please enter watchtower URL.</source>
         <translation>Insira a URL do watchtower.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="740" />
+        <location filename="../src/lightningwidget.cpp" line="740"/>
         <source>Please select a watchtower.</source>
         <translation>Selecione um watchtower.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="760" />
+        <location filename="../src/lightningwidget.cpp" line="760"/>
         <source>Please enter peer address.</source>
         <translation>Insira o endereço do par.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="770" />
+        <location filename="../src/lightningwidget.cpp" line="770"/>
         <source>Not Implemented</source>
         <translation>Não implementado</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="770" />
+        <location filename="../src/lightningwidget.cpp" line="770"/>
         <source>Peer disconnection coming soon.</source>
         <translation>A desconexão de pares chegará em breve.</translation>
     </message>
     <message>
-        <location filename="../src/lightningwidget.cpp" line="778" />
+        <location filename="../src/lightningwidget.cpp" line="778"/>
         <source>Please enter destination and amount.</source>
         <translation>Insira o destino e a quantia.</translation>
     </message>
@@ -7867,141 +7867,141 @@ Tem absoluta certeza?</translation>
 <context>
     <name>dinero::qt::OverviewConnectivityCard</name>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="38" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="38"/>
         <source>Checking available network paths…</source>
         <translation>Verificando os caminhos de rede disponíveis…</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="45" />
-        <location filename="../src/overviewconnectivitycard.cpp" line="93" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="45"/>
+        <location filename="../src/overviewconnectivitycard.cpp" line="93"/>
         <source>Private and resilient connectivity</source>
         <translation>Conectividade privada e resiliente</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="48" />
-        <source>Uses Dinero's included Tor component for Dinero P2P only. Ordinary P2P remains available if Tor cannot start.</source>
+        <location filename="../src/overviewconnectivitycard.cpp" line="48"/>
+        <source>Uses Dinero&apos;s included Tor component for Dinero P2P only. Ordinary P2P remains available if Tor cannot start.</source>
         <translation>Usa o componente Tor incluído no Dinero apenas para o P2P do Dinero. O P2P comum permanece disponível se o Tor não conseguir iniciar.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="53" />
-        <location filename="../src/overviewconnectivitycard.cpp" line="150" />
-        <source>Use Dinero's included privacy network when needed.</source>
+        <location filename="../src/overviewconnectivitycard.cpp" line="53"/>
+        <location filename="../src/overviewconnectivitycard.cpp" line="150"/>
+        <source>Use Dinero&apos;s included privacy network when needed.</source>
         <translation>Use a rede de privacidade incluída no Dinero quando necessário.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="68" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="68"/>
         <source>Copy</source>
         <translation>Copiar</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="70" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="70"/>
         <source>Copy the full public Dinero P2P onion address</source>
         <translation>Copiar o endereço onion público completo do P2P do Dinero</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="75" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="75"/>
         <source>Enable relay service</source>
         <translation>Ativar o serviço de retransmissão</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="78" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="78"/>
         <source>Serves only Dinero P2P traffic within conservative automatic limits; it is not a web proxy or a system-wide relay.</source>
         <translation>Atende apenas ao tráfego P2P do Dinero, dentro de limites automáticos conservadores; não é um proxy web nem uma retransmissão para todo o sistema.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="83" />
-        <location filename="../src/overviewconnectivitycard.cpp" line="191" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="83"/>
+        <location filename="../src/overviewconnectivitycard.cpp" line="191"/>
         <source>Make this node available to other Dinero nodes within safe limits.</source>
         <translation>Disponibilize este nó a outros nós Dinero dentro de limites seguros.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="94" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="94"/>
         <source>Allow Dinero to use its included Tor component for private and resilient network connectivity.</source>
         <translation>Permitir que o Dinero use o componente Tor incluído para uma conectividade de rede privada e resiliente.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="129" />
-        <location filename="../src/overviewconnectivitycard.cpp" line="200" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="129"/>
+        <location filename="../src/overviewconnectivitycard.cpp" line="200"/>
         <source>This daemon does not support live Tor controls.</source>
         <translation>Este daemon não oferece suporte a controles do Tor ao vivo.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="147" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="147"/>
         <source>Tor is active for Dinero P2P; ordinary connections remain available.</source>
         <translation>O Tor está ativo para o P2P do Dinero; as conexões comuns continuam disponíveis.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="149" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="149"/>
         <source>Tor is starting or recovering; ordinary P2P continues normally.</source>
         <translation>O Tor está iniciando ou se recuperando; o P2P comum continua normalmente.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="173" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="173"/>
         <source>Public Dinero P2P address: %1</source>
         <translation>Endereço P2P público do Dinero: %1</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="188" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="188"/>
         <source>Relay service is active within conservative automatic limits.</source>
         <translation>O serviço de retransmissão está ativo dentro de limites automáticos conservadores.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="190" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="190"/>
         <source>Relay service is enabled and will activate when this node is eligible.</source>
         <translation>O serviço de retransmissão está ativado e será ativado quando este nó for elegível.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="203" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="203"/>
         <source>Could not change Tor connectivity. Ordinary P2P continues normally.</source>
         <translation>Não foi possível alterar a conectividade do Tor. O P2P comum continua normalmente.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="213" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="213"/>
         <source>This daemon does not support live relay controls.</source>
         <translation>Este daemon não oferece suporte a controles de retransmissão ao vivo.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="215" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="215"/>
         <source>Could not change relay service. Existing network paths remain available.</source>
         <translation>Não foi possível alterar o serviço de retransmissão. Os caminhos de rede existentes continuam disponíveis.</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="221" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="221"/>
         <source>Direct active</source>
         <translation>Direto ativo</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="221" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="221"/>
         <source>Direct inbound unavailable</source>
         <translation>Entrada direta indisponível</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="222" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="222"/>
         <source>Relay fallback ready</source>
         <translation>Retransmissão de reserva pronta</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="222" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="222"/>
         <source>Relay fallback idle</source>
         <translation>Retransmissão de reserva ociosa</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="223" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="223"/>
         <source>Tor active</source>
         <translation>Tor ativo</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="223" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="223"/>
         <source>Tor inactive</source>
         <translation>Tor inativo</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="230" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="230"/>
         <source>Applying securely…</source>
         <translation>Aplicando com segurança…</translation>
     </message>
     <message>
-        <location filename="../src/overviewconnectivitycard.cpp" line="236" />
+        <location filename="../src/overviewconnectivitycard.cpp" line="236"/>
         <source>Applying safe automatic limits…</source>
         <translation>Aplicando limites automáticos seguros…</translation>
     </message>
@@ -8009,55 +8009,55 @@ Tem absoluta certeza?</translation>
 <context>
     <name>dinero::qt::dashboard::ContributionSection</name>
     <message>
-        <location filename="../src/contributionsection.cpp" line="41" />
+        <location filename="../src/contributionsection.cpp" line="41"/>
         <source>Your contribution</source>
         <translation>Sua contribuição</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="58" />
-        <location filename="../src/contributionsection.cpp" line="70" />
+        <location filename="../src/contributionsection.cpp" line="58"/>
+        <location filename="../src/contributionsection.cpp" line="70"/>
         <source>Bytes in</source>
         <translation>Bytes recebidos</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="62" />
-        <location filename="../src/contributionsection.cpp" line="73" />
+        <location filename="../src/contributionsection.cpp" line="62"/>
+        <location filename="../src/contributionsection.cpp" line="73"/>
         <source>Bytes out</source>
         <translation>Bytes enviados</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="66" />
-        <location filename="../src/contributionsection.cpp" line="76" />
+        <location filename="../src/contributionsection.cpp" line="66"/>
+        <location filename="../src/contributionsection.cpp" line="76"/>
         <source>Relay traffic</source>
         <translation>Tráfego de retransmissão</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="91" />
+        <location filename="../src/contributionsection.cpp" line="91"/>
         <source>Registrants active:</source>
         <translation>Registrantes ativos:</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="93" />
+        <location filename="../src/contributionsection.cpp" line="93"/>
         <source>Blocks served (24h):</source>
         <translation>Blocos servidos (24 h):</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="95" />
+        <location filename="../src/contributionsection.cpp" line="95"/>
         <source>Hints sent:</source>
         <translation>Dicas enviadas:</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="97" />
+        <location filename="../src/contributionsection.cpp" line="97"/>
         <source>Peers via gossip:</source>
         <translation>Pares via gossip:</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="105" />
+        <location filename="../src/contributionsection.cpp" line="105"/>
         <source>Decentralization score:</source>
         <translation>Pontuação de descentralização:</translation>
     </message>
     <message>
-        <location filename="../src/contributionsection.cpp" line="117" />
+        <location filename="../src/contributionsection.cpp" line="117"/>
         <source>Optional contribution indicator—not a security rating. Nodes behind NAT remain secure.</source>
         <translation>Indicador opcional de contribuição — não é uma classificação de segurança. Nós atrás de NAT permanecem seguros.</translation>
     </message>
@@ -8065,71 +8065,71 @@ Tem absoluta certeza?</translation>
 <context>
     <name>dinero::qt::dashboard::DashboardActionController</name>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="71" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="227" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="339" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="71"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="227"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="339"/>
         <source>Ready</source>
         <translation>Pronto</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="71" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="228" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="339" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="71"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="228"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="339"/>
         <source>Off</source>
         <translation>Desligado</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="137" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="137"/>
         <source>No endpoint to copy</source>
         <translation>Nenhum endpoint para copiar</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="143" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="143"/>
         <source>Copied %1</source>
         <translation>%1 copiado</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="152" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="152"/>
         <source>Copied peer details</source>
         <translation>Detalhes do par copiados</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="157" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="157"/>
         <source>No peer selected</source>
         <translation>Nenhum par selecionado</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="160" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="160"/>
         <source>Disconnect peer?</source>
         <translation>Desconectar o par?</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="161" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="161"/>
         <source>Disconnect %1 from this node? The daemon may reconnect later.</source>
         <translation>Desconectar %1 deste nó? O daemon pode reconectar mais tarde.</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="163" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="163"/>
         <source>Disconnect cancelled</source>
         <translation>Desconexão cancelada</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="167" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="167"/>
         <source>Disconnect requested for %1</source>
         <translation>Desconexão solicitada para %1</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="173" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="173"/>
         <source>Ban unavailable for %1</source>
         <translation>Banimento indisponível para %1</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="177" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="177"/>
         <source>Ban %1 for %2 seconds?</source>
         <translation>Banir %1 por %2 segundos?</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="179" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="179"/>
         <source>
 
 This is one of your configured bootstrap peers. Ban only if you are debugging.</source>
@@ -8138,96 +8138,96 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
 Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depurando.</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="181" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="181"/>
         <source>Ban peer?</source>
         <translation>Banir o par?</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="182" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="182"/>
         <source>Ban cancelled</source>
         <translation>Banimento cancelado</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="188" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="188"/>
         <source>Ban requested for %1</source>
         <translation>Banimento solicitado para %1</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="193" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="193"/>
         <source>Direct reconnect unavailable</source>
         <translation>Reconexão direta indisponível</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="198" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="198"/>
         <source>Reconnect requested for %1</source>
         <translation>Reconexão solicitada para %1</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="203" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="203"/>
         <source>Relay hint has no target</source>
         <translation>A dica de retransmissão não tem destino</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="215" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="215"/>
         <source>Relay dial submitted for %1</source>
         <translation>Discagem de retransmissão enviada para %1</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="225" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="257" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="225"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="257"/>
         <source>Stopping</source>
         <translation>Parando</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="227" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="337" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="343" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="227"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="337"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="343"/>
         <source>Running</source>
         <translation>Em execução</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="235" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="235"/>
         <source>Switch to Yes first</source>
         <translation>Mude para Sim primeiro</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="242" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="242"/>
         <source>dinero-seeder not found</source>
         <translation>dinero-seeder não encontrado</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="250" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="250"/>
         <source>Starting</source>
         <translation>Iniciando</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="323" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="323"/>
         <source>Relay dial result received</source>
         <translation>Resultado da discagem de retransmissão recebido</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="324" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="324"/>
         <source>Relay dial: %1</source>
         <translation>Discagem de retransmissão: %1</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="328" />
-        <location filename="../src/dashboardactioncontroller.cpp" line="344" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="328"/>
+        <location filename="../src/dashboardactioncontroller.cpp" line="344"/>
         <source>%1 accepted</source>
         <translation>%1 aceito</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="343" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="343"/>
         <source>Stopped</source>
         <translation>Parado</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="359" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="359"/>
         <source>%1 failed (%2): %3</source>
         <translation>%1 falhou (%2): %3</translation>
     </message>
     <message>
-        <location filename="../src/dashboardactioncontroller.cpp" line="363" />
+        <location filename="../src/dashboardactioncontroller.cpp" line="363"/>
         <source>Error: %1</source>
         <translation>Erro: %1</translation>
     </message>
@@ -8235,59 +8235,59 @@ Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depu
 <context>
     <name>dinero::qt::dashboard::DiscoverySection</name>
     <message>
-        <location filename="../src/discoverysection.cpp" line="138" />
+        <location filename="../src/discoverysection.cpp" line="138"/>
         <source>Discovery — 0 targets known</source>
         <translation>Descoberta — 0 destinos conhecidos</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="146" />
+        <location filename="../src/discoverysection.cpp" line="146"/>
         <source>Seeder operator service</source>
         <translation>Serviço de operador do seeder</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="148" />
+        <location filename="../src/discoverysection.cpp" line="148"/>
         <source>No</source>
         <translation>Não</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="149" />
+        <location filename="../src/discoverysection.cpp" line="149"/>
         <source>Yes</source>
         <translation>Sim</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="150" />
-        <location filename="../src/discoverysection.cpp" line="222" />
+        <location filename="../src/discoverysection.cpp" line="150"/>
+        <location filename="../src/discoverysection.cpp" line="222"/>
         <source>Start Seeder</source>
         <translation>Iniciar o seeder</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="152" />
-        <location filename="../src/discoverysection.cpp" line="227" />
+        <location filename="../src/discoverysection.cpp" line="152"/>
+        <location filename="../src/discoverysection.cpp" line="227"/>
         <source>Off</source>
         <translation>Desligado</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="182" />
+        <location filename="../src/discoverysection.cpp" line="182"/>
         <source>Discovery — %1 targets known</source>
         <translation>Descoberta — %1 destinos conhecidos</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="221" />
+        <location filename="../src/discoverysection.cpp" line="221"/>
         <source>Stop Seeder</source>
         <translation>Parar o seeder</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="227" />
+        <location filename="../src/discoverysection.cpp" line="227"/>
         <source>Running</source>
         <translation>Em execução</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="245" />
+        <location filename="../src/discoverysection.cpp" line="245"/>
         <source>Copy relay endpoint</source>
         <translation>Copiar o endpoint de retransmissão</translation>
     </message>
     <message>
-        <location filename="../src/discoverysection.cpp" line="248" />
+        <location filename="../src/discoverysection.cpp" line="248"/>
         <source>Dial via relay hint</source>
         <translation>Discar pela dica de retransmissão</translation>
     </message>
@@ -8295,77 +8295,77 @@ Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depu
 <context>
     <name>dinero::qt::dashboard::IdentitySection</name>
     <message>
-        <location filename="../src/identitysection.cpp" line="22" />
+        <location filename="../src/identitysection.cpp" line="22"/>
         <source>Connection</source>
         <translation>Conexão</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="42" />
+        <location filename="../src/identitysection.cpp" line="42"/>
         <source>Copy node_id</source>
         <translation>Copiar node_id</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="101" />
+        <location filename="../src/identitysection.cpp" line="101"/>
         <source>○ Offline — the Dinero service is not responding.</source>
         <translation>○ Off-line — o serviço Dinero não está respondendo.</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="122" />
+        <location filename="../src/identitysection.cpp" line="122"/>
         <source>● Connected directly and securely.</source>
         <translation>● Conectado de forma direta e segura.</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="125" />
+        <location filename="../src/identitysection.cpp" line="125"/>
         <source>● Connected directly and securely (port %1).</source>
         <translation>● Conectado de forma direta e segura (porta %1).</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="128" />
+        <location filename="../src/identitysection.cpp" line="128"/>
         <source>● Connected directly and securely on %1:%2.</source>
         <translation>● Conectado de forma direta e segura em %1:%2.</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="132" />
+        <location filename="../src/identitysection.cpp" line="132"/>
         <source>● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic. Listening locally on port %1.</source>
         <translation>● Conectado com segurança por meio de uma retransmissão Dinero. O acesso direto de entrada está indisponível; a recuperação é automática. Escutando localmente na porta %1.</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="135" />
+        <location filename="../src/identitysection.cpp" line="135"/>
         <source>● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic.</source>
         <translation>● Conectado com segurança por meio de uma retransmissão Dinero. O acesso direto de entrada está indisponível; a recuperação é automática.</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="137" />
+        <location filename="../src/identitysection.cpp" line="137"/>
         <source>○ Offline — the node is not accepting connections.</source>
         <translation>○ Off-line — o nó não está aceitando conexões.</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="140" />
+        <location filename="../src/identitysection.cpp" line="140"/>
         <source>○ Checking secure connectivity…</source>
         <translation>○ Verificando a conectividade segura…</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="148" />
+        <location filename="../src/identitysection.cpp" line="148"/>
         <source>Direct active</source>
         <translation>Direto ativo</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="150" />
+        <location filename="../src/identitysection.cpp" line="150"/>
         <source>Direct outbound active</source>
         <translation>Saída direta ativa</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="152" />
+        <location filename="../src/identitysection.cpp" line="152"/>
         <source>Direct connection unavailable</source>
         <translation>Conexão direta indisponível</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="156" />
+        <location filename="../src/identitysection.cpp" line="156"/>
         <source>Relay fallback ready</source>
         <translation>Retransmissão de reserva pronta</translation>
     </message>
     <message>
-        <location filename="../src/identitysection.cpp" line="158" />
+        <location filename="../src/identitysection.cpp" line="158"/>
         <source>Tor active</source>
         <translation>Tor ativo</translation>
     </message>
@@ -8373,20 +8373,20 @@ Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depu
 <context>
     <name>dinero::qt::dashboard::MyNodeDashboard</name>
     <message>
-        <location filename="../src/mynodedashboard.cpp" line="53" />
-        <location filename="../src/mynodedashboard.cpp" line="83" />
-        <location filename="../src/mynodedashboard.cpp" line="88" />
+        <location filename="../src/mynodedashboard.cpp" line="53"/>
+        <location filename="../src/mynodedashboard.cpp" line="83"/>
+        <location filename="../src/mynodedashboard.cpp" line="88"/>
         <source>Advanced details</source>
         <translation>Detalhes avançados</translation>
     </message>
     <message>
-        <location filename="../src/mynodedashboard.cpp" line="54" />
+        <location filename="../src/mynodedashboard.cpp" line="54"/>
         <source>Show technical node, peer, relay, and discovery diagnostics.</source>
         <translation>Mostrar diagnósticos técnicos de nó, pares, retransmissão e descoberta.</translation>
     </message>
     <message>
-        <location filename="../src/mynodedashboard.cpp" line="82" />
-        <location filename="../src/mynodedashboard.cpp" line="87" />
+        <location filename="../src/mynodedashboard.cpp" line="82"/>
+        <location filename="../src/mynodedashboard.cpp" line="87"/>
         <source>Hide advanced details</source>
         <translation>Ocultar os detalhes avançados</translation>
     </message>
@@ -8394,164 +8394,164 @@ Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depu
 <context>
     <name>dinero::qt::dashboard::NetworkSection</name>
     <message>
-        <location filename="../src/networksection.cpp" line="28" />
-        <source>Network diagnostics (your node's view)</source>
+        <location filename="../src/networksection.cpp" line="28"/>
+        <source>Network diagnostics (your node&apos;s view)</source>
         <translation>Diagnósticos de rede (a visão do seu nó)</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="64" />
+        <location filename="../src/networksection.cpp" line="64"/>
         <source>Tor connectivity (Admin only)</source>
         <translation>Conectividade do Tor (somente para administradores)</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="67" />
-        <location filename="../src/networksection.cpp" line="99" />
+        <location filename="../src/networksection.cpp" line="67"/>
+        <location filename="../src/networksection.cpp" line="99"/>
         <source>Off</source>
         <translation>Desligado</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="68" />
-        <location filename="../src/networksection.cpp" line="100" />
+        <location filename="../src/networksection.cpp" line="68"/>
+        <location filename="../src/networksection.cpp" line="100"/>
         <source>Automatic — recommended</source>
         <translation>Automático — recomendado</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="69" />
+        <location filename="../src/networksection.cpp" line="69"/>
         <source>External Tor — advanced</source>
         <translation>Tor externo — avançado</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="71" />
-        <source>Uses this node's existing authenticated RPC session and local node cookie; no additional credentials are required. Automatic uses only Dinero's included Tor component.</source>
+        <location filename="../src/networksection.cpp" line="71"/>
+        <source>Uses this node&apos;s existing authenticated RPC session and local node cookie; no additional credentials are required. Automatic uses only Dinero&apos;s included Tor component.</source>
         <translation>Usa a sessão RPC autenticada existente deste nó e o cookie local do nó; nenhuma credencial adicional é necessária. O modo automático usa apenas o componente Tor incluído no Dinero.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="78" />
+        <location filename="../src/networksection.cpp" line="78"/>
         <source>Tor connectivity</source>
         <translation>Conectividade do Tor</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="78" />
+        <location filename="../src/networksection.cpp" line="78"/>
         <source>Allow Dinero to use its included Tor component for private and resilient network connectivity.</source>
         <translation>Permitir que o Dinero use o componente Tor incluído para uma conectividade de rede privada e resiliente.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="88" />
+        <location filename="../src/networksection.cpp" line="88"/>
         <source>Applying Tor connectivity preference…</source>
         <translation>Aplicando a preferência de conectividade do Tor…</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="96" />
+        <location filename="../src/networksection.cpp" line="96"/>
         <source>Enable relay service (Admin only)</source>
         <translation>Ativar o serviço de retransmissão (somente para administradores)</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="101" />
+        <location filename="../src/networksection.cpp" line="101"/>
         <source>Custom limits</source>
         <translation>Limites personalizados</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="102" />
+        <location filename="../src/networksection.cpp" line="102"/>
         <source>Serves encrypted Dinero P2P relay circuits only. It is not a web proxy and cannot relay other software.</source>
         <translation>Atende apenas a circuitos de retransmissão P2P criptografados do Dinero. Não é um proxy web e não pode retransmitir outros softwares.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="107" />
+        <location filename="../src/networksection.cpp" line="107"/>
         <source>Concurrent circuits</source>
         <translation>Circuitos simultâneos</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="107" />
+        <location filename="../src/networksection.cpp" line="107"/>
         <source>Bandwidth (KiB/s)</source>
         <translation>Largura de banda (KiB/s)</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="108" />
+        <location filename="../src/networksection.cpp" line="108"/>
         <source>Circuits per peer</source>
         <translation>Circuitos por par</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="108" />
+        <location filename="../src/networksection.cpp" line="108"/>
         <source>Circuit lifetime (seconds)</source>
         <translation>Vida útil do circuito (segundos)</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="109" />
+        <location filename="../src/networksection.cpp" line="109"/>
         <source>Requests per peer/minute</source>
         <translation>Solicitações por par/minuto</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="120" />
+        <location filename="../src/networksection.cpp" line="120"/>
         <source>Apply relay service</source>
         <translation>Aplicar o serviço de retransmissão</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="122" />
+        <location filename="../src/networksection.cpp" line="122"/>
         <source>Relay service status unavailable.</source>
         <translation>Estado do serviço de retransmissão indisponível.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="150" />
+        <location filename="../src/networksection.cpp" line="150"/>
         <source>peer estimate  %1</source>
         <translation>estimativa dos pares  %1</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="170" />
+        <location filename="../src/networksection.cpp" line="170"/>
         <source>● In sync with the peer estimate</source>
         <translation>● Sincronizado com a estimativa dos pares</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="171" />
+        <location filename="../src/networksection.cpp" line="171"/>
         <source>● %1 block(s) behind the peer estimate</source>
         <translation>● %1 bloco(s) atrás da estimativa dos pares</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="172" />
+        <location filename="../src/networksection.cpp" line="172"/>
         <source>● %1 block(s) ahead of the peer estimate; peers may still be catching up</source>
         <translation>● %1 bloco(s) à frente da estimativa dos pares; os pares ainda podem estar se atualizando</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="194" />
+        <location filename="../src/networksection.cpp" line="194"/>
         <source>Check the local daemon log for details.</source>
         <translation>Consulte o registro do daemon local para obter detalhes.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="213" />
+        <location filename="../src/networksection.cpp" line="213"/>
         <source>Dinero relay service is active within the configured limits.</source>
         <translation>O serviço de retransmissão do Dinero está ativo dentro dos limites configurados.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="214" />
+        <location filename="../src/networksection.cpp" line="214"/>
         <source>Dinero relay service is not accepting new circuits.</source>
         <translation>O serviço de retransmissão do Dinero não está aceitando novos circuitos.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="224" />
+        <location filename="../src/networksection.cpp" line="224"/>
         <source>Could not change Tor reachability. Check RPC authorization and the local daemon log.</source>
         <translation>Não foi possível alterar a acessibilidade do Tor. Verifique a autorização RPC e o registro do daemon local.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="231" />
+        <location filename="../src/networksection.cpp" line="231"/>
         <source>Off. Ordinary direct and Dinero relay connections remain available.</source>
         <translation>Desligado. As conexões diretas comuns e as retransmissões do Dinero continuam disponíveis.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="236" />
+        <location filename="../src/networksection.cpp" line="236"/>
         <source>Tor active. Direct and relay paths remain available.</source>
         <translation>Tor ativo. Os caminhos diretos e de retransmissão continuam disponíveis.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="237" />
+        <location filename="../src/networksection.cpp" line="237"/>
         <source>Active · onion address: %1</source>
         <translation>Ativo · endereço onion: %1</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="240" />
+        <location filename="../src/networksection.cpp" line="240"/>
         <source>Configured, but the onion service is not active. Check the daemon log; credentials are hidden here.</source>
         <translation>Configurado, mas o serviço onion não está ativo. Consulte o registro do daemon; as credenciais ficam ocultas aqui.</translation>
     </message>
     <message>
-        <location filename="../src/networksection.cpp" line="243" />
+        <location filename="../src/networksection.cpp" line="243"/>
         <source>This daemon is older and does not support live Tor controls. Ordinary P2P continues normally.</source>
         <translation>Este daemon é mais antigo e não oferece suporte a controles do Tor ao vivo. O P2P comum continua normalmente.</translation>
     </message>
@@ -8559,42 +8559,42 @@ Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depu
 <context>
     <name>dinero::qt::dashboard::PeersSection</name>
     <message>
-        <location filename="../src/peerssection.cpp" line="121" />
+        <location filename="../src/peerssection.cpp" line="121"/>
         <source>%1 · stale</source>
         <translation>%1 · desatualizado</translation>
     </message>
     <message>
-        <location filename="../src/peerssection.cpp" line="124" />
+        <location filename="../src/peerssection.cpp" line="124"/>
         <source>This peer is %1 blocks behind your current network estimate.</source>
         <translation>Este par está %1 blocos atrás da sua estimativa de rede atual.</translation>
     </message>
     <message>
-        <location filename="../src/peerssection.cpp" line="180" />
+        <location filename="../src/peerssection.cpp" line="180"/>
         <source>Copy endpoint</source>
         <translation>Copiar o endpoint</translation>
     </message>
     <message>
-        <location filename="../src/peerssection.cpp" line="181" />
+        <location filename="../src/peerssection.cpp" line="181"/>
         <source>Copy peer details</source>
         <translation>Copiar os detalhes do par</translation>
     </message>
     <message>
-        <location filename="../src/peerssection.cpp" line="183" />
+        <location filename="../src/peerssection.cpp" line="183"/>
         <source>Try direct reconnect</source>
         <translation>Tentar reconexão direta</translation>
     </message>
     <message>
-        <location filename="../src/peerssection.cpp" line="185" />
+        <location filename="../src/peerssection.cpp" line="185"/>
         <source>Disconnect peer</source>
         <translation>Desconectar o par</translation>
     </message>
     <message>
-        <location filename="../src/peerssection.cpp" line="186" />
+        <location filename="../src/peerssection.cpp" line="186"/>
         <source>Ban 1 hour</source>
         <translation>Banir por 1 hora</translation>
     </message>
     <message>
-        <location filename="../src/peerssection.cpp" line="187" />
+        <location filename="../src/peerssection.cpp" line="187"/>
         <source>Ban 24 hours</source>
         <translation>Banir por 24 horas</translation>
     </message>
@@ -8602,47 +8602,47 @@ Este é um dos seus pares de bootstrap configurados. Bana apenas se estiver depu
 <context>
     <name>dinero::qt::dashboard::TopologySection</name>
     <message>
-        <location filename="../src/topologysection.cpp" line="82" />
+        <location filename="../src/topologysection.cpp" line="82"/>
         <source>Topology — waiting for peers</source>
         <translation>Topologia — aguardando pares</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="109" />
+        <location filename="../src/topologysection.cpp" line="109"/>
         <source>Topology — %1 nodes / %2 paths</source>
         <translation>Topologia — %1 nós / %2 caminhos</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="154" />
+        <location filename="../src/topologysection.cpp" line="154"/>
         <source>%1 via %2</source>
         <translation>%1 via %2</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="201" />
+        <location filename="../src/topologysection.cpp" line="201"/>
         <source>Copy endpoint</source>
         <translation>Copiar o endpoint</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="203" />
+        <location filename="../src/topologysection.cpp" line="203"/>
         <source>Try direct reconnect</source>
         <translation>Tentar reconexão direta</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="209" />
+        <location filename="../src/topologysection.cpp" line="209"/>
         <source>Dial via relay hint</source>
         <translation>Discar pela dica de retransmissão</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="216" />
+        <location filename="../src/topologysection.cpp" line="216"/>
         <source>Disconnect peer</source>
         <translation>Desconectar o par</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="217" />
+        <location filename="../src/topologysection.cpp" line="217"/>
         <source>Ban 1 hour</source>
         <translation>Banir por 1 hora</translation>
     </message>
     <message>
-        <location filename="../src/topologysection.cpp" line="218" />
+        <location filename="../src/topologysection.cpp" line="218"/>
         <source>Ban 24 hours</source>
         <translation>Banir por 24 horas</translation>
     </message>
