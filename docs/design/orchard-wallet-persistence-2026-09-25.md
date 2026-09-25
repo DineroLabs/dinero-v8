@@ -82,3 +82,27 @@ Address issuance and pending operation reservations are intentionally not part
 of the chain-derived scan state: replacing it during a reorg must not reuse an
 issued address or release a still-pending spend. Those durable wallet records
 must share the outer SQLite transaction when the live wallet integration lands.
+
+## Account snapshot and address issuance
+
+`OrchardAccountState` combines the typed scanner, pending operation queue and
+external/internal 88-bit address counters in one `DNORAC01` encrypted payload.
+An issued receiver accompanies an immutable replacement account. The caller must
+commit that replacement before displaying the receiver. The last index can be
+issued once; a persistent exhaustion flag prevents wraparound. Account domain,
+activation and viewing-key identity must match on restore.
+
+A chain reorg replaces only the derived scanner with a retained parent view.
+Counters and pending transaction identities come from the current account, so
+rewinding a chain block cannot reuse addresses or forget a possibly relayed
+transaction. If the scan checkpoint is no longer usable, the explicit rescan
+restore path preserves authenticated counters and pending operations while
+resetting the scanner to the known activation parent. This path does not claim
+synchronization or permission to spend: the host must finish scanning to the
+selected tip and perform fresh admission before sending anything.
+
+The account test uses a fresh real shield proof and transparent signatures,
+receives its note, retains its pending transaction, and persists/reopens that
+combined state through SQLite. Rewind, replacement branch, full rescan and
+address exhaustion all preserve issuance. Production origin callbacks, wallet
+RPC/job integration and selected-chain operation archival remain required.
