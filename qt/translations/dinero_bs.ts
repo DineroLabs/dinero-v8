@@ -1991,12 +1991,12 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2334" />
         <source>Router port mapping will be enabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
-        <translation type="unfinished" />
+        <translation>Mapiranje portova na ruteru će se uključiti pri sljedećem pokretanju daemona (Datoteka → Izlaz, pa ponovo otvorite Dinero).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2336" />
         <source>Router port mapping will be disabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
-        <translation type="unfinished" />
+        <translation>Mapiranje portova na ruteru će se isključiti pri sljedećem pokretanju daemona (Datoteka → Izlaz, pa ponovo otvorite Dinero).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2340" />
@@ -2905,7 +2905,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="4203" />
         <source>64-hex-char static public key of the SV2 pool. Pinned on connect — leave blank only for first-contact TOFU (not recommended).</source>
-        <translation type="unfinished" />
+        <translation>Statički javni ključ SV2 poola od 64 heksadecimalna znaka. Fiksira se pri povezivanju; ostavite prazno samo za prvi kontakt po TOFU principu (ne preporučuje se).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4217" />
@@ -2916,7 +2916,8 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
         <location filename="../src/mainwindow.cpp" line="4237" />
         <source>CPU = dinero-sv2-miner (all cores hashing).
 GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</source>
-        <translation type="unfinished" />
+        <translation>CPU = dinero-sv2-miner (sve jezgre računaju hasheve).
+GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4251" />
@@ -3607,7 +3608,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="5732" />
         <source>Generate a quantum-safe ML-DSA-65 receive address (din1r...)</source>
-        <translation type="unfinished" />
+        <translation>Generiši kvantno sigurnu ML-DSA-65 adresu za primanje (din1r…)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5735" />
@@ -3653,7 +3654,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="5814" />
         <source>Continue in Shielded. Availability depends on network activation.</source>
-        <translation type="unfinished" />
+        <translation>Nastavite u Zaštićeno. Dostupnost ovisi o aktivaciji na mreži.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5816" />
@@ -3693,7 +3694,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="5826" />
         <source>Unshield selected private value to a fresh wallet Taproot address</source>
-        <translation type="unfinished" />
+        <translation>Skini zaštitu s odabrane privatne vrijednosti na novu Taproot adresu novčanika</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5829" />
@@ -3713,17 +3714,17 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="5857" />
         <source>Spend shielded balance privately. Recipient must be a dins1 shielded address.</source>
-        <translation type="unfinished" />
+        <translation>Potroši zaštićeno stanje privatno. Primalac mora biti zaštićena dins1 adresa.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5860" />
         <source>Send transparent balance into a shielded address. Recipient must be a dins1 shielded address.</source>
-        <translation type="unfinished" />
+        <translation>Pošalji transparentno stanje na zaštićenu adresu. Primalac mora biti zaštićena dins1 adresa.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5863" />
         <source>Convert shielded balance to public Taproot. The daemon sends it to a fresh wallet address.</source>
-        <translation type="unfinished" />
+        <translation>Pretvori zaštićeno stanje u javni Taproot. Daemon ga šalje na novu adresu novčanika.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5866" />
@@ -3794,7 +3795,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="7182" />
         <source>Mempool: N/A</source>
-        <translation type="unfinished" />
+        <translation>Mempool: nedostupno</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7187" />
@@ -3820,7 +3821,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="7364" />
         <source>Dinero Core currently reports peer activity timestamps, not per-peer ping latency.</source>
-        <translation type="unfinished" />
+        <translation>Dinero Core trenutno prijavljuje vremenske oznake aktivnosti čvorova, a ne ping kašnjenje po čvoru.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7454" />
@@ -3946,7 +3947,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="8277" />
         <source>&lt;h2&gt;🚀 Welcome to Dinero!&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🚀 Dobro došli u Dinero&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8373" />
@@ -4026,12 +4027,12 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="9390" />
         <source>System-wide GPU telemetry. It may be active even when the selected miner is CPU.</source>
-        <translation type="unfinished" />
+        <translation>Telemetrija GPU-a za cijeli sistem. Može biti aktivna i kada je odabrani rudar CPU.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9397" />
         <source>System-wide GPU memory from macOS AGX PerformanceStatistics</source>
-        <translation type="unfinished" />
+        <translation>Memorija GPU-a za cijeli sistem, prema macOS AGX PerformanceStatistics</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9399" />
@@ -4054,14 +4055,16 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
         <location filename="../src/mainwindow.cpp" line="14840" />
         <location filename="../src/mainwindow.cpp" line="15302" />
         <source>Wallet Locked</source>
-        <translation type="unfinished" />
+        <translation>Novčanik je zaključan</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9688" />
         <source>Your wallet must be unlocked to use wallet addresses for mining.
 
 Would you like to unlock your wallet now?</source>
-        <translation type="unfinished" />
+        <translation>Novčanik mora biti otključan da bi se njegove adrese koristile za Rudare.
+
+Želite li ga otključati sada?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9714" />
@@ -4102,7 +4105,7 @@ Please generate a new Taproot address first:
     <message>
         <location filename="../src/mainwindow.cpp" line="9857" />
         <source>Start and connect the daemon before starting the local Stratum server.</source>
-        <translation type="unfinished" />
+        <translation>Pokrenite i povežite daemon prije pokretanja lokalnog Stratum servera.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9869" />
@@ -4113,7 +4116,7 @@ Please generate a new Taproot address first:
     <message>
         <location filename="../src/mainwindow.cpp" line="9870" />
         <source>Set a Taproot or P2MR mining address before starting the local Stratum server.</source>
-        <translation type="unfinished" />
+        <translation>Postavite Taproot ili P2MR adresu za Rudare prije pokretanja lokalnog Stratum servera.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9878" />
@@ -4130,7 +4133,9 @@ Please generate a new Taproot address first:
         <source>Could not find dinero-stratum.
 
 Build the Stratum server or set DINERO_STRATUM_PATH.</source>
-        <translation type="unfinished" />
+        <translation>dinero-stratum nije pronađen.
+
+Izgradite Stratum server ili postavite DINERO_STRATUM_PATH.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9917" />
@@ -4166,7 +4171,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="10937" />
         <source>Hashrate reported by external miner (self-reported)</source>
-        <translation type="unfinished" />
+        <translation>Brzina hashiranja koju prijavljuje vanjski rudar (samoprijavljeno)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11284" />
@@ -4181,7 +4186,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11373" />
         <source>Recovery descriptor and watch script are persisted in the active wallet.</source>
-        <translation type="unfinished" />
+        <translation>Descriptor za vraćanje i skripta za praćenje su sačuvani u aktivnom novčaniku.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11376" />
@@ -4196,7 +4201,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11473" />
         <source>Spend from this contract (requires satisfying the covenant conditions)</source>
-        <translation type="unfinished" />
+        <translation>Potroši iz ovog ugovora (traži ispunjenje uvjeta covenanta)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11488" />
@@ -4294,7 +4299,10 @@ Mining rewards will be sent to your wallet's Taproot address.</source>
 
 Set the Pool Endpoint in the Mining tab, for example:
 127.0.0.1:3333</source>
-        <translation type="unfinished" />
+        <translation>CUDA Rudari na GPU-u pod Windowsom koriste Stratum rudara.
+
+Postavite pool endpoint u kartici Rudari, naprimjer:
+127.0.0.1:3333</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11851" />
@@ -4333,7 +4341,10 @@ Set the Pool Endpoint in the Mining tab, for example:
 
 Set it in the Mining tab (Pool Endpoint), for example:
 127.0.0.1:3333</source>
-        <translation type="unfinished" />
+        <translation>Pool način traži Stratum endpoint.
+
+Postavite ga u kartici Rudari (Pool endpoint), naprimjer:
+127.0.0.1:3333</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12103" />
@@ -4382,7 +4393,7 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
     <message>
         <location filename="../src/mainwindow.cpp" line="12758" />
         <source>Wait for the current wallet switch to finish before creating or restoring another wallet.</source>
-        <translation type="unfinished" />
+        <translation>Sačekajte da se trenutna promjena novčanika završi prije pravljenja ili vraćanja drugog.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12763" />
@@ -4392,7 +4403,7 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
     <message>
         <location filename="../src/mainwindow.cpp" line="12764" />
         <source>A send is in progress. Wait for it to finish before creating or restoring another wallet.</source>
-        <translation type="unfinished" />
+        <translation>Slanje je u toku. Sačekajte da se završi prije pravljenja ili vraćanja drugog novčanika.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12769" />
@@ -4402,7 +4413,7 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
     <message>
         <location filename="../src/mainwindow.cpp" line="12770" />
         <source>Wait for the current wallet scan to finish before creating or restoring another wallet.</source>
-        <translation type="unfinished" />
+        <translation>Sačekajte da se trenutno skeniranje novčanika završi prije pravljenja ili vraćanja drugog.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12817" />
@@ -4445,7 +4456,7 @@ This can take time and lock some wallet actions until complete.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="12942" />
         <source>❌ Wallet out of sync with chain: selected inputs are not in active UTXO set. Rescan wallet and retry.</source>
-        <translation type="unfinished" />
+        <translation>❌ Novčanik nije usklađen s lancem: odabrani ulazi nisu u aktivnom UTXO skupu. Ponovo skenirajte novčanik i pokušajte opet.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12957" />
@@ -4457,7 +4468,9 @@ This can take time and lock some wallet actions until complete.</source>
         <source>This send failed because selected inputs are not present in the node's current UTXO set.
 
 Run wallet rescan now?</source>
-        <translation type="unfinished" />
+        <translation>Slanje nije uspjelo jer odabrani ulazi nisu u trenutnom UTXO skupu čvora.
+
+Pokrenuti ponovno skeniranje novčanika sada?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12974" />
@@ -4539,7 +4552,7 @@ Write it down on paper, store it offline, and never share it.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13121" />
         <source>&lt;b&gt;Write this phrase down on paper.&lt;/b&gt;&lt;br&gt;Do not screenshot it, upload it, paste it into chat, or store it in cloud notes.</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Zapišite ovu frazu na papir.&lt;/b&gt;&lt;br&gt;Nemojte je slikati, otpremati, lijepiti u poruke niti čuvati u bilješkama u oblaku.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13130" />
@@ -4552,12 +4565,15 @@ Write it down on paper, store it offline, and never share it.</source>
 • Taproot payments: m/86'/1448'/0'/0/i, din1p...
 • Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...
 </source>
-        <translation type="unfinished" />
+        <translation>Napomene o putanjama za vraćanje:
+• Taproot plaćanja: m/86'/1448'/0'/0/i, din1p…
+• Kvantno sigurni P2MR: m/88'/1448'/0'/0/i, din1r…
+</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13163" />
         <source>Close</source>
-        <translation type="unfinished" />
+        <translation>Zatvori</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13219" />
@@ -4577,7 +4593,7 @@ Write it down on paper, store it offline, and never share it.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13284" />
         <source>Dinero has been waiting 180 seconds for the daemon (dinerod) and is still not connected — the daemon may have failed.</source>
-        <translation type="unfinished" />
+        <translation>Dinero čeka daemon (dinerod) već 180 sekundi i još nije povezan – daemon je možda otkazao.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13347" />
@@ -4640,7 +4656,9 @@ Write it down on paper, store it offline, and never share it.</source>
         <source>Daemon started but RPC not ready yet.
 
 Wait a few more seconds and click 'Reconnect' if needed.</source>
-        <translation type="unfinished" />
+        <translation>Daemon je pokrenut, ali RPC još nije spreman.
+
+Sačekajte još nekoliko sekundi i kliknite „Poveži ponovo“ ako treba.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13687" />
@@ -4665,7 +4683,10 @@ Continue?</source>
 
 Database files unlocked.
 Click 'Start Daemon' when ready to restart.</source>
-        <translation type="unfinished" />
+        <translation>✅ Svi procesi daemona su zaustavljeni
+
+Datoteke baze su otključane.
+Kliknite „Pokreni daemon“ kada budete spremni.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13823" />
@@ -4704,7 +4725,10 @@ Click 'Start Daemon' when ready to restart.</source>
 
 No unlock is required.
 Use Encrypt Wallet to protect private keys.</source>
-        <translation type="unfinished" />
+        <translation>ℹ️ Novčanik nije šifrovan.
+
+Otključavanje nije potrebno.
+Koristite Šifruj novčanik da zaštitite privatne ključeve.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13927" />
@@ -4754,7 +4778,11 @@ Use Encrypt Wallet to protect private keys.</source>
 • Taproot signing is now disabled
 • Private keys are secured
 • Unlock to spend or sign transactions</source>
-        <translation type="unfinished" />
+        <translation>🔒 Novčanik je uspješno zaključan.
+
+• Taproot potpisivanje je sada onemogućeno
+• Privatni ključevi su zaštićeni
+• Otključajte ga da trošite ili potpisujete transakcije</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14077" />
@@ -4801,7 +4829,7 @@ Use Encrypt Wallet to protect private keys.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14246" />
         <source>A send is in progress. Wait for it to complete before switching wallets.</source>
-        <translation type="unfinished" />
+        <translation>Slanje je u toku. Sačekajte da se završi prije promjene novčanika.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14252" />
@@ -4876,7 +4904,7 @@ Use Encrypt Wallet to protect private keys.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14460" />
         <source>Hardware-wallet signing is currently wired only for public Taproot transfers</source>
-        <translation type="unfinished" />
+        <translation>Potpisivanje hardverskim novčanikom je trenutno povezano samo za javne Taproot prenose</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14497" />
@@ -4921,7 +4949,7 @@ Use Encrypt Wallet to protect private keys.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14551" />
         <source>Fill mining address from your wallet</source>
-        <translation type="unfinished" />
+        <translation>Popuni adresu za Rudare iz svog novčanika</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14570" />
@@ -4950,7 +4978,8 @@ Do you want to continue?</source>
         <location filename="../src/mainwindow.cpp" line="14607" />
         <source>Password should be at least 8 characters for security.
 Consider using a longer, stronger password.</source>
-        <translation type="unfinished" />
+        <translation>Lozinka bi radi sigurnosti trebala imati najmanje 8 znakova.
+Razmislite o dužoj i jačoj lozinki.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14644" />
@@ -4960,7 +4989,7 @@ Consider using a longer, stronger password.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14646" />
         <source>Wallet encrypted and locked. Click to unlock for Taproot signing.</source>
-        <translation type="unfinished" />
+        <translation>Novčanik je šifrovan i zaključan. Kliknite da ga otključate za Taproot potpisivanje.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14649" />
@@ -4976,7 +5005,7 @@ Consider using a longer, stronger password.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14674" />
         <source>Please unlock your wallet first to derive new addresses.</source>
-        <translation type="unfinished" />
+        <translation>Prvo otključajte novčanik da izvedete nove adrese.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14713" />
@@ -4990,7 +5019,9 @@ Consider using a longer, stronger password.</source>
         <source>❌ Address generation returned an empty address.
 
 Please verify wallet state and try again.</source>
-        <translation type="unfinished" />
+        <translation>❌ Generisanje adrese je vratilo praznu adresu.
+
+Provjerite stanje novčanika i pokušajte ponovo.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14734" />
@@ -5005,7 +5036,7 @@ Please verify wallet state and try again.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14781" />
         <source>A public withdrawal destination is required for this covenant.</source>
-        <translation type="unfinished" />
+        <translation>Za ovaj covenant je potrebno javno odredište isplate.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14786" />
@@ -5016,7 +5047,8 @@ Please verify wallet state and try again.</source>
         <location filename="../src/mainwindow.cpp" line="14830" />
         <source>❌ Error: Shield destination must be a shielded dins1 address.
 Leave recipient blank to shield to your own private lane.</source>
-        <translation type="unfinished" />
+        <translation>❌ Greška: odredište zaštite mora biti zaštićena dins1 adresa.
+Ostavite primaoca praznim da zaštitite u vlastitu privatnu traku.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14838" />
@@ -5036,17 +5068,17 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14922" />
         <source>❌ Error: Failed to prepare hardware-wallet signing flow</source>
-        <translation type="unfinished" />
+        <translation>❌ Greška: priprema potpisivanja hardverskim novčanikom nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14943" />
         <source>❌ Hardware-wallet PSBT cannot spend P2MR inputs yet.</source>
-        <translation type="unfinished" />
+        <translation>❌ PSBT hardverskog novčanika još ne može trošiti P2MR ulaze.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14963" />
         <source>✅ Hardware-wallet send prepared. Continue in the Hardware Wallet tab.</source>
-        <translation type="unfinished" />
+        <translation>✅ Slanje s hardverskog novčanika je pripremljeno. Nastavite u kartici Hardverski novčanik.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15031" />
@@ -5056,7 +5088,7 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15064" />
         <source>Unsupported send mode. Select a public payment or open the Shielded composer.</source>
-        <translation type="unfinished" />
+        <translation>Nepodržan način slanja. Odaberite javno plaćanje ili otvorite Zaštićeno.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15076" />
@@ -5077,22 +5109,22 @@ Leave recipient blank to shield to your own private lane.</source>
         <location filename="../src/mainwindow.cpp" line="15115" />
         <location filename="../src/mainwindow.cpp" line="15143" />
         <source>❌ Contract amount is too small after the fixed spend fee.</source>
-        <translation type="unfinished" />
+        <translation>❌ Iznos ugovora je premali nakon fiksne naknade za trošenje.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15130" />
         <source>Timelock funding requires an upgraded node with contextual lock enforcement active.</source>
-        <translation type="unfinished" />
+        <translation>Finansiranje s timelockom traži nadograđen čvor s aktivnom primjenom kontekstualnih zaključavanja.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15138" />
         <source>❌ Relative timelock must be between 1 and 65,535 blocks.</source>
-        <translation type="unfinished" />
+        <translation>❌ Relativni timelock mora biti između 1 i 65.535 blokova.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15186" />
         <source>❌ Unknown contract template; refusing to create a fallback script.</source>
-        <translation type="unfinished" />
+        <translation>❌ Nepoznat šablon ugovora; odbijam napraviti zamjensku skriptu.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15205" />
@@ -5102,7 +5134,7 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15274" />
         <source>Hardware-wallet signing is currently wired only for public Taproot transfers.</source>
-        <translation type="unfinished" />
+        <translation>Potpisivanje hardverskim novčanikom je trenutno povezano samo za javne Taproot prenose.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15286" />
@@ -5119,7 +5151,9 @@ Leave recipient blank to shield to your own private lane.</source>
         <source>Your wallet must be unlocked to consolidate UTXOs.
 
 Would you like to unlock your wallet now?</source>
-        <translation type="unfinished" />
+        <translation>Novčanik mora biti otključan da objedinite UTXO.
+
+Želite li ga otključati sada?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15324" />
@@ -5217,14 +5251,16 @@ Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/t
     <message>
         <location filename="../src/mainwindow.cpp" line="15649" />
         <source>Invalid Address</source>
-        <translation type="unfinished" />
+        <translation>Neispravna adresa</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15650" />
         <source>Invalid Dinero address format.
 
 Enter a Dinero transparent or shielded address.</source>
-        <translation type="unfinished" />
+        <translation>Neispravan format Dinero adrese.
+
+Unesite transparentnu ili zaštićenu Dinero adresu.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15658" />
@@ -5257,7 +5293,10 @@ Enter a Dinero transparent or shielded address.</source>
 
 Expected format:
 Label,Address</source>
-        <translation type="unfinished" />
+        <translation>U CSV datoteci nema ispravnih Dinero adresa.
+
+Očekivani format:
+Oznaka,Adresa</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15746" />
@@ -5287,58 +5326,58 @@ Label,Address</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="16078" />
         <source>✅ Synced</source>
-        <translation type="unfinished" />
+        <translation>✅ Sinhronizovano</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16120" />
         <location filename="../src/mainwindow.cpp" line="16253" />
         <source>P2P disabled</source>
-        <translation type="unfinished" />
+        <translation>P2P je isključen</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16123" />
         <source>No peers</source>
-        <translation type="unfinished" />
+        <translation>Nema čvorova</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16257" />
         <source>Direct inbound</source>
-        <translation type="unfinished" />
+        <translation>Direktna dolazna veza</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16261" />
         <source>Tor available</source>
-        <translation type="unfinished" />
+        <translation>Tor je dostupan</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16265" />
         <source>Outbound only</source>
-        <translation type="unfinished" />
+        <translation>Samo odlazne veze</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16514" />
         <source>Export Failed</source>
-        <translation type="unfinished" />
+        <translation>Izvoz nije uspio</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16514" />
         <source>Could not open file for writing</source>
-        <translation type="unfinished" />
+        <translation>Datoteka se ne može otvoriti za pisanje</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16573" />
         <source>Export Successful</source>
-        <translation type="unfinished" />
+        <translation>Izvoz je uspio</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16615" />
         <source>Start mining to this address</source>
-        <translation type="unfinished" />
+        <translation>Pokreni Rudare na ovu adresu</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16880" />
         <source>Connection failed</source>
-        <translation type="unfinished" />
+        <translation>Veza nije uspjela</translation>
     </message>
 </context>
 <context>
