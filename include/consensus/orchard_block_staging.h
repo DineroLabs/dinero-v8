@@ -1,5 +1,6 @@
 #pragma once
 #include "consensus/orchard_state_transition.h"
+#include "primitives/orchard_block_reader.h"
 
 namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; }
@@ -14,5 +15,6 @@ namespace dinero::consensus {
 // OrchardStateLookupError, never a peer consensus-invalid classification.
 [[nodiscard]] PreparedOrchardState StageOrchardBlockUnderChainstateLock(
     ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, bool require_witness_commitment,
     std::span<const VerifiedOrchardAuthorizations>, rocksdb::WriteBatch&);
 } // namespace dinero::consensus

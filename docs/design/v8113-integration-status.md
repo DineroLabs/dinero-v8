@@ -30,6 +30,10 @@ This branch collects release implementation for review and qualification against
   local corruption/read errors from transaction rejection. Real frontier funding,
   spend, reopen, undo and branch replacement pass in temporary stores. This is
   still not wired into the daemon's mixed-transaction block connector.
+- Typed mixed-block candidate reader with shared transaction/witness Merkle and
+  DINW checks. The ChainDB staging adapter requires exact, ordered authorization
+  coverage of every Orchard transaction in that candidate and rejects retired
+  legacy shielded transactions. This remains a staged format, not live admission.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
@@ -71,7 +75,7 @@ the following rows to test-only work:
 
 | Area | Current state |
 | --- | --- |
-| Shared parsing and authorization | Staged typed reader and authorization components; no live admission |
+| Shared parsing and authorization | Staged transaction/block readers and exact candidate-bound authorization coverage; no live admission |
 | Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
 | Anchors, nullifiers, pool and atomic storage/undo | Sealed Orchard transitions and ChainDB batch adapter implemented, including real frontier and recovery tests; mixed-block coin/fee collection and production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Not implemented |

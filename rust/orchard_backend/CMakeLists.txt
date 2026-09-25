@@ -96,9 +96,12 @@ target_link_libraries(dinero_orchard_transparent PUBLIC dinero_transaction_reade
 # Storage integration links the real ChainDB only in the repository build.
 # Keeping this separate avoids making the historical database depend on Rust.
 if(TARGET dinero_chainstate)
+  add_library(dinero_orchard_block_reader STATIC
+    "${ORCHARD_HOST_ROOT}/src/primitives/orchard_block_reader.cpp")
+  target_link_libraries(dinero_orchard_block_reader PUBLIC dinero_transaction_reader dinero_consensus)
   add_library(dinero_orchard_block_staging STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_staging.cpp")
-  target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate)
+  target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader)
   target_include_directories(dinero_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
 endif()
 if(DINERO_ORCHARD_BUILD_TESTS)
@@ -138,6 +141,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   target_link_libraries(test_orchard_state_transition PRIVATE dinero_orchard_transparent)
   add_test(NAME OrchardStateTransition COMMAND test_orchard_state_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   if(TARGET dinero_orchard_block_staging)
+    add_executable(test_orchard_block_reader
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_reader.cpp"
+      "${ORCHARD_HOST_ROOT}/src/consensus/chainparams_impl.cpp")
+    target_link_libraries(test_orchard_block_reader PRIVATE dinero_orchard_block_reader)
+    add_test(NAME OrchardBlockReader COMMAND test_orchard_block_reader "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardBlockReader PROPERTIES TIMEOUT 120 LABELS "orchard;serialization;integration-staging")
     add_executable(test_orchard_block_staging
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")

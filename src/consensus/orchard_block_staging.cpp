@@ -1,10 +1,39 @@
 #include "consensus/orchard_block_staging.h"
 #include "storage/chain_db.h"
+#include <set>
 
 namespace dinero::consensus {
 PreparedOrchardState StageOrchardBlockUnderChainstateLock(ChainDB& db,
     const ChainWriteToken& token, const OrchardBlockContext& context,
+    const OrchardBlockCandidate& block, bool require_witness_commitment,
     std::span<const VerifiedOrchardAuthorizations> transactions, rocksdb::WriteBatch& batch) {
+    if (context.activation_height == UINT32_MAX || context.activation_height == 0 ||
+        context.height < context.activation_height) throw OrchardStateError(OrchardStateErrorCode::Inactive);
+    if (block.Header().GetHash() != context.block_hash || block.Header().prev_block_hash != context.parent_hash)
+        throw OrchardStateError(OrchardStateErrorCode::Context);
+    std::string body_error;
+    if (!block.Header().IsReservedValid() || !block.CheckIdentityCommitments(require_witness_commitment, body_error))
+        throw OrchardStateError(OrchardStateErrorCode::BlockBody);
+    std::set<TxId> ids;
+    size_t checked = 0;
+    for (size_t i = 0; i < block.Transactions().size(); ++i) {
+        const auto& tx = block.Transactions()[i];
+        if (!ids.insert(tx.GetTxid()).second) throw OrchardStateError(OrchardStateErrorCode::DuplicateTransaction);
+        if (tx.IsOrchard()) {
+            // Compare full canonical bytes, including transparent witnesses.
+            // A valid subset or reordered list cannot produce a partial update.
+            if (checked == transactions.size() ||
+                tx.Orchard().CanonicalBytes() != transactions[checked].Orchard().CanonicalBytes())
+                throw OrchardStateError(OrchardStateErrorCode::AuthorizationCoverage);
+            ++checked;
+        } else {
+            const auto& old = tx.Historical();
+            if (Transaction::IsShieldedVersion(old.version) || !old.shielded_bundle_bytes.empty())
+                throw OrchardStateError(OrchardStateErrorCode::RetiredLegacyPool);
+            if (i != 0 && old.IsCoinbase()) throw OrchardStateError(OrchardStateErrorCode::BlockBody);
+        }
+    }
+    if (checked != transactions.size()) throw OrchardStateError(OrchardStateErrorCode::AuthorizationCoverage);
     const auto tip = db.getTip();
     if (!tip.ok()) throw OrchardStateLookupError(tip.status());
     if (context.height == 0 || tip->height < 0 ||
