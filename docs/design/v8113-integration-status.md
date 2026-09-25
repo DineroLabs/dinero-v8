@@ -40,6 +40,10 @@ This branch collects release implementation for review and qualification against
   coins, conventional undo and Orchard state together and reverse them after
   checking exact body/undo coverage. Synthetic connect/reopen/disconnect/reconnect
   tests pass; forest and production service integration remain unfinished.
+- Stateful mixed forest computation uses the actual transaction identities and
+  creation-height leaf rules, excludes transient outputs, checks parent/header
+  commitments and supports checked delta rollback on a private clone. Durable
+  forest undo and production/CSN integration remain unfinished.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
@@ -83,7 +87,7 @@ the following rows to test-only work:
 | --- | --- |
 | Shared parsing and authorization | Staged transaction/block readers and exact candidate-bound authorization coverage; no live admission |
 | Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
-| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation and combined ChainDB coin/state/undo staging implemented; forest, tip/index coordination and production callers not integrated |
+| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation, ChainDB coin/state/undo staging and private-clone forest transitions implemented; durable forest/tip/index coordination and production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Not implemented |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
 

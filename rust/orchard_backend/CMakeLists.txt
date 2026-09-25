@@ -100,7 +100,8 @@ if(TARGET dinero_chainstate)
     "${ORCHARD_HOST_ROOT}/src/primitives/orchard_block_reader.cpp")
   target_link_libraries(dinero_orchard_block_reader PUBLIC dinero_transaction_reader dinero_consensus)
   add_library(dinero_orchard_block_coins STATIC
-    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_coins.cpp")
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_coins.cpp"
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_forest_transition.cpp")
   target_link_libraries(dinero_orchard_block_coins PUBLIC dinero_orchard_block_reader dinero_orchard_transparent)
   add_library(dinero_orchard_block_staging STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_staging.cpp")
@@ -144,6 +145,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   target_link_libraries(test_orchard_state_transition PRIVATE dinero_orchard_transparent)
   add_test(NAME OrchardStateTransition COMMAND test_orchard_state_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   if(TARGET dinero_orchard_block_staging)
+    add_executable(test_orchard_forest_transition
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_forest_transition.cpp")
+    target_link_libraries(test_orchard_forest_transition PRIVATE dinero_orchard_block_coins)
+    add_test(NAME OrchardForestTransition COMMAND test_orchard_forest_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardForestTransition PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+      ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
     add_executable(test_orchard_block_coins
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_coins.cpp")
     target_link_libraries(test_orchard_block_coins PRIVATE dinero_orchard_block_coins)

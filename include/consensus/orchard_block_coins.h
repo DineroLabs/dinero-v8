@@ -40,6 +40,8 @@ class PreparedOrchardBlockCoins;
 class PreparedOrchardBlockCoins {
 public:
     const uint256& BlockHash() const noexcept { return block_hash_; }
+    const uint256& ParentHash() const noexcept { return parent_hash_; }
+    uint32_t Height() const noexcept { return height_; }
     const auto& Transactions() const noexcept { return transactions_; }
     const auto& Changes() const noexcept { return changes_; }
     const auto& Authorizations() const noexcept { return authorizations_; }
@@ -48,12 +50,14 @@ private:
     friend PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         const OrchardBlockCandidate&, const OrchardBlockContext&, const ChainStateView&,
         const OrchardBranchMtpLookup&, bool);
-    PreparedOrchardBlockCoins(uint256 hash, std::vector<OrchardTransactionCoins> transactions,
+    PreparedOrchardBlockCoins(uint256 hash, uint256 parent, uint32_t height, std::vector<OrchardTransactionCoins> transactions,
         std::vector<OrchardCoinChange> changes,
         std::vector<VerifiedOrchardAuthorizations> authorizations, uint64_t fees)
-        : block_hash_(hash), transactions_(std::move(transactions)), changes_(std::move(changes)),
+        : block_hash_(hash), parent_hash_(parent), height_(height), transactions_(std::move(transactions)), changes_(std::move(changes)),
           authorizations_(std::move(authorizations)), fees_(fees) {}
     const uint256 block_hash_;
+    const uint256 parent_hash_;
+    const uint32_t height_;
     const std::vector<OrchardTransactionCoins> transactions_;
     const std::vector<OrchardCoinChange> changes_;
     const std::vector<VerifiedOrchardAuthorizations> authorizations_;

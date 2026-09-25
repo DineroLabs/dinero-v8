@@ -160,7 +160,7 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
     if (!reward_detail::CheckCoinbaseReward(block.Transactions().front().Historical(), context.height, total_fees, error))
         Reject(Error::Reward);
     if (parent.getHeight() != context.height - 1) throw OrchardCoinLookupError(Status::Internal);
-    return PreparedOrchardBlockCoins(context.block_hash, std::move(records), view.Changes(),
+    return PreparedOrchardBlockCoins(context.block_hash, context.parent_hash, context.height, std::move(records), view.Changes(),
                                     std::move(authorizations), total_fees);
 }
 } // namespace dinero::consensus
