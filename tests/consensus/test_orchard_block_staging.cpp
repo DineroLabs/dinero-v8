@@ -1,6 +1,8 @@
 #include "orchard_block_coin_test_fixture.h"
 #include "consensus/orchard_block_staging.h"
 #include "../storage/shielded_store_fixture.h"
+#include <iomanip>
+#include <sstream>
 
 using namespace shielded_store_fixture;
 static const auto token = ChainWriteToken::CreateForTesting();
@@ -115,6 +117,11 @@ static void Coverage(const std::string& base) {
     StateReject(StateError::RetiredLegacyPool,[&]{(void)StageOrchardBlockUnderChainstateLock(db,token,old_context,old,true,auth,batch);});
     CHECK(batch.Data()==before && db.getOrchardState().status()==Status::NotFound);
 }
+static std::string StorageScriptHex(const Bytes& script) {
+    std::ostringstream out;
+    for(const auto byte:script)out<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(byte);
+    return out.str();
+}
 static void AtomicCoins(const std::string& base) {
     TempDir temp; Seed(temp.path); ChainDB db; CHECK(db.init(temp.path)==Status::Ok);
     const auto auth=Authorized(base,false,20000);Fixture keys(base);
@@ -127,11 +134,23 @@ static void AtomicCoins(const std::string& base) {
     rocksdb::WriteBatch initial;Tip(db,c.parent_hash,c.height-1,initial);
     for(size_t i=0;i<tx.Inputs().size();++i) {
         const auto point=Point(tx.Inputs()[i]);const auto& in=auth.Transparent().Snapshot().Coins()[i];
-        Coin coin;coin.amount=in.value.GetUna();coin.script_pubkey.assign(in.scriptPubKey.begin(),in.scriptPubKey.end());
+        Coin coin;coin.amount=in.value.GetUna();coin.script_pubkey=StorageScriptHex(in.scriptPubKey);
         coin.height=in.height;coin.coinbase=in.isCoinbase;
         CHECK(db.putCoin(token,point.txid.AsUint256(),point.vout,coin,&initial)==Status::Ok);
     }
-    Commit(db,initial);db.close();const auto original=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
+    Commit(db,initial);
+    const auto first_point=Point(tx.Inputs()[0]);
+    const auto stored_first=RequiredValue(db.getCoin(first_point.txid.AsUint256(),first_point.vout));
+    for(const std::string invalid:{std::string("0"),std::string("gg"),std::string(1,char(0xff))}) {
+        auto malformed=stored_first;malformed.script_pubkey=invalid;
+        CHECK(db.putCoin(token,first_point.txid.AsUint256(),first_point.vout,malformed)==Status::Ok);
+        rocksdb::WriteBatch rejected;bool corruption=false;
+        try{(void)StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,c,block,{},true,rejected);}
+        catch(const OrchardCoinLookupError&e){corruption=e.SourceStatus()==Status::Corruption;}
+        CHECK(corruption && rejected.Count()==0);
+    }
+    CHECK(db.putCoin(token,first_point.txid.AsUint256(),first_point.vout,stored_first)==Status::Ok);
+    db.close();const auto original=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
     {
         rocksdb::WriteBatch abandoned;
         const auto staged=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,c,block,{},true,abandoned);
@@ -156,7 +175,7 @@ static void AtomicCoins(const std::string& base) {
     CHECK(RequiredValue(db.getOrchardState())==staged.orchard.Next());
     CHECK(db.getCoin(Point(tx.Inputs()[0]).txid.AsUint256(),tx.Inputs()[0].output_index).status()==Status::NotFound);
     CHECK(db.getCoin(id.AsUint256(),0).status()==Status::NotFound); // Same-block parent output never persists.
-    CHECK(db.getCoin(id.AsUint256(),1).ok());
+    CHECK(RequiredValue(db.getCoin(id.AsUint256(),1)).script_pubkey==StorageScriptHex(tx.Outputs()[1].script_pub_key));
     CHECK(RequiredValue(db.getCoin(child.GetTxid().AsUint256(),0)).amount==intermediate.value.GetUna()-123);
     const auto undo=RequiredValue(db.getUndo(c.block_hash));
     CHECK(undo.spent.size()==2 && undo.created.size()==4);

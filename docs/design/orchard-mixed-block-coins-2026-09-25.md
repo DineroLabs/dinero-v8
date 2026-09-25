@@ -64,3 +64,13 @@ by its link map instrumented. External dependencies and Rust are uninstrumented;
 macOS leak detection is disabled. Earlier partial-instrumentation failures and
 the corrected link-map qualification script are retained in private evidence.
 Linux Actions must qualify the exact source separately.
+
+### Storage representation correction
+
+The first combined adapter treated `Coin::script_pubkey` as raw bytes, but the
+actual daemon and persistent UTXO adapter store hex text. Its original test fixture
+made the same assumption. A fixture seeded using the daemon's hex convention
+failed authorization before the correction and passed after explicit hex decode
+on reads and hex encode on writes/restores. Odd-length, non-hex and non-ASCII
+rows now produce local corruption errors without staging writes. This supersedes
+the earlier raw-fixture claim of real ChainDB coin-format compatibility.

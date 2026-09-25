@@ -4,6 +4,7 @@
 #include <exception>
 #include <map>
 #include "consensus/undo.h"
+#include "util/hex.h"
 
 namespace dinero::consensus {
 namespace {
@@ -16,8 +17,15 @@ public:
         const auto& coin = *result;
         if (coin.height < 0 || uint32_t(coin.height) > height_ || coin.amount > orchard::kMaxMoneyUna)
             return Status::Corruption;
-        return UTXOEntry(AmountUna::Una(coin.amount),
-            {coin.script_pubkey.begin(), coin.script_pubkey.end()}, uint32_t(coin.height),
+        // ChainDB Coin uses hex text, as written by BlockAcceptor and the
+        // persistent UTXO adapter. Never reinterpret that text as script bytes.
+        // Validate ASCII first: util::unhex's case folding takes a char.
+        if (!std::all_of(coin.script_pubkey.begin(),coin.script_pubkey.end(),[](unsigned char c) {
+            return (c>='0'&&c<='9') || (c>='a'&&c<='f') || (c>='A'&&c<='F');
+        })) return Status::Corruption;
+        std::vector<uint8_t> script;
+        if (!util::unhex(coin.script_pubkey,script)) return Status::Corruption;
+        return UTXOEntry(AmountUna::Una(coin.amount),script, uint32_t(coin.height),
             coin.coinbase, coin.is_confidential, coin.commitment);
     }
     bool hasCoin(const OutPoint& point) const override {
@@ -32,7 +40,7 @@ private:
 };
 Coin StoredCoin(const UTXOEntry& coin) {
     Coin result; result.amount=coin.value.GetUna();
-    result.script_pubkey.assign(coin.scriptPubKey.begin(),coin.scriptPubKey.end());
+    result.script_pubkey=util::hex(coin.scriptPubKey);
     result.height=static_cast<int>(coin.height);result.coinbase=coin.isCoinbase;
     result.is_confidential=coin.is_confidential;result.commitment=coin.commitment;
     return result;
