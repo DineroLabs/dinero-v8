@@ -35,6 +35,12 @@ This branch collects release implementation for review and qualification against
   exact bytes; stale metadata aborts before writing. This prepares service-index
   coordination but does not enable production ConnectTip or claim validity flags.
   See the indexed-commit design and its isolated restart scope.
+- The actual activation-time startup journal gate now requires the Orchard
+  tip-local consistency audit, exact indexed body/undo and restored-memory
+  agreement. Failure enters safe mode and does not consume the one-shot gate.
+  Historical journal behavior stays optional before activation. This is not yet
+  complete startup/replay/reindex or production connection; see the service
+  startup audit design and generated-store qualification scope.
 - The actual legacy persistence helpers now preserve frozen retirement state.
   Shutdown/notifications can confirm an unchanged cache without rewriting it;
   legacy marker rebinding and snapshot replacement refuse while retirement exists.

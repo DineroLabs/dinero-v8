@@ -7,6 +7,7 @@
 #include "consensus/block_index.h"
 #include "consensus/block_lifecycle.h"
 #include <thread>
+#include <functional>
 #include <type_traits>
 #include "consensus/orchard_block_filter.h"
 #include "consensus/orchard_state_root.h"
@@ -534,7 +535,8 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     CHECK(restored.forest.dumpInternalState()==parent_forest.dumpInternalState());
     CHECK(RequiredValue(db.getOrchardState())==parent_state);
 }
-static void AtomicForest(const std::string& base,bool checkpoint,const std::string& crash_executable={},bool owned_write=false,bool indexed=false) {
+static void AtomicForest(const std::string& base,bool checkpoint,const std::string& crash_executable={},bool owned_write=false,bool indexed=false,
+    const std::function<void(ChainDB&,const OrchardBlockContext&,const OrchardBlockCandidate&,const UtreexoForest&,const std::filesystem::path&)>& startup_check={}) {
     AnnotatedRecursiveMutex activation;
     TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
     BlockStorage files;CBlockIndex disk_index;
@@ -749,6 +751,7 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
     CHECK(storage::RestoreHistoricalForest(db,c.height,reopened,error)==Status::Ok);
     CHECK(reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
     AuditOrchardChainstateTipUnderLock(db,token,c,parent,reopened,true);
+    if(startup_check) { startup_check(db,c,block,reopened,temp.path); return; }
     // Frozen legacy anchor contents are checked on startup/disconnect.
     const auto legacy_anchors=RequiredValue(db.getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory));
     consensus::shielded::AnchorHistory changed_anchors;
@@ -905,8 +908,18 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
     CHECK(ReadStoredOrchardBlock(db,c.block_hash,true).WireBytes()==block.WireBytes());
     CHECK(RequiredValue(db.getOrchardState())==staged.block.orchard.Next());
 }
+#ifdef DINERO_TEST_ORCHARD_SERVICE_STARTUP
+#include "../daemon/orchard_service_startup_checks.h"
+#endif
 int main(int argc,char**argv) {
     try { SelectParams(Chain::REGTEST);
+#ifdef DINERO_TEST_ORCHARD_SERVICE_STARTUP
+        if(argc==3 && std::string(argv[1])=="--service-startup") {
+            AtomicForest(argv[2],false,{},false,false,ServiceStartupChecks);
+            AtomicForest(argv[2],true,{},false,false,ServiceStartupChecks);
+            std::cout<<"OrchardServiceStartup PASS\n";return 0;
+        }
+#endif
         if(argc>1 && (std::string(argv[1])=="--crash-child" || std::string(argv[1])=="--owner-child" || std::string(argv[1])=="--indexed-child")) {CrashChild(argc,argv);return 2;}
         if(argc==3 && std::string(argv[1])=="--crash-lifecycle") {
             const auto executable=std::filesystem::absolute(argv[0]).string();

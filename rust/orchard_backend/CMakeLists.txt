@@ -204,6 +204,18 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_orchard_runtime_reader PRIVATE dinero_core dinero_orchard_runtime_reader dinero_orchard_block_staging)
     add_test(NAME OrchardRuntimeReader COMMAND test_orchard_runtime_reader "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     set_tests_properties(OrchardRuntimeReader PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE LABELS "orchard;storage;integration-staging")
+    # Reuse the honest, fully staged storage fixture; only the test executable
+    # includes service assertions. No test define is applied to a library.
+    add_executable(test_orchard_service_startup
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
+      "${ORCHARD_HOST_ROOT}/src/daemon/config.cpp"
+      "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
+      "${ORCHARD_HOST_ROOT}/tests/stubs/daemon_test_stubs.cpp")
+    target_compile_definitions(test_orchard_service_startup PRIVATE DINERO_TEST_ORCHARD_SERVICE_STARTUP=1)
+    target_include_directories(test_orchard_service_startup PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    target_link_libraries(test_orchard_service_startup PRIVATE dinero_core dinero_orchard_chainstate_write dinero_orchard_block_staging)
+    add_test(NAME OrchardServiceStartup COMMAND test_orchard_service_startup --service-startup "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardServiceStartup PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;daemon;storage;integration-staging")
     add_executable(test_orchard_operation_archive "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_operation_archive.cpp")
     target_link_libraries(test_orchard_operation_archive PRIVATE dinero_orchard_operation_archive)
     add_test(NAME OrchardOperationArchive COMMAND test_orchard_operation_archive "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

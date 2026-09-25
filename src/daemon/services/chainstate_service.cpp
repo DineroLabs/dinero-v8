@@ -3,8 +3,10 @@
 #include "daemon/services/chainstate_service.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/runtime_block_reader.h"
-#include "consensus/orchard_profile.h"
+#include "consensus/orchard_block_staging.h"
 #endif
+#include "consensus/orchard_profile.h"
+#include <tuple>
 #include "consensus/assumeutxo_fork_guard.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/chainstate_commit_batch.h"
@@ -1958,6 +1960,81 @@ std::optional<uint256> ChainstateService::PredictPostBlockShieldedRootForTemplat
 }
 
 bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    // Orchard's commit record is mandatory. Never route its state through the
+    // optional legacy journal or let a failed check consume the startup gate.
+    const auto fail_orchard = [&](const char* reason) {
+        EnterSafeMode(std::string("orchard-startup-state: ") + reason);
+        return false;
+    };
+    if (!consensus::OrchardProfileConfigurationValid(Params()))
+        return fail_orchard("invalid selected profile");
+    const bool selected_orchard = active_tip_ &&
+        consensus::OrchardActiveForHeight(Params(), active_tip_->height);
+    const auto orchard_state = chain_db_ ? chain_db_->getOrchardState() :
+        StatusOr<storage::OrchardStoredState>(Status::NotFound);
+    if (!orchard_state.ok() && orchard_state.status() != Status::NotFound &&
+        !(chain_db_ && orchard_state.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return fail_orchard("cannot read stored Orchard state");
+    const auto retired = chain_db_ ? chain_db_->getLegacyRetirementState() :
+        StatusOr<storage::LegacyRetirementState>(Status::NotFound);
+    if (!retired.ok() && retired.status() != Status::NotFound &&
+        !(chain_db_ && retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return fail_orchard("cannot read stored retirement state");
+    const auto persisted_tip = chain_db_ ? chain_db_->getTip() : StatusOr<TipInfo>(Status::NotFound);
+    const bool persisted_orchard = persisted_tip.ok() && persisted_tip->height >= 0 &&
+        consensus::OrchardActiveForHeight(Params(), uint32_t(persisted_tip->height));
+    if (selected_orchard || persisted_orchard || orchard_state.ok() || retired.ok()) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (!selected_orchard || !orchard_state.ok() || !chain_db_ || !block_storage_ ||
+            !consensus_utxo_set_ || GetConfig().utreexo_stateless)
+            return fail_orchard("selected stateful restore is unavailable");
+        try {
+            const auto& tip = *active_tip_;
+            if (consensus_utxo_set_->GetBestBlock() != tip.hash ||
+                consensus_utxo_set_->GetHeight() != tip.height)
+                return fail_orchard("restored memory tip disagrees with active tip");
+            const auto body = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), tip.hash, tip.height);
+            const auto metadata = chain_db_->getHeaderMetadata(tip.hash);
+            if (!body.ok() || !body->IsOrchardProfile() || !metadata.ok())
+                return fail_orchard("indexed body or metadata unavailable");
+            const auto& m = *metadata;
+            const auto& header = body->Orchard().Header();
+            if (tip.prev_hash != header.prev_block_hash || tip.version != header.version ||
+                tip.merkle_root != header.merkle_root || tip.timestamp != header.timestamp ||
+                tip.bits != header.difficulty || tip.nonce != header.nonce ||
+                ChainworkFromHex(tip.chainwork) != m.chainwork ||
+                (m.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)) ||
+                (m.status_flags & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) != (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO) ||
+                !m.undo_size ||
+                std::tie(tip.status, tip.file_number, tip.data_pos, tip.data_size, tip.undo_file, tip.undo_pos, tip.undo_size) !=
+                std::tie(m.status_flags, m.file_number, m.data_pos, m.data_size, m.undo_file, m.undo_pos, m.undo_size))
+                return fail_orchard("active index disagrees with durable locators");
+            const auto undo = chain_db_->getUndo(tip.hash);
+            const auto disk_undo = block_storage_->readUndo({m.undo_file, m.undo_pos, m.undo_size});
+            if (!undo.ok() || !disk_undo.ok() || undo->Serialize() != *disk_undo)
+                return fail_orchard("flatfile and chainstate undo disagree");
+            const auto parent = chain_db_->getHeader(header.prev_block_hash);
+            if (!parent.ok()) return fail_orchard("selected parent unavailable");
+            const bool witness = Params().enforce_witness_commitment &&
+                tip.height >= Params().witness_commitment_enforcement_height;
+            // The strict indexed body and the embedded commit body must be
+            // byte-identical, including the Utreexo suffix outside the tx root.
+            if (body->Orchard().WireBytes() != consensus::ReadStoredOrchardBlock(
+                    *chain_db_, tip.hash, witness).WireBytes())
+                return fail_orchard("flatfile and committed body disagree");
+            ChainWriteToken token;
+            const auto forest_lock = consensus_utxo_set_->LockForestShared();
+            consensus::AuditOrchardChainstateTipUnderLock(*chain_db_, token, *body->Context(),
+                *parent, consensus_utxo_set_->GetForest(), witness);
+            return true;
+        } catch (const std::exception&) {
+            return fail_orchard("tip-local consistency audit failed");
+        }
+#else
+        return fail_orchard("binary has no Orchard runtime support");
+#endif
+    }
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row written by ConsensusWriteBatch::Commit() (commit 85eacb55d).
     //
@@ -8534,7 +8611,7 @@ void ChainstateService::ActivateBestChain() {
     // be a normal in-flight delta, not a partial-commit signature.
     // Guarded by `journal_verified_at_startup_`.
     if (!journal_verified_at_startup_) {
-        VerifyConsensusJournalAtActiveTip();
+        if (!VerifyConsensusJournalAtActiveTip()) return;
         journal_verified_at_startup_ = true;
     }
 
@@ -10478,18 +10555,20 @@ void ChainstateService::EnterSafeMode(const std::string& reason) {
     safe_mode_reason_ = reason;
     safe_mode_entered_time_ = std::chrono::steady_clock::now();
 
-    logger_->warning("⚠️  SAFE MODE ACTIVATED: " + reason);
-    logger_->warning("⚠️  Mining has been paused for safety");
-    logger_->warning("⚠️  Chain state is unstable - waiting for network consensus");
+    if (logger_) {
+        logger_->warning("⚠️  SAFE MODE ACTIVATED: " + reason);
+        logger_->warning("⚠️  Mining has been paused for safety");
+        logger_->warning("⚠️  Chain state is unstable - waiting for network consensus");
+    }
 
     // Notify mining service to pause
     auto* daemon_ctx = DaemonContext::instance();
     if (daemon_ctx && daemon_ctx->mining) {
         auto mining = std::dynamic_pointer_cast<MiningService>(daemon_ctx->mining);
         if (mining) {
-            logger_->info("[SafeMode] Notifying mining service to pause");
+            if (logger_) logger_->info("[SafeMode] Notifying mining service to pause");
             mining->stopMining();
-            logger_->info("[SafeMode] Mining stopped");
+            if (logger_) logger_->info("[SafeMode] Mining stopped");
         }
     }
 }

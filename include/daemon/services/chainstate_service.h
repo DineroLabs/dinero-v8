@@ -260,9 +260,12 @@ public:
     //                template generation + block connect, require
     //                operator safemode.exit. Return false.
     //
-    // Returns true if state is consistent (or unverifiable due to
-    // absent row), false if a mismatch was detected and safe mode
-    // was entered.
+    // The optional behavior above is historical only. A selected/persisted
+    // Orchard tip or retirement receipt requires the mandatory typed startup
+    // audit and restored stateful view, independent of the legacy flag. Missing
+    // rows, unsupported runtime/profile or inconsistent local state enter safe
+    // mode and return false. ActivateBestChain must stop without consuming its
+    // startup verification flag. This method acquires the activation lock.
     bool VerifyConsensusJournalAtActiveTip();
 
     // Phase 11a: Utreexo forest accessor (for extracting root hash)
