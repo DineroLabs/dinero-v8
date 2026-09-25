@@ -38,6 +38,10 @@ This branch collects release implementation for review and qualification against
   MTP/future time, exact shared ASERT difficulty and proof of work using owned
   branch values. Competing timing-boundary branches are tested. Live admission
   still needs to invoke it and complete fork-choice/resource obligations. Configured checkpoints now bind to candidate ancestry, including competing branches; runtime replay/reindex routing remains unfinished.
+- Selected-network Orchard activation/signing context is now explicit. All
+  network defaults remain inactive; public schedules must match the joint
+  release profile, and the staged header gate rejects caller context that
+  disagrees with the selected height/branch. No runtime caller is enabled.
 - Draft mixed-block resource accounting caps aggregate bundles/actions before coin lookup or proof verification, counts static scripts and resolved input signature work including same-block children, and returns charged usage. Runtime/miner callers and loaded-platform capacity qualification remain open.
 - Ordered shared coin processing verifies Orchard and ordinary signatures,
   supports same-block children, prevents cross-family double spending and binds

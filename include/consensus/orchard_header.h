@@ -1,5 +1,6 @@
 #pragma once
 #include "consensus/orchard_state_transition.h"
+#include <optional>
 
 namespace dinero::consensus {
 class HeaderChainSelector;
@@ -20,6 +21,11 @@ class OrchardHeaderLookupError : public std::runtime_error {
 public:
     explicit OrchardHeaderLookupError(const char* message) : std::runtime_error(message) {}
 };
+// Runtime routing context from selected network parameters. Nullopt means
+// Orchard is inactive at this height. Invalid local configuration throws a
+// lookup error; the transaction or peer never supplies the branch/domain.
+[[nodiscard]] std::optional<OrchardBlockContext> SelectedOrchardBlockContext(
+    const BlockHeader&, uint32_t height);
 // Staged post-activation header gate. The host holds the selected chain/writer
 // lock and keeps Params() fixed through application. Every selector read is
 // hash-anchored and copies values under the selector's own lock; no raw index

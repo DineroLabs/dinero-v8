@@ -417,6 +417,12 @@ struct ChainParams {
     // Joint compact-v1 / 60-second release and service cutoff. Public heights
     // are source-selected, never operator overrides. UINT32_MAX is dormant.
     uint32_t release_v8113_activation_height = UINT32_MAX;
+
+    // Dormant Orchard profile. Source-selected only; no public-network CLI
+    // override. A scheduled public profile must share the release boundary.
+    // Zero is not a signing branch. No production branch ID is chosen here.
+    uint32_t orchard_activation_height = UINT32_MAX;
+    uint32_t orchard_branch_id = 0;
 };
 
 // ============================================================================

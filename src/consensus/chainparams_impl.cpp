@@ -1,3 +1,4 @@
+#include "consensus/orchard_profile.h"
 #include "consensus/release_profile.h"
 // Canonical ChainParams implementation
 // This is the ONLY file that defines g_chainParams and implements Params()
@@ -593,6 +594,8 @@ const ChainParams& ParamsImpl() {
 // `const ChainParams&` rather than reading the globals is what makes that
 // mistake impossible to reintroduce -- there is no global here to read.
 static void ValidateChainParams(const ChainParams& params) {
+    if (!consensus::OrchardProfileConfigurationValid(params))
+        throw std::runtime_error("invalid chainparams: Orchard height/branch must be explicit and coupled to the public release");
     if (!consensus::ReleaseProfileConfigurationValid(params))
         throw std::runtime_error("invalid chainparams: joint release requires matching compact, timing and service heights");
     if (!consensus::shielded::CompactActivationConfigurationValid(params)) {

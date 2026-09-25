@@ -1,4 +1,5 @@
 #include "consensus/orchard_header.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/pow_context.h"
 #include "consensus/pow.h"
 #include "consensus/pow.hpp"
@@ -38,7 +39,51 @@ template<class F> void LookupFailure(F run) {
     CHECK(rejected);
 }
 int main() {
+    // All shipped network configurations remain inactive, including the
+    // sentinel height. Only local copies are scheduled by this test.
+    for (auto network : {Chain::MAINNET, Chain::TESTNET, Chain::REGTEST}) {
+        SelectParams(network);
+        CHECK(Params().orchard_activation_height == UINT32_MAX);
+        CHECK(Params().orchard_branch_id == 0);
+        CHECK(OrchardProfileConfigurationValid(Params()));
+        CHECK(!OrchardActiveForHeight(Params(), UINT32_MAX));
+        CHECK(!SelectedOrchardBlockContext(BlockHeader{}, UINT32_MAX));
+        auto scheduled = Params();
+        // Synthetic prerequisites avoid assigning an actual public schedule.
+        scheduled.shielded_activation_height = 1;
+        scheduled.shielded_input_binding_activation_height = 2;
+        scheduled.shielded_cv_binding_activation_height = scheduled.shielded_epoch_reset_height = 3;
+        scheduled.shielded_spend_auth_activation_height = scheduled.shielded_spend_auth_epoch_reset_height = 4;
+        for (auto [height, branch] : {std::pair<uint32_t,uint32_t>{0,1}, {10,0},
+                                    {uint32_t(INT32_MAX)+1,1}, {UINT32_MAX,1}}) {
+            bool failed = false;
+            try { ConfigureOrchardRelease(scheduled, height, branch); }
+            catch (const std::invalid_argument&) { failed = true; }
+            CHECK(failed);
+            CHECK(scheduled.orchard_activation_height == UINT32_MAX);
+            CHECK(scheduled.orchard_branch_id == 0);
+            CHECK(scheduled.release_v8113_activation_height == UINT32_MAX);
+            CHECK(scheduled.shielded_compact_activation_height == UINT32_MAX);
+            CHECK(scheduled.sixty_second_activation_height == UINT32_MAX);
+        }
+        ConfigureOrchardRelease(scheduled, 10, 1); // fixture branch only
+        CHECK(!OrchardActiveForHeight(scheduled, 9));
+        CHECK(OrchardActiveForHeight(scheduled, 10));
+        CHECK(!OrchardActiveForHeight(scheduled, 9)); // boundary rewind
+        auto mismatch = scheduled;
+        mismatch.sixty_second_activation_height = 11;
+        CHECK(OrchardProfileConfigurationValid(mismatch) == (network == Chain::REGTEST));
+        mismatch = scheduled; mismatch.orchard_activation_height = 11;
+        CHECK(OrchardProfileConfigurationValid(mismatch) == (network == Chain::REGTEST));
+        mismatch = scheduled; mismatch.name = "unknown";
+        CHECK(!OrchardProfileConfigurationValid(mismatch));
+        ConfigureOrchardRelease(scheduled, UINT32_MAX, 0);
+        CHECK(!OrchardActiveForHeight(scheduled, UINT32_MAX));
+        CHECK(Params().orchard_activation_height == UINT32_MAX);
+    }
     SelectParams(Chain::REGTEST);
+    MutableParams().orchard_activation_height = 1;
+    MutableParams().orchard_branch_id = 1;
     MutableParams().regtest_enforce_pow = true;
     MutableParams().sixty_second_activation_height = 4;
     const auto genesis = BuildCanonicalGenesis(Params()).header;
@@ -57,6 +102,11 @@ int main() {
         child.difficulty = GetNextWorkRequiredForCandidate(height, child.timestamp, consensus,
             nullptr, parent, static_cast<NoChainDb*>(nullptr));
         CHECK(child.difficulty != 0); child = Solve(child);
+        auto selected = SelectedOrchardBlockContext(child, height);
+        CHECK(selected && selected->height == height && selected->activation_height == 1);
+        CHECK(selected->block_hash == child.GetHash() && selected->parent_hash == parent->hash);
+        CHECK(selected->domain.network_code == 2 && selected->domain.branch_id == 1);
+        CHECK(selected->domain.genesis_wire == Context(child, height).domain.genesis_wire);
         check(child, parent->header, height, child.timestamp);
         CHECK(headers.GetBestHeaderValue()->hash == parent->hash); // gate does not mutate fork choice
 
@@ -84,6 +134,19 @@ int main() {
         Rejected(OrchardHeaderErrorCode::Context, [&] { CheckOrchardHeaderUnderChainstateLock(child, parent->header, context, headers, child.timestamp); });
         context = Context(child, height); context.domain.branch_id = 0;
         Rejected(OrchardHeaderErrorCode::Context, [&] { CheckOrchardHeaderUnderChainstateLock(child, parent->header, context, headers, child.timestamp); });
+        context = Context(child, height); context.domain.branch_id = 2;
+        Rejected(OrchardHeaderErrorCode::Context, [&] { CheckOrchardHeaderUnderChainstateLock(child, parent->header, context, headers, child.timestamp); });
+        if (height >= 2) {
+            context = Context(child, height); context.activation_height = 2;
+            Rejected(OrchardHeaderErrorCode::Context, [&] { CheckOrchardHeaderUnderChainstateLock(child, parent->header, context, headers, child.timestamp); });
+        }
+        MutableParams().orchard_activation_height = height + 1;
+        CHECK(!SelectedOrchardBlockContext(child, height));
+        Rejected(OrchardHeaderErrorCode::Context, [&] { check(child, parent->header, height, child.timestamp); });
+        MutableParams().orchard_activation_height = 1;
+        MutableParams().orchard_branch_id = 0;
+        LookupFailure([&] { check(child, parent->header, height, child.timestamp); });
+        MutableParams().orchard_branch_id = 1;
         context = Context(child, height); context.block_hash = genesis.GetHash();
         Rejected(OrchardHeaderErrorCode::Context, [&] { CheckOrchardHeaderUnderChainstateLock(child, parent->header, context, headers, child.timestamp); });
         context = Context(child, height); context.height = 0;

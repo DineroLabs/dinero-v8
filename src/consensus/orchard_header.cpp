@@ -1,6 +1,7 @@
 #include "consensus/orchard_header.h"
 #include "consensus/header_chain.h"
 #include "consensus/pow.h"
+#include "consensus/orchard_profile.h"
 #include "consensus/pow_context.h"
 #include <algorithm>
 #include <limits>
@@ -9,6 +10,29 @@ namespace dinero::consensus {
 namespace {
 using Error = OrchardHeaderErrorCode;
 [[noreturn]] void Reject(Error code) { throw OrchardHeaderError(code); }
+}
+std::optional<OrchardBlockContext> SelectedOrchardBlockContext(
+    const BlockHeader& header, uint32_t height) {
+    const auto& params = Params();
+    if (!OrchardProfileConfigurationValid(params))
+        throw OrchardHeaderLookupError("invalid selected Orchard activation configuration");
+    if (!OrchardActiveForHeight(params, height)) return std::nullopt;
+    if (height > uint32_t(INT32_MAX))
+        throw OrchardHeaderLookupError("unsupported selected Orchard height");
+    const uint8_t network = params.name == "mainnet" ? 0 :
+        params.name == "testnet" ? 1 : params.name == "regtest" ? 2 : 0xff;
+    uint256 genesis;
+    if (network == 0xff || !uint256::FromHex(params.genesis_hash, genesis) || genesis.IsNull())
+        throw OrchardHeaderLookupError("invalid selected Orchard network identity");
+    OrchardBlockContext context;
+    context.height = height;
+    context.block_hash = header.GetHash();
+    context.parent_hash = header.prev_block_hash;
+    context.activation_height = params.orchard_activation_height;
+    context.domain.network_code = network;
+    context.domain.branch_id = params.orchard_branch_id;
+    std::copy(genesis.begin(), genesis.end(), context.domain.genesis_wire.begin());
+    return context;
 }
 void CheckOrchardHeaderUnderChainstateLock(
     const BlockHeader& header, const BlockHeader& parent,
@@ -21,6 +45,9 @@ void CheckOrchardHeaderUnderChainstateLock(
     if (network == 0xff || !uint256::FromHex(params.genesis_hash, genesis) || genesis.IsNull() ||
         now_seconds == 0 || now_seconds > static_cast<uint64_t>(INT64_MAX) - 7200)
         throw OrchardHeaderLookupError("invalid selected Orchard header configuration");
+    const auto selected = SelectedOrchardBlockContext(header, context.height);
+    if (!selected || context.activation_height != selected->activation_height ||
+        context.domain.branch_id != selected->domain.branch_id) Reject(Error::Context);
     if (context.domain.network_code != network || context.domain.branch_id == 0 ||
         !std::equal(genesis.begin(), genesis.end(), context.domain.genesis_wire.begin()) ||
         context.height == 0 || context.height > static_cast<uint32_t>(INT32_MAX) ||
