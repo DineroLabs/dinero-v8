@@ -55,7 +55,11 @@ This branch collects release implementation for review and qualification against
   A versioned commit record shares the batch; tip-local startup auditing and eight process-exit boundaries pass on generated stores. Production/CSN integration and service/flatfile-index coordination remain unfinished.
 - Wallet primitives now include opaque ZIP32 account keys, external/internal receivers, watch-only parity and an explicit-network Bech32m address profile. Fresh shield/send/unshield bundle construction uses OS randomness and an owned transaction signing context, then decodes and verifies before returning. Received notes are opaque; incremental witnesses check roots, preserve prior state and resume from a canonical checkpoint-bound encoding. No wallet database or RPC caller is enabled.
 - Encrypted wallet snapshots stage in the caller-owned SQLite transaction with companion wallet records, checked revisions and process-exit recovery tests. Typed scan state now tracks receipts/spends and witnesses and restores from an encrypted snapshot against an exact selected checkpoint and authenticated origin callbacks. Production callbacks, reservations/operations and live callers remain unfinished.
-- Pending-operation component reserves inputs before proving, freezes fully authorized canonical bytes before broadcast, and restores encrypted Reserved/Ready states through process-exit boundaries. Live selection, job scheduling, admission, broadcast and confirmation/reorg archival remain unfinished.
+- Pending-operation component reserves inputs before proving, freezes fully authorized canonical bytes before broadcast, and restores encrypted Reserved/Ready states through process-exit boundaries. Live selection, service job integration, admission, broadcast and confirmation/reorg archival remain unfinished.
+- Bounded proof executor stages one worker and four total jobs/results, checks
+  exact durable reservation intent and discards cancelled active results. It is
+  not wired into wallet RPCs; active proofs cannot be preempted and production
+  shutdown drain time is not yet qualified.
 - Account snapshots combine scanner, pending operations and durable external/internal address counters. Rewind and explicit rescan reset only derived scan state; they preserve address issuance and frozen pending transactions. These are staged wallet components, not live RPC callers.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.

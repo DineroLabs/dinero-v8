@@ -54,7 +54,7 @@ exits. The companion wallet row and queue recover the same side of the commit.
 Malformed/truncated snapshots and edited authorization bytes reject.
 
 This is not a complete wallet job runner. Final production integration still
-needs bounded proof jobs, wallet ownership/selection, live
+needs service integration of bounded proof jobs, wallet ownership/selection, live
 RPC/admission/broadcast, and selected-chain
 confirmation/conflict archival with reorg resurrection. There is deliberately
 no ready-entry removal API yet: those missing archival rules must not be replaced
@@ -63,3 +63,7 @@ by cancellation that could release inputs belonging to a relayed transaction.
 `OrchardAccountState` now combines this queue with typed scan state and durable
 address counters in one encrypted payload. Its reorg/rescan paths preserve the
 queue; they do not supply confirmation/conflict archival.
+
+The `OrchardProofJobs` component now supplies bounded execution and cancellation
+against exact reserved intents. Its service integration remains unfinished;
+see `orchard-proof-jobs-2026-09-25.md` for capacity and shutdown limits.
