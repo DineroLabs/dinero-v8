@@ -238,6 +238,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_orchard_block_reader PRIVATE dinero_orchard_block_reader)
     add_test(NAME OrchardBlockReader COMMAND test_orchard_block_reader "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     set_tests_properties(OrchardBlockReader PROPERTIES TIMEOUT 120 LABELS "orchard;serialization;integration-staging")
+    add_executable(test_utxo_publication
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_utxo_publication.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(test_utxo_publication PRIVATE dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    add_test(NAME OrchardMemoryPublication COMMAND test_utxo_publication)
+    set_tests_properties(OrchardMemoryPublication PROPERTIES TIMEOUT 60 LABELS "orchard;consensus;integration-staging")
     add_executable(test_orchard_block_staging
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")

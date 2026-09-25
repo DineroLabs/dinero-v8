@@ -1,5 +1,6 @@
 #include "orchard_forest_test_fixture.h"
 #include "consensus/orchard_block_staging.h"
+#include "consensus/utxo_publication.h"
 #include "consensus/orchard_block_filter.h"
 #include "../storage/shielded_store_fixture.h"
 #include <iomanip>
@@ -380,6 +381,11 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
     Tip(db,parent.GetHash(),20000,seed);Commit(db,seed);
     db.close();const auto original=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
     const auto before=parent_forest.dumpInternalState();
+    ConsensusUTXOSet live;
+    for (const auto& [point,coin]:view.coins) CHECK(live.AddCoin(point,coin));
+    live.ReplaceForestGuarded(parent_forest);
+    live.SetBestBlock(parent.GetHash(),c.height-1);
+
     { auto no_filter=c;no_filter.block_hash=no_filter_header.GetHash();
       rocksdb::WriteBatch rejected;bool failed=false;
       try{(void)StageOrchardChainstateConnectUnderLock(db,token,no_filter,no_filter_block,parent,parent_forest,{},true,checkpoint,rejected);}
@@ -420,7 +426,22 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
     rocksdb::WriteBatch connect;
     auto staged=StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,parent_forest,{},true,checkpoint,connect);
     CHECK(parent_forest.dumpInternalState()==before);
-    Commit(db,connect);db.close();CHECK(db.init(temp.path)==Status::Ok);
+    std::vector<UTXOPublicationChange> memory_changes;
+    for (const auto& change:staged.block.coins.Changes())
+        memory_changes.push_back({change.outpoint,change.before,change.after});
+    auto publication=PreparedUTXOPublication::PrepareUnderLock(live,c.height-1,parent.GetHash(),
+        parent.utreexo_root,memory_changes,staged.forest.After(),c.height,c.block_hash,header.utreexo_root);
+    publication.CheckReadyUnderLock();
+    CHECK(live.GetBestBlock()==parent.GetHash());
+    Commit(db,connect);
+    std::move(publication).PublishAfterCommitUnderLock();
+    CHECK(live.GetBestBlock()==c.block_hash && live.GetHeight()==c.height);
+    CHECK(live.SnapshotForestCommitment()==staged.forest.After().getCommitment());
+    for(const auto& change:memory_changes) {
+        CHECK(live.HaveCoin(change.outpoint)==bool(change.after));
+        if(change.after) CHECK(live.GetCoin(change.outpoint)->value==change.after->value);
+    }
+db.close();CHECK(db.init(temp.path)==Status::Ok);
     CHECK(RequiredValue(db.getTip()).hash==c.block_hash);
     CHECK(RequiredValue(db.getValidatedTip()).hash==c.block_hash);
     CHECK(RequiredValue(db.getForestTipMarker()).forest_root==header.utreexo_root);
@@ -477,7 +498,19 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
     rocksdb::WriteBatch disconnect;
     const auto restored=StageOrchardChainstateDisconnectUnderLock(db,token,c,block,parent,reopened,true,disconnect);
     CHECK(restored.dumpInternalState()==before && reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
-    Commit(db,disconnect);db.close();CHECK(db.init(temp.path)==Status::Ok);
+    std::vector<UTXOPublicationChange> reverse_changes;
+    for(const auto& change:memory_changes)
+        reverse_changes.push_back({change.outpoint,change.after,change.before});
+    auto rollback=PreparedUTXOPublication::PrepareUnderLock(live,c.height,c.block_hash,
+        header.utreexo_root,reverse_changes,restored,c.height-1,parent.GetHash(),parent.utreexo_root);
+    rollback.CheckReadyUnderLock();
+    CHECK(live.GetBestBlock()==c.block_hash);
+    Commit(db,disconnect);
+    std::move(rollback).PublishAfterCommitUnderLock();
+    CHECK(live.GetBestBlock()==parent.GetHash() && live.GetHeight()==c.height-1);
+    CHECK(live.SnapshotForestCommitment()==parent_forest.getCommitment());
+    for(const auto& change:reverse_changes) CHECK(live.HaveCoin(change.outpoint)==bool(change.after));
+db.close();CHECK(db.init(temp.path)==Status::Ok);
     CHECK(RequiredValue(db.getTip()).hash==parent.GetHash());
     CHECK(RequiredValue(db.getValidatedTip()).hash==parent.GetHash());
     CHECK(RequiredValue(db.getForestTipMarker()).forest_root==parent.utreexo_root);
