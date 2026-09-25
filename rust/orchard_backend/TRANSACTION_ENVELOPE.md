@@ -64,8 +64,12 @@ validation. A nonempty scriptSig is structurally rejected, eliminating an
 unsigned mutable field from txid. Host admission MUST resolve the previous
 output, require a supported native witness program, reject unexpected witness
 and enforce the complete script/stack rules before producing any full-validation
-result or populating its cache. The current component performs none of those
-script checks, and its synthetic signing fixture is not a valid transparent spend.
+result or populating its cache. The staged host `OrchardTransparent` component
+now implements restricted native P2WPKH/key-path Taproot checks, maturity and
+contextual locks. It is not wired into admission, and the original synthetic
+signing fixture is not a valid transparent spend. See
+`docs/design/orchard-transparent-authorization-2026-09-24.md` for exact signing
+rules and the remaining combined-authorization gate.
 Multiple wtxids for one txid are possible by design; wire bounds limit each
 candidate but do not establish a cache policy. The host must bound admission,
 deduplication and caches; neither identifier alone substitutes for validation.

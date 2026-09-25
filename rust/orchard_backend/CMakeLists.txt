@@ -1,7 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(dinero_orchard_backend LANGUAGES CXX)
+  project(dinero_orchard_backend LANGUAGES C CXX)
   include(CTest)
+endif()
+if(NOT TARGET secp256k1)
+  # Use the repository-pinned library, never a system secp256k1 substitute.
+  set(SECP256K1_DISABLE_SHARED ON CACHE BOOL "" FORCE)
+  set(SECP256K1_ENABLE_MODULE_EXTRAKEYS ON CACHE BOOL "" FORCE)
+  set(SECP256K1_ENABLE_MODULE_SCHNORRSIG ON CACHE BOOL "" FORCE)
+  foreach(feature ECDH RECOVERY ELLSWIFT GENERATOR RANGEPROOF SURJECTIONPROOF WHITELIST MUSIG ECDSA_ADAPTOR ECDSA_S2C BPPP)
+    set(SECP256K1_ENABLE_MODULE_${feature} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  foreach(kind BENCHMARK TESTS EXHAUSTIVE_TESTS CTIME_TESTS EXAMPLES)
+    set(SECP256K1_BUILD_${kind} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/secp256k1-zkp" "secp256k1")
 endif()
 # This first build integration supports native Linux/macOS. Refuse accidental
 # cross compilation until the Rust target and native libraries are qualified.
@@ -75,6 +88,8 @@ else()
   target_include_directories(orchard_historical_codec PUBLIC "${ORCHARD_HOST_ROOT}/include")
   target_link_libraries(dinero_transaction_reader PUBLIC orchard_historical_codec)
 endif()
+add_library(dinero_orchard_transparent STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_transparent.cpp")
+target_link_libraries(dinero_orchard_transparent PUBLIC dinero_transaction_reader secp256k1)
 if(DINERO_ORCHARD_BUILD_TESTS)
   # Fail closed if the host monetary constant changes or cannot be read.
   # The C++ test compares this host value to both its own value and Rust's ABI.
@@ -102,9 +117,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_executable(test_orchard_coin_snapshot "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_coin_snapshot.cpp")
   target_link_libraries(test_orchard_coin_snapshot PRIVATE dinero_transaction_reader)
   add_test(NAME OrchardCoinSnapshot COMMAND test_orchard_coin_snapshot "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  add_executable(test_orchard_transparent "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_transparent.cpp")
+  target_link_libraries(test_orchard_transparent PRIVATE dinero_orchard_transparent)
+  add_test(NAME OrchardTransparent COMMAND test_orchard_transparent "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()

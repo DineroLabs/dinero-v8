@@ -9,6 +9,9 @@ This branch collects release implementation for review and qualification against
   transaction envelope, with exact-source component and root-build CI jobs.
 - Typed shared reader with historical-format regression tests and a default
   legacy-parser rejection boundary for marked Orchard envelopes.
+- Owned consensus-view coin resolution and staged transparent authorization:
+  restricted native Taproot/P2WPKH signatures bound to Orchard intent, maturity
+  and contextual locks. No production admission caller is enabled.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
   outer/inner signing-profile identity.
 - Explicit domain/profile checks across Rust/C++, canonical synthetic vectors,
@@ -24,8 +27,9 @@ its own full Linux build and test runs.
 
 - Connect the typed shared reader to validated mempool, relay, storage and
   block assembly; current production callers still reject Orchard.
-- Resolve transparent inputs against authenticated chainstate and validate
-  scripts, maturity, anchors, nullifiers, monetary conservation and activation.
+- Connect the staged coin/signature/spendability components to authenticated
+  runtime state; qualify combined transparent and Orchard authorization,
+  anchors, nullifiers, monetary conservation and activation.
 - Atomic Orchard frontier/pool/nullifier updates with UTXOs, tip and undo;
   disconnect, restart, reindex, crash recovery and cross-boundary reorg tests.
 - Wallet keys/addresses, proof construction, witness maintenance, shield/send/
