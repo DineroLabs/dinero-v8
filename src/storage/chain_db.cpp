@@ -561,6 +561,14 @@ StatusOr<Block> ChainDB::getBlock(const uint256& hash) const {
     return std::move(block);
 }
 
+StatusOr<std::vector<uint8_t>> ChainDB::getBlockEncoding(const uint256& hash) const {
+    if (!db_) return Status::Internal;
+    std::string value;
+    const auto status=db_->Get(rocksdb::ReadOptions(),cf_[idx_blocks_].get(),makeBlockKey(hash),&value);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return std::vector<uint8_t>(value.begin(),value.end());
+}
+
 Status ChainDB::hasBlock(const uint256& hash) const {
     if (!db_) return Status::Internal;
 

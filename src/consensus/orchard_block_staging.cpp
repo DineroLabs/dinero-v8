@@ -7,6 +7,20 @@
 #include "consensus/utreexo_delta_codec.h"
 #include "util/hex.h"
 
+namespace dinero {
+Status ChainDB::stageOrchardBlock(const ChainWriteToken& token,const OrchardBlockCandidate& block,
+    bool require_witness_commitment,rocksdb::WriteBatch& batch) {
+    (void)token;
+    if(!db_)return Status::Internal;
+    std::string error;
+    if(!block.Header().IsReservedValid() || !block.CheckSizeLimits(error) ||
+        !block.CheckIdentityCommitments(require_witness_commitment,error))return Status::Invalid;
+    const auto& bytes=block.WireBytes();
+    return convertRocksDBStatus(batch.Put(cf_[idx_blocks_].get(),makeBlockKey(block.Header().GetHash()),
+        rocksdb::Slice(reinterpret_cast<const char*>(bytes.data()),bytes.size())));
+}
+}
+
 namespace dinero::consensus {
 namespace {
 class DatabaseCoins final : public ChainStateView {
@@ -93,6 +107,22 @@ void StageMarkers(ChainDB& db,const ChainWriteToken& token,const BlockHeader& he
     StorageCheck(db.setTip(token,hash,int(height),work,&batch));
     StorageCheck(db.setValidatedTip(token,hash,int(height),&batch));
 }
+}
+OrchardBlockCandidate ReadStoredOrchardBlock(const ChainDB& db,const uint256& hash,
+    bool require_witness_commitment) {
+    const auto bytes=db.getBlockEncoding(hash);
+    if(!bytes.ok())throw OrchardStateLookupError(bytes.status());
+    const auto block=[&] {
+        try{return OrchardBlockCandidate::DecodeExact(*bytes);}
+        catch(const std::invalid_argument&){throw OrchardStateLookupError(Status::Corruption);}
+        catch(const orchard::BackendError& e){throw OrchardStateLookupError(
+            e.Status()==DINERO_ORCHARD_PANIC?Status::Internal:Status::Corruption);}
+    }();
+    std::string error;
+    if(block.Header().GetHash()!=hash || !block.Header().IsReservedValid() ||
+        !block.CheckSizeLimits(error) || !block.CheckIdentityCommitments(require_witness_commitment,error))
+        throw OrchardStateLookupError(Status::Corruption);
+    return block;
 }
 PreparedOrchardState StageOrchardBlockUnderChainstateLock(ChainDB& db,
     const ChainWriteToken& token, const OrchardBlockContext& context,
@@ -303,6 +333,13 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     CheckStateMarkers(db,context.height-1,context.parent_hash,parent.utreexo_root);
     if(RequiredLocal(db.getTip()).work!=parent_work || work<=parent_work)
         throw OrchardStateLookupError(Status::Corruption);
+    // This path owns active transaction indexing. A prior row would need an
+    // explicit undo policy; never silently overwrite an unrelated location.
+    for(const auto& tx:block.Transactions()) {
+        const auto location=db.getTxLocation(tx.GetTxid().AsUint256());
+        if(location.ok())throw OrchardStateLookupError(Status::AlreadyExists);
+        if(location.status()!=Status::NotFound)throw OrchardStateLookupError(location.status());
+    }
     auto prepared=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,context,block,mtp,
         require_witness_commitment,batch);
     auto transition=[&] {
@@ -323,6 +360,9 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     else if(status!=Status::NotFound)throw OrchardStateLookupError(status);
     batch.Put(key,delta);
     if(checkpoint)StorageCheck(db.putUtreexoCheckpointWithChecksum(token,int(context.height),transition.After().serialize(),&batch));
+    StorageCheck(db.stageOrchardBlock(token,block,require_witness_commitment,batch));
+    for(size_t i=0;i<block.Transactions().size();++i)
+        StorageCheck(db.putTxIndex(token,block.Transactions()[i].GetTxid().AsUint256(),context.block_hash,uint32_t(i),&batch));
     StageMarkers(db,token,block.Header(),context.height,work,batch);
     guard.Keep();
     return {std::move(prepared),std::move(transition)};
@@ -340,6 +380,10 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     CheckStateMarkers(db,context.height,context.block_hash,block.Header().utreexo_root);
     if(RequiredLocal(db.getTip()).work!=work || work<=parent_work)
         throw OrchardStateLookupError(Status::Corruption);
+    for(size_t i=0;i<block.Transactions().size();++i) {
+        const auto location=RequiredLocal(db.getTxLocation(block.Transactions()[i].GetTxid().AsUint256()));
+        if(location.first!=context.block_hash || location.second!=i)throw OrchardStateLookupError(Status::Corruption);
+    }
     std::string encoded,error;UtreexoDelta delta;
     const auto status=db.getRaw(MakeUtreexoDeltaUndoKey(context.block_hash),encoded);
     if(status!=Status::Ok)throw OrchardStateLookupError(status==Status::NotFound?Status::Corruption:status);
@@ -350,6 +394,7 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     }();
     StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,context,block,
         require_witness_commitment,batch);
+    for(const auto& tx:block.Transactions())StorageCheck(db.deleteTxIndex(token,tx.GetTxid().AsUint256(),&batch));
     StorageCheck(db.deleteHeightIndex(token,int(context.height),&batch));
     StorageCheck(db.deleteUtreexoCheckpointWithChecksum(token,int(context.height),&batch));
     StageMarkers(db,token,parent,context.height-1,parent_work,batch);

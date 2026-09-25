@@ -278,6 +278,10 @@ static void AtomicForest(const std::string& base,bool checkpoint) {
     const auto absent_proof=OrchardBlockCandidate::DecodeExact(bytes);
     StateReject(StateError::BlockBody,[&]{(void)StageOrchardChainstateConnectUnderLock(db,token,c,absent_proof,parent,parent_forest,{},true,checkpoint,stale);});
     CHECK(stale.Count()==0);
+    CHECK(db.putTxIndex(token,id.AsUint256(),H(99),1)==Status::Ok);
+    LookupReject(Status::AlreadyExists,[&]{(void)StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,parent_forest,{},true,checkpoint,stale);});
+    CHECK(stale.Count()==0);
+    CHECK(db.deleteTxIndex(token,id.AsUint256())==Status::Ok);
     // A mismatching retained delta must roll back even coins/state already staged.
     const auto key=MakeUtreexoDeltaUndoKey(c.block_hash);
     rocksdb::WriteBatch poison;poison.Put(key,"invalid-delta");Commit(db,poison);
@@ -293,6 +297,12 @@ static void AtomicForest(const std::string& base,bool checkpoint) {
     CHECK(RequiredValue(db.getValidatedTip()).hash==c.block_hash);
     CHECK(RequiredValue(db.getForestTipMarker()).forest_root==header.utreexo_root);
     CHECK(RequiredValue(db.getOrchardState())==staged.block.orchard.Next());
+    CHECK(ReadStoredOrchardBlock(db,c.block_hash,true).WireBytes()==block.WireBytes());
+    CHECK(!db.getBlock(c.block_hash).ok()); // No implicit fallback to the legacy family.
+    for(size_t i=0;i<block.Transactions().size();++i) {
+        const auto location=RequiredValue(db.getTxLocation(block.Transactions()[i].GetTxid().AsUint256()));
+        CHECK(location.first==c.block_hash && location.second==i);
+    }
     UtreexoForest reopened;std::string error;
     CHECK(storage::RestoreHistoricalForest(db,c.height,reopened,error)==Status::Ok);
     CHECK(reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
@@ -323,11 +333,32 @@ static void AtomicForest(const std::string& base,bool checkpoint) {
     UtreexoForest restarted;
     CHECK(storage::RestoreHistoricalForest(db,20000,restarted,error)==Status::Ok);
     CHECK(restarted.dumpInternalState()==before);
+    for(const auto& tx:block.Transactions())CHECK(db.getTxLocation(tx.GetTxid().AsUint256()).status()==Status::NotFound);
+    CHECK(ReadStoredOrchardBlock(db,c.block_hash,true).WireBytes()==block.WireBytes());
+    // Corrupt temporary stored bodies retain the header hash but must not be
+    // accepted merely because the key/header exists. No live store is opened.
+    auto altered=block.WireBytes();auto coinbase=block.Transactions()[0].Historical();
+    coinbase.vout[0].value=AmountUna::Una(2);
+    const auto changed_coinbase=Wire(coinbase);
+    CHECK(changed_coinbase.size()==Wire(block.Transactions()[0].Historical()).size());
+    std::copy(changed_coinbase.begin(),changed_coinbase.end(),altered.begin()+129);
+    CHECK(OrchardBlockCandidate::DecodeExact(altered).Header().GetHash()==c.block_hash);
+    CHECK(!OrchardBlockCandidate::DecodeExact(altered).MatchesTransactionRoot());
+    for(const auto& bad:std::vector<Bytes>{Bytes{1,2,3},altered}) {
+        db.close();
+        {auto names=legacy;names.push_back(shielded_store_fixture::shielded);Raw raw(temp.path,names);
+            raw.put("blocks","b"+c.block_hash.GetHex(),std::string(bad.begin(),bad.end()));}
+        CHECK(db.init(temp.path)==Status::Ok);
+        LookupReject(Status::Corruption,[&]{(void)ReadStoredOrchardBlock(db,c.block_hash,true);});
+    }
+    // Reconnect replaces the bad local body only with the fully prepared
+    // candidate, in the same batch as its restored indexes and chainstate.
     // Reconnect uses the retained exact conventional and forest undo records.
     rocksdb::WriteBatch reconnect;
     const auto again=StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,restarted,{},true,checkpoint,reconnect);
     Commit(db,reconnect);
     CHECK(again.forest.After().dumpInternalState()==staged.forest.After().dumpInternalState());
+    CHECK(ReadStoredOrchardBlock(db,c.block_hash,true).WireBytes()==block.WireBytes());
     CHECK(RequiredValue(db.getOrchardState())==staged.block.orchard.Next());
 }
 int main(int argc,char**argv) {

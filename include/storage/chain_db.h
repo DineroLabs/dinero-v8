@@ -21,6 +21,7 @@
 #include <thread>
 
 namespace dinero {
+class OrchardBlockCandidate;
 
 namespace consensus { struct OrchardValueFlow; }
 
@@ -174,6 +175,10 @@ public:
 
     // Block operations
     Status putBlock(const ChainWriteToken& token, const uint256& hash, const Block& block, rocksdb::WriteBatch* wb = nullptr);
+    // Implemented only by the optional staged Orchard component. Never commits;
+    // full validity and the unified state batch remain the connector's duty.
+    Status stageOrchardBlock(const ChainWriteToken& token, const OrchardBlockCandidate& block,
+                            bool require_witness_commitment, rocksdb::WriteBatch& batch);
     Status deleteBlock(const ChainWriteToken& token, const uint256& hash, rocksdb::WriteBatch* wb = nullptr);
 
     // Header operations
@@ -559,6 +564,9 @@ public:
     // ═══════════════════════════════════════════════════════════════════════
 
     StatusOr<Block> getBlock(const uint256& hash) const;
+    // Exact stored encoding; reading bytes does not authenticate a block body.
+    // Typed readers must check framing, header identity and body commitments.
+    StatusOr<std::vector<uint8_t>> getBlockEncoding(const uint256& hash) const;
     Status hasBlock(const uint256& hash) const;
 
     // Legacy undo operations still used by the active reorg path.

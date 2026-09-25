@@ -8,6 +8,10 @@ namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; }
 
 namespace dinero::consensus {
+// Typed stored-body read. Checks exact framing, key/header identity, transaction
+// and witness commitments, and size. Not replay/PoW/proof/transaction validity.
+[[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(
+    const ChainDB&, const uint256& hash, bool require_witness_commitment);
 // Caller holds the chainstate writer lock from coin resolution/authorization
 // through commit. All supplied authorizations must come from that held view.
 // This stages ONLY Orchard state in the caller's batch. UTXO/forest/tip/index
@@ -48,10 +52,11 @@ struct StagedOrchardChainstate {
     StagedOrchardBlock block;
     PreparedOrchardForest forest;
 };
-// Stage authoritative state, delta, forest marker, height index and both tip
-// markers together. The caller supplies authenticated selected-branch headers,
-// with matching persisted header/work records, holds the writer lock, and must complete header/PoW, resource,
-// block-storage/index/journal obligations before committing. Peer proof data
+// Stage authoritative state, body, active transaction indexes, delta, forest
+// marker, height index and both tip markers together. The caller supplies
+// authenticated selected-branch headers with persisted header/work records,
+// holds the writer lock, and must complete header/PoW, remaining resource,
+// journal and service/flatfile-index obligations before committing. Peer proof data
 // is checked against the resolved coins and full parent forest in this path.
 // This neither commits nor publishes memory and is not full-block admission.
 // An optional checkpoint is in the SAME batch; every block has a durable delta.
@@ -64,7 +69,8 @@ struct StagedOrchardChainstate {
 // Reads the stored delta, so no pre-restart transition object is required.
 // Returns a private restored forest to publish only after the outer commit.
 // Retains block/header/undo/delta records for reconnect; removes the disconnected
-// height index and checkpoint. Same empty-batch and remaining-obligations contract.
+// active transaction/height indexes and checkpoint. Existing transaction-index
+// rows are never overwritten on connect. Same empty-batch/remaining-obligations contract.
 [[nodiscard]] UtreexoForest StageOrchardChainstateDisconnectUnderLock(
     ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
     const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
