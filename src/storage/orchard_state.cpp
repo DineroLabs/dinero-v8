@@ -282,6 +282,29 @@ Status ChainDB::stageOrchardDisconnect(const ChainWriteToken& token,
     guard.keep(); return Status::Ok;
 }
 
+StatusOr<storage::OrchardCommitmentSets> ChainDB::previewOrchardDisconnectCommitmentSets(
+    const OrchardStoredState& expected_tip) const {
+    if (!db_) return Status::Internal;
+    if (!hasSeparatedShieldedState() || !Valid(expected_tip)) return Status::Invalid;
+    const auto current=getOrchardState();
+    if (!current.ok()) return current.status();
+    if (*current!=expected_tip) return Status::Invalid;
+    std::string bytes;
+    const auto status=db_->Get(getReadOptions(),shieldedStateHandle(),Key('U',expected_tip.block_hash),&bytes);
+    if (!status.ok()) return status.IsNotFound()?Status::Corruption:convertRocksDBStatus(status);
+    const auto undo=DecodeUndo(bytes);
+    if (!undo.ok()) return undo.status();
+    if (undo->after!=expected_tip ||
+        (undo->before?undo->before->tree_size:0)+uint64_t(undo->nullifiers.size())!=expected_tip.tree_size)
+        return Status::Corruption;
+    const auto result=readOrchardCommitmentSets(expected_tip,undo->nullifiers,expected_tip.anchor,true,
+        undo->before?std::optional(undo->before->anchor):std::nullopt);
+    if (!result.ok()) return result.status();
+    if (!undo->before && (result->nullifier_count || result->anchor_count || result->anchor_references))
+        return Status::Corruption;
+    return result;
+}
+
 StatusOr<storage::OrchardCommitmentSets> ChainDB::getOrchardCommitmentSets(
     const OrchardStoredState& expected) const {
     if (!Valid(expected)) return Status::Invalid;
@@ -297,7 +320,8 @@ StatusOr<storage::OrchardCommitmentSets> ChainDB::previewOrchardCommitmentSets(
 }
 StatusOr<storage::OrchardCommitmentSets> ChainDB::readOrchardCommitmentSets(
     const std::optional<OrchardStoredState>& parent, const std::vector<uint256>& added,
-    const std::optional<uint256>& added_anchor) const {
+    const std::optional<uint256>& added_anchor, bool removing,
+    const std::optional<uint256>& restored_anchor) const {
     if (!db_) return Status::Internal;
     if (!hasSeparatedShieldedState()) return Status::Invalid;
     const auto current = getOrchardState();
@@ -325,7 +349,9 @@ StatusOr<storage::OrchardCommitmentSets> ChainDB::readOrchardCommitmentSets(
         if (result.nullifier_count == UINT64_MAX) return false;
         nf_hash.Write(nf.data,32); ++result.nullifier_count; return true;
     };
+    if (removing && (!parent || !added_anchor || inserted.size()>parent->tree_size)) return Status::Invalid;
     size_t inserted_pos = 0;
+    uint64_t stored_nullifiers=0;
     std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(),shieldedStateHandle()));
     std::optional<uint256> previous;
     for (it->Seek("O1N"); it->Valid() && it->key().starts_with("O1N"); it->Next()) {
@@ -333,20 +359,31 @@ StatusOr<storage::OrchardCommitmentSets> ChainDB::readOrchardCommitmentSets(
         uint256 nf, owner; std::memcpy(nf.data,it->key().data()+3,32); std::memcpy(owner.data,it->value().data(),32);
         if (owner.IsNull() || (previous && !less(*previous,nf))) return Status::Corruption;
         previous=nf;
-        while (inserted_pos<inserted.size() && less(inserted[inserted_pos],nf))
-            if (!emit_nf(inserted[inserted_pos++])) return Status::Corruption;
-        if (inserted_pos<inserted.size() && inserted[inserted_pos]==nf) return Status::AlreadyExists;
-        if (!emit_nf(nf)) return Status::Corruption;
+        if (stored_nullifiers==UINT64_MAX) return Status::Corruption;
+        ++stored_nullifiers;
+        while (inserted_pos<inserted.size() && less(inserted[inserted_pos],nf)) {
+            if (removing || !emit_nf(inserted[inserted_pos++])) return Status::Corruption;
+        }
+        if (inserted_pos<inserted.size() && inserted[inserted_pos]==nf) {
+            if (!removing) return Status::AlreadyExists;
+            if (owner!=parent->block_hash) return Status::Corruption;
+            ++inserted_pos;
+        } else if (!emit_nf(nf)) return Status::Corruption;
     }
     if (!it->status().ok()) return convertRocksDBStatus(it->status());
+    if (stored_nullifiers!=(parent?parent->tree_size:0)) return Status::Corruption;
+    if (removing && inserted_pos!=inserted.size()) return Status::Corruption;
     while (inserted_pos<inserted.size()) if (!emit_nf(inserted[inserted_pos++])) return Status::Corruption;
-    if (result.nullifier_count != (parent ? parent->tree_size : 0) + uint64_t(inserted.size()))
-        return Status::Corruption;
+    const auto expected_count=removing ? parent->tree_size-uint64_t(inserted.size())
+        : (parent?parent->tree_size:0)+uint64_t(inserted.size());
+    if (result.nullifier_count!=expected_count) return Status::Corruption;
     hash_number(nf_hash,result.nullifier_count); nf_hash.Finalize(result.nullifiers.data);
     bool emitted_new = !added_anchor.has_value(), found_current = !parent.has_value();
+    bool found_restored=!restored_anchor.has_value();
     uint64_t old_references=0;
     const auto emit_anchor = [&](const uint256& a, uint64_t count) {
         if (!count || count > UINT64_MAX-result.anchor_references || result.anchor_count==UINT64_MAX) return false;
+        if (restored_anchor && a==*restored_anchor) found_restored=true;
         anchor_hash.Write(a.data,32); hash_number(anchor_hash,count);
         ++result.anchor_count; result.anchor_references+=count; return true;
     };
@@ -361,15 +398,17 @@ StatusOr<storage::OrchardCommitmentSets> ChainDB::readOrchardCommitmentSets(
         previous=anchor; old_references+=count;
         if (anchor==parent->anchor) found_current=true;
         if (!emitted_new && less(*added_anchor,anchor)) {
-            if (!emit_anchor(*added_anchor,1)) return Status::Corruption;
+            if (removing || !emit_anchor(*added_anchor,1)) return Status::Corruption;
             emitted_new=true;
         }
-        if (!emitted_new && *added_anchor==anchor) { ++count; emitted_new=true; }
-        if (!emit_anchor(anchor,count)) return Status::Corruption;
+        if (!emitted_new && *added_anchor==anchor) {
+            count=removing?count-1:count+1; emitted_new=true;
+        }
+        if (count && !emit_anchor(anchor,count)) return Status::Corruption;
     }
     if (!it->status().ok()) return convertRocksDBStatus(it->status());
-    if (!found_current) return Status::Corruption;
-    if (!emitted_new && !emit_anchor(*added_anchor,1)) return Status::Corruption;
+    if (!found_current || !found_restored) return Status::Corruption;
+    if (!emitted_new && (removing || !emit_anchor(*added_anchor,1))) return Status::Corruption;
     hash_number(anchor_hash,result.anchor_count); hash_number(anchor_hash,result.anchor_references);
     anchor_hash.Finalize(result.anchors.data);
     return result;

@@ -72,6 +72,8 @@ int main(int argc,char**argv){try{
     Require(BuildOrchardStateRootPreimage(child_ctx,record,empty.Next(),empty_sets)==Load(base+"/state-empty-child.preimage"));
     Require(Eq(ComputeOrchardStateRoot(child_ctx,record,empty.Next(),empty_sets),Load(base+"/state-empty-child.root")));
     Stage(db,empty);Require(RequiredValue(db.getOrchardCommitmentSets(empty.Next()))==empty_sets);
+    Require(RequiredValue(db.previewOrchardDisconnectCommitmentSets(empty.Next()))==projected);
+    Require(RequiredValue(db.getOrchardCommitmentSets(empty.Next()))==empty_sets); // Read only.
     rocksdb::WriteBatch undo;Require(db.stageOrchardDisconnect(token,empty.Next(),undo)==Status::Ok);
     Require(db.writeBatch(token,std::move(undo),true)==Status::Ok);
     Require(RequiredValue(db.getOrchardCommitmentSets(funded.Next()))==projected);
@@ -80,6 +82,9 @@ int main(int argc,char**argv){try{
     Require(paid_sets.nullifier_count==4&&paid_sets.anchor_count==2&&paid_sets.anchor_references==2);
     Stage(db,paid);db.close();Require(db.init(tmp.path)==Status::Ok);
     Require(RequiredValue(db.getOrchardCommitmentSets(paid.Next()))==paid_sets);
+    Require(RequiredValue(db.previewOrchardDisconnectCommitmentSets(paid.Next()))==projected);
+    Require(RequiredValue(db.getOrchardCommitmentSets(paid.Next()))==paid_sets);
+    Require(db.previewOrchardDisconnectCommitmentSets(own_hash).status()==Status::Invalid);
     // Projection must reject duplicate new nullifiers, existing membership and wrong size.
     auto next=paid.Next();++next.height;next.block_hash=H(4);next.tree_size+=2;next.anchor=H(99);
     Require(db.previewOrchardCommitmentSets(paid.Next(),next,{H(44),H(44)}).status()==Status::Invalid);
@@ -102,8 +107,39 @@ int main(int argc,char**argv){try{
          else{rocksdb::WriteOptions o;Require(raw.db->Delete(o,raw.cf(shielded_store_fixture::shielded),key).ok());}}
         Require(db.init(tmp.path)==Status::Ok);
         Require(db.getOrchardCommitmentSets(paid.Next()).status()==Status::Corruption);
+        Require(db.previewOrchardDisconnectCommitmentSets(paid.Next()).status()==Status::Corruption);
         db.close();{Raw raw(tmp.path,names);raw.put(shielded_store_fixture::shielded,key,old);}
     }
+    // Reverse projection additionally checks exact stored undo, ownership of
+    // removed nullifiers, and survival of the restored parent's anchor.
+    const auto removed_nf=rawkey("O1N",paid.Nullifiers()[0]);
+    const auto undo_key=rawkey("O1U",paid.Next().block_hash);
+    const auto parent_anchor=rawkey("O1A",funded.Next().anchor);
+    for(int kind=0;kind<4;++kind){
+        const auto key=kind==0?removed_nf:(kind==3?parent_anchor:undo_key);
+        const auto old=pristine.at(shielded_store_fixture::shielded).at(key);
+        {Raw raw(tmp.path,names);
+         if(kind==0)raw.put(shielded_store_fixture::shielded,key,std::string(32,42));
+         else if(kind==2)raw.put(shielded_store_fixture::shielded,key,"truncated undo");
+         else{rocksdb::WriteOptions o;Require(raw.db->Delete(o,raw.cf(shielded_store_fixture::shielded),key).ok());}}
+        const auto changed=Inspect(tmp.path);
+        Require(db.init(tmp.path)==Status::Ok);
+        Require(db.previewOrchardDisconnectCommitmentSets(paid.Next()).status()==Status::Corruption);
+        db.close();Require(Inspect(tmp.path)==changed); // No repair or partial rollback.
+        {Raw raw(tmp.path,names);raw.put(shielded_store_fixture::shielded,key,old);}
+    }
     Require(Inspect(tmp.path)==pristine);
+    Require(db.init(tmp.path)==Status::Ok);
+    rocksdb::WriteBatch undo_paid;Require(db.stageOrchardDisconnect(token,paid.Next(),undo_paid)==Status::Ok);
+    Require(db.writeBatch(token,std::move(undo_paid),true)==Status::Ok);
+    const auto before_boundary=RequiredValue(db.previewOrchardDisconnectCommitmentSets(funded.Next()));
+    Require(before_boundary.nullifier_count==0&&before_boundary.anchor_count==0&&before_boundary.anchor_references==0);
+    Require(Eq(before_boundary.nullifiers,Load(base+"/state-empty.nullifiers")));
+    Require(RequiredValue(db.getOrchardCommitmentSets(funded.Next()))==projected);
+    rocksdb::WriteBatch undo_funded;Require(db.stageOrchardDisconnect(token,funded.Next(),undo_funded)==Status::Ok);
+    Require(db.writeBatch(token,std::move(undo_funded),true)==Status::Ok);
+    Require(db.getOrchardState().status()==Status::NotFound);
+    const auto replay=RequiredValue(db.previewOrchardCommitmentSets({},funded.Next(),funded.Nullifiers()));
+    Require(replay==projected);
     std::cout<<"Composite state root: independent framing/set vectors, projection/commit/reopen/undo parity, field binding, no own-hash cycle and corrupt-set refusal passed\n";
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

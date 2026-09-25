@@ -413,6 +413,12 @@ public:
         const std::optional<storage::OrchardStoredState>& expected_parent,
         const storage::OrchardStoredState& next, const std::vector<uint256>& nullifiers) const;
 
+    // Logical sets after the exact stored undo, before writing it. At the
+    // activation boundary this returns empty sets; never a pre-activation v2
+    // root. Caller must authenticate the parent context/frontier separately.
+    StatusOr<storage::OrchardCommitmentSets> previewOrchardDisconnectCommitmentSets(
+        const storage::OrchardStoredState& expected_tip) const;
+
     // Staged retirement receipt and exact undo. Requires separated storage,
     // the selected validated parent/tip, matching legacy marker, and the same
     // writer lock through outer commit. Frozen record fields cannot change on
@@ -781,7 +787,8 @@ private:
     StatusOr<storage::OrchardCommitmentSets> readOrchardCommitmentSets(
         const std::optional<storage::OrchardStoredState>& parent,
         const std::vector<uint256>& added_nullifiers,
-        const std::optional<uint256>& added_anchor) const;
+        const std::optional<uint256>& changed_anchor, bool removing = false,
+        const std::optional<uint256>& restored_anchor = std::nullopt) const;
 
     // Key prefixes (1-byte tags)
     static constexpr uint8_t PREFIX_BLOCK = 'b';

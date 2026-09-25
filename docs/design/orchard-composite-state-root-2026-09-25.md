@@ -78,9 +78,12 @@ state and a selected ChainDB read/projection, enforce pool flows and proofs,
 compare the coinbase commitment, stage retirement and companion state atomically,
 and publish memory only after commit. Those callers are not enabled here.
 
-This change supports forward set projection. Tests check readback after exact
-undo; a pre-commit reverse projection and complete disconnect/root validation
-remain integration work. Snapshot import must verify the root against an
+Forward and reverse projections both operate without writes. Reverse projection
+requires exact current state and stored undo, verifies ownership of every removed
+nullifier, removes exactly one anchor reference, and requires the restored
+parent anchor to survive. Crossing the initial boundary must leave both sets
+empty; that empty result is not a pre-activation DNRS v2 root. Complete
+connect/disconnect commitment enforcement remains integration work. Snapshot import must verify the root against an
 authenticated selected header/coinbase and separately reconstruct or validate
 excluded metadata. It must not trust a root supplied beside an untrusted snapshot.
 
@@ -91,5 +94,6 @@ and a saved opaque Orchard tree root. It calculates set hashes, the preimage and
 the root for a funded block and its empty child without linking Rust or C++.
 It does not independently implement Orchard curve/tree hashing. CI checks these
 saved vectors. C++ tests use real verified synthetic funding/spend plans, compare
-projection with committed/reopened state, restore prior sets after undo, vary
-root fields, reject malformed stored sets and test an initial empty block.
+forward/reverse projection with committed/reopened state, restore prior sets
+after undo, reject missing/malformed undo and incorrect nullifier ownership,
+vary root fields, reject malformed stored sets and test an initial empty block.
