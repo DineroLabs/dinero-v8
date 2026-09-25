@@ -12,6 +12,14 @@ namespace dinero::consensus {
 // and witness commitments, and size. Not replay/PoW/proof/transaction validity.
 [[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(
     const ChainDB&, const uint256& hash, bool require_witness_commitment);
+// Startup consistency check under the writer lock, after restoring the forest
+// against authenticated selected headers. Validates the exact local body,
+// markers, commit record, frontier and reversibility of current-tip rows/undo.
+// Never commits, repairs, rewinds a pointer alone, or establishes historical
+// consensus validity. Does not audit every older UTXO/nullifier in the database.
+void AuditOrchardChainstateTipUnderLock(ChainDB&, const ChainWriteToken&,
+    const OrchardBlockContext&, const BlockHeader& parent, const UtreexoForest&,
+    bool require_witness_commitment);
 // Caller holds the chainstate writer lock from coin resolution/authorization
 // through commit. All supplied authorizations must come from that held view.
 // This stages ONLY Orchard state in the caller's batch. UTXO/forest/tip/index
@@ -56,7 +64,8 @@ struct StagedOrchardChainstate {
 // marker, height index and both tip markers together. The caller supplies
 // authenticated selected-branch headers with persisted header/work records,
 // holds the writer lock, and must complete header/PoW, remaining resource,
-// journal and service/flatfile-index obligations before committing. Peer proof data
+// service/flatfile-index obligations before committing. The versioned commit record
+// shares the batch. Peer proof data
 // is checked against the resolved coins and full parent forest in this path.
 // This neither commits nor publishes memory and is not full-block admission.
 // An optional checkpoint is in the SAME batch; every block has a durable delta.

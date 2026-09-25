@@ -48,7 +48,7 @@ This branch collects release implementation for review and qualification against
   Peer proof targets, paths and ordered metadata are checked against resolved
   inputs and the authenticated full parent forest.
   Exact body storage and active transaction indexes now share that batch.
-  Production/CSN integration, journal and service/flatfile-index coordination remain unfinished.
+  A versioned commit record shares the batch; tip-local startup auditing and eight process-exit boundaries pass on generated stores. Production/CSN integration and service/flatfile-index coordination remain unfinished.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
@@ -92,7 +92,7 @@ the following rows to test-only work:
 | --- | --- |
 | Shared parsing and authorization | Staged transaction/block readers and exact candidate-bound authorization coverage; no live admission |
 | Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
-| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation, ChainDB coin/state/undo staging and private-clone forest transitions implemented; durable forest/tip/height staging implemented; body/active transaction indexes staged together; journal and production callers not integrated |
+| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation, ChainDB coin/state/undo staging and private-clone forest transitions implemented; durable forest/tip/height staging implemented; body/active transaction indexes and versioned commit record staged together; tip-local audit and process-exit boundaries tested; production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Not implemented |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
 

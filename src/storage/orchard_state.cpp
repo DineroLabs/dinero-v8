@@ -164,6 +164,18 @@ StatusOr<uint256> ChainDB::getOrchardNullifierOwner(const uint256& nullifier) co
     if (owner.IsNull()) return Status::Corruption;
     return owner;
 }
+StatusOr<std::optional<storage::OrchardStoredState>> ChainDB::getOrchardUndoParent(
+    const OrchardStoredState& expected_tip) const {
+    if (!db_) return Status::Internal;
+    if (!hasSeparatedShieldedState() || !Valid(expected_tip)) return Status::Invalid;
+    std::string bytes;
+    const auto status = db_->Get(getReadOptions(), shieldedStateHandle(), Key('U', expected_tip.block_hash), &bytes);
+    if (!status.ok()) return status.IsNotFound() ? Status::Corruption : convertRocksDBStatus(status);
+    const auto undo = DecodeUndo(bytes);
+    if (!undo.ok()) return undo.status();
+    if (undo->after != expected_tip) return Status::Corruption;
+    return undo->before;
+}
 StatusOr<uint64_t> ChainDB::getOrchardAnchorReferences(const uint256& anchor) const {
     if (!db_) return Status::Internal;
     if (!hasSeparatedShieldedState()) return Status::Invalid;

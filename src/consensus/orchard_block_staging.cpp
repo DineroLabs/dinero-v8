@@ -6,6 +6,8 @@
 #include "consensus/undo.h"
 #include "consensus/utreexo_delta_codec.h"
 #include "util/hex.h"
+#include "crypto/sha256.h"
+#include <cstdio>
 
 namespace dinero {
 Status ChainDB::stageOrchardBlock(const ChainWriteToken& token,const OrchardBlockCandidate& block,
@@ -106,6 +108,55 @@ void StageMarkers(ChainDB& db,const ChainWriteToken& token,const BlockHeader& he
     StorageCheck(db.putHeightIndex(token,int(height),hash,&batch));
     StorageCheck(db.setTip(token,hash,int(height),work,&batch));
     StorageCheck(db.setValidatedTip(token,hash,int(height),&batch));
+}
+std::string CommitKey(uint32_t height,const uint256& hash) {
+    char height_hex[9];std::snprintf(height_hex,sizeof(height_hex),"%08x",height);
+    // Versioned separately from the legacy shielded journal, whose fingerprint
+    // covers different containers. A retained row is NOT an active-tip pointer.
+    return std::string("orchard_consensus_journal:v1:")+height_hex+":"+hash.GetHex();
+}
+std::string CommitRecord(const OrchardBlockContext& context,const BlockHeader& header,
+    const arith_uint256& work,const UtreexoForest& forest,const storage::OrchardStoredState& state) {
+    (void)orchard::SigningContext::Create(context.domain,0,{}, {},0);
+    const auto root=forest.getCommitment();
+    if(context.activation_height==UINT32_MAX || !context.activation_height ||
+        state.height<context.activation_height || state.height!=context.height ||
+        state.block_hash!=context.block_hash || header.GetHash()!=context.block_hash ||
+        header.prev_block_hash!=context.parent_hash ||
+        !std::equal(root.begin(),root.end(),header.utreexo_root.begin()))
+        throw OrchardStateLookupError(Status::Corruption);
+    const auto frontier=[&] {
+        try{return orchard::OrchardFrontier::Decode({
+            reinterpret_cast<const uint8_t*>(state.frontier.data()),state.frontier.size()});}
+        catch(const orchard::BackendError& e){throw OrchardStateLookupError(
+            e.Status()==DINERO_ORCHARD_PANIC?Status::Internal:Status::Corruption);}
+    }();
+    if(frontier.Size()!=state.tree_size || state.pool_balance>orchard::kMaxMoneyUna ||
+        !std::equal(frontier.Root().begin(),frontier.Root().end(),state.anchor.begin()))
+        throw OrchardStateLookupError(Status::Corruption);
+    crypto::CSHA256 hash;hash.Write("DIN/orchard/chainstate-commit/v1");
+    const auto number=[&](uint64_t value,size_t width) {
+        std::array<uint8_t,8> bytes{};for(size_t i=0;i<width;++i)bytes[i]=uint8_t(value>>(8*i));
+        hash.Write(bytes.data(),width);
+    };
+    number(context.domain.network_code,1);hash.Write(context.domain.genesis_wire.data(),32);
+    number(context.domain.branch_id,4);number(context.activation_height,4);number(context.height,4);
+    const auto bytes=header.SerializeForHash();hash.Write(bytes.data(),bytes.size());
+    hash.Write(work.GetHex());number(forest.getNumLeaves(),8);
+    number(state.pool_balance,8);number(state.tree_size,8);hash.Write(state.anchor.begin(),32);
+    number(state.frontier.size(),4);hash.Write(state.frontier);
+    const auto digest=hash.Finalize();
+    return std::string("DOC1")+std::string(digest.begin(),digest.end());
+}
+void CheckCommitRecord(const ChainDB& db,const OrchardBlockContext& context,const BlockHeader& header,
+    const arith_uint256& work,const UtreexoForest& forest,const storage::OrchardStoredState& state) {
+    std::string stored;const auto status=db.getRaw(CommitKey(context.height,context.block_hash),stored);
+    if(status!=Status::Ok)throw OrchardStateLookupError(status==Status::NotFound?Status::Corruption:status);
+    if(stored!=CommitRecord(context,header,work,forest,state))throw OrchardStateLookupError(Status::Corruption);
+}
+OrchardBlockContext ParentContext(const OrchardBlockContext& current,const BlockHeader& parent) {
+    auto result=current;--result.height;result.block_hash=parent.GetHash();result.parent_hash=parent.prev_block_hash;
+    return result;
 }
 }
 OrchardBlockCandidate ReadStoredOrchardBlock(const ChainDB& db,const uint256& hash,
@@ -342,6 +393,8 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     }
     auto prepared=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,context,block,mtp,
         require_witness_commitment,batch);
+    if(prepared.orchard.Parent())CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,
+        forest,*prepared.orchard.Parent());
     auto transition=[&] {
         try{return PrepareOrchardForestTransition(prepared.coins,parent,forest);}
         catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
@@ -363,6 +416,11 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     StorageCheck(db.stageOrchardBlock(token,block,require_witness_commitment,batch));
     for(size_t i=0;i<block.Transactions().size();++i)
         StorageCheck(db.putTxIndex(token,block.Transactions()[i].GetTxid().AsUint256(),context.block_hash,uint32_t(i),&batch));
+    const auto journal=CommitRecord(context,block.Header(),work,transition.After(),prepared.orchard.Next());
+    std::string retained;const auto journal_status=db.getRaw(CommitKey(context.height,context.block_hash),retained);
+    if(journal_status==Status::Ok && retained!=journal)throw OrchardStateLookupError(Status::Corruption);
+    if(journal_status!=Status::Ok && journal_status!=Status::NotFound)throw OrchardStateLookupError(journal_status);
+    StorageCheck(batch.Put(CommitKey(context.height,context.block_hash),journal).ok()?Status::Ok:Status::Internal);
     StageMarkers(db,token,block.Header(),context.height,work,batch);
     guard.Keep();
     return {std::move(prepared),std::move(transition)};
@@ -380,6 +438,11 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     CheckStateMarkers(db,context.height,context.block_hash,block.Header().utreexo_root);
     if(RequiredLocal(db.getTip()).work!=work || work<=parent_work)
         throw OrchardStateLookupError(Status::Corruption);
+    const auto current_state=RequiredLocal(db.getOrchardState());
+    CheckCommitRecord(db,context,block.Header(),work,forest,current_state);
+    const auto undo_parent=RequiredLocal(db.getOrchardUndoParent(current_state));
+    if((context.height==context.activation_height)!=!undo_parent)
+        throw OrchardStateLookupError(Status::Corruption);
     for(size_t i=0;i<block.Transactions().size();++i) {
         const auto location=RequiredLocal(db.getTxLocation(block.Transactions()[i].GetTxid().AsUint256()));
         if(location.first!=context.block_hash || location.second!=i)throw OrchardStateLookupError(Status::Corruption);
@@ -392,6 +455,7 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
         try{return UndoOrchardForestDelta(forest,delta,parent,block.Header(),context.height);}
         catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
     }();
+    if(undo_parent)CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,restored,*undo_parent);
     StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,context,block,
         require_witness_commitment,batch);
     for(const auto& tx:block.Transactions())StorageCheck(db.deleteTxIndex(token,tx.GetTxid().AsUint256(),&batch));
@@ -400,5 +464,15 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     StageMarkers(db,token,parent,context.height-1,parent_work,batch);
     guard.Keep();
     return restored;
+}
+void AuditOrchardChainstateTipUnderLock(ChainDB& db,const ChainWriteToken& token,
+    const OrchardBlockContext& context,const BlockHeader& parent,const UtreexoForest& forest,
+    bool require_witness_commitment) {
+    const auto block=ReadStoredOrchardBlock(db,context.block_hash,require_witness_commitment);
+    rocksdb::WriteBatch abandoned;
+    // Check reversibility without applying it. This also checks tip-local coins,
+    // nullifier owners, anchor references, indexes and persistent undo/delta.
+    (void)StageOrchardChainstateDisconnectUnderLock(db,token,context,block,parent,forest,
+        require_witness_commitment,abandoned);
 }
 } // namespace dinero::consensus

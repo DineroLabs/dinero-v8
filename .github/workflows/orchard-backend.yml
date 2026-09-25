@@ -210,20 +210,20 @@ jobs:
           ./build-orchard-root/dinerod --version
       - name: Require and execute all root Orchard lanes
         run: |
-          ctest --test-dir build-orchard-root -R '^(OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardBlockReader|OrchardBlockStaging|OrchardLegacyBoundary)$' --show-only=json-v1 > orchard-root-inventory.json
+          ctest --test-dir build-orchard-root -R '^(OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardLegacyBoundary)$' --show-only=json-v1 > orchard-root-inventory.json
           python3 - <<'PYCODE'
           import json
           with open('orchard-root-inventory.json') as f:
               tests = json.load(f)['tests']
           names = [x['name'] for x in tests]
-          if sorted(names) != ['OrchardAuthorization', 'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardBlockCoins', 'OrchardBlockReader', 'OrchardBlockStaging', 'OrchardCoinSnapshot', 'OrchardForestTransition', 'OrchardLegacyBoundary', 'OrchardStateStorage', 'OrchardStateTransition', 'OrchardTransactionReader', 'OrchardTransparent']:
+          if sorted(names) != ['OrchardAtomicCrash', 'OrchardAuthorization', 'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardBlockCoins', 'OrchardBlockReader', 'OrchardBlockStaging', 'OrchardCoinSnapshot', 'OrchardForestTransition', 'OrchardLegacyBoundary', 'OrchardStateStorage', 'OrchardStateTransition', 'OrchardTransactionReader', 'OrchardTransparent']:
               raise SystemExit(f'Wrong root Orchard inventory: {names}')
           for test in tests:
               props = {p['name']: p['value'] for p in test.get('properties', [])}
               if props.get('DISABLED') or 'orchard' not in props.get('LABELS', []):
                   raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
           PYCODE
-          ctest --test-dir build-orchard-root -R '^(OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardBlockReader|OrchardBlockStaging|OrchardLegacyBoundary)$' --output-on-failure --no-tests=error
+          ctest --test-dir build-orchard-root -R '^(OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardLegacyBoundary)$' --output-on-failure --no-tests=error
       - name: Retain root integration evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

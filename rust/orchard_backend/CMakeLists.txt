@@ -169,7 +169,8 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_orchard_block_staging PRIVATE dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
     target_include_directories(test_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardBlockStaging COMMAND test_orchard_block_staging "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
-    set_tests_properties(OrchardBlockStaging PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+    add_test(NAME OrchardAtomicCrash COMMAND test_orchard_block_staging --crash-lifecycle "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardBlockStaging OrchardAtomicCrash PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
       ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;storage;integration-staging")
   endif()
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2

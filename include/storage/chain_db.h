@@ -396,6 +396,10 @@ public:
     Status stageOrchardDisconnect(const ChainWriteToken& token,
         const storage::OrchardStoredState& expected_tip, rocksdb::WriteBatch& batch);
     StatusOr<storage::OrchardStoredState> getOrchardState() const;
+    // Decode the retained undo and require its after-state to match exactly.
+    // Does not authenticate the parent frontier or its selected-chain identity.
+    StatusOr<std::optional<storage::OrchardStoredState>> getOrchardUndoParent(
+        const storage::OrchardStoredState& expected_tip) const;
     StatusOr<uint256> getOrchardNullifierOwner(const uint256& nullifier) const;
     StatusOr<uint64_t> getOrchardAnchorReferences(const uint256& anchor) const;
 
