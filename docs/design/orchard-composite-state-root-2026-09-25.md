@@ -1,7 +1,8 @@
 # Draft Orchard composite state root
 
-Status: root construction and read-only storage projection, not live DNRS
-validation, a selected activation, or a completed snapshot format.
+Status: root construction, read-only storage projection, and full staged
+connector enforcement. No live daemon routing, selected activation or completed
+snapshot format.
 
 ## Logical sets
 
@@ -76,14 +77,16 @@ supplied set digests, historical SHR1/value, or the boundary's ancestry merely
 by hashing them. The runtime connector must supply independently checked legacy
 state and a selected ChainDB read/projection, enforce pool flows and proofs,
 compare the coinbase commitment, stage retirement and companion state atomically,
-and publish memory only after commit. Those callers are not enabled here.
+and publish memory only after commit. The full staged connector now performs
+the commitment/companion checks; production service callers are not enabled.
 
 Forward and reverse projections both operate without writes. Reverse projection
 requires exact current state and stored undo, verifies ownership of every removed
 nullifier, removes exactly one anchor reference, and requires the restored
 parent anchor to survive. Crossing the initial boundary must leave both sets
 empty; that empty result is not a pre-activation DNRS v2 root. Complete
-connect/disconnect commitment enforcement remains integration work. Snapshot import must verify the root against an
+connect/disconnect commitment enforcement is now in the full staged connector;
+production service wiring remains integration work. Snapshot import must verify the root against an
 authenticated selected header/coinbase and separately reconstruct or validate
 excluded metadata. It must not trust a root supplied beside an untrusted snapshot.
 

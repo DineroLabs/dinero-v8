@@ -123,8 +123,9 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_state_root PUBLIC dinero_orchard_backend dinero_crypto)
   target_include_directories(dinero_orchard_state_root PUBLIC "${ORCHARD_HOST_ROOT}/include")
   add_library(dinero_orchard_block_staging STATIC
-    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_staging.cpp")
-  target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader dinero_orchard_block_coins)
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_staging.cpp"
+    "${ORCHARD_HOST_ROOT}/src/consensus/state_commitment.cpp")
+  target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader dinero_orchard_block_coins dinero_orchard_state_root dinero_shielded)
   target_include_directories(dinero_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
   add_library(dinero_orchard_operation_archive STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_operation_archive.cpp")
   target_link_libraries(dinero_orchard_operation_archive PUBLIC dinero_orchard_wallet_account)

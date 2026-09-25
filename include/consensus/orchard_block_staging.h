@@ -3,6 +3,7 @@
 #include "primitives/orchard_block_reader.h"
 #include "consensus/orchard_block_coins.h"
 #include "consensus/orchard_forest_transition.h"
+#include "storage/legacy_retirement.h"
 
 namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
@@ -75,11 +76,18 @@ struct StagedOrchardChainstate {
 // is checked against the resolved coins and full parent forest in this path.
 // This neither commits nor publishes memory and is not full-block admission.
 // An optional checkpoint is in the SAME batch; every block has a durable delta.
+// DNRS v2 and frozen legacy contents are mandatory in this full adapter. At the
+// first boundary only, authenticated_boundary must come from validated selected
+// history (especially amount/epoch), never a block, RPC or wallet claim. Local
+// legacy contents/markers are independently checked here, but this is NOT an
+// accounting-history derivation API. On descendants omit the boundary input.
+// Retirement receipt/undo/marker share this batch; append no legacy writes.
 [[nodiscard]] StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(
     ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
     const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
     const OrchardBranchMtpLookup&,
-    bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&);
+    bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&,
+    const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt);
 
 struct StagedOrchardDisconnect {
     std::vector<OrchardCoinChange> coins;

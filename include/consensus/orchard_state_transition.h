@@ -14,7 +14,7 @@ struct OrchardBlockContext {
 enum class OrchardStateErrorCode {
     Inactive, Context, ParentState, Anchor, DuplicateNullifier,
     SpentNullifier, DuplicateTransaction, DuplicateInput, PoolBalance, ResourceLimit,
-    BlockBody, AuthorizationCoverage, RetiredLegacyPool
+    BlockBody, AuthorizationCoverage, RetiredLegacyPool, StateCommitment
 };
 class OrchardStateError : public std::runtime_error {
 public:
