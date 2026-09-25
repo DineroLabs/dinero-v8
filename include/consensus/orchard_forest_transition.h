@@ -17,6 +17,12 @@ class PreparedOrchardForest;
 [[nodiscard]] PreparedOrchardForest PrepareOrchardForestTransition(
     const PreparedOrchardBlockCoins&, const BlockHeader& parent, const UtreexoForest&);
 [[nodiscard]] UtreexoForest UndoOrchardForestTransition(const UtreexoForest&,const PreparedOrchardForest&);
+// Restart-safe undo from the durable delta. Both headers and their selected
+// branch height must be authenticated by the caller. Corrupt local records fail
+// without mutating the current forest; this is not peer proof verification.
+[[nodiscard]] UtreexoForest UndoOrchardForestDelta(const UtreexoForest&,
+    const UtreexoDelta&, const BlockHeader& parent, const BlockHeader& current,
+    uint32_t current_height);
 
 // Stateful computation on one private forest clone. No network-proof bypass:
 // this requires the authenticated full parent forest under the caller's lock.

@@ -1,5 +1,6 @@
 #include "consensus/orchard_forest_transition.h"
 #include <set>
+#include "consensus/utreexo_canonical_roots_activation.h"
 
 namespace dinero::consensus {
 namespace {
@@ -57,6 +58,34 @@ UtreexoForest UndoOrchardForestTransition(const UtreexoForest& current,const Pre
         restored.setCanonicalEmptyRoots(transition.parent_canonical_);restored.rebuildRoots();
     }
     if(restored.getNumLeaves()!=transition.delta_.numLeavesBefore || Root(restored)!=transition.parent_root_)
+        Reject(Error::Undo);
+    return restored;
+}
+UtreexoForest UndoOrchardForestDelta(const UtreexoForest& current,const UtreexoDelta& delta,
+    const BlockHeader& parent,const BlockHeader& header,uint32_t height) {
+    if(height==0 || header.prev_block_hash!=parent.GetHash() || !parent.IsReservedValid() ||
+        !header.IsReservedValid() || Root(current)!=header.utreexo_root ||
+        current.isCanonicalEmptyRoots()!=IsUtreexoCanonicalRootsActive(height) ||
+        delta.addedLeaves.size()>UINT64_MAX-delta.numLeavesBefore ||
+        current.getNumLeaves()!=delta.numLeavesBefore+delta.addedLeaves.size())Reject(Error::Undo);
+    std::set<uint64_t> positions;
+    for(const auto& leaf:delta.deletedLeaves)
+        if(leaf.leafHash.size()!=32 || leaf.position>=delta.numLeavesBefore ||
+            !positions.insert(leaf.position).second)Reject(Error::Undo);
+    for(size_t i=0;i<delta.addedLeaves.size();++i) {
+        const auto& leaf=delta.addedLeaves[i];
+        if(leaf.hash.size()!=32 || leaf.position!=delta.numLeavesBefore+i ||
+            current.findLeafPosition(leaf.hash)!=std::optional<uint64_t>(leaf.position))Reject(Error::Undo);
+    }
+    auto restored=current.clone();
+    if(!restored.removeLastNLeaves(delta.addedLeaves.size()))Reject(Error::Undo);
+    for(auto it=delta.deletedLeaves.rbegin();it!=delta.deletedLeaves.rend();++it)
+        if(!restored.restoreDeletedLeaf(it->position,it->leafHash))Reject(Error::Undo);
+    const bool canonical=IsUtreexoCanonicalRootsActive(height-1);
+    if(restored.isCanonicalEmptyRoots()!=canonical) {
+        restored.setCanonicalEmptyRoots(canonical);restored.rebuildRoots();
+    }
+    if(restored.getNumLeaves()!=delta.numLeavesBefore || Root(restored)!=parent.utreexo_root)
         Reject(Error::Undo);
     return restored;
 }

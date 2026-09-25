@@ -74,6 +74,17 @@ static void RoundTrip(const std::string& base,size_t padding) {
     const auto reopened=UtreexoForest::deserialize(final_transition.After().serialize());
     const auto restored=UndoOrchardForestTransition(reopened,final_transition);
     Require(restored.dumpInternalState()==before);
+    Require(UndoOrchardForestDelta(reopened,decoded,parent,header,c.height).dumpInternalState()==before);
+    const auto unchanged=reopened.dumpInternalState();
+    auto malformed=decoded;malformed.addedLeaves[0].hash[0]^=1;
+    ForestReject(OrchardForestErrorCode::Undo,[&]{(void)UndoOrchardForestDelta(reopened,malformed,parent,header,c.height);});
+    malformed=decoded;malformed.deletedLeaves.push_back(malformed.deletedLeaves[0]);
+    ForestReject(OrchardForestErrorCode::Undo,[&]{(void)UndoOrchardForestDelta(reopened,malformed,parent,header,c.height);});
+    malformed=decoded;malformed.numLeavesBefore++;
+    ForestReject(OrchardForestErrorCode::Undo,[&]{(void)UndoOrchardForestDelta(reopened,malformed,parent,header,c.height);});
+    malformed=decoded;malformed.deletedLeaves[0].leafHash[0]^=1;
+    ForestReject(OrchardForestErrorCode::Undo,[&]{(void)UndoOrchardForestDelta(reopened,malformed,parent,header,c.height);});
+    Require(reopened.dumpInternalState()==unchanged);
     ForestReject(OrchardForestErrorCode::Undo,[&]{(void)UndoOrchardForestTransition(forest,final_transition);});
     auto wrong_parent=parent;wrong_parent.nonce++;
     ForestReject(OrchardForestErrorCode::Context,[&]{(void)PrepareOrchardForestTransition(final_coins,wrong_parent,forest);});

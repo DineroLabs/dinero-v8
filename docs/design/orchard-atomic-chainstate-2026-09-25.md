@@ -1,0 +1,17 @@
+# Orchard staged atomic chainstate
+
+This is a stateful integration component, not enabled block admission.
+
+`StageOrchardChainstateConnectUnderLock` resolves coins, authorizes both transaction families, prepares the Orchard transition and computes the mixed forest transition. It stages net UTXOs, conventional undo, Orchard frontier/pool/nullifier/anchor state and undo, the existing UD forest delta, a forest marker, the active height index, storage tip and validated tip into one initially empty ChainDB batch. Optional forest checkpoints and their checksums use that same batch. Nothing commits or mutates the caller's forest.
+
+Parent storage/validated tips, height index, forest marker, selected header bytes, heights and cumulative work must agree before staging. Header records must already be persisted by the header path. Their existence is not proof of contextual header validity: the eventual connector must supply authenticated selected headers and complete difficulty/PoW, time, resource and peer-proof checks before committing. The computed forest root must match the exact candidate header. A retained delta or conventional undo must match byte-for-byte on reconnect.
+
+The disconnect adapter reads the durable delta, checks it against the current forest and both selected header roots, and returns a private restored forest. No pre-restart prepared object is required. It stages coin and Orchard reversal, parent tip/marker restoration, and removal of the disconnected height index and checkpoint together. Header/body/undo/delta records remain available for reconnect. Corrupt local data produces a storage error; a candidate header with the wrong computed root is a body rejection.
+
+Every failure rolls back the entire caller batch, including failures after coin/state preparation. Publishing the returned forest before a successful single outer commit violates the API contract. Block-body storage, transaction indexes, journal and in-memory index bookkeeping still belong to that outer connector and are not implemented by this component.
+
+## Verification
+
+Generated RocksDB fixtures use canonical hex-encoded Coin scripts and honest synthetic Orchard proofs plus a signed ordinary child. Tests cover abandoned connect/disconnect batches, late retained-delta failure, inconsistent local markers/forest, committed close/reopen, production checkpoint-plus-delta forest restore, persistent-delta undo, exact parent restoration and reconnect. Both checkpoint-enabled and delta-only modes run. Corrupt delta shape/hash/count and duplicate deletion records fail without mutating the source forest.
+
+These are isolated component tests, not a running daemon, crash-kill, reindex, stateless-node, wallet, activation or release qualification. Mainnet activation remains unset.

@@ -2,6 +2,7 @@
 #include "consensus/orchard_state_transition.h"
 #include "primitives/orchard_block_reader.h"
 #include "consensus/orchard_block_coins.h"
+#include "consensus/orchard_forest_transition.h"
 
 namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; }
@@ -42,4 +43,30 @@ struct StagedOrchardBlock {
 void StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(
     ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
     const OrchardBlockCandidate&, bool require_witness_commitment, rocksdb::WriteBatch&);
+
+struct StagedOrchardChainstate {
+    StagedOrchardBlock block;
+    PreparedOrchardForest forest;
+};
+// Stage authoritative state, delta, forest marker, height index and both tip
+// markers together. The caller supplies authenticated selected-branch headers,
+// with matching persisted header/work records, holds the writer lock, and must complete header/PoW, resource,
+// peer-proof and block-storage/index/journal obligations before committing.
+// This neither commits nor publishes memory and is not full-block admission.
+// An optional checkpoint is in the SAME batch; every block has a durable delta.
+[[nodiscard]] StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
+    const OrchardBranchMtpLookup&,
+    bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&);
+
+// Reads the stored delta, so no pre-restart transition object is required.
+// Returns a private restored forest to publish only after the outer commit.
+// Retains block/header/undo/delta records for reconnect; removes the disconnected
+// height index and checkpoint. Same empty-batch and remaining-obligations contract.
+[[nodiscard]] UtreexoForest StageOrchardChainstateDisconnectUnderLock(
+    ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
+    bool require_witness_commitment,
+    rocksdb::WriteBatch&);
 } // namespace dinero::consensus

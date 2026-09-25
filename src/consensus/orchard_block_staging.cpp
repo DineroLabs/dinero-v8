@@ -4,6 +4,7 @@
 #include <exception>
 #include <map>
 #include "consensus/undo.h"
+#include "consensus/utreexo_delta_codec.h"
 #include "util/hex.h"
 
 namespace dinero::consensus {
@@ -63,6 +64,35 @@ public:
 private:
     rocksdb::WriteBatch& batch_;int exceptions_;bool kept_=false;
 };
+template<class T> T RequiredLocal(StatusOr<T> result) {
+    if(!result.ok())throw OrchardStateLookupError(result.status()==Status::NotFound?Status::Corruption:result.status());
+    return std::move(result.value());
+}
+arith_uint256 StoredHeaderWork(const ChainDB& db,const BlockHeader& header,uint32_t height) {
+    const auto hash=header.GetHash();
+    const auto stored=RequiredLocal(db.getHeader(hash));
+    if(height>INT32_MAX || RequiredLocal(db.getBlockHeight(hash))!=int(height) ||
+        stored.SerializeForHash()!=header.SerializeForHash())throw OrchardStateLookupError(Status::Corruption);
+    return RequiredLocal(db.getBlockWork(hash));
+}
+void CheckStateMarkers(const ChainDB& db,uint32_t height,const uint256& hash,const uint256& root) {
+    const auto tip=RequiredLocal(db.getTip());
+    const auto validated=RequiredLocal(db.getValidatedTip());
+    const auto marker=RequiredLocal(db.getForestTipMarker());
+    if(height>INT32_MAX || tip.height!=int(height) || tip.hash!=hash ||
+        validated.height!=int(height) || validated.hash!=hash ||
+        marker.height!=int(height) || marker.block_hash!=hash || marker.forest_root!=root ||
+        RequiredLocal(db.getBlockHashByHeight(int(height)))!=hash)
+        throw OrchardStateLookupError(Status::Corruption);
+}
+void StageMarkers(ChainDB& db,const ChainWriteToken& token,const BlockHeader& header,
+    uint32_t height,const arith_uint256& work,rocksdb::WriteBatch& batch) {
+    const auto hash=header.GetHash();
+    StorageCheck(db.putForestTipMarker(token,{int32_t(height),hash,header.utreexo_root},&batch));
+    StorageCheck(db.putHeightIndex(token,int(height),hash,&batch));
+    StorageCheck(db.setTip(token,hash,int(height),work,&batch));
+    StorageCheck(db.setValidatedTip(token,hash,int(height),&batch));
+}
 }
 PreparedOrchardState StageOrchardBlockUnderChainstateLock(ChainDB& db,
     const ChainWriteToken& token, const OrchardBlockContext& context,
@@ -258,5 +288,66 @@ void StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(ChainDB& db,
         StorageCheck(db.putCoin(token,coin.prev_txid,coin.prev_vout,StoredCoin(restored),&batch));
     }
     guard.Keep();
+}
+
+StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
+    const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+    const BlockHeader& parent,const UtreexoForest& forest,const OrchardBranchMtpLookup& mtp,
+    bool require_witness_commitment,bool checkpoint,rocksdb::WriteBatch& batch) {
+    EmptyBatchGuard guard(batch);
+    if(context.height==0 || context.height>INT32_MAX || parent.GetHash()!=context.parent_hash)
+        throw OrchardStateError(OrchardStateErrorCode::Context);
+    const auto parent_work=StoredHeaderWork(db,parent,context.height-1);
+    const auto work=StoredHeaderWork(db,block.Header(),context.height);
+    CheckStateMarkers(db,context.height-1,context.parent_hash,parent.utreexo_root);
+    if(RequiredLocal(db.getTip()).work!=parent_work || work<=parent_work)
+        throw OrchardStateLookupError(Status::Corruption);
+    auto prepared=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,context,block,mtp,
+        require_witness_commitment,batch);
+    auto transition=[&] {
+        try{return PrepareOrchardForestTransition(prepared.coins,parent,forest);}
+        catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
+    }();
+    if(!transition.MatchesHeader(block.Header()))throw OrchardStateError(OrchardStateErrorCode::BlockBody);
+    std::string delta,error;
+    if(!SerializeUtreexoDelta(transition.Delta(),delta,error))throw OrchardStateLookupError(Status::Corruption);
+    const auto key=MakeUtreexoDeltaUndoKey(context.block_hash);
+    std::string existing;const auto status=db.getRaw(key,existing);
+    if(status==Status::Ok) {if(existing!=delta)throw OrchardStateLookupError(Status::Corruption);}
+    else if(status!=Status::NotFound)throw OrchardStateLookupError(status);
+    batch.Put(key,delta);
+    if(checkpoint)StorageCheck(db.putUtreexoCheckpointWithChecksum(token,int(context.height),transition.After().serialize(),&batch));
+    StageMarkers(db,token,block.Header(),context.height,work,batch);
+    guard.Keep();
+    return {std::move(prepared),std::move(transition)};
+}
+
+UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
+    const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
+    const BlockHeader& parent,const UtreexoForest& forest,bool require_witness_commitment,
+    rocksdb::WriteBatch& batch) {
+    EmptyBatchGuard guard(batch);
+    if(context.height==0 || context.height>INT32_MAX || parent.GetHash()!=context.parent_hash)
+        throw OrchardStateError(OrchardStateErrorCode::Context);
+    const auto parent_work=StoredHeaderWork(db,parent,context.height-1);
+    const auto work=StoredHeaderWork(db,block.Header(),context.height);
+    CheckStateMarkers(db,context.height,context.block_hash,block.Header().utreexo_root);
+    if(RequiredLocal(db.getTip()).work!=work || work<=parent_work)
+        throw OrchardStateLookupError(Status::Corruption);
+    std::string encoded,error;UtreexoDelta delta;
+    const auto status=db.getRaw(MakeUtreexoDeltaUndoKey(context.block_hash),encoded);
+    if(status!=Status::Ok)throw OrchardStateLookupError(status==Status::NotFound?Status::Corruption:status);
+    if(!DeserializeUtreexoDelta(encoded,delta,error))throw OrchardStateLookupError(Status::Corruption);
+    auto restored=[&] {
+        try{return UndoOrchardForestDelta(forest,delta,parent,block.Header(),context.height);}
+        catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
+    }();
+    StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,context,block,
+        require_witness_commitment,batch);
+    StorageCheck(db.deleteHeightIndex(token,int(context.height),&batch));
+    StorageCheck(db.deleteUtreexoCheckpointWithChecksum(token,int(context.height),&batch));
+    StageMarkers(db,token,parent,context.height-1,parent_work,batch);
+    guard.Keep();
+    return restored;
 }
 } // namespace dinero::consensus

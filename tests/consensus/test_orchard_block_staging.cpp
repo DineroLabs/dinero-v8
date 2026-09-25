@@ -3,6 +3,9 @@
 #include "../storage/shielded_store_fixture.h"
 #include <iomanip>
 #include <sstream>
+#include "consensus/utreexo_delta_codec.h"
+#include "storage/forest_restore.h"
+#include "consensus/chainparams.h"
 
 using namespace shielded_store_fixture;
 static const auto token = ChainWriteToken::CreateForTesting();
@@ -222,8 +225,110 @@ static void AtomicCoins(const std::string& base) {
     CHECK(again.orchard.Next()==staged.orchard.Next());
     CHECK(RequiredValue(db.getCoin(child.GetTxid().AsUint256(),0)).amount==output.amount);
 }
+
+static void AtomicForest(const std::string& base,bool checkpoint) {
+    TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
+    Fixture keys(base);const auto auth=Authorized(base,false,20000);const auto& tx=auth.Transaction();
+    View view;view.height=20000;UtreexoForest parent_forest;parent_forest.setCanonicalEmptyRoots(true);
+    rocksdb::WriteBatch seed;
+    for(size_t i=0;i<tx.Inputs().size();++i) {
+        const auto point=Point(tx.Inputs()[i]);const auto coin=auth.Transparent().Snapshot().Coins()[i];
+        view.coins.emplace(point,coin);
+        CHECK(parent_forest.add(HashUTXOForCreationHeight(point.txid.AsUint256(),point.vout,
+            coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase))!=UINT64_MAX);
+        Coin stored;stored.amount=coin.value.GetUna();stored.script_pubkey=StorageScriptHex(coin.scriptPubKey);
+        stored.height=coin.height;stored.coinbase=coin.isCoinbase;
+        CHECK(db.putCoin(token,point.txid.AsUint256(),point.vout,stored,&seed)==Status::Ok);
+    }
+    BlockHeader parent{};parent.version=1;parent.timestamp=20000;
+    const auto parent_root=parent_forest.getCommitment();std::copy(parent_root.begin(),parent_root.end(),parent.utreexo_root.begin());
+    OrchardBlockContext c{20001,H(2),parent.GetHash(),20001,keys.domain};
+    const auto id=ParsedTransaction::DecodeExact(auth.Orchard().CanonicalBytes(),TransactionReadMode::StagedOrchard).GetTxid();
+    const auto child=Child(OutPoint(id,0),UTXOEntry(AmountUna::Una(tx.Outputs()[0].amount_una),tx.Outputs()[0].script_pub_key,c.height,false),keys);
+    const auto draft=CandidateWires(c,{auth.Orchard().CanonicalBytes(),Wire(child)});c.block_hash=draft.Header().GetHash();
+    const auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(draft,c,view,{},true);
+    const auto computed=PrepareOrchardForestTransition(coins,parent,parent_forest);
+    auto header=draft.Header();header.utreexo_root=computed.Root();
+    auto bytes=draft.WireBytes();const auto wire=header.SerializeForHash();std::copy(wire.begin(),wire.end(),bytes.begin());
+    const auto block=OrchardBlockCandidate::DecodeExact(bytes);c.block_hash=header.GetHash();
+    CHECK(db.putHeader(token,parent.GetHash(),parent,20000,arith_uint256(20000),&seed)==Status::Ok);
+    CHECK(db.putHeader(token,c.block_hash,header,20001,arith_uint256(20001),&seed)==Status::Ok);
+    CHECK(db.putHeightIndex(token,20000,parent.GetHash(),&seed)==Status::Ok);
+    CHECK(db.putForestTipMarker(token,{20000,parent.GetHash(),parent.utreexo_root},&seed)==Status::Ok);
+    CHECK(db.putUtreexoCheckpointWithChecksum(token,20000,parent_forest.serialize(),&seed)==Status::Ok);
+    Tip(db,parent.GetHash(),20000,seed);Commit(db,seed);
+    db.close();const auto original=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
+    const auto before=parent_forest.dumpInternalState();
+    {
+        rocksdb::WriteBatch abandoned;
+        const auto staged=StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,parent_forest,{},true,checkpoint,abandoned);
+        CHECK(staged.forest.Root()==header.utreexo_root);
+        CHECK(RequiredValue(db.getTip()).hash==parent.GetHash());
+    }
+    db.close();CHECK(Inspect(temp.path)==original);CHECK(db.init(temp.path)==Status::Ok);
+    // Refuse an incomplete local state generation before staging the child.
+    CHECK(db.putForestTipMarker(token,{20000,parent.GetHash(),H(98)})==Status::Ok);
+    rocksdb::WriteBatch stale;
+    LookupReject(Status::Corruption,[&]{(void)StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,parent_forest,{},true,checkpoint,stale);});
+    CHECK(stale.Count()==0);
+    CHECK(db.putForestTipMarker(token,{20000,parent.GetHash(),parent.utreexo_root})==Status::Ok);
+    UtreexoForest missing;missing.setCanonicalEmptyRoots(true);
+    LookupReject(Status::Corruption,[&]{(void)StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,missing,{},true,checkpoint,stale);});
+    CHECK(stale.Count()==0);
+    // A mismatching retained delta must roll back even coins/state already staged.
+    const auto key=MakeUtreexoDeltaUndoKey(c.block_hash);
+    rocksdb::WriteBatch poison;poison.Put(key,"invalid-delta");Commit(db,poison);
+    rocksdb::WriteBatch failed;
+    LookupReject(Status::Corruption,[&]{(void)StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,parent_forest,{},true,checkpoint,failed);});
+    CHECK(failed.Count()==0 && db.getOrchardState().status()==Status::NotFound);
+    rocksdb::WriteBatch clear;clear.Delete(key);Commit(db,clear);
+    rocksdb::WriteBatch connect;
+    auto staged=StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,parent_forest,{},true,checkpoint,connect);
+    CHECK(parent_forest.dumpInternalState()==before);
+    Commit(db,connect);db.close();CHECK(db.init(temp.path)==Status::Ok);
+    CHECK(RequiredValue(db.getTip()).hash==c.block_hash);
+    CHECK(RequiredValue(db.getValidatedTip()).hash==c.block_hash);
+    CHECK(RequiredValue(db.getForestTipMarker()).forest_root==header.utreexo_root);
+    CHECK(RequiredValue(db.getOrchardState())==staged.block.orchard.Next());
+    UtreexoForest reopened;std::string error;
+    CHECK(storage::RestoreHistoricalForest(db,c.height,reopened,error)==Status::Ok);
+    CHECK(reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
+    std::string delta;CHECK(db.getRaw(key,delta)==Status::Ok);
+    rocksdb::WriteBatch corrupt;corrupt.Put(key,"truncated");Commit(db,corrupt);
+    LookupReject(Status::Corruption,[&]{(void)StageOrchardChainstateDisconnectUnderLock(db,token,c,block,parent,reopened,true,failed);});
+    CHECK(failed.Count()==0 && RequiredValue(db.getTip()).hash==c.block_hash);
+    rocksdb::WriteBatch repair;repair.Put(key,delta);Commit(db,repair);
+    {
+        rocksdb::WriteBatch abandoned;
+        const auto undone=StageOrchardChainstateDisconnectUnderLock(db,token,c,block,parent,reopened,true,abandoned);
+        CHECK(undone.dumpInternalState()==before);
+        CHECK(RequiredValue(db.getTip()).hash==c.block_hash);
+    }
+    rocksdb::WriteBatch disconnect;
+    const auto restored=StageOrchardChainstateDisconnectUnderLock(db,token,c,block,parent,reopened,true,disconnect);
+    CHECK(restored.dumpInternalState()==before && reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
+    Commit(db,disconnect);db.close();CHECK(db.init(temp.path)==Status::Ok);
+    CHECK(RequiredValue(db.getTip()).hash==parent.GetHash());
+    CHECK(RequiredValue(db.getValidatedTip()).hash==parent.GetHash());
+    CHECK(RequiredValue(db.getForestTipMarker()).forest_root==parent.utreexo_root);
+    CHECK(db.getBlockHashByHeight(c.height).status()==Status::NotFound);
+    CHECK(db.getUtreexoCheckpoint(c.height).status()==Status::NotFound);
+    CHECK(db.getOrchardState().status()==Status::NotFound);
+    CHECK(db.getCoin(id.AsUint256(),0).status()==Status::NotFound);
+    CHECK(db.getCoin(child.GetTxid().AsUint256(),0).status()==Status::NotFound);
+    for(const auto& input:tx.Inputs())CHECK(db.getCoin(Point(input).txid.AsUint256(),input.output_index).ok());
+    UtreexoForest restarted;
+    CHECK(storage::RestoreHistoricalForest(db,20000,restarted,error)==Status::Ok);
+    CHECK(restarted.dumpInternalState()==before);
+    // Reconnect uses the retained exact conventional and forest undo records.
+    rocksdb::WriteBatch reconnect;
+    const auto again=StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,restarted,{},true,checkpoint,reconnect);
+    Commit(db,reconnect);
+    CHECK(again.forest.After().dumpInternalState()==staged.forest.After().dumpInternalState());
+    CHECK(RequiredValue(db.getOrchardState())==staged.block.orchard.Next());
+}
 int main(int argc,char**argv) {
-    try { CHECK(argc==2);RoundTrip(argv[1]);CorruptParent(argv[1]);Coverage(argv[1]);AtomicCoins(argv[1]);
+    try { CHECK(argc==2);SelectParams(Chain::REGTEST);RoundTrip(argv[1]);CorruptParent(argv[1]);Coverage(argv[1]);AtomicCoins(argv[1]);AtomicForest(argv[1],false);AtomicForest(argv[1],true);
         std::cout<<"Orchard ChainDB staging: real frontier, anchors/nullifiers, reopen, branch replacement, abandonment and error separation passed\n";
     } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }
