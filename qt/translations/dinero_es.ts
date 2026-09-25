@@ -7673,13 +7673,13 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="38" />
         <source>Checking available network paths…</source>
-        <translation type="unfinished" />
+        <translation>Comprobando las rutas de red disponibles …</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="45" />
         <location filename="../src/overviewconnectivitycard.cpp" line="93" />
         <source>Private and resilient connectivity</source>
-        <translation type="unfinished" />
+        <translation>Conectividad privada y resistente</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="48" />
@@ -7690,22 +7690,22 @@ Are you absolutely sure?</source>
         <location filename="../src/overviewconnectivitycard.cpp" line="53" />
         <location filename="../src/overviewconnectivitycard.cpp" line="150" />
         <source>Use Dinero's included privacy network when needed.</source>
-        <translation type="unfinished" />
+        <translation>Use la red de privacidad incluida en Dinero cuando haga falta.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="68" />
         <source>Copy</source>
-        <translation type="unfinished" />
+        <translation>Copiar</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="70" />
         <source>Copy the full public Dinero P2P onion address</source>
-        <translation type="unfinished" />
+        <translation>Copiar la dirección onion P2P pública completa de Dinero</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="75" />
         <source>Enable relay service</source>
-        <translation type="unfinished" />
+        <translation>Activar el servicio de retransmisión</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="78" />
@@ -7716,7 +7716,7 @@ Are you absolutely sure?</source>
         <location filename="../src/overviewconnectivitycard.cpp" line="83" />
         <location filename="../src/overviewconnectivitycard.cpp" line="191" />
         <source>Make this node available to other Dinero nodes within safe limits.</source>
-        <translation type="unfinished" />
+        <translation>Poner este nodo a disposición de otros nodos de Dinero dentro de límites seguros.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="94" />
@@ -7727,87 +7727,87 @@ Are you absolutely sure?</source>
         <location filename="../src/overviewconnectivitycard.cpp" line="129" />
         <location filename="../src/overviewconnectivitycard.cpp" line="200" />
         <source>This daemon does not support live Tor controls.</source>
-        <translation type="unfinished" />
+        <translation>Este daemon no admite controles de Tor en vivo.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="147" />
         <source>Tor is active for Dinero P2P; ordinary connections remain available.</source>
-        <translation type="unfinished" />
+        <translation>Tor está activo para la red P2P de Dinero; las conexiones ordinarias siguen disponibles.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="149" />
         <source>Tor is starting or recovering; ordinary P2P continues normally.</source>
-        <translation type="unfinished" />
+        <translation>Tor está iniciándose o recuperándose; la red P2P ordinaria continúa con normalidad.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="173" />
         <source>Public Dinero P2P address: %1</source>
-        <translation type="unfinished" />
+        <translation>Dirección P2P pública de Dinero: %1</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="188" />
         <source>Relay service is active within conservative automatic limits.</source>
-        <translation type="unfinished" />
+        <translation>El servicio de retransmisión está activo dentro de límites automáticos conservadores.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="190" />
         <source>Relay service is enabled and will activate when this node is eligible.</source>
-        <translation type="unfinished" />
+        <translation>El servicio de retransmisión está habilitado y se activará cuando este nodo sea elegible.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="203" />
         <source>Could not change Tor connectivity. Ordinary P2P continues normally.</source>
-        <translation type="unfinished" />
+        <translation>No se pudo cambiar la conectividad de Tor. La red P2P ordinaria continúa con normalidad.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="213" />
         <source>This daemon does not support live relay controls.</source>
-        <translation type="unfinished" />
+        <translation>Este daemon no admite controles de retransmisión en vivo.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="215" />
         <source>Could not change relay service. Existing network paths remain available.</source>
-        <translation type="unfinished" />
+        <translation>No se pudo cambiar el servicio de retransmisión. Las rutas de red existentes siguen disponibles.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="221" />
         <source>Direct active</source>
-        <translation type="unfinished" />
+        <translation>Directa activa</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="221" />
         <source>Direct inbound unavailable</source>
-        <translation type="unfinished" />
+        <translation>Entrada directa no disponible</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="222" />
         <source>Relay fallback ready</source>
-        <translation type="unfinished" />
+        <translation>Retransmisión de reserva lista</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="222" />
         <source>Relay fallback idle</source>
-        <translation type="unfinished" />
+        <translation>Retransmisión de reserva inactiva</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="223" />
         <source>Tor active</source>
-        <translation type="unfinished" />
+        <translation>Tor activo</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="223" />
         <source>Tor inactive</source>
-        <translation type="unfinished" />
+        <translation>Tor inactivo</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="230" />
         <source>Applying securely…</source>
-        <translation type="unfinished" />
+        <translation>Aplicando de forma segura …</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="236" />
         <source>Applying safe automatic limits…</source>
-        <translation type="unfinished" />
+        <translation>Aplicando límites automáticos seguros …</translation>
     </message>
 </context>
 <context>
@@ -7815,50 +7815,50 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/contributionsection.cpp" line="41" />
         <source>Your contribution</source>
-        <translation type="unfinished" />
+        <translation>Su contribución</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="58" />
         <location filename="../src/contributionsection.cpp" line="70" />
         <source>Bytes in</source>
-        <translation type="unfinished" />
+        <translation>Bytes recibidos</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="62" />
         <location filename="../src/contributionsection.cpp" line="73" />
         <source>Bytes out</source>
-        <translation type="unfinished" />
+        <translation>Bytes enviados</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="66" />
         <location filename="../src/contributionsection.cpp" line="76" />
         <source>Relay traffic</source>
-        <translation type="unfinished" />
+        <translation>Tráfico de retransmisión</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="91" />
         <source>Registrants active:</source>
-        <translation type="unfinished" />
+        <translation>Registros activos:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="93" />
         <source>Blocks served (24h):</source>
-        <translation type="unfinished" />
+        <translation>Bloques servidos (24 h):</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="95" />
         <source>Hints sent:</source>
-        <translation type="unfinished" />
+        <translation>Sugerencias enviadas:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="97" />
         <source>Peers via gossip:</source>
-        <translation type="unfinished" />
+        <translation>Pares vía gossip:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="105" />
         <source>Decentralization score:</source>
-        <translation type="unfinished" />
+        <translation>Puntuación de descentralización:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="117" />
@@ -7873,165 +7873,167 @@ Are you absolutely sure?</source>
         <location filename="../src/dashboardactioncontroller.cpp" line="227" />
         <location filename="../src/dashboardactioncontroller.cpp" line="339" />
         <source>Ready</source>
-        <translation type="unfinished" />
+        <translation>Listo</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="71" />
         <location filename="../src/dashboardactioncontroller.cpp" line="228" />
         <location filename="../src/dashboardactioncontroller.cpp" line="339" />
         <source>Off</source>
-        <translation type="unfinished" />
+        <translation>Desactivado</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="137" />
         <source>No endpoint to copy</source>
-        <translation type="unfinished" />
+        <translation>No hay ningún endpoint que copiar</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="143" />
         <source>Copied %1</source>
-        <translation type="unfinished" />
+        <translation>Se copió %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="152" />
         <source>Copied peer details</source>
-        <translation type="unfinished" />
+        <translation>Se copiaron los detalles del par</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="157" />
         <source>No peer selected</source>
-        <translation type="unfinished" />
+        <translation>No hay ningún par seleccionado</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="160" />
         <source>Disconnect peer?</source>
-        <translation type="unfinished" />
+        <translation>¿Desconectar el par?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="161" />
         <source>Disconnect %1 from this node? The daemon may reconnect later.</source>
-        <translation type="unfinished" />
+        <translation>¿Desconectar %1 de este nodo? El daemon podría reconectarse más adelante.</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="163" />
         <source>Disconnect cancelled</source>
-        <translation type="unfinished" />
+        <translation>Desconexión cancelada</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="167" />
         <source>Disconnect requested for %1</source>
-        <translation type="unfinished" />
+        <translation>Se solicitó desconectar %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="173" />
         <source>Ban unavailable for %1</source>
-        <translation type="unfinished" />
+        <translation>No se puede vetar %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="177" />
         <source>Ban %1 for %2 seconds?</source>
-        <translation type="unfinished" />
+        <translation>¿Vetar %1 durante %2 segundos?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="179" />
         <source>
 
 This is one of your configured bootstrap peers. Ban only if you are debugging.</source>
-        <translation type="unfinished" />
+        <translation>
+
+Este es uno de sus pares de arranque configurados. Vételo solo si está depurando.</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="181" />
         <source>Ban peer?</source>
-        <translation type="unfinished" />
+        <translation>¿Vetar el par?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="182" />
         <source>Ban cancelled</source>
-        <translation type="unfinished" />
+        <translation>Veto cancelado</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="188" />
         <source>Ban requested for %1</source>
-        <translation type="unfinished" />
+        <translation>Se solicitó vetar %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="193" />
         <source>Direct reconnect unavailable</source>
-        <translation type="unfinished" />
+        <translation>La reconexión directa no está disponible</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="198" />
         <source>Reconnect requested for %1</source>
-        <translation type="unfinished" />
+        <translation>Se solicitó reconectar %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="203" />
         <source>Relay hint has no target</source>
-        <translation type="unfinished" />
+        <translation>La sugerencia de retransmisión no tiene destino</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="215" />
         <source>Relay dial submitted for %1</source>
-        <translation type="unfinished" />
+        <translation>Se envió el marcado por retransmisión para %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="225" />
         <location filename="../src/dashboardactioncontroller.cpp" line="257" />
         <source>Stopping</source>
-        <translation type="unfinished" />
+        <translation>Deteniendo</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="227" />
         <location filename="../src/dashboardactioncontroller.cpp" line="337" />
         <location filename="../src/dashboardactioncontroller.cpp" line="343" />
         <source>Running</source>
-        <translation type="unfinished" />
+        <translation>En ejecución</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="235" />
         <source>Switch to Yes first</source>
-        <translation type="unfinished" />
+        <translation>Cambie primero a Sí</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="242" />
         <source>dinero-seeder not found</source>
-        <translation type="unfinished" />
+        <translation>no se encontró dinero-seeder</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="250" />
         <source>Starting</source>
-        <translation type="unfinished" />
+        <translation>Iniciando</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="323" />
         <source>Relay dial result received</source>
-        <translation type="unfinished" />
+        <translation>Se recibió el resultado del marcado por retransmisión</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="324" />
         <source>Relay dial: %1</source>
-        <translation type="unfinished" />
+        <translation>Marcado por retransmisión: %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="328" />
         <location filename="../src/dashboardactioncontroller.cpp" line="344" />
         <source>%1 accepted</source>
-        <translation type="unfinished" />
+        <translation>%1 aceptado</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="343" />
         <source>Stopped</source>
-        <translation type="unfinished" />
+        <translation>Detenido</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="359" />
         <source>%1 failed (%2): %3</source>
-        <translation type="unfinished" />
+        <translation>%1 falló (%2): %3</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="363" />
         <source>Error: %1</source>
-        <translation type="unfinished" />
+        <translation>Error: %1</translation>
     </message>
 </context>
 <context>
@@ -8039,59 +8041,59 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/discoverysection.cpp" line="138" />
         <source>Discovery — 0 targets known</source>
-        <translation type="unfinished" />
+        <translation>Descubrimiento: 0 destinos conocidos</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="146" />
         <source>Seeder operator service</source>
-        <translation type="unfinished" />
+        <translation>Servicio de operador de seeder</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="148" />
         <source>No</source>
-        <translation type="unfinished" />
+        <translation>No</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="149" />
         <source>Yes</source>
-        <translation type="unfinished" />
+        <translation>Sí</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="150" />
         <location filename="../src/discoverysection.cpp" line="222" />
         <source>Start Seeder</source>
-        <translation type="unfinished" />
+        <translation>Iniciar el seeder</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="152" />
         <location filename="../src/discoverysection.cpp" line="227" />
         <source>Off</source>
-        <translation type="unfinished" />
+        <translation>Desactivado</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="182" />
         <source>Discovery — %1 targets known</source>
-        <translation type="unfinished" />
+        <translation>Descubrimiento: %1 destinos conocidos</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="221" />
         <source>Stop Seeder</source>
-        <translation type="unfinished" />
+        <translation>Detener el seeder</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="227" />
         <source>Running</source>
-        <translation type="unfinished" />
+        <translation>En ejecución</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="245" />
         <source>Copy relay endpoint</source>
-        <translation type="unfinished" />
+        <translation>Copiar el endpoint de retransmisión</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="248" />
         <source>Dial via relay hint</source>
-        <translation type="unfinished" />
+        <translation>Marcar mediante sugerencia de retransmisión</translation>
     </message>
 </context>
 <context>
@@ -8099,32 +8101,32 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/identitysection.cpp" line="22" />
         <source>Connection</source>
-        <translation type="unfinished" />
+        <translation>Conexión</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="42" />
         <source>Copy node_id</source>
-        <translation type="unfinished" />
+        <translation>Copiar node_id</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="101" />
         <source>○ Offline — the Dinero service is not responding.</source>
-        <translation type="unfinished" />
+        <translation>○ Sin conexión: el servicio de Dinero no responde.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="122" />
         <source>● Connected directly and securely.</source>
-        <translation type="unfinished" />
+        <translation>● Conectado de forma directa y segura.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="125" />
         <source>● Connected directly and securely (port %1).</source>
-        <translation type="unfinished" />
+        <translation>● Conectado de forma directa y segura (puerto %1).</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="128" />
         <source>● Connected directly and securely on %1:%2.</source>
-        <translation type="unfinished" />
+        <translation>● Conectado de forma directa y segura en %1:%2.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="132" />
@@ -8139,37 +8141,37 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/identitysection.cpp" line="137" />
         <source>○ Offline — the node is not accepting connections.</source>
-        <translation type="unfinished" />
+        <translation>○ Sin conexión: el nodo no acepta conexiones.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="140" />
         <source>○ Checking secure connectivity…</source>
-        <translation type="unfinished" />
+        <translation>○ Comprobando la conectividad segura …</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="148" />
         <source>Direct active</source>
-        <translation type="unfinished" />
+        <translation>Directa activa</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="150" />
         <source>Direct outbound active</source>
-        <translation type="unfinished" />
+        <translation>Salida directa activa</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="152" />
         <source>Direct connection unavailable</source>
-        <translation type="unfinished" />
+        <translation>Conexión directa no disponible</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="156" />
         <source>Relay fallback ready</source>
-        <translation type="unfinished" />
+        <translation>Retransmisión de reserva lista</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="158" />
         <source>Tor active</source>
-        <translation type="unfinished" />
+        <translation>Tor activo</translation>
     </message>
 </context>
 <context>
@@ -8179,18 +8181,18 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
         <location filename="../src/mynodedashboard.cpp" line="83" />
         <location filename="../src/mynodedashboard.cpp" line="88" />
         <source>Advanced details</source>
-        <translation type="unfinished" />
+        <translation>Detalles avanzados</translation>
     </message>
     <message>
         <location filename="../src/mynodedashboard.cpp" line="54" />
         <source>Show technical node, peer, relay, and discovery diagnostics.</source>
-        <translation type="unfinished" />
+        <translation>Mostrar el diagnóstico técnico del nodo, los pares, la retransmisión y el descubrimiento.</translation>
     </message>
     <message>
         <location filename="../src/mynodedashboard.cpp" line="82" />
         <location filename="../src/mynodedashboard.cpp" line="87" />
         <source>Hide advanced details</source>
-        <translation type="unfinished" />
+        <translation>Ocultar los detalles avanzados</translation>
     </message>
 </context>
 <context>
@@ -8198,29 +8200,29 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="28" />
         <source>Network diagnostics (your node's view)</source>
-        <translation type="unfinished" />
+        <translation>Diagnóstico de red (visto por su nodo)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="64" />
         <source>Tor connectivity (Admin only)</source>
-        <translation type="unfinished" />
+        <translation>Conectividad de Tor (solo administrador)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="67" />
         <location filename="../src/networksection.cpp" line="99" />
         <source>Off</source>
-        <translation type="unfinished" />
+        <translation>Desactivado</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="68" />
         <location filename="../src/networksection.cpp" line="100" />
         <source>Automatic — recommended</source>
-        <translation type="unfinished" />
+        <translation>Automática: recomendada</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="69" />
         <source>External Tor — advanced</source>
-        <translation type="unfinished" />
+        <translation>Tor externo: avanzado</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="71" />
@@ -8230,7 +8232,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="78" />
         <source>Tor connectivity</source>
-        <translation type="unfinished" />
+        <translation>Conectividad de Tor</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="78" />
@@ -8240,17 +8242,17 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="88" />
         <source>Applying Tor connectivity preference…</source>
-        <translation type="unfinished" />
+        <translation>Aplicando la preferencia de conectividad de Tor …</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="96" />
         <source>Enable relay service (Admin only)</source>
-        <translation type="unfinished" />
+        <translation>Activar el servicio de retransmisión (solo administrador)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="101" />
         <source>Custom limits</source>
-        <translation type="unfinished" />
+        <translation>Límites personalizados</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="102" />
@@ -8260,72 +8262,72 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="107" />
         <source>Concurrent circuits</source>
-        <translation type="unfinished" />
+        <translation>Circuitos simultáneos</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="107" />
         <source>Bandwidth (KiB/s)</source>
-        <translation type="unfinished" />
+        <translation>Ancho de banda (KiB/s)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="108" />
         <source>Circuits per peer</source>
-        <translation type="unfinished" />
+        <translation>Circuitos por par</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="108" />
         <source>Circuit lifetime (seconds)</source>
-        <translation type="unfinished" />
+        <translation>Duración del circuito (segundos)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="109" />
         <source>Requests per peer/minute</source>
-        <translation type="unfinished" />
+        <translation>Solicitudes por par y minuto</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="120" />
         <source>Apply relay service</source>
-        <translation type="unfinished" />
+        <translation>Aplicar el servicio de retransmisión</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="122" />
         <source>Relay service status unavailable.</source>
-        <translation type="unfinished" />
+        <translation>Estado del servicio de retransmisión no disponible.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="150" />
         <source>peer estimate  %1</source>
-        <translation type="unfinished" />
+        <translation>estimación de los pares  %1</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="170" />
         <source>● In sync with the peer estimate</source>
-        <translation type="unfinished" />
+        <translation>● Sincronizado con la estimación de los pares</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="171" />
         <source>● %1 block(s) behind the peer estimate</source>
-        <translation type="unfinished" />
+        <translation>● %1 bloque(s) por detrás de la estimación de los pares</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="172" />
         <source>● %1 block(s) ahead of the peer estimate; peers may still be catching up</source>
-        <translation type="unfinished" />
+        <translation>● %1 bloque(s) por delante de la estimación de los pares; puede que aún se estén poniendo al día</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="194" />
         <source>Check the local daemon log for details.</source>
-        <translation type="unfinished" />
+        <translation>Consulte el registro del daemon local para ver los detalles.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="213" />
         <source>Dinero relay service is active within the configured limits.</source>
-        <translation type="unfinished" />
+        <translation>El servicio de retransmisión de Dinero está activo dentro de los límites configurados.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="214" />
         <source>Dinero relay service is not accepting new circuits.</source>
-        <translation type="unfinished" />
+        <translation>El servicio de retransmisión de Dinero no acepta circuitos nuevos.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="224" />
@@ -8335,17 +8337,17 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="231" />
         <source>Off. Ordinary direct and Dinero relay connections remain available.</source>
-        <translation type="unfinished" />
+        <translation>Desactivado. Las conexiones directas ordinarias y las de retransmisión de Dinero siguen disponibles.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="236" />
         <source>Tor active. Direct and relay paths remain available.</source>
-        <translation type="unfinished" />
+        <translation>Tor activo. Las rutas directas y de retransmisión siguen disponibles.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="237" />
         <source>Active · onion address: %1</source>
-        <translation type="unfinished" />
+        <translation>Activo · dirección onion: %1</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="240" />
@@ -8363,42 +8365,42 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/peerssection.cpp" line="121" />
         <source>%1 · stale</source>
-        <translation type="unfinished" />
+        <translation>%1 · obsoleto</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="124" />
         <source>This peer is %1 blocks behind your current network estimate.</source>
-        <translation type="unfinished" />
+        <translation>Este par está %1 bloques por detrás de su estimación actual de la red.</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="180" />
         <source>Copy endpoint</source>
-        <translation type="unfinished" />
+        <translation>Copiar el endpoint</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="181" />
         <source>Copy peer details</source>
-        <translation type="unfinished" />
+        <translation>Copiar los detalles del par</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="183" />
         <source>Try direct reconnect</source>
-        <translation type="unfinished" />
+        <translation>Intentar la reconexión directa</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="185" />
         <source>Disconnect peer</source>
-        <translation type="unfinished" />
+        <translation>Desconectar el par</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="186" />
         <source>Ban 1 hour</source>
-        <translation type="unfinished" />
+        <translation>Vetar 1 hora</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="187" />
         <source>Ban 24 hours</source>
-        <translation type="unfinished" />
+        <translation>Vetar 24 horas</translation>
     </message>
 </context>
 <context>
@@ -8406,47 +8408,47 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/topologysection.cpp" line="82" />
         <source>Topology — waiting for peers</source>
-        <translation type="unfinished" />
+        <translation>Topología: esperando pares</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="109" />
         <source>Topology — %1 nodes / %2 paths</source>
-        <translation type="unfinished" />
+        <translation>Topología: %1 nodos / %2 rutas</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="154" />
         <source>%1 via %2</source>
-        <translation type="unfinished" />
+        <translation>%1 vía %2</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="201" />
         <source>Copy endpoint</source>
-        <translation type="unfinished" />
+        <translation>Copiar el endpoint</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="203" />
         <source>Try direct reconnect</source>
-        <translation type="unfinished" />
+        <translation>Intentar la reconexión directa</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="209" />
         <source>Dial via relay hint</source>
-        <translation type="unfinished" />
+        <translation>Marcar mediante sugerencia de retransmisión</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="216" />
         <source>Disconnect peer</source>
-        <translation type="unfinished" />
+        <translation>Desconectar el par</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="217" />
         <source>Ban 1 hour</source>
-        <translation type="unfinished" />
+        <translation>Vetar 1 hora</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="218" />
         <source>Ban 24 hours</source>
-        <translation type="unfinished" />
+        <translation>Vetar 24 horas</translation>
     </message>
 </context>
 </TS>

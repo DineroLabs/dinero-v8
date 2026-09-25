@@ -111,3 +111,27 @@ Four things could still change this plan.
 - **Whether wave 2 gains a tenth language.** Korean is the obvious candidate. Traditional Chinese is a separate decision and a separate catalog, warranted only if traffic shows it.
 - **Whether the old standalone dinero-qt repository gets retired.** A pre-monorepo checkout still sits on disk on the `qt-main` branch, last committed in June 2026. It is not built and not shipped, but it looks like the GUI source, so anyone who edits it will see no effect on the product. Archiving or clearly labelling it would remove a real trap.
 - **Who owns translation review per language.** The locked security strings need a named reviewer before any outside contributor touches a catalog, not after.
+
+## Contexts that are compiled out, and why they still appear
+
+`lupdate` scans source files textually. It does not evaluate preprocessor
+conditions, so a `tr()` inside a disabled `#if` block lands in every catalog
+looking exactly like live text. Nothing marks it.
+
+**`VaultPanel` is compiled out of normal builds.** The Liquidity Vault tab is
+guarded by `DIN_ENABLE_LIQUIDITY_VAULT_UI`, declared `OFF` in
+`qt/CMakeLists.txt` and described in `mainwindow.cpp` as disabled until the
+product model is finalised. Its 37 strings are in the catalogs and are
+translated in Spanish, but no ordinary build shows that tab.
+
+They were left translated rather than reverted, because reverting only marks
+them unfinished again and the work is correct if the panel is ever enabled.
+They should not be counted as progress against the live UI.
+
+**It is the only one.** `DIN_ENABLE_LIQUIDITY_VAULT_UI` is the sole
+`DIN_ENABLE_*` guard in the Qt sources, and no other tab is added
+conditionally. Every other context in the catalogs is live code.
+
+Before a final pass, regenerate the catalogs against current `dinero-main` so
+that newly added strings appear and removed ones drop out. A catalog generated
+from an older base can carry strings that no longer exist.
