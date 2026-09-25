@@ -49,8 +49,9 @@ and referenced inputs. Loaded-node and archival capacity are not qualified.
 The caller must bind the result to the same selected frozen legacy state when
 constructing the retirement record. Full staged commitment checks then verify
 that record's content against local frozen state and stage it atomically. This
-new amount source is not yet wired to record construction or production
-ChainstateService. It does not certify snapshot provenance, historical validity,
+new amount source is used by the selected boundary factory described in
+`orchard-retirement-boundary-2026-09-25.md`; production ChainstateService remains
+unwired. It does not certify snapshot provenance, historical validity,
 past proof soundness, full supply reconciliation or previous retired epochs.
 A validated-tip marker alone cannot establish those properties.
 

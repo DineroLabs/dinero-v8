@@ -93,9 +93,11 @@ This branch collects release implementation for review and qualification against
 - A read-only selected-history accounting adapter now derives the current legacy
   epoch's public pool flows from authenticated bodies and original prevouts,
   with explicit fees, reset handling and fail-closed incomplete/unknown amounts.
-  It requires independently validated archival history. Binding its result to
-  retirement record construction and production callers remains unfinished;
-  this is not a historical consensus replay or full supply reconciliation.
+  A selected boundary factory now binds that result to reconstructed frozen
+  contents and the selected parent's legacy DNRS where active. It requires
+  independently validated archival history. Production callers, CSN/pruned
+  accounting sources and complete supply reconciliation remain unfinished;
+  this is not historical consensus replay.
 - Wallet primitives now include opaque ZIP32 account keys, external/internal receivers, watch-only parity and an explicit-network Bech32m address profile. Fresh shield/send/unshield bundle construction uses OS randomness and an owned transaction signing context, then decodes and verifies before returning. Received notes are opaque; incremental witnesses check roots, preserve prior state and resume from a canonical checkpoint-bound encoding. No wallet database or RPC caller is enabled.
 - Encrypted wallet snapshots stage in the caller-owned SQLite transaction with companion wallet records, checked revisions and process-exit recovery tests. Typed scan state now tracks receipts/spends and witnesses and restores from an encrypted snapshot against an exact selected checkpoint and authenticated origin callbacks. A selected archival ChainDB restore adapter now authenticates origins and resolves historical or ordered same-block prevouts from original bodies, with read-only reopen coverage. Indexed flatfile bodies now restore through the same typed authentication gate when the embedded copy is absent. Pruned/archive coverage, stale-checkpoint recovery, coordinated startup and live callers remain unfinished.
 - Pending-operation component reserves inputs before proving, freezes fully authorized canonical bytes before broadcast, and restores encrypted Reserved/Ready states through process-exit boundaries. Live selection, service job integration, admission, broadcast and confirmation/reorg archival remain unfinished.

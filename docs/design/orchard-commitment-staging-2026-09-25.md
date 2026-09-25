@@ -16,9 +16,11 @@ At the first boundary, the caller must explicitly supply its independently
 validated historical retirement receipt; omission fails. In particular, this
 API does not derive or authenticate the retired monetary amount or selected
 epoch from history. Never use a wallet display, network payload or arbitrary
-RPC field as that source. Implementing that selected-history accounting source
-is still required before any production caller can use this adapter. This is
-not a cryptographic certification type merely because its argument is named
+RPC field as that source. The selected archival factory in
+`orchard-retirement-boundary-2026-09-25.md` now supplies the record from public
+flows and frozen contents under the same locked view. Its validated-history
+preconditions and production/CSN integration remain required. This is not a
+cryptographic certification type merely because its argument is named
 `authenticated_boundary`.
 
 The connector independently compares the receipt's network/activation and

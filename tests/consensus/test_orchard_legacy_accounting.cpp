@@ -1,5 +1,8 @@
 #include "consensus/orchard_legacy_accounting.h"
 #include "consensus/orchard_state_transition.h"
+#include "consensus/orchard_block_staging.h"
+#include "consensus/shielded/shielded_root.h"
+#include "consensus/state_commitment.h"
 #include "consensus/chainparams.h"
 #include "consensus/merkle_root.h"
 #include "../storage/shielded_store_fixture.h"
@@ -70,8 +73,48 @@ static void Run(bool same_block) {
     auto result=derive();CHECK(result.value_una==68 && result.epoch_height==2);
     CHECK(result.parent_height==4 && result.parent_hash==withdrawal.GetHash());
     CHECK(result.blocks_read==3 && result.shielded_transactions==2);
+    // Couple derived public flows to serialized frozen contents and the
+    // selected parent's historical DNRS. Synthetic contents, not replay proof.
+    consensus::shielded::CommitmentTree tree;tree.Append(consensus::shielded::Hash{7});
+    consensus::shielded::AnchorHistory anchors;anchors.RecordRoot(4,tree.Root());
+    const auto frontier=tree.SerializeFrontier(),history=anchors.SerializePersistenceBytes();
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::Frontier,{frontier.begin(),frontier.end()})==Status::Ok);
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,{history.begin(),history.end()})==Status::Ok);
+    CHECK(db.deleteAllShieldedNullifiers(token).ok());
+    consensus::shielded::NullifierEntry nf;nf.height=3;nf.nullifier[0]=9;
+    CHECK(db.putShieldedNullifier(token,3,nf.nullifier.data())==Status::Ok);
+    const auto tree_root=tree.Root();uint256 stored_root;std::copy(tree_root.begin(),tree_root.end(),stored_root.begin());
+    const auto composite=consensus::shielded::ComputeShieldedRootFromParts(
+        {tree_root.begin(),tree_root.end()},tree.Size(),
+        consensus::shielded::ComputeNullifierAccumulator({nf}),anchors.SerializeBytes());CHECK(composite);
+    withdrawal.vtx[0].vout.emplace_back(AmountUna::Zero(),BuildStateCommitmentScript(*composite));
+    withdrawal.header.merkle_root=ComputeMerkleRoot(withdrawal.vtx);Store(db,withdrawal,4,true);
+    const ChainDB::ShieldedTipMarker marker{4,withdrawal.GetHash(),stored_root,tree.Size(),1};
+    CHECK(db.putShieldedTipMarker(token,marker)==Status::Ok);
+    const auto receipt=[&]{return DeriveSelectedLegacyRetirementUnderLock(db,nullptr,3);};
+    const auto record=receipt();
+    CHECK(record.retired_value==68 && record.legacy_epoch_height==2 && record.activation_height==5);
+    CHECK(record.boundary_parent==withdrawal.GetHash() && record.network_code==2 && record.genesis==genesis);
+    CHECK(record.branch_id==1 && record.legacy_state_root==*composite && record.tree_root==stored_root);
+    CHECK(record.tree_size==1 && record.nullifier_count==1);
+    auto wrong_marker=marker;wrong_marker.block_hash=deposit.GetHash();
+    CHECK(db.putShieldedTipMarker(token,wrong_marker)==Status::Ok);
+    Reject(Status::Corruption,[&]{(void)receipt();});CHECK(db.putShieldedTipMarker(token,marker)==Status::Ok);
+    wrong_marker=marker;++wrong_marker.nullifier_count;CHECK(db.putShieldedTipMarker(token,wrong_marker)==Status::Ok);
+    Reject(Status::Corruption,[&]{(void)receipt();});CHECK(db.putShieldedTipMarker(token,marker)==Status::Ok);
+    auto altered=anchors;altered.RecordRoot(4,consensus::shielded::Hash{8});
+    const auto altered_bytes=altered.SerializePersistenceBytes();
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,{altered_bytes.begin(),altered_bytes.end()})==Status::Ok);
+    Reject(Status::Corruption,[&]{(void)receipt();});
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,{history.begin(),history.end()})==Status::Ok);
+    auto no_commitment=Body(4,deposit.GetHash(),{Shielded({},20,2)});Store(db,no_commitment,4,true);
+    auto no_commitment_marker=marker;no_commitment_marker.block_hash=no_commitment.GetHash();
+    CHECK(db.putShieldedTipMarker(token,no_commitment_marker)==Status::Ok);
+    Reject(Status::Corruption,[&]{(void)receipt();});
+    Store(db,withdrawal,4,true);CHECK(db.putShieldedTipMarker(token,marker)==Status::Ok);
+    CHECK(receipt()==record);
     db.close();auto before=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
-    CHECK(derive().value_una==68);db.close();CHECK(Inspect(temp.path)==before);CHECK(db.init(temp.path)==Status::Ok);
+    CHECK(derive().value_una==68 && receipt()==record);db.close();CHECK(Inspect(temp.path)==before);CHECK(db.init(temp.path)==Status::Ok);
     Reject(Status::Invalid,[&]{(void)derive(2);});Reject(Status::Invalid,[&]{(void)derive(0);});
     // Missing or corrupt bodies, source index and ancestry are not zero value.
     CHECK(db.deleteBlock(token,deposit.GetHash())==Status::Ok);

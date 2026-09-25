@@ -9,6 +9,15 @@ namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
 
 namespace dinero::consensus {
+// Read-only boundary factory. Derives amount/epoch from selected archival
+// public flows, then binds frozen contents and marker from the SAME held
+// selected writer view. No amount/domain/epoch is supplied by a wallet, RPC
+// or candidate. Requires independently validated historical state (including
+// fee/coinbase rules and snapshot provenance), not merely matching tip rows.
+// No writes, activation or live admission; missing evidence never yields a
+// partial record. Use only at the selected activation parent.
+[[nodiscard]] storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
+    const ChainDB&, const BlockStorage*, uint32_t maximum_epoch_blocks);
 // Typed stored-body read. Checks exact framing, key/header identity, transaction
 // and witness commitments, and size. Not replay/PoW/proof/transaction validity.
 [[nodiscard]] OrchardBlockCandidate ReadStoredOrchardBlock(

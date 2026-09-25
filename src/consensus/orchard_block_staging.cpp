@@ -4,6 +4,10 @@
 #include "consensus/orchard_block_filter.h"
 #include "consensus/filter_commitment.h"
 #include "consensus/orchard_state_root.h"
+#include "consensus/orchard_legacy_accounting.h"
+#include "consensus/chainparams.h"
+#include "consensus/merkle_root.h"
+#include "storage/archival_block_reader.h"
 #include "consensus/state_commitment.h"
 #include "consensus/shielded/shielded_root.h"
 #include <set>
@@ -161,6 +165,36 @@ void CheckCommitRecord(const ChainDB& db,const OrchardBlockContext& context,cons
     if(status!=Status::Ok)throw OrchardStateLookupError(status==Status::NotFound?Status::Corruption:status);
     if(stored!=CommitRecord(context,header,work,forest,state))throw OrchardStateLookupError(Status::Corruption);
 }
+void FillFrozenLegacy(const ChainDB& db,storage::LegacyRetirementRecord& r,
+    uint32_t selected_height,const uint256& selected_hash) {
+    const auto bad=[] { throw OrchardStateLookupError(Status::Corruption); };
+    const auto marker=RequiredLocal(db.getShieldedTipMarker());
+    if (marker.height!=int32_t(selected_height) || marker.block_hash!=selected_hash) bad();
+    const auto frontier=RequiredLocal(db.getShieldedState(ChainDB::ShieldedStateRecord::Frontier));
+    const auto anchors=RequiredLocal(db.getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory));
+    shielded::CommitmentTree tree;shielded::AnchorHistory history;
+    if (!tree.DeserializeFrontier(reinterpret_cast<const uint8_t*>(frontier.data()),frontier.size()) ||
+        history.DeserializePersistenceBytes({anchors.begin(),anchors.end()})!=shielded::AnchorHistory::IoResult::Ok ||
+        tree.Size()!=marker.tree_size) bad();
+    const auto root=tree.Root();
+    if (!std::equal(root.begin(),root.end(),marker.shielded_root.begin())) bad();
+    std::vector<shielded::NullifierEntry> entries;std::set<shielded::Hash> unique;
+    bool valid=true;
+    StorageCheck(db.forEachShieldedNullifier([&](uint32_t height,const uint8_t* bytes) {
+        shielded::NullifierEntry entry;entry.height=height;std::copy(bytes,bytes+32,entry.nullifier.begin());
+        if (height<r.legacy_epoch_height || height>=r.activation_height ||
+            entries.size()>=marker.nullifier_count || !unique.insert(entry.nullifier).second) {
+            valid=false;return false;
+        }
+        entries.push_back(entry);return true;
+    }));
+    if (!valid || entries.size()!=marker.nullifier_count) bad();
+    const auto composite=shielded::ComputeShieldedRootFromParts({root.begin(),root.end()},tree.Size(),
+        shielded::ComputeNullifierAccumulator(std::move(entries)),history.SerializeBytes());
+    if (!composite) bad();
+    r.legacy_state_root=*composite;r.tree_root=marker.shielded_root;
+    r.tree_size=tree.Size();r.nullifier_count=marker.nullifier_count;
+}
 void CheckFrozenLegacy(const ChainDB& db,const storage::LegacyRetirementRecord& r,
     const OrchardBlockContext& c,uint32_t selected_height,const uint256& selected_hash) {
     const auto bad=[] { throw OrchardStateLookupError(Status::Corruption); };
@@ -169,32 +203,8 @@ void CheckFrozenLegacy(const ChainDB& db,const storage::LegacyRetirementRecord& 
         r.activation_height!=c.activation_height || !r.activation_height ||
         r.legacy_epoch_height>=r.activation_height || r.boundary_parent.IsNull() ||
         r.retired_value>orchard::kMaxMoneyUna) bad();
-    const auto marker=RequiredLocal(db.getShieldedTipMarker());
-    if (marker.height!=int32_t(selected_height) || marker.block_hash!=selected_hash ||
-        marker.tree_size!=r.tree_size || marker.nullifier_count!=r.nullifier_count ||
-        marker.shielded_root!=r.tree_root) bad();
-    const auto frontier=RequiredLocal(db.getShieldedState(ChainDB::ShieldedStateRecord::Frontier));
-    const auto anchors=RequiredLocal(db.getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory));
-    shielded::CommitmentTree tree;shielded::AnchorHistory history;
-    if (!tree.DeserializeFrontier(reinterpret_cast<const uint8_t*>(frontier.data()),frontier.size()) ||
-        history.DeserializePersistenceBytes({anchors.begin(),anchors.end()})!=shielded::AnchorHistory::IoResult::Ok ||
-        tree.Size()!=r.tree_size) bad();
-    const auto root=tree.Root();
-    if (!std::equal(root.begin(),root.end(),r.tree_root.begin())) bad();
-    std::vector<shielded::NullifierEntry> entries;std::set<shielded::Hash> unique;
-    bool valid=true;
-    StorageCheck(db.forEachShieldedNullifier([&](uint32_t height,const uint8_t* bytes) {
-        shielded::NullifierEntry entry;entry.height=height;std::copy(bytes,bytes+32,entry.nullifier.begin());
-        if (height<r.legacy_epoch_height || height>=r.activation_height ||
-            entries.size()>=r.nullifier_count || !unique.insert(entry.nullifier).second) {
-            valid=false;return false;
-        }
-        entries.push_back(entry);return true;
-    }));
-    if (!valid || entries.size()!=r.nullifier_count) bad();
-    const auto composite=shielded::ComputeShieldedRootFromParts({root.begin(),root.end()},tree.Size(),
-        shielded::ComputeNullifierAccumulator(std::move(entries)),history.SerializeBytes());
-    if (!composite || *composite!=r.legacy_state_root) bad();
+    auto derived=r;FillFrozenLegacy(db,derived,selected_height,selected_hash);
+    if (derived!=r) bad();
 }
 uint256 StateRoot(const OrchardBlockContext& c,const storage::LegacyRetirementRecord& r,
     const storage::OrchardStoredState& s,const storage::OrchardCommitmentSets& sets) {
@@ -214,6 +224,41 @@ OrchardBlockContext ParentContext(const OrchardBlockContext& current,const Block
     auto result=current;--result.height;result.block_hash=parent.GetHash();result.parent_hash=parent.prev_block_hash;
     return result;
 }
+}
+storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
+    const ChainDB& db,const BlockStorage* blocks,uint32_t maximum_epoch_blocks) {
+    const auto accounting=DeriveSelectedLegacyPoolAccountingUnderLock(db,blocks,maximum_epoch_blocks);
+    const auto& params=Params();
+    storage::LegacyRetirementRecord result;
+    result.network_code=params.name=="mainnet"?0:params.name=="testnet"?1:params.name=="regtest"?2:0xff;
+    if (result.network_code==0xff || !uint256::FromHex(params.genesis_hash,result.genesis) ||
+        result.genesis.IsNull() || params.orchard_activation_height!=accounting.parent_height+1 ||
+        accounting.epoch_height>=params.orchard_activation_height)
+        throw OrchardStateLookupError(Status::Invalid);
+    result.branch_id=params.orchard_branch_id;result.activation_height=params.orchard_activation_height;
+    result.legacy_epoch_height=accounting.epoch_height;result.boundary_parent=accounting.parent_hash;
+    result.retired_value=accounting.value_una;
+    for (const auto status : {db.getLegacyRetirementState().status(), db.getOrchardState().status()}) {
+        if (status==Status::Ok) throw OrchardStateLookupError(Status::Corruption);
+        if (status!=Status::NotFound) throw OrchardStateLookupError(status);
+    }
+    FillFrozenLegacy(db,result,accounting.parent_height,accounting.parent_hash);
+    if (IsStateCommitmentActive(accounting.parent_height,params.state_commitment_activation_height)) {
+        const auto body=RequiredLocal(storage::ReadArchivalBlock(db,blocks,accounting.parent_hash));
+        bool mutated=false;
+        if (body.vtx.empty() || !body.vtx.front().IsCoinbase() ||
+            body.GetHash()!=accounting.parent_hash ||
+            ComputeMerkleRoot(body.vtx,&mutated)!=body.header.merkle_root || mutated)
+            throw OrchardStateLookupError(Status::Corruption);
+        const auto commitment=FindStateCommitment(body.vtx.front());
+        if (commitment.status!=StateCommitmentStatus::Ok || commitment.root!=result.legacy_state_root)
+            throw OrchardStateLookupError(Status::Corruption);
+    }
+    const auto tip=RequiredLocal(db.getTip()),validated=RequiredLocal(db.getValidatedTip());
+    if (tip.height!=int(accounting.parent_height) || validated.height!=tip.height ||
+        tip.hash!=accounting.parent_hash || validated.hash!=tip.hash)
+        throw OrchardStateLookupError(Status::Corruption);
+    return result;
 }
 OrchardBlockCandidate ReadStoredOrchardBlock(const ChainDB& db,const uint256& hash,
     bool require_witness_commitment,const BlockStorage* archival_blocks) {

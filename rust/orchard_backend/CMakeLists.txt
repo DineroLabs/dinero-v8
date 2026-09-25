@@ -127,7 +127,7 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_block_staging STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_staging.cpp"
     "${ORCHARD_HOST_ROOT}/src/consensus/state_commitment.cpp")
-  target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader dinero_orchard_block_coins dinero_orchard_state_root dinero_shielded)
+  target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader dinero_orchard_block_coins dinero_orchard_state_root dinero_shielded dinero_orchard_legacy_accounting)
   target_include_directories(dinero_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
   add_library(dinero_orchard_operation_archive STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_operation_archive.cpp")
   target_link_libraries(dinero_orchard_operation_archive PUBLIC dinero_orchard_wallet_account)
@@ -254,7 +254,7 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_executable(test_orchard_legacy_accounting
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_legacy_accounting.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
-    target_link_libraries(test_orchard_legacy_accounting PRIVATE dinero_orchard_legacy_accounting RocksDB::rocksdb)
+    target_link_libraries(test_orchard_legacy_accounting PRIVATE dinero_orchard_block_staging RocksDB::rocksdb)
     add_test(NAME OrchardLegacyAccounting COMMAND test_orchard_legacy_accounting)
     set_tests_properties(OrchardLegacyAccounting PROPERTIES TIMEOUT 120 LABELS "orchard;consensus;storage;integration-staging")
     add_executable(test_orchard_state_root
