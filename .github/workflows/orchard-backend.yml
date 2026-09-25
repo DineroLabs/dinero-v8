@@ -77,7 +77,7 @@ jobs:
           python3 - <<'PY'
           import json
           tests = {x['name'] for x in json.load(open('orchard-test-inventory.json'))['tests']}
-          if tests != {'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardTransactionReader'}:
+          if tests != {'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardTransactionReader', 'OrchardCoinSnapshot'}:
               raise SystemExit(f'wrong Orchard test inventory: {tests}')
           PY
           ctest --test-dir build-orchard-backend --output-on-failure --no-tests=error
@@ -138,24 +138,24 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_orchard_backend test_orchard_transaction_reader test_orchard_legacy_boundary --parallel 2
+          cmake --build build-orchard-root --target dinerod test_orchard_backend test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_legacy_boundary --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute all root Orchard lanes
         run: |
-          ctest --test-dir build-orchard-root -R '^(OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardLegacyBoundary)$' --show-only=json-v1 > orchard-root-inventory.json
+          ctest --test-dir build-orchard-root -R '^(OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardLegacyBoundary)$' --show-only=json-v1 > orchard-root-inventory.json
           python3 - <<'PYCODE'
           import json
           with open('orchard-root-inventory.json') as f:
               tests = json.load(f)['tests']
           names = [x['name'] for x in tests]
-          if sorted(names) != ['OrchardBackendCpp', 'OrchardBackendRust', 'OrchardLegacyBoundary', 'OrchardTransactionReader']:
+          if sorted(names) != ['OrchardBackendCpp', 'OrchardBackendRust', 'OrchardCoinSnapshot', 'OrchardLegacyBoundary', 'OrchardTransactionReader']:
               raise SystemExit(f'Wrong root Orchard inventory: {names}')
           for test in tests:
               props = {p['name']: p['value'] for p in test.get('properties', [])}
               if props.get('DISABLED') or 'orchard' not in props.get('LABELS', []):
                   raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
           PYCODE
-          ctest --test-dir build-orchard-root -R '^(OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardLegacyBoundary)$' --output-on-failure --no-tests=error
+          ctest --test-dir build-orchard-root -R '^(OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardLegacyBoundary)$' --output-on-failure --no-tests=error
       - name: Retain root integration evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -58,7 +58,9 @@ option(DINERO_ORCHARD_BUILD_TESTS "Build Orchard component qualification tests" 
 # build uses the real consensus-core primitives. Standalone qualification builds
 # those exact source files, not a second parser or mock implementation.
 set(ORCHARD_HOST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
-add_library(dinero_transaction_reader STATIC "${ORCHARD_HOST_ROOT}/src/primitives/transaction_reader.cpp")
+add_library(dinero_transaction_reader STATIC
+  "${ORCHARD_HOST_ROOT}/src/primitives/transaction_reader.cpp"
+  "${ORCHARD_HOST_ROOT}/src/consensus/orchard_coin_snapshot.cpp")
 target_include_directories(dinero_transaction_reader PUBLIC "${ORCHARD_HOST_ROOT}/include")
 target_link_libraries(dinero_transaction_reader PUBLIC dinero_orchard_backend)
 if(TARGET dinero_consensus_core)
@@ -97,9 +99,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_sources(test_orchard_transaction_reader PRIVATE "${ORCHARD_HOST_ROOT}/src/consensus/chainparams_impl.cpp")
   endif()
   add_test(NAME OrchardTransactionReader COMMAND test_orchard_transaction_reader "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  add_executable(test_orchard_coin_snapshot "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_coin_snapshot.cpp")
+  target_link_libraries(test_orchard_coin_snapshot PRIVATE dinero_transaction_reader)
+  add_test(NAME OrchardCoinSnapshot COMMAND test_orchard_coin_snapshot "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()
