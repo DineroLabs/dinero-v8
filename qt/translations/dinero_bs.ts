@@ -6,27 +6,27 @@
     <message>
         <location filename="../src/aipanel.cpp" line="165" />
         <source>DineroAI Setup</source>
-        <translation type="unfinished" />
+        <translation>Podešavanje DineroAI</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="172" />
         <source>Choose your AI provider</source>
-        <translation type="unfinished" />
+        <translation>Odaberite svog AI pružaoca</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="245" />
         <source>API Key</source>
-        <translation type="unfinished" />
+        <translation>API ključ</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="248" />
         <source>Paste your API key here…</source>
-        <translation type="unfinished" />
+        <translation>Zalijepite svoj API ključ ovdje …</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="265" />
         <source>Claude CLI path (blank = auto-detect)</source>
-        <translation type="unfinished" />
+        <translation>Putanja do Claude CLI (prazno = automatski)</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="272" />
@@ -36,7 +36,7 @@
     <message>
         <location filename="../src/aipanel.cpp" line="300" />
         <source>Server URL  /  Model name</source>
-        <translation type="unfinished" />
+        <translation>URL servera  /  naziv modela</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="303" />
@@ -52,12 +52,12 @@
     <message>
         <location filename="../src/aipanel.cpp" line="323" />
         <source>Base address (wDIN required)</source>
-        <translation type="unfinished" />
+        <translation>Base adresa (potreban wDIN)</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="326" />
         <source>0x…  (must hold wDIN v2 to unlock)</source>
-        <translation type="unfinished" />
+        <translation>0x…  (mora imati wDIN v2 za otključavanje)</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="331" />
@@ -67,32 +67,32 @@
     <message>
         <location filename="../src/aipanel.cpp" line="352" />
         <source>Save &amp; Start</source>
-        <translation type="unfinished" />
+        <translation>Sačuvaj i pokreni</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="396" />
         <source>Get free key at aistudio.google.com</source>
-        <translation type="unfinished" />
+        <translation>Besplatan ključ na aistudio.google.com</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="397" />
         <source>Get free key at console.groq.com</source>
-        <translation type="unfinished" />
+        <translation>Besplatan ključ na console.groq.com</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="398" />
         <source>Uses your Anthropic API key</source>
-        <translation type="unfinished" />
+        <translation>Koristi vaš Anthropic API ključ</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="399" />
         <source>Uses claude CLI on this machine</source>
-        <translation type="unfinished" />
+        <translation>Koristi claude CLI na ovom računaru</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="400" />
         <source>Requires Ollama running locally (ollama.ai)</source>
-        <translation type="unfinished" />
+        <translation>Zahtijeva pokrenut Ollama lokalno (ollama.ai)</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="401" />
@@ -107,12 +107,12 @@
     <message>
         <location filename="../src/aipanel.cpp" line="421" />
         <source>Enter your Base address (0x…) to verify wDIN balance</source>
-        <translation type="unfinished" />
+        <translation>Unesite svoju Base adresu (0x…) da provjerite stanje wDIN-a</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="426" />
         <source>Checking wDIN balance…</source>
-        <translation type="unfinished" />
+        <translation>Provjeravam stanje wDIN-a …</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="515" />
@@ -127,28 +127,28 @@
     <message>
         <location filename="../src/aipanel.cpp" line="585" />
         <source>AI Settings</source>
-        <translation type="unfinished" />
+        <translation>Podešavanje AI-ja</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="594" />
         <source>Clear</source>
-        <translation type="unfinished" />
+        <translation>Očisti</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="706" />
         <source>Ask anything crypto…</source>
-        <translation type="unfinished" />
+        <translation>Pitajte bilo šta o kriptu …</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="718" />
         <source>Attach image (vision models)</source>
-        <translation type="unfinished" />
+        <translation>Priloži sliku (modeli s vidom)</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="728" />
         <location filename="../src/aipanel.cpp" line="943" />
         <source>Mic</source>
-        <translation type="unfinished" />
+        <translation>Mikrofon</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="738" />
@@ -158,12 +158,12 @@
     <message>
         <location filename="../src/aipanel.cpp" line="751" />
         <source>DineroAI — your crypto assistant</source>
-        <translation type="unfinished" />
+        <translation>DineroAI – vaš kripto asistent</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="927" />
         <source>Stop</source>
-        <translation type="unfinished" />
+        <translation>Zaustavi</translation>
     </message>
 </context>
 <context>
@@ -179,7 +179,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="29" />
         <source>Bridge ready - Auto-refresh every 15s</source>
-        <translation type="unfinished" />
+        <translation>Most je spreman – automatsko osvježavanje svakih 15 s</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="46" />
@@ -199,22 +199,22 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="63" />
         <source>Amount:</source>
-        <translation type="unfinished" />
+        <translation>Iznos:</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="65" />
         <source>Enter amount to convert</source>
-        <translation type="unfinished" />
+        <translation>Unesite iznos za pretvorbu</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="214" />
         <source>Invalid Input</source>
-        <translation type="unfinished" />
+        <translation>Neispravan unos</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="214" />
         <source>Please enter a valid amount greater than 0.</source>
-        <translation type="unfinished" />
+        <translation>Unesite ispravan iznos veći od 0.</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="268" />
@@ -224,37 +224,37 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="275" />
         <source>Fees: ~1.5%</source>
-        <translation type="unfinished" />
+        <translation>Naknade: ~1,5 %</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="280" />
         <source>Rate updated successfully</source>
-        <translation type="unfinished" />
+        <translation>Kurs je uspješno ažuriran</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="289" />
         <source>Direct conversion (1 hop)</source>
-        <translation type="unfinished" />
+        <translation>Direktna pretvorba (1 korak)</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="343" />
         <source>Conversion Successful</source>
-        <translation type="unfinished" />
+        <translation>Pretvorba je uspjela</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="356" />
         <source>Conversion Failed</source>
-        <translation type="unfinished" />
+        <translation>Pretvorba nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="357" />
         <source>❌ Conversion failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Pretvorba nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="380" />
         <source>Rate updated via WebSocket</source>
-        <translation type="unfinished" />
+        <translation>Kurs je ažuriran preko WebSocketa</translation>
     </message>
 </context>
 <context>
@@ -5653,58 +5653,58 @@ Label,Address</source>
     <message>
         <location filename="../src/paymentswidget.cpp" line="92" />
         <source>DineroPay ready - Create your first invoice</source>
-        <translation type="unfinished" />
+        <translation>DineroPay je spreman – napravite svoj prvi račun</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="108" />
         <source>Amount (DNR):</source>
-        <translation type="unfinished" />
+        <translation>Iznos (DNR):</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="113" />
         <source>Label (optional):</source>
-        <translation type="unfinished" />
+        <translation>Oznaka (opcionalno):</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="115" />
         <source>e.g., Order #12345</source>
-        <translation type="unfinished" />
+        <translation>npr. narudžba br. 12345</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="118" />
         <source>Address (optional):</source>
-        <translation type="unfinished" />
+        <translation>Adresa (opcionalno):</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="120" />
         <source>Leave blank for auto-generated</source>
-        <translation type="unfinished" />
+        <translation>Ostavite prazno za automatsko generisanje</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="136" />
         <source>Search:</source>
-        <translation type="unfinished" />
+        <translation>Traži:</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="138" />
         <source>Type to filter currencies...</source>
-        <translation type="unfinished" />
+        <translation>Kucajte da filtrirate valute …</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="151" />
         <source>Add/Remove from favorites</source>
-        <translation type="unfinished" />
+        <translation>Dodaj ili ukloni iz favorita</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="159" />
         <source>Open MoonPay/Ramp on-ramp in browser</source>
-        <translation type="unfinished" />
+        <translation>Otvori MoonPay/Ramp u pregledniku</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="195" />
         <location filename="../src/paymentswidget.cpp" line="391" />
         <source>No invoice selected</source>
-        <translation type="unfinished" />
+        <translation>Nijedan račun nije odabran</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="234" />
@@ -5719,62 +5719,62 @@ Label,Address</source>
     <message>
         <location filename="../src/paymentswidget.cpp" line="308" />
         <source>Invalid Amount</source>
-        <translation type="unfinished" />
+        <translation>Neispravan iznos</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="308" />
         <source>Please enter a valid amount greater than 0.</source>
-        <translation type="unfinished" />
+        <translation>Unesite ispravan iznos veći od 0.</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="342" />
         <source>No Subscription</source>
-        <translation type="unfinished" />
+        <translation>Nema pretplate</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="342" />
         <source>No active subscription found for this address.</source>
-        <translation type="unfinished" />
+        <translation>Za ovu adresu nije pronađena aktivna pretplata.</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="349" />
         <source>Checking payment status...</source>
-        <translation type="unfinished" />
+        <translation>Provjeravam status plaćanja …</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="372" />
         <source>QR Code Generated</source>
-        <translation type="unfinished" />
+        <translation>QR kod je generisan</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="387" />
         <source>Address: –</source>
-        <translation type="unfinished" />
+        <translation>Adresa: –</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="388" />
         <source>Amount: –</source>
-        <translation type="unfinished" />
+        <translation>Iznos: –</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="389" />
         <source>Fiat value: –</source>
-        <translation type="unfinished" />
+        <translation>Vrijednost u fiat valuti: –</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="504" />
         <source>Invoice Creation Failed</source>
-        <translation type="unfinished" />
+        <translation>Pravljenje računa nije uspjelo</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="505" />
         <source>❌ Failed to create invoice</source>
-        <translation type="unfinished" />
+        <translation>❌ Račun se ne može napraviti</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="540" />
         <source>100% ARP</source>
-        <translation type="unfinished" />
+        <translation>100 % ARP</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="542" />
@@ -5784,17 +5784,17 @@ Label,Address</source>
     <message>
         <location filename="../src/paymentswidget.cpp" line="544" />
         <source>100% Market</source>
-        <translation type="unfinished" />
+        <translation>100 % tržište</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="546" />
         <source>📈 Market-driven pricing</source>
-        <translation type="unfinished" />
+        <translation>📈 Cijena vođena tržištem</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="553" />
         <source>🔄 Blended pricing (transitioning)</source>
-        <translation type="unfinished" />
+        <translation>🔄 Mješovita cijena (prelazno)</translation>
     </message>
 </context>
 <context>
@@ -6148,27 +6148,27 @@ Label,Address</source>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="26" />
         <source>Waiting for network capability</source>
-        <translation type="unfinished" />
+        <translation>Čekam podršku mreže</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="33" />
         <source>Your shielded address; its wallet will control the contract</source>
-        <translation type="unfinished" />
+        <translation>Vaša zaštićena adresa; njen novčanik će upravljati ugovorom</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="35" />
         <source>Use my shielded address</source>
-        <translation type="unfinished" />
+        <translation>Koristi moju zaštićenu adresu</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="41" />
         <source>Select or load a wallet first.</source>
-        <translation type="unfinished" />
+        <translation>Prvo odaberite ili učitajte novčanik.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="42" />
         <source>Getting your shielded address…</source>
-        <translation type="unfinished" />
+        <translation>Preuzimam vašu zaštićenu adresu …</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="47" />
@@ -6188,12 +6188,12 @@ Label,Address</source>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="62" />
         <source>Refresh private contracts</source>
-        <translation type="unfinished" />
+        <translation>Osvježi privatne ugovore</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="69" />
         <source>Resolve uncertain submission</source>
-        <translation type="unfinished" />
+        <translation>Riješi slanje s nejasnim ishodom</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="70" />
@@ -6205,7 +6205,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="75" />
         <source>Cannot save resolution; the hold remains.</source>
-        <translation type="unfinished" />
+        <translation>Rješenje se ne može sačuvati; zadržavanje ostaje.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="78" />
@@ -6215,7 +6215,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="110" />
         <source>Your shielded address is ready.</source>
-        <translation type="unfinished" />
+        <translation>Vaša zaštićena adresa je spremna.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="131" />
@@ -6225,7 +6225,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="175" />
         <source>Review payment</source>
-        <translation type="unfinished" />
+        <translation>Pregledaj plaćanje</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="185" />
@@ -6240,27 +6240,27 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="196" />
         <source>Enter one or two valid payments within the amount range.</source>
-        <translation type="unfinished" />
+        <translation>Unesite jedno ili dva ispravna plaćanja unutar raspona iznosa.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="201" />
         <source>Review private covenant</source>
-        <translation type="unfinished" />
+        <translation>Pregledaj privatni covenant</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="214" />
         <source>Review private covenant payment</source>
-        <translation type="unfinished" />
+        <translation>Pregledaj plaćanje privatnog covenanta</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="221" />
         <source>Cannot save the operation journal; nothing submitted.</source>
-        <translation type="unfinished" />
+        <translation>Dnevnik operacije se ne može sačuvati; ništa nije poslano.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="222" />
         <source>Building and submitting proof. Please wait…</source>
-        <translation type="unfinished" />
+        <translation>Pravim i šaljem dokaz. Sačekajte …</translation>
     </message>
 </context>
 <context>
@@ -6842,7 +6842,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="152" />
         <source>Last request: —</source>
-        <translation type="unfinished" />
+        <translation>Zadnji zahtjev: —</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="164" />
@@ -6852,12 +6852,12 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="214" />
         <source>&lt;h2&gt;🏦 Liquidity Vault&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🏦 Trezor likvidnosti&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="215" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Osvježi</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="222" />
@@ -6867,17 +6867,17 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="237" />
         <source>Vault Summary</source>
-        <translation type="unfinished" />
+        <translation>Sažetak trezora</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="239" />
         <source>unknown</source>
-        <translation type="unfinished" />
+        <translation>nepoznato</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="240" />
         <source>connecting…</source>
-        <translation type="unfinished" />
+        <translation>povezujem …</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="241" />
@@ -6898,37 +6898,37 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="249" />
         <source>Runtime:</source>
-        <translation type="unfinished" />
+        <translation>Rad:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="251" />
         <source>Connection:</source>
-        <translation type="unfinished" />
+        <translation>Veza:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="253" />
         <source>Withdrawal queue:</source>
-        <translation type="unfinished" />
+        <translation>Red za isplatu:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="255" />
         <source>Settling:</source>
-        <translation type="unfinished" />
+        <translation>Podmiruje se:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="257" />
         <source>Vault Deposit Address:</source>
-        <translation type="unfinished" />
+        <translation>Adresa za uplatu u trezor:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="262" />
         <source>Vault Balance</source>
-        <translation type="unfinished" />
+        <translation>Stanje trezora</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="296" />
         <source>Withdrawal</source>
-        <translation type="unfinished" />
+        <translation>Isplata</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="308" />
@@ -6938,17 +6938,17 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="314" />
         <source>Review Withdrawal</source>
-        <translation type="unfinished" />
+        <translation>Pregledaj isplatu</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="320" />
         <source>Last request: –</source>
-        <translation type="unfinished" />
+        <translation>Zadnji zahtjev: –</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="325" />
         <source>Status of:</source>
-        <translation type="unfinished" />
+        <translation>Status za:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="327" />
@@ -6958,72 +6958,72 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="329" />
         <source>Check</source>
-        <translation type="unfinished" />
+        <translation>Provjeri</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="337" />
         <source>Advanced / Operator Details</source>
-        <translation type="unfinished" />
+        <translation>Napredno / detalji operatera</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="347" />
         <source>Manual withdrawal status lookup:</source>
-        <translation type="unfinished" />
+        <translation>Ručna provjera statusa isplate:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="350" />
         <source>Activity:</source>
-        <translation type="unfinished" />
+        <translation>Aktivnost:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="422" />
         <source>Invalid Vault Amount</source>
-        <translation type="unfinished" />
+        <translation>Neispravan iznos za trezor</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="423" />
         <source>Enter a positive DIN amount with no more than 8 decimal places.</source>
-        <translation type="unfinished" />
+        <translation>Unesite pozitivan iznos u DIN s najviše 8 decimala.</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="427" />
         <source>Invalid Vault Destination</source>
-        <translation type="unfinished" />
+        <translation>Neispravno odredište trezora</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="428" />
         <source>Enter a Taproot Dinero address beginning with din1p…</source>
-        <translation type="unfinished" />
+        <translation>Unesite Taproot Dinero adresu koja počinje s din1p…</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="432" />
         <source>Insufficient Vault Balance</source>
-        <translation type="unfinished" />
+        <translation>Nedovoljno stanje u trezoru</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="439" />
         <source>Review Vault Withdrawal</source>
-        <translation type="unfinished" />
+        <translation>Pregledaj isplatu iz trezora</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="473" />
         <source>&lt;span style='color:#7bd88f;'&gt;active&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;aktivno&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="517" />
         <source>&lt;span style='color:#d8a37b;'&gt;not bound&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;nije povezano&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="644" />
         <source>&lt;span style='color:#d8a37b;'&gt;waiting for daemon…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;čekam daemon …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="647" />
         <source>&lt;span style='color:#d8a37b;'&gt;starting…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;pokrećem …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="654" />
@@ -7033,7 +7033,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="729" />
         <source>&lt;span style='color:#7bd88f;'&gt;connected&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;povezano&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
@@ -7885,64 +7885,64 @@ Are you absolutely sure?</source>
         <location filename="../src/dashboardactioncontroller.cpp" line="227" />
         <location filename="../src/dashboardactioncontroller.cpp" line="339" />
         <source>Ready</source>
-        <translation type="unfinished" />
+        <translation>Spremno</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="71" />
         <location filename="../src/dashboardactioncontroller.cpp" line="228" />
         <location filename="../src/dashboardactioncontroller.cpp" line="339" />
         <source>Off</source>
-        <translation type="unfinished" />
+        <translation>Isključeno</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="137" />
         <source>No endpoint to copy</source>
-        <translation type="unfinished" />
+        <translation>Nema endpointa za kopiranje</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="143" />
         <source>Copied %1</source>
-        <translation type="unfinished" />
+        <translation>Kopirano %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="152" />
         <source>Copied peer details</source>
-        <translation type="unfinished" />
+        <translation>Detalji čvora su kopirani</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="157" />
         <source>No peer selected</source>
-        <translation type="unfinished" />
+        <translation>Nijedan čvor nije odabran</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="160" />
         <source>Disconnect peer?</source>
-        <translation type="unfinished" />
+        <translation>Prekinuti vezu s čvorom?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="161" />
         <source>Disconnect %1 from this node? The daemon may reconnect later.</source>
-        <translation type="unfinished" />
+        <translation>Prekinuti vezu s %1 na ovom čvoru? Daemon se možda kasnije ponovo poveže.</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="163" />
         <source>Disconnect cancelled</source>
-        <translation type="unfinished" />
+        <translation>Prekid veze je otkazan</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="167" />
         <source>Disconnect requested for %1</source>
-        <translation type="unfinished" />
+        <translation>Zatražen je prekid veze za %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="173" />
         <source>Ban unavailable for %1</source>
-        <translation type="unfinished" />
+        <translation>Zabrana nije dostupna za %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="177" />
         <source>Ban %1 for %2 seconds?</source>
-        <translation type="unfinished" />
+        <translation>Zabraniti %1 na %2 sekundi?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="179" />
@@ -7954,32 +7954,32 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="181" />
         <source>Ban peer?</source>
-        <translation type="unfinished" />
+        <translation>Zabraniti čvor?</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="182" />
         <source>Ban cancelled</source>
-        <translation type="unfinished" />
+        <translation>Zabrana je otkazana</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="188" />
         <source>Ban requested for %1</source>
-        <translation type="unfinished" />
+        <translation>Zatražena je zabrana za %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="193" />
         <source>Direct reconnect unavailable</source>
-        <translation type="unfinished" />
+        <translation>Direktno ponovno povezivanje nije dostupno</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="198" />
         <source>Reconnect requested for %1</source>
-        <translation type="unfinished" />
+        <translation>Zatraženo je ponovno povezivanje za %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="203" />
         <source>Relay hint has no target</source>
-        <translation type="unfinished" />
+        <translation>Naznaka prosljeđivanja nema odredište</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="215" />
@@ -7990,29 +7990,29 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
         <location filename="../src/dashboardactioncontroller.cpp" line="225" />
         <location filename="../src/dashboardactioncontroller.cpp" line="257" />
         <source>Stopping</source>
-        <translation type="unfinished" />
+        <translation>Zaustavljam</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="227" />
         <location filename="../src/dashboardactioncontroller.cpp" line="337" />
         <location filename="../src/dashboardactioncontroller.cpp" line="343" />
         <source>Running</source>
-        <translation type="unfinished" />
+        <translation>Radi</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="235" />
         <source>Switch to Yes first</source>
-        <translation type="unfinished" />
+        <translation>Prvo prebacite na Da</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="242" />
         <source>dinero-seeder not found</source>
-        <translation type="unfinished" />
+        <translation>dinero-seeder nije pronađen</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="250" />
         <source>Starting</source>
-        <translation type="unfinished" />
+        <translation>Pokrećem</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="323" />
@@ -8028,22 +8028,22 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
         <location filename="../src/dashboardactioncontroller.cpp" line="328" />
         <location filename="../src/dashboardactioncontroller.cpp" line="344" />
         <source>%1 accepted</source>
-        <translation type="unfinished" />
+        <translation>%1 je prihvaćeno</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="343" />
         <source>Stopped</source>
-        <translation type="unfinished" />
+        <translation>Zaustavljeno</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="359" />
         <source>%1 failed (%2): %3</source>
-        <translation type="unfinished" />
+        <translation>%1 nije uspjelo (%2): %3</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="363" />
         <source>Error: %1</source>
-        <translation type="unfinished" />
+        <translation>Greška: %1</translation>
     </message>
 </context>
 <context>
@@ -8210,29 +8210,29 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="28" />
         <source>Network diagnostics (your node's view)</source>
-        <translation type="unfinished" />
+        <translation>Dijagnostika mreže (pogled vašeg čvora)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="64" />
         <source>Tor connectivity (Admin only)</source>
-        <translation type="unfinished" />
+        <translation>Tor povezanost (samo administrator)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="67" />
         <location filename="../src/networksection.cpp" line="99" />
         <source>Off</source>
-        <translation type="unfinished" />
+        <translation>Isključeno</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="68" />
         <location filename="../src/networksection.cpp" line="100" />
         <source>Automatic — recommended</source>
-        <translation type="unfinished" />
+        <translation>Automatski – preporučeno</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="69" />
         <source>External Tor — advanced</source>
-        <translation type="unfinished" />
+        <translation>Vanjski Tor – napredno</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="71" />
@@ -8242,7 +8242,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="78" />
         <source>Tor connectivity</source>
-        <translation type="unfinished" />
+        <translation>Tor povezanost</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="78" />
@@ -8252,17 +8252,17 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="88" />
         <source>Applying Tor connectivity preference…</source>
-        <translation type="unfinished" />
+        <translation>Primjenjujem postavku Tor povezanosti …</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="96" />
         <source>Enable relay service (Admin only)</source>
-        <translation type="unfinished" />
+        <translation>Uključi servis prosljeđivanja (samo administrator)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="101" />
         <source>Custom limits</source>
-        <translation type="unfinished" />
+        <translation>Prilagođene granice</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="102" />
@@ -8272,52 +8272,52 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="107" />
         <source>Concurrent circuits</source>
-        <translation type="unfinished" />
+        <translation>Istovremeni krugovi</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="107" />
         <source>Bandwidth (KiB/s)</source>
-        <translation type="unfinished" />
+        <translation>Propusnost (KiB/s)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="108" />
         <source>Circuits per peer</source>
-        <translation type="unfinished" />
+        <translation>Krugova po čvoru</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="108" />
         <source>Circuit lifetime (seconds)</source>
-        <translation type="unfinished" />
+        <translation>Trajanje kruga (sekunde)</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="109" />
         <source>Requests per peer/minute</source>
-        <translation type="unfinished" />
+        <translation>Zahtjeva po čvoru u minuti</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="120" />
         <source>Apply relay service</source>
-        <translation type="unfinished" />
+        <translation>Primijeni servis prosljeđivanja</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="122" />
         <source>Relay service status unavailable.</source>
-        <translation type="unfinished" />
+        <translation>Status servisa prosljeđivanja nije dostupan.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="150" />
         <source>peer estimate  %1</source>
-        <translation type="unfinished" />
+        <translation>procjena čvorova  %1</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="170" />
         <source>● In sync with the peer estimate</source>
-        <translation type="unfinished" />
+        <translation>● Usklađeno s procjenom čvorova</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="171" />
         <source>● %1 block(s) behind the peer estimate</source>
-        <translation type="unfinished" />
+        <translation>● %1 blokova iza procjene čvorova</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="172" />
@@ -8327,7 +8327,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="194" />
         <source>Check the local daemon log for details.</source>
-        <translation type="unfinished" />
+        <translation>Detalje potražite u zapisu lokalnog daemona.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="213" />
@@ -8357,7 +8357,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="237" />
         <source>Active · onion address: %1</source>
-        <translation type="unfinished" />
+        <translation>Aktivno · onion adresa: %1</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="240" />
