@@ -71,6 +71,7 @@ public:
     std::int64_t RequiredValueBalance() const noexcept { return required_balance_; }
 private:
     friend class ParsedBundle;
+    friend class WalletShieldPlan;
     SigningContext(SigningDomain domain, std::uint32_t lock_time,
                    std::vector<ResolvedInput> inputs,
                    std::vector<TransparentOutput> outputs,

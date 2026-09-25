@@ -90,6 +90,20 @@ int32_t dinero_orchard_address_decode_v1(const uint8_t*, size_t, uint8_t network
 int32_t dinero_orchard_wallet_free_v1(DineroOrchardWalletKeys*);
 uint32_t dinero_orchard_wallet_coin_type_v1(void);
 
+/* One-use shield builder. Preparation creates fresh randomized outputs. The
+ * host derives the signing digest from these exact effects and its owned,
+ * authenticated transaction context. No private wallet material is returned.
+ * Every output is unchanged on failure; a started proof attempt consumes the
+ * plan even on failure. Free the plan exactly once after all calls finish. */
+#define DINERO_ORCHARD_V1_MAX_BUNDLE_BYTES 65536
+typedef struct DineroOrchardShieldPlan DineroOrchardShieldPlan;
+typedef struct { uint64_t amount; uint8_t recipient[43]; uint8_t memo[512]; } DineroOrchardPayment;
+typedef struct { uint32_t length; uint8_t bytes[DINERO_ORCHARD_V1_MAX_BUNDLE_BYTES]; } DineroOrchardBuiltBundle;
+int32_t dinero_orchard_prepare_shield_v1(const DineroOrchardWalletKeys*, const DineroOrchardPayment*, size_t, DineroOrchardShieldPlan**);
+int32_t dinero_orchard_shield_facts_v1(const DineroOrchardShieldPlan*, DineroOrchardFacts*);
+int32_t dinero_orchard_prove_shield_v1(DineroOrchardShieldPlan*, const uint8_t digest[32], const uint8_t effect[32], int64_t balance, DineroOrchardBuiltBundle*);
+int32_t dinero_orchard_shield_plan_free_v1(DineroOrchardShieldPlan*);
+
 /* All non-null pointers must be valid and aligned; inputs immutable for each
  * call, outputs non-aliasing. Decode/facts leave output unchanged on failure.
  * A handle owns its decoded data, may be read concurrently, and must outlive

@@ -43,7 +43,7 @@ add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}"
     ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} build --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     --target-dir "${ORCHARD_TARGET_DIR}"
-  DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs
+  DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs src/wallet_prover.rs
     include/orchard_backend_ffi.h tests/fixtures/candidate-spend.bundle
     tests/fixtures/candidate-spend.digest tests/fixtures/candidate-spend.effect
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" VERBATIM)
@@ -126,6 +126,9 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_executable(test_orchard_wallet tests/wallet.cpp)
   target_link_libraries(test_orchard_wallet PRIVATE dinero_orchard_backend)
   add_test(NAME OrchardWalletKeys COMMAND test_orchard_wallet)
+  add_executable(test_orchard_wallet_shield tests/wallet_shield.cpp)
+  target_link_libraries(test_orchard_wallet_shield PRIVATE dinero_orchard_backend)
+  add_test(NAME OrchardWalletShield COMMAND test_orchard_wallet_shield)
   add_executable(test_orchard_transaction_reader "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_transaction_reader.cpp")
   target_link_libraries(test_orchard_transaction_reader PRIVATE dinero_transaction_reader)
   if(TARGET dinero_consensus_core)
@@ -179,6 +182,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardWalletKeys OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardWalletKeys OrchardWalletShield OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()

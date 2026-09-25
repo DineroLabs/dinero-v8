@@ -19,7 +19,7 @@ pub struct WalletKeys {
     spending_key: Zeroizing<[u8; 32]>,
 }
 impl WalletKeys {
-    fn derive(seed: &[u8], account: u32) -> Result<Self, Status> {
+    pub(super) fn derive(seed: &[u8], account: u32) -> Result<Self, Status> {
         if !(32..=252).contains(&seed.len()) {
             return Err(Status::Limit);
         }
@@ -30,7 +30,7 @@ impl WalletKeys {
             spending_key: Zeroizing::new(*key.to_bytes()),
         })
     }
-    fn viewing(&self) -> Result<FullViewingKey, Status> {
+    pub(super) fn viewing(&self) -> Result<FullViewingKey, Status> {
         let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes(*self.spending_key))
             .ok_or(Status::Encoding)?;
         Ok(FullViewingKey::from(&sk))
