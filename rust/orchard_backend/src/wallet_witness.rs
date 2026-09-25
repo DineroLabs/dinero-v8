@@ -1,5 +1,5 @@
 //! Immutable copies of upstream incrementally updatable note witnesses.
-use crate::{boundary, free_owned, frontier, Status, MAX_ACTIONS};
+use crate::{boundary, free_owned, frontier, Reader, Status, MAX_ACTIONS};
 use incrementalmerkletree::{frontier::CommitmentTree, witness::IncrementalWitness};
 use orchard::tree::MerkleHashOrchard;
 type Witness = IncrementalWitness<MerkleHashOrchard, 32>;
@@ -83,6 +83,167 @@ fn facts(witness: &WalletWitness) -> Result<WitnessFacts, Status> {
         path,
     })
 }
+const WITNESS_MAGIC: [u8; 8] = *b"DNORWI01";
+const MAX_WITNESS_BYTES: usize = 4096;
+#[repr(C)]
+pub struct StoredWitness {
+    length: u32,
+    bytes: [u8; MAX_WITNESS_BYTES],
+}
+fn encode(witness: &WalletWitness) -> Result<Vec<u8>, Status> {
+    let state = facts(witness)?;
+    let mut bytes = WITNESS_MAGIC.to_vec();
+    bytes.extend_from_slice(&witness.commitment);
+    bytes.extend_from_slice(&state.root);
+    bytes.extend_from_slice(&state.leaf_count.to_le_bytes());
+    let tree = frontier::encoded_bytes(&witness.witness.tree().to_frontier());
+    bytes.extend_from_slice(&(tree.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&tree);
+    if witness.witness.filled().len() > 32 {
+        return Err(Status::Limit);
+    }
+    bytes.push(witness.witness.filled().len() as u8);
+    for node in witness.witness.filled() {
+        bytes.extend_from_slice(&node.to_bytes());
+    }
+    let cursor = witness
+        .witness
+        .cursor()
+        .as_ref()
+        .map(|tree| frontier::encoded_bytes(&tree.to_frontier()))
+        .unwrap_or_default();
+    bytes.extend_from_slice(&(cursor.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&cursor);
+    if bytes.len() > MAX_WITNESS_BYTES {
+        return Err(Status::Limit);
+    }
+    Ok(bytes)
+}
+fn decode(bytes: &[u8]) -> Result<WalletWitness, Status> {
+    if bytes.len() > MAX_WITNESS_BYTES {
+        return Err(Status::Limit);
+    }
+    let mut reader = Reader::new(bytes);
+    if reader.array::<8>()? != WITNESS_MAGIC {
+        return Err(Status::Format);
+    }
+    let commitment = reader.array()?;
+    let root: [u8; 32] = reader.array()?;
+    let leaf_count = u64::from_le_bytes(reader.array()?);
+    let length = reader.u32()? as usize;
+    if length > 1073 {
+        return Err(Status::Limit);
+    }
+    let tree = CommitmentTree::from_frontier(&frontier::decode(reader.take(length)?)?);
+    if tree.is_empty() || tree.leaf().map(MerkleHashOrchard::to_bytes) != Some(commitment) {
+        return Err(Status::Format);
+    }
+    // A filled hash represents a COMPLETE future sibling subtree. A cursor
+    // must be a nonempty, INCOMPLETE next subtree. Enforce this before calling
+    // upstream from_parts, whose legacy decoder is intentionally permissive.
+    let position = incrementalmerkletree::Position::from(tree.size() as u64 - 1);
+    let future: Vec<_> = position
+        .witness_addrs(32.into())
+        .filter_map(|(a, source)| {
+            (source == incrementalmerkletree::Source::Future).then_some(u8::from(a.level()))
+        })
+        .collect();
+    let count = reader.byte()? as usize;
+    if count > future.len() {
+        return Err(Status::Format);
+    }
+    let mut filled = Vec::with_capacity(count);
+    for _ in 0..count {
+        filled.push(node(&reader.array()?)?);
+    }
+    let length = reader.u32()? as usize;
+    if length > 1073 {
+        return Err(Status::Limit);
+    }
+    let cursor = if length == 0 {
+        None
+    } else {
+        let cursor = CommitmentTree::from_frontier(&frontier::decode(reader.take(length)?)?);
+        let depth = *future.get(count).ok_or(Status::Format)?;
+        if cursor.is_empty() || cursor.size() as u64 >= (1u64 << depth) {
+            return Err(Status::Format);
+        }
+        Some(cursor)
+    };
+    reader.finish()?;
+    let witness = Witness::from_parts(tree, filled, cursor).ok_or(Status::Format)?;
+    let result = WalletWitness {
+        witness,
+        commitment,
+    };
+    let state = facts(&result)?;
+    if state.root != root || state.leaf_count != leaf_count || encode(&result)? != bytes {
+        return Err(Status::Format);
+    }
+    Ok(result)
+}
+/// # Safety
+/// Live immutable witness, aligned writable non-aliasing output. Output is
+/// unchanged on failure. Encoded witness links a wallet note to chain state;
+/// persist under wallet privacy protections, never as a consensus certificate.
+#[no_mangle]
+pub unsafe extern "C" fn dinero_orchard_witness_encode_v1(
+    witness: *const WalletWitness,
+    output: *mut StoredWitness,
+) -> i32 {
+    if witness.is_null() || output.is_null() {
+        return Status::NullArgument as i32;
+    }
+    boundary(|| {
+        let bytes = encode(unsafe { &*witness })?;
+        let mut result = StoredWitness {
+            length: bytes.len() as u32,
+            bytes: [0; MAX_WITNESS_BYTES],
+        };
+        result.bytes[..bytes.len()].copy_from_slice(&bytes);
+        unsafe {
+            output.write(result);
+        }
+        Ok(())
+    })
+}
+/// # Safety
+/// Immutable bounded bytes, 32-byte commitment/root and selected tree count.
+/// Aligned writable non-aliasing output, unchanged on failure. Host must bind
+/// the supplied expected values to its authenticated wallet/chain checkpoint.
+#[no_mangle]
+pub unsafe extern "C" fn dinero_orchard_witness_decode_v1(
+    bytes: *const u8,
+    length: usize,
+    commitment: *const u8,
+    root: *const u8,
+    leaf_count: u64,
+    output: *mut *mut WalletWitness,
+) -> i32 {
+    if length > MAX_WITNESS_BYTES {
+        return Status::Limit as i32;
+    }
+    if bytes.is_null() || commitment.is_null() || root.is_null() || output.is_null() {
+        return Status::NullArgument as i32;
+    }
+    boundary(|| {
+        let witness = decode(unsafe { std::slice::from_raw_parts(bytes, length) })?;
+        let state = facts(&witness)?;
+        let expected_commitment: &[u8; 32] = unsafe { &*commitment.cast() };
+        let expected_root: &[u8; 32] = unsafe { &*root.cast() };
+        if witness.commitment != *expected_commitment
+            || state.root != *expected_root
+            || state.leaf_count != leaf_count
+        {
+            return Err(Status::Format);
+        }
+        unsafe {
+            output.write(Box::into_raw(Box::new(witness)));
+        }
+        Ok(())
+    })
+}
+
 /// # Safety
 /// Immutable bounded frontier encoding and count consecutive 32-byte leaves.
 /// Aligned writable non-aliasing output, unchanged on failure. Host supplies
@@ -216,7 +377,11 @@ mod tests {
                 let path = next.witness.path().unwrap();
                 assert_eq!(path.root(node(&witness.commitment).unwrap()), tree.root());
                 assert_eq!(facts(&next).unwrap().leaf_count, tree.tree_size());
-                *witness = next;
+                let bytes = encode(&next).unwrap();
+                let restored = decode(&bytes).unwrap();
+                assert_eq!(encode(&restored).unwrap(), bytes);
+                assert_eq!(facts(&restored).unwrap().path, facts(&next).unwrap().path);
+                *witness = restored;
             }
         }
         let w = &witnesses[0];
@@ -232,5 +397,56 @@ mod tests {
         assert_eq!(w.witness.root().to_bytes(), root);
         assert_eq!(std::mem::size_of::<WitnessFacts>(), 1104);
         assert_eq!(std::mem::offset_of!(WitnessFacts, path), 80);
+    }
+    #[test]
+    fn stored_witness_is_bounded_canonical_and_checkpoint_bound() {
+        let mut empty = b"DNORFR01".to_vec();
+        empty.extend_from_slice(&0u64.to_le_bytes());
+        let witness = create(&empty, &[leaf(1), leaf(2), leaf(3)], 0).unwrap();
+        let bytes = encode(&witness).unwrap();
+        for n in 0..bytes.len() {
+            assert!(decode(&bytes[..n]).is_err());
+        }
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(matches!(decode(&trailing), Err(Status::TrailingBytes)));
+        for at in [0, 8, 40, 72] {
+            let mut changed = bytes.clone();
+            changed[at] ^= 1;
+            assert!(decode(&changed).is_err());
+        }
+        let mut too_many = bytes.clone();
+        too_many[80..84].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(decode(&too_many), Err(Status::Limit)));
+        let state = facts(&witness).unwrap();
+        let mut handle = std::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                dinero_orchard_witness_decode_v1(
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    state.commitment.as_ptr(),
+                    state.root.as_ptr(),
+                    state.leaf_count + 1,
+                    &mut handle,
+                )
+            },
+            Status::Format as i32
+        );
+        assert!(handle.is_null());
+        assert_eq!(std::mem::size_of::<StoredWitness>(), 4100);
+        // Last possible leaf: no future sibling or cursor remains legal.
+        let almost = Frontier::<MerkleHashOrchard, 32>::from_parts(
+            incrementalmerkletree::Position::from((1u64 << 32) - 2),
+            node(&leaf(9)).unwrap(),
+            vec![node(&leaf(7)).unwrap(); 31],
+        )
+        .unwrap();
+        let full = create(&frontier::encoded_bytes(&almost), &[leaf(10)], 0).unwrap();
+        assert_eq!(facts(&full).unwrap().leaf_count, 1u64 << 32);
+        let restored = decode(&encode(&full).unwrap()).unwrap();
+        assert_eq!(facts(&restored).unwrap().position, u32::MAX);
+        let root = full.witness.root().to_bytes();
+        assert!(append(&full, &[leaf(11)], &root, &root).is_err());
     }
 }

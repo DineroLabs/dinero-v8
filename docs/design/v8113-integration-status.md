@@ -49,7 +49,7 @@ This branch collects release implementation for review and qualification against
   inputs and the authenticated full parent forest.
   Exact body storage and active transaction indexes now share that batch.
   A versioned commit record shares the batch; tip-local startup auditing and eight process-exit boundaries pass on generated stores. Production/CSN integration and service/flatfile-index coordination remain unfinished.
-- Wallet primitives now include opaque ZIP32 account keys, external/internal receivers, watch-only parity and an explicit-network Bech32m address profile. Fresh shield/send/unshield bundle construction uses OS randomness and an owned transaction signing context, then decodes and verifies before returning. Received notes are opaque; incremental witnesses check roots and preserve prior state. No wallet database or RPC caller is enabled.
+- Wallet primitives now include opaque ZIP32 account keys, external/internal receivers, watch-only parity and an explicit-network Bech32m address profile. Fresh shield/send/unshield bundle construction uses OS randomness and an owned transaction signing context, then decodes and verifies before returning. Received notes are opaque; incremental witnesses check roots, preserve prior state and resume from a canonical checkpoint-bound encoding. No wallet database or RPC caller is enabled.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared

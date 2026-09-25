@@ -2,6 +2,9 @@
 #include "orchard_transaction.h"
 #include <algorithm>
 #include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <unistd.h>
 using namespace dinero::orchard;
 static void Check(bool ok){if(!ok)throw std::runtime_error("Orchard wallet spend lifecycle failed");}
 template<class F>static void Reject(F fn){bool rejected=false;try{fn();}catch(const BackendError&){rejected=true;}Check(rejected);}
@@ -39,6 +42,22 @@ int main(){try{
     Check(Root(witness)==first.Root());Check(updated.Facts().leaf_count==leaves.size()+3);
     Reject([&]{(void)witness.Append(appended,second.Root(),second.Root());});
     Reject([&]{(void)witness.Append(appended,first.Root(),first.Root());});
+    // Close a temporary file, release the updated witness, and restore its
+    // canonical state before the actual spend proof below.
+    const auto stored=updated.Encode();
+    auto pattern=(std::filesystem::temp_directory_path()/"dinero-orchard-witness-XXXXXX").string();
+    std::vector<char> file(pattern.begin(),pattern.end());file.push_back(0);
+    const int fd=mkstemp(file.data());Check(fd>=0);close(fd);
+    {std::ofstream out(file.data(),std::ios::binary);out.write(reinterpret_cast<const char*>(stored.data()),stored.size());Check(bool(out));}
+    std::vector<uint8_t> reloaded;
+    {std::ifstream in(file.data(),std::ios::binary);Check(bool(in));reloaded.assign(std::istreambuf_iterator<char>(in),{});}
+    std::filesystem::remove(file.data());Check(reloaded==stored);
+    Hash commitment{};std::copy(std::begin(note.Facts().commitment),std::end(note.Facts().commitment),commitment.begin());
+    Reject([&]{(void)WalletWitness::Decode(stored,commitment,second.Root(),second.Size()+1);});
+    Reject([&]{(void)WalletWitness::Decode(stored,commitment,first.Root(),second.Size());});
+    auto extra=stored;extra.push_back(0);Reject([&]{(void)WalletWitness::Decode(extra,commitment,second.Root(),second.Size());});
+    updated=WalletWitness::Decode(reloaded,commitment,second.Root(),second.Size());
+    Check(updated.Encode()==stored);
     std::vector<WalletSpendInput> spends{{note,updated}};
     std::vector<WalletPayment> outputs{{4900,c.Receiver(WalletScope::External,{})}};
     Reject([&]{(void)WalletBundlePlan::PrepareSpend(a,spends,second.Root(),outputs);});

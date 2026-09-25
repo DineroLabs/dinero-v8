@@ -71,6 +71,11 @@ fn encode(tree: &Tree) -> FrontierResult {
     result
 }
 
+pub(super) fn encoded_bytes(tree: &Tree) -> Vec<u8> {
+    let result = encode(tree);
+    result.encoded[..result.encoded_length as usize].to_vec()
+}
+
 /// # Safety
 /// Output is aligned writable storage, unchanged on failure.
 #[no_mangle]

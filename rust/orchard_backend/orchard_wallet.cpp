@@ -83,6 +83,17 @@ WalletWitness WalletWitness::Append(std::span<const Hash> commitments,const Hash
     Check(dinero_orchard_witness_append_v1(handle_.get(),commitments.empty()?nullptr:commitments[0].data(),
         commitments.size(),parent.data(),next.data(),&handle));return WalletWitness(handle);
 }
+static_assert(sizeof(DineroOrchardStoredWitness)==4100);
+std::vector<uint8_t> WalletWitness::Encode()const {
+    DineroOrchardStoredWitness result{};Check(dinero_orchard_witness_encode_v1(handle_.get(),&result));
+    if(result.length>DINERO_ORCHARD_V1_MAX_WITNESS_BYTES)throw BackendError(DINERO_ORCHARD_FORMAT);
+    return {result.bytes,result.bytes+result.length};
+}
+WalletWitness WalletWitness::Decode(std::span<const uint8_t> bytes,const Hash& commitment,const Hash& root,uint64_t count) {
+    DineroOrchardWitness* handle=nullptr;
+    Check(dinero_orchard_witness_decode_v1(bytes.data(),bytes.size(),commitment.data(),root.data(),count,&handle));
+    return WalletWitness(handle);
+}
 namespace {
 std::vector<DineroOrchardPayment> Payments(std::span<const WalletPayment> payments) {
     if(payments.size()>kMaxActionsV1)throw BackendError(DINERO_ORCHARD_LIMIT);

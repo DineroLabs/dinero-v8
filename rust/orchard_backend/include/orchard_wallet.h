@@ -67,6 +67,9 @@ public:
         std::span<const Hash> ordered_commitments, std::size_t index_in_batch);
     [[nodiscard]] WalletWitness Append(std::span<const Hash> ordered_commitments,
         const Hash& expected_parent, const Hash& expected_next) const;
+    [[nodiscard]] std::vector<std::uint8_t> Encode() const;
+    [[nodiscard]] static WalletWitness Decode(std::span<const std::uint8_t>,
+        const Hash& expected_commitment, const Hash& expected_root, std::uint64_t expected_leaf_count);
     WalletWitness(WalletWitness&&) noexcept = default;
     WalletWitness& operator=(WalletWitness&&) noexcept = default;
     WalletWitness(const WalletWitness&) = delete;

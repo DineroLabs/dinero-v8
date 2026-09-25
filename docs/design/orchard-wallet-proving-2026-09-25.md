@@ -58,7 +58,23 @@ fees. Wrong account, duplicate note and wrong anchor are rejected. A separate
 incremental test follows four witnesses across 256 additional commitments,
 checking roots, paths, counts and immutable parents.
 
-Protected wallet storage, durable witnesses, authenticated chain scanning,
+Protected wallet storage, authenticated chain scanning,
 operation recovery, transparent signing and runtime admission remain separate
 implementation work. Returning a proved bundle does
 not establish that its transaction is currently admissible or mined.
+
+## Durable witness encoding
+
+Witnesses now have a bounded canonical `DNORWI01` storage encoding. It preserves
+the origin frontier, completed sibling subtrees and partial cursor needed to
+resume appending after reload. Decoding validates the permissible future subtree
+layout before using upstream's permissive legacy-parts constructor, checks the
+recomputed root and count, and requires exact re-encoding. The caller must also
+supply the expected note commitment, selected tree root and leaf count.
+
+The incremental tests serialize, discard and decode on every append across four
+witnesses. The last possible tree leaf, truncations, extra bytes and mismatched
+checkpoint values are covered. The C++ lifecycle closes a temporary witness file
+and restores its bytes before making the spend proof. This qualifies the codec
+and resumed proving, not a wallet database transaction or crash recovery of the
+whole wallet. Witness records link wallet activity and need protected storage.

@@ -105,6 +105,10 @@ int32_t dinero_orchard_witness_create_v1(const uint8_t*, size_t, const uint8_t*,
 int32_t dinero_orchard_witness_append_v1(const DineroOrchardWitness*, const uint8_t*, size_t, const uint8_t parent[32], const uint8_t next[32], DineroOrchardWitness**);
 int32_t dinero_orchard_witness_facts_v1(const DineroOrchardWitness*, DineroOrchardWitnessFacts*);
 int32_t dinero_orchard_witness_free_v1(DineroOrchardWitness*);
+#define DINERO_ORCHARD_V1_MAX_WITNESS_BYTES 4096
+typedef struct {uint32_t length; uint8_t bytes[DINERO_ORCHARD_V1_MAX_WITNESS_BYTES];} DineroOrchardStoredWitness;
+int32_t dinero_orchard_witness_encode_v1(const DineroOrchardWitness*, DineroOrchardStoredWitness*);
+int32_t dinero_orchard_witness_decode_v1(const uint8_t*, size_t, const uint8_t commitment[32], const uint8_t root[32], uint64_t leaf_count, DineroOrchardWitness**);
 
 /* One-use shield builder. Preparation creates fresh randomized outputs. The
  * host derives the signing digest from these exact effects and its owned,
