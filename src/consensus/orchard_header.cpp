@@ -46,6 +46,23 @@ void CheckOrchardHeaderUnderChainstateLock(
         throw OrchardHeaderLookupError("Orchard selected header ancestry unavailable");
     if (header.timestamp <= static_cast<uint64_t>(ancestry.parent_mtp))
         Reject(Error::TimeTooOld);
+    // Check the candidate's own ancestry. A checkpoint on some best-header
+    // branch is not evidence for this selected parent's branch. Future
+    // checkpoints do not prevent initial sync toward them.
+    for (const auto& [height, encoded] : params.vCheckpoints) {
+        if (height > context.height) break;
+        uint256 expected;
+        if (!uint256::FromHex(encoded, expected) || expected.IsNull())
+            throw OrchardHeaderLookupError("invalid Orchard checkpoint configuration");
+        uint256 actual = context.block_hash;
+        if (height < context.height) {
+            uint32_t parent_height = 0;
+            if (!headers.GetAncestorHashByHash(context.parent_hash, height, actual, parent_height) ||
+                parent_height != context.height - 1)
+                throw OrchardHeaderLookupError("Orchard checkpoint ancestry unavailable");
+        }
+        if (actual != expected) Reject(Error::Checkpoint);
+    }
     if (params.SkipProofOfWork()) return;
     if (context.height > 1 && !ancestry.timing_anchor && ancestry.block1_time <= 0)
         throw OrchardHeaderLookupError("Orchard ASERT reference unavailable");

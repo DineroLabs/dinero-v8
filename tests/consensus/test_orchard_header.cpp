@@ -120,5 +120,21 @@ int main() {
     check(unsolved, fork, 4, fork_child.timestamp);
     unsolved.timestamp = 0;
     Rejected(OrchardHeaderErrorCode::TimeTooOld, [&] { check(unsolved, fork, 4, fork_child.timestamp); });
-    std::cout << "PASS: staged headers, branch ASERT, PoW, MTP/time and selected context\n";
+    const auto prior_checkpoints = Params().vCheckpoints;
+    MutableParams().vCheckpoints = {{3, chain[3]->hash.GetHex()}};
+    check(chain[3]->header, chain[2]->header, 3, chain[3]->header.timestamp);
+    check(chain[6]->header, chain[5]->header, 6, chain[6]->header.timestamp);
+    Rejected(OrchardHeaderErrorCode::Checkpoint, [&] { check(fork, chain[2]->header, 3, fork.timestamp); });
+    Rejected(OrchardHeaderErrorCode::Checkpoint, [&] { check(fork_child, fork, 4, fork_child.timestamp); });
+    // The selector's best chain is not the authority for the candidate fork.
+    MutableParams().vCheckpoints = {{3, fork.GetHash().GetHex()}};
+    check(fork_child, fork, 4, fork_child.timestamp);
+    Rejected(OrchardHeaderErrorCode::Checkpoint, [&] { check(chain[6]->header, chain[5]->header, 6, chain[6]->header.timestamp); });
+    // A future checkpoint must not reject an earlier valid sync prefix.
+    MutableParams().vCheckpoints = {{7, fork.GetHash().GetHex()}};
+    check(fork_child, fork, 4, fork_child.timestamp);
+    MutableParams().vCheckpoints = {{3, "invalid-config"}};
+    LookupFailure([&] { check(fork_child, fork, 4, fork_child.timestamp); });
+    MutableParams().vCheckpoints = prior_checkpoints;
+    std::cout << "PASS: staged headers, branch ASERT, PoW, MTP/time, branch checkpoints and selected context\n";
 }

@@ -16,6 +16,10 @@ fall back to active-chain difficulty or zero/uncomputed expected bits.
 Checks cover candidate/parent hashes and height, activation context, signing
 network/genesis/nonzero branch, version/reserved fields, MTP, the shared two-hour
 future-time bound, exact shared ASERT difficulty and actual proof of work.
+Configured checkpoints at or below the candidate height must match the candidate
+or its own hash-anchored parent ancestry. Missing ancestry or malformed configured
+hashes are local errors. Future checkpoints do not block earlier sync prefixes;
+ordinary regtest bypasses neither checkpoint nor context checks.
 Time arithmetic checks the unsigned difference before conversion to signed ASERT
 time. Ordinary regtest keeps its explicit existing PoW/ASERT bypass, while the
 enforce-PoW qualification profile exercises both checks across the timing boundary.
@@ -25,11 +29,12 @@ configuration, never a peer-invalid result. `TimeTooNew` is temporary: an eventu
 caller must retry it as time advances, not mark that header permanently invalid.
 The gate does not mutate the header selector or persistent/memory chainstate.
 
-The selected parent remains a host trust boundary. This gate is not checkpoint
-validation, historical-chain authentication, full block validity, or final branch
+The selected parent remains a host trust boundary. This gate is not
+historical-chain authentication, full block validity, or final branch
 selection. A production adapter must run it before expensive body authorization
 and apply the same locked context through the existing atomic staging operation.
-Remaining obligations include checkpoints, complete sigop/proof-work budgets,
+Remaining obligations include consistent live checkpoint/fork-choice routing,
+final resource-profile qualification,
 body/transaction validation, selected state and durable commit. A nonzero branch
 identifier alone is not a registered production Orchard consensus profile.
 
@@ -38,3 +43,8 @@ the 60-second boundary, a competing branch with a different boundary anchor,
 MTP/future-time boundaries, malformed framing/context and missing local ancestry.
 The test verifies that checking a header does not advance best-header selection.
 Its CTest name and Orchard label are mandatory in the root Linux CI inventory.
+
+Checkpoint tests cover the exact height, later descendants, a competing branch
+whose checkpoint differs from the best-header branch, ignored future heights,
+and malformed local configuration. This does not qualify the runtime deep-reorg
+path: it must invoke this gate on every candidate, including replay/reindex.

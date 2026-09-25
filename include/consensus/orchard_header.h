@@ -4,7 +4,7 @@
 namespace dinero::consensus {
 class HeaderChainSelector;
 enum class OrchardHeaderErrorCode {
-    Context, Shape, TimeTooOld, TimeTooNew, Difficulty, ProofOfWork
+    Context, Shape, TimeTooOld, TimeTooNew, Difficulty, ProofOfWork, Checkpoint
 };
 class OrchardHeaderError : public std::runtime_error {
 public:
@@ -24,7 +24,8 @@ public:
 // lock and keeps Params() fixed through application. Every selector read is
 // hash-anchored and copies values under the selector's own lock; no raw index
 // pointer escapes. The selected parent must already be authenticated by the
-// host. This does not select a branch, check checkpoints, or validate the body.
+// host. Checks configured checkpoints against this parent branch, never the
+// best-header height index. Does not select a branch or validate the body.
 // TimeTooNew is temporary/retryable: never permanently poison its header.
 // now_seconds is the host's current validation clock, not peer-supplied time.
 // Ordinary regtest retains its explicit PoW/ASERT bypass; enforce-pow regtest
