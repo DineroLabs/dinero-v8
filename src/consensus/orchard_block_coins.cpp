@@ -91,7 +91,8 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         Reject(Error::Context);
     std::string error;
     if (!block.Header().IsReservedValid() || !block.CheckSizeLimits(error) ||
-        !block.CheckIdentityCommitments(require_witness_commitment, error))
+        !block.CheckIdentityCommitments(require_witness_commitment, error) ||
+        !block.CheckCoinbaseHeight(context.height, error))
         Reject(Error::Body);
     OrderedView view(parent);
     std::set<TxId> ids;

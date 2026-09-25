@@ -6,11 +6,19 @@
 
 // Honest proof fixtures inside a syntactically valid block with real identity
 // commitments. No mined PoW, Utreexo proof or full block validity is claimed.
+// Independent test encoding, matching the miner's minimal Script-number push.
+static Bytes CoinbaseHeightScript(uint32_t height) {
+    if(height>=1&&height<=16)return Bytes{static_cast<uint8_t>(0x50+height),0};
+    Bytes value;for(uint32_t n=height;n;n>>=8)value.push_back(n&255);
+    if(value.empty())value.push_back(0);
+    if(value.back()&0x80)value.push_back(0);
+    Bytes script{static_cast<uint8_t>(value.size())};script.insert(script.end(),value.begin(),value.end());return script;
+}
 static OrchardBlockCandidate CandidateWires(const OrchardBlockContext& context,
-    std::vector<Bytes> wires, uint32_t nonce = 0, uint64_t coinbase_amount = 1) {
+    std::vector<Bytes> wires, uint32_t nonce = 0, uint64_t coinbase_amount = 1, std::optional<Bytes> coinbase_script = std::nullopt) {
     Require(wires.size()<252);
     Transaction coinbase;coinbase.version=2;
-    TxInput input;input.prevout.vout=UINT32_MAX;input.scriptSig={1,1};coinbase.vin={input};
+    TxInput input;input.prevout.vout=UINT32_MAX;input.scriptSig=coinbase_script.value_or(CoinbaseHeightScript(context.height));coinbase.vin={input};
     coinbase.vout.emplace_back(AmountUna::Una(coinbase_amount),Bytes{0x51});
     std::vector<WTxId> wids{WTxId(uint256())};
     for(const auto& wire:wires) {

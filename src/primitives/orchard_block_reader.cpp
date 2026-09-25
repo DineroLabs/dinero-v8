@@ -1,6 +1,7 @@
 #include "primitives/orchard_block_reader.h"
 #include "consensus/limits.h"
 #include "consensus/merkle_root.h"
+#include "consensus/script.h"
 #include "consensus/witness_commitment.h"
 #include <algorithm>
 #include <stdexcept>
@@ -104,6 +105,26 @@ bool OrchardBlockCandidate::CheckIdentityCommitments(bool require_witness_commit
     });
     if (require_witness_commitment && has_witness && !consensus::FindWitnessCommitmentIndex(coinbase)) {
         error = "missing-witness-commitment"; return false;
+    }
+    return true;
+}
+bool OrchardBlockCandidate::CheckCoinbaseHeight(uint32_t height, std::string& error) const {
+    if (height == 0 || height > INT32_MAX || transactions_.empty() || transactions_[0].IsOrchard()) {
+        error = "orchard-coinbase-height-context"; return false;
+    }
+    const auto& coinbase = transactions_[0].Historical();
+    if (!coinbase.IsCoinbase() || coinbase.vin.size() != 1) {
+        error = "orchard-coinbase-input"; return false;
+    }
+    const auto& script = coinbase.vin[0].scriptSig;
+    if (script.size() < 2 || script.size() > 100) {
+        error = "orchard-coinbase-script-size"; return false;
+    }
+    consensus::Script expected;
+    expected.pushInt64(height);
+    const auto& prefix = expected.data();
+    if (script.size() < prefix.size() || !std::equal(prefix.begin(), prefix.end(), script.begin())) {
+        error = "orchard-coinbase-height"; return false;
     }
     return true;
 }

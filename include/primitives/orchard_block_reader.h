@@ -18,6 +18,9 @@ public:
     size_t Weight() const noexcept { return 3*base_size_+bytes_.size(); }
     // Size/weight only; sigops and Orchard proof-work budgets are separate.
     bool CheckSizeLimits(std::string& error) const;
+    // Staged post-activation profile: one historical coinbase, script2..100,
+    // minimal positive height prefix matching the shared miner Script encoder.
+    bool CheckCoinbaseHeight(uint32_t height, std::string& error) const;
     // These compare transaction identities, NOT transaction validity. The
     // Orchard proof and ciphertext are inside txid; transparent witnesses need
     // the separate DINW commitment check in the eventual block validator.

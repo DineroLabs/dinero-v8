@@ -74,3 +74,11 @@ failed authorization before the correction and passed after explicit hex decode
 on reads and hex encode on writes/restores. Odd-length, non-hex and non-ASCII
 rows now produce local corruption errors without staging writes. This supersedes
 the earlier raw-fixture claim of real ChainDB coin-format compatibility.
+
+
+The staged connector now checks the coinbase's 2..100-byte script and minimal
+selected-height prefix before any coin lookup/proof work, using the same Script
+encoder as mining. The regression rejects wrong/short/oversized scripts before
+a deliberately failing coin view and checks heights around small-opcode,
+sign-bit and integer boundaries. With the check disabled, the regression fails;
+restoring it passes. Only this staged post-activation path changes.

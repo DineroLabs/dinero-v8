@@ -75,6 +75,15 @@ static void Mixed(const std::string& base) {
     bool io=false;
     try{(void)Prepare(c,failing,wires);}catch(const OrchardCoinLookupError&e){io=e.SourceStatus()==Status::Io;}
     Require(io);
+    // Height/script rejection must precede any coin lookup or proof work.
+    for(const auto& script:std::vector<Bytes>{{1,1},{},{0x51},Bytes(101,0),CoinbaseHeightScript(c.height+1)}){
+        const auto badHeight=CandidateWires(c,wires,0,1,script);auto badContext=c;badContext.block_hash=badHeight.Header().GetHash();
+        CoinReject(CoinError::Body,[&]{(void)PrepareOrchardBlockCoinsUnderChainstateLock(badHeight,badContext,failing,{},true);});
+    }
+    for(uint32_t height:{1u,16u,17u,127u,128u,255u,256u,32767u,32768u,uint32_t(INT32_MAX)}){
+        auto h=c;h.height=height;const auto body=CandidateWires(h,{});std::string error;
+        Require(body.CheckCoinbaseHeight(height,error));Require(!body.CheckCoinbaseHeight(height==1?2:height-1,error));
+    }
     // Ordinary-only blocks use the same actual fee comparator, with no pool flow.
     const auto plain=Prepare(c,view,{Wire(conflict)});
     Require(plain.Authorizations().empty() && plain.TotalFees()==123);
