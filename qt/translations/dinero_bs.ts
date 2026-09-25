@@ -117,7 +117,7 @@
     <message>
         <location filename="../src/aipanel.cpp" line="515" />
         <source>No wDIN found on this address. Bridge DIN → wDIN at bridge.dinero-coin.com</source>
-        <translation type="unfinished" />
+        <translation>Na ovoj adresi nema wDIN-a. Pretvorite DIN → wDIN na bridge.dinero-coin.com</translation>
     </message>
     <message>
         <location filename="../src/aipanel.cpp" line="565" />
@@ -171,7 +171,7 @@
     <message>
         <location filename="../src/aistatusstrip.cpp" line="23" />
         <source>Connecting...</source>
-        <translation type="unfinished" />
+        <translation>Povezujem …</translation>
     </message>
 </context>
 <context>
@@ -184,7 +184,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="46" />
         <source>From:</source>
-        <translation type="unfinished" />
+        <translation>Od:</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="51" />
@@ -194,7 +194,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="57" />
         <source>Provider:</source>
-        <translation type="unfinished" />
+        <translation>Pružalac:</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="63" />
@@ -219,7 +219,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="268" />
         <source>Effective rate: (direct conversion, minimal fees)</source>
-        <translation type="unfinished" />
+        <translation>Efektivni kurs: (direktna pretvorba, minimalne naknade)</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="275" />
@@ -486,7 +486,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/dpiwidget.cpp" line="101" />
         <source>Amount (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Iznos (DIN):</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="106" />
@@ -502,7 +502,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/dpiwidget.cpp" line="111" />
         <source>Expiry:</source>
-        <translation type="unfinished" />
+        <translation>Istek:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="120" />
@@ -519,13 +519,13 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/dpiwidget.cpp" line="141" />
         <source>Invoice ID:</source>
-        <translation type="unfinished" />
+        <translation>ID računa:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="147" />
         <location filename="../src/dpiwidget.cpp" line="260" />
         <source>Destination:</source>
-        <translation type="unfinished" />
+        <translation>Odredište:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="153" />
@@ -537,7 +537,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/dpiwidget.cpp" line="157" />
         <location filename="../src/dpiwidget.cpp" line="270" />
         <source>Expires:</source>
-        <translation type="unfinished" />
+        <translation>Ističe:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="169" />
@@ -548,7 +548,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/dpiwidget.cpp" line="172" />
         <location filename="../src/dpiwidget.cpp" line="363" />
         <source>Copy Invoice</source>
-        <translation type="unfinished" />
+        <translation>Kopiraj račun</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="183" />
@@ -580,7 +580,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/dpiwidget.cpp" line="238" />
         <source>Paste or scan a DPI invoice from DineroDPI or Dinero-Qt:</source>
-        <translation type="unfinished" />
+        <translation>Zalijepite ili skenirajte DPI račun iz DineroDPI ili Dinero-Qt:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="241" />
@@ -597,7 +597,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/dpiwidget.cpp" line="253" />
         <source>Invoice Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji računa</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="277" />
@@ -625,29 +625,29 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/dpiwidget.cpp" line="305" />
         <location filename="../src/dpiwidget.cpp" line="439" />
         <source>Copy Package</source>
-        <translation type="unfinished" />
+        <translation>Kopiraj paket</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="334" />
         <location filename="../src/dpiwidget.cpp" line="374" />
         <location filename="../src/dpiwidget.cpp" line="398" />
         <source>Input Required</source>
-        <translation type="unfinished" />
+        <translation>Potreban je unos</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="334" />
         <source>Please enter an amount.</source>
-        <translation type="unfinished" />
+        <translation>Unesite iznos.</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="340" />
         <source>Invalid Amount</source>
-        <translation type="unfinished" />
+        <translation>Neispravan iznos</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="340" />
         <source>Amount must be greater than 0.</source>
-        <translation type="unfinished" />
+        <translation>Iznos mora biti veći od 0.</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="350" />
@@ -724,7 +724,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="55" />
         <source>&lt;h2&gt;⚖️ Smart Contract Escrow&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;⚖️ Escrow pametnog ugovora&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="56" />
@@ -919,7 +919,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="424" />
         <source>Contract Signing Unavailable</source>
-        <translation type="unfinished" />
+        <translation>Potpisivanje ugovora nije dostupno</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="425" />
@@ -934,7 +934,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
         <source>Contract details not loaded.</source>
-        <translation type="unfinished" />
+        <translation>Detalji ugovora nisu učitani.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="444" />
@@ -949,12 +949,12 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="452" />
         <source>Export sighash for which action?</source>
-        <translation type="unfinished" />
+        <translation>Za koju radnju izvesti sighash?</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="543" />
         <source>Contract Broadcast Unavailable</source>
-        <translation type="unfinished" />
+        <translation>Objava ugovora nije dostupna</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="544" />
@@ -985,7 +985,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="592" />
         <source>Contract ID Mismatch</source>
-        <translation type="unfinished" />
+        <translation>ID ugovora se ne poklapa</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="607" />
@@ -996,7 +996,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="608" />
         <source>No signatures found in file. Please sign the sighash first.</source>
-        <translation type="unfinished" />
+        <translation>U datoteci nema potpisa. Prvo potpišite sighash.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="622" />
@@ -1008,7 +1008,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/escrowwidget.cpp" line="630" />
         <location filename="../src/escrowwidget.cpp" line="1567" />
         <source>Contract Broadcast Disabled</source>
-        <translation type="unfinished" />
+        <translation>Objava ugovora je onemogućena</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="631" />
@@ -1048,23 +1048,24 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="1028" />
         <source>027... (66 hex characters)</source>
-        <translation type="unfinished" />
+        <translation>027… (66 heksadecimalnih znakova)</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1031" />
         <source>02c... (66 hex characters)</source>
-        <translation type="unfinished" />
+        <translation>02c… (66 heksadecimalnih znakova)</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1034" />
         <source>02f... (66 hex characters)</source>
-        <translation type="unfinished" />
+        <translation>02f… (66 heksadecimalnih znakova)</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1047" />
         <source>Select which currency to release to seller.
 Bridge conversion uses locked exchange rate.</source>
-        <translation type="unfinished" />
+        <translation>Odaberite valutu koja se oslobađa prodavcu.
+Pretvorba preko mosta koristi zaključani kurs.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1075" />
@@ -1080,7 +1081,7 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1080" />
         <source>Public keys must be 66 hex characters (compressed).</source>
-        <translation type="unfinished" />
+        <translation>Javni ključevi moraju imati 66 heksadecimalnih znakova (komprimovani).</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1110" />
@@ -1095,12 +1096,12 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1210" />
         <source>&lt;b&gt;Redeem Script (Hex):&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Skripta za otkup (heks.):&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1218" />
         <source>&lt;b&gt;Decoded Script:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Dekodirana skripta:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1225" />
@@ -1115,7 +1116,7 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1252" />
         <source>No P2SH address available for this contract.</source>
-        <translation type="unfinished" />
+        <translation>Za ovaj ugovor nema dostupne P2SH adrese.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1296" />
@@ -1143,29 +1144,29 @@ Bridge conversion uses locked exchange rate.</source>
         <location filename="../src/escrowwidget.cpp" line="1329" />
         <location filename="../src/escrowwidget.cpp" line="1458" />
         <source>Success</source>
-        <translation type="unfinished" />
+        <translation>Uspjeh</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1331" />
         <location filename="../src/escrowwidget.cpp" line="1460" />
         <source>Error</source>
-        <translation type="unfinished" />
+        <translation>Greška</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1331" />
         <location filename="../src/escrowwidget.cpp" line="1460" />
         <source>Failed to save QR code image.</source>
-        <translation type="unfinished" />
+        <translation>Slika QR koda se ne može sačuvati.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1351" />
         <source>Sighash QR Code - Offline Signing</source>
-        <translation type="unfinished" />
+        <translation>QR kod sighasha – potpisivanje bez mreže</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1357" />
         <source>&lt;h3&gt;📱 Sighash QR Code&lt;/h3&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h3&gt;📱 QR kod sighasha&lt;/h3&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1362" />
@@ -1207,12 +1208,12 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1479" />
         <source>Import Signed Transaction from QR</source>
-        <translation type="unfinished" />
+        <translation>Uvezi potpisanu transakciju iz QR koda</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1485" />
         <source>&lt;h3&gt;📱 Import Signed Transaction&lt;/h3&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h3&gt;📱 Uvoz potpisane transakcije&lt;/h3&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1490" />
@@ -1222,7 +1223,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1501" />
         <source>Paste signed transaction JSON here...</source>
-        <translation type="unfinished" />
+        <translation>Zalijepite JSON potpisane transakcije ovdje …</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1509" />
@@ -1237,7 +1238,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1515" />
         <source>Please paste the signed transaction JSON.</source>
-        <translation type="unfinished" />
+        <translation>Zalijepite JSON potpisane transakcije.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1535" />
@@ -1249,17 +1250,19 @@ Please use the JSON file export method instead.</source>
         <source>No signatures found in the JSON data.
 
 Please ensure the transaction has been signed.</source>
-        <translation type="unfinished" />
+        <translation>U JSON podacima nema potpisa.
+
+Provjerite je li transakcija potpisana.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1568" />
         <source>The package was not submitted. Bound contract signing is not available in v8.1.9.</source>
-        <translation type="unfinished" />
+        <translation>Paket nije poslan. Vezano potpisivanje ugovora nije dostupno u v8.1.9.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1575" />
         <source>Cancel</source>
-        <translation type="unfinished" />
+        <translation>Otkaži</translation>
     </message>
 </context>
 <context>
@@ -1303,7 +1306,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="253" />
         <source>Paste Partially Signed Dinero Transaction here or create one from the Send tab...</source>
-        <translation type="unfinished" />
+        <translation>Zalijepite djelimično potpisanu Dinero transakciju ovdje ili je napravite u kartici Šalji …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="273" />
@@ -1384,13 +1387,13 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="359" />
         <source>Broadcast the last finalized or imported transaction hex.</source>
-        <translation type="unfinished" />
+        <translation>Objavi zadnji finalizirani ili uvezeni heksadecimalni zapis transakcije.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="368" />
         <location filename="../src/hardwarewalletwidget.cpp" line="457" />
         <source>Ready</source>
-        <translation type="unfinished" />
+        <translation>Spremno</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="385" />
@@ -1413,7 +1416,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="405" />
         <source>Paste Partially Signed Dinero Transaction here...</source>
-        <translation type="unfinished" />
+        <translation>Zalijepite djelimično potpisanu Dinero transakciju ovdje …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="421" />
@@ -1443,7 +1446,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="461" />
         <source>Transaction summary will appear after a Dinero PSBT is analyzed.</source>
-        <translation type="unfinished" />
+        <translation>Sažetak transakcije će se pojaviti nakon analize Dinero PSBT-a.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="479" />
@@ -1453,7 +1456,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="482" />
         <source>PSBT loaded. Click Show QR Code to analyze and display the signing QR.</source>
-        <translation type="unfinished" />
+        <translation>PSBT je učitan. Kliknite Prikaži QR kod da ga analizirate i prikažete QR za potpisivanje.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="486" />
@@ -1474,7 +1477,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
         <location filename="../src/hardwarewalletwidget.cpp" line="543" />
         <location filename="../src/hardwarewalletwidget.cpp" line="547" />
         <source>Analyzing Dinero PSBT before QR display...</source>
-        <translation type="unfinished" />
+        <translation>Analiziram Dinero PSBT prije prikaza QR koda …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="595" />
@@ -1538,7 +1541,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="663" />
         <source>Fetch the address for the derivation path from the active USB session.</source>
-        <translation type="unfinished" />
+        <translation>Preuzmi adresu za putanju izvođenja iz aktivne USB sesije.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="666" />
@@ -1548,7 +1551,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="668" />
         <source>Ask the active device to show and confirm the address for this derivation path.</source>
-        <translation type="unfinished" />
+        <translation>Zatraži od aktivnog uređaja da prikaže i potvrdi adresu za ovu putanju izvođenja.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="671" />
@@ -1579,7 +1582,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="701" />
         <source>Export receive/change descriptors and the account xpub from the active USB session.</source>
-        <translation type="unfinished" />
+        <translation>Izvezi descriptore za primanje i kusur te xpub računa iz aktivne USB sesije.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="704" />
@@ -1594,12 +1597,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="712" />
         <source>Exported receive/change descriptors will appear here.</source>
-        <translation type="unfinished" />
+        <translation>Izvezeni descriptori za primanje i kusur će se pojaviti ovdje.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="724" />
         <source>USB capability unknown until detection runs</source>
-        <translation type="unfinished" />
+        <translation>Mogućnosti USB-a su nepoznate dok se ne pokrene otkrivanje</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="729" />
@@ -1624,7 +1627,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="847" />
         <source>Requesting signature from connected USB device...</source>
-        <translation type="unfinished" />
+        <translation>Tražim potpis od povezanog USB uređaja …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="866" />
@@ -1639,32 +1642,32 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="891" />
         <source>🔍 Detecting USB hardware wallets...</source>
-        <translation type="unfinished" />
+        <translation>🔍 Otkrivam USB hardverske novčanike …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="902" />
         <source>🔌 Disconnecting active USB session...</source>
-        <translation type="unfinished" />
+        <translation>🔌 Zatvaram aktivnu USB sesiju …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="925" />
         <source>🔌 Opening USB session...</source>
-        <translation type="unfinished" />
+        <translation>🔌 Otvaram USB sesiju …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="952" />
         <source>📥 Fetching address from active USB session...</source>
-        <translation type="unfinished" />
+        <translation>📥 Preuzimam adresu iz aktivne USB sesije …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="982" />
         <source>👁️ Waiting for device address confirmation...</source>
-        <translation type="unfinished" />
+        <translation>👁️ Čekam potvrdu adrese na uređaju …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1008" />
         <source>🧾 Exporting account descriptors...</source>
-        <translation type="unfinished" />
+        <translation>🧾 Izvozim descriptore računa …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1025" />
@@ -1679,13 +1682,13 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1033" />
         <source>📥 Importing watch-only descriptors into the active wallet...</source>
-        <translation type="unfinished" />
+        <translation>📥 Uvozim descriptore samo za praćenje u aktivni novčanik …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1116" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1196" />
         <source>❌ PSBT analysis failed; QR was not displayed.</source>
-        <translation type="unfinished" />
+        <translation>❌ Analiza PSBT-a nije uspjela; QR kod nije prikazan.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1128" />
@@ -1721,7 +1724,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1184" />
         <source>✅ Analysis complete; QR ready</source>
-        <translation type="unfinished" />
+        <translation>✅ Analiza je završena; QR je spreman</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1189" />
@@ -1751,22 +1754,22 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1322" />
         <source>⚠️ Descriptor import returned an unexpected response</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Uvoz descriptora je vratio neočekivan odgovor</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1328" />
         <source>⚠️ Descriptor import returned incomplete results</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Uvoz descriptora je vratio nepotpune rezultate</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1352" />
         <source>❌ Watch-only descriptor import failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Uvoz descriptora samo za praćenje nije uspio</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1357" />
         <source>✅ Watch-only descriptors imported into the active wallet</source>
-        <translation type="unfinished" />
+        <translation>✅ Descriptori samo za praćenje su uvezeni u aktivni novčanik</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1373" />
@@ -1776,7 +1779,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1392" />
         <source>✅ Finalized. Ready to broadcast</source>
-        <translation type="unfinished" />
+        <translation>✅ Finalizirano. Spremno za objavu</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1395" />
@@ -1811,12 +1814,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1576" />
         <source>Close the active USB hardware-wallet session.</source>
-        <translation type="unfinished" />
+        <translation>Zatvori aktivnu USB sesiju s hardverskim novčanikom.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1631" />
         <source>✅ Signed Dinero PSBT ready to broadcast</source>
-        <translation type="unfinished" />
+        <translation>✅ Potpisani Dinero PSBT je spreman za objavu</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1637" />
@@ -1826,7 +1829,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1640" />
         <source>⚠️ Dinero PSBT still needs more signatures</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Dinero PSBT još treba dodatne potpise</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1656" />
@@ -1896,22 +1899,24 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
         <source>Please import a valid Taproot descriptor before continuing.
 
 Click the 'Import Taproot Key' button after entering a valid descriptor.</source>
-        <translation type="unfinished" />
+        <translation>Uvezite ispravan Taproot descriptor prije nego nastavite.
+
+Kliknite „Uvezi Taproot ključ“ nakon unosa ispravnog descriptora.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1972" />
         <source>&lt;span style='color: #e03131;'&gt;Please enter a Taproot descriptor&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color: #e03131;'&gt;Unesite Taproot descriptor&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1978" />
         <source>&lt;span style='color: #228be6;'&gt;Importing... (this may take a moment for rescan)&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color: #228be6;'&gt;Uvozim … (ponovno skeniranje može potrajati)&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="2011" />
         <source>Import Complete</source>
-        <translation type="unfinished" />
+        <translation>Uvoz je završen</translation>
     </message>
 </context>
 <context>
@@ -1935,12 +1940,12 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2057" />
         <source>Almost there — the node is taking a little longer than usual.</source>
-        <translation type="unfinished" />
+        <translation>Skoro smo tu – čvoru treba malo više vremena nego obično.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2058" />
         <source>Still starting… please keep waiting and do NOT close or restart.</source>
-        <translation type="unfinished" />
+        <translation>Još se pokreće … sačekajte i NEMOJTE zatvarati ni ponovo pokretati.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2100" />
@@ -1950,7 +1955,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
         <location filename="../src/mainwindow.cpp" line="16605" />
         <location filename="../src/mainwindow.cpp" line="16858" />
         <source>Connected</source>
-        <translation type="unfinished" />
+        <translation>Povezano</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2110" />
@@ -1971,12 +1976,12 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2326" />
         <source>&amp;Network</source>
-        <translation type="unfinished" />
+        <translation>&amp;Mreža</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2327" />
         <source>Enable router port mapping (UPnP/NAT-PMP)</source>
-        <translation type="unfinished" />
+        <translation>Uključi mapiranje portova na ruteru (UPnP/NAT-PMP)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2332" />
@@ -1996,7 +2001,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2340" />
         <source>&amp;Help</source>
-        <translation type="unfinished" />
+        <translation>&amp;Pomoć</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2341" />
@@ -2146,7 +2151,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2580" />
         <source>PQ Ratio: --</source>
-        <translation type="unfinished" />
+        <translation>PQ omjer: --</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2582" />
@@ -2156,7 +2161,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2584" />
         <source>Active: ML-DSA-65</source>
-        <translation type="unfinished" />
+        <translation>Aktivno: ML-DSA-65</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2606" />
@@ -2166,7 +2171,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2615" />
         <source>Newest blocks from your node. Double-click one to open it in the explorer.</source>
-        <translation type="unfinished" />
+        <translation>Najnoviji blokovi s vašeg čvora. Dvaput kliknite na blok da ga otvorite u pregledaču.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2621" />
@@ -2176,7 +2181,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2623" />
         <source>Search blocks, transactions and addresses in a separate window.</source>
-        <translation type="unfinished" />
+        <translation>Pretražujte blokove, transakcije i adrese u zasebnom prozoru.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2644" />
@@ -2216,12 +2221,12 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2739" />
         <source>Mining: --</source>
-        <translation type="unfinished" />
+        <translation>Rudari: --</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2740" />
         <source>GPU: --</source>
-        <translation type="unfinished" />
+        <translation>GPU: --</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2741" />
@@ -2239,7 +2244,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
         <location filename="../src/mainwindow.cpp" line="2743" />
         <location filename="../src/mainwindow.cpp" line="9532" />
         <source>GPU Temp/Fan: --</source>
-        <translation type="unfinished" />
+        <translation>Temp./ventilator GPU-a: --</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2760" />
@@ -2278,7 +2283,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
         <location filename="../src/mainwindow.cpp" line="16669" />
         <location filename="../src/mainwindow.cpp" line="16836" />
         <source>Disconnected</source>
-        <translation type="unfinished" />
+        <translation>Veza prekinuta</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2805" />
@@ -2321,7 +2326,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2887" />
         <source>If balance/history looks wrong, rescan blockchain for this wallet.</source>
-        <translation type="unfinished" />
+        <translation>Ako stanje ili historija izgledaju pogrešno, ponovo skenirajte lanac za ovaj novčanik.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2896" />
@@ -2331,7 +2336,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2909" />
         <source>📱 Seed &amp; Address Compatibility</source>
-        <translation type="unfinished" />
+        <translation>📱 Kompatibilnost seeda i adresa</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2913" />
@@ -2346,7 +2351,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2926" />
         <source>Show seed-backup guidance. Hardened wallets may not allow seed phrase re-export after setup.</source>
-        <translation type="unfinished" />
+        <translation>Prikaži upute za kopiju seeda. Ojačani novčanici možda ne dozvoljavaju ponovni izvoz seed fraze nakon podešavanja.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2933" />
@@ -2398,7 +2403,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2977" />
         <source>Percentage of transparent spendable funds held in P2MR outputs</source>
-        <translation type="unfinished" />
+        <translation>Postotak transparentnih raspoloživih sredstava koja su u P2MR izlazima</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2988" />
@@ -2418,7 +2423,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2998" />
         <source>Pending:</source>
-        <translation type="unfinished" />
+        <translation>Na čekanju:</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3003" />
@@ -2438,7 +2443,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3041" />
         <source>Combine many small UTXOs into fewer larger ones to reduce fees and improve performance</source>
-        <translation type="unfinished" />
+        <translation>Spojite mnogo malih UTXO u manje njih većih da smanjite naknade i poboljšate performanse</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3050" />
@@ -2484,7 +2489,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3093" />
         <source>Copy</source>
-        <translation type="unfinished" />
+        <translation>Kopiraj</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3119" />
@@ -2501,12 +2506,12 @@ Select private/transparent on the Send tab.</source>
         <location filename="../src/mainwindow.cpp" line="14174" />
         <location filename="../src/mainwindow.cpp" line="14211" />
         <source>Loading...</source>
-        <translation type="unfinished" />
+        <translation>Učitavam …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3159" />
         <source>Refresh</source>
-        <translation type="unfinished" />
+        <translation>Osvježi</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3166" />
@@ -2541,7 +2546,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3244" />
         <source>Recipient:</source>
-        <translation type="unfinished" />
+        <translation>Primalac:</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3247" />
@@ -2586,7 +2591,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3317" />
         <source>Pending Core contextual lock enforcement verification</source>
-        <translation type="unfinished" />
+        <translation>Čeka se provjera primjene kontekstualnih zaključavanja u Coreu</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3322" />
@@ -2600,7 +2605,8 @@ Recovery and custom scripts are not available</source>
         <location filename="../src/mainwindow.cpp" line="3336" />
         <source>Your funds will be locked to a specific withdrawal destination.
 Only the preset recipient can receive them.</source>
-        <translation type="unfinished" />
+        <translation>Vaša sredstva će biti zaključana za određeno odredište isplate.
+Samo unaprijed određeni primalac ih može primiti.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3346" />
@@ -2626,7 +2632,7 @@ multi-path Taproot profile. The former prototype was not safe for funds.</source
     <message>
         <location filename="../src/mainwindow.cpp" line="3378" />
         <source>Uses the 2-minute block target. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.</source>
-        <translation type="unfinished" />
+        <translation>Koristi cilj od 2 minute po bloku. Zaključavanje počinje potvrdom finansiranja i mjeri se u blokovima, a ne u stvarnom vremenu.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3387" />
@@ -2679,7 +2685,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3512" />
         <source>Transaction details will appear here after sending...</source>
-        <translation type="unfinished" />
+        <translation>Detalji transakcije će se pojaviti ovdje nakon slanja …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3522" />
@@ -2748,7 +2754,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3672" />
         <source>Next</source>
-        <translation type="unfinished" />
+        <translation>Dalje</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3689" />
@@ -2769,22 +2775,22 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3718" />
         <source>Payments</source>
-        <translation type="unfinished" />
+        <translation>Plaćanja</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3724" />
         <source>Escrow</source>
-        <translation type="unfinished" />
+        <translation>Escrow</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3730" />
         <source>Marketplace</source>
-        <translation type="unfinished" />
+        <translation>Tržnica</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3744" />
         <source>Liquidity Vault</source>
-        <translation type="unfinished" />
+        <translation>Trezor likvidnosti</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3753" />
@@ -2804,17 +2810,17 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3821" />
         <source>Search block height, transaction hash, block hash, or din1/tdin1/rdin1 address...</source>
-        <translation type="unfinished" />
+        <translation>Tražite po visini bloka, hashu transakcije, hashu bloka ili adresi din1/tdin1/rdin1 …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3823" />
         <source>Search</source>
-        <translation type="unfinished" />
+        <translation>Traži</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3830" />
         <source>Search a block, transaction, or address. Latest blocks load from the connected daemon.</source>
-        <translation type="unfinished" />
+        <translation>Potražite blok, transakciju ili adresu. Najnoviji blokovi se učitavaju s povezanog daemona.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3846" />
@@ -2865,7 +2871,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="4145" />
         <source>Endpoint currently overridden by DINERO_STRATUM_ENDPOINT environment variable.</source>
-        <translation type="unfinished" />
+        <translation>Endpoint je trenutno nadjačan varijablom okruženja DINERO_STRATUM_ENDPOINT.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4158" />
@@ -2879,7 +2885,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
         <location filename="../src/mainwindow.cpp" line="9910" />
         <location filename="../src/mainwindow.cpp" line="9994" />
         <source>Start a localhost dinero-stratum server and use it as this pool endpoint.</source>
-        <translation type="unfinished" />
+        <translation>Pokrenite lokalni dinero-stratum server i koristite ga kao endpoint ovog poola.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4169" />
@@ -2889,7 +2895,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="4180" />
         <source>SV2 endpoint currently overridden by DINERO_SV2_POOL environment variable.</source>
-        <translation type="unfinished" />
+        <translation>SV2 endpoint je trenutno nadjačan varijablom okruženja DINERO_SV2_POOL.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4193" />
@@ -2951,7 +2957,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4337" />
         <source>Address:</source>
-        <translation type="unfinished" />
+        <translation>Adresa:</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4339" />
@@ -2966,7 +2972,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4346" />
         <source>Fill mining address from your wallet (requires unlocked wallet)</source>
-        <translation type="unfinished" />
+        <translation>Popuni adresu za Rudare iz svog novčanika (traži otključan novčanik)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4349" />
@@ -3006,7 +3012,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
         <location filename="../src/mainwindow.cpp" line="4403" />
         <location filename="../src/mainwindow.cpp" line="4949" />
         <source>Height:</source>
-        <translation type="unfinished" />
+        <translation>Visina:</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4408" />
@@ -3017,7 +3023,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4416" />
         <source>MH/s:</source>
-        <translation type="unfinished" />
+        <translation>MH/s:</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4421" />
@@ -3093,7 +3099,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4769" />
         <source>Status:</source>
-        <translation type="unfinished" />
+        <translation>Status:</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4772" />
@@ -3173,7 +3179,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4827" />
         <source>Utreexo Proofs</source>
-        <translation type="unfinished" />
+        <translation>Utreexo dokazi</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4838" />
@@ -3253,12 +3259,12 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4915" />
         <source>Copy P2P status, port mapping, advertised addresses, and peers</source>
-        <translation type="unfinished" />
+        <translation>Kopiraj P2P status, mapiranje portova, objavljene adrese i čvorove</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4923" />
         <source>Peers</source>
-        <translation type="unfinished" />
+        <translation>Čvorovi</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4934" />
@@ -3293,42 +3299,42 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4979" />
         <source>Click 'Refresh' to fetch block template...</source>
-        <translation type="unfinished" />
+        <translation>Kliknite „Osvježi“ da preuzmete šablon bloka …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4983" />
         <source>Template</source>
-        <translation type="unfinished" />
+        <translation>Šablon</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4999" />
         <source>Language</source>
-        <translation type="unfinished" />
+        <translation>Jezik</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5013" />
         <source>Interface language:</source>
-        <translation type="unfinished" />
+        <translation>Jezik sučelja:</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5021" />
         <source>Untranslated text stays in English. Amounts always use a dot decimal separator, in every language.</source>
-        <translation type="unfinished" />
+        <translation>Neprevedeni tekst ostaje na engleskom. Iznosi uvijek koriste tačku kao decimalni znak, u svim jezicima.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5037" />
         <source>Restart Dinero Now</source>
-        <translation type="unfinished" />
+        <translation>Ponovo pokreni Dinero sada</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5050" />
         <source>Language saved. Restart Dinero to apply it.</source>
-        <translation type="unfinished" />
+        <translation>Jezik je sačuvan. Ponovo pokrenite Dinero da se primijeni.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5060" />
         <source>Restart Dinero</source>
-        <translation type="unfinished" />
+        <translation>Ponovo pokreni Dinero</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5061" />
@@ -3338,17 +3344,17 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5063" />
         <source>The wallet and its built-in node shut down cleanly and start again. Any sync or mining in progress pauses until Dinero is back up.</source>
-        <translation type="unfinished" />
+        <translation>Novčanik i njegov ugrađeni čvor se uredno gase i ponovo pokreću. Sinhronizacija ili Rudari u toku se pauziraju dok se Dinero ne vrati.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5067" />
         <source>Restart Now</source>
-        <translation type="unfinished" />
+        <translation>Ponovo pokreni sada</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5068" />
         <source>Later</source>
-        <translation type="unfinished" />
+        <translation>Kasnije</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5142" />
@@ -3434,7 +3440,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5266" />
         <source>Return to the bundled or system dinerod on the next daemon start.</source>
-        <translation type="unfinished" />
+        <translation>Vrati se na ugrađeni ili sistemski dinerod pri sljedećem pokretanju daemona.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5269" />
@@ -3444,7 +3450,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5270" />
         <source>Dinero-Qt will use the bundled or system dinerod the next time the daemon is started.</source>
-        <translation type="unfinished" />
+        <translation>Dinero-Qt će koristiti ugrađeni ili sistemski dinerod pri sljedećem pokretanju daemona.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5279" />
@@ -3459,7 +3465,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5304" />
         <source>Advanced local daemon controls, reconnect tools, and runtime diagnostics. Hidden by default so the main wallet stays calm.</source>
-        <translation type="unfinished" />
+        <translation>Napredne kontrole lokalnog daemona, alati za ponovno povezivanje i dijagnostika rada. Skriveno po zadanom da glavni novčanik ostane jednostavan.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5332" />
@@ -3479,17 +3485,17 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5369" />
         <source>Use these controls when testing daemon startup, connection recovery, or local runtime health.</source>
-        <translation type="unfinished" />
+        <translation>Koristite ove kontrole pri testiranju pokretanja daemona, oporavka veze ili stanja lokalnog rada.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5379" />
         <source>Hide Developer Menu</source>
-        <translation type="unfinished" />
+        <translation>Sakrij meni za programere</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5380" />
         <source>Show Developer Menu</source>
-        <translation type="unfinished" />
+        <translation>Prikaži meni za programere</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5394" />
@@ -3509,7 +3515,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5413" />
         <source>Backup wallets/, hd_wallet/, and wallet_registry.db files from the daemon data directory.</source>
-        <translation type="unfinished" />
+        <translation>Napravi kopiju datoteka wallets/, hd_wallet/ i wallet_registry.db iz direktorija s podacima daemona.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5423" />
@@ -3528,7 +3534,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5463" />
         <source>Copies wallets/, hd_wallet/, wallet registry, and the local SV2 pool key.</source>
-        <translation type="unfinished" />
+        <translation>Kopira wallets/, hd_wallet/, registar novčanika i lokalni ključ SV2 poola.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5468" />
@@ -3538,7 +3544,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5470" />
         <source>Backup blockchain/, blocks/, and headers/ from the daemon data directory.</source>
-        <translation type="unfinished" />
+        <translation>Napravi kopiju blockchain/, blocks/ i headers/ iz direktorija s podacima daemona.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5473" />
@@ -3557,12 +3563,12 @@ Continue?</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5516" />
         <source>Copies blockchain/, blocks/, and headers/. Wallet backup is the critical one.</source>
-        <translation type="unfinished" />
+        <translation>Kopira blockchain/, blocks/ i headers/. Kopija novčanika je ona najvažnija.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5524" />
         <source>Backups are created as timestamped folders. For the cleanest filesystem snapshot, stop mining first and avoid closing the app during the copy.</source>
-        <translation type="unfinished" />
+        <translation>Kopije se prave kao mape s vremenskom oznakom. Za najčistiju sliku datotečnog sistema prvo zaustavite Rudare i ne zatvarajte aplikaciju tokom kopiranja.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5532" />
@@ -3578,7 +3584,8 @@ Continue?</source>
         <location filename="../src/mainwindow.cpp" line="5683" />
         <source>Purpose 88 P2MR lane.
 Quantum-safe ML-DSA-65 receive addresses derive from the same BIP39 seed.</source>
-        <translation type="unfinished" />
+        <translation>P2MR traka s namjenom 88.
+Kvantno sigurne ML-DSA-65 adrese za primanje izvode se iz istog BIP39 seeda.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5687" />
@@ -3589,7 +3596,8 @@ Quantum-safe ML-DSA-65 receive addresses derive from the same BIP39 seed.</sourc
         <location filename="../src/mainwindow.cpp" line="5688" />
         <source>BIP86 Taproot lane.
 Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
-        <translation type="unfinished" />
+        <translation>BIP86 Taproot traka.
+Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5731" />
