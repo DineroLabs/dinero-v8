@@ -244,6 +244,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_utxo_publication PRIVATE dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
     add_test(NAME OrchardMemoryPublication COMMAND test_utxo_publication)
     set_tests_properties(OrchardMemoryPublication PROPERTIES TIMEOUT 60 LABELS "orchard;consensus;integration-staging")
+    add_executable(test_orchard_state_commitment
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_state_commitment.cpp"
+      "${ORCHARD_HOST_ROOT}/src/consensus/state_commitment.cpp")
+    target_link_libraries(test_orchard_state_commitment PRIVATE dinero_core)
+    add_test(NAME OrchardStateCommitment COMMAND test_orchard_state_commitment)
+    set_tests_properties(OrchardStateCommitment PROPERTIES TIMEOUT 60 LABELS "orchard;consensus;encoding;integration-staging")
     add_executable(test_orchard_block_staging
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
