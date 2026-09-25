@@ -272,7 +272,7 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1539" />
         <source>✅ Your wallet setup has completed.</source>
-        <translation type="unfinished" />
+        <translation>✅ La configuración de su billetera se completó.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1545" />
@@ -302,7 +302,7 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1590" />
         <source>❌ Error: Wizard not found</source>
-        <translation type="unfinished" />
+        <translation>❌ Error: no se encontró el asistente</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1600" />
@@ -397,7 +397,7 @@ Please go back and write down your seed phrase carefully.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="749" />
         <source>📱 Seed &amp; Address Compatibility</source>
-        <translation type="unfinished" />
+        <translation>📱 Compatibilidad de semilla y direcciones</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="753" />
@@ -4920,7 +4920,7 @@ Use Encrypt Wallet to protect private keys.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14551" />
         <source>Fill mining address from your wallet</source>
-        <translation type="unfinished" />
+        <translation>Completar la dirección de Mining desde su billetera</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14570" />
@@ -4938,12 +4938,12 @@ Do you want to continue?</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14600" />
         <source>Passwords do not match!</source>
-        <translation type="unfinished" />
+        <translation>Las contraseñas no coinciden.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14606" />
         <source>Weak Password</source>
-        <translation type="unfinished" />
+        <translation>Contraseña débil</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14607" />
@@ -4954,7 +4954,7 @@ Consider using a longer, stronger password.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14644" />
         <source>Encrypted | Unlock</source>
-        <translation type="unfinished" />
+        <translation>Cifrada | Desbloquear</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14646" />
@@ -4982,7 +4982,7 @@ Consider using a longer, stronger password.</source>
         <location filename="../src/mainwindow.cpp" line="14719" />
         <location filename="../src/mainwindow.cpp" line="14754" />
         <source>Address Generation Failed</source>
-        <translation type="unfinished" />
+        <translation>Falló la generación de la dirección</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14720" />
@@ -4994,12 +4994,12 @@ Please verify wallet state and try again.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14734" />
         <source>New Quantum-Safe Address</source>
-        <translation type="unfinished" />
+        <translation>Nueva dirección resistente a la computación cuántica</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14772" />
         <source>❌ Error: Recipient address is required</source>
-        <translation type="unfinished" />
+        <translation>❌ Error: se requiere la dirección del destinatario</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14781" />
@@ -5009,7 +5009,7 @@ Please verify wallet state and try again.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14786" />
         <source>❌ Error: Amount must be greater than 0</source>
-        <translation type="unfinished" />
+        <translation>❌ Error: el monto debe ser mayor que 0</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14830" />
@@ -5020,27 +5020,27 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14838" />
         <source>❌ Error: Wallet is locked. Please unlock it first.</source>
-        <translation type="unfinished" />
+        <translation>❌ Error: la billetera está bloqueada. Desbloquéela primero.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14841" />
         <source>Please unlock your wallet before sending transactions.</source>
-        <translation type="unfinished" />
+        <translation>Desbloquee su billetera antes de enviar transacciones.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14877" />
         <source>🔄 Creating PSBT for hardware wallet...</source>
-        <translation type="unfinished" />
+        <translation>🔄 Creando la PSBT para la billetera de hardware …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14922" />
         <source>❌ Error: Failed to prepare hardware-wallet signing flow</source>
-        <translation type="unfinished" />
+        <translation>❌ Error: no se pudo preparar el flujo de firma con billetera de hardware</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14943" />
         <source>❌ Hardware-wallet PSBT cannot spend P2MR inputs yet.</source>
-        <translation type="unfinished" />
+        <translation>❌ La PSBT de billetera de hardware aún no puede gastar entradas P2MR.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14963" />
@@ -5050,7 +5050,7 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15031" />
         <source>✅ Hardware-wallet transaction sent successfully!</source>
-        <translation type="unfinished" />
+        <translation>✅ La transacción con billetera de hardware se envió correctamente.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15064" />
@@ -5060,17 +5060,17 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15076" />
         <source>🔄 Processing transaction...</source>
-        <translation type="unfinished" />
+        <translation>🔄 Procesando la transacción …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15081" />
         <source>Processing...</source>
-        <translation type="unfinished" />
+        <translation>Procesando …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15083" />
         <source>Sending transaction...</source>
-        <translation type="unfinished" />
+        <translation>Enviando la transacción …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15115" />
@@ -5096,7 +5096,7 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15205" />
         <source>Review Public Contract</source>
-        <translation type="unfinished" />
+        <translation>Revisar el contrato público</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15274" />
@@ -5106,7 +5106,7 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15286" />
         <source>Hardware Wallet PSBT</source>
-        <translation type="unfinished" />
+        <translation>PSBT de billetera de hardware</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15287" />
@@ -5123,78 +5123,78 @@ Would you like to unlock your wallet now?</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15324" />
         <source>Consolidate UTXOs</source>
-        <translation type="unfinished" />
+        <translation>Consolidar UTXOs</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15352" />
         <source>Consolidating...</source>
-        <translation type="unfinished" />
+        <translation>Consolidando …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15405" />
         <source>Enter custom fee in una/vB</source>
-        <translation type="unfinished" />
+        <translation>Ingrese una comisión personalizada en una/vB</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15421" />
         <source>Estimating...</source>
-        <translation type="unfinished" />
+        <translation>Estimando …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15454" />
         <location filename="../src/mainwindow.cpp" line="15486" />
         <source>No Peer Selected</source>
-        <translation type="unfinished" />
+        <translation>No hay ningún par seleccionado</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15454" />
         <source>Please select a peer to disconnect.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione un par para desconectar.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15463" />
         <source>Disconnect Peer</source>
-        <translation type="unfinished" />
+        <translation>Desconectar el par</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15486" />
         <source>Please select a peer to manage.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione un par para gestionar.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15496" />
         <source>Peer Address Missing</source>
-        <translation type="unfinished" />
+        <translation>Falta la dirección del par</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15496" />
         <source>The selected peer does not have a usable address.</source>
-        <translation type="unfinished" />
+        <translation>El par seleccionado no tiene una dirección utilizable.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15521" />
         <source>Block Bootstrap Peer</source>
-        <translation type="unfinished" />
+        <translation>Bloquear un par de arranque</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15531" />
         <source>Block Peer</source>
-        <translation type="unfinished" />
+        <translation>Bloquear el par</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15571" />
         <source>No Peers</source>
-        <translation type="unfinished" />
+        <translation>Sin pares</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15571" />
         <source>No peers connected to reconnect.</source>
-        <translation type="unfinished" />
+        <translation>No hay pares conectados que reconectar.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15603" />
         <source>Diagnostics copied to clipboard</source>
-        <translation type="unfinished" />
+        <translation>Diagnóstico copiado al portapapeles</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15620" />
@@ -5206,12 +5206,12 @@ Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/t
     <message>
         <location filename="../src/mainwindow.cpp" line="15641" />
         <source>Empty Address</source>
-        <translation type="unfinished" />
+        <translation>Dirección vacía</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15641" />
         <source>Please enter an address to generate QR code.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese una dirección para generar el código QR.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15649" />
@@ -5228,27 +5228,27 @@ Enter a Dinero transparent or shielded address.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15658" />
         <source>QR Generation Failed</source>
-        <translation type="unfinished" />
+        <translation>Falló la generación del QR</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15658" />
         <source>Failed to generate QR code.</source>
-        <translation type="unfinished" />
+        <translation>No se pudo generar el código QR.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15685" />
         <source>QR Code Generated</source>
-        <translation type="unfinished" />
+        <translation>Código QR generado</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15701" />
         <source>Failed to open file for reading.</source>
-        <translation type="unfinished" />
+        <translation>No se pudo abrir el archivo para lectura.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15740" />
         <source>No Valid Addresses</source>
-        <translation type="unfinished" />
+        <translation>No hay direcciones válidas</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15741" />
@@ -5261,27 +5261,27 @@ Label,Address</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15746" />
         <source>Confirm Import</source>
-        <translation type="unfinished" />
+        <translation>Confirmar la importación</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15783" />
         <source>Import Complete</source>
-        <translation type="unfinished" />
+        <translation>Importación completada</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15806" />
         <source>Failed to open file for writing.</source>
-        <translation type="unfinished" />
+        <translation>No se pudo abrir el archivo para escritura.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15838" />
         <source>Export Complete</source>
-        <translation type="unfinished" />
+        <translation>Exportación completada</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15922" />
         <source>Label Error</source>
-        <translation type="unfinished" />
+        <translation>Error en la etiqueta</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16078" />
@@ -5345,52 +5345,52 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="47" />
         <source>&lt;h2&gt;🛒 P2P Marketplace&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🛒 Mercado P2P&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="48" />
         <source>Loading...</source>
-        <translation type="unfinished" />
+        <translation>Cargando …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="51" />
         <source>➕ Create Offer</source>
-        <translation type="unfinished" />
+        <translation>➕ Crear una oferta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="54" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Actualizar</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="55" />
         <source>📋 My Offers</source>
-        <translation type="unfinished" />
+        <translation>📋 Mis ofertas</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="56" />
         <source>🤝 My Trades</source>
-        <translation type="unfinished" />
+        <translation>🤝 Mis operaciones</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="79" />
         <source>&lt;b&gt;Event Log:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Registro de eventos:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="100" />
         <source>Search offers by keyword...</source>
-        <translation type="unfinished" />
+        <translation>Buscar ofertas por palabra clave …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="102" />
         <source>🔍 Search</source>
-        <translation type="unfinished" />
+        <translation>🔍 Buscar</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="131" />
         <source>Search:</source>
-        <translation type="unfinished" />
+        <translation>Buscar:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="134" />
@@ -5400,259 +5400,259 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="136" />
         <source>Asset:</source>
-        <translation type="unfinished" />
+        <translation>Activo:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="182" />
         <source>Selected Offer Details</source>
-        <translation type="unfinished" />
+        <translation>Detalles de la oferta seleccionada</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="195" />
         <source>📊 View Seller Reputation</source>
-        <translation type="unfinished" />
+        <translation>📊 Ver la reputación del vendedor</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="200" />
         <source>&lt;b&gt;Offer ID:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;ID de la oferta:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="203" />
         <source>&lt;b&gt;Type:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Tipo:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="205" />
         <source>&lt;b&gt;Asset:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Activo:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="208" />
         <source>&lt;b&gt;Amount:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Monto:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="210" />
         <source>&lt;b&gt;Price:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Precio:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="213" />
         <source>&lt;b&gt;Description:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Descripción:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="216" />
         <source>&lt;b&gt;Seller:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Vendedor:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="220" />
         <source>&lt;b&gt;Seller Reputation:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Reputación del vendedor:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="229" />
         <source>✅ Accept Offer</source>
-        <translation type="unfinished" />
+        <translation>✅ Aceptar la oferta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="233" />
         <source>🔍 View Full Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Ver todos los detalles</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="252" />
         <location filename="../src/marketplacewidget.cpp" line="325" />
         <source>Status:</source>
-        <translation type="unfinished" />
+        <translation>Estado:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="293" />
         <source>❌ Cancel Offer</source>
-        <translation type="unfinished" />
+        <translation>❌ Cancelar la oferta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="297" />
         <source>✏️ Update Offer</source>
-        <translation type="unfinished" />
+        <translation>✏️ Actualizar la oferta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="318" />
         <source>Role:</source>
-        <translation type="unfinished" />
+        <translation>Rol:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="364" />
         <source>✅ Complete Trade</source>
-        <translation type="unfinished" />
+        <translation>✅ Completar la operación</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="368" />
         <source>⚠️ Open Dispute</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Abrir una disputa</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="372" />
         <source>🔍 View Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Ver los detalles</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="390" />
         <source>My Reputation</source>
-        <translation type="unfinished" />
+        <translation>Mi reputación</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="396" />
         <source>0 total trades</source>
-        <translation type="unfinished" />
+        <translation>0 operaciones en total</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="397" />
         <source>0 successful</source>
-        <translation type="unfinished" />
+        <translation>0 exitosas</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="398" />
         <source>No ratings yet</source>
-        <translation type="unfinished" />
+        <translation>Aún no hay valoraciones</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="400" />
         <source>&lt;b&gt;Average Rating:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Valoración media:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="403" />
         <source>&lt;b&gt;Total Trades:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Operaciones totales:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="406" />
         <source>&lt;b&gt;Successful:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Exitosas:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="409" />
         <source>&lt;b&gt;Rating Distribution:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Distribución de valoraciones:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="415" />
         <source>🔍 View Other User's Reputation</source>
-        <translation type="unfinished" />
+        <translation>🔍 Ver la reputación de otro usuario</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
         <location filename="../src/marketplacewidget.cpp" line="550" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Sin selección</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
         <source>Please select an offer first.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione primero una oferta.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="550" />
         <source>Please select an offer to cancel.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione una oferta para cancelar.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="556" />
         <source>Cancel Offer</source>
-        <translation type="unfinished" />
+        <translation>Cancelar la oferta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
         <source>Update Offer</source>
-        <translation type="unfinished" />
+        <translation>Actualizar la oferta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
         <source>Update offer dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Diálogo de actualización de oferta: próximamente.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
         <source>Complete Trade</source>
-        <translation type="unfinished" />
+        <translation>Completar la operación</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
         <source>Complete trade dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Diálogo de finalización de la operación: próximamente.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
         <source>Open Dispute</source>
-        <translation type="unfinished" />
+        <translation>Abrir una disputa</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
         <source>Dispute dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Diálogo de disputa: próximamente.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
         <source>Trade Details</source>
-        <translation type="unfinished" />
+        <translation>Detalles de la operación</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
         <source>Trade details dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Diálogo de detalles de la operación: próximamente.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
         <source>View Reputation</source>
-        <translation type="unfinished" />
+        <translation>Ver la reputación</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
         <source>Reputation viewer - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Visor de reputación: próximamente.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="674" />
         <source>Offer Created</source>
-        <translation type="unfinished" />
+        <translation>Oferta creada</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="682" />
         <source>Success</source>
-        <translation type="unfinished" />
+        <translation>Operación correcta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="682" />
         <source>Offer cancelled successfully!</source>
-        <translation type="unfinished" />
+        <translation>La oferta se canceló correctamente.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="693" />
         <source>Trade Created</source>
-        <translation type="unfinished" />
+        <translation>Operación creada</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="839" />
         <source>Create New Marketplace Offer</source>
-        <translation type="unfinished" />
+        <translation>Crear una oferta nueva en el mercado</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="879" />
         <source>Describe your offer...</source>
-        <translation type="unfinished" />
+        <translation>Describa su oferta …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="915" />
         <source>Offer Details</source>
-        <translation type="unfinished" />
+        <translation>Detalles de la oferta</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="946" />
         <source>Accept Offer</source>
-        <translation type="unfinished" />
+        <translation>Aceptar la oferta</translation>
     </message>
 </context>
 <context>
@@ -7193,12 +7193,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="49" />
         <source>⚡ Lightning Network</source>
-        <translation type="unfinished" />
+        <translation>⚡ Red Lightning</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="73" />
         <source>Channel Statistics</source>
-        <translation type="unfinished" />
+        <translation>Estadísticas de los canales</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="77" />
@@ -7212,77 +7212,77 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="81" />
         <source>&lt;b&gt;Active Channels:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Canales activos:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="83" />
         <source>&lt;b&gt;Total Capacity:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Capacidad total:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="85" />
         <source>&lt;b&gt;Local Balance:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Saldo local:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="87" />
         <source>&lt;b&gt;Remote Balance:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Saldo remoto:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="106" />
         <source>Open New Channel</source>
-        <translation type="unfinished" />
+        <translation>Abrir un canal nuevo</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="110" />
         <source>Peer Node ID (02abcdef...)</source>
-        <translation type="unfinished" />
+        <translation>ID del nodo par (02abcdef…)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="112" />
         <source>Capacity (e.g. 1.0 for 1 DIN)</source>
-        <translation type="unfinished" />
+        <translation>Capacidad (por ejemplo, 1.0 para 1 DIN)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="114" />
         <source>Push amount (optional, 0.0)</source>
-        <translation type="unfinished" />
+        <translation>Monto inicial a enviar (opcional, 0.0)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="119" />
         <source>Peer Node ID:</source>
-        <translation type="unfinished" />
+        <translation>ID del nodo par:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="121" />
         <source>Capacity (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Capacidad (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="123" />
         <source>Push Amount (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Monto inicial (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="125" />
         <source>Min Confirmations:</source>
-        <translation type="unfinished" />
+        <translation>Confirmaciones mínimas:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="133" />
         <source>Open Channel</source>
-        <translation type="unfinished" />
+        <translation>Abrir el canal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="134" />
         <source>Close Selected Channel</source>
-        <translation type="unfinished" />
+        <translation>Cerrar el canal seleccionado</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="135" />
         <source>Force Close (Emergency)</source>
-        <translation type="unfinished" />
+        <translation>Cierre forzado (emergencia)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="136" />
@@ -7291,248 +7291,248 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="361" />
         <location filename="../src/lightningwidget.cpp" line="475" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Actualizar</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="160" />
         <location filename="../src/lightningwidget.cpp" line="180" />
         <source>Create Invoice</source>
-        <translation type="unfinished" />
+        <translation>Crear una factura</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="164" />
         <source>Amount in DIN (e.g. 0.001)</source>
-        <translation type="unfinished" />
+        <translation>Monto en DIN (por ejemplo, 0.001)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="166" />
         <source>Description (e.g. Coffee payment)</source>
-        <translation type="unfinished" />
+        <translation>Descripción (por ejemplo, pago del café)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="172" />
         <source>Amount (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Monto (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="174" />
         <source>Description:</source>
-        <translation type="unfinished" />
+        <translation>Descripción:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="176" />
         <source>Expiry:</source>
-        <translation type="unfinished" />
+        <translation>Vencimiento:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="181" />
         <source>Create Open Invoice (Flexible Amount)</source>
-        <translation type="unfinished" />
+        <translation>Crear una factura abierta (monto flexible)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="192" />
         <source>Generated Invoice</source>
-        <translation type="unfinished" />
+        <translation>Factura generada</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="201" />
         <source>Generate QR Code</source>
-        <translation type="unfinished" />
+        <translation>Generar el código QR</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="209" />
         <source>Invoice will appear here...</source>
-        <translation type="unfinished" />
+        <translation>La factura aparecerá aquí …</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="210" />
         <source>📋 Copy Invoice</source>
-        <translation type="unfinished" />
+        <translation>📋 Copiar la factura</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="212" />
         <source>&lt;b&gt;BOLT 11 Invoice:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Factura BOLT 11:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="223" />
         <location filename="../src/lightningwidget.cpp" line="238" />
         <location filename="../src/lightningwidget.cpp" line="635" />
         <source>Pay Invoice</source>
-        <translation type="unfinished" />
+        <translation>Pagar la factura</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="227" />
         <source>Paste BOLT 11 invoice here</source>
-        <translation type="unfinished" />
+        <translation>Pegue aquí la factura BOLT 11</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="229" />
         <source>Custom amount (for open invoices)</source>
-        <translation type="unfinished" />
+        <translation>Monto personalizado (para facturas abiertas)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="231" />
         <source>Invoice (BOLT 11):</source>
-        <translation type="unfinished" />
+        <translation>Factura (BOLT 11):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="233" />
         <source>Custom Amount:</source>
-        <translation type="unfinished" />
+        <translation>Monto personalizado:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="237" />
         <source>Decode Invoice</source>
-        <translation type="unfinished" />
+        <translation>Decodificar la factura</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="249" />
         <source>Decoded invoice details will appear here...</source>
-        <translation type="unfinished" />
+        <translation>Los detalles de la factura decodificada aparecerán aquí …</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="250" />
         <source>Decoded Info:</source>
-        <translation type="unfinished" />
+        <translation>Información decodificada:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="258" />
         <source>&lt;b&gt;Invoice History&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Historial de facturas&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="263" />
         <location filename="../src/lightningwidget.cpp" line="300" />
         <source>Filter:</source>
-        <translation type="unfinished" />
+        <translation>Filtro:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="303" />
         <source>Cancel Selected Payment</source>
-        <translation type="unfinished" />
+        <translation>Cancelar el pago seleccionado</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="323" />
         <source>Payment Details</source>
-        <translation type="unfinished" />
+        <translation>Detalles del pago</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="344" />
         <location filename="../src/lightningwidget.cpp" line="359" />
         <source>Register Watchtower</source>
-        <translation type="unfinished" />
+        <translation>Registrar una watchtower</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="348" />
         <source>Watchtower URL (e.g. wt://watchtower.dinero.com:9911)</source>
-        <translation type="unfinished" />
+        <translation>URL de la watchtower (por ejemplo, wt://watchtower.dinero.com:9911)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="350" />
         <source>Reward per appointment (unas)</source>
-        <translation type="unfinished" />
+        <translation>Recompensa por cita (unas)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="353" />
         <source>Watchtower URL:</source>
-        <translation type="unfinished" />
+        <translation>URL de la watchtower:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="355" />
         <source>Reward (una):</source>
-        <translation type="unfinished" />
+        <translation>Recompensa (una):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="360" />
         <source>Unregister Selected</source>
-        <translation type="unfinished" />
+        <translation>Dar de baja la seleccionada</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="386" />
         <source>Watchtower Information</source>
-        <translation type="unfinished" />
+        <translation>Información de la watchtower</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="410" />
         <source>Network Statistics</source>
-        <translation type="unfinished" />
+        <translation>Estadísticas de la red</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="418" />
         <source>&lt;b&gt;Total Nodes:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Nodos totales:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="420" />
         <source>&lt;b&gt;Total Channels:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Canales totales:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="422" />
         <source>&lt;b&gt;Network Capacity:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Capacidad de la red:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="424" />
         <source>&lt;b&gt;Avg Channel Size:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Tamaño medio de canal:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="431" />
         <source>Connect to Peer</source>
-        <translation type="unfinished" />
+        <translation>Conectar con un par</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="434" />
         <source>Node ID@host:port (e.g. 02abc@192.168.1.100:9735)</source>
-        <translation type="unfinished" />
+        <translation>ID de nodo@host:puerto (por ejemplo, 02abc@192.168.1.100:9735)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="435" />
         <source>Connect</source>
-        <translation type="unfinished" />
+        <translation>Conectar</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="436" />
         <source>Disconnect Selected</source>
-        <translation type="unfinished" />
+        <translation>Desconectar el seleccionado</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="446" />
         <location filename="../src/lightningwidget.cpp" line="453" />
         <source>Find Route</source>
-        <translation type="unfinished" />
+        <translation>Buscar una ruta</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="450" />
         <source>Destination Node ID</source>
-        <translation type="unfinished" />
+        <translation>ID del nodo de destino</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="452" />
         <source>Amount (DIN)</source>
-        <translation type="unfinished" />
+        <translation>Monto (DIN)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="456" />
         <source>Destination:</source>
-        <translation type="unfinished" />
+        <translation>Destino:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="458" />
         <source>Amount:</source>
-        <translation type="unfinished" />
+        <translation>Monto:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="465" />
         <source>Route:</source>
-        <translation type="unfinished" />
+        <translation>Ruta:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="473" />
         <source>&lt;b&gt;Network Nodes&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Nodos de la red&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="515" />
@@ -7544,24 +7544,24 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="760" />
         <location filename="../src/lightningwidget.cpp" line="778" />
         <source>Invalid Input</source>
-        <translation type="unfinished" />
+        <translation>Entrada no válida</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="515" />
         <source>Please enter peer node ID and capacity.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese el ID del nodo par y la capacidad.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="522" />
         <location filename="../src/lightningwidget.cpp" line="602" />
         <location filename="../src/lightningwidget.cpp" line="785" />
         <source>Invalid Amount</source>
-        <translation type="unfinished" />
+        <translation>Monto no válido</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="522" />
         <source>Please enter a valid capacity amount.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese una capacidad válida.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
@@ -7569,17 +7569,17 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="711" />
         <location filename="../src/lightningwidget.cpp" line="740" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Sin selección</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
         <source>Please select a channel to close.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione un canal para cerrar.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="546" />
         <source>Close Channel</source>
-        <translation type="unfinished" />
+        <translation>Cerrar el canal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="547" />
@@ -7591,12 +7591,12 @@ This will create a closing transaction on-chain.</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="559" />
         <source>Please select a channel to force close.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione un canal para el cierre forzado.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="563" />
         <source>Force Close Channel</source>
-        <translation type="unfinished" />
+        <translation>Cierre forzado del canal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="564" />
@@ -7611,74 +7611,74 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="595" />
         <source>Please enter amount and description.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese el monto y la descripción.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="602" />
         <location filename="../src/lightningwidget.cpp" line="785" />
         <source>Please enter a valid amount.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese un monto válido.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="618" />
         <source>Please enter a description.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese una descripción.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="631" />
         <location filename="../src/lightningwidget.cpp" line="661" />
         <source>Please enter a BOLT 11 invoice.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese una factura BOLT 11.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="636" />
         <source>Are you sure you want to pay this invoice?</source>
-        <translation type="unfinished" />
+        <translation>¿Seguro que quiere pagar esta factura?</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
         <source>No Invoice</source>
-        <translation type="unfinished" />
+        <translation>Sin factura</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
         <source>Create an invoice first.</source>
-        <translation type="unfinished" />
+        <translation>Cree primero una factura.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="711" />
         <source>Please select a payment to cancel.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione un pago para cancelar.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="724" />
         <source>Please enter watchtower URL.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese la URL de la watchtower.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="740" />
         <source>Please select a watchtower.</source>
-        <translation type="unfinished" />
+        <translation>Seleccione una watchtower.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="760" />
         <source>Please enter peer address.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese la dirección del par.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
         <source>Not Implemented</source>
-        <translation type="unfinished" />
+        <translation>No implementado</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
         <source>Peer disconnection coming soon.</source>
-        <translation type="unfinished" />
+        <translation>La desconexión de pares llegará pronto.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="778" />
         <source>Please enter destination and amount.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese el destino y el monto.</translation>
     </message>
 </context>
 <context>
