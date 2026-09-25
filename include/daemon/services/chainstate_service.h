@@ -1339,6 +1339,9 @@ private:
      * already holds it. Lock acquisition belongs at the OUTER operation
      * boundary, where the order is visible and taken once.
      */
+    // After asserting the caller's activation lock, publication uses fixed-size
+    // copies under the observer mutex. Synchronization failure is fatal; logging
+    // is best-effort after publication and cannot throw back to a committed caller.
     void PublishActiveTipLocked(CBlockIndex* tip, TipPublishReason reason);
 
     /**

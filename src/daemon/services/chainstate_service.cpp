@@ -5742,22 +5742,19 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
     // the check inside PublishActiveTip would re-walk durable storage
     // for every non-advancement publish too (rollback, startup,
     // snapshot), which is unnecessary and would increase boot time.
-    if (logger_ && tip) {
-        logger_->info("[PublishActiveTip] " +
-                      std::string(TipPublishReasonName(reason)) +
-                      " tip=" + tip->hash.GetHex().substr(0, 16) + "..." +
-                      " height=" + std::to_string(tip->height));
-    }
-    active_tip_ = tip;
-
     // #439: publish an immutable VALUE copy of the tip identity under its own
     // mutex. GetSyncSnapshot() reads this instead of dereferencing active_tip_,
     // which is a bare CBlockIndex* mutated on the chain-advancement path — a
     // reader touching tip->hash / tip->height concurrently would be racing.
     // Because this is the single setter for active_tip_, publishing here keeps
     // the value in lockstep with the pointer.
-    {
+    // This may follow an authoritative database commit. Acquire the observer
+    // mutex BEFORE changing either representation, then copy fixed-size values
+    // only. A synchronization failure cannot return to a caller that might
+    // continue with durable state and an unpublished service tip.
+    try {
         std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        active_tip_ = tip;
         if (tip) {
             published_tip_valid_ = true;
             published_tip_hash_ = tip->GetBlockHash();
@@ -5767,6 +5764,21 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
             published_tip_hash_.SetNull();
             published_tip_height_ = 0;
         }
+    } catch (...) {
+        std::terminate();
+    }
+
+    // Diagnostics allocate and may throw. They are best-effort AFTER both tip
+    // representations agree, never a prerequisite for post-commit publication.
+    // Do not attempt another allocating log from this catch path.
+    try {
+        if (logger_ && tip) {
+            logger_->info("[PublishActiveTip] " +
+                          std::string(TipPublishReasonName(reason)) +
+                          " tip=" + tip->hash.GetHex().substr(0, 16) + "..." +
+                          " height=" + std::to_string(tip->height));
+        }
+    } catch (...) {
     }
 }
 

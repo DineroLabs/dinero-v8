@@ -6,6 +6,22 @@
 #include "daemon/config.h"
 #include "consensus/orchard_header.h"
 #include "daemon/runtime_block_reader.h"
+#include <new>
+
+// Test executable only. Refuse ordinary allocations on the publishing thread;
+// other threads (including RocksDB workers) retain their normal allocator.
+static thread_local bool refuse_tip_allocation = false;
+static thread_local unsigned refused_tip_allocations = 0;
+void* operator new(std::size_t n) {
+    if (refuse_tip_allocation) { ++refused_tip_allocations; throw std::bad_alloc(); }
+    if (auto p = std::malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace dinero {
 struct ShieldedStateStartupTestAccess {
@@ -23,6 +39,22 @@ struct ShieldedStateStartupTestAccess {
     static void StaleMemory(ChainstateService& s) { s.consensus_utxo_set_->SetBestBlock(uint256{},0); }
     static void EmptyForest(ChainstateService& s) { s.consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest{}); }
     static bool Verified(const ChainstateService& s) { return s.journal_verified_at_startup_; }
+    static void PublishWithoutAllocations(ChainstateService& s, CBlockIndex* next, bool rollback) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
+        bool threw=false;refused_tip_allocations=0;refuse_tip_allocation=true;
+        try {
+            s.PublishActiveTipLocked(next,rollback ? ChainstateService::TipPublishReason::kRollback
+                                                   : ChainstateService::TipPublishReason::kAdvancement);
+        } catch (...) { threw=true; }
+        refuse_tip_allocation=false;
+        CHECK(!threw); // Diagnostics must not interrupt post-durable publication.
+        CHECK(!next || refused_tip_allocations>0); // The logging failure was actually exercised.
+        CHECK(s.active_tip_==next);
+        std::lock_guard<std::mutex> published(s.published_tip_mutex_);
+        CHECK(s.published_tip_valid_==bool(next));
+        CHECK(s.published_tip_hash_==(next?next->hash:uint256{}));
+        CHECK(s.published_tip_height_==(next?uint32_t(next->height):0));
+    }
 };
 }
 static void ServiceStartupChecks(ChainDB& db,const OrchardBlockContext& c,
@@ -49,6 +81,14 @@ static void ServiceStartupChecks(ChainDB& db,const OrchardBlockContext& c,
     metadata.undo_file=undo_pos.file_number;metadata.undo_pos=undo_pos.offset;metadata.undo_size=undo_pos.size;
     CHECK(db.putHeaderMetadata(token,c.block_hash,metadata)==Status::Ok);
     auto index=DiskIndex(db,block.Header(),c.height);
+    {
+        ChainstateService service;Access::Set(service,index,forest);
+        CBlockIndex next=index;next.hash=H(98);++next.height;
+        Access::PublishWithoutAllocations(service,&next,false);
+        Access::PublishWithoutAllocations(service,&index,true);
+        Access::PublishWithoutAllocations(service,nullptr,true);
+        Access::PublishWithoutAllocations(service,&index,false);
+    }
     db.close();const auto original=Inspect(path);CHECK(db.init(path)==Status::Ok);
     const auto check=[&](bool expected,bool stale_memory=false,bool activation=false,bool empty_forest=false) {
         ChainstateService service;service.setChainDB(&db);service.setBlockStorage(files);

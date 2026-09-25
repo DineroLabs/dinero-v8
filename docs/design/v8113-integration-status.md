@@ -35,6 +35,12 @@ This branch collects release implementation for review and qualification against
   exact bytes; stale metadata aborts before writing. This prepares service-index
   coordination but does not enable production ConnectTip or claim validity flags.
   See the indexed-commit design and its isolated restart scope.
+- The actual shared active-tip setter now publishes pointer and observer identity
+  under the observer mutex before best-effort diagnostics. Allocation failure
+  during logging cannot interrupt publication after a durable commit. The real
+  service regression covers advancement, rollback and null-tip transitions with
+  thread-local allocation refusal. Other post-commit consumers remain unfinished;
+  see the service-tip-publication design.
 - The actual activation-time startup journal gate now requires the Orchard
   tip-local consistency audit, exact indexed body/undo and restored-memory
   agreement. Failure enters safe mode and does not consume the one-shot gate.
