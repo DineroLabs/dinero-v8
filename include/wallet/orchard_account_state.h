@@ -8,6 +8,12 @@ namespace dinero::wallet {
 // exposing results.
 class OrchardAccountState {
 public:
+  struct ArchiveCheckpoint {
+    uint64_t count = 0;
+    orchard::Hash head{};
+    bool operator==(const ArchiveCheckpoint &) const = default;
+  };
+  const ArchiveCheckpoint &Archive() const noexcept;
   enum class OperationOutcome : uint8_t { Confirmed = 1, Conflicted = 2 };
   struct OperationObservation {
     OperationOutcome outcome;
@@ -56,6 +62,15 @@ public:
                    const uint256 &authenticated_activation_parent);
 
 private:
+  friend class OrchardOperationArchive;
+  [[nodiscard]] OrchardAccountState WithArchive(ArchiveCheckpoint) const;
+  [[nodiscard]] OrchardAccountState
+  RemoveObservedOperation(const orchard::Hash &) const;
+  [[nodiscard]] OrchardAccountState
+  RestoreArchivedOperation(const orchard::Hash &,
+                           const OrchardOperationQueue &) const;
+  void VerifyOperationObservation(const orchard::Hash &,
+                                  const OrchardWalletRestoreLookups &) const;
   struct Data;
   explicit OrchardAccountState(std::shared_ptr<const Data> data)
       : data_(std::move(data)) {}

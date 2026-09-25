@@ -60,7 +60,7 @@ This branch collects release implementation for review and qualification against
   exact durable reservation intent and discards cancelled active results. It is
   not wired into wallet RPCs; active proofs cannot be preempted and production
   shutdown drain time is not yet qualified.
-- Account advancement records confirmation/conflict evidence for pending operations, including transparent-input and nullifier conflicts. Encrypted restore rechecks selected-block evidence; rewind/rescan reverses derived observations while retaining signed bytes and reservations. Durable completed-operation archival/retention and live admission/rebroadcast remain unfinished.
+- Account advancement records confirmation/conflict evidence for pending operations, including transparent-input and nullifier conflicts. Encrypted restore rechecks selected-block evidence; rewind/rescan reverses derived observations while retaining signed bytes and reservations. Encrypted completed-operation archival now stages history and pending removal atomically, retains exact signed bytes, and supports authenticated bounded pagination and selected-chain reactivation. Runtime reconciliation/backlog and live admission/rebroadcast remain unfinished.
 - Account snapshots combine scanner, pending operations and durable external/internal address counters. Rewind and explicit rescan reset only derived scan state; they preserve address issuance and frozen pending transactions. These are staged wallet components, not live RPC callers.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.

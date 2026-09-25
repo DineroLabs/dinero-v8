@@ -13,7 +13,7 @@ void Check(bool v) {
   if (!v)
     Fail();
 }
-constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '2'};
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '3'};
 Hash Identity(const FullViewingKeyBytes &fvk) {
   Hash h;
   SHA256(fvk.data(), fvk.size(), h.data());
@@ -157,6 +157,7 @@ struct OrchardAccountState::Data {
   OrchardWalletScanState scan;
   OrchardOperationQueue operations;
   std::map<Hash, Observation> observations;
+  ArchiveCheckpoint archive;
   std::array<DiversifierIndex, 2> next{};
   std::array<bool, 2> exhausted{};
   Data(SigningDomain d, const FullViewingKeyBytes &f, uint32_t a,
@@ -281,6 +282,9 @@ WalletStateBytes OrchardAccountState::Encode() const {
     w.Raw(HashBytes(observation.block_hash));
     w.Raw(observation.transaction_id);
   }
+  w.U32(uint32_t(data_->archive.count));
+  w.U32(uint32_t(data_->archive.count >> 32));
+  w.Raw(data_->archive.head);
   return WalletStateBytes(w.bytes);
 }
 std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
@@ -291,8 +295,9 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
   Reader r{bytes.Bytes()};
   auto m = r.Raw(8);
   Check(std::equal(m.begin(), m.begin() + 7, magic.begin()) &&
-        (m[7] == '1' || m[7] == '2'));
-  const bool has_observations = m[7] == '2';
+        (m[7] >= '1' && m[7] <= '3'));
+  const bool has_observations = m[7] >= '2';
+  const bool has_archive = m[7] == '3';
   Check(r.Raw(1)[0] == domain.network_code &&
         r.Hash32() == domain.genesis_wire && r.U32() == domain.branch_id &&
         r.U32() == activation && r.Hash32() == Identity(fvk));
@@ -328,6 +333,12 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
           id, Observation{static_cast<Outcome>(outcome), height, block, txid});
     }
   }
+  if (has_archive) {
+    const uint64_t low = r.U32(), high = r.U32();
+    state->archive.count = low | (high << 32);
+    state->archive.head = r.Hash32();
+    Check((state->archive.count == 0) == (state->archive.head == Hash{}));
+  }
   Check(r.bytes.empty());
   state->operations =
       OrchardOperationQueue::Restore(WalletStateBytes(operations), domain);
@@ -353,19 +364,67 @@ OrchardAccountState OrchardAccountState::Restore(
       ReadMetadata(bytes, domain, fvk, activation, checkpoint.block_hash, scan);
   state->scan = OrchardWalletScanState::Restore(
       WalletStateBytes(scan), domain, fvk, activation, checkpoint, lookups);
-  for (const auto &[id, observation] : state->observations) {
-    Check(observation.height <= checkpoint.height &&
-          bool(lookups.selected_block));
-    const auto block =
-        lookups.selected_block(observation.height, observation.block_hash);
-    Check(bool(block) && block->Header().GetHash() == observation.block_hash);
-    std::string error;
-    Check(block->CheckSizeLimits(error) &&
-          block->CheckIdentityCommitments(true, error));
-    Check(BlockObservations(*block).Find(state->operations.Entries().at(id),
-                                         observation.height) == observation);
-  }
+  const OrchardAccountState candidate(state);
+  for (const auto &[id, observation] : state->observations)
+    candidate.VerifyOperationObservation(id, lookups);
   return OrchardAccountState(std::move(state));
+}
+const OrchardAccountState::ArchiveCheckpoint &
+OrchardAccountState::Archive() const noexcept {
+  return data_->archive;
+}
+OrchardAccountState
+OrchardAccountState::WithArchive(ArchiveCheckpoint checkpoint) const {
+  Check((checkpoint.count == 0) == (checkpoint.head == Hash{}));
+  auto next = std::make_shared<Data>(*data_);
+  next->archive = checkpoint;
+  return OrchardAccountState(std::move(next));
+}
+void OrchardAccountState::VerifyOperationObservation(
+    const Hash &id, const OrchardWalletRestoreLookups &lookups) const {
+  const auto &observation = data_->observations.at(id);
+  const auto &checkpoint = data_->scan.Checkpoint();
+  Check(observation.height <= checkpoint.height &&
+        bool(lookups.selected_block));
+  if (observation.height == checkpoint.height)
+    Check(observation.block_hash == checkpoint.block_hash);
+  const auto block =
+      lookups.selected_block(observation.height, observation.block_hash);
+  Check(bool(block) && block->Header().GetHash() == observation.block_hash);
+  std::string error;
+  Check(block->CheckSizeLimits(error) &&
+        block->CheckIdentityCommitments(true, error));
+  Check(BlockObservations(*block).Find(data_->operations.Entries().at(id),
+                                       observation.height) == observation);
+}
+OrchardAccountState
+OrchardAccountState::RemoveObservedOperation(const Hash &id) const {
+  Check(data_->observations.contains(id) &&
+        data_->operations.Entries().contains(id));
+  auto next = std::make_shared<Data>(*data_);
+  next->operations.entries_.erase(id);
+  next->observations.erase(id);
+  return OrchardAccountState(std::move(next));
+}
+OrchardAccountState OrchardAccountState::RestoreArchivedOperation(
+    const Hash &id, const OrchardOperationQueue &single) const {
+  Check(single.entries_.size() == 1 && single.entries_.contains(id) &&
+        DomainEqual(single.domain_, data_->domain) &&
+        !data_->observations.contains(id));
+  const auto &entry = single.entries_.at(id);
+  if (auto it = data_->operations.entries_.find(id);
+      it != data_->operations.entries_.end()) {
+    // Reconciliation retry never replaces or re-proves a transaction.
+    auto existing = OrchardOperationQueue::Empty(data_->domain);
+    existing.entries_.emplace(id, it->second);
+    Check(existing.ContinuesArchived(single));
+    return *this;
+  }
+  Check(data_->operations.entries_.size() < OrchardOperationQueue::kMaxPending);
+  auto next = std::make_shared<Data>(*data_);
+  next->operations.entries_.emplace(id, entry);
+  next->operations.CheckUniqueReservations();
+  return OrchardAccountState(std::move(next));
 }
 OrchardAccountState OrchardAccountState::RestoreForRescan(
     const WalletStateBytes &bytes, SigningDomain domain,

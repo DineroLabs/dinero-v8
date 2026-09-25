@@ -242,14 +242,23 @@ int main(int argc, char **argv) {
     auto oldBytes = initial.Encode();
     std::vector<uint8_t> old(oldBytes.Bytes().begin(), oldBytes.Bytes().end());
     old[7] = '1';
-    old.resize(old.size() - 4);
+    old.resize(old.size() - 44);
     Require(OrchardAccountState::RestoreForRescan(WalletStateBytes(old),
                                                   f.domain, fvk, 20001, H(1))
                 .Observations()
                 .empty());
+    auto prior =
+        std::vector<uint8_t>(bytes.Bytes().begin(), bytes.Bytes().end());
+    prior[7] = '2';
+    prior.resize(prior.size() - 40);
+    auto priorRestored = OrchardAccountState::Restore(
+        WalletStateBytes(prior), f.domain, fvk, 20001,
+        funded.Scan().Checkpoint(), restoreLookups);
+    Require(priorRestored.Observations() == funded.Observations() &&
+            priorRestored.Archive().count == 0);
     auto badReceipt =
         std::vector<uint8_t>(bytes.Bytes().begin(), bytes.Bytes().end());
-    const auto receiptStart = badReceipt.size() - 101;
+    const auto receiptStart = badReceipt.size() - 141;
     badReceipt[receiptStart + 32] =
         0; // Unknown outcome, not a missing observation.
     AccountReject([&] {

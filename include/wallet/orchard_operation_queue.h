@@ -40,10 +40,15 @@ public:
   Restore(const orchard::WalletStateBytes &, orchard::SigningDomain);
 
 private:
+  friend class OrchardAccountState;
+  friend class OrchardOperationArchive;
   explicit OrchardOperationQueue(orchard::SigningDomain domain)
       : domain_(domain) {}
   void CheckEntry(const Entry &, bool verify_proof) const;
   void CheckUniqueReservations() const;
+  // Singleton archive continuity: an unfinished intent may become Ready once;
+  // completed bytes never change or regress to Reserved.
+  bool ContinuesArchived(const OrchardOperationQueue &) const;
   orchard::SigningDomain domain_;
   std::map<orchard::Hash, Entry> entries_;
 };

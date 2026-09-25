@@ -56,13 +56,14 @@ Malformed/truncated snapshots and edited authorization bytes reject.
 This is not a complete wallet job runner. Final production integration still
 needs service integration of bounded proof jobs, wallet ownership/selection, live
 RPC/admission/broadcast, and selected-chain
-confirmation/conflict archival with reorg resurrection. There is deliberately
-no ready-entry removal API yet: those missing archival rules must not be replaced
-by cancellation that could release inputs belonging to a relayed transaction.
+confirmation/conflict notifications and reconciliation after reorg. The separate
+`OrchardOperationArchive` stages authenticated history before pending removal;
+see `orchard-operation-archive-2026-09-25.md`. There is no Ready cancellation API.
 
 `OrchardAccountState` now combines this queue with typed scan state and durable
 address counters in one encrypted payload. Its reorg/rescan paths preserve the
-queue; they do not supply confirmation/conflict archival.
+queue and archive checkpoint; archived operations require selected-chain
+reconciliation before new input selection.
 
 The `OrchardProofJobs` component now supplies bounded execution and cancellation
 against exact reserved intents. Its service integration remains unfinished;

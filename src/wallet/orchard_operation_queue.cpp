@@ -247,4 +247,19 @@ OrchardOperationQueue::Restore(const WalletStateBytes &bytes,
     queue.CheckEntry(e, true);
   return queue;
 }
+bool OrchardOperationQueue::ContinuesArchived(
+    const OrchardOperationQueue &previous) const {
+  if (entries_.size() != 1 || previous.entries_.size() != 1 ||
+      entries_.begin()->first != previous.entries_.begin()->first)
+    return false;
+  auto normalized = *this;
+  if (previous.entries_.begin()->second.phase == Phase::Reserved) {
+    auto &entry = normalized.entries_.begin()->second;
+    entry.phase = Phase::Reserved;
+    entry.transaction.clear();
+  }
+  const auto a = normalized.Encode(), b = previous.Encode();
+  return std::equal(a.Bytes().begin(), a.Bytes().end(), b.Bytes().begin(),
+                    b.Bytes().end());
+}
 } // namespace dinero::wallet
