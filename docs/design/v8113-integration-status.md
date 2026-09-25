@@ -35,6 +35,10 @@ This branch collects release implementation for review and qualification against
   exact bytes; stale metadata aborts before writing. This prepares service-index
   coordination but does not enable production ConnectTip or claim validity flags.
   See the indexed-commit design and its isolated restart scope.
+- The actual legacy persistence helpers now preserve frozen retirement state.
+  Shutdown/notifications can confirm an unchanged cache without rewriting it;
+  legacy marker rebinding and snapshot replacement refuse while retirement exists.
+  This covers helper writes, not the complete snapshot/startup/Orchard connector.
 - Independent transparent-value pool arithmetic enforced by the storage staging
   API, starting at zero, including fees, checked bounds and undo. Runtime block
   flow collection is still required; see the pool-guard design document.

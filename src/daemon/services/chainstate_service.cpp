@@ -1568,6 +1568,34 @@ bool ChainstateService::LoadShieldedState() {
 }
 
 bool ChainstateService::PersistShieldedState() const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (chain_db_) {
+        const auto retired = chain_db_->getLegacyRetirementState();
+        if (retired.ok()) {
+            // Retirement owns these bytes. Shutdown and legacy notifications
+            // may confirm an unchanged cache, but must never rewrite the
+            // frozen store or its fallback files from stale process memory.
+            const auto frontier = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
+            const auto anchors = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
+            const auto memory_frontier = shielded_tree_.SerializeFrontier();
+            const auto memory_anchors = shielded_anchor_history_.SerializePersistenceBytes();
+            const auto root = ComputeShieldedRoot();
+            const auto snapshot = CurrentShieldedStateSnapshot();
+            return frontier.ok() && anchors.ok() && root &&
+                *frontier == std::string(memory_frontier.begin(), memory_frontier.end()) &&
+                *anchors == std::string(memory_anchors.begin(), memory_anchors.end()) &&
+                *root == retired->record.legacy_state_root &&
+                snapshot.root == retired->record.tree_root &&
+                snapshot.tree_size == retired->record.tree_size &&
+                snapshot.nullifier_count == retired->record.nullifier_count;
+        }
+        // Old-schema stores have no retirement namespace. Preserve their
+        // historical path; unavailable or malformed separated stores do not
+        // authorize a fallback-file write.
+        if (retired.status() != Status::NotFound &&
+            !(retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+            return false;
+    }
     if (shielded_frontier_path_.empty()) {
         return false;
     }
@@ -1652,12 +1680,19 @@ bool ChainstateService::PersistShieldedState() const {
 
 bool ChainstateService::PersistImportedShieldedState(const uint256& base_hash,
                                                    uint32_t base_height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (!chain_db_) return false;
+    const auto retired = chain_db_->getLegacyRetirementState();
+    // A legacy import cannot replace a retired pool. A future Orchard snapshot
+    // path must authenticate and move the complete composite state atomically.
+    if (retired.ok() || (retired.status() != Status::NotFound &&
+        !(retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState())))
+        return false;
     // LoadSnapshot has already authenticated the complete imported state.
     // SQLite is only a cache: startup discards its rows when ChainDB has none.
     // Replace the authoritative nullifiers with the imported set, together
     // with the frontier, anchors and marker, in one durable batch. This also
     // removes stale rows when importing an empty or different snapshot set.
-    if (!chain_db_) return false;
     const auto token = ChainWriteToken::CreateForTesting();
     rocksdb::WriteBatch batch;
     if (!chain_db_->deleteAllShieldedNullifiers(token, &batch).ok()) return false;
@@ -2011,6 +2046,7 @@ bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
 }
 
 bool ChainstateService::PersistShieldedTipMarker(const uint256& tip_hash, uint32_t tip_height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
     if (!chain_db_) {
         return false;
     }
@@ -2023,6 +2059,22 @@ bool ChainstateService::PersistShieldedTipMarker(const uint256& tip_hash, uint32
     marker.shielded_root = snapshot.root;
     marker.tree_size = snapshot.tree_size;
     marker.nullifier_count = snapshot.nullifier_count;
+    const auto retired = chain_db_->getLegacyRetirementState();
+    if (retired.ok()) {
+        // Only the composite connect/disconnect batch may advance this marker.
+        // Idempotent legacy callers can observe it, never rebind it separately.
+        const auto stored = chain_db_->getShieldedTipMarker();
+        return stored.ok() && tip_hash == retired->block_hash && tip_height == retired->height &&
+            marker.height == stored->height && marker.block_hash == stored->block_hash &&
+            marker.shielded_root == stored->shielded_root && marker.tree_size == stored->tree_size &&
+            marker.nullifier_count == stored->nullifier_count &&
+            marker.shielded_root == retired->record.tree_root &&
+            marker.tree_size == retired->record.tree_size &&
+            marker.nullifier_count == retired->record.nullifier_count;
+    }
+    if (retired.status() != Status::NotFound &&
+        !(retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return false;
     return chain_db_->putShieldedTipMarker(token, marker) == Status::Ok;
 }
 

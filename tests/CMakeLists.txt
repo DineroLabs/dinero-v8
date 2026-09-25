@@ -1085,6 +1085,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
     ${CMAKE_SOURCE_DIR}/include
   )
   add_test(NAME ShieldedStateStartup COMMAND test_shielded_state_startup)
+  add_test(NAME OrchardServicePersistence COMMAND test_shielded_state_startup retired_persistence)
+  set_tests_properties(OrchardServicePersistence PROPERTIES
+    LABELS "orchard;daemon;shielded;storage;smoke" TIMEOUT 120)
   set_tests_properties(ShieldedStateStartup PROPERTIES
     LABELS "daemon;shielded;storage;smoke"
     TIMEOUT 120

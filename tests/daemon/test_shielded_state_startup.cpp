@@ -10,6 +10,10 @@
 
 namespace dinero {
 struct ShieldedStateStartupTestAccess {
+    static bool Persist(ChainstateService& s) { return s.PersistShieldedState(); }
+    static bool Marker(ChainstateService& s,const uint256& h,uint32_t n) { return s.PersistShieldedTipMarker(h,n); }
+    static bool Import(ChainstateService& s,const uint256& h,uint32_t n) { return s.PersistImportedShieldedState(h,n); }
+    static void Append(ChainstateService& s) { consensus::shielded::Hash h{};h[0]=77;s.shielded_tree_.Append(h); }
     static bool Load(ChainstateService& service, const std::filesystem::path& root) {
         service.datadir_ = root.string();
         service.shielded_frontier_path_ = root / "blockchain/shielded_frontier.bin";
@@ -109,9 +113,67 @@ void Startup(const std::string& fault, bool separated = true) {
     }
 }
 
+void RetiredPersistence(bool separated=true) {
+    TempDir temp;const auto dir=temp.path/"chaindb";std::filesystem::create_directory(dir);Seed(dir,separated,separated?std::optional<std::string>(ready):std::nullopt);
+    std::filesystem::create_directory(temp.path/"blockchain");
+    ChainDB db;CHECK(db.init(dir)==Status::Ok);const auto token=ChainWriteToken::CreateForTesting();
+    uint256 parent,child,other;parent.data[0]=3;child.data[0]=4;other.data[0]=5;
+    sh::CommitmentTree tree;sh::AnchorHistory anchors;anchors.RecordRoot(3,tree.Root());
+    const auto frontier=tree.SerializeFrontier(),history=anchors.SerializePersistenceBytes();
+    const auto tree_root=tree.Root();uint256 root;std::copy(tree_root.begin(),tree_root.end(),root.begin());
+    CHECK(db.deleteAllShieldedNullifiers(token).ok());
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::Frontier,{frontier.begin(),frontier.end()})==Status::Ok);
+    CHECK(db.putShieldedState(token,ChainDB::ShieldedStateRecord::AnchorHistory,{history.begin(),history.end()})==Status::Ok);
+    CHECK(db.putShieldedTipMarker(token,{3,parent,root,0,0})==Status::Ok);
+    CHECK(db.setTip(token,parent,3,arith_uint256(3))==Status::Ok);
+    CHECK(db.setValidatedTip(token,parent,3)==Status::Ok);
+    WriteFile(temp.path/"blockchain/shielded_frontier.bin",frontier);
+    WriteFile(temp.path/"blockchain/shielded_anchor_history.bin",history);
+    ChainstateService service;service.setChainDB(&db);
+    CHECK(ShieldedStateStartupTestAccess::Load(service,temp.path));
+    CHECK(ShieldedStateStartupTestAccess::Persist(service));
+    CHECK(ShieldedStateStartupTestAccess::Marker(service,parent,3));
+    CHECK(ShieldedStateStartupTestAccess::Import(service,parent,3));
+    if(!separated)return; // Old-schema writes keep their historical behavior.
+    const auto composite=service.ComputeShieldedRoot();CHECK(composite);
+    storage::LegacyRetirementState retired{{2,other,1,4,3,parent,*composite,37,root,0,0},4,child,parent};
+    rocksdb::WriteBatch batch;
+    CHECK(db.stageLegacyRetirementConnect(token,std::nullopt,retired,batch)==Status::Ok);
+    CHECK(db.setTip(token,child,4,arith_uint256(4),&batch)==Status::Ok);
+    CHECK(db.setValidatedTip(token,child,4,&batch)==Status::Ok);
+    CHECK(db.writeBatch(token,std::move(batch),true)==Status::Ok);
+    const auto before=Inspect(dir);
+    const auto unchanged=[&] {
+        CHECK(Inspect(dir)==before);
+        for(const auto& entry:std::vector<std::pair<std::string,std::vector<uint8_t>>>{
+                {"shielded_frontier.bin",frontier},{"shielded_anchor_history.bin",history}}) {
+            std::ifstream in(temp.path/"blockchain"/entry.first,std::ios::binary);
+            const std::vector<uint8_t> actual((std::istreambuf_iterator<char>(in)),{});
+            CHECK(actual==entry.second);
+        }
+    };
+    CHECK(ShieldedStateStartupTestAccess::Persist(service));unchanged();
+    CHECK(ShieldedStateStartupTestAccess::Marker(service,child,4));unchanged();
+    CHECK(!ShieldedStateStartupTestAccess::Marker(service,parent,3));unchanged();
+    CHECK(!ShieldedStateStartupTestAccess::Marker(service,other,4));unchanged();
+    CHECK(!ShieldedStateStartupTestAccess::Import(service,child,4));unchanged();
+    ShieldedStateStartupTestAccess::Append(service);
+    CHECK(!ShieldedStateStartupTestAccess::Persist(service));unchanged();
+    db.close();CHECK(!ShieldedStateStartupTestAccess::Persist(service));
+    CHECK(db.init(dir)==Status::Ok);unchanged();
+    CHECK(ShieldedStateStartupTestAccess::Load(service,temp.path));
+    rocksdb::WriteBatch undo;
+    CHECK(db.stageLegacyRetirementDisconnect(token,retired,undo)==Status::Ok);
+    CHECK(db.setTip(token,parent,3,arith_uint256(3),&undo)==Status::Ok);
+    CHECK(db.setValidatedTip(token,parent,3,&undo)==Status::Ok);
+    CHECK(db.writeBatch(token,std::move(undo),true)==Status::Ok);
+    CHECK(ShieldedStateStartupTestAccess::Persist(service));
+    CHECK(ShieldedStateStartupTestAccess::Marker(service,parent,3));
+}
+
 int main(int argc, char** argv) {
     SelectParams(Chain::REGTEST);
-    const std::vector<std::string> cases{"valid", "zero_nullifiers", "unstamped_cache", "frontier", "anchors", "count", "root", "composite_root", "size", "height", "hash", "legacy_frontier", "legacy_anchors"};
+    const std::vector<std::string> cases{"valid", "zero_nullifiers", "unstamped_cache", "frontier", "anchors", "count", "root", "composite_root", "size", "height", "hash", "legacy_frontier", "legacy_anchors", "retired_persistence", "legacy_persistence"};
     if (argc == 2 && std::string(argv[1]) == "--list") {
         for (const auto& name : cases) std::cout << name << '\n'; return 0;
     }
@@ -120,7 +182,8 @@ int main(int argc, char** argv) {
         if (argc == 2 && name != argv[1]) continue;
         try {
             const bool legacy_case = name.rfind("legacy_", 0) == 0;
-            Startup(name == "valid" ? "" : legacy_case ? name.substr(7) : name, !legacy_case);
+            if(name=="retired_persistence" || name=="legacy_persistence")RetiredPersistence(name=="retired_persistence");
+            else Startup(name == "valid" ? "" : legacy_case ? name.substr(7) : name, !legacy_case);
             ++passed; std::cout << "PASS " << name << '\n';
         } catch (const Failure& e) { ++failed; std::cerr << "FAIL " << name << ": " << e.what() << '\n'; }
         catch (const std::exception& e) { std::cerr << "SETUP ERROR " << name << ": " << e.what() << '\n'; return 2; }
