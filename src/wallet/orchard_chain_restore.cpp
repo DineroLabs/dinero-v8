@@ -155,6 +155,9 @@ OrchardAccountState RestoreOrchardAccountFromChainUnderLock(
         }
         Corrupt(); // A present owner row must name a selected body with that NF.
     };
+    lookups.selected_block = [&](uint32_t height, const uint256& block) {
+        return std::make_shared<const OrchardBlockCandidate>(archive.OrchardBody(block, height));
+    };
     auto restored = OrchardAccountState::Restore(payload, domain, fvk, activation, checkpoint, lookups);
     if (Read(db.getOrchardState()) != checkpoint || Read(db.getValidatedTip()).hash != tip.hash) Corrupt();
     return restored;

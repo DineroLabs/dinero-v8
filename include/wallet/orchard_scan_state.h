@@ -23,6 +23,11 @@ struct OrchardWalletRestoreLookups {
       uint32_t height, const uint256 &block, const orchard::Hash &txid)>
       origin;
   std::function<StatusOr<bool>(const uint256 &)> spent_nullifier;
+  // Required by account restoration when persisted operation observations
+  // exist. Establish selected-ancestor membership at exactly this height.
+  std::function<std::shared_ptr<const OrchardBlockCandidate>(
+      uint32_t height, const uint256 &block)>
+      selected_block;
 };
 // Immutable derived wallet view. Host supplies a fully validated selected block
 // and holds its chain/wallet snapshot contract. The checks here bind body,

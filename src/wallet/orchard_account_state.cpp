@@ -13,7 +13,7 @@ void Check(bool v) {
   if (!v)
     Fail();
 }
-constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '1'};
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '2'};
 Hash Identity(const FullViewingKeyBytes &fvk) {
   Hash h;
   SHA256(fvk.data(), fvk.size(), h.data());
@@ -72,6 +72,83 @@ struct Reader {
     return Raw(n);
   }
 };
+using Observation = OrchardAccountState::OperationObservation;
+using Outcome = OrchardAccountState::OperationOutcome;
+Hash HashBytes(const uint256 &value) {
+  Hash h;
+  std::copy(value.begin(), value.end(), h.begin());
+  return h;
+}
+uint256 HashValue(const Hash &value) {
+  uint256 h;
+  std::copy(value.begin(), value.end(), h.begin());
+  return h;
+}
+class BlockObservations {
+public:
+  explicit BlockObservations(const OrchardBlockCandidate &block)
+      : hash_(block.Header().GetHash()) {
+    uint32_t ordinal = 0;
+    for (const auto &tx : block.Transactions()) {
+      const auto id = HashBytes(tx.GetTxid().AsUint256());
+      Check(transactions_.emplace(id, ordinal).second);
+      const auto input = [&](const Hash &previous, uint32_t index) {
+        Check(
+            inputs_
+                .emplace(std::make_pair(previous, index), Spender{ordinal, id})
+                .second);
+      };
+      if (tx.IsOrchard()) {
+        for (const auto &in : tx.Orchard().Inputs())
+          input(in.txid_wire, in.output_index);
+        const auto &facts = tx.Orchard().UnverifiedFacts();
+        for (uint32_t i = 0; i < facts.action_count; ++i) {
+          Hash nf;
+          std::copy(std::begin(facts.nullifiers[i]),
+                    std::end(facts.nullifiers[i]), nf.begin());
+          Check(nullifiers_.emplace(nf, Spender{ordinal, id}).second);
+        }
+      } else if (!tx.Historical().IsCoinbase()) {
+        for (const auto &in : tx.Historical().vin)
+          input(HashBytes(in.prevout.txid.AsUint256()), in.prevout.vout);
+      }
+      ++ordinal;
+    }
+  }
+  std::optional<Observation> Find(const OrchardOperationQueue::Entry &entry,
+                                  uint32_t height) const {
+    std::optional<Hash> own;
+    if (entry.phase == OrchardOperationQueue::Phase::Ready)
+      own = TransactionEnvelope::DecodeExact(entry.transaction).Txid();
+    std::optional<Spender> conflict;
+    const auto consider = [&](const auto &it, const auto &end) {
+      if (it != end && (!own || it->second.id != *own) &&
+          (!conflict || it->second.ordinal < conflict->ordinal))
+        conflict = it->second;
+    };
+    for (const auto &in : entry.inputs)
+      consider(inputs_.find({in.txid_wire, in.output_index}), inputs_.end());
+    for (const auto &nf : entry.nullifiers)
+      consider(nullifiers_.find(nf), nullifiers_.end());
+    const bool included = own && transactions_.contains(*own);
+    Check(!(included && conflict)); // Cannot be one validated selected block.
+    if (included)
+      return Observation{Outcome::Confirmed, height, hash_, *own};
+    if (conflict)
+      return Observation{Outcome::Conflicted, height, hash_, conflict->id};
+    return std::nullopt;
+  }
+
+private:
+  struct Spender {
+    uint32_t ordinal;
+    Hash id;
+  };
+  uint256 hash_;
+  std::map<Hash, uint32_t> transactions_;
+  std::map<std::pair<Hash, uint32_t>, Spender> inputs_;
+  std::map<Hash, Spender> nullifiers_;
+};
 } // namespace
 struct OrchardAccountState::Data {
   SigningDomain domain;
@@ -79,6 +156,7 @@ struct OrchardAccountState::Data {
   uint32_t activation;
   OrchardWalletScanState scan;
   OrchardOperationQueue operations;
+  std::map<Hash, Observation> observations;
   std::array<DiversifierIndex, 2> next{};
   std::array<bool, 2> exhausted{};
   Data(SigningDomain d, const FullViewingKeyBytes &f, uint32_t a,
@@ -121,6 +199,13 @@ OrchardAccountState OrchardAccountState::Advance(
     std::span<const VerifiedOrchardAuthorizations> authorizations) const {
   auto next = std::make_shared<Data>(*data_);
   next->scan = data_->scan.Advance(context, block, prepared, authorizations);
+  const BlockObservations observed(block);
+  for (const auto &[id, entry] : next->operations.Entries()) {
+    if (next->observations.contains(id))
+      continue;
+    if (auto observation = observed.Find(entry, context.height))
+      next->observations.emplace(id, *observation);
+  }
   return OrchardAccountState(std::move(next));
 }
 OrchardAccountState
@@ -128,9 +213,14 @@ OrchardAccountState::RewindScanFrom(const OrchardAccountState &parent) const {
   Check(DomainEqual(data_->domain, parent.data_->domain) &&
         data_->activation == parent.data_->activation &&
         data_->fvk == parent.data_->fvk);
-  Check(parent.Scan().Checkpoint().height <= Scan().Checkpoint().height);
+  Check(parent.Scan().Checkpoint().height < Scan().Checkpoint().height ||
+        parent.Scan().Checkpoint() == Scan().Checkpoint());
   auto next = std::make_shared<Data>(*data_);
   next->scan = parent.data_->scan;
+  const auto &checkpoint = next->scan.Checkpoint();
+  std::erase_if(next->observations, [&](const auto &item) {
+    return item.second.height > checkpoint.height;
+  });
   return OrchardAccountState(std::move(next));
 }
 OrchardAccountState
@@ -144,12 +234,16 @@ OrchardAccountState
 OrchardAccountState::SetReady(const Hash &id,
                               const VerifiedOrchardAuthorizations &auth) const {
   auto next = std::make_shared<Data>(*data_);
+  Check(!data_->observations.contains(id) ||
+        data_->operations.Entries().at(id).phase ==
+            OrchardOperationQueue::Phase::Ready);
   next->operations = data_->operations.SetReady(id, auth);
   return OrchardAccountState(std::move(next));
 }
 OrchardAccountState OrchardAccountState::CancelReserved(const Hash &id) const {
   auto next = std::make_shared<Data>(*data_);
   next->operations = data_->operations.CancelReserved(id);
+  next->observations.erase(id);
   return OrchardAccountState(std::move(next));
 }
 const OrchardWalletScanState &OrchardAccountState::Scan() const noexcept {
@@ -157,6 +251,10 @@ const OrchardWalletScanState &OrchardAccountState::Scan() const noexcept {
 }
 const OrchardOperationQueue &OrchardAccountState::Operations() const noexcept {
   return data_->operations;
+}
+const std::map<Hash, OrchardAccountState::OperationObservation> &
+OrchardAccountState::Observations() const noexcept {
+  return data_->observations;
 }
 WalletStateBytes OrchardAccountState::Encode() const {
   Writer w;
@@ -174,6 +272,15 @@ WalletStateBytes OrchardAccountState::Encode() const {
   auto scan = data_->scan.Encode(), operations = data_->operations.Encode();
   w.Blob(scan.Bytes());
   w.Blob(operations.Bytes());
+  w.U32(data_->observations.size());
+  for (const auto &[id, observation] : data_->observations) {
+    w.Raw(id);
+    uint8_t outcome = static_cast<uint8_t>(observation.outcome);
+    w.Raw({&outcome, 1});
+    w.U32(observation.height);
+    w.Raw(HashBytes(observation.block_hash));
+    w.Raw(observation.transaction_id);
+  }
   return WalletStateBytes(w.bytes);
 }
 std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
@@ -183,7 +290,9 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
   auto state = std::make_shared<Data>(domain, fvk, activation, parent);
   Reader r{bytes.Bytes()};
   auto m = r.Raw(8);
-  Check(std::equal(m.begin(), m.end(), magic.begin()));
+  Check(std::equal(m.begin(), m.begin() + 7, magic.begin()) &&
+        (m[7] == '1' || m[7] == '2'));
+  const bool has_observations = m[7] == '2';
   Check(r.Raw(1)[0] == domain.network_code &&
         r.Hash32() == domain.genesis_wire && r.U32() == domain.branch_id &&
         r.U32() == activation && r.Hash32() == Identity(fvk));
@@ -199,9 +308,39 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
   }
   scan = r.Blob();
   auto operations = r.Blob();
+  // Parse the bounded observation section before expensive proof restore.
+  if (has_observations) {
+    const auto count = r.U32();
+    Check(count <= OrchardOperationQueue::kMaxPending &&
+          count <= r.bytes.size() / 101);
+    Hash previous{};
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto id = r.Hash32();
+      Check(id > previous);
+      previous = id;
+      const auto outcome = r.Raw(1)[0];
+      Check(outcome == 1 || outcome == 2);
+      const auto height = r.U32();
+      const auto block = HashValue(r.Hash32());
+      const auto txid = r.Hash32();
+      Check(height >= activation && !block.IsNull() && txid != Hash{});
+      state->observations.emplace(
+          id, Observation{static_cast<Outcome>(outcome), height, block, txid});
+    }
+  }
   Check(r.bytes.empty());
   state->operations =
       OrchardOperationQueue::Restore(WalletStateBytes(operations), domain);
+  for (const auto &[id, observation] : state->observations) {
+    const auto found = state->operations.Entries().find(id);
+    Check(found != state->operations.Entries().end());
+    if (observation.outcome == Outcome::Confirmed) {
+      Check(
+          found->second.phase == OrchardOperationQueue::Phase::Ready &&
+          TransactionEnvelope::DecodeExact(found->second.transaction).Txid() ==
+              observation.transaction_id);
+    }
+  }
   return state;
 }
 OrchardAccountState OrchardAccountState::Restore(
@@ -214,6 +353,18 @@ OrchardAccountState OrchardAccountState::Restore(
       ReadMetadata(bytes, domain, fvk, activation, checkpoint.block_hash, scan);
   state->scan = OrchardWalletScanState::Restore(
       WalletStateBytes(scan), domain, fvk, activation, checkpoint, lookups);
+  for (const auto &[id, observation] : state->observations) {
+    Check(observation.height <= checkpoint.height &&
+          bool(lookups.selected_block));
+    const auto block =
+        lookups.selected_block(observation.height, observation.block_hash);
+    Check(bool(block) && block->Header().GetHash() == observation.block_hash);
+    std::string error;
+    Check(block->CheckSizeLimits(error) &&
+          block->CheckIdentityCommitments(true, error));
+    Check(BlockObservations(*block).Find(state->operations.Entries().at(id),
+                                         observation.height) == observation);
+  }
   return OrchardAccountState(std::move(state));
 }
 OrchardAccountState OrchardAccountState::RestoreForRescan(
@@ -221,7 +372,9 @@ OrchardAccountState OrchardAccountState::RestoreForRescan(
     const FullViewingKeyBytes &fvk, uint32_t activation,
     const uint256 &parent) {
   std::span<const uint8_t> ignored;
-  return OrchardAccountState(
-      ReadMetadata(bytes, domain, fvk, activation, parent, ignored));
+  auto state = ReadMetadata(bytes, domain, fvk, activation, parent, ignored);
+  state->observations
+      .clear(); // Rescan rebuilds chain observations, never signed bytes.
+  return OrchardAccountState(std::move(state));
 }
 } // namespace dinero::wallet

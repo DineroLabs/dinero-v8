@@ -64,7 +64,11 @@ int main(int argc, char **argv) {
     Require(funded.Scan().BalanceUna() == 5000 &&
             funded.Operations().Entries().at(id).transaction ==
                 f.Build().CanonicalBytes());
+    Require(funded.Observations().at(id).outcome ==
+            OrchardAccountState::OperationOutcome::Confirmed);
+    Require(funded.Observations().at(id).block_hash == c.block_hash);
     auto rewound = funded.RewindScanFrom(initial);
+    Require(rewound.Observations().empty());
     Require(rewound.Scan().BalanceUna() == 0 &&
             rewound.Operations().Entries().size() == 1);
     DiversifierIndex two{};
@@ -90,6 +94,10 @@ int main(int argc, char **argv) {
               auths[0]);
         },
         [](const uint256 &) -> StatusOr<bool> { return false; }};
+    restoreLookups.selected_block = [&](uint32_t height, const uint256 &hash) {
+      Require(height == c.height && hash == c.block_hash);
+      return std::make_shared<const OrchardBlockCandidate>(block);
+    };
     auto bytes = funded.Encode();
     auto restored = OrchardAccountState::Restore(bytes, f.domain, fvk, 20001,
                                                  funded.Scan().Checkpoint(),
@@ -97,15 +105,158 @@ int main(int argc, char **argv) {
     Require(restored.Scan().BalanceUna() == 5000 &&
             restored.Operations().Entries().at(id).transaction ==
                 f.Build().CanonicalBytes());
+    Require(restored.Observations() == funded.Observations());
     Require(restored.IssueReceiver(WalletScope::External).second == r2);
     auto rescan = OrchardAccountState::RestoreForRescan(bytes, f.domain, fvk,
                                                         20001, H(1));
     Require(rescan.Scan().BalanceUna() == 0 &&
             rescan.Operations().Entries().at(id).transaction ==
                 f.Build().CanonicalBytes());
+    Require(rescan.Observations().empty());
     Require(rescan.IssueReceiver(WalletScope::External).second == r2);
     Require(rescan.Advance(c, block, transition, auths).Scan().BalanceUna() ==
             5000);
+    // An ordinary selected transaction can conflict with the transparent
+    // funding reservation. Its script validity is a caller precondition here.
+    Transaction competing;
+    competing.version = 2;
+    TxInput input;
+    input.prevout.txid = Point(f.inputs[0]).txid;
+    input.prevout.vout = f.inputs[0].output_index;
+    competing.vin = {input};
+    competing.vout.emplace_back(AmountUna::Una(12000),
+                                f.outputs[0].script_pub_key);
+    auto transparentBlock = Candidate(c, {}, {competing}, 29);
+    auto tc = c;
+    tc.block_hash = transparentBlock.Header().GetHash();
+    auto transparentTransition =
+        PrepareOrchardStateTransition(tc, std::nullopt, {}, lookups);
+    auto conflicted =
+        ready.Advance(tc, transparentBlock, transparentTransition, {});
+    Require(conflicted.Observations().at(id).outcome ==
+            OrchardAccountState::OperationOutcome::Conflicted);
+    Require(conflicted.Operations().Entries().at(id).transaction ==
+            ready.Operations().Entries().at(id).transaction);
+    Require(conflicted.RewindScanFrom(initial).Observations().empty());
+    // Same-height branch replacement must first rewind to the common ancestor.
+    AccountReject([&] { (void)funded.RewindScanFrom(replaced); });
+
+    // Two honest wallet plans spending the same note: selected-chain conflict
+    // is detected by nullifier with no transparent inputs in either plan.
+    const Hash spendId{43};
+    const auto &owned = funded.Scan().Notes()[0];
+    std::vector<WalletSpendInput> spendInputs{{*owned.note, *owned.witness}};
+    Hash anchor;
+    std::copy(std::begin(owned.witness->Facts().root),
+              std::end(owned.witness->Facts().root), anchor.begin());
+    const std::vector<TransparentOutput> cash{
+        {4500, f.outputs[0].script_pub_key}};
+    const auto spendContext =
+        SigningContext::Create(f.domain, 0, {}, cash, 500);
+    auto planA = WalletBundlePlan::PrepareSpend(keys, spendInputs, anchor, {});
+    auto pendingSpend = funded.Reserve(spendId, planA.Intent(spendContext));
+    auto proofB = WalletBundlePlan::PrepareSpend(keys, spendInputs, anchor, {})
+                      .Prove(spendContext);
+    const auto txB =
+        TransactionEnvelope::Create(0, {}, cash, 500, proofB.Bytes());
+    auto spendView = f.view;
+    spendView.height = 20001;
+    const auto authB = VerifyOrchardAuthorizations(
+        OrchardCoinSnapshot::ResolveUnderChainstateLock(txB, spendView),
+        f.domain, 20002, {});
+    const std::vector<VerifiedOrchardAuthorizations> spendAuthsB{authB};
+    auto sc = c;
+    sc.height = 20002;
+    sc.parent_hash = c.block_hash;
+    auto blockB = Candidate(sc, spendAuthsB);
+    sc.block_hash = blockB.Header().GetHash();
+    auto spendLookups = lookups;
+    spendLookups.active_anchor = [](const uint256 &) -> StatusOr<bool> {
+      return true;
+    };
+    auto transitionB = PrepareOrchardStateTransition(sc, transition.Next(),
+                                                     spendAuthsB, spendLookups);
+    auto spentOther =
+        pendingSpend.Advance(sc, blockB, transitionB, spendAuthsB);
+    Require(spentOther.Scan().BalanceUna() == 0 &&
+            spentOther.Observations().at(spendId).outcome ==
+                OrchardAccountState::OperationOutcome::Conflicted);
+    const auto proofA = std::move(planA).Prove(spendContext);
+    const auto txA =
+        TransactionEnvelope::Create(0, {}, cash, 500, proofA.Bytes());
+    const auto authA = VerifyOrchardAuthorizations(
+        OrchardCoinSnapshot::ResolveUnderChainstateLock(txA, spendView),
+        f.domain, 20002, {});
+    AccountReject([&] { (void)spentOther.SetReady(spendId, authA); });
+    auto resurrected = spentOther.RewindScanFrom(funded);
+    Require(!resurrected.Observations().contains(spendId) &&
+            resurrected.Observations().contains(id));
+    Require(resurrected.Operations().Entries().contains(spendId));
+    auto readySpend = resurrected.SetReady(spendId, authA);
+    const std::vector<VerifiedOrchardAuthorizations> spendAuthsA{authA};
+    auto blockA = Candidate(sc, spendAuthsA, {}, 33);
+    auto ac = sc;
+    ac.block_hash = blockA.Header().GetHash();
+    auto transitionA = PrepareOrchardStateTransition(ac, transition.Next(),
+                                                     spendAuthsA, spendLookups);
+    auto confirmedSpend =
+        readySpend.Advance(ac, blockA, transitionA, spendAuthsA);
+    Require(confirmedSpend.Observations().at(spendId).outcome ==
+            OrchardAccountState::OperationOutcome::Confirmed);
+    Require(confirmedSpend.RewindScanFrom(funded)
+                .Operations()
+                .Entries()
+                .at(spendId)
+                .transaction == txA.CanonicalBytes());
+    auto historyLookups = restoreLookups;
+    historyLookups.selected_block = [&](uint32_t height, const uint256 &hash) {
+      if (height == c.height) {
+        Require(hash == c.block_hash);
+        return std::make_shared<const OrchardBlockCandidate>(block);
+      }
+      Require(height == sc.height && hash == sc.block_hash);
+      return std::make_shared<const OrchardBlockCandidate>(blockB);
+    };
+    auto conflictRestart = OrchardAccountState::Restore(
+        spentOther.Encode(), f.domain, fvk, 20001,
+        spentOther.Scan().Checkpoint(), historyLookups);
+    Require(conflictRestart.Observations() == spentOther.Observations());
+    auto missingHistory = historyLookups;
+    missingHistory.selected_block = {};
+    AccountReject([&] {
+      (void)OrchardAccountState::Restore(spentOther.Encode(), f.domain, fvk,
+                                         20001, spentOther.Scan().Checkpoint(),
+                                         missingHistory);
+    });
+    auto wrongHistory = historyLookups;
+    wrongHistory.selected_block = [&](uint32_t, const uint256 &) {
+      return std::make_shared<const OrchardBlockCandidate>(blockA);
+    };
+    AccountReject([&] {
+      (void)OrchardAccountState::Restore(spentOther.Encode(), f.domain, fvk,
+                                         20001, spentOther.Scan().Checkpoint(),
+                                         wrongHistory);
+    });
+    // Old staged account snapshots have no observation section. Decode them
+    // without fabricating confirmations; subsequent selected replay fills it.
+    auto oldBytes = initial.Encode();
+    std::vector<uint8_t> old(oldBytes.Bytes().begin(), oldBytes.Bytes().end());
+    old[7] = '1';
+    old.resize(old.size() - 4);
+    Require(OrchardAccountState::RestoreForRescan(WalletStateBytes(old),
+                                                  f.domain, fvk, 20001, H(1))
+                .Observations()
+                .empty());
+    auto badReceipt =
+        std::vector<uint8_t>(bytes.Bytes().begin(), bytes.Bytes().end());
+    const auto receiptStart = badReceipt.size() - 101;
+    badReceipt[receiptStart + 32] =
+        0; // Unknown outcome, not a missing observation.
+    AccountReject([&] {
+      (void)OrchardAccountState::Restore(WalletStateBytes(badReceipt), f.domain,
+                                         fvk, 20001, funded.Scan().Checkpoint(),
+                                         restoreLookups);
+    });
     auto wrong = keys.ExportFullViewingKey();
     wrong[0] ^= 1;
     AccountReject([&] {
@@ -201,6 +352,33 @@ int main(int argc, char **argv) {
               account.IssueReceiver(WalletScope::External).second == r2 &&
               account.Operations().Entries().at(id).transaction ==
                   f.Build().CanonicalBytes());
+      Require(account.Observations() == funded.Observations());
+      sql("BEGIN IMMEDIATE;");
+      Require(store.StageReplace(1, rewound.Encode()) == 2);
+      sql("ROLLBACK;");
+      auto retained = store.Read();
+      Require(retained && retained->revision == 1);
+      Require(OrchardAccountState::Restore(retained->state, f.domain, fvk,
+                                           20001, funded.Scan().Checkpoint(),
+                                           restoreLookups)
+                  .Observations() == funded.Observations());
+      sql("BEGIN IMMEDIATE;");
+      Require(store.StageReplace(1, rewound.Encode()) == 2);
+      sql("COMMIT;");
+    }
+    Require(sqlite3_close(db) == SQLITE_OK);
+    Require(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+    {
+      WalletSnapshotStore store(db, identity, seed);
+      auto saved = store.Read();
+      Require(saved && saved->revision == 2);
+      auto after = OrchardAccountState::Restore(
+          saved->state, f.domain, fvk, 20001, rewound.Scan().Checkpoint(),
+          restoreLookups);
+      Require(after.Observations().empty() &&
+              after.Operations().Entries().at(id).transaction ==
+                  f.Build().CanonicalBytes());
+      Require(after.IssueReceiver(WalletScope::External).second == r2);
     }
     Require(sqlite3_close(db) == SQLITE_OK);
     std::cout << "Orchard account: atomic typed snapshot, address non-reuse "
