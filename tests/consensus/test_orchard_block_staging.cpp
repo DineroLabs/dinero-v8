@@ -1,6 +1,10 @@
 #include "orchard_forest_test_fixture.h"
 #include "consensus/orchard_block_staging.h"
 #include "consensus/utxo_publication.h"
+#include "daemon/orchard_chainstate_write.h"
+#include "common/annotated_mutex.h"
+#include <thread>
+#include <type_traits>
 #include "consensus/orchard_block_filter.h"
 #include "consensus/orchard_state_root.h"
 #include "consensus/state_commitment.h"
@@ -315,7 +319,7 @@ static Rows ConsensusRows(const std::filesystem::path& path) {
 }
 static void CrashLifecycle(const std::string& executable,const std::string& base,
     const std::filesystem::path& path,const OrchardBlockContext& context,
-    const OrchardBlockCandidate& block,const BlockHeader& parent,const UtreexoForest& forest,bool checkpoint) {
+    const OrchardBlockCandidate& block,const BlockHeader& parent,const UtreexoForest& forest,bool checkpoint,bool owned=false) {
     // Both stores are CLOSED before copying or spawning. The child execs a new
     // process: never call RocksDB/Rayon on inherited post-fork worker state.
     const auto before=ConsensusRows(path);TempDir oracle;
@@ -332,17 +336,20 @@ static void CrashLifecycle(const std::string& executable,const std::string& base
     const auto block_file=path/"synthetic-orchard-block.bin";
     {std::ofstream file(block_file,std::ios::binary);const auto& bytes=block.WireBytes();
         file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());CHECK(file.good());}
-    for(const auto& step:std::vector<std::pair<std::string,std::string>>{
-        {"disconnect","pre"},{"disconnect","post"},{"connect","pre"},{"connect","post"},
-        {"disconnect","published"},{"connect","published"}}) {
-        std::vector<std::string> args{executable,"--crash-child",base,path.string(),block_file.string(),
+    const std::vector<std::pair<std::string,std::string>> steps = owned
+        ? std::vector<std::pair<std::string,std::string>>{{"disconnect","failed"},{"disconnect","pre"},
+            {"disconnect","published"},{"connect","failed"},{"connect","pre"},{"connect","published"}}
+        : std::vector<std::pair<std::string,std::string>>{{"disconnect","pre"},{"disconnect","post"},
+            {"connect","pre"},{"connect","post"},{"disconnect","published"},{"connect","published"}};
+    for(const auto& step:steps) {
+        std::vector<std::string> args{executable,owned?"--owner-child":"--crash-child",base,path.string(),block_file.string(),
             step.first,step.second,checkpoint?"1":"0"};
         std::vector<char*> argv;for(auto& a:args)argv.push_back(a.data());argv.push_back(nullptr);
         pid_t child=0;CHECK(posix_spawn(&child,executable.c_str(),nullptr,nullptr,argv.data(),environ)==0);
         int status=0;pid_t waited;do{waited=waitpid(child,&status,0);}while(waited<0 && errno==EINTR);
         CHECK(waited==child && WIFEXITED(status) &&
-            WEXITSTATUS(status)==(step.second=="pre"?73:step.second=="post"?74:75));
-        const bool connected=(step.first=="disconnect")== (step.second=="pre");
+            WEXITSTATUS(status)==(step.second=="failed"?76:step.second=="pre"?73:step.second=="post"?74:75));
+        const bool connected=(step.first=="disconnect")== (step.second=="pre" || step.second=="failed");
         CHECK(ConsensusRows(path)==(connected?before:disconnected));
         ChainDB reopened;CHECK(reopened.init(path)==Status::Ok);UtreexoForest recovered;std::string error;
         CHECK(storage::RestoreHistoricalForest(reopened,connected?context.height:context.height-1,recovered,error)==Status::Ok);
@@ -350,7 +357,7 @@ static void CrashLifecycle(const std::string& executable,const std::string& base
         if(connected)AuditOrchardChainstateTipUnderLock(reopened,token,context,parent,recovered,true);
         else CHECK(reopened.getOrchardState().status()==Status::NotFound);
         reopened.close();
-        std::cout<<"Atomic crash boundary passed: "<<step.first<<" "<<step.second<<" checkpoint="<<checkpoint<<'\n';
+        std::cout<<(owned?"Owned commit boundary passed: ":"Atomic crash boundary passed: ")<<step.first<<" "<<step.second<<" checkpoint="<<checkpoint<<'\n';
     }
 }
 static void CrashChild(int argc,char** argv) {
@@ -362,7 +369,7 @@ static void CrashChild(int argc,char** argv) {
     OrchardBlockContext context{20001,header.GetHash(),header.prev_block_hash,20001,keys.domain};
     const bool connect=std::string(argv[5])=="connect",post=std::string(argv[6])=="post",
         published=std::string(argv[6])=="published",checkpoint=std::string(argv[7])=="1";
-    CHECK(connect || std::string(argv[5])=="disconnect");CHECK(post || published || std::string(argv[6])=="pre");
+    CHECK(connect || std::string(argv[5])=="disconnect");CHECK(post || published || std::string(argv[6])=="pre" || std::string(argv[6])=="failed");
     UtreexoForest forest;std::string error;
     CHECK(storage::RestoreHistoricalForest(db,connect?20000:20001,forest,error)==Status::Ok);
     // No original connect result exists in this fresh process. Restore the
@@ -374,6 +381,21 @@ static void CrashChild(int argc,char** argv) {
     live.ReplaceForestGuarded(forest);
     live.SetBestBlock(connect?context.parent_hash:context.block_hash,connect?20000:20001);
     CheckMemoryCoins(db,live);
+    if (std::string(argv[1])=="--owner-child") {
+        AnnotatedRecursiveMutex activation;
+        auto write = connect
+            ? PreparedOrchardChainstateWrite::Connect(activation,db,token,live,context,
+                block,parent,forest,{},true,checkpoint,FixtureRetirement(context))
+            : PreparedOrchardChainstateWrite::Disconnect(activation,db,token,live,context,
+                block,parent,forest,true);
+        if (std::string(argv[6])=="failed") {
+            // Temporary store only. Force writeBatch to return Internal; the
+            // owner must fail stop, never return and continue on old memory.
+            db.close();std::set_terminate([]{std::_Exit(76);});write->Commit();std::_Exit(2);
+        }
+        if (published) {write->Commit();CheckMemoryCoins(db,live);}
+        std::_Exit(published?75:73);
+    }
     rocksdb::WriteBatch batch;
     std::vector<UTXOPublicationChange> changes;UtreexoForest next_forest;
     if(connect) {
@@ -443,7 +465,8 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     CHECK(restored.forest.dumpInternalState()==parent_forest.dumpInternalState());
     CHECK(RequiredValue(db.getOrchardState())==parent_state);
 }
-static void AtomicForest(const std::string& base,bool checkpoint,const std::string& crash_executable={}) {
+static void AtomicForest(const std::string& base,bool checkpoint,const std::string& crash_executable={},bool owned_write=false) {
+    AnnotatedRecursiveMutex activation;
     TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
     Fixture keys(base);const auto auth=Authorized(base,false,20000);const auto& tx=auth.Transaction();
     View view;view.height=20000;UtreexoForest parent_forest;parent_forest.setCanonicalEmptyRoots(true);
@@ -567,8 +590,41 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
         parent.utreexo_root,memory_changes,staged.forest.After(),c.height,c.block_hash,header.utreexo_root);
     publication.CheckReadyUnderLock();
     CHECK(live.GetBestBlock()==parent.GetHash());
-    Commit(db,connect);
-    std::move(publication).PublishAfterCommitUnderLock();
+    if (owned_write) {
+        static_assert(!std::is_move_constructible_v<PreparedOrchardChainstateWrite>);
+        static_assert(!std::is_copy_constructible_v<PreparedOrchardChainstateWrite>);
+        const auto prepare = [&] {
+            return PreparedOrchardChainstateWrite::Connect(activation,db,token,live,c,
+                block,parent,parent_forest,{},true,checkpoint,FixtureRetirement(c));
+        };
+        // Abandonment releases the lock and changes no durable/logical state.
+        { auto abandoned=prepare();CHECK(activation.HeldByCurrentThread()); }
+        CHECK(!activation.HeldByCurrentThread());CheckMemoryCoins(db,live);
+        CHECK(RequiredValue(db.getTip()).hash==parent.GetHash());
+        {
+            auto aborted=prepare();
+            live.SetBestBlock(H(111),c.height-1); // simulate a violated host contract
+            bool refused=false;try{aborted->Commit();}catch(const std::exception&){refused=true;}
+            CHECK(refused && RequiredValue(db.getTip()).hash==parent.GetHash());
+            live.SetBestBlock(parent.GetHash(),c.height-1);
+            refused=false;try{aborted->Commit();}catch(const std::logic_error&){refused=true;}
+            CHECK(refused); // an aborted transaction can never be retried
+        }
+        auto write=prepare();
+        bool excluded=false,wrong_thread=false;
+        std::thread contender([&] {
+            excluded=!activation.try_lock();if(!excluded)activation.unlock();
+            try{write->Commit();}catch(const std::logic_error&){wrong_thread=true;}
+        });contender.join();CHECK(excluded && wrong_thread);
+        CHECK(RequiredValue(db.getTip()).hash==parent.GetHash());
+        write->Commit();CHECK(activation.HeldByCurrentThread());
+        bool duplicate=false;try{write->Commit();}catch(const std::logic_error&){duplicate=true;}
+        CHECK(duplicate);write.reset();CHECK(!activation.HeldByCurrentThread());
+        CheckMemoryCoins(db,live);
+    } else {
+        Commit(db,connect);
+        std::move(publication).PublishAfterCommitUnderLock();
+    }
     CHECK(live.GetBestBlock()==c.block_hash && live.GetHeight()==c.height);
     CHECK(live.SnapshotForestCommitment()==staged.forest.After().getCommitment());
     for(const auto& change:memory_changes) {
@@ -638,7 +694,7 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
     AuditOrchardChainstateTipUnderLock(db,token,c,parent,reopened,true);
     db.close();CHECK(Inspect(temp.path)==audit_before);CHECK(db.init(temp.path)==Status::Ok);
     if(!crash_executable.empty()) {
-        db.close();CrashLifecycle(crash_executable,base,temp.path,c,block,parent,reopened,checkpoint);
+        db.close();CrashLifecycle(crash_executable,base,temp.path,c,block,parent,reopened,checkpoint,owned_write);
         CHECK(db.init(temp.path)==Status::Ok);
     }
     std::string delta;CHECK(db.getRaw(key,delta)==Status::Ok);
@@ -662,8 +718,19 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
         header.utreexo_root,reverse_changes,restored.forest,c.height-1,parent.GetHash(),parent.utreexo_root);
     rollback.CheckReadyUnderLock();
     CHECK(live.GetBestBlock()==c.block_hash);
-    Commit(db,disconnect);
-    std::move(rollback).PublishAfterCommitUnderLock();
+    if (owned_write) {
+        { auto abandoned=PreparedOrchardChainstateWrite::Disconnect(activation,db,token,
+            live,c,block,parent,reopened,true); }
+        CHECK(!activation.HeldByCurrentThread());CheckMemoryCoins(db,live);
+        CHECK(RequiredValue(db.getTip()).hash==c.block_hash);
+        auto write=PreparedOrchardChainstateWrite::Disconnect(activation,db,token,
+            live,c,block,parent,reopened,true);
+        write->Commit();CheckMemoryCoins(db,live);
+        write.reset();CHECK(!activation.HeldByCurrentThread());
+    } else {
+        Commit(db,disconnect);
+        std::move(rollback).PublishAfterCommitUnderLock();
+    }
     CHECK(live.GetBestBlock()==parent.GetHash() && live.GetHeight()==c.height-1);
     CHECK(live.SnapshotForestCommitment()==parent_forest.getCommitment());
     for(const auto& change:reverse_changes) CHECK(live.HaveCoin(change.outpoint)==bool(change.after));
@@ -712,10 +779,16 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
 }
 int main(int argc,char**argv) {
     try { SelectParams(Chain::REGTEST);
-        if(argc>1 && std::string(argv[1])=="--crash-child") {CrashChild(argc,argv);return 2;}
+        if(argc>1 && (std::string(argv[1])=="--crash-child" || std::string(argv[1])=="--owner-child")) {CrashChild(argc,argv);return 2;}
         if(argc==3 && std::string(argv[1])=="--crash-lifecycle") {
             const auto executable=std::filesystem::absolute(argv[0]).string();
             AtomicForest(argv[2],false,executable);AtomicForest(argv[2],true,executable);return 0;
+        }
+        if(argc==3 && std::string(argv[1])=="--commit-owner") {
+            const auto executable=std::filesystem::absolute(argv[0]).string();
+            AtomicForest(argv[2],false,executable,true);AtomicForest(argv[2],true,executable,true);
+            std::cout<<"Owned atomic writes: connect/disconnect, abandonment, stale memory, thread exclusion and single-use passed\n";
+            return 0;
         }
         CHECK(argc==2);RoundTrip(argv[1]);CorruptParent(argv[1]);Coverage(argv[1]);AtomicCoins(argv[1]);AtomicForest(argv[1],false);AtomicForest(argv[1],true);
         std::cout<<"Orchard ChainDB staging: real frontier, anchors/nullifiers, reopen, branch replacement, abandonment and error separation passed\n";

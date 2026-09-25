@@ -24,6 +24,11 @@ This branch collects release implementation for review and qualification against
 - ChainDB staging for Orchard block state, nullifier ownership, anchor references
   and undo, tested with companion coin/tip writes on generated RocksDB stores.
   Production ConnectTip/DisconnectTip callers are not wired yet.
+- A daemon commit owner now holds the activation lock and a private full-state
+  batch through synchronous write and prepared memory publication. Abandonment,
+  single-use/thread checks and storage-error fail-stop behavior are covered on
+  generated stores. No late batch writes are exposed. Production connector,
+  service-index and startup wiring remain unfinished; see the commit-owner design.
 - Independent transparent-value pool arithmetic enforced by the storage staging
   API, starting at zero, including fees, checked bounds and undo. Runtime block
   flow collection is still required; see the pool-guard design document.

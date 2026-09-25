@@ -136,6 +136,11 @@ if(TARGET dinero_chainstate)
     "${ORCHARD_HOST_ROOT}/src/consensus/state_commitment.cpp")
   target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader dinero_orchard_block_coins dinero_orchard_state_root dinero_shielded dinero_orchard_legacy_accounting)
   target_include_directories(dinero_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
+  add_library(dinero_orchard_chainstate_write STATIC "${ORCHARD_HOST_ROOT}/src/daemon/orchard_chainstate_write.cpp")
+  target_link_libraries(dinero_orchard_chainstate_write PUBLIC dinero_orchard_block_staging)
+  if(TARGET dinero_core)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_chainstate_write)
+  endif()
   add_library(dinero_orchard_operation_archive STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_operation_archive.cpp")
   target_link_libraries(dinero_orchard_operation_archive PUBLIC dinero_orchard_wallet_account)
   add_library(dinero_orchard_chain_restore STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_chain_restore.cpp")
@@ -288,11 +293,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_executable(test_orchard_block_staging
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
-    target_link_libraries(test_orchard_block_staging PRIVATE dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    target_link_libraries(test_orchard_block_staging PRIVATE dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
     target_include_directories(test_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardBlockStaging COMMAND test_orchard_block_staging "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME OrchardAtomicCrash COMMAND test_orchard_block_staging --crash-lifecycle "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
-    set_tests_properties(OrchardBlockStaging OrchardAtomicCrash PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+    add_test(NAME OrchardCommitOwner COMMAND test_orchard_block_staging --commit-owner "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardBlockStaging OrchardAtomicCrash OrchardCommitOwner PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
       ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;storage;integration-staging")
   endif()
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
