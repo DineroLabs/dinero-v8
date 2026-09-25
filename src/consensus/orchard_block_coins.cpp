@@ -1,4 +1,5 @@
 #include "consensus/orchard_block_coins.h"
+#include "consensus/orchard_resources.h"
 #include "consensus/block_reward.h"
 #include "consensus/chainparams.h"
 #include "consensus/contextual_locks.h"
@@ -94,6 +95,9 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         !block.CheckIdentityCommitments(require_witness_commitment, error) ||
         !block.CheckCoinbaseHeight(context.height, error))
         Reject(Error::Body);
+    OrchardResourceUsage resources;
+    for (const auto& parsed : block.Transactions())
+        AccumulateOrchardTransactionResources(parsed, resources);
     OrderedView view(parent);
     std::set<TxId> ids;
     std::vector<OrchardTransactionCoins> records;
@@ -106,6 +110,7 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         if (parsed.IsOrchard()) {
             try {
                 const auto snapshot = OrchardCoinSnapshot::ResolveUnderChainstateLock(parsed.Orchard(), view);
+                AccumulateOrchardInputResources(parsed, snapshot.Coins(), resources);
                 authorizations.push_back(VerifyOrchardAuthorizations(snapshot, context.domain, context.height, mtp));
             } catch (const OrchardCoinLookupError& e) {
                 if (e.SourceStatus() == Status::NotFound) Reject(Error::MissingCoin);
@@ -137,6 +142,7 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
             }
             if (!record.coinbase) {
                 const auto coins = Resolve(tx, view, context.height);
+                AccumulateOrchardInputResources(parsed, coins, resources);
                 uint64_t input_total = 0;
                 std::vector<std::optional<uint32_t>> heights;
                 for (const auto& coin : coins) { AddAmount(coin.value.GetUna(), input_total); heights.push_back(coin.height); }
@@ -163,6 +169,6 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         Reject(Error::Reward);
     if (parent.getHeight() != context.height - 1) throw OrchardCoinLookupError(Status::Internal);
     return PreparedOrchardBlockCoins(context.block_hash, context.parent_hash, context.height, std::move(records), view.Changes(),
-                                    std::move(authorizations), total_fees);
+                                    std::move(authorizations), total_fees, resources);
 }
 } // namespace dinero::consensus

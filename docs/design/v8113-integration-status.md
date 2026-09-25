@@ -38,6 +38,7 @@ This branch collects release implementation for review and qualification against
   MTP/future time, exact shared ASERT difficulty and proof of work using owned
   branch values. Competing timing-boundary branches are tested. Live admission
   still needs to invoke it and complete checkpoints/resource obligations.
+- Draft mixed-block resource accounting caps aggregate bundles/actions before coin lookup or proof verification, counts static scripts and resolved input signature work including same-block children, and returns charged usage. Runtime/miner callers and loaded-platform capacity qualification remain open.
 - Ordered shared coin processing verifies Orchard and ordinary signatures,
   supports same-block children, prevents cross-family double spending and binds
   the coinbase limit to the same validated fees. Stateful ChainDB adapters stage

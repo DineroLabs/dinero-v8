@@ -114,6 +114,7 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus)
   add_library(dinero_orchard_block_coins STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_coins.cpp"
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_resources.cpp"
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_forest_transition.cpp")
   target_link_libraries(dinero_orchard_block_coins PUBLIC dinero_orchard_block_reader dinero_orchard_transparent)
   add_library(dinero_orchard_block_staging STATIC
@@ -215,6 +216,11 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_include_directories(test_orchard_header PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardHeader COMMAND test_orchard_header)
     set_tests_properties(OrchardHeader PROPERTIES TIMEOUT 120 LABELS "orchard;integration-staging")
+    add_executable(test_orchard_resources
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_resources.cpp")
+    target_link_libraries(test_orchard_resources PRIVATE dinero_orchard_block_coins)
+    add_test(NAME OrchardResources COMMAND test_orchard_resources "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardResources PROPERTIES LABELS "orchard;consensus;integration-staging" TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2")
     add_executable(test_orchard_block_coins
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_coins.cpp")
     target_link_libraries(test_orchard_block_coins PRIVATE dinero_orchard_block_coins)

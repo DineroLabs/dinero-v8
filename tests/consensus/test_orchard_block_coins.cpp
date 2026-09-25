@@ -32,6 +32,7 @@ static void Mixed(const std::string& base) {
     const std::vector<Bytes> wires{auth.Orchard().CanonicalBytes(),Wire(child)};
     const auto plan=Prepare(c,view,wires);
     Require(plan.Transactions().size()==3 && plan.Authorizations().size()==1 && plan.TotalFees()==789);
+    Require(plan.Resources().bundles==1 && plan.Resources().actions==tx.UnverifiedFacts().action_count && plan.Resources().sigops==3);
     Require(plan.Transactions()[2].spent[0].first==parent_output);
     Require(plan.Transactions()[2].spent[0].second.height==c.height);
     Require(plan.Changes().size()==6);
