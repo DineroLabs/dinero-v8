@@ -4,6 +4,7 @@
 #include "consensus/orchard_block_coins.h"
 #include "consensus/orchard_forest_transition.h"
 #include "storage/legacy_retirement.h"
+#include "consensus/undo.h"
 
 namespace rocksdb { class WriteBatch; }
 namespace dinero { class ChainDB; class ChainWriteToken; class BlockStorage; }
@@ -46,6 +47,7 @@ void AuditOrchardChainstateTipUnderLock(ChainDB&, const ChainWriteToken&,
 struct StagedOrchardBlock {
     PreparedOrchardBlockCoins coins;
     PreparedOrchardState orchard;
+    UndoRecord undo;
 };
 // Stateful ChainDB adapter. Resolve all coins from this same selected database,
 // verify both transaction families, and stage net UTXO changes, coin undo and

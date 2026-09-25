@@ -399,7 +399,7 @@ StagedOrchardBlock StageOrchardBlockCoinsAndStateUnderChainstateLock(ChainDB& db
     } else if (existing.status()!=Status::NotFound) throw OrchardStateLookupError(existing.status());
     StorageCheck(db.putUndo(token,context.block_hash,undo,&batch));
     guard.Keep();
-    return {std::move(coins),std::move(state)};
+    return {std::move(coins),std::move(state),std::move(undo)};
 }
 
 std::vector<OrchardCoinChange> StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(ChainDB& db,

@@ -4,6 +4,7 @@
 
 namespace dinero {
 class AnnotatedRecursiveMutex;
+class CBlockIndex;
 namespace consensus { class ConsensusUTXOSet; }
 
 // Owns one stateful chainstate batch AND the activation lock, from preparation
@@ -29,6 +30,25 @@ public:
     [[nodiscard]] static std::unique_ptr<PreparedOrchardChainstateWrite> Disconnect(
         AnnotatedRecursiveMutex&, ChainDB&, const ChainWriteToken&,
         consensus::ConsensusUTXOSet&, const consensus::OrchardBlockContext&,
+        const OrchardBlockCandidate&, const BlockHeader& parent,
+        const consensus::UtreexoForest&, bool require_witness);
+
+    // Indexed service variants: fsync exact body/undo first, stage their checked
+    // locators in the same private batch, and publish the index's availability
+    // fields only after durability. The CBlockIndex must outlive the owner.
+    // Abandonment can leave unreferenced append
+    // records, never a locator pointing to an uncommitted transition. These do
+    // not mark a header/chain/scripts validity level or publish the active tip.
+    [[nodiscard]] static std::unique_ptr<PreparedOrchardChainstateWrite> ConnectIndexed(
+        AnnotatedRecursiveMutex&, ChainDB&, const ChainWriteToken&, BlockStorage&,
+        CBlockIndex&, consensus::ConsensusUTXOSet&, const consensus::OrchardBlockContext&,
+        const OrchardBlockCandidate&, const BlockHeader& parent,
+        const consensus::UtreexoForest&, const consensus::OrchardBranchMtpLookup&,
+        bool require_witness, bool checkpoint,
+        const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt);
+    [[nodiscard]] static std::unique_ptr<PreparedOrchardChainstateWrite> DisconnectIndexed(
+        AnnotatedRecursiveMutex&, ChainDB&, const ChainWriteToken&, BlockStorage&,
+        CBlockIndex&, consensus::ConsensusUTXOSet&, const consensus::OrchardBlockContext&,
         const OrchardBlockCandidate&, const BlockHeader& parent,
         const consensus::UtreexoForest&, bool require_witness);
 

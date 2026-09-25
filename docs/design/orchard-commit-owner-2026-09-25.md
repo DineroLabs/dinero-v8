@@ -10,7 +10,8 @@ closes the mutable-batch boundary of the existing full staging adapter.
 This is a daemon ownership component, not production block admission. The
 historical `ConnectTip`/`DisconnectTip` routes remain unchanged. Before using it
 there, the service must complete selected header/PoW validation, flatfile and
-block-index coordination, active-chain metadata publication and notifications.
+block-index coordination (now available through the indexed variants),
+active-chain metadata publication and notifications.
 CSN authentication, startup/replay/reindex routing, ordinary confidential
 transaction compatibility and wallet SQLite coordination remain separate work.
 All shipped Orchard activation switches remain unset.

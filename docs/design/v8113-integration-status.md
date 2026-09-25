@@ -28,7 +28,13 @@ This branch collects release implementation for review and qualification against
   batch through synchronous write and prepared memory publication. Abandonment,
   single-use/thread checks and storage-error fail-stop behavior are covered on
   generated stores. No late batch writes are exposed. Production connector,
-  service-index and startup wiring remain unfinished; see the commit-owner design.
+  active-tip and startup wiring remain unfinished; see the commit-owner design.
+- Indexed commit preparation now fsyncs exact mixed-body and conventional undo
+  records before staging their locators with the full chainstate batch. Memory
+  availability flags publish after commit. Existing locators must read back the
+  exact bytes; stale metadata aborts before writing. This prepares service-index
+  coordination but does not enable production ConnectTip or claim validity flags.
+  See the indexed-commit design and its isolated restart scope.
 - Independent transparent-value pool arithmetic enforced by the storage staging
   API, starting at zero, including fees, checked bounds and undo. Runtime block
   flow collection is still required; see the pool-guard design document.
