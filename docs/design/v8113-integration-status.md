@@ -34,6 +34,12 @@ This branch collects release implementation for review and qualification against
   DINW checks. The ChainDB staging adapter requires exact, ordered authorization
   coverage of every Orchard transaction in that candidate and rejects retired
   legacy shielded transactions. This remains a staged format, not live admission.
+- Ordered shared coin processing verifies Orchard and ordinary signatures,
+  supports same-block children, prevents cross-family double spending and binds
+  the coinbase limit to the same validated fees. Stateful ChainDB adapters stage
+  coins, conventional undo and Orchard state together and reverse them after
+  checking exact body/undo coverage. Synthetic connect/reopen/disconnect/reconnect
+  tests pass; forest and production service integration remain unfinished.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
@@ -77,7 +83,7 @@ the following rows to test-only work:
 | --- | --- |
 | Shared parsing and authorization | Staged transaction/block readers and exact candidate-bound authorization coverage; no live admission |
 | Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
-| Anchors, nullifiers, pool and atomic storage/undo | Sealed Orchard transitions and ChainDB batch adapter implemented, including real frontier and recovery tests; mixed-block coin/fee collection and production callers not integrated |
+| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation and combined ChainDB coin/state/undo staging implemented; forest, tip/index coordination and production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Not implemented |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
 

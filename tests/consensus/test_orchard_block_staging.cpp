@@ -1,4 +1,4 @@
-#include "orchard_block_test_fixture.h"
+#include "orchard_block_coin_test_fixture.h"
 #include "consensus/orchard_block_staging.h"
 #include "../storage/shielded_store_fixture.h"
 
@@ -115,8 +115,96 @@ static void Coverage(const std::string& base) {
     StateReject(StateError::RetiredLegacyPool,[&]{(void)StageOrchardBlockUnderChainstateLock(db,token,old_context,old,true,auth,batch);});
     CHECK(batch.Data()==before && db.getOrchardState().status()==Status::NotFound);
 }
+static void AtomicCoins(const std::string& base) {
+    TempDir temp; Seed(temp.path); ChainDB db; CHECK(db.init(temp.path)==Status::Ok);
+    const auto auth=Authorized(base,false,20000);Fixture keys(base);
+    OrchardBlockContext c{20001,H(2),H(1),20001,keys.domain};
+    const auto& tx=auth.Transaction();
+    const auto id=ParsedTransaction::DecodeExact(auth.Orchard().CanonicalBytes(),TransactionReadMode::StagedOrchard).GetTxid();
+    UTXOEntry intermediate(AmountUna::Una(tx.Outputs()[0].amount_una),tx.Outputs()[0].script_pub_key,c.height,false);
+    const auto child=Child(OutPoint(id,0),intermediate,keys);
+    const auto block=CandidateWires(c,{auth.Orchard().CanonicalBytes(),Wire(child)});c.block_hash=block.Header().GetHash();
+    rocksdb::WriteBatch initial;Tip(db,c.parent_hash,c.height-1,initial);
+    for(size_t i=0;i<tx.Inputs().size();++i) {
+        const auto point=Point(tx.Inputs()[i]);const auto& in=auth.Transparent().Snapshot().Coins()[i];
+        Coin coin;coin.amount=in.value.GetUna();coin.script_pubkey.assign(in.scriptPubKey.begin(),in.scriptPubKey.end());
+        coin.height=in.height;coin.coinbase=in.isCoinbase;
+        CHECK(db.putCoin(token,point.txid.AsUint256(),point.vout,coin,&initial)==Status::Ok);
+    }
+    Commit(db,initial);db.close();const auto original=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
+    {
+        rocksdb::WriteBatch abandoned;
+        const auto staged=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,c,block,{},true,abandoned);
+        CHECK(staged.coins.TotalFees()==789 && staged.orchard.Next().pool_balance==5000);
+        CHECK(db.getOrchardState().status()==Status::NotFound);
+        CHECK(db.getCoin(Point(tx.Inputs()[0]).txid.AsUint256(),tx.Inputs()[0].output_index).ok());
+    }
+    db.close();CHECK(Inspect(temp.path)==original);CHECK(db.init(temp.path)==Status::Ok);
+    // An incompatible pre-existing conventional undo is a local failure AFTER
+    // Orchard and coin writes were staged. All of those staged writes roll back.
+    UndoRecord wrong;wrong.created.emplace_back(H(77),1);
+    CHECK(db.putUndo(token,c.block_hash,wrong)==Status::Ok);
+    rocksdb::WriteBatch rejected;
+    LookupReject(Status::Corruption,[&]{(void)StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,c,block,{},true,rejected);});
+    CHECK(rejected.Count()==0 && db.getOrchardState().status()==Status::NotFound);
+    // Use a distinct honest candidate header so its conventional undo is absent.
+    const auto accepted=CandidateWires(c,{auth.Orchard().CanonicalBytes(),Wire(child)},1);c.block_hash=accepted.Header().GetHash();
+    rocksdb::WriteBatch batch;
+    const auto staged=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,c,accepted,{},true,batch);
+    Tip(db,c.block_hash,c.height,batch);Commit(db,batch);
+    db.close();CHECK(db.init(temp.path)==Status::Ok);
+    CHECK(RequiredValue(db.getOrchardState())==staged.orchard.Next());
+    CHECK(db.getCoin(Point(tx.Inputs()[0]).txid.AsUint256(),tx.Inputs()[0].output_index).status()==Status::NotFound);
+    CHECK(db.getCoin(id.AsUint256(),0).status()==Status::NotFound); // Same-block parent output never persists.
+    CHECK(db.getCoin(id.AsUint256(),1).ok());
+    CHECK(RequiredValue(db.getCoin(child.GetTxid().AsUint256(),0)).amount==intermediate.value.GetUna()-123);
+    const auto undo=RequiredValue(db.getUndo(c.block_hash));
+    CHECK(undo.spent.size()==2 && undo.created.size()==4);
+    CHECK(std::none_of(undo.spent.begin(),undo.spent.end(),[&](const auto& coin){return coin.prev_txid==id.AsUint256();}));
+    // Refuse composing over already-staged changes, preserving the caller batch.
+    rocksdb::WriteBatch occupied;Tip(db,c.block_hash,c.height,occupied);
+    const auto saved=occupied.Data();
+    LookupReject(Status::Invalid,[&]{(void)StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,c,accepted,{},true,occupied);});
+    CHECK(occupied.Data()==saved);
+    // Validate current output data and exact conventional undo before rollback.
+    const auto output=RequiredValue(db.getCoin(child.GetTxid().AsUint256(),0));
+    auto damaged=output;damaged.amount++;
+    CHECK(db.putCoin(token,child.GetTxid().AsUint256(),0,damaged)==Status::Ok);
+    rocksdb::WriteBatch mismatch;
+    LookupReject(Status::Corruption,[&]{StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,c,accepted,true,mismatch);});
+    CHECK(mismatch.Count()==0);
+    CHECK(db.putCoin(token,child.GetTxid().AsUint256(),0,output)==Status::Ok);
+    auto extra_undo=undo;extra_undo.created.emplace_back(H(88),0);
+    CHECK(db.putUndo(token,c.block_hash,extra_undo)==Status::Ok);
+    LookupReject(Status::Corruption,[&]{StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,c,accepted,true,mismatch);});
+    CHECK(mismatch.Count()==0);
+    CHECK(db.putUndo(token,c.block_hash,undo)==Status::Ok);
+    {
+        rocksdb::WriteBatch abandoned;
+        StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,c,accepted,true,abandoned);
+        CHECK(RequiredValue(db.getOrchardState())==staged.orchard.Next());
+        CHECK(db.getCoin(child.GetTxid().AsUint256(),0).ok());
+    }
+    rocksdb::WriteBatch disconnect;
+    StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,c,accepted,true,disconnect);
+    Tip(db,c.parent_hash,c.height-1,disconnect);Commit(db,disconnect);
+    db.close();CHECK(db.init(temp.path)==Status::Ok);
+    CHECK(db.getOrchardState().status()==Status::NotFound);
+    CHECK(db.getCoin(child.GetTxid().AsUint256(),0).status()==Status::NotFound);
+    CHECK(db.getCoin(id.AsUint256(),0).status()==Status::NotFound);
+    CHECK(db.getCoin(id.AsUint256(),1).status()==Status::NotFound);
+    for(size_t i=0;i<tx.Inputs().size();++i) {
+        const auto point=Point(tx.Inputs()[i]);
+        CHECK(RequiredValue(db.getCoin(point.txid.AsUint256(),point.vout)).amount==auth.Transparent().Snapshot().Coins()[i].value.GetUna());
+    }
+    rocksdb::WriteBatch reconnect;
+    const auto again=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,c,accepted,{},true,reconnect);
+    Tip(db,c.block_hash,c.height,reconnect);Commit(db,reconnect);
+    CHECK(again.orchard.Next()==staged.orchard.Next());
+    CHECK(RequiredValue(db.getCoin(child.GetTxid().AsUint256(),0)).amount==output.amount);
+}
 int main(int argc,char**argv) {
-    try { CHECK(argc==2);RoundTrip(argv[1]);CorruptParent(argv[1]);Coverage(argv[1]);
+    try { CHECK(argc==2);RoundTrip(argv[1]);CorruptParent(argv[1]);Coverage(argv[1]);AtomicCoins(argv[1]);
         std::cout<<"Orchard ChainDB staging: real frontier, anchors/nullifiers, reopen, branch replacement, abandonment and error separation passed\n";
     } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}
 }
