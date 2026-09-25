@@ -5,7 +5,6 @@
 #include "storage/tip_info.h"
 #include "storage/chain_write_token.h"
 #include "storage/orchard_state.h"
-#include "consensus/orchard_pool_balance.h"
 #include <optional>
 #include "consensus/undo.h"
 #include <rocksdb/db.h>
@@ -22,6 +21,8 @@
 #include <thread>
 
 namespace dinero {
+
+namespace consensus { struct OrchardValueFlow; }
 
 // Forward declarations
 class CBlockIndex;  // From consensus/block_index.h

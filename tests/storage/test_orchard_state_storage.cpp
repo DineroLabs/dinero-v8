@@ -1,6 +1,7 @@
 // Generated temporary stores only. Frontier bytes here are opaque storage
 // fixtures, not a claim that the Orchard tree or block validator is integrated.
 #include "shielded_store_fixture.h"
+#include "consensus/orchard_pool_balance.h"
 #include "consensus/tx_validation.h"
 #include <rocksdb/env.h>
 #include <atomic>

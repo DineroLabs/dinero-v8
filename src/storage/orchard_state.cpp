@@ -1,4 +1,5 @@
 #include "storage/chain_db.h"
+#include "consensus/orchard_pool_balance.h"
 #include "consensus/tx_validation.h"
 #include <algorithm>
 #include <cstring>
