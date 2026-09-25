@@ -26,17 +26,30 @@
  *   Total:          240 R1CS multiplication constraints
  *   (MDS matrix multiplications and round constant additions are free — linear)
  *
- * Usage in the Poseidon commitment binding protocol:
- *   - Prover computes commitment = poseidon2_native(privkey_scalar, nonce)
- *   - Prover includes commitment in CLSAG binding message (so CLSAG signs over it)
- *   - Circuit proves: poseidon2_gadget(privkey_var, nonce_var) == commitment (public input)
- *   - This replaces the 3.36M-constraint in-circuit variable-base EC scalar mul
- *     privkey * H_p(P) == KI with a 240-constraint collision-resistant binding.
+ * Usage: the collision-resistant hash inside the shielded circuit. It hashes
+ *   Merkle authentication paths, the nullifier-key commitment, the ownership
+ *   and address bindings, and the covenant policy terms. See
+ *   consensus/shielded/shielded_circuit.cpp for the call sites. Using a hash
+ *   here replaces an in-circuit variable-base EC scalar multiplication costing
+ *   roughly 3.36M constraints with 240.
  *
- * Security: CLSAG proves natively that privkey is a valid ring member.
- *           The Poseidon commitment binds the ZK witness privkey to the CLSAG signer's privkey
- *           via the shared commitment in the CLSAG message, preventing witness separation.
- *           Collision resistance of Poseidon prevents two distinct privkeys from sharing a commitment.
+ * Security: collision resistance, and only that. Two distinct preimages cannot
+ *           share an output, so a commitment produced by this gadget identifies
+ *           its inputs.
+ *
+ *           This gadget does NOT bind the circuit's witness to the public
+ *           inputs a verifier is presented with. That property is enforced
+ *           elsewhere, by the Spartan verifier reconstructing the public-input
+ *           contribution from its own known values rather than trusting the
+ *           prover's commitment (see r1cs_spartan.cpp, gated on
+ *           shielded_input_binding_activation_height and
+ *           shielded_cv_binding_activation_height). Do not rely on this gadget
+ *           for witness binding.
+ *
+ *           Historical note: an earlier revision of this comment credited CLSAG
+ *           with binding the witness key to a ring signer's key. That was
+ *           accurate when written, but the legacy ring and confidential stack
+ *           was removed in April 2026 and no CLSAG message exists any more.
  */
 
 #include "zk/zkvm/r1cs.h"
