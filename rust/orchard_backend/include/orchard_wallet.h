@@ -2,6 +2,7 @@
 #include "orchard_backend.h"
 #include <string>
 #include <string_view>
+#include <optional>
 
 namespace dinero::orchard {
 enum class WalletScope : uint8_t { External=0, Internal=1 };
@@ -35,11 +36,49 @@ public:
     [[nodiscard]] FullViewingKeyBytes ExportFullViewingKey() const;
     [[nodiscard]] WalletReceiver Receiver(WalletScope, const DiversifierIndex&) const;
 private:
-    friend class WalletShieldPlan;
+    friend class WalletBundlePlan;
     struct Deleter { void operator()(DineroOrchardWalletKeys*) const noexcept; };
     explicit WalletKeys(DineroOrchardWalletKeys* handle):handle_(handle){}
     std::unique_ptr<DineroOrchardWalletKeys,Deleter> handle_;
 };
+
+// Created only by decrypting an already authorized bundle. This is NOT a
+// confirmed/unspent note until the wallet binds it to selected chain history.
+class WalletNote {
+public:
+    [[nodiscard]] static std::optional<WalletNote> Receive(const VerifiedAuthorization&,
+        const FullViewingKeyBytes&, WalletScope, std::uint32_t action_index);
+    WalletNote(WalletNote&&) noexcept = default;
+    WalletNote& operator=(WalletNote&&) noexcept = default;
+    WalletNote(const WalletNote&) = delete;
+    WalletNote& operator=(const WalletNote&) = delete;
+    ~WalletNote();
+    const DineroOrchardNoteFacts& Facts() const noexcept { return facts_; }
+private:
+    friend class WalletBundlePlan;
+    struct Deleter { void operator()(DineroOrchardNote*) const noexcept; };
+    explicit WalletNote(DineroOrchardNote*);
+    std::unique_ptr<DineroOrchardNote,Deleter> handle_;
+    DineroOrchardNoteFacts facts_{};
+};
+class WalletWitness {
+public:
+    [[nodiscard]] static WalletWitness ForAppendedLeaf(const OrchardFrontier& parent,
+        std::span<const Hash> ordered_commitments, std::size_t index_in_batch);
+    [[nodiscard]] WalletWitness Append(std::span<const Hash> ordered_commitments,
+        const Hash& expected_parent, const Hash& expected_next) const;
+    WalletWitness(WalletWitness&&) noexcept = default;
+    WalletWitness& operator=(WalletWitness&&) noexcept = default;
+    WalletWitness(const WalletWitness&) = delete;
+    WalletWitness& operator=(const WalletWitness&) = delete;
+    const DineroOrchardWitnessFacts& Facts() const noexcept { return facts_; }
+private:
+    struct Deleter { void operator()(DineroOrchardWitness*) const noexcept; };
+    explicit WalletWitness(DineroOrchardWitness*);
+    std::unique_ptr<DineroOrchardWitness,Deleter> handle_;
+    DineroOrchardWitnessFacts facts_{};
+};
+struct WalletSpendInput { const WalletNote& note; const WalletWitness& witness; };
 
 struct WalletPayment {
     std::uint64_t amount_una;
@@ -53,27 +92,30 @@ public:
     const std::vector<std::uint8_t>& Bytes() const noexcept { return bytes_; }
     const VerifiedAuthorization& Authorization() const noexcept { return authorization_; }
 private:
-    friend class WalletShieldPlan;
+    friend class WalletBundlePlan;
     ProvedWalletBundle(std::vector<std::uint8_t> bytes, VerifiedAuthorization authorization)
         :bytes_(std::move(bytes)),authorization_(std::move(authorization)){}
     const std::vector<std::uint8_t> bytes_;
     const VerifiedAuthorization authorization_;
 };
-class WalletShieldPlan {
+class WalletBundlePlan {
 public:
-    [[nodiscard]] static WalletShieldPlan Prepare(const WalletKeys&, std::span<const WalletPayment>);
-    WalletShieldPlan(WalletShieldPlan&&) noexcept = default;
-    WalletShieldPlan& operator=(WalletShieldPlan&&) noexcept = default;
-    WalletShieldPlan(const WalletShieldPlan&) = delete;
-    WalletShieldPlan& operator=(const WalletShieldPlan&) = delete;
+    [[nodiscard]] static WalletBundlePlan PrepareShield(const WalletKeys&, std::span<const WalletPayment>);
+    [[nodiscard]] static WalletBundlePlan PrepareSpend(const WalletKeys&,
+        std::span<const WalletSpendInput>, const Hash& selected_anchor,
+        std::span<const WalletPayment> payments);
+    WalletBundlePlan(WalletBundlePlan&&) noexcept = default;
+    WalletBundlePlan& operator=(WalletBundlePlan&&) noexcept = default;
+    WalletBundlePlan(const WalletBundlePlan&) = delete;
+    WalletBundlePlan& operator=(const WalletBundlePlan&) = delete;
     const DineroOrchardFacts& UnprovedFacts() const noexcept { return facts_; }
     // Consumes this plan, including after a failed attempt. There is no public
     // caller-digest overload. Context must originate from authenticated coins.
     [[nodiscard]] ProvedWalletBundle Prove(const SigningContext&) &&;
 private:
-    struct Deleter { void operator()(DineroOrchardShieldPlan*) const noexcept; };
-    explicit WalletShieldPlan(DineroOrchardShieldPlan* handle);
-    std::unique_ptr<DineroOrchardShieldPlan,Deleter> handle_;
+    struct Deleter { void operator()(DineroOrchardWalletPlan*) const noexcept; };
+    explicit WalletBundlePlan(DineroOrchardWalletPlan* handle);
+    std::unique_ptr<DineroOrchardWalletPlan,Deleter> handle_;
     DineroOrchardFacts facts_{};
 };
 } // namespace dinero::orchard

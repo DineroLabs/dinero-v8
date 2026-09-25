@@ -17,7 +17,7 @@ pub struct FrontierResult {
     encoded: [u8; MAX_BYTES],
 }
 
-fn decode(bytes: &[u8]) -> Result<Tree, Status> {
+pub(super) fn decode(bytes: &[u8]) -> Result<Tree, Status> {
     if bytes.len() > MAX_BYTES {
         return Err(Status::Limit);
     }

@@ -90,19 +90,37 @@ int32_t dinero_orchard_address_decode_v1(const uint8_t*, size_t, uint8_t network
 int32_t dinero_orchard_wallet_free_v1(DineroOrchardWalletKeys*);
 uint32_t dinero_orchard_wallet_coin_type_v1(void);
 
+/* Note discovery from an authorized bundle. Null on successful receive means
+ * not owned. Facts are wallet-private and must not be logged publicly. */
+typedef struct DineroOrchardNote DineroOrchardNote;
+typedef struct { uint64_t amount; uint8_t commitment[32]; uint8_t nullifier[32]; uint8_t recipient[43]; uint8_t memo[512]; uint8_t reserved[5]; } DineroOrchardNoteFacts;
+int32_t dinero_orchard_receive_note_v1(const DineroOrchardHandle*, const uint8_t fvk[96], uint8_t scope, uint32_t index, DineroOrchardNote**);
+int32_t dinero_orchard_note_facts_v1(const DineroOrchardNote*, DineroOrchardNoteFacts*);
+int32_t dinero_orchard_note_free_v1(DineroOrchardNote*);
+/* Immutable incremental witness. Counts <=8 per call, all roots canonical.
+ * Membership does not establish selected-chain provenance or unspentness. */
+typedef struct DineroOrchardWitness DineroOrchardWitness;
+typedef struct { uint64_t leaf_count; uint32_t position; uint32_t reserved; uint8_t root[32]; uint8_t commitment[32]; uint8_t path[32][32]; } DineroOrchardWitnessFacts;
+int32_t dinero_orchard_witness_create_v1(const uint8_t*, size_t, const uint8_t*, size_t, size_t, DineroOrchardWitness**);
+int32_t dinero_orchard_witness_append_v1(const DineroOrchardWitness*, const uint8_t*, size_t, const uint8_t parent[32], const uint8_t next[32], DineroOrchardWitness**);
+int32_t dinero_orchard_witness_facts_v1(const DineroOrchardWitness*, DineroOrchardWitnessFacts*);
+int32_t dinero_orchard_witness_free_v1(DineroOrchardWitness*);
+
 /* One-use shield builder. Preparation creates fresh randomized outputs. The
  * host derives the signing digest from these exact effects and its owned,
  * authenticated transaction context. No private wallet material is returned.
  * Every output is unchanged on failure; a started proof attempt consumes the
  * plan even on failure. Free the plan exactly once after all calls finish. */
 #define DINERO_ORCHARD_V1_MAX_BUNDLE_BYTES 65536
-typedef struct DineroOrchardShieldPlan DineroOrchardShieldPlan;
+typedef struct DineroOrchardWalletPlan DineroOrchardWalletPlan;
 typedef struct { uint64_t amount; uint8_t recipient[43]; uint8_t memo[512]; } DineroOrchardPayment;
 typedef struct { uint32_t length; uint8_t bytes[DINERO_ORCHARD_V1_MAX_BUNDLE_BYTES]; } DineroOrchardBuiltBundle;
-int32_t dinero_orchard_prepare_shield_v1(const DineroOrchardWalletKeys*, const DineroOrchardPayment*, size_t, DineroOrchardShieldPlan**);
-int32_t dinero_orchard_shield_facts_v1(const DineroOrchardShieldPlan*, DineroOrchardFacts*);
-int32_t dinero_orchard_prove_shield_v1(DineroOrchardShieldPlan*, const uint8_t digest[32], const uint8_t effect[32], int64_t balance, DineroOrchardBuiltBundle*);
-int32_t dinero_orchard_shield_plan_free_v1(DineroOrchardShieldPlan*);
+int32_t dinero_orchard_prepare_shield_v1(const DineroOrchardWalletKeys*, const DineroOrchardPayment*, size_t, DineroOrchardWalletPlan**);
+typedef struct { uint32_t position; uint8_t path[32][32]; const DineroOrchardNote* note; } DineroOrchardSpendInput;
+int32_t dinero_orchard_prepare_spend_v1(const DineroOrchardWalletKeys*, const DineroOrchardSpendInput*, size_t, const uint8_t anchor[32], const DineroOrchardPayment*, size_t, DineroOrchardWalletPlan**);
+int32_t dinero_orchard_wallet_plan_facts_v1(const DineroOrchardWalletPlan*, DineroOrchardFacts*);
+int32_t dinero_orchard_prove_wallet_bundle_v1(DineroOrchardWalletPlan*, const uint8_t digest[32], const uint8_t effect[32], int64_t balance, DineroOrchardBuiltBundle*);
+int32_t dinero_orchard_wallet_plan_free_v1(DineroOrchardWalletPlan*);
 
 /* All non-null pointers must be valid and aligned; inputs immutable for each
  * call, outputs non-aliasing. Decode/facts leave output unchanged on failure.

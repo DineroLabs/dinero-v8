@@ -30,6 +30,9 @@ impl WalletKeys {
             spending_key: Zeroizing::new(*key.to_bytes()),
         })
     }
+    pub(super) fn secret_copy(&self) -> Zeroizing<[u8; 32]> {
+        self.spending_key.clone()
+    }
     pub(super) fn viewing(&self) -> Result<FullViewingKey, Status> {
         let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes(*self.spending_key))
             .ok_or(Status::Encoding)?;

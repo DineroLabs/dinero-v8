@@ -71,7 +71,7 @@ public:
     std::int64_t RequiredValueBalance() const noexcept { return required_balance_; }
 private:
     friend class ParsedBundle;
-    friend class WalletShieldPlan;
+    friend class WalletBundlePlan;
     SigningContext(SigningDomain domain, std::uint32_t lock_time,
                    std::vector<ResolvedInput> inputs,
                    std::vector<TransparentOutput> outputs,
@@ -103,6 +103,7 @@ public:
     const Hash& SigningDigest() const noexcept { return digest_; }
 private:
     friend class ParsedBundle;
+    friend class WalletNote;
     VerifiedAuthorization(std::shared_ptr<const DineroOrchardHandle> handle,
                           DineroOrchardFacts facts, Hash digest);
     const std::shared_ptr<const DineroOrchardHandle> handle_;

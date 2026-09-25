@@ -6,15 +6,15 @@ using namespace dinero::orchard;
 static void Check(bool ok){if(!ok)throw std::runtime_error("Orchard shield construction test failed");}
 template<class F>static void Reject(F fn){bool rejected=false;try{fn();}catch(const BackendError&){rejected=true;}Check(rejected);}
 int main(){try{
-    static_assert(!std::is_copy_constructible_v<WalletShieldPlan>);
-    static_assert(std::is_nothrow_move_constructible_v<WalletShieldPlan>);
+    static_assert(!std::is_copy_constructible_v<WalletBundlePlan>);
+    static_assert(std::is_nothrow_move_constructible_v<WalletBundlePlan>);
     const std::array<uint8_t,64> seed{7},recipientSeed{9};
     auto sender=WalletKeys::FromSeed(seed,0),receiver=WalletKeys::FromSeed(recipientSeed,0);
     std::vector<WalletPayment> payments{{5000,receiver.Receiver(WalletScope::External,{})}};
     payments[0].memo.fill(42);
-    auto plan=WalletShieldPlan::Prepare(sender,payments);
+    auto plan=WalletBundlePlan::PrepareShield(sender,payments);
     Check(plan.UnprovedFacts().value_balance==-5000);
-    auto wrongPlan=WalletShieldPlan::Prepare(sender,payments);
+    auto wrongPlan=WalletBundlePlan::PrepareShield(sender,payments);
     Check(!std::equal(std::begin(plan.UnprovedFacts().effect),std::end(plan.UnprovedFacts().effect),std::begin(wrongPlan.UnprovedFacts().effect)));
     SigningDomain domain;domain.network_code=2;domain.genesis_wire[0]=42;domain.branch_id=1;
     ResolvedInput input;input.txid_wire[0]=1;input.amount_una=10000;input.sequence=0xfffffffe;input.script_pub_key={0x51};

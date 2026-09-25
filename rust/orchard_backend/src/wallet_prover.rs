@@ -1,19 +1,23 @@
 //! Owned one-use shield construction. Host transaction context is still required.
 use crate::{
-    boundary, free_owned, wallet::WalletKeys, BundleFacts, ParsedBundle, Status, BUNDLE_VERSION,
-    EFFECT_TX_VERSION, MAGIC, MAX_ACTIONS, MAX_BUNDLE_BYTES, MAX_MONEY, WIRE_VERSION,
+    boundary, free_owned, wallet::WalletKeys, wallet_note::ReceivedNote, BundleFacts, ParsedBundle,
+    Status, BUNDLE_VERSION, EFFECT_TX_VERSION, MAGIC, MAX_ACTIONS, MAX_BUNDLE_BYTES, MAX_MONEY,
+    WIRE_VERSION,
 };
 use incrementalmerkletree::Hashable;
 use orchard::{
     builder::{Builder, BundleType, InProgress, Unauthorized, Unproven},
     bundle::{Authorized, Flags},
     circuit::ProvingKey,
-    tree::MerkleHashOrchard,
+    keys::{FullViewingKey, SpendAuthorizingKey, SpendingKey},
+    tree::{MerkleHashOrchard, MerklePath},
     value::NoteValue,
-    Address, Bundle,
+    Address, Anchor, Bundle,
 };
 use rand::rngs::OsRng;
+use std::collections::BTreeSet;
 use std::sync::{Mutex, OnceLock};
+use zeroize::Zeroizing;
 use zip32::Scope;
 
 type UnprovedBundle = Bundle<InProgress<Unproven, Unauthorized>, i64>;
@@ -27,28 +31,36 @@ pub struct Payment {
     recipient: [u8; 43],
     memo: [u8; 512],
 }
-pub struct ShieldPlan {
+pub struct WalletPlan {
     bundle: Option<UnprovedBundle>,
     facts: BundleFacts,
+    spending_key: Option<Zeroizing<[u8; 32]>>,
 }
 #[repr(C)]
 pub struct BuiltBundle {
     length: u32,
     bytes: [u8; MAX_BUNDLE_BYTES],
 }
-fn prepare(keys: &WalletKeys, payments: &[Payment]) -> Result<ShieldPlan, Status> {
-    if payments.is_empty() || payments.len() > MAX_ACTIONS {
+#[repr(C)]
+pub struct SpendInput {
+    position: u32,
+    path: [[u8; 32]; 32],
+    note: *const ReceivedNote,
+}
+struct WitnessedNote<'a> {
+    note: &'a ReceivedNote,
+    position: u32,
+    path: [[u8; 32]; 32],
+}
+fn add_payments(
+    builder: &mut Builder,
+    fvk: &FullViewingKey,
+    payments: &[Payment],
+) -> Result<u64, Status> {
+    if payments.len() > MAX_ACTIONS {
         return Err(Status::Limit);
     }
-    let fvk = keys.viewing()?;
-    let mut total = 0u64;
-    let mut builder = Builder::new(
-        BundleType::DEFAULT,
-        BUNDLE_VERSION,
-        Flags::SPENDS_DISABLED,
-        MerkleHashOrchard::empty_root(32.into()).into(),
-    )
-    .map_err(|_| Status::Format)?;
+    let mut total = 0;
     for payment in payments {
         if payment.amount == 0 || payment.amount > MAX_MONEY || total > MAX_MONEY - payment.amount {
             return Err(Status::Money);
@@ -65,12 +77,18 @@ fn prepare(keys: &WalletKeys, payments: &[Payment]) -> Result<ShieldPlan, Status
             )
             .map_err(|_| Status::Format)?;
     }
-    // OS CSPRNG only. Deterministic test generators never enter this path.
+    Ok(total)
+}
+fn finish_plan(
+    builder: Builder,
+    balance: i64,
+    key: Option<Zeroizing<[u8; 32]>>,
+) -> Result<WalletPlan, Status> {
     let (bundle, _) = builder
         .build::<i64>(&mut OsRng)
         .map_err(|_| Status::Format)?
         .ok_or(Status::Format)?;
-    if bundle.actions().len() > MAX_ACTIONS || *bundle.value_balance() != -(total as i64) {
+    if bundle.actions().len() > MAX_ACTIONS || *bundle.value_balance() != balance {
         return Err(Status::Format);
     }
     let mut facts = BundleFacts {
@@ -91,10 +109,77 @@ fn prepare(keys: &WalletKeys, payments: &[Payment]) -> Result<ShieldPlan, Status
         facts.nullifiers[i] = action.nullifier().to_bytes();
         facts.commitments[i] = action.cmx().to_bytes();
     }
-    Ok(ShieldPlan {
+    Ok(WalletPlan {
         bundle: Some(bundle),
         facts,
+        spending_key: key,
     })
+}
+fn prepare(keys: &WalletKeys, payments: &[Payment]) -> Result<WalletPlan, Status> {
+    if payments.is_empty() {
+        return Err(Status::Limit);
+    }
+    let fvk = keys.viewing()?;
+    let mut builder = Builder::new(
+        BundleType::DEFAULT,
+        BUNDLE_VERSION,
+        Flags::SPENDS_DISABLED,
+        MerkleHashOrchard::empty_root(32.into()).into(),
+    )
+    .map_err(|_| Status::Format)?;
+    let total = add_payments(&mut builder, &fvk, payments)?;
+    finish_plan(builder, -(total as i64), None)
+}
+fn prepare_spend(
+    keys: &WalletKeys,
+    inputs: &[WitnessedNote<'_>],
+    anchor: [u8; 32],
+    payments: &[Payment],
+) -> Result<WalletPlan, Status> {
+    if inputs.is_empty() || inputs.len() > MAX_ACTIONS {
+        return Err(Status::Limit);
+    }
+    let anchor = Option::<Anchor>::from(Anchor::from_bytes(anchor)).ok_or(Status::Encoding)?;
+    let fvk = keys.viewing()?;
+    let mut builder = Builder::new(
+        BundleType::DEFAULT,
+        BUNDLE_VERSION,
+        BUNDLE_VERSION.default_flags(),
+        anchor,
+    )
+    .map_err(|_| Status::Format)?;
+    let mut seen = BTreeSet::new();
+    let mut total = 0u64;
+    for input in inputs {
+        if input.note.fvk.to_bytes() != fvk.to_bytes() {
+            return Err(Status::Encoding);
+        }
+        if !seen.insert(input.note.note.nullifier(&fvk).to_bytes()) {
+            return Err(Status::DuplicateNullifier);
+        }
+        let amount = input.note.note.value().inner();
+        if amount == 0 || amount > MAX_MONEY || total > MAX_MONEY - amount {
+            return Err(Status::Money);
+        }
+        total += amount;
+        let mut path = [MerkleHashOrchard::empty_root(0.into()); 32];
+        for (node, raw) in path.iter_mut().zip(&input.path) {
+            *node = Option::from(MerkleHashOrchard::from_bytes(raw)).ok_or(Status::Encoding)?;
+        }
+        let path = MerklePath::from_parts(input.position, path);
+        if path.root(input.note.note.commitment().into()) != anchor {
+            return Err(Status::Format);
+        }
+        builder
+            .add_spend(fvk.clone(), input.note.note, path)
+            .map_err(|_| Status::Format)?;
+    }
+    let output_total = add_payments(&mut builder, &fvk, payments)?;
+    finish_plan(
+        builder,
+        total as i64 - output_total as i64,
+        Some(keys.secret_copy()),
+    )
 }
 fn encode(bundle: &Bundle<Authorized, i64>) -> Result<Vec<u8>, Status> {
     if bundle.actions().len() > MAX_ACTIONS {
@@ -132,7 +217,7 @@ fn encode(bundle: &Bundle<Authorized, i64>) -> Result<Vec<u8>, Status> {
     Ok(bytes)
 }
 fn prove(
-    plan: &mut ShieldPlan,
+    plan: &mut WalletPlan,
     digest: &[u8; 32],
     expected_effect: &[u8; 32],
     required_balance: i64,
@@ -157,12 +242,21 @@ fn prove(
         .as_ref()
         .map_err(|e| *e)?;
     let bundle = plan.bundle.take().ok_or(Status::Format)?;
+    let secret = plan.spending_key.take();
+    let authorities = match &secret {
+        Some(raw) => {
+            let sk = Option::<SpendingKey>::from(SpendingKey::from_bytes(**raw))
+                .ok_or(Status::Encoding)?;
+            vec![SpendAuthorizingKey::from(&sk)]
+        }
+        None => Vec::new(),
+    };
     let complete = pool.install(|| {
         let key = PROVING_KEY.get_or_init(|| ProvingKey::build(BUNDLE_VERSION.circuit_version()));
         bundle
             .create_proof(key, &mut OsRng)
             .map_err(|_| Status::Proof)?
-            .apply_signatures(OsRng, *digest, &[])
+            .apply_signatures(OsRng, *digest, &authorities)
             .map_err(|_| Status::SpendSignature)
     })?;
     let bytes = encode(&complete)?;
@@ -183,7 +277,7 @@ pub unsafe extern "C" fn dinero_orchard_prepare_shield_v1(
     keys: *const WalletKeys,
     payments: *const Payment,
     count: usize,
-    output: *mut *mut ShieldPlan,
+    output: *mut *mut WalletPlan,
 ) -> i32 {
     if count == 0 || count > MAX_ACTIONS {
         return Status::Limit as i32;
@@ -202,11 +296,67 @@ pub unsafe extern "C" fn dinero_orchard_prepare_shield_v1(
     })
 }
 /// # Safety
+/// Keys and each input note are live and immutable for the call. All arrays
+/// are aligned, immutable and non-aliasing with writable output. Payments may
+/// be null only at zero count. Anchor is 32 bytes from the selected chain.
+/// Failure leaves output unchanged. Paths prove membership, not chain choice.
+#[no_mangle]
+pub unsafe extern "C" fn dinero_orchard_prepare_spend_v1(
+    keys: *const WalletKeys,
+    inputs: *const SpendInput,
+    count: usize,
+    anchor: *const u8,
+    payments: *const Payment,
+    payment_count: usize,
+    output: *mut *mut WalletPlan,
+) -> i32 {
+    if count == 0 || count > MAX_ACTIONS || payment_count > MAX_ACTIONS {
+        return Status::Limit as i32;
+    }
+    if keys.is_null()
+        || inputs.is_null()
+        || anchor.is_null()
+        || output.is_null()
+        || (payment_count != 0 && payments.is_null())
+    {
+        return Status::NullArgument as i32;
+    }
+    boundary(|| {
+        let inputs = unsafe { std::slice::from_raw_parts(inputs, count) };
+        let mut checked = Vec::with_capacity(count);
+        for input in inputs {
+            if input.note.is_null() {
+                return Err(Status::NullArgument);
+            }
+            checked.push(WitnessedNote {
+                note: unsafe { &*input.note },
+                position: input.position,
+                path: input.path,
+            });
+        }
+        let payments = if payment_count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(payments, payment_count) }
+        };
+        let plan = Box::new(prepare_spend(
+            unsafe { &*keys },
+            &checked,
+            unsafe { *anchor.cast() },
+            payments,
+        )?);
+        unsafe {
+            output.write(Box::into_raw(plan));
+        }
+        Ok(())
+    })
+}
+/// # Safety
 /// Plan is live, immutable during this call; output is aligned writable and
 /// non-aliasing. Facts describe this plan only, never a verified transaction.
 #[no_mangle]
-pub unsafe extern "C" fn dinero_orchard_shield_facts_v1(
-    plan: *const ShieldPlan,
+pub unsafe extern "C" fn dinero_orchard_wallet_plan_facts_v1(
+    plan: *const WalletPlan,
     output: *mut BundleFacts,
 ) -> i32 {
     if plan.is_null() || output.is_null() {
@@ -226,8 +376,8 @@ pub unsafe extern "C" fn dinero_orchard_shield_facts_v1(
 /// free the handle once even after a failure. Host derives digest from this
 /// plan's facts plus authenticated transaction context, never a raw RPC value.
 #[no_mangle]
-pub unsafe extern "C" fn dinero_orchard_prove_shield_v1(
-    plan: *mut ShieldPlan,
+pub unsafe extern "C" fn dinero_orchard_prove_wallet_bundle_v1(
+    plan: *mut WalletPlan,
     digest: *const u8,
     effect: *const u8,
     balance: i64,
@@ -257,7 +407,7 @@ pub unsafe extern "C" fn dinero_orchard_prove_shield_v1(
 /// # Safety
 /// Null or live owned plan, consumed regardless of status. No concurrent use.
 #[no_mangle]
-pub unsafe extern "C" fn dinero_orchard_shield_plan_free_v1(plan: *mut ShieldPlan) -> i32 {
+pub unsafe extern "C" fn dinero_orchard_wallet_plan_free_v1(plan: *mut WalletPlan) -> i32 {
     unsafe { free_owned(plan) }
 }
 

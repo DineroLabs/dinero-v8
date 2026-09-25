@@ -6,7 +6,9 @@
 use nonempty::NonEmpty;
 mod frontier;
 mod wallet;
+mod wallet_note;
 mod wallet_prover;
+mod wallet_witness;
 use orchard::{
     bundle::{Authorized, BundleVersion, Flags, TxVersion},
     circuit::VerifyingKey,

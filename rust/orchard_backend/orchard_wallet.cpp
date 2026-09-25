@@ -50,34 +50,90 @@ std::string WalletReceiver::EncodeAddress(WalletNetwork network)const {
     return {reinterpret_cast<const char*>(text.text),text.length};
 }
 
-static_assert(sizeof(DineroOrchardPayment)==568);
-static_assert(offsetof(DineroOrchardPayment,recipient)==8);
-static_assert(offsetof(DineroOrchardPayment,memo)==51);
-static_assert(sizeof(DineroOrchardBuiltBundle)==65540);
-void WalletShieldPlan::Deleter::operator()(DineroOrchardShieldPlan* handle)const noexcept {
-    if(dinero_orchard_shield_plan_free_v1(handle)!=DINERO_ORCHARD_OK)std::terminate();
+static_assert(sizeof(DineroOrchardNoteFacts)==632);
+static_assert(offsetof(DineroOrchardNoteFacts,memo)==115);
+static_assert(sizeof(DineroOrchardWitnessFacts)==1104);
+static_assert(offsetof(DineroOrchardWitnessFacts,path)==80);
+static_assert(sizeof(DineroOrchardSpendInput)==1040);
+static_assert(offsetof(DineroOrchardSpendInput,note)==1032);
+void WalletNote::Deleter::operator()(DineroOrchardNote* handle)const noexcept {
+    if(dinero_orchard_note_free_v1(handle)!=DINERO_ORCHARD_OK)std::terminate();
 }
-WalletShieldPlan::WalletShieldPlan(DineroOrchardShieldPlan* handle):handle_(handle) {
-    Check(dinero_orchard_shield_facts_v1(handle_.get(),&facts_));
+WalletNote::WalletNote(DineroOrchardNote* handle):handle_(handle) {Check(dinero_orchard_note_facts_v1(handle,&facts_));}
+WalletNote::~WalletNote(){OPENSSL_cleanse(&facts_,sizeof(facts_));}
+std::optional<WalletNote> WalletNote::Receive(const VerifiedAuthorization& authorization,
+    const FullViewingKeyBytes& fvk,WalletScope scope,uint32_t index) {
+    DineroOrchardNote* handle=nullptr;
+    Check(dinero_orchard_receive_note_v1(authorization.handle_.get(),fvk.data(),uint8_t(scope),index,&handle));
+    if(!handle)return std::nullopt;
+    return WalletNote(handle);
 }
-WalletShieldPlan WalletShieldPlan::Prepare(const WalletKeys& keys,std::span<const WalletPayment> payments) {
-    if(payments.empty()||payments.size()>kMaxActionsV1)throw BackendError(DINERO_ORCHARD_LIMIT);
+void WalletWitness::Deleter::operator()(DineroOrchardWitness* handle)const noexcept {
+    if(dinero_orchard_witness_free_v1(handle)!=DINERO_ORCHARD_OK)std::terminate();
+}
+WalletWitness::WalletWitness(DineroOrchardWitness* handle):handle_(handle) {Check(dinero_orchard_witness_facts_v1(handle,&facts_));}
+WalletWitness WalletWitness::ForAppendedLeaf(const OrchardFrontier& parent,std::span<const Hash> commitments,size_t index) {
+    DineroOrchardWitness* handle=nullptr;
+    Check(dinero_orchard_witness_create_v1(parent.Bytes().data(),parent.Bytes().size(),
+        commitments.empty()?nullptr:commitments[0].data(),commitments.size(),index,&handle));
+    return WalletWitness(handle);
+}
+WalletWitness WalletWitness::Append(std::span<const Hash> commitments,const Hash& parent,const Hash& next)const {
+    DineroOrchardWitness* handle=nullptr;
+    Check(dinero_orchard_witness_append_v1(handle_.get(),commitments.empty()?nullptr:commitments[0].data(),
+        commitments.size(),parent.data(),next.data(),&handle));return WalletWitness(handle);
+}
+namespace {
+std::vector<DineroOrchardPayment> Payments(std::span<const WalletPayment> payments) {
+    if(payments.size()>kMaxActionsV1)throw BackendError(DINERO_ORCHARD_LIMIT);
     std::vector<DineroOrchardPayment> wire(payments.size());
     for(size_t i=0;i<payments.size();++i) {
         wire[i].amount=payments[i].amount_una;
         std::copy(payments[i].recipient.Raw().begin(),payments[i].recipient.Raw().end(),wire[i].recipient);
         std::copy(payments[i].memo.begin(),payments[i].memo.end(),wire[i].memo);
     }
-    DineroOrchardShieldPlan* handle=nullptr;
-    Check(dinero_orchard_prepare_shield_v1(keys.handle_.get(),wire.data(),wire.size(),&handle));
-    return WalletShieldPlan(handle);
+    return wire;
 }
-ProvedWalletBundle WalletShieldPlan::Prove(const SigningContext& context)&& {
+}
+static_assert(sizeof(DineroOrchardPayment)==568);
+static_assert(offsetof(DineroOrchardPayment,recipient)==8);
+static_assert(offsetof(DineroOrchardPayment,memo)==51);
+static_assert(sizeof(DineroOrchardBuiltBundle)==65540);
+void WalletBundlePlan::Deleter::operator()(DineroOrchardWalletPlan* handle)const noexcept {
+    if(dinero_orchard_wallet_plan_free_v1(handle)!=DINERO_ORCHARD_OK)std::terminate();
+}
+WalletBundlePlan::WalletBundlePlan(DineroOrchardWalletPlan* handle):handle_(handle) {
+    Check(dinero_orchard_wallet_plan_facts_v1(handle_.get(),&facts_));
+}
+WalletBundlePlan WalletBundlePlan::PrepareShield(const WalletKeys& keys,std::span<const WalletPayment> payments) {
+    if(payments.empty()||payments.size()>kMaxActionsV1)throw BackendError(DINERO_ORCHARD_LIMIT);
+    const auto wire=Payments(payments);
+    DineroOrchardWalletPlan* handle=nullptr;
+    Check(dinero_orchard_prepare_shield_v1(keys.handle_.get(),wire.data(),wire.size(),&handle));
+    return WalletBundlePlan(handle);
+}
+WalletBundlePlan WalletBundlePlan::PrepareSpend(const WalletKeys& keys,std::span<const WalletSpendInput> inputs,
+    const Hash& anchor,std::span<const WalletPayment> payments) {
+    if(inputs.empty()||inputs.size()>kMaxActionsV1)throw BackendError(DINERO_ORCHARD_LIMIT);
+    const auto outputs=Payments(payments);std::vector<DineroOrchardSpendInput> wire(inputs.size());
+    for(size_t i=0;i<inputs.size();++i) {
+        const auto& witness=inputs[i].witness.Facts();const auto& note=inputs[i].note;
+        if(!std::equal(anchor.begin(),anchor.end(),witness.root)||
+           !std::equal(std::begin(note.Facts().commitment),std::end(note.Facts().commitment),witness.commitment))
+            throw BackendError(DINERO_ORCHARD_FORMAT);
+        wire[i].position=witness.position;
+        std::memcpy(wire[i].path,witness.path,sizeof(witness.path));wire[i].note=note.handle_.get();
+    }
+    DineroOrchardWalletPlan* handle=nullptr;
+    Check(dinero_orchard_prepare_spend_v1(keys.handle_.get(),wire.data(),wire.size(),anchor.data(),
+        outputs.data(),outputs.size(),&handle));return WalletBundlePlan(handle);
+}
+ProvedWalletBundle WalletBundlePlan::Prove(const SigningContext& context)&& {
     auto consumed=std::move(handle_);
     if(!consumed)throw BackendError(DINERO_ORCHARD_FORMAT);
     const auto digest=context.Digest(facts_);
     auto result=std::make_unique<DineroOrchardBuiltBundle>();
-    Check(dinero_orchard_prove_shield_v1(consumed.get(),digest.data(),facts_.effect,
+    Check(dinero_orchard_prove_wallet_bundle_v1(consumed.get(),digest.data(),facts_.effect,
         context.RequiredValueBalance(),result.get()));
     if(result->length>DINERO_ORCHARD_V1_MAX_BUNDLE_BYTES)throw BackendError(DINERO_ORCHARD_FORMAT);
     std::vector<uint8_t> bytes(result->bytes,result->bytes+result->length);
