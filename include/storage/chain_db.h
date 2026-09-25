@@ -4,6 +4,8 @@
 #include "common/serialization.h"
 #include "storage/tip_info.h"
 #include "storage/chain_write_token.h"
+#include "storage/orchard_state.h"
+#include <optional>
 #include "consensus/undo.h"
 #include <rocksdb/db.h>
 #include <rocksdb/write_batch.h>
@@ -367,6 +369,25 @@ public:
     StatusOr<std::string> getShieldedState(ShieldedStateRecord record) const;
     // Diagnostic layout query; not permission to reset or migrate a database.
     bool hasSeparatedShieldedState() const { return db_ && cf_.size() == 10; }
+
+    // Staged Orchard block persistence. Only the named, separated layout is
+    // accepted; no implicit migration or legacy-CF fallback. Caller holds the
+    // chainstate writer lock through validation, staging and writeBatch, and
+    // stages coins/forest/tip/height/ordinary undo in this SAME outer batch.
+    // Exactly one Orchard connect OR disconnect may be staged per batch.
+    // These methods never commit, and reject without changing the batch.
+    // The expected state is compared byte-exactly with committed storage; this
+    // is a stale-state check, not a replacement for the caller's writer lock.
+    // No runtime admission caller is enabled by this storage API.
+    Status stageOrchardConnect(const ChainWriteToken& token,
+        const std::optional<storage::OrchardStoredState>& expected_parent,
+        const storage::OrchardStoredState& next, const std::vector<uint256>& nullifiers,
+        rocksdb::WriteBatch& batch);
+    Status stageOrchardDisconnect(const ChainWriteToken& token,
+        const storage::OrchardStoredState& expected_tip, rocksdb::WriteBatch& batch);
+    StatusOr<storage::OrchardStoredState> getOrchardState() const;
+    StatusOr<uint256> getOrchardNullifierOwner(const uint256& nullifier) const;
+    StatusOr<uint64_t> getOrchardAnchorReferences(const uint256& anchor) const;
 
     // CSN reorg: Spend targets stored in utreexo CF for forest replay
     Status putCSNSpendTargets(const ChainWriteToken& token, const uint256& block_hash,

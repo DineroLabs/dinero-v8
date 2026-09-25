@@ -7489,6 +7489,19 @@ target_include_directories(test_shielded_state_storage PRIVATE
 add_test(NAME ShieldedStateStorage COMMAND test_shielded_state_storage)
 set_tests_properties(ShieldedStateStorage PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
 
+add_executable(test_orchard_state_storage
+  tests/storage/test_orchard_state_storage.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_orchard_state_storage PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_orchard_state_storage PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME OrchardStateStorage COMMAND test_orchard_state_storage)
+set_tests_properties(OrchardStateStorage PROPERTIES LABELS "orchard;storage;smoke" TIMEOUT 120)
+
 # Generated offline-copy qualification only. Not installed or linked into
 # dinerod/NodeCore: whole-datadir eligibility and cutover remain separate gates.
 if(UNIX AND NOT IOS)

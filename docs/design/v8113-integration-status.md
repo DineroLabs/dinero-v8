@@ -16,6 +16,9 @@ This branch collects release implementation for review and qualification against
   coin snapshot, with honest synthetic shield and cross-address spend fixtures.
   This verifies authorization, not anchor membership, unspentness at application
   time, or an atomic chainstate transition.
+- ChainDB staging for Orchard block state, nullifier ownership, anchor references
+  and undo, tested with companion coin/tip writes on generated RocksDB stores.
+  Production ConnectTip/DisconnectTip callers are not wired yet.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
   outer/inner signing-profile identity.
 - Explicit domain/profile checks across Rust/C++, canonical synthetic vectors,
@@ -57,7 +60,7 @@ the following rows to test-only work:
 | --- | --- |
 | Shared parsing and authorization | Staged typed reader and authorization components; no live admission |
 | Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
-| Anchors, nullifiers, pool and atomic storage/undo | Orchard chainstate integration not implemented |
+| Anchors, nullifiers, pool and atomic storage/undo | ChainDB staging and storage recovery tests implemented; cryptographic frontier, consensus transitions and production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Not implemented |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
 
