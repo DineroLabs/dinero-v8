@@ -1,6 +1,10 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "daemon/runtime_block_reader.h"
+#include "consensus/orchard_profile.h"
+#endif
 #include "consensus/assumeutxo_fork_guard.h"
 #include "daemon/chainstate_recovery_marker.h"
 #include "daemon/chainstate_commit_batch.h"
@@ -5406,6 +5410,7 @@ bool ChainstateService::hasBlock(uint32_t height) const {
 }
 
 std::string ChainstateService::getBlock(uint32_t height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
     if (!chain_db_) {
         return "";
     }
@@ -5415,6 +5420,16 @@ std::string ChainstateService::getBlock(uint32_t height) const {
         return "";
     }
 
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!consensus::OrchardProfileConfigurationValid(Params())) return "";
+    if (consensus::OrchardActiveForHeight(Params(), height)) {
+        const auto body = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(),
+                                                   hash_result.value(), height);
+        if (!body.ok()) return "";
+        const auto bytes = body->Serialize();
+        return BinaryToHexString(std::string(bytes.begin(), bytes.end()));
+    }
+#endif
     auto block_result = ReadStoredBlock(hash_result.value());
     if (block_result.status() != Status::Ok) {
         return "";
@@ -5458,6 +5473,22 @@ bool ChainstateService::hasFlatfileBlockByHash(const uint256& hash) const {
 
 StatusOr<Block> ChainstateService::getBlockByHash(const uint256& hash) const {
     return ReadStoredBlock(hash);
+}
+
+StatusOr<std::shared_ptr<const RuntimeBlockBody>> ChainstateService::getRuntimeBlockByHash(
+        const uint256& hash) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
+    if (!chain_db_) return Status::Internal;
+    const auto metadata = chain_db_->getHeaderMetadata(hash);
+    if (!metadata.ok()) return metadata.status();
+    if (metadata->height < 0) return Status::Corruption;
+    auto body = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, metadata->height);
+    if (!body.ok()) return body.status();
+    return std::make_shared<const RuntimeBlockBody>(std::move(*body));
+#else
+    return Status::Internal;
+#endif
 }
 
 uint64_t ChainstateService::getLegacyBodyFallbackReadCount() const {

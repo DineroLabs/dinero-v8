@@ -48,6 +48,7 @@ namespace dinero {
 // Phase 39 Step 2: Forward declaration (header deleted)
 class ChainManager;
 class BlockStorage;
+class RuntimeBlockBody;
 class WalletManager;  // Snapshot wallet rescan (see RescanWalletFromSnapshotUTXOs)
 struct FilePosition;  // #309: storage/block_storage.h
 
@@ -793,6 +794,10 @@ public:
     void PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos);
     bool hasFlatfileBlockByHash(const uint256& hash) const;
     StatusOr<Block> getBlockByHash(const uint256& hash) const;
+    // Selected-height typed read, under the service activation lock. Optional
+    // Orchard builds expose a mixed body without fabricating legacy transactions.
+    // Default builds return Internal (reader unavailable). Not admission.
+    StatusOr<std::shared_ptr<const RuntimeBlockBody>> getRuntimeBlockByHash(const uint256& hash) const;
     uint64_t getLegacyBodyFallbackReadCount() const;
     uint64_t getLegacyUndoFallbackReadCount() const;
     bool strictArchivalReadsEnabled() const;

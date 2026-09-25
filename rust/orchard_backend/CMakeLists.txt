@@ -112,6 +112,13 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_wallet_account PUBLIC dinero_orchard_wallet_scan dinero_orchard_operation_queue)
   add_library(dinero_orchard_header STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_header.cpp")
   target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus)
+  add_library(dinero_orchard_runtime_reader STATIC "${ORCHARD_HOST_ROOT}/src/daemon/runtime_block_reader.cpp")
+  target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_block_reader dinero_orchard_header dinero_chainstate)
+  if(TARGET dinero_core)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_runtime_reader)
+    set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/chainstate_service.cpp"
+      DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
+  endif()
   add_library(dinero_orchard_block_coins STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_coins.cpp"
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_resources.cpp"
@@ -183,6 +190,15 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   target_link_libraries(test_orchard_state_transition PRIVATE dinero_orchard_transparent)
   add_test(NAME OrchardStateTransition COMMAND test_orchard_state_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   if(TARGET dinero_orchard_block_staging)
+    add_executable(test_orchard_runtime_reader
+      "${ORCHARD_HOST_ROOT}/tests/daemon/test_orchard_runtime_reader.cpp"
+      "${ORCHARD_HOST_ROOT}/src/daemon/config.cpp"
+      "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
+      "${ORCHARD_HOST_ROOT}/tests/stubs/daemon_test_stubs.cpp")
+    target_include_directories(test_orchard_runtime_reader PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    target_link_libraries(test_orchard_runtime_reader PRIVATE dinero_core dinero_orchard_runtime_reader dinero_orchard_block_staging)
+    add_test(NAME OrchardRuntimeReader COMMAND test_orchard_runtime_reader "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardRuntimeReader PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE LABELS "orchard;storage;integration-staging")
     add_executable(test_orchard_operation_archive "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_operation_archive.cpp")
     target_link_libraries(test_orchard_operation_archive PRIVATE dinero_orchard_operation_archive)
     add_test(NAME OrchardOperationArchive COMMAND test_orchard_operation_archive "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
