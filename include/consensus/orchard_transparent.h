@@ -58,5 +58,8 @@ private:
 // Derive the turnstile input from the exact owned transparent authorization
 // context. Orchard proof verification is deliberately not consulted here.
 // Current unspentness still requires the caller's held chainstate lock/view.
+// The owned TransactionEnvelope requires a fee at construction and checks the
+// mandatory marker on decode; absent is not representable (zero is valid).
+// It also rejects the coinbase null outpoint. No legacy Transaction is accepted.
 [[nodiscard]] OrchardValueFlow GetOrchardValueFlow(const VerifiedOrchardTransparentInputs& inputs);
 } // namespace dinero::consensus

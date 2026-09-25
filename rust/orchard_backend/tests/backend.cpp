@@ -138,9 +138,22 @@ static void EnvelopeTests(const std::string& base) {
     const auto padded_length=static_cast<std::uint32_t>(padded.size()-19);
     for (unsigned i=0;i<4;++i) padded[15+i]=static_cast<std::uint8_t>(padded_length>>(8*i));
     Invalid([&]{ (void)TransactionEnvelope::DecodeExact(padded); });
-    auto wrong_fee_marker=wire;
-    wrong_fee_marker.at(wire.size()-4-bundle.size()-4-8-1)=0;
-    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(wrong_fee_marker); });
+    const auto fee_marker_offset=wire.size()-4-bundle.size()-4-8-1;
+    for (unsigned marker=0; marker<256; ++marker) {
+        if (marker==1) continue;
+        auto wrong_fee_marker=wire;
+        wrong_fee_marker.at(fee_marker_offset)=static_cast<uint8_t>(marker);
+        Invalid([&]{ (void)TransactionEnvelope::DecodeExact(wrong_fee_marker); });
+    }
+    auto absent_fee_marker=wire;
+    absent_fee_marker.erase(absent_fee_marker.begin()+fee_marker_offset);
+    const auto shortened_payload=static_cast<uint32_t>(absent_fee_marker.size()-19);
+    for (unsigned i=0; i<4; ++i) absent_fee_marker[15+i]=static_cast<uint8_t>(shortened_payload>>(8*i));
+    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(absent_fee_marker); });
+    // Zero is a present fee value, not a missing-marker fallback. Structural
+    // decoding here does not assert authorization for this altered fixture.
+    const auto zero_fee=TransactionEnvelope::Create(fixture.lock_time,inputs,fixture.outputs,0,bundle);
+    Require(TransactionEnvelope::DecodeExact(zero_fee.CanonicalBytes()).ExplicitFee()==0);
     auto wrong_coins=coins; std::swap(wrong_coins[0],wrong_coins[1]);
     Invalid([&]{ (void)tx.VerifyAuthorization(fixture.domain,wrong_coins); });
     wrong_coins=coins; wrong_coins.pop_back();
@@ -172,6 +185,10 @@ static void EnvelopeTests(const std::string& base) {
     Invalid([&]{ (void)TransactionEnvelope::Create(0,duplicate,{},0,bundle); });
     EnvelopeInput coinbase; coinbase.output_index=0xffffffff;
     Invalid([&]{ (void)TransactionEnvelope::Create(0,{coinbase},{},0,bundle); });
+    auto coinbase_wire=wire;
+    std::fill(coinbase_wire.begin()+23,coinbase_wire.begin()+55,0);
+    std::fill(coinbase_wire.begin()+55,coinbase_wire.begin()+59,0xff);
+    Invalid([&]{ (void)TransactionEnvelope::DecodeExact(coinbase_wire); });
     auto excess=tx.Inputs(); excess[0].witness.resize(101);
     Invalid([&]{ (void)TransactionEnvelope::Create(0,excess,{},0,bundle); });
     excess=tx.Inputs(); excess[0].script_sig.resize(10001);

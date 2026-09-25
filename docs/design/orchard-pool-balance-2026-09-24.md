@@ -19,6 +19,28 @@ Fees funded from the pool are withdrawals too. An empty list preserves the
 balance. An absent initial Orchard state means zero; legacy value is not
 carried into this counter.
 
+The fee is explicitly declared and authorization-bound. It cannot be derived
+from the transparent delta alone, because that delta also includes the shielded
+deposit or withdrawal. Block validation must enforce coinbase value no greater
+than subsidy plus the **same validated transaction fees**, using checked sums.
+Miners may underclaim fees; unclaimed value is not returned to this pool.
+The turnstile does not replace that reward bound.
+
+`TransactionEnvelope` has no missing-fee state: its constructor requires a fee,
+its decoder requires the marker, and its fields are immutable. A valid zero fee
+is distinct from an absent marker. `GetOrchardValueFlow` accepts only this typed
+envelope through sealed transparent authorization, not the legacy transaction
+class with optional fields. A constant-true `HasExplicitFee()` would not add a
+check. Any future optional-fee format needs a separate reviewed derivation path.
+
+For a validated ordinary transparent transaction, inputs minus outputs minus
+the actual fee is zero, so its arithmetic contribution would be neutral. That
+identity is tested, but does not expand this Orchard-only adapter to generic
+transactions or eliminate validation/fee-derivation requirements. Coinbase is
+excluded explicitly by the envelope's null-outpoint rule. Zero transparent
+inputs can instead be legitimate for a shielded-only transaction; they do not
+mean coinbase. Issuance must never be fed through the pool counter.
+
 The draft rule applies transactions in canonical block order and requires the
 pool to remain in range after **each** transaction. A later deposit cannot
 rescue an earlier withdrawal. This stronger intermediate-state rule needs

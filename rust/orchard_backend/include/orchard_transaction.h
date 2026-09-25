@@ -55,6 +55,8 @@ public:
     const std::vector<EnvelopeInput>& Inputs() const noexcept { return inputs_; }
     const std::vector<TransparentOutput>& Outputs() const noexcept { return outputs_; }
     std::uint32_t LockTime() const noexcept { return lock_time_; }
+    // Required value, never a missing-field fallback. Create requires it and
+    // Decode rejects any absent/incorrect fee marker before constructing us.
     std::uint64_t ExplicitFee() const noexcept { return fee_; }
     const DineroOrchardFacts& UnverifiedFacts() const noexcept { return bundle_.UnverifiedFacts(); }
     Hash Txid() const;

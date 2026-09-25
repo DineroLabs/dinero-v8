@@ -9,6 +9,13 @@ namespace dinero::consensus {
 // exact transaction's outputs/fee. No proof, note, commitment or claimed
 // shielded value balance is an input to the counter arithmetic.
 // This is a storage/consensus value type, NOT an authorization certificate.
+// The block reward check must use these SAME validated fees: coinbase value
+// <= subsidy + sum(fees), with checked arithmetic. An unclaimed fee may burn;
+// it must not be credited back to the pool. This counter alone cannot enforce
+// the reward bound or ordinary transparent transaction conservation.
+// A validated ordinary transparent flow with fee = inputs - outputs is zero
+// net, but legacy fee derivation/admission is separate. Never feed coinbase
+// issuance into this counter, and never substitute zero for an absent fee.
 struct OrchardValueFlow {
     uint64_t transparent_inputs = 0;
     uint64_t transparent_outputs = 0;

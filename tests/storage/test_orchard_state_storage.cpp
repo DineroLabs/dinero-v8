@@ -22,6 +22,10 @@ using dinero::consensus::ApplyOrchardValueFlows;
 const std::vector<OrchardValueFlow> funding{{100, 60, 0}};
 void TurnstileArithmetic() {
     using dinero::consensus::MAX_MONEY;
+    // A separately validated transparent transfer has no pool contribution
+    // when its actual fee closes the transparent balance equation.
+    for (uint64_t parent : {uint64_t{0}, uint64_t{40}, MAX_MONEY})
+        CHECK(RequiredValue(ApplyOrchardValueFlows(parent, {{100, 90, 10}, {25, 25, 0}})) == parent);
     CHECK(RequiredValue(ApplyOrchardValueFlows(0, {{100, 60, 5}})) == 35);
     CHECK(RequiredValue(ApplyOrchardValueFlows(40, {{0, 0, 7}})) == 33);
     CHECK(RequiredValue(ApplyOrchardValueFlows(40, {{0, 39, 1}})) == 0);
