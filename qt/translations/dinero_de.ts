@@ -179,7 +179,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="29" />
         <source>Bridge ready - Auto-refresh every 15s</source>
-        <translation type="unfinished" />
+        <translation>Bridge bereit – automatische Aktualisierung alle 15 s</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="46" />
@@ -214,7 +214,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="214" />
         <source>Please enter a valid amount greater than 0.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie einen gültigen Betrag größer als 0 ein.</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="268" />
@@ -224,7 +224,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="275" />
         <source>Fees: ~1.5%</source>
-        <translation type="unfinished" />
+        <translation>Gebühren: ~1,5 %</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="280" />
@@ -234,7 +234,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="289" />
         <source>Direct conversion (1 hop)</source>
-        <translation type="unfinished" />
+        <translation>Direkte Umwandlung (1 Hop)</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="343" />
@@ -249,12 +249,12 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="357" />
         <source>❌ Conversion failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Umwandlung fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="380" />
         <source>Rate updated via WebSocket</source>
-        <translation type="unfinished" />
+        <translation>Kurs über WebSocket aktualisiert</translation>
     </message>
 </context>
 <context>
@@ -475,7 +475,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/dpiwidget.cpp" line="98" />
         <source>Create DPI Invoice</source>
-        <translation type="unfinished" />
+        <translation>DPI-Rechnung erstellen</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="101" />
@@ -486,7 +486,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
         <location filename="../src/dpiwidget.cpp" line="106" />
         <location filename="../src/dpiwidget.cpp" line="266" />
         <source>Memo:</source>
-        <translation type="unfinished" />
+        <translation>Memo:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="108" />
@@ -503,12 +503,12 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
         <location filename="../src/dpiwidget.cpp" line="450" />
         <location filename="../src/dpiwidget.cpp" line="684" />
         <source>Create Collect Invoice</source>
-        <translation type="unfinished" />
+        <translation>Inkasso-Rechnung erstellen</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="129" />
         <source>Collect Invoice</source>
-        <translation type="unfinished" />
+        <translation>Inkasso-Rechnung</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="141" />
@@ -536,7 +536,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/dpiwidget.cpp" line="169" />
         <source>Invoice data will appear here...</source>
-        <translation type="unfinished" />
+        <translation>Die Rechnungsdaten erscheinen hier …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="172" />
@@ -547,29 +547,29 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/dpiwidget.cpp" line="183" />
         <source>Verify Payment Package</source>
-        <translation type="unfinished" />
+        <translation>Zahlungspaket prüfen</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="186" />
         <source>Paste payment package from sender:</source>
-        <translation type="unfinished" />
+        <translation>Zahlungspaket des Absenders einfügen:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="189" />
         <source>Paste payment package here...</source>
-        <translation type="unfinished" />
+        <translation>Zahlungspaket hier einfügen …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="192" />
         <location filename="../src/dpiwidget.cpp" line="548" />
         <location filename="../src/dpiwidget.cpp" line="701" />
         <source>Verify Package</source>
-        <translation type="unfinished" />
+        <translation>Paket prüfen</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="235" />
         <source>Pay DPI Invoice</source>
-        <translation type="unfinished" />
+        <translation>DPI-Rechnung bezahlen</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="238" />
@@ -579,14 +579,14 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/dpiwidget.cpp" line="241" />
         <source>Paste invoice here...</source>
-        <translation type="unfinished" />
+        <translation>Rechnung hier einfügen …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="244" />
         <location filename="../src/dpiwidget.cpp" line="489" />
         <location filename="../src/dpiwidget.cpp" line="689" />
         <source>Review Invoice</source>
-        <translation type="unfinished" />
+        <translation>Rechnung prüfen</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="253" />
@@ -598,22 +598,22 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
         <location filename="../src/dpiwidget.cpp" line="521" />
         <location filename="../src/dpiwidget.cpp" line="695" />
         <source>Pay Reviewed Invoice</source>
-        <translation type="unfinished" />
+        <translation>Geprüfte Rechnung bezahlen</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="295" />
         <source>Payment Package</source>
-        <translation type="unfinished" />
+        <translation>Zahlungspaket</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="298" />
         <source>Send this to the merchant:</source>
-        <translation type="unfinished" />
+        <translation>Senden Sie dies an den Händler:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="302" />
         <source>Package will appear after payment...</source>
-        <translation type="unfinished" />
+        <translation>Das Paket erscheint nach der Zahlung …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="305" />
@@ -646,71 +646,71 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/dpiwidget.cpp" line="350" />
         <source>Creating...</source>
-        <translation type="unfinished" />
+        <translation>Wird erstellt …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="361" />
         <location filename="../src/dpiwidget.cpp" line="437" />
         <source>Copied!</source>
-        <translation type="unfinished" />
+        <translation>Kopiert.</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="374" />
         <source>Paste a payment package first.</source>
-        <translation type="unfinished" />
+        <translation>Fügen Sie zuerst ein Zahlungspaket ein.</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="378" />
         <source>No Invoice</source>
-        <translation type="unfinished" />
+        <translation>Keine Rechnung</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="378" />
         <source>Create an invoice first.</source>
-        <translation type="unfinished" />
+        <translation>Erstellen Sie zuerst eine Rechnung.</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="387" />
         <source>Verifying...</source>
-        <translation type="unfinished" />
+        <translation>Wird geprüft …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="398" />
         <source>Paste an invoice first.</source>
-        <translation type="unfinished" />
+        <translation>Fügen Sie zuerst eine Rechnung ein.</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="408" />
         <source>Decoding...</source>
-        <translation type="unfinished" />
+        <translation>Wird dekodiert …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="423" />
         <source>Paying...</source>
-        <translation type="unfinished" />
+        <translation>Wird bezahlt …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="424" />
         <source>Processing payment...</source>
-        <translation type="unfinished" />
+        <translation>Zahlung wird verarbeitet …</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="455" />
         <location filename="../src/dpiwidget.cpp" line="685" />
         <source>Invoice Error</source>
-        <translation type="unfinished" />
+        <translation>Rechnungsfehler</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="494" />
         <location filename="../src/dpiwidget.cpp" line="691" />
         <source>Decode Error</source>
-        <translation type="unfinished" />
+        <translation>Dekodierungsfehler</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="508" />
         <location filename="../src/dpiwidget.cpp" line="773" />
         <source>EXPIRED</source>
-        <translation type="unfinished" />
+        <translation>ABGELAUFEN</translation>
     </message>
 </context>
 <context>
@@ -5801,7 +5801,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="126" />
         <source>Hosting a pool</source>
-        <translation type="unfinished" />
+        <translation>Einen Pool betreiben</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="128" />
@@ -5816,7 +5816,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="161" />
         <source>Your pool</source>
-        <translation type="unfinished" />
+        <translation>Ihr Pool</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="163" />
@@ -5837,7 +5837,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="190" />
         <source>Connect</source>
-        <translation type="unfinished" />
+        <translation>Verbinden</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="196" />
@@ -5856,22 +5856,22 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="201" />
         <source>About trustless pooled mining</source>
-        <translation type="unfinished" />
+        <translation>Über vertrauensfreies Pool-Mining</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="209" />
         <source>Live status</source>
-        <translation type="unfinished" />
+        <translation>Live-Status</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="229" />
         <source>OFFLINE</source>
-        <translation type="unfinished" />
+        <translation>OFFLINE</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="231" />
         <source>Not connected</source>
-        <translation type="unfinished" />
+        <translation>Nicht verbunden</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="241" />
@@ -5879,52 +5879,52 @@ Label,Address</source>
         <location filename="../src/poolpanel.cpp" line="322" />
         <location filename="../src/poolpanel.cpp" line="323" />
         <source>Unavailable</source>
-        <translation type="unfinished" />
+        <translation>Nicht verfügbar</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="243" />
         <source>Connected sessions:</source>
-        <translation type="unfinished" />
+        <translation>Verbundene Sitzungen:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="245" />
         <source>Operator fee:</source>
-        <translation type="unfinished" />
+        <translation>Betreibergebühr:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="259" />
         <source>PPLNS window:</source>
-        <translation type="unfinished" />
+        <translation>PPLNS-Fenster:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="264" />
         <source>Template producer:</source>
-        <translation type="unfinished" />
+        <translation>Vorlagen-Erzeuger:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="266" />
         <source>Shares (since pool restart):</source>
-        <translation type="unfinished" />
+        <translation>Shares (seit Pool-Neustart):</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="267" />
         <source>Blocks found (since pool restart):</source>
-        <translation type="unfinished" />
+        <translation>Gefundene Blöcke (seit Pool-Neustart):</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="275" />
         <source>Daemon:</source>
-        <translation type="unfinished" />
+        <translation>Daemon:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="277" />
         <source>Stratum:</source>
-        <translation type="unfinished" />
+        <translation>Stratum:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="285" />
         <source>Fee paid to:</source>
-        <translation type="unfinished" />
+        <translation>Gebühr gezahlt an:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="290" />
@@ -5934,72 +5934,72 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="292" />
         <source>Change</source>
-        <translation type="unfinished" />
+        <translation>Ändern</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="294" />
         <source>Change to:</source>
-        <translation type="unfinished" />
+        <translation>Ändern in:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="311" />
         <source>Change fee</source>
-        <translation type="unfinished" />
+        <translation>Gebühr ändern</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="314" />
         <source>Set operator fee:</source>
-        <translation type="unfinished" />
+        <translation>Betreibergebühr festlegen:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="324" />
         <source>None reported</source>
-        <translation type="unfinished" />
+        <translation>Nichts gemeldet</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="326" />
         <source>Last accepted share:</source>
-        <translation type="unfinished" />
+        <translation>Letzter akzeptierter Share:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="328" />
         <source>Last block result:</source>
-        <translation type="unfinished" />
+        <translation>Letztes Blockergebnis:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="330" />
         <source>Rejection reasons:</source>
-        <translation type="unfinished" />
+        <translation>Ablehnungsgründe:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="333" />
         <source>Share activity history (stored locally)</source>
-        <translation type="unfinished" />
+        <translation>Verlauf der Share-Aktivität (lokal gespeichert)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="338" />
         <source>5 min</source>
-        <translation type="unfinished" />
+        <translation>5 Min.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="339" />
         <source>1 hour</source>
-        <translation type="unfinished" />
+        <translation>1 Stunde</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="340" />
         <source>24 hours</source>
-        <translation type="unfinished" />
+        <translation>24 Stunden</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="364" />
         <source>PPLNS contributors (not connected sessions)</source>
-        <translation type="unfinished" />
+        <translation>PPLNS-Beitragende (keine verbundenen Sitzungen)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="375" />
         <source>Fee earnings (verified on-chain)</source>
-        <translation type="unfinished" />
+        <translation>Gebühreneinnahmen (on-chain verifiziert)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="377" />
@@ -6009,7 +6009,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="388" />
         <source>Fee address:</source>
-        <translation type="unfinished" />
+        <translation>Gebührenadresse:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="390" />
@@ -6019,7 +6019,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="392" />
         <source>Check</source>
-        <translation type="unfinished" />
+        <translation>Prüfen</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="473" />
@@ -6029,7 +6029,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="536" />
         <source>Change fee address</source>
-        <translation type="unfinished" />
+        <translation>Gebührenadresse ändern</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="580" />
@@ -6039,12 +6039,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="585" />
         <source>That is already the live operator fee.</source>
-        <translation type="unfinished" />
+        <translation>Das ist bereits die aktive Betreibergebühr.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="590" />
         <source>Change operator fee</source>
-        <translation type="unfinished" />
+        <translation>Betreibergebühr ändern</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="605" />
@@ -6114,7 +6114,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1175" />
         <source>checking the chain…</source>
-        <translation type="unfinished" />
+        <translation>Chain wird geprüft …</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1192" />
@@ -6490,12 +6490,12 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="81" />
         <source>Checking shielded pool status…</source>
-        <translation type="unfinished" />
+        <translation>Status des Shielded Pools wird geprüft …</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="91" />
         <source>Shielded Balance</source>
-        <translation type="unfinished" />
+        <translation>Shielded-Guthaben</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="94" />
@@ -6505,22 +6505,22 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="98" />
         <source>Balance (una):</source>
-        <translation type="unfinished" />
+        <translation>Guthaben (una):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="101" />
         <source>Confirmed notes:</source>
-        <translation type="unfinished" />
+        <translation>Bestätigte Notes:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="104" />
         <source>Pending notes:</source>
-        <translation type="unfinished" />
+        <translation>Ausstehende Notes:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="107" />
         <source>Tree size:</source>
-        <translation type="unfinished" />
+        <translation>Baumgröße:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="111" />
@@ -6530,7 +6530,7 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="117" />
         <source>Receive Address</source>
-        <translation type="unfinished" />
+        <translation>Empfangsadresse</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="130" />
@@ -6540,17 +6540,17 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="133" />
         <source>New (j+1)</source>
-        <translation type="unfinished" />
+        <translation>Neu (j+1)</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="140" />
         <source>Issued addresses:</source>
-        <translation type="unfinished" />
+        <translation>Ausgegebene Adressen:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="161" />
         <source>Shield (transparent → shielded)</source>
-        <translation type="unfinished" />
+        <translation>Shield (transparent → shielded)</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="164" />
@@ -6563,26 +6563,26 @@ Please try again.</source>
         <location filename="../src/shieldedwidget.cpp" line="210" />
         <location filename="../src/shieldedwidget.cpp" line="247" />
         <source>Fee (una):</source>
-        <translation type="unfinished" />
+        <translation>Gebühr (una):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="170" />
         <location filename="../src/shieldedwidget.cpp" line="212" />
         <location filename="../src/shieldedwidget.cpp" line="249" />
         <source>Auto-sized</source>
-        <translation type="unfinished" />
+        <translation>Automatisch bemessen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="173" />
         <location filename="../src/shieldedwidget.cpp" line="623" />
         <location filename="../src/shieldedwidget.cpp" line="633" />
         <source>Shield</source>
-        <translation type="unfinished" />
+        <translation>Shield</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="187" />
         <source>Send shielded</source>
-        <translation type="unfinished" />
+        <translation>Shielded senden</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="191" />
@@ -6592,39 +6592,39 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="193" />
         <source>shielded address</source>
-        <translation type="unfinished" />
+        <translation>Shielded-Adresse</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="203" />
         <source>Amount (una):</source>
-        <translation type="unfinished" />
+        <translation>Betrag (una):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="216" />
         <source>Memo (≤512B):</source>
-        <translation type="unfinished" />
+        <translation>Memo (≤512 B):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="218" />
         <source>optional UTF-8 memo</source>
-        <translation type="unfinished" />
+        <translation>optionales UTF-8-Memo</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="222" />
         <location filename="../src/shieldedwidget.cpp" line="685" />
         <location filename="../src/shieldedwidget.cpp" line="698" />
         <source>Send</source>
-        <translation type="unfinished">Senden</translation>
+        <translation>Senden</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="236" />
         <source>Unshield note (shielded → transparent)</source>
-        <translation type="unfinished" />
+        <translation>Note unshielden (shielded → transparent)</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="240" />
         <source>Minimum note (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Mindest-Note (DIN):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="243" />
@@ -6636,7 +6636,7 @@ Please try again.</source>
         <location filename="../src/shieldedwidget.cpp" line="768" />
         <location filename="../src/shieldedwidget.cpp" line="778" />
         <source>Unshield</source>
-        <translation type="unfinished" />
+        <translation>Unshield</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="261" />
@@ -6647,88 +6647,88 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="271" />
         <source>Shielded Notes</source>
-        <translation type="unfinished" />
+        <translation>Shielded Notes</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="293" />
         <source>Activity</source>
-        <translation type="unfinished" />
+        <translation>Aktivität</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="324" />
         <source>✅ Private payments enabled by the daemon</source>
-        <translation type="unfinished" />
+        <translation>✅ Private Zahlungen sind vom Daemon aktiviert</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="329" />
         <source>🔒 Wallet is locked — unlock wallet to continue with private payments.</source>
-        <translation type="unfinished" />
+        <translation>🔒 Die Wallet ist gesperrt. Entsperren Sie sie, um mit privaten Zahlungen fortzufahren.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="617" />
         <location filename="../src/shieldedwidget.cpp" line="679" />
         <location filename="../src/shieldedwidget.cpp" line="762" />
         <source>Wallet is locked — unlock wallet to continue.</source>
-        <translation type="unfinished" />
+        <translation>Die Wallet ist gesperrt. Entsperren Sie sie, um fortzufahren.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="624" />
         <location filename="../src/shieldedwidget.cpp" line="686" />
         <location filename="../src/shieldedwidget.cpp" line="769" />
         <source>Previous uncertain attempt cleared — review before submitting again.</source>
-        <translation type="unfinished" />
+        <translation>Ein vorheriger Versuch mit unklarem Ausgang wurde verworfen. Prüfen Sie ihn, bevor Sie erneut senden.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="632" />
         <source>ready for a new shield operation</source>
-        <translation type="unfinished" />
+        <translation>bereit für eine neue Shield-Operation</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="640" />
         <location filename="../src/shieldedwidget.cpp" line="785" />
         <source>invalid amount</source>
-        <translation type="unfinished" />
+        <translation>ungültiger Betrag</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="648" />
         <location filename="../src/shieldedwidget.cpp" line="723" />
         <location filename="../src/shieldedwidget.cpp" line="793" />
         <source>invalid fee</source>
-        <translation type="unfinished" />
+        <translation>ungültige Gebühr</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="654" />
         <source>Review Shield Operation</source>
-        <translation type="unfinished" />
+        <translation>Shield-Operation prüfen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="663" />
         <location filename="../src/shieldedwidget.cpp" line="738" />
         <location filename="../src/shieldedwidget.cpp" line="809" />
         <source>could not persist authorization; nothing submitted</source>
-        <translation type="unfinished" />
+        <translation>Autorisierung konnte nicht gespeichert werden; es wurde nichts gesendet</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="670" />
         <location filename="../src/shieldedwidget.cpp" line="753" />
         <location filename="../src/shieldedwidget.cpp" line="816" />
         <source>proving and submitting…</source>
-        <translation type="unfinished" />
+        <translation>Beweis wird erstellt und gesendet …</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="697" />
         <source>ready for a new private payment</source>
-        <translation type="unfinished" />
+        <translation>bereit für eine neue private Zahlung</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="705" />
         <source>enter recipient address</source>
-        <translation type="unfinished" />
+        <translation>Empfängeradresse eingeben</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="710" />
         <source>recipient is not a valid address for the active network</source>
-        <translation type="unfinished" />
+        <translation>Der Empfänger ist keine gültige Adresse für das aktive Netzwerk</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="716" />
@@ -6738,32 +6738,32 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="730" />
         <source>Review Private Payment</source>
-        <translation type="unfinished" />
+        <translation>Private Zahlung prüfen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="742" />
         <source>could not persist submission state; nothing submitted</source>
-        <translation type="unfinished" />
+        <translation>Sendestatus konnte nicht gespeichert werden; es wurde nichts gesendet</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="777" />
         <source>ready for a new unshield operation</source>
-        <translation type="unfinished" />
+        <translation>bereit für eine neue Unshield-Operation</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="799" />
         <source>Review Unshield Operation</source>
-        <translation type="unfinished" />
+        <translation>Unshield-Operation prüfen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="933" />
         <source>New Shield Operation</source>
-        <translation type="unfinished" />
+        <translation>Neue Shield-Operation</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="985" />
         <source>New Unshield Operation</source>
-        <translation type="unfinished" />
+        <translation>Neue Unshield-Operation</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1038" />
@@ -6787,26 +6787,26 @@ Please try again.</source>
         <location filename="../src/shieldedwidget.cpp" line="1135" />
         <location filename="../src/shieldedwidget.cpp" line="1205" />
         <source>Review and Retry</source>
-        <translation type="unfinished" />
+        <translation>Prüfen und erneut versuchen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1088" />
         <location filename="../src/shieldedwidget.cpp" line="1147" />
         <location filename="../src/shieldedwidget.cpp" line="1154" />
         <source>Proving and submitting…</source>
-        <translation type="unfinished" />
+        <translation>Beweis wird erstellt und gesendet …</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1108" />
         <location filename="../src/shieldedwidget.cpp" line="1138" />
         <source>New Private Payment</source>
-        <translation type="unfinished" />
+        <translation>Neue private Zahlung</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1130" />
         <location filename="../src/shieldedwidget.cpp" line="1200" />
         <source>Review Outcome</source>
-        <translation type="unfinished" />
+        <translation>Ergebnis prüfen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1131" />
@@ -6817,12 +6817,12 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1136" />
         <source>previous private payment was rejected; review before explicit retry</source>
-        <translation type="unfinished" />
+        <translation>Die vorherige private Zahlung wurde abgelehnt; prüfen Sie sie vor einem ausdrücklichen erneuten Versuch</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1206" />
         <source>previous operation was rejected; review before retrying</source>
-        <translation type="unfinished" />
+        <translation>Die vorherige Operation wurde abgelehnt; prüfen Sie sie vor einem erneuten Versuch</translation>
     </message>
 </context>
 <context>
@@ -7136,14 +7136,14 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/debugconsole.cpp" line="96" />
         <location filename="../src/debugconsole.cpp" line="153" />
         <source>Log Level:</source>
-        <translation type="unfinished" />
+        <translation>Protokollstufe:</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="47" />
         <location filename="../src/debugconsole.cpp" line="104" />
         <location filename="../src/debugconsole.cpp" line="161" />
         <source>Pause Scroll</source>
-        <translation type="unfinished" />
+        <translation>Scrollen pausieren</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="49" />
@@ -7157,22 +7157,22 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/debugconsole.cpp" line="107" />
         <location filename="../src/debugconsole.cpp" line="164" />
         <source>Export...</source>
-        <translation type="unfinished" />
+        <translation>Exportieren …</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="204" />
         <source>Debug Console - Live Logs</source>
-        <translation type="unfinished" />
+        <translation>Debug-Konsole – Live-Protokolle</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="375" />
         <source>Export Failed</source>
-        <translation type="unfinished" />
+        <translation>Export fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="384" />
         <source>Export Successful</source>
-        <translation type="unfinished" />
+        <translation>Export erfolgreich</translation>
     </message>
 </context>
 <context>
@@ -7815,50 +7815,50 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/contributionsection.cpp" line="41" />
         <source>Your contribution</source>
-        <translation type="unfinished" />
+        <translation>Ihr Beitrag</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="58" />
         <location filename="../src/contributionsection.cpp" line="70" />
         <source>Bytes in</source>
-        <translation type="unfinished" />
+        <translation>Bytes empfangen</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="62" />
         <location filename="../src/contributionsection.cpp" line="73" />
         <source>Bytes out</source>
-        <translation type="unfinished" />
+        <translation>Bytes gesendet</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="66" />
         <location filename="../src/contributionsection.cpp" line="76" />
         <source>Relay traffic</source>
-        <translation type="unfinished" />
+        <translation>Weiterleitungsverkehr</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="91" />
         <source>Registrants active:</source>
-        <translation type="unfinished" />
+        <translation>Aktive Registrierungen:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="93" />
         <source>Blocks served (24h):</source>
-        <translation type="unfinished" />
+        <translation>Ausgelieferte Blöcke (24 h):</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="95" />
         <source>Hints sent:</source>
-        <translation type="unfinished" />
+        <translation>Gesendete Hinweise:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="97" />
         <source>Peers via gossip:</source>
-        <translation type="unfinished" />
+        <translation>Peers über Gossip:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="105" />
         <source>Decentralization score:</source>
-        <translation type="unfinished" />
+        <translation>Dezentralisierungswert:</translation>
     </message>
     <message>
         <location filename="../src/contributionsection.cpp" line="117" />
@@ -8044,29 +8044,29 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/discoverysection.cpp" line="146" />
         <source>Seeder operator service</source>
-        <translation type="unfinished" />
+        <translation>Seeder-Betreiberdienst</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="148" />
         <source>No</source>
-        <translation type="unfinished" />
+        <translation>Nein</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="149" />
         <source>Yes</source>
-        <translation type="unfinished" />
+        <translation>Ja</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="150" />
         <location filename="../src/discoverysection.cpp" line="222" />
         <source>Start Seeder</source>
-        <translation type="unfinished" />
+        <translation>Seeder starten</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="152" />
         <location filename="../src/discoverysection.cpp" line="227" />
         <source>Off</source>
-        <translation type="unfinished" />
+        <translation>Aus</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="182" />
@@ -8076,22 +8076,22 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/discoverysection.cpp" line="221" />
         <source>Stop Seeder</source>
-        <translation type="unfinished" />
+        <translation>Seeder stoppen</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="227" />
         <source>Running</source>
-        <translation type="unfinished" />
+        <translation>Läuft</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="245" />
         <source>Copy relay endpoint</source>
-        <translation type="unfinished" />
+        <translation>Weiterleitungs-Endpunkt kopieren</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="248" />
         <source>Dial via relay hint</source>
-        <translation type="unfinished" />
+        <translation>Über Weiterleitungshinweis wählen</translation>
     </message>
 </context>
 <context>
@@ -8099,12 +8099,12 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/identitysection.cpp" line="22" />
         <source>Connection</source>
-        <translation type="unfinished" />
+        <translation>Verbindung</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="42" />
         <source>Copy node_id</source>
-        <translation type="unfinished" />
+        <translation>node_id kopieren</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="101" />
@@ -8149,27 +8149,27 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/identitysection.cpp" line="148" />
         <source>Direct active</source>
-        <translation type="unfinished" />
+        <translation>Direkt aktiv</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="150" />
         <source>Direct outbound active</source>
-        <translation type="unfinished" />
+        <translation>Ausgehend direkt aktiv</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="152" />
         <source>Direct connection unavailable</source>
-        <translation type="unfinished" />
+        <translation>Direkte Verbindung nicht verfügbar</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="156" />
         <source>Relay fallback ready</source>
-        <translation type="unfinished" />
+        <translation>Weiterleitung als Rückfallebene bereit</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="158" />
         <source>Tor active</source>
-        <translation type="unfinished" />
+        <translation>Tor aktiv</translation>
     </message>
 </context>
 <context>
@@ -8179,18 +8179,18 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
         <location filename="../src/mynodedashboard.cpp" line="83" />
         <location filename="../src/mynodedashboard.cpp" line="88" />
         <source>Advanced details</source>
-        <translation type="unfinished" />
+        <translation>Erweiterte Details</translation>
     </message>
     <message>
         <location filename="../src/mynodedashboard.cpp" line="54" />
         <source>Show technical node, peer, relay, and discovery diagnostics.</source>
-        <translation type="unfinished" />
+        <translation>Technische Diagnose zu Node, Peers, Weiterleitung und Discovery anzeigen.</translation>
     </message>
     <message>
         <location filename="../src/mynodedashboard.cpp" line="82" />
         <location filename="../src/mynodedashboard.cpp" line="87" />
         <source>Hide advanced details</source>
-        <translation type="unfinished" />
+        <translation>Erweiterte Details ausblenden</translation>
     </message>
 </context>
 <context>
@@ -8373,32 +8373,32 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/peerssection.cpp" line="180" />
         <source>Copy endpoint</source>
-        <translation type="unfinished" />
+        <translation>Endpunkt kopieren</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="181" />
         <source>Copy peer details</source>
-        <translation type="unfinished" />
+        <translation>Peer-Details kopieren</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="183" />
         <source>Try direct reconnect</source>
-        <translation type="unfinished" />
+        <translation>Direkte Neuverbindung versuchen</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="185" />
         <source>Disconnect peer</source>
-        <translation type="unfinished" />
+        <translation>Peer trennen</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="186" />
         <source>Ban 1 hour</source>
-        <translation type="unfinished" />
+        <translation>1 Stunde sperren</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="187" />
         <source>Ban 24 hours</source>
-        <translation type="unfinished" />
+        <translation>24 Stunden sperren</translation>
     </message>
 </context>
 <context>
@@ -8406,7 +8406,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/topologysection.cpp" line="82" />
         <source>Topology — waiting for peers</source>
-        <translation type="unfinished" />
+        <translation>Topologie – warte auf Peers</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="109" />
@@ -8421,32 +8421,32 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/topologysection.cpp" line="201" />
         <source>Copy endpoint</source>
-        <translation type="unfinished" />
+        <translation>Endpunkt kopieren</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="203" />
         <source>Try direct reconnect</source>
-        <translation type="unfinished" />
+        <translation>Direkte Neuverbindung versuchen</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="209" />
         <source>Dial via relay hint</source>
-        <translation type="unfinished" />
+        <translation>Über Weiterleitungshinweis wählen</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="216" />
         <source>Disconnect peer</source>
-        <translation type="unfinished" />
+        <translation>Peer trennen</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="217" />
         <source>Ban 1 hour</source>
-        <translation type="unfinished" />
+        <translation>1 Stunde sperren</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="218" />
         <source>Ban 24 hours</source>
-        <translation type="unfinished" />
+        <translation>24 Stunden sperren</translation>
     </message>
 </context>
 </TS>
