@@ -157,8 +157,9 @@ it is explicitly not a transparent-script or chainstate-validity result.
 
 The draft starts with numeric version 7, two zero bytes, `DNORCHTX`, profile byte
 1 and a four-byte payload length. The two zero bytes distinguish this candidate
-from ordinary transparent v7 transactions. No shared Transaction parser or live
-admission path is changed; old-binary reindex/storage exclusion is still unproven.
+from ordinary transparent v7 transactions. A typed shared reader now handles the new envelope separately from historical
+transactions. Legacy callers explicitly reject its marker; no live Orchard
+admission path is enabled. Old-binary reindex/storage exclusion remains unproven.
 This codec is **not frozen or activated**. See [transaction envelope](TRANSACTION_ENVELOPE.md).
 
 The C++ test compares the bytes and both identities with an independent Python

@@ -6,7 +6,9 @@ on:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'
       - 'CMakeLists.txt'
-      - 'include/consensus/tx_validation.h'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
       - 'cmake/**'
       - 'depends/**'
       - '.gitmodules'
@@ -17,7 +19,9 @@ on:
       - 'rust/orchard_backend/**'
       - '.github/workflows/orchard-backend.yml'
       - 'CMakeLists.txt'
-      - 'include/consensus/tx_validation.h'
+      - 'include/**'
+      - 'src/**'
+      - 'tests/**'
       - 'cmake/**'
       - 'depends/**'
       - '.gitmodules'
@@ -67,13 +71,13 @@ jobs:
         run: |
           cmake -S rust/orchard_backend -B build-orchard-backend -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
           cmake --build build-orchard-backend --parallel 2
-      - name: Require both executable test lanes
+      - name: Require all executable test lanes
         run: |
           ctest --test-dir build-orchard-backend --show-only=json-v1 > orchard-test-inventory.json
           python3 - <<'PY'
           import json
           tests = {x['name'] for x in json.load(open('orchard-test-inventory.json'))['tests']}
-          if tests != {'OrchardBackendCpp', 'OrchardBackendRust'}:
+          if tests != {'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardTransactionReader'}:
               raise SystemExit(f'wrong Orchard test inventory: {tests}')
           PY
           ctest --test-dir build-orchard-backend --output-on-failure --no-tests=error
@@ -132,26 +136,26 @@ jobs:
             -DDINERO_USE_VENDORED_DEPS=ON -DENABLE_GRPC=OFF \
             -DDINERO_BUILD_ORCHARD_BACKEND=ON -DDINERO_ORCHARD_BUILD_TESTS=ON \
             -DBUILD_TESTING=ON
-      - name: Build daemon and root Orchard target
+      - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_orchard_backend --parallel 2
+          cmake --build build-orchard-root --target dinerod test_orchard_backend test_orchard_transaction_reader test_orchard_legacy_boundary --parallel 2
           ./build-orchard-root/dinerod --version
-      - name: Require and execute both root Orchard lanes
+      - name: Require and execute all root Orchard lanes
         run: |
-          ctest --test-dir build-orchard-root -R '^OrchardBackend(Cpp|Rust)$' --show-only=json-v1 > orchard-root-inventory.json
+          ctest --test-dir build-orchard-root -R '^(OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardLegacyBoundary)$' --show-only=json-v1 > orchard-root-inventory.json
           python3 - <<'PYCODE'
           import json
           with open('orchard-root-inventory.json') as f:
               tests = json.load(f)['tests']
           names = [x['name'] for x in tests]
-          if sorted(names) != ['OrchardBackendCpp', 'OrchardBackendRust']:
+          if sorted(names) != ['OrchardBackendCpp', 'OrchardBackendRust', 'OrchardLegacyBoundary', 'OrchardTransactionReader']:
               raise SystemExit(f'Wrong root Orchard inventory: {names}')
           for test in tests:
               props = {p['name']: p['value'] for p in test.get('properties', [])}
               if props.get('DISABLED') or 'orchard' not in props.get('LABELS', []):
                   raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
           PYCODE
-          ctest --test-dir build-orchard-root -R '^OrchardBackend(Cpp|Rust)$' --output-on-failure --no-tests=error
+          ctest --test-dir build-orchard-root -R '^(OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardLegacyBoundary)$' --output-on-failure --no-tests=error
       - name: Retain root integration evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

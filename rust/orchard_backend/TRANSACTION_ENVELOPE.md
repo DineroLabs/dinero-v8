@@ -3,6 +3,8 @@
 This is an implementation candidate on the integration branch, not a
 frozen consensus protocol. No new bytes are routed into production admission.
 Existing transparent v7 and historical v5/v6 serialization remain untouched.
+The shared typed reader is implemented, while legacy callers explicitly reject
+the marked family until full admission and activation are wired.
 
 ## Exact framing
 
@@ -110,3 +112,11 @@ The component always verifies both spend and binding signatures. Four bounded
 reject-only cases (noncanonical R/S for each role) pass alongside the valid
 fixture. This is source-backed encoding evidence, not a replacement for the
 independent cryptographic review or an assertion of unique randomized signatures.
+
+## Shared host reader
+
+See [typed parsing boundary](../../docs/design/orchard-shared-reader-2026-09-24.md).
+`ParsedTransaction` preserves the variant and strong identity types. Calling
+`Historical()` on an Orchard result throws instead of fabricating a transparent
+transaction. The root block decoder test verifies that enabling the component
+still does not admit Orchard blocks through current callers.

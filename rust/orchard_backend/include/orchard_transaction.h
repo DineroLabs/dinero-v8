@@ -50,6 +50,8 @@ public:
     [[nodiscard]] static std::pair<TransactionEnvelope, std::size_t>
         DecodePrefix(std::span<const std::uint8_t> bytes);
     const std::vector<std::uint8_t>& CanonicalBytes() const noexcept { return bytes_; }
+    // Without witnesses this is the txid preimage, not a fully authorized spend.
+    std::vector<std::uint8_t> TxidPreimage() const;
     const std::vector<EnvelopeInput>& Inputs() const noexcept { return inputs_; }
     const std::vector<TransparentOutput>& Outputs() const noexcept { return outputs_; }
     std::uint32_t LockTime() const noexcept { return lock_time_; }

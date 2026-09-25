@@ -193,6 +193,9 @@ VerifiedEnvelopeAuthorization TransactionEnvelope::VerifyAuthorization(SigningDo
     auto authorization=bundle_.VerifyAuthorization(Context(domain,coins));
     return VerifiedEnvelopeAuthorization(std::move(authorization),Txid(),Wtxid(),bytes_);
 }
-Hash TransactionEnvelope::Txid() const { return Hash256(Encode(lock_time_,inputs_,outputs_,fee_,bundle_bytes_,false)); }
+Hash TransactionEnvelope::Txid() const { return Hash256(TxidPreimage()); }
 Hash TransactionEnvelope::Wtxid() const { return Hash256(bytes_); }
+std::vector<std::uint8_t> TransactionEnvelope::TxidPreimage() const {
+    return Encode(lock_time_,inputs_,outputs_,fee_,bundle_bytes_,false);
+}
 } // namespace dinero::orchard

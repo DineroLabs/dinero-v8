@@ -53,6 +53,26 @@ elseif(UNIX)
   target_link_libraries(dinero_orchard_backend PUBLIC m)
 endif()
 option(DINERO_ORCHARD_BUILD_TESTS "Build Orchard component qualification tests" ON)
+
+# Typed host reader: Orchard never becomes an ordinary Transaction. The root
+# build uses the real consensus-core primitives. Standalone qualification builds
+# those exact source files, not a second parser or mock implementation.
+set(ORCHARD_HOST_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+add_library(dinero_transaction_reader STATIC "${ORCHARD_HOST_ROOT}/src/primitives/transaction_reader.cpp")
+target_include_directories(dinero_transaction_reader PUBLIC "${ORCHARD_HOST_ROOT}/include")
+target_link_libraries(dinero_transaction_reader PUBLIC dinero_orchard_backend)
+if(TARGET dinero_consensus_core)
+  target_link_libraries(dinero_transaction_reader PUBLIC dinero_consensus_core)
+else()
+  add_library(orchard_historical_codec STATIC
+    "${ORCHARD_HOST_ROOT}/src/primitives/transaction.cpp"
+    "${ORCHARD_HOST_ROOT}/src/primitives/transaction_serializer.cpp"
+    "${ORCHARD_HOST_ROOT}/src/primitives/uint256.cpp"
+    "${ORCHARD_HOST_ROOT}/src/crypto/sha256.cpp")
+  target_compile_features(orchard_historical_codec PUBLIC cxx_std_20)
+  target_include_directories(orchard_historical_codec PUBLIC "${ORCHARD_HOST_ROOT}/include")
+  target_link_libraries(dinero_transaction_reader PUBLIC orchard_historical_codec)
+endif()
 if(DINERO_ORCHARD_BUILD_TESTS)
   # Fail closed if the host monetary constant changes or cannot be read.
   # The C++ test compares this host value to both its own value and Rust's ABI.
@@ -68,9 +88,18 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   target_compile_definitions(test_orchard_backend PRIVATE DINERO_HOST_MAX_MONEY=${ORCHARD_HOST_MAX_MONEY})
   target_link_libraries(test_orchard_backend PRIVATE dinero_orchard_backend)
   add_test(NAME OrchardBackendCpp COMMAND test_orchard_backend "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  add_executable(test_orchard_transaction_reader "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_transaction_reader.cpp")
+  target_link_libraries(test_orchard_transaction_reader PRIVATE dinero_transaction_reader)
+  if(TARGET dinero_consensus_core)
+    target_compile_definitions(test_orchard_transaction_reader PRIVATE DINERO_READER_ROOT_BLOCK_TESTS=1)
+    # The pure core archive intentionally omits runtime chain selection; its
+    # real block/Utreexo codec needs the canonical implementation in this test.
+    target_sources(test_orchard_transaction_reader PRIVATE "${ORCHARD_HOST_ROOT}/src/consensus/chainparams_impl.cpp")
+  endif()
+  add_test(NAME OrchardTransactionReader COMMAND test_orchard_transaction_reader "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()

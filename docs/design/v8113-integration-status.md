@@ -7,6 +7,8 @@ This branch collects release implementation for review and qualification against
 
 - Pinned Orchard backend, immutable C++ signing context and bounded draft outer
   transaction envelope, with exact-source component and root-build CI jobs.
+- Typed shared reader with historical-format regression tests and a default
+  legacy-parser rejection boundary for marked Orchard envelopes.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
   outer/inner signing-profile identity.
 - Explicit domain/profile checks across Rust/C++, canonical synthetic vectors,
@@ -20,8 +22,8 @@ its own full Linux build and test runs.
 
 ## Still required before release
 
-- Connect the marked envelope to shared parsing, validation, mempool, relay,
-  storage and block assembly while preserving historical encodings.
+- Connect the typed shared reader to validated mempool, relay, storage and
+  block assembly; current production callers still reject Orchard.
 - Resolve transparent inputs against authenticated chainstate and validate
   scripts, maturity, anchors, nullifiers, monetary conservation and activation.
 - Atomic Orchard frontier/pool/nullifier updates with UTXOs, tip and undo;

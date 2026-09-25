@@ -13566,3 +13566,10 @@ add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
 set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
     LABELS "daemon;utreexo;recovery;regression"
     TIMEOUT 30)
+
+# Always-on parser boundary: no Rust/backend enablement is required to reject
+# the new marked family in historical transaction/block readers.
+add_executable(test_orchard_legacy_boundary tests/consensus/test_orchard_legacy_boundary.cpp)
+target_link_libraries(test_orchard_legacy_boundary PRIVATE dinero_consensus_core)
+add_test(NAME OrchardLegacyBoundary COMMAND test_orchard_legacy_boundary)
+set_tests_properties(OrchardLegacyBoundary PROPERTIES LABELS "consensus;serialization;orchard" TIMEOUT 30)
