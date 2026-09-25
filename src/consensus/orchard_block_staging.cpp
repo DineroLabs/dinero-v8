@@ -8,6 +8,7 @@
 #include <map>
 #include "consensus/undo.h"
 #include "consensus/utreexo_delta_codec.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 #include "util/hex.h"
 #include "crypto/sha256.h"
 #include <cstdio>
@@ -304,7 +305,7 @@ StagedOrchardBlock StageOrchardBlockCoinsAndStateUnderChainstateLock(ChainDB& db
     return {std::move(coins),std::move(state)};
 }
 
-void StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(ChainDB& db,
+std::vector<OrchardCoinChange> StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(ChainDB& db,
     const ChainWriteToken& token, const OrchardBlockContext& context,
     const OrchardBlockCandidate& block, bool require_witness_commitment, rocksdb::WriteBatch& batch) {
     EmptyBatchGuard guard(batch);
@@ -378,12 +379,19 @@ void StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(ChainDB& db,
         if (coin.status()!=Status::NotFound) throw OrchardStateLookupError(coin.status());
     }
     StorageCheck(db.stageOrchardDisconnect(token,*state,batch));
-    for (const auto& point:expected_created) StorageCheck(db.deleteCoin(token,point.txid.AsUint256(),point.vout,&batch));
+    std::vector<OrchardCoinChange> changes;
+    changes.reserve(expected_created.size()+undo->spent.size());
+    for (const auto& point:expected_created) {
+        StorageCheck(db.deleteCoin(token,point.txid.AsUint256(),point.vout,&batch));
+        changes.push_back({point,created.at(point),std::nullopt});
+    }
     for (const auto& coin:undo->spent) {
         const UTXOEntry restored(AmountUna::Una(coin.value),coin.scriptPubKey,coin.height,coin.is_coinbase);
         StorageCheck(db.putCoin(token,coin.prev_txid,coin.prev_vout,StoredCoin(restored),&batch));
+        changes.push_back({OutPoint(TxId(coin.prev_txid),coin.prev_vout),std::nullopt,restored});
     }
     guard.Keep();
+    return changes;
 }
 
 StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
@@ -447,7 +455,7 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     return {std::move(prepared),std::move(transition)};
 }
 
-UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
+StagedOrchardDisconnect StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     const ChainWriteToken& token,const OrchardBlockContext& context,const OrchardBlockCandidate& block,
     const BlockHeader& parent,const UtreexoForest& forest,bool require_witness_commitment,
     rocksdb::WriteBatch& batch) {
@@ -477,8 +485,31 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
         catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
     }();
     if(undo_parent)CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,restored,*undo_parent);
-    StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,context,block,
+    auto changes=StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,context,block,
         require_witness_commitment,batch);
+    // The undo record's shape alone cannot authenticate its restored coins.
+    // Require correspondence under the existing creation-height leaf rules to the delta
+    // whose rollback just reproduced the selected parent's forest commitment.
+    std::set<UtreexoHash> removed,added;
+    for(const auto& leaf:delta.deletedLeaves)
+        if(!removed.insert(leaf.leafHash).second)throw OrchardStateLookupError(Status::Corruption);
+    for(const auto& leaf:delta.addedLeaves)
+        if(!added.insert(leaf.hash).second)throw OrchardStateLookupError(Status::Corruption);
+    for(const auto& change:changes) {
+        const auto hash=[&](const UTXOEntry& coin) {
+            return HashUTXOForCreationHeight(change.outpoint.txid.AsUint256(),change.outpoint.vout,
+                coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
+        };
+        if(change.before) {
+            if(added.erase(hash(*change.before))!=1)throw OrchardStateLookupError(Status::Corruption);
+        }
+        if(change.after) {
+            const auto leaf=hash(*change.after);
+            if(removed.erase(leaf)!=1 || !restored.findLeafPosition(leaf))
+                throw OrchardStateLookupError(Status::Corruption);
+        }
+    }
+    if(!removed.empty() || !added.empty())throw OrchardStateLookupError(Status::Corruption);
     // Coins/undo have now been checked against the exact body. Reconstruct
     // the filter independently, including inputs spent within this same block.
     // The encoded-data hash alone does not authenticate the stored element count.
@@ -523,7 +554,7 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     StorageCheck(db.deleteUtreexoCheckpointWithChecksum(token,int(context.height),&batch));
     StageMarkers(db,token,parent,context.height-1,parent_work,batch);
     guard.Keep();
-    return restored;
+    return {std::move(changes),std::move(restored)};
 }
 void AuditOrchardChainstateTipUnderLock(ChainDB& db,const ChainWriteToken& token,
     const OrchardBlockContext& context,const BlockHeader& parent,const UtreexoForest& forest,

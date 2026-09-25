@@ -7,6 +7,7 @@
 #include <sstream>
 #include "consensus/utreexo_delta_codec.h"
 #include "storage/forest_restore.h"
+#include "util/hex.h"
 #include "consensus/chainparams.h"
 #include <fstream>
 #include <spawn.h>
@@ -24,6 +25,25 @@ static void Tip(ChainDB& db, uint256 hash, uint32_t height, rocksdb::WriteBatch&
 }
 static void Commit(ChainDB& db, rocksdb::WriteBatch& batch) {
     CHECK(db.writeBatch(token, std::move(batch), true) == Status::Ok);
+}
+static UTXOEntry MemoryCoin(const Coin& coin) {
+    Bytes script;CHECK(util::unhex(coin.script_pubkey,script));CHECK(coin.height>=0);
+    return UTXOEntry(AmountUna::Una(coin.amount),script,uint32_t(coin.height),
+        coin.coinbase,coin.is_confidential,coin.commitment);
+}
+static void CheckMemoryCoins(const ChainDB& db,const ConsensusUTXOSet& live) {
+    size_t count=0;
+    CHECK(db.forEachUTXO([&](const uint256& hash,uint32_t n,const Coin& stored) {
+        ++count;const auto coin=live.GetCoin(OutPoint(TxId(hash),n));
+        const auto expected=MemoryCoin(stored);CHECK(coin!=nullptr);
+        CHECK(coin->value==expected.value && coin->scriptPubKey==expected.scriptPubKey &&
+            coin->height==expected.height && coin->isCoinbase==expected.isCoinbase &&
+            coin->is_confidential==expected.is_confidential && coin->commitment==expected.commitment);
+        return true;
+    })==Status::Ok);
+    CHECK(live.GetSetSize()==count);
+    const auto tip=RequiredValue(db.getTip());
+    CHECK(live.GetBestBlock()==tip.hash && live.GetHeight()==uint32_t(tip.height));
 }
 static PreparedOrchardState StageFixture(ChainDB& db, const ChainWriteToken& token,
     OrchardBlockContext& context, std::span<const VerifiedOrchardAuthorizations> auth,
@@ -257,25 +277,27 @@ static void CrashLifecycle(const std::string& executable,const std::string& base
     const auto restored=StageOrchardChainstateDisconnectUnderLock(reference,token,context,block,parent,forest,true,batch);
     Commit(reference,batch);reference.close();const auto disconnected=ConsensusRows(oracle.path);
     CHECK(reference.init(oracle.path)==Status::Ok);rocksdb::WriteBatch reconnect;
-    (void)StageOrchardChainstateConnectUnderLock(reference,token,context,block,parent,restored,{},true,checkpoint,reconnect);
+    (void)StageOrchardChainstateConnectUnderLock(reference,token,context,block,parent,restored.forest,{},true,checkpoint,reconnect);
     Commit(reference,reconnect);reference.close();
     CHECK(ConsensusRows(oracle.path)==before);
     const auto block_file=path/"synthetic-orchard-block.bin";
     {std::ofstream file(block_file,std::ios::binary);const auto& bytes=block.WireBytes();
         file.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());CHECK(file.good());}
     for(const auto& step:std::vector<std::pair<std::string,std::string>>{
-        {"disconnect","pre"},{"disconnect","post"},{"connect","pre"},{"connect","post"}}) {
+        {"disconnect","pre"},{"disconnect","post"},{"connect","pre"},{"connect","post"},
+        {"disconnect","published"},{"connect","published"}}) {
         std::vector<std::string> args{executable,"--crash-child",base,path.string(),block_file.string(),
             step.first,step.second,checkpoint?"1":"0"};
         std::vector<char*> argv;for(auto& a:args)argv.push_back(a.data());argv.push_back(nullptr);
         pid_t child=0;CHECK(posix_spawn(&child,executable.c_str(),nullptr,nullptr,argv.data(),environ)==0);
         int status=0;pid_t waited;do{waited=waitpid(child,&status,0);}while(waited<0 && errno==EINTR);
-        CHECK(waited==child && WIFEXITED(status) && WEXITSTATUS(status)==(step.second=="pre"?73:74));
+        CHECK(waited==child && WIFEXITED(status) &&
+            WEXITSTATUS(status)==(step.second=="pre"?73:step.second=="post"?74:75));
         const bool connected=(step.first=="disconnect")== (step.second=="pre");
         CHECK(ConsensusRows(path)==(connected?before:disconnected));
         ChainDB reopened;CHECK(reopened.init(path)==Status::Ok);UtreexoForest recovered;std::string error;
         CHECK(storage::RestoreHistoricalForest(reopened,connected?context.height:context.height-1,recovered,error)==Status::Ok);
-        CHECK(recovered.dumpInternalState()==(connected?forest:restored).dumpInternalState());
+        CHECK(recovered.dumpInternalState()==(connected?forest:restored.forest).dumpInternalState());
         if(connected)AuditOrchardChainstateTipUnderLock(reopened,token,context,parent,recovered,true);
         else CHECK(reopened.getOrchardState().status()==Status::NotFound);
         reopened.close();
@@ -289,17 +311,47 @@ static void CrashChild(int argc,char** argv) {
     const auto block=OrchardBlockCandidate::DecodeExact(bytes);const auto& header=block.Header();
     const auto parent=RequiredValue(db.getHeader(header.prev_block_hash));
     OrchardBlockContext context{20001,header.GetHash(),header.prev_block_hash,20001,keys.domain};
-    const bool connect=std::string(argv[5])=="connect",post=std::string(argv[6])=="post",checkpoint=std::string(argv[7])=="1";
-    CHECK(connect || std::string(argv[5])=="disconnect");CHECK(post || std::string(argv[6])=="pre");
+    const bool connect=std::string(argv[5])=="connect",post=std::string(argv[6])=="post",
+        published=std::string(argv[6])=="published",checkpoint=std::string(argv[7])=="1";
+    CHECK(connect || std::string(argv[5])=="disconnect");CHECK(post || published || std::string(argv[6])=="pre");
     UtreexoForest forest;std::string error;
     CHECK(storage::RestoreHistoricalForest(db,connect?20000:20001,forest,error)==Status::Ok);
+    // No original connect result exists in this fresh process. Restore the
+    // exact current memory view from persisted coins and the checked forest.
+    ConsensusUTXOSet live;
+    CHECK(db.forEachUTXO([&](const uint256& hash,uint32_t n,const Coin& coin) {
+        CHECK(live.AddCoin(OutPoint(TxId(hash),n),MemoryCoin(coin)));return true;
+    })==Status::Ok);
+    live.ReplaceForestGuarded(forest);
+    live.SetBestBlock(connect?context.parent_hash:context.block_hash,connect?20000:20001);
+    CheckMemoryCoins(db,live);
     rocksdb::WriteBatch batch;
-    if(connect)(void)StageOrchardChainstateConnectUnderLock(db,token,context,block,parent,forest,{},true,checkpoint,batch);
-    else (void)StageOrchardChainstateDisconnectUnderLock(db,token,context,block,parent,forest,true,batch);
-    if(post)Commit(db,batch);
-    // Test subprocess only: no close, destructors, memory publication, or second
-    // commit. A separate process must reopen and find exactly old or new rows.
-    std::_Exit(post?74:73);
+    std::vector<UTXOPublicationChange> changes;UtreexoForest next_forest;
+    if(connect) {
+        auto staged=StageOrchardChainstateConnectUnderLock(db,token,context,block,parent,forest,{},true,checkpoint,batch);
+        for(const auto& change:staged.block.coins.Changes())changes.push_back({change.outpoint,change.before,change.after});
+        next_forest=staged.forest.After();
+    } else {
+        auto staged=StageOrchardChainstateDisconnectUnderLock(db,token,context,block,parent,forest,true,batch);
+        for(const auto& change:staged.coins)changes.push_back({change.outpoint,change.before,change.after});
+        next_forest=std::move(staged.forest);
+    }
+    auto publication=PreparedUTXOPublication::PrepareUnderLock(live,connect?20000:20001,
+        connect?context.parent_hash:context.block_hash,connect?parent.utreexo_root:header.utreexo_root,
+        changes,std::move(next_forest),connect?20001:20000,
+        connect?context.block_hash:context.parent_hash,connect?header.utreexo_root:parent.utreexo_root);
+    publication.CheckReadyUnderLock();
+    if(post || published)Commit(db,batch);
+    if(published) {
+        std::move(publication).PublishAfterCommitUnderLock();
+        CheckMemoryCoins(db,live);
+        const auto marker=RequiredValue(db.getForestTipMarker());
+        const auto commitment=live.SnapshotForestCommitment();
+        CHECK(Bytes(marker.forest_root.begin(),marker.forest_root.end())==commitment);
+    }
+    // Test subprocess only: no close/destructors. The parent reopens the store
+    // at pre-commit, post-commit/pre-publication and post-publication boundaries.
+    std::_Exit(published?75:post?74:73);
 }
 static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     const OrchardBlockCandidate& parent,const UtreexoForest& parent_forest,bool checkpoint) {
@@ -337,7 +389,7 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     rocksdb::WriteBatch disconnect;
     const auto restored=StageOrchardChainstateDisconnectUnderLock(db,token,next,child,parent.Header(),staged.forest.After(),true,disconnect);
     Commit(db,disconnect);
-    CHECK(restored.dumpInternalState()==parent_forest.dumpInternalState());
+    CHECK(restored.forest.dumpInternalState()==parent_forest.dumpInternalState());
     CHECK(RequiredValue(db.getOrchardState())==parent_state);
 }
 static void AtomicForest(const std::string& base,bool checkpoint,const std::string& crash_executable={}) {
@@ -456,6 +508,17 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
     CHECK(storage::RestoreHistoricalForest(db,c.height,reopened,error)==Status::Ok);
     CHECK(reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
     AuditOrchardChainstateTipUnderLock(db,token,c,parent,reopened,true);
+    // Reopening must not trust a structurally valid coin undo whose value no
+    // longer agrees with the authenticated parent forest's restored leaf.
+    const auto saved_undo=RequiredValue(db.getUndo(c.block_hash));
+    CHECK(!saved_undo.spent.empty());
+    auto inconsistent_undo=saved_undo;++inconsistent_undo.spent[0].value;
+    CHECK(db.putUndo(token,c.block_hash,inconsistent_undo)==Status::Ok);
+    rocksdb::WriteBatch inconsistent;
+    LookupReject(Status::Corruption,[&]{(void)StageOrchardChainstateDisconnectUnderLock(
+        db,token,c,block,parent,reopened,true,inconsistent);});
+    CHECK(inconsistent.Count()==0 && RequiredValue(db.getTip()).hash==c.block_hash);
+    CHECK(db.putUndo(token,c.block_hash,saved_undo)==Status::Ok);
     const auto filter=BuildOrchardBlockFilter(staged.block.coins);
     CHECK(RequiredValue(db.getBlockFilter(c.block_hash)).data==filter.encoded_data);
     CHECK(RequiredValue(db.getBlockFilter(c.block_hash)).element_count==filter.element_count);
@@ -492,17 +555,17 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
     {
         rocksdb::WriteBatch abandoned;
         const auto undone=StageOrchardChainstateDisconnectUnderLock(db,token,c,block,parent,reopened,true,abandoned);
-        CHECK(undone.dumpInternalState()==before);
+        CHECK(undone.forest.dumpInternalState()==before);
         CHECK(RequiredValue(db.getTip()).hash==c.block_hash);
     }
     rocksdb::WriteBatch disconnect;
     const auto restored=StageOrchardChainstateDisconnectUnderLock(db,token,c,block,parent,reopened,true,disconnect);
-    CHECK(restored.dumpInternalState()==before && reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
+    CHECK(restored.forest.dumpInternalState()==before && reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
     std::vector<UTXOPublicationChange> reverse_changes;
-    for(const auto& change:memory_changes)
-        reverse_changes.push_back({change.outpoint,change.after,change.before});
+    for(const auto& change:restored.coins)
+        reverse_changes.push_back({change.outpoint,change.before,change.after});
     auto rollback=PreparedUTXOPublication::PrepareUnderLock(live,c.height,c.block_hash,
-        header.utreexo_root,reverse_changes,restored,c.height-1,parent.GetHash(),parent.utreexo_root);
+        header.utreexo_root,reverse_changes,restored.forest,c.height-1,parent.GetHash(),parent.utreexo_root);
     rollback.CheckReadyUnderLock();
     CHECK(live.GetBestBlock()==c.block_hash);
     Commit(db,disconnect);

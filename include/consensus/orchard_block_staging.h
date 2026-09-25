@@ -53,7 +53,10 @@ struct StagedOrchardBlock {
 // coverage/current coins, and leave retained conventional undo for reconnect.
 // Same empty-batch/lock/outer-commit contract; forest and tip restoration remain
 // the caller's responsibility in this same batch. No historical-path change.
-void StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(
+// Returns the exact reverse coin patch from the checked persisted undo/body.
+// This partial helper does not authenticate those restored coins to a forest;
+// use the full chainstate disconnect before preparing runtime publication.
+std::vector<OrchardCoinChange> StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(
     ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
     const OrchardBlockCandidate&, bool require_witness_commitment, rocksdb::WriteBatch&);
 
@@ -78,12 +81,18 @@ struct StagedOrchardChainstate {
     const OrchardBranchMtpLookup&,
     bool require_witness_commitment, bool checkpoint, rocksdb::WriteBatch&);
 
-// Reads the stored delta, so no pre-restart transition object is required.
-// Returns a private restored forest to publish only after the outer commit.
+struct StagedOrchardDisconnect {
+    std::vector<OrchardCoinChange> coins;
+    UtreexoForest forest;
+};
+// Reads the stored delta and conventional undo; no pre-restart transition
+// object is required. The reverse coin patch is bound to the exact delta leaves
+// and authenticated parent forest. Prepare memory publication from this patch
+// and private restored forest, then publish only after the outer commit.
 // Retains block/header/undo/delta/filter records for reconnect; removes the disconnected
 // active transaction/height indexes and checkpoint. Existing transaction-index
 // rows are never overwritten on connect. Same empty-batch/remaining-obligations contract.
-[[nodiscard]] UtreexoForest StageOrchardChainstateDisconnectUnderLock(
+[[nodiscard]] StagedOrchardDisconnect StageOrchardChainstateDisconnectUnderLock(
     ChainDB&, const ChainWriteToken&, const OrchardBlockContext&,
     const OrchardBlockCandidate&, const BlockHeader& parent, const UtreexoForest&,
     bool require_witness_commitment,

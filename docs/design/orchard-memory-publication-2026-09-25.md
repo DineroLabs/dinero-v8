@@ -22,6 +22,20 @@ holds its selected activation/writer lock across this entire sequence:
    failure, discard the prepared publication; no live coin/forest/tip changes.
 
 Connect and disconnect use the same primitive with opposite checked patches.
+The full staged disconnect now returns its reverse coin patch together with the
+restored forest. It derives removals from the exact stored body and restores
+from conventional undo, then matches both sets to the durable forest delta.
+Each restored coin must also exist as its creation-height leaf in the restored
+parent forest. Shape-valid undo with a changed value is therefore a local
+corruption error, with an empty abandoned batch. The partial coin/state helper
+does not perform this forest binding and is insufficient for runtime publication.
+This uses the historical creation-height leaf rules; it does not add fields to
+older leaf encodings or independently revalidate the entire origin history.
+
+After restart the host can use that returned patch; it must not reconstruct it
+by retaining or reversing an old in-memory connect result. Same-block transient
+outputs remain absent from both the durable and in-memory rollback.
+
 It is not a block validator and does not prove that the caller committed. The
 host must supply patches from validated connection or exact checked undo, never
 from peer-provided claims. It cannot serve as a snapshot import or tip repair.
@@ -51,6 +65,14 @@ ordinary C++ allocations are disabled during publication. The real Orchard
 staging fixture exercises the same API around successful outer ChainDB writes,
 including ephemeral same-block outputs, with and without forest checkpoints.
 Its persistent-state crash checks remain in place.
+Fresh-process checks now restore all current coins and the forest from the
+temporary database, prepare both directions, and terminate at twelve boundaries
+across checkpoint/no-checkpoint cases: before commit, after commit before memory
+publication, and after publication, for connect and disconnect. Published memory
+is compared field by field with the committed database, including coin count,
+scripts, amounts, creation metadata, tip and forest commitment. The parent then
+reopens and compares the complete selected persistent state. These are generated
+store tests, not a whole-daemon lifecycle claim.
 
 This is a runtime integration prerequisite, not a new production caller.
 ChainstateService connect/disconnect, startup restoration, DNRS/legacy-state
