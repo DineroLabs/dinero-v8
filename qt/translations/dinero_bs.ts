@@ -189,7 +189,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="51" />
         <source>To:</source>
-        <translation type="unfinished" />
+        <translation>Za:</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="57" />
@@ -292,7 +292,7 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1567" />
         <source>&lt;p&gt;&lt;b&gt;Important Reminders:&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Keep your seed phrase safe and offline&lt;/li&gt;&lt;li&gt;Never share your seed phrase with anyone&lt;/li&gt;&lt;li&gt;Make multiple backups stored in different locations&lt;/li&gt;&lt;li&gt;Your password encrypts the wallet file, but the seed phrase is the ultimate backup&lt;/li&gt;&lt;/ul&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p&gt;&lt;b&gt;Važne napomene:&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Čuvajte svoju seed frazu na sigurnom i van mreže&lt;/li&gt;&lt;li&gt;Nikada je nikome ne dijelite&lt;/li&gt;&lt;li&gt;Napravite više kopija na različitim mjestima&lt;/li&gt;&lt;li&gt;Lozinka šifruje datoteku novčanika, ali seed fraza je krajnja kopija&lt;/li&gt;&lt;/ul&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1585" />
@@ -404,7 +404,7 @@ Vratite se i pažljivo zapišite seed frazu.</translation>
     <message>
         <location filename="../src/walletwizard.cpp" line="753" />
         <source>&lt;b&gt;Your BIP39 seed phrase works across Dinero wallets.&lt;/b&gt;&lt;br&gt;&lt;br&gt;✅ &lt;b&gt;Taproot lane:&lt;/b&gt; BIP86 &lt;code&gt;din1p...&lt;/code&gt; addresses for mobile-friendly payments&lt;br&gt;✅ &lt;b&gt;Quantum-safe lane:&lt;/b&gt; purpose 88 P2MR &lt;code&gt;din1r...&lt;/code&gt; addresses using ML-DSA-65 in Qt&lt;br&gt;&lt;br&gt;Mobile restore uses the same seed for Taproot payments. P2MR keys derive from that same seed as mobile support expands.&lt;br&gt;&lt;br&gt;&lt;i&gt;One seed phrase, clear address lanes.&lt;/i&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Vaša BIP39 seed fraza radi u svim Dinero novčanicima.&lt;/b&gt;&lt;br&gt;&lt;br&gt;✅ &lt;b&gt;Taproot traka:&lt;/b&gt; BIP86 &lt;code&gt;din1p…&lt;/code&gt; adrese za plaćanja pogodna za mobitel&lt;br&gt;✅ &lt;b&gt;Kvantno sigurna traka:&lt;/b&gt; P2MR adrese s namjenom 88 &lt;code&gt;din1r…&lt;/code&gt; koje u Qt-u koriste ML-DSA-65&lt;br&gt;&lt;br&gt;Vraćanje na mobitelu koristi isti seed za Taproot plaćanja. P2MR ključevi se izvode iz istog seeda kako se podrška za mobitel bude širila.&lt;br&gt;&lt;br&gt;&lt;i&gt;Jedna seed fraza, jasno odvojene trake adresa.&lt;/i&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="765" />
@@ -430,7 +430,13 @@ Please check that:
 • ConnectionManager is connected
 
 Click 'Generate Seed' to try again.</source>
-        <translation type="unfinished" />
+        <translation>⏱️ Zahtjev je istekao nakon 30 sekundi.
+
+Provjerite:
+• radi li daemon
+• je li ConnectionManager povezan
+
+Kliknite „Generiši seed“ da pokušate ponovo.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1023" />
@@ -924,7 +930,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="425" />
         <source>Contract fund movement is disabled in v8.1.9. The daemon does not yet produce a canonical signing package bound to the funding outpoint, action, destination, amount, chain, and expiry.</source>
-        <translation type="unfinished" />
+        <translation>Pomjeranje sredstava ugovora je onemogućeno u v8.1.9. Daemon još ne pravi kanonski paket za potpisivanje vezan za izlaz finansiranja, radnju, odredište, iznos, lanac i istek.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
@@ -959,7 +965,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="544" />
         <source>Imported contract signatures cannot be broadcast in v8.1.9 because the daemon cannot validate a bound signing package. No RPC was called.</source>
-        <translation type="unfinished" />
+        <translation>Uvezeni potpisi ugovora se ne mogu objaviti u v8.1.9 jer daemon ne može provjeriti vezani paket za potpisivanje. Nijedan RPC poziv nije napravljen.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="564" />
@@ -1013,7 +1019,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="631" />
         <source>The signature package was parsed but not submitted. Bound contract signing is not available in v8.1.9.</source>
-        <translation type="unfinished" />
+        <translation>Paket potpisa je obrađen, ali nije poslan. Vezano potpisivanje ugovora nije dostupno u v8.1.9.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="747" />
@@ -1193,12 +1199,14 @@ Pretvorba preko mosta koristi zaključani kurs.</translation>
         <source>Failed to generate QR code. The data may be too large.
 
 Please use the JSON file export method instead.</source>
-        <translation type="unfinished" />
+        <translation>QR kod se ne može generisati. Podaci su možda preveliki.
+
+Umjesto toga koristite izvoz u JSON datoteku.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1425" />
         <source>&lt;b&gt;Instructions for Offline Signing:&lt;/b&gt;&lt;br&gt;1. Scan this QR code with your offline signing device&lt;br&gt;2. Sign the sighash with your private key(s)&lt;br&gt;3. The signed transaction can be returned via QR or JSON file&lt;br&gt;4. Use '📥 Import Signatures' to complete the transaction</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Upute za potpisivanje bez mreže:&lt;/b&gt;&lt;br&gt;1. Skenirajte ovaj QR kod uređajem za potpisivanje bez mreže&lt;br&gt;2. Potpišite sighash svojim privatnim ključem ili ključevima&lt;br&gt;3. Potpisana transakcija se može vratiti QR kodom ili JSON datotekom&lt;br&gt;4. Koristite „📥 Uvezi potpise“ da dovršite transakciju</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1440" />
@@ -1218,7 +1226,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1490" />
         <source>&lt;b&gt;Import Methods:&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;Paste JSON Data:&lt;/b&gt; Copy signed transaction JSON and paste below&lt;br&gt;2. &lt;b&gt;Load from File:&lt;/b&gt; Use the '📥 Import Signatures' button instead&lt;br&gt;3. &lt;b&gt;Scan QR (Future):&lt;/b&gt; Camera-based QR scanning coming soon</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Načini uvoza:&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;Zalijepite JSON:&lt;/b&gt; kopirajte JSON potpisane transakcije i zalijepite ispod&lt;br&gt;2. &lt;b&gt;Učitaj iz datoteke:&lt;/b&gt; koristite dugme „📥 Uvezi potpise“&lt;br&gt;3. &lt;b&gt;Skeniraj QR (uskoro):&lt;/b&gt; skeniranje kamerom stiže uskoro</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1501" />
@@ -1276,7 +1284,8 @@ Provjerite je li transakcija potpisana.</translation>
         <location filename="../src/hardwarewalletwidget.cpp" line="205" />
         <source>Sign transactions using hardware wallets (Coldcard, Ledger, Trezor, Keystone, etc.)
 PSBT here means Partially Signed Dinero Transaction. It is a binary signing container shown as Base64 for copy/paste, files, and QR transfer.</source>
-        <translation type="unfinished" />
+        <translation>Potpisujte transakcije hardverskim novčanicima (Coldcard, Ledger, Trezor, Keystone i drugi).
+PSBT ovdje znači djelimično potpisana Dinero transakcija. To je binarni spremnik za potpisivanje prikazan kao Base64 radi kopiranja, datoteka i prenosa QR kodom.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="234" />
@@ -1290,7 +1299,11 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
 3. Sign Taproot inputs on your hardware wallet or use a connected USB session
 4. Import or finalize the signed Dinero PSBT
 5. Broadcast the extracted final transaction</source>
-        <translation type="unfinished" />
+        <translation>1. Napravite nepotpisanu transakciju u DineroCoin novčaniku
+2. Izvezite djelimično potpisanu Dinero transakciju u datoteku
+3. Potpišite Taproot ulaze na hardverskom novčaniku ili koristite povezanu USB sesiju
+4. Uvezite ili finalizirajte potpisani Dinero PSBT
+5. Objavite izdvojenu konačnu transakciju</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="248" />
@@ -1367,7 +1380,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="349" />
         <source>Connect a USB device with direct PSBT-signing support in the USB tab, then sign the PSBT currently loaded here.</source>
-        <translation type="unfinished" />
+        <translation>Povežite USB uređaj s podrškom za direktno potpisivanje PSBT-a u kartici USB, pa potpišite PSBT koji je ovdje učitan.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="352" />
@@ -1377,7 +1390,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="354" />
         <source>Attempt to finalize the current Partially Signed Dinero Transaction and extract a broadcastable transaction.</source>
-        <translation type="unfinished" />
+        <translation>Pokušaj finalizirati trenutnu djelimično potpisanu Dinero transakciju i izdvojiti transakciju spremnu za objavu.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="357" />
@@ -1411,7 +1424,15 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
 2. Scan with hardware wallet camera
 3. Sign on device
 4. Scan signed Dinero PSBT QR code back</source>
-        <translation type="unfinished" />
+        <translation>Koristite QR kodove za potpisivanje na uređajima bez mreže, poput:
+• Keystone (ranije Cobo Vault)
+• Passport (Foundation Devices)
+• AirGap Vault
+
+1. Prikažite nepotpisani Dinero PSBT kao QR kod
+2. Skenirajte ga kamerom hardverskog novčanika
+3. Potpišite na uređaju
+4. Skenirajte nazad QR kod potpisanog Dinero PSBT-a</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="405" />
@@ -1471,7 +1492,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="524" />
         <source>No transaction loaded. Scanning this demo QR reads a plain-text placeholder, not a spend request.</source>
-        <translation type="unfinished" />
+        <translation>Nijedna transakcija nije učitana. Skeniranje ovog demo QR koda čita tekstualni rezervisani sadržaj, a ne zahtjev za trošenje.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="543" />
@@ -1495,7 +1516,15 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
 • File / SD Card and QR flows remain the fallback signing paths
 
 Click 'Detect Devices' to check whether this daemon build can see connected USB wallets.</source>
-        <translation type="unfinished" />
+        <translation>Trenutni status USB-a:
+• Otkrivanje uređaja je eksperimentalno i ovisi o podršci za USB u pozadinskom dijelu
+• Otkrivanje trenutno prepoznaje Ledger i Trezor uređaje kada su dostupni
+• Ledger sesije podržavaju povezivanje, izvoz otiska i direktno potpisivanje PSBT-a
+• Trezor sesije mogu podržati povezivanje, izvoz otiska, provjeru adrese, izvoz descriptora samo za praćenje i ograničeno direktno BIP86 potpisivanje PSBT-a kada je pozadinski dio izgrađen s ENABLE_TREZOR=ON
+• Trezor potpisivanje preko USB-a ograničeno je na BIP86 Taproot PSBT-ove aktivnog novčanika koji odgovaraju učitanom skupu descriptora
+• Datoteka, SD kartica i QR tokovi ostaju zamjenski načini potpisivanja
+
+Kliknite „Otkrij uređaje“ da provjerite vidi li ova verzija daemona povezane USB novčanike.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="612" />
@@ -1521,7 +1550,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="628" />
         <source>Open a supported USB device session after detection. Direct signing availability depends on the device family.</source>
-        <translation type="unfinished" />
+        <translation>Otvorite sesiju podržanog USB uređaja nakon otkrivanja. Dostupnost direktnog potpisivanja ovisi o porodici uređaja.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="651" />
@@ -1592,7 +1621,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="706" />
         <source>Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors.</source>
-        <translation type="unfinished" />
+        <translation>Uvezi izvezene descriptore za primanje i kusur u učitani novčanik kao descriptore samo za praćenje.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="712" />
@@ -1677,7 +1706,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1026" />
         <source>Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors?</source>
-        <translation type="unfinished" />
+        <translation>Uvesti izvezene descriptore za primanje i kusur u učitani novčanik kao descriptore samo za praćenje?</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1033" />
@@ -1857,7 +1886,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/walletwizard.cpp" line="1827" />
         <source>&lt;p style='background: #ff922b; color: white; padding: 8px; border-radius: 4px;'&gt;⚠️ &lt;b&gt;Advanced Feature:&lt;/b&gt; Only use this if you have a Taproot descriptor (e.g., from mining setup or another wallet). For most users, restoring from a seed phrase is recommended.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='background: #ff922b; color: white; padding: 8px; border-radius: 4px;'&gt;⚠️ &lt;b&gt;Napredna mogućnost:&lt;/b&gt; koristite ovo samo ako imate Taproot descriptor (npr. iz podešavanja Rudara ili drugog novčanika). Većini korisnika se preporučuje vraćanje iz seed fraze.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1837" />
@@ -1882,12 +1911,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/walletwizard.cpp" line="1891" />
         <source>&lt;p style='font-size: 10px; color: #e03131; margin-top: 10px;'&gt;&lt;b&gt;Security:&lt;/b&gt; Your wallet must be &lt;b&gt;unlocked&lt;/b&gt; to import private keys. If your wallet is encrypted, unlock it first from the main toolbar.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='font-size: 10px; color: #e03131; margin-top: 10px;'&gt;&lt;b&gt;Sigurnost:&lt;/b&gt; novčanik mora biti &lt;b&gt;otključan&lt;/b&gt; za uvoz privatnih ključeva. Ako je šifrovan, prvo ga otključajte s glavne trake.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1899" />
         <source>&lt;p style='font-size: 10px; color: #666;'&gt;&lt;b&gt;Note:&lt;/b&gt; Importing a Taproot descriptor will automatically trigger a blockchain rescan to find any existing transactions. This may take some time depending on blockchain size.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='font-size: 10px; color: #666;'&gt;&lt;b&gt;Napomena:&lt;/b&gt; uvoz Taproot descriptora automatski pokreće ponovno skeniranje lanca radi pronalaska postojećih transakcija. To može potrajati, ovisno o veličini lanca.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1926" />
@@ -1935,7 +1964,8 @@ Kliknite „Uvezi Taproot ključ“ nakon unosa ispravnog descriptora.</translat
         <location filename="../src/mainwindow.cpp" line="2052" />
         <source>This can take up to ~3 minutes on first start.
 Please wait — do NOT close or restart. The wallet opens automatically once the node is ready.</source>
-        <translation type="unfinished" />
+        <translation>Ovo može potrajati do oko 3 minute pri prvom pokretanju.
+Sačekajte i NEMOJTE zatvarati ni ponovo pokretati. Novčanik se otvara sam kada čvor bude spreman.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2057" />
@@ -2011,7 +2041,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2344" />
         <source>&lt;h3&gt;Dinero Wallet&lt;/h3&gt;&lt;p&gt;Version: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Real Money For Free People.&lt;br&gt;Post-quantum, utreexo-native, fair-launched.&lt;/p&gt;&lt;hr&gt;&lt;p style='color:#888;font-size:90%;'&gt;Built from &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href='https://dinero-coin.com'&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href='https://github.com/DineroLabs'&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h3&gt;Dinero novčanik&lt;/h3&gt;&lt;p&gt;Verzija: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Pravi novac za slobodne ljude.&lt;br&gt;Postkvantni, izvorno utreexo, pošteno lansiran.&lt;/p&gt;&lt;hr&gt;&lt;p style='color:#888;font-size:90%;'&gt;Izgrađen iz &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href='https://dinero-coin.com'&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href='https://github.com/DineroLabs'&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2357" />
@@ -2291,7 +2321,9 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
         <source>Observed through this local node's P2P connection.
 This is not the remote node's active validated tip.
 Validation requires that node's authenticated blockchain RPC.</source>
-        <translation type="unfinished" />
+        <translation>Posmatrano kroz P2P vezu ovog lokalnog čvora.
+Ovo nije aktivni potvrđeni vrh udaljenog čvora.
+Za provjeru je potreban autentifikovani RPC tog čvora.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2833" />
@@ -2341,7 +2373,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2913" />
         <source>&lt;b&gt;One seed, two address lanes.&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;BIP39 seed phrase&lt;/b&gt; restores the same wallet across Dinero Qt and mobile. &lt;b&gt;BIP86 Taproot&lt;/b&gt; addresses (&lt;code&gt;din1p...&lt;/code&gt;) are the mobile-friendly payment lane. &lt;b&gt;Purpose 88 P2MR&lt;/b&gt; addresses (&lt;code&gt;din1r...&lt;/code&gt;) are the quantum-safe lane using ML-DSA-65 signatures.&lt;br&gt;&lt;br&gt;✅ Desktop (Qt Wallet) - full node, mining, Taproot, P2MR quantum-safe receive/spend&lt;br&gt;✅ Mobile (iOS Wallet) - seed-compatible Taproot payments; P2MR keys derive from the same seed as mobile support expands</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Jedan seed, dvije trake adresa.&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;BIP39 seed fraza&lt;/b&gt; vraća isti novčanik i u Dinero Qt-u i na mobitelu. &lt;b&gt;BIP86 Taproot&lt;/b&gt; adrese (&lt;code&gt;din1p…&lt;/code&gt;) su traka za plaćanja pogodna za mobitel. &lt;b&gt;P2MR adrese s namjenom 88&lt;/b&gt; (&lt;code&gt;din1r…&lt;/code&gt;) su kvantno sigurna traka koja koristi ML-DSA-65 potpise.&lt;br&gt;&lt;br&gt;✅ Računar (Qt novčanik) – puni čvor, Rudari, Taproot, kvantno sigurno P2MR primanje i trošenje&lt;br&gt;✅ Mobitel (iOS novčanik) – Taproot plaćanja kompatibilna sa seedom; P2MR ključevi se izvode iz istog seeda kako se podrška za mobitel bude širila</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2924" />
@@ -2368,7 +2400,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2940" />
         <source>Total wallet balance: public and shielded funds, including covenant-locked value. See Shielded for funds available for ordinary private payments.</source>
-        <translation type="unfinished" />
+        <translation>Ukupno stanje novčanika: javna i zaštićena sredstva, uključujući vrijednost zaključanu u covenantima. Za sredstva raspoloživa za obična privatna plaćanja vidi Zaštićeno.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2944" />
@@ -2469,7 +2501,11 @@ Quantum-Safe: ML-DSA-65 post-quantum signatures
 
 Privacy is a send mode, not an address type.
 Select private/transparent on the Send tab.</source>
-        <translation type="unfinished" />
+        <translation>Taproot: brzi, mali potpisi (secp256k1)
+Kvantno sigurno: ML-DSA-65 postkvantni potpisi
+
+Privatnost je način slanja, a ne vrsta adrese.
+Odaberite privatno ili transparentno u kartici Šalji.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3087" />
@@ -2526,7 +2562,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3178" />
         <source>Contracts are programmable spending rules attached to your funds. Vaults lock funds to a specific template. Timelocks release after a duration. Create, fund, track and spend public covenants here. Public covenants require a matching recovery descriptor. Private covenants recover from encrypted funding notes and require separate network activation.</source>
-        <translation type="unfinished" />
+        <translation>Ugovori su programabilna pravila trošenja vezana za vaša sredstva. Trezori zaključavaju sredstva za određeni šablon. Timelockovi ih oslobađaju nakon isteka roka. Ovdje pravite, finansirate, pratite i trošite javne covenante. Javni covenanti traže odgovarajući descriptor za vraćanje. Privatni covenanti se vraćaju iz šifrovanih nota finansiranja i traže zasebnu aktivaciju na mreži.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3188" />
@@ -2541,7 +2577,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3214" />
         <source>Public payments use transparent funds. Private payments and conversions open the Shielded composer, subject to network activation. Covenants currently use public or private funds through their respective covenant controls.</source>
-        <translation type="unfinished" />
+        <translation>Javna plaćanja koriste transparentna sredstva. Privatna plaćanja i pretvorbe otvaraju Zaštićeno, ovisno o aktivaciji na mreži. Covenanti trenutno koriste javna ili privatna sredstva kroz svoje kontrole.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3244" />
@@ -2599,7 +2635,10 @@ Select private/transparent on the Send tab.</source>
 Timelock: unavailable pending Core lock enforcement
 Payroll: batch payment to multiple recipients (CTV)
 Recovery and custom scripts are not available</source>
-        <translation type="unfinished" />
+        <translation>Jednostavno zaključavanje: sredstva vezana za šablon trošenja
+Timelock: nedostupno dok Core ne uvede primjenu zaključavanja
+Platni spisak: grupno plaćanje na više primalaca (CTV)
+Vraćanje i prilagođene skripte nisu dostupni</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3336" />
@@ -2612,7 +2651,8 @@ Samo unaprijed određeni primalac ih može primiti.</translation>
         <location filename="../src/mainwindow.cpp" line="3346" />
         <source>Unavailable in this build. Recovery contracts require a descriptor-backed
 multi-path Taproot profile. The former prototype was not safe for funds.</source>
-        <translation type="unfinished" />
+        <translation>Nedostupno u ovoj verziji. Ugovori za vraćanje traže Taproot profil
+s više putanja podržan descriptorima. Raniji prototip nije bio siguran za sredstva.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3354" />
@@ -2639,7 +2679,9 @@ multi-path Taproot profile. The former prototype was not safe for funds.</source
         <source>Payroll: batch payment locked to multiple recipients.
 The CTV template commits to the exact output set.
 Amounts and recipients are public. Choose Private covenants for payments to one or two fixed shielded recipients.</source>
-        <translation type="unfinished" />
+        <translation>Platni spisak: grupno plaćanje zaključano za više primalaca.
+CTV šablon se obavezuje na tačan skup izlaza.
+Iznosi i primaoci su javni. Za plaćanja jednom ili dvoje unaprijed određenih zaštićenih primalaca odaberite privatne covenante.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3410" />
@@ -2853,7 +2895,8 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
         <location filename="../src/mainwindow.cpp" line="4077" />
         <source>&lt;h2&gt;⛏️ Mining&lt;/h2&gt;&lt;p&gt;&lt;b&gt;Use command-line miner:&lt;/b&gt;&lt;/p&gt;&lt;p&gt;1. Generate address in Wallet tab&lt;/p&gt;&lt;p&gt;2. Run in terminal:&lt;/p&gt;&lt;pre&gt;./build/dinero-miner --rpc http://127.0.0.1:20998/ \
   --address YOUR_ADDRESS --threads 8&lt;/pre&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;⛏️ Rudari&lt;/h2&gt;&lt;p&gt;&lt;b&gt;Koristite rudara iz komandne linije:&lt;/b&gt;&lt;/p&gt;&lt;p&gt;1. Generišite adresu u kartici Novčanik&lt;/p&gt;&lt;p&gt;2. Pokrenite u terminalu:&lt;/p&gt;&lt;pre&gt;./build/dinero-miner --rpc http://127.0.0.1:20998/ \
+  --address VASA_ADRESA --threads 8&lt;/pre&gt;</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4124" />
@@ -2861,7 +2904,10 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
 Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).
 Pool (SV2) = Noise-encrypted pool mining. Choose Shared rewards
 for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
-        <translation type="unfinished" />
+        <translation>Samostalno = kopajte direktno svojim čvorom.
+Pool (Stratum V1) = šaljite shareove V1 poolu (staro, nešifrovano).
+Pool (SV2) = Rudari u poolu sa Noise šifrovanjem. Odaberite dijeljene nagrade
+za PPLNS isplate ili samostalne nagrade za coinbase u vlasništvu rudara.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4131" />
@@ -2928,7 +2974,8 @@ GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</translation>
         <location filename="../src/mainwindow.cpp" line="4266" />
         <source>Pool Shared = each accepted share contributes to the pool's PPLNS window.
 Pool Solo = the miner owns the block coinbase, but receives nothing unless it finds a block.</source>
-        <translation type="unfinished" />
+        <translation>Pool dijeljeno = svaki prihvaćeni share doprinosi PPLNS prozoru poola.
+Pool samostalno = rudar je vlasnik coinbasea bloka, ali ne dobija ništa osim ako pronađe blok.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4283" />
@@ -3090,7 +3137,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4739" />
         <source>Live daemon diagnostics for Utreexo proof caching and proof serving. This is not the asset bridge; it shows whether this node can serve compact proof data to stateless/mobile peers.</source>
-        <translation type="unfinished" />
+        <translation>Dijagnostika daemona uživo za keširanje i posluživanje Utreexo dokaza. Ovo nije most za sredstva; pokazuje može li ovaj čvor posluživati sažete podatke dokaza čvorovima bez stanja i mobilnim čvorovima.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4747" />
@@ -3506,7 +3553,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5398" />
         <source>&lt;b&gt;Wallet backup:&lt;/b&gt; copies wallet databases, HD wallet state, and wallet registry from the live daemon data directory. &lt;b&gt;Chain backup:&lt;/b&gt; optional; it can be large and can always be rebuilt by syncing again.</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Kopija novčanika:&lt;/b&gt; kopira baze novčanika, stanje HD novčanika i registar novčanika iz aktivnog direktorija s podacima daemona. &lt;b&gt;Kopija lanca:&lt;/b&gt; opcionalna; može biti velika i uvijek se može ponovo izgraditi novom sinhronizacijom.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5411" />
@@ -3559,7 +3606,11 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
 This is optional because the node can resync from the network.
 
 Continue?</source>
-        <translation type="unfinished" />
+        <translation>Podaci lanca mogu biti veliki i kopiranje može trajati nekoliko minuta.
+
+Ovo je opcionalno jer se čvor može ponovo sinhronizovati s mreže.
+
+Nastaviti?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5516" />
@@ -3704,7 +3755,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="5853" />
         <source>Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.</source>
-        <translation type="unfinished" />
+        <translation>Otvorite Zaštićeno da šaljete privatno ili pretvarate sredstva. Daemon javlja je li aktivacija dostupna. Kada bude aktivno, koristite Covenants za kontrole privatnih ugovora.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5855" />
@@ -3749,7 +3800,7 @@ Adrese za primanje pogodne za mobitel izvode se iz istog BIP39 seeda.</translati
     <message>
         <location filename="../src/mainwindow.cpp" line="6028" />
         <source>🕶️ Private receive addresses are wallet-generated private addresses. Copy the address directly or view its underlying Taproot details above.</source>
-        <translation type="unfinished" />
+        <translation>🕶️ Privatne adrese za primanje su privatne adrese koje generiše novčanik. Kopirajte adresu direktno ili pogledajte njene Taproot detalje iznad.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="6040" />
@@ -4090,7 +4141,12 @@ Please generate a new Taproot address first:
 1. Go to Receive tab
 2. Click 'New Transparent Address' to generate a Taproot address
 3. Return here and click 'Use Wallet' again</source>
-        <translation type="unfinished" />
+        <translation>U vašem novčaniku nema adresa.
+
+Prvo generišite novu Taproot adresu:
+1. Idite u karticu Primi
+2. Kliknite „Nova transparentna adresa“ da generišete Taproot adresu
+3. Vratite se ovdje i ponovo kliknite „Koristi novčanik“</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9816" />
@@ -4216,7 +4272,7 @@ Izgradite Stratum server ili postavite DINERO_STRATUM_PATH.</translation>
     <message>
         <location filename="../src/mainwindow.cpp" line="11505" />
         <source>This transaction-history record has no recovery descriptor. The wallet will not guess its spending conditions. Import the original descriptor before attempting a spend.</source>
-        <translation type="unfinished" />
+        <translation>Ovaj zapis iz historije transakcija nema descriptor za vraćanje. Novčanik neće nagađati njegove uvjete trošenja. Uvezite originalni descriptor prije pokušaja trošenja.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11541" />
@@ -4231,7 +4287,12 @@ Please start the daemon first:
 1. Click 'Start Daemon' button
 2. Wait for connection to establish
 3. Then try starting the miner again.</source>
-        <translation type="unfinished" />
+        <translation>Rudari se ne mogu pokrenuti – daemon nije povezan.
+
+Prvo pokrenite daemon:
+1. Kliknite dugme „Pokreni daemon“
+2. Sačekajte da se veza uspostavi
+3. Pa ponovo pokušajte pokrenuti rudara.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11552" />
@@ -4249,7 +4310,15 @@ Steps to set up mining:
 4. Return here and click 'Use Wallet'
 
 Mining rewards will be sent to your wallet's Taproot address.</source>
-        <translation type="unfinished" />
+        <translation>Prvo postavite adresu za Rudare.
+
+Koraci za podešavanje:
+1. Idite u karticu Primi
+2. Otključajte novčanik (ako je šifrovan)
+3. Kliknite „Nova transparentna adresa“ da generišete Taproot adresu
+4. Vratite se ovdje i kliknite „Koristi novčanik“
+
+Nagrade Rudara će biti poslane na Taproot adresu vašeg novčanika.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11653" />
@@ -4366,7 +4435,9 @@ Postavite ga u kartici Rudari (Pool endpoint), naprimjer:
         <source>Could not convert mining address to a scriptPubKey.
 
 SV2 pool mining requires a Taproot (din1p…) or P2MR (din1r…) bech32m address. Generate one in the Receive tab, then click 'Use Wallet'.</source>
-        <translation type="unfinished" />
+        <translation>Adresa za Rudare se ne može pretvoriti u scriptPubKey.
+
+SV2 pool traži Taproot (din1p…) ili P2MR (din1r…) bech32m adresu. Generišite je u kartici Primi, pa kliknite „Koristi novčanik“.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12325" />
@@ -4378,7 +4449,9 @@ SV2 pool mining requires a Taproot (din1p…) or P2MR (din1r…) bech32m address
         <source>Pool Shared credits its PPLNS ledger to a Taproot (din1p...) address.
 
 Select a Taproot mining address, or choose Pool Solo to keep using this address.</source>
-        <translation type="unfinished" />
+        <translation>Pool dijeljeno upisuje u svoju PPLNS knjigu na Taproot (din1p…) adresu.
+
+Odaberite Taproot adresu za Rudare ili odaberite Pool samostalno da zadržite ovu adresu.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12637" />
@@ -4451,7 +4524,10 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
 
 Use this when balance/history appears missing.
 This can take time and lock some wallet actions until complete.</source>
-        <translation type="unfinished" />
+        <translation>Ponovo skenirati lanac radi stanja i historije transakcija novčanika?
+
+Koristite ovo kada stanje ili historija izgledaju nepotpuni.
+Može potrajati i zaključati neke radnje novčanika dok se ne završi.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12942" />
@@ -4488,14 +4564,18 @@ Pokrenuti ponovno skeniranje novčanika sada?</translation>
         <source>No wallet is loaded.
 
 Create or restore a wallet first. The BIP39 seed phrase is shown during setup and should be written down offline.</source>
-        <translation type="unfinished" />
+        <translation>Nijedan novčanik nije učitan.
+
+Prvo napravite ili vratite novčanik. BIP39 seed fraza se prikazuje tokom podešavanja i treba je zapisati van mreže.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13029" />
         <source>Wallet seed export, when supported by the daemon, requires the wallet to be unlocked first.
 
 Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
-        <translation type="unfinished" />
+        <translation>Izvoz seeda novčanika, kada ga daemon podržava, traži da novčanik prvo bude otključan.
+
+Otključajte ga, pa ponovo otvorite Kopija seeda / vraćanje na mobitelu.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13039" />
@@ -4510,7 +4590,7 @@ Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13055" />
         <source>Dinero can restore from the BIP39 phrase you wrote down during setup, but this wallet storage cannot reconstruct those words later. The original phrase is converted into wallet seed material, and that conversion is one-way unless a future daemon explicitly stores an encrypted mnemonic backup.</source>
-        <translation type="unfinished" />
+        <translation>Dinero se može vratiti iz BIP39 fraze koju ste zapisali tokom podešavanja, ali ova pohrana novčanika ne može kasnije rekonstruisati te riječi. Originalna fraza se pretvara u materijal seeda novčanika, a ta pretvorba je jednosmjerna osim ako neki budući daemon izričito ne sačuva šifrovanu kopiju mnemonika.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13061" />
@@ -4523,12 +4603,15 @@ Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
 
 Taproot payments: m/86'/1448'/0'/0/i, din1p...
 Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...</source>
-        <translation type="unfinished" />
+        <translation>Za vraćanje na mobitelu koristite originalnu papirnu kopiju seeda.
+
+Taproot plaćanja: m/86'/1448'/0'/0/i, din1p…
+Kvantno sigurni P2MR: m/88'/1448'/0'/0/i, din1r…</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13089" />
         <source>OK</source>
-        <translation type="unfinished" />
+        <translation>U redu</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13102" />
@@ -4542,7 +4625,11 @@ Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...</source>
 Anyone with this phrase can access your funds.
 
 Write it down on paper, store it offline, and never share it.</source>
-        <translation type="unfinished" />
+        <translation>Upravo ćete vidjeti svoju seed frazu.
+
+Svako ko ima ovu frazu može pristupiti vašim sredstvima.
+
+Zapišite je na papir, čuvajte je van mreže i nikada je ne dijelite.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13116" />
@@ -4623,7 +4710,7 @@ Write it down on paper, store it offline, and never share it.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13477" />
         <source>Port 20998 is already in use — another Dinero process may be running.</source>
-        <translation type="unfinished" />
+        <translation>Port 20998 je već zauzet — možda je pokrenut drugi Dinero proces.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13543" />
@@ -4670,7 +4757,14 @@ This will:
 • Disconnect GUI from blockchain
 
 Continue?</source>
-        <translation type="unfinished" />
+        <translation>Jeste li sigurni da želite zaustaviti daemon?
+
+To će:
+• zatražiti da se lokalni dinerod za ovaj direktorij novčanika zaustavi
+• otključati datoteke baze
+• prekinuti vezu sučelja s lancem
+
+Nastaviti?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13765" />
@@ -4756,7 +4850,11 @@ Koristite Šifruj novčanik da zaštitite privatne ključeve.</translation>
 • Taproot signing is now enabled
 • Wallet will auto-lock in 1 hour
 • You can now spend P2TR outputs and sign transactions</source>
-        <translation type="unfinished" />
+        <translation>✅ Novčanik je uspješno otključan.
+
+• Taproot potpisivanje je sada omogućeno
+• Novčanik će se sam zaključati za 1 sat
+• Sada možete trošiti P2TR izlaze i potpisivati transakcije</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13991" />
@@ -4962,7 +5060,15 @@ Koristite Šifruj novčanik da zaštitite privatne ključeve.</translation>
 Make sure you have written down your seed phrase.
 
 Do you want to continue?</source>
-        <translation type="unfinished" />
+        <translation>⚠️  Upravo ćete šifrovati svoj novčanik.
+
+• Za otključavanje i trošenje novčića trebat će vam lozinka
+• Novčanik će nakon šifrovanja biti zaključan
+• SAČUVAJTE SVOJU SEED FRAZU OD 12 RIJEČI – to je jedina kopija.
+
+Provjerite jeste li je zapisali.
+
+Želite li nastaviti?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14600" />
@@ -5000,7 +5106,13 @@ Razmislite o dužoj i jačoj lozinki.</translation>
 • You will need your password to spend funds
 
 🚨 IMPORTANT: Make sure you have saved your 12-word seed phrase!</source>
-        <translation type="unfinished" />
+        <translation>✅ Novčanik je uspješno šifrovan.
+
+• Vaš novčanik je sada zaključan i zaštićen
+• Taproot potpisivanje traži otključavanje lozinkom
+• Za trošenje sredstava trebat će vam lozinka
+
+🚨 VAŽNO: provjerite jeste li sačuvali svoju seed frazu od 12 riječi.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14674" />
@@ -5144,7 +5256,7 @@ Ostavite primaoca praznim da zaštitite u vlastitu privatnu traku.</translation>
     <message>
         <location filename="../src/mainwindow.cpp" line="15287" />
         <source>P2MR is a Dinero quantum-safe address type. Current hardware-wallet PSBT signing is Taproot/BIP86 only, so use the normal Send button for P2MR transfers.</source>
-        <translation type="unfinished" />
+        <translation>P2MR je Dinero vrsta adrese otporna na kvantne računare. Trenutno PSBT potpisivanje hardverskim novčanikom podržava samo Taproot/BIP86, pa za P2MR prenose koristite obično dugme Šalji.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15303" />
@@ -5236,7 +5348,9 @@ Would you like to unlock your wallet now?</source>
         <source>To request a block template, enter a Taproot mining address first.
 
 Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/tdin1p/rdin1p) address by default.</source>
-        <translation type="unfinished" />
+        <translation>Za zahtjev za šablon bloka prvo unesite Taproot adresu za Rudare.
+
+Savjet: Novčanik → Primi → Nova transparentna adresa po zadanom generiše Taproot (din1p/tdin1p/rdin1p) adresu.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15641" />
@@ -5859,12 +5973,12 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="128" />
         <source>&lt;span style='font-size:18px; font-weight:700;'&gt;Bring the cockpit online.&lt;/span&gt; Run your own pool, connect miners, and earn a transparent operator fee.</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='font-size:18px; font-weight:700;'&gt;Preuzmite komande.&lt;/span&gt; Vodite vlastiti pool, povežite rudare i zaradite providnu naknadu operatera.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="135" />
         <source>&lt;p style='margin-top:0;'&gt;A Dinero pool pays every contributing miner &lt;b&gt;directly in the block's coinbase&lt;/b&gt;, split by share weight, the moment a block is found.&lt;/p&gt;&lt;ul style='margin-left:-18px;'&gt;&lt;li&gt;&lt;b&gt;You never hold your miners' coins.&lt;/b&gt; No balances, no payout run, nothing to lose or be blamed for losing.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Your fee is provable.&lt;/b&gt; It is an output in the block — any miner can verify what you took, without trusting you.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You stop depending on someone else's server&lt;/b&gt;, and you choose which transactions go in your blocks.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You can pool with people who never have to trust you&lt;/b&gt; — sharing variance without anyone holding anyone's funds.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Hosting a pool means running a full node too: the pool gets block templates from your node and submits found blocks through it. That is the point — every pool operator is a node operator.&lt;/p&gt;&lt;p style='color:#9fb3c8;'&gt;Setup is one command on a Linux server. See &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; in the dinero-sv2 repository.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='margin-top:0;'&gt;Dinero pool plaća svakom rudaru koji doprinosi &lt;b&gt;direktno u coinbaseu bloka&lt;/b&gt;, podijeljeno po težini shareova, u trenutku kada se blok pronađe.&lt;/p&gt;&lt;ul style='margin-left:-18px;'&gt;&lt;li&gt;&lt;b&gt;Nikada ne držite novčiće svojih rudara.&lt;/b&gt; Nema stanja, nema isplatnih ciklusa, nema šta da se izgubi ni za šta da vas okrive.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Vaša naknada je dokaziva.&lt;/b&gt; To je izlaz u bloku — svaki rudar može provjeriti koliko ste uzeli, bez povjerenja u vas.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Prestajete ovisiti o tuđem serveru&lt;/b&gt; i sami birate koje transakcije idu u vaše blokove.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Možete se udružiti s ljudima koji vam nikada ne moraju vjerovati&lt;/b&gt; — dijelite varijansu, a niko ne drži ničija sredstva.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Vođenje poola znači i vođenje punog čvora: pool dobija šablone blokova od vašeg čvora i preko njega šalje pronađene blokove. U tome i jeste poenta — svaki operater poola je i operater čvora.&lt;/p&gt;&lt;p style='color:#9fb3c8;'&gt;Postavljanje je jedna komanda na Linux serveru. Vidi &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; u dinero-sv2 repozitoriju.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="161" />
@@ -5875,7 +5989,7 @@ Oznaka,Adresa</translation>
         <location filename="../src/poolpanel.cpp" line="163" />
         <location filename="../src/poolpanel.cpp" line="457" />
         <source>Point this at your pool's read-only status endpoint. It is loopback-only on the pool host by design, so from another machine open an SSH tunnel first:&lt;br/&gt;&lt;code&gt;ssh -N -L 4445:127.0.0.1:4445 you@your.host&lt;/code&gt;</source>
-        <translation type="unfinished" />
+        <translation>Usmjerite ovo na endpoint statusa vašeg poola koji je samo za čitanje. Namjerno je dostupan samo lokalno na hostu poola, pa s drugog računara prvo otvorite SSH tunel:&lt;br/&gt;&lt;code&gt;ssh -N -L 4445:127.0.0.1:4445 vi@vas.host&lt;/code&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="180" />
@@ -6057,7 +6171,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="377" />
         <source>Read from your node, not from the pool — so it is still right when the pool is down, and it cannot be overstated by a pool reporting on itself.&lt;br/&gt;&lt;b&gt;Lifetime&lt;/b&gt; is every fee ever paid to this address and only ever rises. &lt;b&gt;Unspent&lt;/b&gt; is what is still sitting there, so it falls when you move funds out.</source>
-        <translation type="unfinished" />
+        <translation>Čita se s vašeg čvora, a ne s poola — pa je tačno i kada je pool nedostupan, i pool ne može preuveličati podatke o sebi.&lt;br/&gt;&lt;b&gt;Ukupno&lt;/b&gt; je svaka naknada ikada plaćena na ovu adresu i samo raste. &lt;b&gt;Nepotrošeno&lt;/b&gt; je ono što je još tu, pa pada kada sredstva pomjerite.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="388" />
@@ -6077,7 +6191,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="473" />
         <source>&lt;span style='color:#e06c75;'&gt;Use HTTPS, or plain HTTP only through a loopback/SSH-tunnel endpoint such as 127.0.0.1.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Koristite HTTPS, ili obični HTTP samo preko lokalnog endpointa ili SSH tunela, npr. 127.0.0.1.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="536" />
@@ -6112,7 +6226,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="629" />
         <source>&lt;span style='color:#d8a37b;'&gt;Runtime fee changes are disabled on this pool. Re-run its installer with &lt;code&gt;--allow-fee-change&lt;/code&gt;.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Promjena naknade u radu je onemogućena na ovom poolu. Ponovo pokrenite njegov instalater s &lt;code&gt;--allow-fee-change&lt;/code&gt;.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="632" />
@@ -6122,22 +6236,22 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="641" />
         <source>&lt;span style='color:#e06c75;'&gt;Safety conflict: the pool did not confirm the exact fee you reviewed. Further changes are locked pending inspection.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Sigurnosni sukob: pool nije potvrdio tačnu naknadu koju ste pregledali. Dalje promjene su zaključane do provjere.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="646" />
         <source>&lt;span style='color:#8fbf7f;'&gt;Operator fee changed for the next template and persisted across restart.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#8fbf7f;'&gt;Naknada operatera je promijenjena za sljedeći šablon i sačuvana nakon ponovnog pokretanja.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="727" />
         <source>&lt;span style='color:#d8a37b;'&gt;Fee-change outcome uncertain. Reconnecting to reconcile the live policy.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Ishod promjene naknade je nejasan. Povezujem se ponovo da uskladim aktivna pravila.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1134" />
         <source>&lt;span style='color:#d8a37b;'&gt;A previous fee change has an uncertain outcome. Connect to reconcile it.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Prethodna promjena naknade ima nejasan ishod. Povežite se da je uskladite.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1144" />
@@ -6152,7 +6266,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/poolpanel.cpp" line="1152" />
         <source>&lt;span style='color:#e06c75;'&gt;Fee-policy reconciliation conflict. Inspect the pool before changing it again.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Sukob pri usklađivanju pravila naknade. Provjerite pool prije nove promjene.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1164" />
@@ -6190,7 +6304,7 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="24" />
         <source>Private covenants pay one or two fixed shielded recipients. Amounts and recipients are hidden; the earliest spend height and fee are public. Your wallet recovers the encrypted contract from its funding note. A public funding source reveals the amount entering the shielded pool.</source>
-        <translation type="unfinished" />
+        <translation>Privatni covenanti plaćaju jednom ili dvoje unaprijed određenih zaštićenih primalaca. Iznosi i primaoci su skriveni; najranija visina trošenja i naknada su javni. Vaš novčanik vraća šifrovani ugovor iz note kojom je finansiran. Javni izvor finansiranja otkriva iznos koji ulazi u zaštićeni pool.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="26" />
@@ -6225,12 +6339,12 @@ Oznaka,Adresa</translation>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="50" />
         <source>Reserved in the contract. The exact payment outputs cannot be reduced later to raise this fee. Funding fee is additional and estimated by the daemon.</source>
-        <translation type="unfinished" />
+        <translation>Rezervisano u ugovoru. Tačni izlazi plaćanja se kasnije ne mogu umanjiti da bi se povećala ova naknada. Naknada za finansiranje je zasebna i procjenjuje je daemon.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="53" />
         <source>Exact fee paid to fund this contract. If below relay policy, the daemon rejects the transaction without raising the fee.</source>
-        <translation type="unfinished" />
+        <translation>Tačna naknada plaćena za finansiranje ovog ugovora. Ako je ispod pravila prosljeđivanja, daemon odbija transakciju i ne povećava naknadu.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="62" />
@@ -6247,7 +6361,9 @@ Oznaka,Adresa</translation>
         <source>First check transaction history and refresh recovered contracts. The previous transaction may already have reached the network.
 
 Only continue after checking its outcome. This clears the local hold; it does not resubmit anything. A new funding operation creates a new contract and could duplicate a previously accepted payment.</source>
-        <translation type="unfinished" />
+        <translation>Prvo provjerite historiju transakcija i osvježite vraćene ugovore. Prethodna transakcija je možda već stigla do mreže.
+
+Nastavite tek nakon što provjerite njen ishod. Ovo uklanja lokalno zadržavanje; ništa se ponovo ne šalje. Nova operacija finansiranja pravi novi ugovor i mogla bi udvostručiti već prihvaćeno plaćanje.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="75" />
@@ -6267,7 +6383,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="131" />
         <source>No transaction ID returned. Outcome uncertain; check recovered contracts before taking further action.</source>
-        <translation type="unfinished" />
+        <translation>Nije vraćen ID transakcije. Ishod je nejasan; provjerite vraćene ugovore prije nego bilo šta poduzmete.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="175" />
@@ -6344,7 +6460,11 @@ Only continue after checking its outcome. This clears the local hold; it does no
 This can happen after a chain reset or major upgrade. Your wallet will be backed up automatically before wiping.
 
 Wipe chain data and restart with a fresh sync?</source>
-        <translation type="unfinished" />
+        <translation>Vaši podaci lanca su iz starije ili nekompatibilne verzije Dinera.
+
+To se može desiti nakon resetovanja lanca ili veće nadogradnje. Kopija novčanika će se napraviti automatski prije brisanja.
+
+Obrisati podatke lanca i početi ponovo sa svježom sinhronizacijom?</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1305" />
@@ -6378,7 +6498,7 @@ Wipe chain data and restart with a fresh sync?</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="1165" />
         <source>⚠️ &lt;b&gt;Recovery only:&lt;/b&gt; Restore creates a new named wallet from your seed phrase.&lt;br&gt;&lt;br&gt;Existing wallet names cannot be overwritten from this wizard.&lt;br&gt;&lt;br&gt;📱 Import from iOS Wallet: enter your 12-word seed phrase below only when migrating/recovering.</source>
-        <translation type="unfinished" />
+        <translation>⚠️ &lt;b&gt;Samo za vraćanje:&lt;/b&gt; vraćanje pravi novi imenovani novčanik iz vaše seed fraze.&lt;br&gt;&lt;br&gt;Postojeći nazivi novčanika se ne mogu prepisati kroz ovaj čarobnjak.&lt;br&gt;&lt;br&gt;📱 Uvoz iz iOS novčanika: unesite svoju seed frazu od 12 riječi ispod samo kod selidbe ili vraćanja.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1174" />
@@ -6696,7 +6816,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="243" />
         <source>The daemon selects the smallest confirmed shielded note at least this large. The full selected note minus fee is sent to a fresh wallet Taproot address.</source>
-        <translation type="unfinished" />
+        <translation>Daemon bira najmanju potvrđenu zaštićenu notu koja je barem ovolika. Cijela odabrana nota umanjena za naknadu šalje se na novu Taproot adresu novčanika.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="252" />
@@ -6879,7 +6999,7 @@ Pokušajte ponovo.</translation>
         <location filename="../src/shieldedwidget.cpp" line="1131" />
         <location filename="../src/shieldedwidget.cpp" line="1201" />
         <source>Previous outcome is uncertain — inspect notes and transaction history, then click Review Outcome to clear this warning. Nothing will be sent by that click.</source>
-        <translation type="unfinished" />
+        <translation>Prethodni ishod je nejasan – pregledajte note i historiju transakcija, pa kliknite Pregledaj ishod da uklonite ovo upozorenje. Tim klikom se ništa ne šalje.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1136" />
@@ -6917,7 +7037,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="222" />
         <source>Custodial deposit / withdrawal ledger backed by the daemon's Track-C vault service. Distinct from on-chain script vaults (see Contracts tab). When the daemon starts with an active wallet and no vault address configured, it auto-binds to your wallet's primary address and tracks deposits there; credits open at K=10 confirmations, settle at K=20. This is a separate vault ledger—not your normal wallet balance. Only new payments received at the Vault Deposit Address after binding are credited; existing wallet funds are never imported automatically.</source>
-        <translation type="unfinished" />
+        <translation>Skrbnička knjiga uplata i isplata koju vodi Track-C servis trezora u daemonu. Razlikuje se od trezora u skriptama na lancu (vidi karticu Ugovori). Kada se daemon pokrene s aktivnim novčanikom i bez podešene adrese trezora, automatski se veže za primarnu adresu vašeg novčanika i tamo prati uplate; odobrenja se otvaraju pri K=10 potvrda, a podmiruju pri K=20. Ovo je zasebna knjiga trezora, a ne vaše uobičajeno stanje novčanika. Odobravaju se samo nove uplate primljene na adresu za uplatu u trezor nakon povezivanja; postojeća sredstva novčanika se nikada ne uvoze automatski.</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="237" />
@@ -7119,7 +7239,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/walletwizard.cpp" line="436" />
         <source>&lt;p&gt;Your Dinero wallet will be protected with:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;12-word BIP-39 seed phrase&lt;/b&gt; (industry standard, 128-bit security)&lt;/li&gt;&lt;li&gt;&lt;b&gt;AES-256-GCM encryption&lt;/b&gt; with Argon2id key derivation&lt;/li&gt;&lt;li&gt;&lt;b&gt;HD wallet&lt;/b&gt; (BIP-32/86 Taproot) for unlimited addresses&lt;/li&gt;&lt;/ul&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p&gt;Vaš Dinero novčanik bit će zaštićen:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;BIP-39 seed frazom od 12 riječi&lt;/b&gt; (industrijski standard, sigurnost od 128 bita)&lt;/li&gt;&lt;li&gt;&lt;b&gt;AES-256-GCM šifrovanjem&lt;/b&gt; s Argon2id izvođenjem ključa&lt;/li&gt;&lt;li&gt;&lt;b&gt;HD novčanikom&lt;/b&gt; (BIP-32/86 Taproot) za neograničen broj adresa&lt;/li&gt;&lt;/ul&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="447" />
@@ -7156,7 +7276,7 @@ Pokušajte ponovo.</translation>
         <location filename="../src/walletwizard.cpp" line="475" />
         <location filename="../src/walletwizard.cpp" line="564" />
         <source>Balances, addresses, send history, and advisory state stay scoped to this wallet only. Existing wallet names cannot be overwritten from the setup wizard.</source>
-        <translation type="unfinished" />
+        <translation>Stanja, adrese, historija slanja i status upozorenja vrijede samo za ovaj novčanik. Postojeći nazivi novčanika se ne mogu prepisati kroz čarobnjak za podešavanje.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="554" />
@@ -7664,7 +7784,12 @@ This will broadcast your latest commitment transaction.
 You may lose funds if the peer has a newer state.
 
 Are you absolutely sure?</source>
-        <translation type="unfinished" />
+        <translation>⚠️ UPOZORENJE: prisilno zatvaranje koristite samo u hitnim slučajevima.
+
+Time se objavljuje vaša zadnja commitment transakcija.
+Možete izgubiti sredstva ako druga strana ima noviji zapis.
+
+Jeste li potpuno sigurni?</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="595" />
@@ -7755,7 +7880,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="48" />
         <source>Uses Dinero's included Tor component for Dinero P2P only. Ordinary P2P remains available if Tor cannot start.</source>
-        <translation type="unfinished" />
+        <translation>Koristi ugrađenu Tor komponentu Dinera samo za Dinero P2P. Obični P2P ostaje dostupan ako se Tor ne pokrene.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="53" />
@@ -7781,7 +7906,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="78" />
         <source>Serves only Dinero P2P traffic within conservative automatic limits; it is not a web proxy or a system-wide relay.</source>
-        <translation type="unfinished" />
+        <translation>Poslužuje samo Dinero P2P saobraćaj unutar konzervativnih automatskih granica; nije web proxy niti prosljeđivanje za cijeli sistem.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="83" />
@@ -8202,12 +8327,12 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/identitysection.cpp" line="132" />
         <source>● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic. Listening locally on port %1.</source>
-        <translation type="unfinished" />
+        <translation>● Sigurno povezano preko Dinero prosljeđivanja. Direktan dolazni pristup nije dostupan; oporavak je automatski. Sluša lokalno na portu %1.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="135" />
         <source>● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic.</source>
-        <translation type="unfinished" />
+        <translation>● Sigurno povezano preko Dinero prosljeđivanja. Direktan dolazni pristup nije dostupan; oporavak je automatski.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="137" />
@@ -8298,7 +8423,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/networksection.cpp" line="71" />
         <source>Uses this node's existing authenticated RPC session and local node cookie; no additional credentials are required. Automatic uses only Dinero's included Tor component.</source>
-        <translation type="unfinished" />
+        <translation>Koristi postojeću autentifikovanu RPC sesiju ovog čvora i lokalni kolačić čvora; dodatni podaci za prijavu nisu potrebni. Automatski način koristi samo ugrađenu Tor komponentu Dinera.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="78" />
@@ -8328,7 +8453,7 @@ Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otkl
     <message>
         <location filename="../src/networksection.cpp" line="102" />
         <source>Serves encrypted Dinero P2P relay circuits only. It is not a web proxy and cannot relay other software.</source>
-        <translation type="unfinished" />
+        <translation>Poslužuje samo šifrovane krugove Dinero P2P prosljeđivanja. Nije web proxy i ne može prosljeđivati drugi softver.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="107" />
