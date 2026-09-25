@@ -5,6 +5,7 @@
 #include "storage/tip_info.h"
 #include "storage/chain_write_token.h"
 #include "storage/orchard_state.h"
+#include "storage/legacy_retirement.h"
 #include <optional>
 #include "consensus/undo.h"
 #include <rocksdb/db.h>
@@ -402,6 +403,21 @@ public:
         const storage::OrchardStoredState& expected_tip) const;
     StatusOr<uint256> getOrchardNullifierOwner(const uint256& nullifier) const;
     StatusOr<uint64_t> getOrchardAnchorReferences(const uint256& anchor) const;
+
+    // Staged retirement receipt and exact undo. Requires separated storage,
+    // the selected validated parent/tip, matching legacy marker, and the same
+    // writer lock through outer commit. Frozen record fields cannot change on
+    // descendants. Updates the legacy active-tip marker in the SAME batch.
+    // Does not authenticate the supplied SHR1/balance, select activation, or
+    // reject legacy activity: the full connector must do those before calling.
+    // No caller may append legacy-content writes after this stage. Orchard and
+    // ordinary companion state must share the batch. No standalone commit.
+    StatusOr<storage::LegacyRetirementState> getLegacyRetirementState() const;
+    Status stageLegacyRetirementConnect(const ChainWriteToken&,
+        const std::optional<storage::LegacyRetirementState>& expected_parent,
+        const storage::LegacyRetirementState& next, rocksdb::WriteBatch&);
+    Status stageLegacyRetirementDisconnect(const ChainWriteToken&,
+        const storage::LegacyRetirementState& expected_tip, rocksdb::WriteBatch&);
 
     // CSN reorg: Spend targets stored in utreexo CF for forest replay
     Status putCSNSpendTargets(const ChainWriteToken& token, const uint256& block_hash,

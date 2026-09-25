@@ -7,6 +7,7 @@
 add_library(dinero_chainstate STATIC
   ${CMAKE_SOURCE_DIR}/src/storage/chain_db.cpp             # ChainDB (RocksDB backend)
   ${CMAKE_SOURCE_DIR}/src/storage/orchard_state.cpp         # Staged Orchard block state/undo
+  ${CMAKE_SOURCE_DIR}/src/storage/legacy_retirement.cpp     # Staged frozen legacy receipt/undo
   ${CMAKE_SOURCE_DIR}/src/storage/persistent_utxo_adapter.cpp  # Bridges consensus to persistence
   ${CMAKE_SOURCE_DIR}/src/storage/block_storage.cpp        # Block/undo flatfile management
   ${CMAKE_SOURCE_DIR}/src/storage/forest_restore.cpp       # Checkpoint + UD-sidecar replay (campaign phase 3)

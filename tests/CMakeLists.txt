@@ -7489,6 +7489,19 @@ target_include_directories(test_shielded_state_storage PRIVATE
 add_test(NAME ShieldedStateStorage COMMAND test_shielded_state_storage)
 set_tests_properties(ShieldedStateStorage PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
 
+add_executable(test_legacy_retirement
+  tests/storage/test_legacy_retirement.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_legacy_retirement PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_legacy_retirement PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME OrchardLegacyRetirement COMMAND test_legacy_retirement)
+set_tests_properties(OrchardLegacyRetirement PROPERTIES LABELS "orchard;storage;integration-staging" TIMEOUT 120)
+
 add_executable(test_orchard_state_storage
   tests/storage/test_orchard_state_storage.cpp
   src/common/logger.cpp

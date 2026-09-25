@@ -74,6 +74,11 @@ This branch collects release implementation for review and qualification against
   lookup; existing callers and historical SHR1 behavior stay unchanged. Fixed
   wire vectors and rejection cases qualify the encoding boundary only. Composite
   root construction, retirement accounting/undo and live enforcement remain open.
+- Staged legacy retirement storage now records an ancestry-bound frozen receipt,
+  advances the legacy tip marker atomically, and provides exact boundary undo.
+  Synthetic-store tests cover Orchard companion batches, reopen and process exits.
+  Historical balance/SHR1 authentication, composite DNRS binding and runtime
+  enforcement remain required; this does not retire a live pool.
 - Wallet primitives now include opaque ZIP32 account keys, external/internal receivers, watch-only parity and an explicit-network Bech32m address profile. Fresh shield/send/unshield bundle construction uses OS randomness and an owned transaction signing context, then decodes and verifies before returning. Received notes are opaque; incremental witnesses check roots, preserve prior state and resume from a canonical checkpoint-bound encoding. No wallet database or RPC caller is enabled.
 - Encrypted wallet snapshots stage in the caller-owned SQLite transaction with companion wallet records, checked revisions and process-exit recovery tests. Typed scan state now tracks receipts/spends and witnesses and restores from an encrypted snapshot against an exact selected checkpoint and authenticated origin callbacks. A selected archival ChainDB restore adapter now authenticates origins and resolves historical or ordered same-block prevouts from original bodies, with read-only reopen coverage. Indexed flatfile bodies now restore through the same typed authentication gate when the embedded copy is absent. Pruned/archive coverage, stale-checkpoint recovery, coordinated startup and live callers remain unfinished.
 - Pending-operation component reserves inputs before proving, freezes fully authorized canonical bytes before broadcast, and restores encrypted Reserved/Ready states through process-exit boundaries. Live selection, service job integration, admission, broadcast and confirmation/reorg archival remain unfinished.
