@@ -34,6 +34,10 @@ This branch collects release implementation for review and qualification against
   DINW checks and base/weight accounting enforced before coin lookup. The ChainDB staging adapter requires exact, ordered authorization
   coverage of every Orchard transaction in that candidate and rejects retired
   legacy shielded transactions. This remains a staged format, not live admission.
+- Contextual header component checks selected-parent height/linkage, network,
+  MTP/future time, exact shared ASERT difficulty and proof of work using owned
+  branch values. Competing timing-boundary branches are tested. Live admission
+  still needs to invoke it and complete checkpoints/resource obligations.
 - Ordered shared coin processing verifies Orchard and ordinary signatures,
   supports same-block children, prevents cross-family double spending and binds
   the coinbase limit to the same validated fees. Stateful ChainDB adapters stage

@@ -108,6 +108,8 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_wallet_scan PUBLIC dinero_orchard_block_reader dinero_orchard_transparent dinero_orchard_wallet_storage)
   add_library(dinero_orchard_wallet_account STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_state.cpp")
   target_link_libraries(dinero_orchard_wallet_account PUBLIC dinero_orchard_wallet_scan dinero_orchard_operation_queue)
+  add_library(dinero_orchard_header STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_header.cpp")
+  target_link_libraries(dinero_orchard_header PUBLIC dinero_orchard_transparent dinero_consensus)
   add_library(dinero_orchard_block_coins STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_coins.cpp"
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_forest_transition.cpp")
@@ -184,6 +186,16 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_test(NAME OrchardForestTransition COMMAND test_orchard_forest_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     set_tests_properties(OrchardForestTransition PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
       ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
+    add_executable(test_orchard_header
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_header.cpp"
+      "${ORCHARD_HOST_ROOT}/src/consensus/header_chain.cpp"
+      "${ORCHARD_HOST_ROOT}/src/consensus/header_store.cpp"
+      "${ORCHARD_HOST_ROOT}/src/consensus/genesis_canonical.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(test_orchard_header PRIVATE dinero_orchard_header)
+    target_include_directories(test_orchard_header PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    add_test(NAME OrchardHeader COMMAND test_orchard_header)
+    set_tests_properties(OrchardHeader PROPERTIES TIMEOUT 120 LABELS "orchard;integration-staging")
     add_executable(test_orchard_block_coins
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_coins.cpp")
     target_link_libraries(test_orchard_block_coins PRIVATE dinero_orchard_block_coins)
