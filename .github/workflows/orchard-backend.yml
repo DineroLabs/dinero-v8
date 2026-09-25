@@ -34,6 +34,69 @@ concurrency:
   group: orchard-backend-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
+  dependency-audit:
+    name: Orchard pinned dependency audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read pinned compiler
+        id: rust-pin
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_OUTPUT"
+          import tomllib
+          with open('rust/orchard_backend/rust-toolchain.toml', 'rb') as f:
+              print('version=' + tomllib.load(f)['toolchain']['channel'])
+          PYCODE
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: ${{ steps.rust-pin.outputs.version }}
+      - name: Install exact audit tool with its locked dependencies
+        run: |
+          cargo +${{ steps.rust-pin.outputs.version }} install cargo-audit --version 0.22.2 --locked --jobs 2 --root build-orchard-audit-tools
+          build-orchard-audit-tools/bin/cargo-audit --version > orchard-audit-tool.txt
+      - name: Audit committed graph against fresh advisories
+        run: |
+          set +e
+          build-orchard-audit-tools/bin/cargo-audit audit --file rust/orchard_backend/Cargo.lock --db build-orchard-advisory-db --deny unsound --deny yanked --format json > orchard-dependency-audit.json
+          audit_status=$?
+          set -e
+          printf '%s\n' "$audit_status" > orchard-dependency-audit-exit.txt
+          git -C build-orchard-advisory-db rev-parse HEAD > orchard-advisory-db-head.txt
+          git rev-parse HEAD > orchard-audit-source.txt
+          sha256sum rust/orchard_backend/Cargo.lock > orchard-audit-lock-sha256.txt
+          exit "$audit_status"
+      - name: Display informational maintenance warnings
+        if: always()
+        run: |
+          python3 - <<'PYCODE' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+          report = Path('orchard-dependency-audit.json')
+          print('## Orchard dependency audit')
+          print('Gate: known vulnerabilities, unsoundness advisories, yanked crates, and scanner errors fail. Maintenance notices remain visible below; they are not a cryptographic review.')
+          data = json.loads(report.read_text())
+          for kind, entries in data.get('warnings', {}).items():
+              for entry in entries:
+                  package, advisory = entry['package'], entry.get('advisory') or {}
+                  print(f"- {kind}: {package['name']} {package['version']} — {advisory.get('id', '')} {advisory.get('title', '')}")
+          PYCODE
+      - name: Retain audit evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orchard-dependency-audit-${{ github.sha }}
+          path: |
+            orchard-audit-tool.txt
+            orchard-audit-source.txt
+            orchard-audit-lock-sha256.txt
+            orchard-advisory-db-head.txt
+            orchard-dependency-audit.json
+            orchard-dependency-audit-exit.txt
+            rust/orchard_backend/Cargo.lock
+          if-no-files-found: error
   native-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

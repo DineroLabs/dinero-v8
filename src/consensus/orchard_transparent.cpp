@@ -144,4 +144,19 @@ VerifiedOrchardTransparentInputs VerifyOrchardTransparentInputs(
     }
     return VerifiedOrchardTransparentInputs(snapshot, intent, candidate_height);
 }
+OrchardValueFlow GetOrchardValueFlow(const VerifiedOrchardTransparentInputs& inputs) {
+    static_assert(orchard::kMaxMoneyUna == MAX_MONEY);
+    OrchardValueFlow flow;
+    const auto add = [](uint64_t value, uint64_t& sum) {
+        if (value > MAX_MONEY || sum > MAX_MONEY - value)
+            throw std::invalid_argument("Orchard transparent flow exceeds money bound");
+        sum += value;
+    };
+    for (const auto& coin : inputs.Snapshot().Coins()) add(coin.value.GetUna(), flow.transparent_inputs);
+    for (const auto& output : inputs.Snapshot().Transaction().Outputs()) add(output.amount_una, flow.transparent_outputs);
+    flow.fee = inputs.Snapshot().Transaction().ExplicitFee();
+    if (flow.fee > MAX_MONEY - flow.transparent_outputs)
+        throw std::invalid_argument("Orchard transparent outputs and fee exceed money bound");
+    return flow;
+}
 } // namespace dinero::consensus

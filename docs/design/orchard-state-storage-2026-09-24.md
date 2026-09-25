@@ -49,6 +49,12 @@ agreement and matching nullifier owners before staging any removal. It restores
 the entire previous state and removes only this block's additions. Disconnecting
 the first Orchard block restores the absence of Orchard state.
 
+The flow list is now mandatory: connect recomputes the pool counter from
+authenticated transparent inputs, outputs and fees, starting at zero for an
+absent Orchard state. The proposed stored balance must match. See
+[the pool guard](orchard-pool-balance-2026-09-24.md) for its draft ordering rule,
+independent arithmetic tests and remaining runtime caller obligations.
+
 Only a verified separated shielded layout is accepted. There is no implicit
 migration, no write into the legacy column family and no change to legacy rows.
 This uses the existing named-comparator protection against older layouts; full
@@ -57,8 +63,9 @@ release upgrade/downgrade and matched wallet restore remain qualification work.
 ## Executed storage checks
 
 `OrchardStateStorage` uses generated temporary RocksDB databases and opaque
-frontier fixtures. It covers abandoned staging, commit/reopen, byte-identical
-undo with companion coin/tip writes, repeated roots, branch replacement,
+frontier fixtures. It covers abandoned staging, commit/reopen, exact state
+undo with companion coin/tip writes (the tip's write timestamp is separately
+bounded to the restore operation), repeated roots, branch replacement,
 nullifier removal/reuse on the replacement branch, stale/bounded-input
 rejection, malformed state/undo/owner/reference records, and legacy-layout
 refusal. An injected WAL append failure leaves all old records intact.
@@ -83,7 +90,7 @@ hardcoded eight jobs to override the outer compiler budget.
 ## Still to implement
 
 - Pinned Orchard frontier append/serialization and authenticated anchor rules.
-- Block-level pool conservation and proof-derived nullifier/commitment lists.
+- Validated block flow collection and proof-derived nullifier/commitment lists.
 - Actual ConnectTip/DisconnectTip and replay/reindex integration, including all
   alternate storage funnels and startup consistency checks.
 - Runtime parsing/admission, mempool/relay/assembly and activation rules.

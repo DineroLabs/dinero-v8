@@ -33,6 +33,11 @@ static void CombinedCase(const std::string& base, bool spending) {
     }
     f.Sign();
     const auto result = VerifyBoth(f);
+    const auto flow = GetOrchardValueFlow(result.Transparent());
+    Require(flow.transparent_inputs == 66666 && flow.transparent_outputs == (spending ? 66500 : 61000) && flow.fee == 666);
+    const auto pool = ApplyOrchardValueFlows(spending ? 5000 : 0, {flow});
+    Require(pool.ok() && pool.value() == (spending ? 4500 : 5000));
+    Require(ApplyOrchardValueFlows(spending ? 499 : MAX_MONEY - 4999, {flow}).status() == Status::Invalid);
     const auto expected = Load(prefix + ".digest");
     const auto d = result.Transparent().OrchardIntent();
     Require(std::equal(d.begin(), d.end(), expected.begin(), expected.end()));
@@ -70,7 +75,9 @@ static void CombinedCase(const std::string& base, bool spending) {
     Reject(Error::InvalidSignature, [&] { (void)VerifyBoth(f); }); f.inputs = signed_inputs;
     const auto good_bundle = f.bundle;
     f.bundle.at(54 + 884 * 2 + 4 + 30) ^= 1;
-    (void)f.Verify(); // Transparent signatures alone still pass with a bad proof.
+    const auto proof_independent_flow = GetOrchardValueFlow(f.Verify());
+    Require(proof_independent_flow.transparent_inputs == flow.transparent_inputs &&
+            proof_independent_flow.transparent_outputs == flow.transparent_outputs && proof_independent_flow.fee == flow.fee);
     BackendReject(DINERO_ORCHARD_PROOF, [&] { (void)VerifyBoth(f); }); f.bundle = good_bundle;
     f.bundle.at(54 + 820) ^= 1;
     (void)f.Verify();

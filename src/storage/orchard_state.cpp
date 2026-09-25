@@ -176,12 +176,18 @@ StatusOr<uint64_t> ChainDB::getOrchardAnchorReferences(const uint256& anchor) co
 }
 Status ChainDB::stageOrchardConnect(const ChainWriteToken& token,
     const std::optional<OrchardStoredState>& expected_parent, const OrchardStoredState& next,
-    const std::vector<uint256>& nullifiers, rocksdb::WriteBatch& batch) {
+    const std::vector<uint256>& nullifiers, const std::vector<consensus::OrchardValueFlow>& value_flows,
+    rocksdb::WriteBatch& batch) {
     (void)token;
     if (!db_) return Status::Internal;
     if (!hasSeparatedShieldedState()) return Status::Invalid;
     if (!Transition(expected_parent, next) || nullifiers.size() > storage::ORCHARD_STORED_BLOCK_NULLIFIER_LIMIT)
         return Status::Invalid;
+    // The Orchard pool begins at zero, independent of every historical pool.
+    // Never accept a caller-provided next pool total without accounting for it.
+    const auto balance = consensus::ApplyOrchardValueFlows(
+        expected_parent ? expected_parent->pool_balance : 0, value_flows);
+    if (!balance.ok() || balance.value() != next.pool_balance) return Status::Invalid;
     auto* cf = shieldedStateHandle(); PriorWrites prior(cf->GetID());
     if (!batch.Iterate(&prior).ok()) return Status::Invalid;
     auto current = getOrchardState();

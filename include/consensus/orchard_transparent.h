@@ -1,6 +1,7 @@
 #pragma once
 
 #include "consensus/orchard_coin_snapshot.h"
+#include "consensus/orchard_pool_balance.h"
 #include <functional>
 #include <optional>
 
@@ -53,4 +54,9 @@ private:
     const orchard::Hash intent_;
     const uint32_t candidate_height_;
 };
+
+// Derive the turnstile input from the exact owned transparent authorization
+// context. Orchard proof verification is deliberately not consulted here.
+// Current unspentness still requires the caller's held chainstate lock/view.
+[[nodiscard]] OrchardValueFlow GetOrchardValueFlow(const VerifiedOrchardTransparentInputs& inputs);
 } // namespace dinero::consensus

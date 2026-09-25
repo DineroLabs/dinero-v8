@@ -5,6 +5,7 @@
 #include "storage/tip_info.h"
 #include "storage/chain_write_token.h"
 #include "storage/orchard_state.h"
+#include "consensus/orchard_pool_balance.h"
 #include <optional>
 #include "consensus/undo.h"
 #include <rocksdb/db.h>
@@ -379,9 +380,12 @@ public:
     // The expected state is compared byte-exactly with committed storage; this
     // is a stale-state check, not a replacement for the caller's writer lock.
     // No runtime admission caller is enabled by this storage API.
+    // Supply EVERY Orchard transaction's authenticated transparent flow, in
+    // block order. Pool arithmetic does not trust a claimed bundle balance.
     Status stageOrchardConnect(const ChainWriteToken& token,
         const std::optional<storage::OrchardStoredState>& expected_parent,
         const storage::OrchardStoredState& next, const std::vector<uint256>& nullifiers,
+        const std::vector<consensus::OrchardValueFlow>& value_flows,
         rocksdb::WriteBatch& batch);
     Status stageOrchardDisconnect(const ChainWriteToken& token,
         const storage::OrchardStoredState& expected_tip, rocksdb::WriteBatch& batch);
