@@ -102,6 +102,8 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_block_reader STATIC
     "${ORCHARD_HOST_ROOT}/src/primitives/orchard_block_reader.cpp")
   target_link_libraries(dinero_orchard_block_reader PUBLIC dinero_transaction_reader dinero_consensus)
+  add_library(dinero_orchard_wallet_scan STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_scan_state.cpp")
+  target_link_libraries(dinero_orchard_wallet_scan PUBLIC dinero_orchard_block_reader dinero_orchard_transparent dinero_orchard_wallet_storage)
   add_library(dinero_orchard_block_coins STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_coins.cpp"
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_forest_transition.cpp")
@@ -160,6 +162,10 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   target_link_libraries(test_orchard_state_transition PRIVATE dinero_orchard_transparent)
   add_test(NAME OrchardStateTransition COMMAND test_orchard_state_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   if(TARGET dinero_orchard_block_staging)
+    add_executable(test_orchard_wallet_scan "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_wallet_scan.cpp")
+    target_link_libraries(test_orchard_wallet_scan PRIVATE dinero_orchard_wallet_scan)
+    add_test(NAME OrchardWalletScan COMMAND test_orchard_wallet_scan "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardWalletScan PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;wallet;integration-staging")
     add_executable(test_orchard_forest_transition
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_forest_transition.cpp")
     target_link_libraries(test_orchard_forest_transition PRIVATE dinero_orchard_block_coins)
