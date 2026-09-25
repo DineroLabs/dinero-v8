@@ -5381,7 +5381,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="100" />
         <source>Search offers by keyword...</source>
-        <translation type="unfinished" />
+        <translation>Tražite ponude po ključnoj riječi …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="102" />
@@ -5396,7 +5396,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="134" />
         <source>Type:</source>
-        <translation type="unfinished" />
+        <translation>Vrsta:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="136" />
@@ -5411,7 +5411,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="195" />
         <source>📊 View Seller Reputation</source>
-        <translation type="unfinished" />
+        <translation>📊 Prikaži reputaciju prodavca</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="200" />
@@ -5451,7 +5451,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="220" />
         <source>&lt;b&gt;Seller Reputation:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Reputacija prodavca:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="229" />
@@ -5507,7 +5507,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="396" />
         <source>0 total trades</source>
-        <translation type="unfinished" />
+        <translation>0 trgovina ukupno</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="397" />
@@ -5537,12 +5537,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="409" />
         <source>&lt;b&gt;Rating Distribution:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Raspodjela ocjena:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="415" />
         <source>🔍 View Other User's Reputation</source>
-        <translation type="unfinished" />
+        <translation>🔍 Prikaži reputaciju drugog korisnika</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
@@ -5553,12 +5553,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
         <source>Please select an offer first.</source>
-        <translation type="unfinished" />
+        <translation>Prvo odaberite ponudu.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="550" />
         <source>Please select an offer to cancel.</source>
-        <translation type="unfinished" />
+        <translation>Odaberite ponudu za otkazivanje.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="556" />
@@ -5573,7 +5573,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
         <source>Update offer dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Dijalog za ažuriranje ponude – uskoro.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
@@ -5583,7 +5583,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
         <source>Complete trade dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Dijalog za završetak trgovine – uskoro.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
@@ -5593,7 +5593,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
         <source>Dispute dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Dijalog za spor – uskoro.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
@@ -5603,7 +5603,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
         <source>Trade details dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Dijalog s detaljima trgovine – uskoro.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
@@ -5613,7 +5613,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
         <source>Reputation viewer - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Pregled reputacije – uskoro.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="674" />
@@ -5628,7 +5628,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="682" />
         <source>Offer cancelled successfully!</source>
-        <translation type="unfinished" />
+        <translation>Ponuda je uspješno otkazana.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="693" />
@@ -5638,12 +5638,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="839" />
         <source>Create New Marketplace Offer</source>
-        <translation type="unfinished" />
+        <translation>Napravi novu ponudu na tržnici</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="879" />
         <source>Describe your offer...</source>
-        <translation type="unfinished" />
+        <translation>Opišite svoju ponudu …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="915" />
@@ -5717,12 +5717,12 @@ Label,Address</source>
     <message>
         <location filename="../src/paymentswidget.cpp" line="234" />
         <source>Anchor Reference Price - Soft price guide for early market phase</source>
-        <translation type="unfinished" />
+        <translation>Sidrena referentna cijena – okvirna cijena za ranu fazu tržišta</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="249" />
         <source>Shows the blend ratio of ARP vs Market price</source>
-        <translation type="unfinished" />
+        <translation>Prikazuje omjer ARP cijene i tržišne cijene</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="308" />
@@ -5787,7 +5787,7 @@ Label,Address</source>
     <message>
         <location filename="../src/paymentswidget.cpp" line="542" />
         <source>📌 Pure ARP (pre-launch)</source>
-        <translation type="unfinished" />
+        <translation>📌 Čisti ARP (prije lansiranja)</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="544" />
@@ -5810,7 +5810,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="120" />
         <source>&lt;h2&gt;👥 Pool&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;👥 Pool&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="126" />
@@ -5846,7 +5846,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="187" />
         <source>contents of /etc/dinero-sv2/ops-token</source>
-        <translation type="unfinished" />
+        <translation>sadržaj datoteke /etc/dinero-sv2/ops-token</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="190" />
@@ -6028,7 +6028,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="390" />
         <source>the din1p... you passed as --payout-address</source>
-        <translation type="unfinished" />
+        <translation>din1p… koju ste naveli kao --payout-address</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="392" />
@@ -6048,7 +6048,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="580" />
         <source>&lt;span style='color:#d8a37b;'&gt;Connect to the pool before changing its fee.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Povežite se s poolom prije promjene naknade.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="585" />
@@ -6063,12 +6063,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="605" />
         <source>&lt;span style='color:#e06c75;'&gt;Not sent: the local fee-policy journal could not be saved.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Nije poslano: lokalni dnevnik pravila naknade nije sačuvan.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="619" />
         <source>Review accepted locally; asking the pool to apply the fee policy…</source>
-        <translation type="unfinished" />
+        <translation>Pregled je prihvaćen lokalno; tražim od poola da primijeni pravila naknade …</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="629" />
@@ -6078,7 +6078,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="632" />
         <source>&lt;span style='color:#e06c75;'&gt;Rejected: wrong ops token.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Odbijeno: pogrešan ops token.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="641" />
@@ -6103,12 +6103,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1144" />
         <source>&lt;span style='color:#7bd88f;'&gt;Reconciled: the requested operator fee is live.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;Usklađeno: tražena naknada operatera je aktivna.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1148" />
         <source>&lt;span style='color:#d8a37b;'&gt;Reconciled: the previous operator fee remains live.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Usklađeno: prethodna naknada operatera ostaje aktivna.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1152" />
@@ -6118,12 +6118,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1164" />
         <source>&lt;span style='color:#d8a37b;'&gt;Enter your fee address.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Unesite svoju adresu za naknadu.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1174" />
         <source>reading the chain… (this walks the block history and can take a few seconds)</source>
-        <translation type="unfinished" />
+        <translation>čitam lanac … (prolazi kroz historiju blokova i može potrajati nekoliko sekundi)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1175" />
@@ -6133,17 +6133,17 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1192" />
         <source>&lt;span style='color:#e06c75;'&gt;Unexpected history reply from the node.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Neočekivan odgovor o historiji od čvora.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1253" />
         <source>&lt;span style='color:#e06c75;'&gt;Unexpected reply from the node.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Neočekivan odgovor od čvora.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1265" />
         <source>&lt;span style='color:#e06c75;'&gt;The node did not return a valid confirmed unspent balance.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Čvor nije vratio ispravno potvrđeno nepotrošeno stanje.&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
@@ -6181,7 +6181,7 @@ Label,Address</source>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="47" />
         <source>Absolute block height, not a duration. Zero permits spending after confirmation.</source>
-        <translation type="unfinished" />
+        <translation>Apsolutna visina bloka, ne trajanje. Nula dozvoljava trošenje nakon potvrde.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="50" />
@@ -6218,7 +6218,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="78" />
         <source>Previous outcome reviewed. Compose a new operation if needed; nothing was resubmitted.</source>
-        <translation type="unfinished" />
+        <translation>Prethodni ishod je pregledan. Napravite novu operaciju ako treba; ništa nije ponovo poslano.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="110" />
@@ -6238,12 +6238,12 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="185" />
         <source>Enter a contract owner and positive funding and reserved spend fees.</source>
-        <translation type="unfinished" />
+        <translation>Unesite vlasnika ugovora te pozitivne naknade za finansiranje i rezervisano trošenje.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="192" />
         <source>Complete each recipient row with a positive amount of at most 8 decimals.</source>
-        <translation type="unfinished" />
+        <translation>Popunite svaki red primaoca pozitivnim iznosom s najviše 8 decimala.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="196" />
@@ -6356,7 +6356,14 @@ abandon
 ability
 able
 ...</source>
-        <translation type="unfinished" />
+        <translation>Primjer:
+abandon ability able about above absent absorb abstract absurd abuse access accident…
+
+Ili jedna riječ po redu:
+abandon
+ability
+able
+…</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1199" />
@@ -6439,7 +6446,8 @@ Provjerite jeste li unijeli ispravnu BIP-39 seed frazu od 12/15/18/21/24 riječi
         <location filename="../src/walletwizard.cpp" line="1400" />
         <source>This password encrypts your wallet file using AES-256-GCM with Argon2id key derivation.
 You'll need this password to unlock your wallet and send coins.</source>
-        <translation type="unfinished" />
+        <translation>Ova lozinka šifruje datoteku vašeg novčanika pomoću AES-256-GCM i Argon2id izvođenja ključa.
+Trebat će vam da otključate novčanik i šaljete novčiće.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1410" />
@@ -6520,7 +6528,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="94" />
         <source>Balance:</source>
-        <translation type="unfinished" />
+        <translation>Stanje:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="98" />
@@ -6753,7 +6761,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="716" />
         <source>invalid amount_una</source>
-        <translation type="unfinished" />
+        <translation>neispravan amount_una</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="730" />
@@ -6788,17 +6796,17 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1038" />
         <source>outcome uncertain — refresh notes and transaction history before retrying</source>
-        <translation type="unfinished" />
+        <translation>ishod nejasan – osvježite note i historiju transakcija prije ponovnog pokušaja</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1043" />
         <source>outcome uncertain — inspect transaction history before starting another shield</source>
-        <translation type="unfinished" />
+        <translation>ishod nejasan – pregledajte historiju transakcija prije nove zaštite</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1048" />
         <source>outcome uncertain — inspect notes and transaction history before retrying</source>
-        <translation type="unfinished" />
+        <translation>ishod nejasan – pregledajte note i historiju transakcija prije ponovnog pokušaja</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1064" />
@@ -6855,7 +6863,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="164" />
         <source>&lt;span style='color:#d8a37b;'&gt;rebinding to active wallet…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;ponovo povezujem s aktivnim novčanikom …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="214" />
@@ -6961,7 +6969,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="327" />
         <source>withdrawal_id</source>
-        <translation type="unfinished" />
+        <translation>withdrawal_id</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="329" />
@@ -7036,7 +7044,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="654" />
         <source>&lt;span style='color:#d8a37b;'&gt;disabled&lt;/span&gt; (set vault=1)</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;isključeno&lt;/span&gt; (postavite vault=1)</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="729" />
@@ -7114,7 +7122,7 @@ Pokušajte ponovo.</translation>
     <message>
         <location filename="../src/walletwizard.cpp" line="554" />
         <source>Taproot descriptor import uses the currently active wallet. Load a wallet first if needed.</source>
-        <translation type="unfinished" />
+        <translation>Uvoz Taproot descriptora koristi trenutno aktivni novčanik. Prvo učitajte novčanik ako treba.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="603" />
@@ -7126,7 +7134,9 @@ Pokušajte ponovo.</translation>
         <source>Taproot descriptor import uses the currently loaded wallet.
 
 Load a wallet first, or cancel this setup flow and reopen it when you are ready to import.</source>
-        <translation type="unfinished" />
+        <translation>Uvoz Taproot descriptora koristi učitani novčanik.
+
+Prvo učitajte novčanik ili otkažite ovo podešavanje i otvorite ga ponovo kada budete spremni za uvoz.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="615" />
@@ -7214,7 +7224,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="415" />
         <location filename="../src/lightningwidget.cpp" line="416" />
         <source>0 DIN</source>
-        <translation type="unfinished" />
+        <translation>0 DIN</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="81" />
@@ -7244,17 +7254,17 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="110" />
         <source>Peer Node ID (02abcdef...)</source>
-        <translation type="unfinished" />
+        <translation>ID čvora (02abcdef…)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="112" />
         <source>Capacity (e.g. 1.0 for 1 DIN)</source>
-        <translation type="unfinished" />
+        <translation>Kapacitet (npr. 1.0 za 1 DIN)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="114" />
         <source>Push amount (optional, 0.0)</source>
-        <translation type="unfinished" />
+        <translation>Početni iznos (opcionalno, 0.0)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="119" />
@@ -7309,12 +7319,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="164" />
         <source>Amount in DIN (e.g. 0.001)</source>
-        <translation type="unfinished" />
+        <translation>Iznos u DIN (npr. 0.001)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="166" />
         <source>Description (e.g. Coffee payment)</source>
-        <translation type="unfinished" />
+        <translation>Opis (npr. plaćanje kafe)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="172" />
@@ -7334,7 +7344,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="181" />
         <source>Create Open Invoice (Flexible Amount)</source>
-        <translation type="unfinished" />
+        <translation>Napravi otvoreni račun (fleksibilan iznos)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="192" />
@@ -7349,7 +7359,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="209" />
         <source>Invoice will appear here...</source>
-        <translation type="unfinished" />
+        <translation>Račun će se pojaviti ovdje …</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="210" />
@@ -7371,12 +7381,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="227" />
         <source>Paste BOLT 11 invoice here</source>
-        <translation type="unfinished" />
+        <translation>Zalijepite BOLT 11 račun ovdje</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="229" />
         <source>Custom amount (for open invoices)</source>
-        <translation type="unfinished" />
+        <translation>Prilagođeni iznos (za otvorene račune)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="231" />
@@ -7396,7 +7406,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="249" />
         <source>Decoded invoice details will appear here...</source>
-        <translation type="unfinished" />
+        <translation>Dekodirani detalji računa će se pojaviti ovdje …</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="250" />
@@ -7433,12 +7443,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="348" />
         <source>Watchtower URL (e.g. wt://watchtower.dinero.com:9911)</source>
-        <translation type="unfinished" />
+        <translation>Watchtower URL (npr. wt://watchtower.dinero.com:9911)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="350" />
         <source>Reward per appointment (unas)</source>
-        <translation type="unfinished" />
+        <translation>Nagrada po zadatku (una)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="353" />
@@ -7483,7 +7493,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="424" />
         <source>&lt;b&gt;Avg Channel Size:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Prosječna veličina kanala:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="431" />
@@ -7493,7 +7503,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="434" />
         <source>Node ID@host:port (e.g. 02abc@192.168.1.100:9735)</source>
-        <translation type="unfinished" />
+        <translation>ID čvora@host:port (npr. 02abc@192.168.1.100:9735)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="435" />
@@ -7514,12 +7524,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="450" />
         <source>Destination Node ID</source>
-        <translation type="unfinished" />
+        <translation>ID odredišnog čvora</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="452" />
         <source>Amount (DIN)</source>
-        <translation type="unfinished" />
+        <translation>Iznos (DIN)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="456" />
@@ -7556,7 +7566,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="515" />
         <source>Please enter peer node ID and capacity.</source>
-        <translation type="unfinished" />
+        <translation>Unesite ID čvora i kapacitet.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="522" />
@@ -7568,7 +7578,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="522" />
         <source>Please enter a valid capacity amount.</source>
-        <translation type="unfinished" />
+        <translation>Unesite ispravan kapacitet.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
@@ -7581,7 +7591,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
         <source>Please select a channel to close.</source>
-        <translation type="unfinished" />
+        <translation>Odaberite kanal za zatvaranje.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="546" />
@@ -7593,12 +7603,14 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <source>Are you sure you want to close this channel?
 
 This will create a closing transaction on-chain.</source>
-        <translation type="unfinished" />
+        <translation>Jeste li sigurni da želite zatvoriti ovaj kanal?
+
+To će napraviti transakciju zatvaranja na lancu.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="559" />
         <source>Please select a channel to force close.</source>
-        <translation type="unfinished" />
+        <translation>Odaberite kanal za prisilno zatvaranje.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="563" />
@@ -7618,24 +7630,24 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="595" />
         <source>Please enter amount and description.</source>
-        <translation type="unfinished" />
+        <translation>Unesite iznos i opis.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="602" />
         <location filename="../src/lightningwidget.cpp" line="785" />
         <source>Please enter a valid amount.</source>
-        <translation type="unfinished" />
+        <translation>Unesite ispravan iznos.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="618" />
         <source>Please enter a description.</source>
-        <translation type="unfinished" />
+        <translation>Unesite opis.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="631" />
         <location filename="../src/lightningwidget.cpp" line="661" />
         <source>Please enter a BOLT 11 invoice.</source>
-        <translation type="unfinished" />
+        <translation>Unesite BOLT 11 račun.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="636" />
@@ -7655,22 +7667,22 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="711" />
         <source>Please select a payment to cancel.</source>
-        <translation type="unfinished" />
+        <translation>Odaberite plaćanje za otkazivanje.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="724" />
         <source>Please enter watchtower URL.</source>
-        <translation type="unfinished" />
+        <translation>Unesite watchtower URL.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="740" />
         <source>Please select a watchtower.</source>
-        <translation type="unfinished" />
+        <translation>Odaberite watchtower.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="760" />
         <source>Please enter peer address.</source>
-        <translation type="unfinished" />
+        <translation>Unesite adresu čvora.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
@@ -7680,12 +7692,12 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
         <source>Peer disconnection coming soon.</source>
-        <translation type="unfinished" />
+        <translation>Prekidanje veze s čvorom stiže uskoro.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="778" />
         <source>Please enter destination and amount.</source>
-        <translation type="unfinished" />
+        <translation>Unesite odredište i iznos.</translation>
     </message>
 </context>
 <context>
@@ -7741,7 +7753,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="94" />
         <source>Allow Dinero to use its included Tor component for private and resilient network connectivity.</source>
-        <translation type="unfinished" />
+        <translation>Dozvolite Dineru da koristi ugrađenu Tor komponentu za privatnu i otpornu mrežnu povezanost.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="129" />
@@ -7757,7 +7769,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="149" />
         <source>Tor is starting or recovering; ordinary P2P continues normally.</source>
-        <translation type="unfinished" />
+        <translation>Tor se pokreće ili oporavlja; obični P2P nastavlja normalno.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="173" />
@@ -7767,27 +7779,27 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="188" />
         <source>Relay service is active within conservative automatic limits.</source>
-        <translation type="unfinished" />
+        <translation>Servis prosljeđivanja je aktivan unutar konzervativnih automatskih granica.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="190" />
         <source>Relay service is enabled and will activate when this node is eligible.</source>
-        <translation type="unfinished" />
+        <translation>Servis prosljeđivanja je uključen i aktivirat će se kada ovaj čvor bude odgovarao uvjetima.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="203" />
         <source>Could not change Tor connectivity. Ordinary P2P continues normally.</source>
-        <translation type="unfinished" />
+        <translation>Tor povezanost se ne može promijeniti. Obični P2P nastavlja normalno.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="213" />
         <source>This daemon does not support live relay controls.</source>
-        <translation type="unfinished" />
+        <translation>Ovaj daemon ne podržava upravljanje prosljeđivanjem uživo.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="215" />
         <source>Could not change relay service. Existing network paths remain available.</source>
-        <translation type="unfinished" />
+        <translation>Servis prosljeđivanja se ne može promijeniti. Postojeće mrežne putanje ostaju dostupne.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="221" />
@@ -7883,7 +7895,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/contributionsection.cpp" line="117" />
         <source>Optional contribution indicator—not a security rating. Nodes behind NAT remain secure.</source>
-        <translation type="unfinished" />
+        <translation>Opcionalni pokazatelj doprinosa, ne ocjena sigurnosti. Čvorovi iza NAT-a ostaju sigurni.</translation>
     </message>
 </context>
 <context>
@@ -7957,7 +7969,9 @@ Are you absolutely sure?</source>
         <source>
 
 This is one of your configured bootstrap peers. Ban only if you are debugging.</source>
-        <translation type="unfinished" />
+        <translation>
+
+Ovo je jedan od vaših podešenih početnih čvorova. Zabranite ga samo ako otklanjate greške.</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="181" />
@@ -7992,7 +8006,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="215" />
         <source>Relay dial submitted for %1</source>
-        <translation type="unfinished" />
+        <translation>Poziv preko prosljeđivanja je poslan za %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="225" />
@@ -8025,12 +8039,12 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="323" />
         <source>Relay dial result received</source>
-        <translation type="unfinished" />
+        <translation>Rezultat poziva preko prosljeđivanja je primljen</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="324" />
         <source>Relay dial: %1</source>
-        <translation type="unfinished" />
+        <translation>Poziv preko prosljeđivanja: %1</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="328" />
@@ -8059,7 +8073,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/discoverysection.cpp" line="138" />
         <source>Discovery — 0 targets known</source>
-        <translation type="unfinished" />
+        <translation>Otkrivanje – 0 poznatih odredišta</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="146" />
@@ -8091,7 +8105,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/discoverysection.cpp" line="182" />
         <source>Discovery — %1 targets known</source>
-        <translation type="unfinished" />
+        <translation>Otkrivanje – %1 poznatih odredišta</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="221" />
@@ -8144,7 +8158,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/identitysection.cpp" line="128" />
         <source>● Connected directly and securely on %1:%2.</source>
-        <translation type="unfinished" />
+        <translation>● Povezano direktno i sigurno na %1:%2.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="132" />
@@ -8255,7 +8269,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="78" />
         <source>Allow Dinero to use its included Tor component for private and resilient network connectivity.</source>
-        <translation type="unfinished" />
+        <translation>Dozvolite Dineru da koristi ugrađenu Tor komponentu za privatnu i otpornu mrežnu povezanost.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="88" />
@@ -8330,7 +8344,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="172" />
         <source>● %1 block(s) ahead of the peer estimate; peers may still be catching up</source>
-        <translation type="unfinished" />
+        <translation>● %1 blokova ispred procjene čvorova; čvorovi možda još sustižu</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="194" />
@@ -8340,27 +8354,27 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="213" />
         <source>Dinero relay service is active within the configured limits.</source>
-        <translation type="unfinished" />
+        <translation>Dinero servis prosljeđivanja je aktivan unutar podešenih granica.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="214" />
         <source>Dinero relay service is not accepting new circuits.</source>
-        <translation type="unfinished" />
+        <translation>Dinero servis prosljeđivanja ne prihvata nove krugove.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="224" />
         <source>Could not change Tor reachability. Check RPC authorization and the local daemon log.</source>
-        <translation type="unfinished" />
+        <translation>Dostupnost preko Tora se ne može promijeniti. Provjerite RPC autorizaciju i zapis lokalnog daemona.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="231" />
         <source>Off. Ordinary direct and Dinero relay connections remain available.</source>
-        <translation type="unfinished" />
+        <translation>Isključeno. Obične direktne veze i Dinero prosljeđivanje ostaju dostupni.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="236" />
         <source>Tor active. Direct and relay paths remain available.</source>
-        <translation type="unfinished" />
+        <translation>Tor je aktivan. Direktne putanje i prosljeđivanje ostaju dostupni.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="237" />
@@ -8370,12 +8384,12 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="240" />
         <source>Configured, but the onion service is not active. Check the daemon log; credentials are hidden here.</source>
-        <translation type="unfinished" />
+        <translation>Podešeno, ali onion servis nije aktivan. Provjerite zapis daemona; podaci za prijavu su ovdje sakriveni.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="243" />
         <source>This daemon is older and does not support live Tor controls. Ordinary P2P continues normally.</source>
-        <translation type="unfinished" />
+        <translation>Ovaj daemon je stariji i ne podržava upravljanje Torom uživo. Obični P2P nastavlja normalno.</translation>
     </message>
 </context>
 <context>
