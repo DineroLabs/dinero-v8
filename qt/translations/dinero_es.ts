@@ -1913,7 +1913,7 @@ Click the 'Import Taproot Key' button after entering a valid descriptor.</source
     <message>
         <location filename="../src/mainwindow.cpp" line="1947" />
         <source>Dinero Cryptocurrency Wallet - Real Money For Free People</source>
-        <translation type="unfinished" />
+        <translation>Billetera de criptomoneda Dinero — dinero real para gente libre</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2025" />
@@ -2021,7 +2021,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
         <location filename="../src/mainwindow.cpp" line="14312" />
         <location filename="../src/mainwindow.cpp" line="16663" />
         <source>No wallet loaded. Create or restore a wallet to get started.</source>
-        <translation type="unfinished" />
+        <translation>No hay ninguna billetera cargada. Cree o restaure una para empezar.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2397" />
@@ -2053,7 +2053,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
         <location filename="../src/mainwindow.cpp" line="2418" />
         <location filename="../src/mainwindow.cpp" line="14396" />
         <source>Unlock wallet to enable Taproot signing and transactions</source>
-        <translation type="unfinished" />
+        <translation>Desbloquee la billetera para habilitar la firma Taproot y las transacciones</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2421" />
@@ -2253,7 +2253,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2782" />
         <source>Transactions currently held by this local node</source>
-        <translation type="unfinished" />
+        <translation>Transacciones que este nodo local tiene en este momento</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2787" />
@@ -2422,7 +2422,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3006" />
         <source>Recently mined coins (available after 100 confirmations)</source>
-        <translation type="unfinished" />
+        <translation>Monedas minadas recientemente (disponibles tras 100 confirmaciones)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3039" />
@@ -2560,7 +2560,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3279" />
         <source>Select transaction priority (confirmation target)</source>
-        <translation type="unfinished" />
+        <translation>Seleccione la prioridad de la transacción (objetivo de confirmación)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3291" />
@@ -2580,7 +2580,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3317" />
         <source>Pending Core contextual lock enforcement verification</source>
-        <translation type="unfinished" />
+        <translation>Pendiente de verificar la aplicación de bloqueos contextuales en Core</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3322" />
@@ -2673,7 +2673,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3512" />
         <source>Transaction details will appear here after sending...</source>
-        <translation type="unfinished" />
+        <translation>Los detalles de la transacción aparecerán aquí tras el envío …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3522" />
@@ -2689,7 +2689,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3549" />
         <source>Derive a new address of the currently selected type</source>
-        <translation type="unfinished" />
+        <translation>Derivar una dirección nueva del tipo seleccionado</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3577" />
@@ -2818,7 +2818,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3885" />
         <source>Double-click a row to open block detail in the explorer.</source>
-        <translation type="unfinished" />
+        <translation>Haga doble clic en una fila para abrir el detalle del bloque en el explorador.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3908" />
@@ -3038,7 +3038,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4515" />
         <source>Mining output will appear here when you start mining...</source>
-        <translation type="unfinished" />
+        <translation>La salida del Mining aparecerá aquí cuando lo inicie …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4690" />
@@ -3237,7 +3237,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4909" />
         <source>Disconnect and reconnect all peers (refreshes peer heights)</source>
-        <translation type="unfinished" />
+        <translation>Desconectar y reconectar todos los pares (actualiza sus alturas)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4914" />
@@ -3593,7 +3593,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5732" />
         <source>Generate a quantum-safe ML-DSA-65 receive address (din1r...)</source>
-        <translation type="unfinished" />
+        <translation>Generar una dirección de recepción ML-DSA-65 resistente a la computación cuántica (din1r…)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5735" />
@@ -3604,7 +3604,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5736" />
         <source>Generate a new Taproot receive address (din1p...)</source>
-        <translation type="unfinished" />
+        <translation>Generar una nueva dirección de recepción Taproot (din1p…)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5799" />
@@ -3624,7 +3624,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5805" />
         <source>Fresh wallet Taproot address will be generated</source>
-        <translation type="unfinished" />
+        <translation>Se generará una dirección Taproot nueva de la billetera</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5807" />
@@ -3649,7 +3649,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5817" />
         <source>Create an on-chain contract lock with spending rules</source>
-        <translation type="unfinished" />
+        <translation>Crear un bloqueo de contrato en la cadena con reglas de gasto</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5819" />
@@ -3669,7 +3669,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5823" />
         <source>Fund a shielded dins1 address from your transparent balance</source>
-        <translation type="unfinished" />
+        <translation>Financiar una dirección blindada dins1 desde su saldo transparente</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5825" />
@@ -3684,7 +3684,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5829" />
         <source>Send DIN transparently from public Taproot/P2MR funds</source>
-        <translation type="unfinished" />
+        <translation>Enviar DIN de forma transparente desde fondos públicos Taproot/P2MR</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5853" />
@@ -3694,7 +3694,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5855" />
         <source>Create an on-chain contract with spending rules.</source>
-        <translation type="unfinished" />
+        <translation>Crear un contrato en la cadena con reglas de gasto.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5857" />
@@ -3714,7 +3714,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5866" />
         <source>Send DIN publicly from transparent Taproot/P2MR funds.</source>
-        <translation type="unfinished" />
+        <translation>Enviar DIN públicamente desde fondos transparentes Taproot/P2MR.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5952" />
@@ -3775,7 +3775,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="6526" />
         <source>✅ Transaction created and signed! Broadcasting...</source>
-        <translation type="unfinished" />
+        <translation>✅ Transacción creada y firmada. Difundiendo …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7182" />
@@ -3801,7 +3801,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="7324" />
         <source>Good connectivity</source>
-        <translation type="unfinished" />
+        <translation>Buena conectividad</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7364" />
@@ -3813,201 +3813,201 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
         <location filename="../src/mainwindow.cpp" line="8480" />
         <location filename="../src/mainwindow.cpp" line="16928" />
         <source>✅ Fully synced!</source>
-        <translation type="unfinished" />
+        <translation>✅ Totalmente sincronizado.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7469" />
         <location filename="../src/mainwindow.cpp" line="7657" />
         <source>No wallet loaded</source>
-        <translation type="unfinished" />
+        <translation>No hay ninguna billetera cargada</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7471" />
         <location filename="../src/mainwindow.cpp" line="7659" />
         <source>No active wallet is loaded.</source>
-        <translation type="unfinished" />
+        <translation>No hay ninguna billetera activa cargada.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7582" />
         <source>Switching wallet</source>
-        <translation type="unfinished" />
+        <translation>Cambiando de billetera</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7610" />
         <location filename="../src/mainwindow.cpp" line="8197" />
         <source>Wallet Load Failed</source>
-        <translation type="unfinished" />
+        <translation>Falló la carga de la billetera</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7663" />
         <source>Wallet unload failed</source>
-        <translation type="unfinished" />
+        <translation>Falló la descarga de la billetera</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7735" />
         <source>Consolidation</source>
-        <translation type="unfinished" />
+        <translation>Consolidación</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7736" />
         <source>Nothing to consolidate — no eligible UTXOs.</source>
-        <translation type="unfinished" />
+        <translation>No hay nada que consolidar: no hay UTXOs elegibles.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7742" />
         <source>Confirm Consolidation</source>
-        <translation type="unfinished" />
+        <translation>Confirmar la consolidación</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7771" />
         <location filename="../src/mainwindow.cpp" line="8162" />
         <source>Consolidation Failed</source>
-        <translation type="unfinished" />
+        <translation>Falló la consolidación</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7778" />
         <source>Consolidation Complete</source>
-        <translation type="unfinished" />
+        <translation>Consolidación completada</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7790" />
         <source>Contract Inspection</source>
-        <translation type="unfinished" />
+        <translation>Inspección del contrato</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7793" />
         <source>Verified Contract Descriptor</source>
-        <translation type="unfinished" />
+        <translation>Descriptor de contrato verificado</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7918" />
         <location filename="../src/mainwindow.cpp" line="8014" />
         <location filename="../src/mainwindow.cpp" line="15899" />
         <source>(no label)</source>
-        <translation type="unfinished" />
+        <translation>(sin etiqueta)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7919" />
         <location filename="../src/mainwindow.cpp" line="8015" />
         <location filename="../src/mainwindow.cpp" line="15901" />
         <source>Double-click to add a label</source>
-        <translation type="unfinished" />
+        <translation>Haga doble clic para añadir una etiqueta</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7942" />
         <location filename="../src/mainwindow.cpp" line="8038" />
         <source>📋 Copy</source>
-        <translation type="unfinished" />
+        <translation>📋 Copiar</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8086" />
         <source>Mempool: unavailable</source>
-        <translation type="unfinished" />
+        <translation>Mempool: no disponible</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8087" />
         <source>Unavailable</source>
-        <translation type="unfinished" />
+        <translation>No disponible</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8088" />
         <source>Local node did not answer</source>
-        <translation type="unfinished" />
+        <translation>El nodo local no respondió</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8178" />
         <source>Retrying wallet load</source>
-        <translation type="unfinished" />
+        <translation>Reintentando la carga de la billetera</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8225" />
         <source>Mining Address Not Eligible</source>
-        <translation type="unfinished" />
+        <translation>La dirección de Mining no es elegible</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8275" />
         <source>Welcome to Dinero</source>
-        <translation type="unfinished" />
+        <translation>Bienvenido a Dinero</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8277" />
         <source>&lt;h2&gt;🚀 Welcome to Dinero!&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🚀 Bienvenido a Dinero&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8373" />
         <location filename="../src/mainwindow.cpp" line="8382" />
         <source>Daemon start failed</source>
-        <translation type="unfinished" />
+        <translation>Falló el inicio del daemon</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8392" />
         <location filename="../src/mainwindow.cpp" line="13610" />
         <source>Starting daemon...</source>
-        <translation type="unfinished" />
+        <translation>Iniciando el daemon …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8400" />
         <location filename="../src/mainwindow.cpp" line="16846" />
         <source>Connecting...</source>
-        <translation type="unfinished" />
+        <translation>Conectando …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8404" />
         <location filename="../src/mainwindow.cpp" line="13450" />
         <source>Daemon Not Found</source>
-        <translation type="unfinished" />
+        <translation>No se encontró el daemon</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8411" />
         <source>Daemon not found</source>
-        <translation type="unfinished" />
+        <translation>No se encontró el daemon</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8415" />
         <location filename="../src/mainwindow.cpp" line="13829" />
         <source>Daemon not running</source>
-        <translation type="unfinished" />
+        <translation>El daemon no está en ejecución</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8431" />
         <source>Connected to local daemon.</source>
-        <translation type="unfinished" />
+        <translation>Conectado al daemon local.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8603" />
         <source>Disabled</source>
-        <translation type="unfinished" />
+        <translation>Desactivado</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8606" />
         <source>Enabled / Backpressure</source>
-        <translation type="unfinished" />
+        <translation>Activado / contrapresión</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8609" />
         <source>Enabled / Serving</source>
-        <translation type="unfinished" />
+        <translation>Activado / sirviendo</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8612" />
         <source>Enabled / Warm</source>
-        <translation type="unfinished" />
+        <translation>Activado / en calentamiento</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8615" />
         <source>Enabled / Idle</source>
-        <translation type="unfinished" />
+        <translation>Activado / inactivo</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8717" />
         <source>New address generated!</source>
-        <translation type="unfinished" />
+        <translation>Se generó una dirección nueva.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9336" />
         <source>Temp: unavailable</source>
-        <translation type="unfinished" />
+        <translation>Temp.: no disponible</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9390" />
@@ -4017,22 +4017,22 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="9397" />
         <source>System-wide GPU memory from macOS AGX PerformanceStatistics</source>
-        <translation type="unfinished" />
+        <translation>Memoria de GPU de todo el sistema, según AGX PerformanceStatistics de macOS</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9399" />
         <source>GPU Load: unavailable</source>
-        <translation type="unfinished" />
+        <translation>Carga de GPU: no disponible</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9400" />
         <source>GPU Mem: unavailable</source>
-        <translation type="unfinished" />
+        <translation>Memoria de GPU: no disponible</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9415" />
         <source>GPU thermal telemetry</source>
-        <translation type="unfinished" />
+        <translation>Telemetría térmica de la GPU</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9687" />
@@ -4053,17 +4053,17 @@ Would you like to unlock your wallet now?</source>
         <location filename="../src/mainwindow.cpp" line="9714" />
         <location filename="../src/mainwindow.cpp" line="11579" />
         <source>Address Not Eligible for Mining</source>
-        <translation type="unfinished" />
+        <translation>La dirección no es elegible para Mining</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9730" />
         <source>Mining Address Set</source>
-        <translation type="unfinished" />
+        <translation>Dirección de Mining establecida</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9733" />
         <source>No Wallet Address</source>
-        <translation type="unfinished" />
+        <translation>No hay dirección de billetera</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9734" />
@@ -4078,12 +4078,12 @@ Please generate a new Taproot address first:
     <message>
         <location filename="../src/mainwindow.cpp" line="9816" />
         <source>Wrong SV2 Miner</source>
-        <translation type="unfinished" />
+        <translation>Minero SV2 incorrecto</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9856" />
         <source>Daemon Required</source>
-        <translation type="unfinished" />
+        <translation>Se requiere el daemon</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9857" />
@@ -4094,7 +4094,7 @@ Please generate a new Taproot address first:
         <location filename="../src/mainwindow.cpp" line="9869" />
         <location filename="../src/mainwindow.cpp" line="15619" />
         <source>Mining Address Required</source>
-        <translation type="unfinished" />
+        <translation>Se requiere una dirección de Mining</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9870" />
@@ -4104,12 +4104,12 @@ Please generate a new Taproot address first:
     <message>
         <location filename="../src/mainwindow.cpp" line="9878" />
         <source>RPC Cookie Missing</source>
-        <translation type="unfinished" />
+        <translation>Falta la cookie RPC</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9885" />
         <source>Stratum Server Not Found</source>
-        <translation type="unfinished" />
+        <translation>No se encontró el servidor Stratum</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9886" />
@@ -4122,47 +4122,47 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
         <location filename="../src/mainwindow.cpp" line="9917" />
         <location filename="../src/mainwindow.cpp" line="9998" />
         <source>Pool mode ready (Stratum stopped)</source>
-        <translation type="unfinished" />
+        <translation>Modo Pool listo (Stratum detenido)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9960" />
         <source>Stratum Server Failed</source>
-        <translation type="unfinished" />
+        <translation>Falló el servidor Stratum</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9966" />
         <source>Stop Local</source>
-        <translation type="unfinished" />
+        <translation>Detener local</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9967" />
         <source>Stop the localhost Stratum server.</source>
-        <translation type="unfinished" />
+        <translation>Detener el servidor Stratum local.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9970" />
         <source>Local Stratum ready</source>
-        <translation type="unfinished" />
+        <translation>Stratum local listo</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="10860" />
         <source>No block submissions yet</source>
-        <translation type="unfinished" />
+        <translation>Aún no se han enviado bloques</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="10937" />
         <source>Hashrate reported by external miner (self-reported)</source>
-        <translation type="unfinished" />
+        <translation>Tasa de hash informada por el minero externo (autodeclarada)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11284" />
         <source>Coinbase output is fully mature and spendable</source>
-        <translation type="unfinished" />
+        <translation>La salida coinbase está madura y se puede gastar</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11286" />
         <source>Regular transaction (not coinbase)</source>
-        <translation type="unfinished" />
+        <translation>Transacción normal (no coinbase)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11373" />
@@ -4172,12 +4172,12 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11376" />
         <source>Inspect</source>
-        <translation type="unfinished" />
+        <translation>Inspeccionar</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11471" />
         <source>Withdraw</source>
-        <translation type="unfinished" />
+        <translation>Retirar</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11473" />
@@ -4187,12 +4187,12 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11488" />
         <source>Confirm Contract Spend</source>
-        <translation type="unfinished" />
+        <translation>Confirmar el gasto del contrato</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11504" />
         <source>Legacy Contract Record</source>
-        <translation type="unfinished" />
+        <translation>Registro de contrato heredado</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11505" />
@@ -4202,7 +4202,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11541" />
         <source>Daemon Not Connected</source>
-        <translation type="unfinished" />
+        <translation>El daemon no está conectado</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11542" />
@@ -4217,7 +4217,7 @@ Please start the daemon first:
     <message>
         <location filename="../src/mainwindow.cpp" line="11552" />
         <source>No Mining Address</source>
-        <translation type="unfinished" />
+        <translation>No hay dirección de Mining</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11553" />
@@ -4238,30 +4238,30 @@ Mining rewards will be sent to your wallet's Taproot address.</source>
         <location filename="../src/mainwindow.cpp" line="11988" />
         <location filename="../src/mainwindow.cpp" line="12746" />
         <source>0.00 MH/s</source>
-        <translation type="unfinished" />
+        <translation>0.00 MH/s</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11678" />
         <location filename="../src/mainwindow.cpp" line="11890" />
         <location filename="../src/mainwindow.cpp" line="12305" />
         <source>Already Mining</source>
-        <translation type="unfinished" />
+        <translation>Ya se está minando</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11678" />
         <source>GPU mining is already running!</source>
-        <translation type="unfinished" />
+        <translation>El Mining por GPU ya está en ejecución.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11717" />
         <source>GPU Miner Not Found</source>
-        <translation type="unfinished" />
+        <translation>No se encontró el minero de GPU</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11742" />
         <location filename="../src/mainwindow.cpp" line="11989" />
         <source>0 hashes</source>
-        <translation type="unfinished" />
+        <translation>0 hashes</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11743" />
@@ -5647,148 +5647,148 @@ Label,Address</source>
     <message>
         <location filename="../src/paymentswidget.cpp" line="92" />
         <source>DineroPay ready - Create your first invoice</source>
-        <translation type="unfinished" />
+        <translation>DineroPay listo: cree su primera factura</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="108" />
         <source>Amount (DNR):</source>
-        <translation type="unfinished" />
+        <translation>Monto (DNR):</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="113" />
         <source>Label (optional):</source>
-        <translation type="unfinished" />
+        <translation>Etiqueta (opcional):</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="115" />
         <source>e.g., Order #12345</source>
-        <translation type="unfinished" />
+        <translation>por ejemplo: pedido n.º 12345</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="118" />
         <source>Address (optional):</source>
-        <translation type="unfinished" />
+        <translation>Dirección (opcional):</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="120" />
         <source>Leave blank for auto-generated</source>
-        <translation type="unfinished" />
+        <translation>Déjelo vacío para generarla automáticamente</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="136" />
         <source>Search:</source>
-        <translation type="unfinished" />
+        <translation>Buscar:</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="138" />
         <source>Type to filter currencies...</source>
-        <translation type="unfinished" />
+        <translation>Escriba para filtrar monedas …</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="151" />
         <source>Add/Remove from favorites</source>
-        <translation type="unfinished" />
+        <translation>Agregar o quitar de favoritos</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="159" />
         <source>Open MoonPay/Ramp on-ramp in browser</source>
-        <translation type="unfinished" />
+        <translation>Abrir la pasarela MoonPay/Ramp en el navegador</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="195" />
         <location filename="../src/paymentswidget.cpp" line="391" />
         <source>No invoice selected</source>
-        <translation type="unfinished" />
+        <translation>No hay ninguna factura seleccionada</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="234" />
         <source>Anchor Reference Price - Soft price guide for early market phase</source>
-        <translation type="unfinished" />
+        <translation>Precio de referencia ancla: guía orientativa para la fase inicial del mercado</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="249" />
         <source>Shows the blend ratio of ARP vs Market price</source>
-        <translation type="unfinished" />
+        <translation>Muestra la proporción entre el precio ARP y el de mercado</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="308" />
         <source>Invalid Amount</source>
-        <translation type="unfinished" />
+        <translation>Monto no válido</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="308" />
         <source>Please enter a valid amount greater than 0.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese un monto válido mayor que 0.</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="342" />
         <source>No Subscription</source>
-        <translation type="unfinished" />
+        <translation>Sin suscripción</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="342" />
         <source>No active subscription found for this address.</source>
-        <translation type="unfinished" />
+        <translation>No se encontró ninguna suscripción activa para esta dirección.</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="349" />
         <source>Checking payment status...</source>
-        <translation type="unfinished" />
+        <translation>Comprobando el estado del pago …</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="372" />
         <source>QR Code Generated</source>
-        <translation type="unfinished" />
+        <translation>Código QR generado</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="387" />
         <source>Address: –</source>
-        <translation type="unfinished" />
+        <translation>Dirección: –</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="388" />
         <source>Amount: –</source>
-        <translation type="unfinished" />
+        <translation>Monto: –</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="389" />
         <source>Fiat value: –</source>
-        <translation type="unfinished" />
+        <translation>Valor en moneda fiat: –</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="504" />
         <source>Invoice Creation Failed</source>
-        <translation type="unfinished" />
+        <translation>Falló la creación de la factura</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="505" />
         <source>❌ Failed to create invoice</source>
-        <translation type="unfinished" />
+        <translation>❌ No se pudo crear la factura</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="540" />
         <source>100% ARP</source>
-        <translation type="unfinished" />
+        <translation>100 % ARP</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="542" />
         <source>📌 Pure ARP (pre-launch)</source>
-        <translation type="unfinished" />
+        <translation>📌 ARP puro (antes del lanzamiento)</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="544" />
         <source>100% Market</source>
-        <translation type="unfinished" />
+        <translation>100 % mercado</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="546" />
         <source>📈 Market-driven pricing</source>
-        <translation type="unfinished" />
+        <translation>📈 Precio guiado por el mercado</translation>
     </message>
     <message>
         <location filename="../src/paymentswidget.cpp" line="553" />
         <source>🔄 Blended pricing (transitioning)</source>
-        <translation type="unfinished" />
+        <translation>🔄 Precio mixto (en transición)</translation>
     </message>
 </context>
 <context>
@@ -5796,12 +5796,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="120" />
         <source>&lt;h2&gt;👥 Pool&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;👥 Pool&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="126" />
         <source>Hosting a pool</source>
-        <translation type="unfinished" />
+        <translation>Alojar un Pool</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="128" />
@@ -5816,7 +5816,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="161" />
         <source>Your pool</source>
-        <translation type="unfinished" />
+        <translation>Su Pool</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="163" />
@@ -5832,12 +5832,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="187" />
         <source>contents of /etc/dinero-sv2/ops-token</source>
-        <translation type="unfinished" />
+        <translation>contenido de /etc/dinero-sv2/ops-token</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="190" />
         <source>Connect</source>
-        <translation type="unfinished" />
+        <translation>Conectar</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="196" />
@@ -5856,22 +5856,22 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="201" />
         <source>About trustless pooled mining</source>
-        <translation type="unfinished" />
+        <translation>Acerca del Mining en Pool sin confianza</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="209" />
         <source>Live status</source>
-        <translation type="unfinished" />
+        <translation>Estado en vivo</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="229" />
         <source>OFFLINE</source>
-        <translation type="unfinished" />
+        <translation>SIN CONEXIÓN</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="231" />
         <source>Not connected</source>
-        <translation type="unfinished" />
+        <translation>No conectado</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="241" />
@@ -5879,127 +5879,127 @@ Label,Address</source>
         <location filename="../src/poolpanel.cpp" line="322" />
         <location filename="../src/poolpanel.cpp" line="323" />
         <source>Unavailable</source>
-        <translation type="unfinished" />
+        <translation>No disponible</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="243" />
         <source>Connected sessions:</source>
-        <translation type="unfinished" />
+        <translation>Sesiones conectadas:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="245" />
         <source>Operator fee:</source>
-        <translation type="unfinished" />
+        <translation>Comisión del operador:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="259" />
         <source>PPLNS window:</source>
-        <translation type="unfinished" />
+        <translation>Ventana PPLNS:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="264" />
         <source>Template producer:</source>
-        <translation type="unfinished" />
+        <translation>Productor de plantillas:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="266" />
         <source>Shares (since pool restart):</source>
-        <translation type="unfinished" />
+        <translation>Shares (desde el reinicio del Pool):</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="267" />
         <source>Blocks found (since pool restart):</source>
-        <translation type="unfinished" />
+        <translation>Bloques encontrados (desde el reinicio del Pool):</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="275" />
         <source>Daemon:</source>
-        <translation type="unfinished" />
+        <translation>Daemon:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="277" />
         <source>Stratum:</source>
-        <translation type="unfinished" />
+        <translation>Stratum:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="285" />
         <source>Fee paid to:</source>
-        <translation type="unfinished" />
+        <translation>Comisión pagada a:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="290" />
         <source>din1p… new fee address</source>
-        <translation type="unfinished" />
+        <translation>din1p… nueva dirección de comisión</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="292" />
         <source>Change</source>
-        <translation type="unfinished" />
+        <translation>Cambiar</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="294" />
         <source>Change to:</source>
-        <translation type="unfinished" />
+        <translation>Cambiar a:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="311" />
         <source>Change fee</source>
-        <translation type="unfinished" />
+        <translation>Cambiar la comisión</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="314" />
         <source>Set operator fee:</source>
-        <translation type="unfinished" />
+        <translation>Establecer la comisión del operador:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="324" />
         <source>None reported</source>
-        <translation type="unfinished" />
+        <translation>Ninguno informado</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="326" />
         <source>Last accepted share:</source>
-        <translation type="unfinished" />
+        <translation>Último share aceptado:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="328" />
         <source>Last block result:</source>
-        <translation type="unfinished" />
+        <translation>Resultado del último bloque:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="330" />
         <source>Rejection reasons:</source>
-        <translation type="unfinished" />
+        <translation>Motivos de rechazo:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="333" />
         <source>Share activity history (stored locally)</source>
-        <translation type="unfinished" />
+        <translation>Historial de actividad de shares (guardado localmente)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="338" />
         <source>5 min</source>
-        <translation type="unfinished" />
+        <translation>5 min</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="339" />
         <source>1 hour</source>
-        <translation type="unfinished" />
+        <translation>1 hora</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="340" />
         <source>24 hours</source>
-        <translation type="unfinished" />
+        <translation>24 horas</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="364" />
         <source>PPLNS contributors (not connected sessions)</source>
-        <translation type="unfinished" />
+        <translation>Contribuyentes PPLNS (no sesiones conectadas)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="375" />
         <source>Fee earnings (verified on-chain)</source>
-        <translation type="unfinished" />
+        <translation>Ganancias por comisiones (verificadas en la cadena)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="377" />
@@ -6009,17 +6009,17 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="388" />
         <source>Fee address:</source>
-        <translation type="unfinished" />
+        <translation>Dirección de comisión:</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="390" />
         <source>the din1p... you passed as --payout-address</source>
-        <translation type="unfinished" />
+        <translation>la din1p… que indicó en --payout-address</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="392" />
         <source>Check</source>
-        <translation type="unfinished" />
+        <translation>Comprobar</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="473" />
@@ -6029,7 +6029,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="536" />
         <source>Change fee address</source>
-        <translation type="unfinished" />
+        <translation>Cambiar la dirección de comisión</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="580" />
@@ -6039,12 +6039,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="585" />
         <source>That is already the live operator fee.</source>
-        <translation type="unfinished" />
+        <translation>Esa ya es la comisión del operador vigente.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="590" />
         <source>Change operator fee</source>
-        <translation type="unfinished" />
+        <translation>Cambiar la comisión del operador</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="605" />
@@ -6054,7 +6054,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="619" />
         <source>Review accepted locally; asking the pool to apply the fee policy…</source>
-        <translation type="unfinished" />
+        <translation>Revisión aceptada localmente; solicitando al Pool que aplique la política de comisiones …</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="629" />
@@ -6064,7 +6064,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="632" />
         <source>&lt;span style='color:#e06c75;'&gt;Rejected: wrong ops token.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Rechazado: token de operaciones incorrecto.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="641" />
@@ -6104,7 +6104,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1164" />
         <source>&lt;span style='color:#d8a37b;'&gt;Enter your fee address.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Ingrese su dirección de comisión.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1174" />
@@ -6114,7 +6114,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1175" />
         <source>checking the chain…</source>
-        <translation type="unfinished" />
+        <translation>comprobando la cadena …</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1192" />
@@ -6124,7 +6124,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1253" />
         <source>&lt;span style='color:#e06c75;'&gt;Unexpected reply from the node.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Respuesta inesperada del nodo.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1265" />
@@ -6142,27 +6142,27 @@ Label,Address</source>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="26" />
         <source>Waiting for network capability</source>
-        <translation type="unfinished" />
+        <translation>Esperando la capacidad de la red</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="33" />
         <source>Your shielded address; its wallet will control the contract</source>
-        <translation type="unfinished" />
+        <translation>Su dirección blindada; su billetera controlará el contrato</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="35" />
         <source>Use my shielded address</source>
-        <translation type="unfinished" />
+        <translation>Usar mi dirección blindada</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="41" />
         <source>Select or load a wallet first.</source>
-        <translation type="unfinished" />
+        <translation>Primero seleccione o cargue una billetera.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="42" />
         <source>Getting your shielded address…</source>
-        <translation type="unfinished" />
+        <translation>Obteniendo su dirección blindada …</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="47" />
@@ -6182,12 +6182,12 @@ Label,Address</source>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="62" />
         <source>Refresh private contracts</source>
-        <translation type="unfinished" />
+        <translation>Actualizar los contratos privados</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="69" />
         <source>Resolve uncertain submission</source>
-        <translation type="unfinished" />
+        <translation>Resolver un envío de resultado incierto</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="70" />
@@ -6199,7 +6199,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="75" />
         <source>Cannot save resolution; the hold remains.</source>
-        <translation type="unfinished" />
+        <translation>No se pudo guardar la resolución; la retención se mantiene.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="78" />
@@ -6209,7 +6209,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="110" />
         <source>Your shielded address is ready.</source>
-        <translation type="unfinished" />
+        <translation>Su dirección blindada está lista.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="131" />
@@ -6219,42 +6219,42 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="175" />
         <source>Review payment</source>
-        <translation type="unfinished" />
+        <translation>Revisar el pago</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="185" />
         <source>Enter a contract owner and positive funding and reserved spend fees.</source>
-        <translation type="unfinished" />
+        <translation>Indique un propietario del contrato y comisiones positivas de financiación y de gasto reservado.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="192" />
         <source>Complete each recipient row with a positive amount of at most 8 decimals.</source>
-        <translation type="unfinished" />
+        <translation>Complete cada fila de destinatario con un monto positivo de como máximo 8 decimales.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="196" />
         <source>Enter one or two valid payments within the amount range.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese uno o dos pagos válidos dentro del rango de montos.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="201" />
         <source>Review private covenant</source>
-        <translation type="unfinished" />
+        <translation>Revisar el covenant privado</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="214" />
         <source>Review private covenant payment</source>
-        <translation type="unfinished" />
+        <translation>Revisar el pago del covenant privado</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="221" />
         <source>Cannot save the operation journal; nothing submitted.</source>
-        <translation type="unfinished" />
+        <translation>No se pudo guardar el registro de la operación; no se envió nada.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="222" />
         <source>Building and submitting proof. Please wait…</source>
-        <translation type="unfinished" />
+        <translation>Construyendo y enviando la prueba. Espere …</translation>
     </message>
 </context>
 <context>
@@ -6262,27 +6262,27 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/main.cpp" line="1120" />
         <source>Running from Disk Image</source>
-        <translation type="unfinished" />
+        <translation>Ejecutándose desde la imagen de disco</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1121" />
         <source>Dinero is running directly from the disk image.</source>
-        <translation type="unfinished" />
+        <translation>Dinero se está ejecutando directamente desde la imagen de disco.</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1150" />
         <source>Port Already in Use</source>
-        <translation type="unfinished" />
+        <translation>El puerto ya está en uso</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1151" />
         <source>Port 20998 is already in use — another Dinero process may be running.</source>
-        <translation type="unfinished" />
+        <translation>El puerto 20998 ya está en uso; puede haber otro proceso de Dinero en ejecución.</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1274" />
         <source>Incompatible Chain Data</source>
-        <translation type="unfinished" />
+        <translation>Datos de cadena incompatibles</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1276" />
@@ -6297,17 +6297,17 @@ Wipe chain data and restart with a fresh sync?</source>
         <location filename="../src/main.cpp" line="1305" />
         <location filename="../src/main.cpp" line="1316" />
         <source>Error</source>
-        <translation type="unfinished" />
+        <translation>Error</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1346" />
         <source>Daemon Failed to Start</source>
-        <translation type="unfinished" />
+        <translation>El daemon no pudo iniciarse</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1399" />
         <source>Daemon Stopped Unexpectedly</source>
-        <translation type="unfinished" />
+        <translation>El daemon se detuvo de forma inesperada</translation>
     </message>
 </context>
 <context>
@@ -6490,12 +6490,12 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="81" />
         <source>Checking shielded pool status…</source>
-        <translation type="unfinished" />
+        <translation>Comprobando el estado del pool blindado …</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="91" />
         <source>Shielded Balance</source>
-        <translation type="unfinished" />
+        <translation>Saldo blindado</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="94" />
@@ -6505,126 +6505,126 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="98" />
         <source>Balance (una):</source>
-        <translation type="unfinished" />
+        <translation>Saldo (una):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="101" />
         <source>Confirmed notes:</source>
-        <translation type="unfinished" />
+        <translation>Notas confirmadas:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="104" />
         <source>Pending notes:</source>
-        <translation type="unfinished" />
+        <translation>Notas pendientes:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="107" />
         <source>Tree size:</source>
-        <translation type="unfinished" />
+        <translation>Tamaño del árbol:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="111" />
         <source>Refresh</source>
-        <translation type="unfinished" />
+        <translation>Actualizar</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="117" />
         <source>Receive Address</source>
-        <translation type="unfinished" />
+        <translation>Dirección para recibir</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="130" />
         <source>Copy</source>
-        <translation type="unfinished" />
+        <translation>Copiar</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="133" />
         <source>New (j+1)</source>
-        <translation type="unfinished" />
+        <translation>Nueva (j+1)</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="140" />
         <source>Issued addresses:</source>
-        <translation type="unfinished" />
+        <translation>Direcciones emitidas:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="161" />
         <source>Shield (transparent → shielded)</source>
-        <translation type="unfinished" />
+        <translation>Blindar (transparente → blindado)</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="164" />
         <location filename="../src/shieldedwidget.cpp" line="196" />
         <source>Amount (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Monto (DIN):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="168" />
         <location filename="../src/shieldedwidget.cpp" line="210" />
         <location filename="../src/shieldedwidget.cpp" line="247" />
         <source>Fee (una):</source>
-        <translation type="unfinished" />
+        <translation>Comisión (una):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="170" />
         <location filename="../src/shieldedwidget.cpp" line="212" />
         <location filename="../src/shieldedwidget.cpp" line="249" />
         <source>Auto-sized</source>
-        <translation type="unfinished" />
+        <translation>Tamaño automático</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="173" />
         <location filename="../src/shieldedwidget.cpp" line="623" />
         <location filename="../src/shieldedwidget.cpp" line="633" />
         <source>Shield</source>
-        <translation type="unfinished" />
+        <translation>Blindar</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="187" />
         <source>Send shielded</source>
-        <translation type="unfinished" />
+        <translation>Enviar blindado</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="191" />
         <source>Recipient:</source>
-        <translation type="unfinished" />
+        <translation>Destinatario:</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="193" />
         <source>shielded address</source>
-        <translation type="unfinished" />
+        <translation>dirección blindada</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="203" />
         <source>Amount (una):</source>
-        <translation type="unfinished" />
+        <translation>Monto (una):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="216" />
         <source>Memo (≤512B):</source>
-        <translation type="unfinished" />
+        <translation>Memo (≤512 B):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="218" />
         <source>optional UTF-8 memo</source>
-        <translation type="unfinished" />
+        <translation>memo UTF-8 opcional</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="222" />
         <location filename="../src/shieldedwidget.cpp" line="685" />
         <location filename="../src/shieldedwidget.cpp" line="698" />
         <source>Send</source>
-        <translation type="unfinished" />
+        <translation>Enviar</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="236" />
         <source>Unshield note (shielded → transparent)</source>
-        <translation type="unfinished" />
+        <translation>Desblindar una nota (blindado → transparente)</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="240" />
         <source>Minimum note (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Nota mínima (DIN):</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="243" />
@@ -6636,134 +6636,134 @@ Please try again.</source>
         <location filename="../src/shieldedwidget.cpp" line="768" />
         <location filename="../src/shieldedwidget.cpp" line="778" />
         <source>Unshield</source>
-        <translation type="unfinished" />
+        <translation>Desblindar</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="261" />
         <location filename="../src/shieldedwidget.cpp" line="399" />
         <source>To: fresh wallet Taproot address generated by daemon at submit time</source>
-        <translation type="unfinished" />
+        <translation>Destino: una dirección Taproot nueva de la billetera, generada por el daemon al enviar</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="271" />
         <source>Shielded Notes</source>
-        <translation type="unfinished" />
+        <translation>Notas blindadas</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="293" />
         <source>Activity</source>
-        <translation type="unfinished" />
+        <translation>Actividad</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="324" />
         <source>✅ Private payments enabled by the daemon</source>
-        <translation type="unfinished" />
+        <translation>✅ El daemon tiene habilitados los pagos privados</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="329" />
         <source>🔒 Wallet is locked — unlock wallet to continue with private payments.</source>
-        <translation type="unfinished" />
+        <translation>🔒 La billetera está bloqueada. Desbloquéela para continuar con los pagos privados.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="617" />
         <location filename="../src/shieldedwidget.cpp" line="679" />
         <location filename="../src/shieldedwidget.cpp" line="762" />
         <source>Wallet is locked — unlock wallet to continue.</source>
-        <translation type="unfinished" />
+        <translation>La billetera está bloqueada. Desbloquéela para continuar.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="624" />
         <location filename="../src/shieldedwidget.cpp" line="686" />
         <location filename="../src/shieldedwidget.cpp" line="769" />
         <source>Previous uncertain attempt cleared — review before submitting again.</source>
-        <translation type="unfinished" />
+        <translation>Se descartó un intento anterior de resultado incierto. Revíselo antes de volver a enviar.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="632" />
         <source>ready for a new shield operation</source>
-        <translation type="unfinished" />
+        <translation>listo para una nueva operación de blindaje</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="640" />
         <location filename="../src/shieldedwidget.cpp" line="785" />
         <source>invalid amount</source>
-        <translation type="unfinished" />
+        <translation>monto no válido</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="648" />
         <location filename="../src/shieldedwidget.cpp" line="723" />
         <location filename="../src/shieldedwidget.cpp" line="793" />
         <source>invalid fee</source>
-        <translation type="unfinished" />
+        <translation>comisión no válida</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="654" />
         <source>Review Shield Operation</source>
-        <translation type="unfinished" />
+        <translation>Revisar la operación de blindaje</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="663" />
         <location filename="../src/shieldedwidget.cpp" line="738" />
         <location filename="../src/shieldedwidget.cpp" line="809" />
         <source>could not persist authorization; nothing submitted</source>
-        <translation type="unfinished" />
+        <translation>no se pudo guardar la autorización; no se envió nada</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="670" />
         <location filename="../src/shieldedwidget.cpp" line="753" />
         <location filename="../src/shieldedwidget.cpp" line="816" />
         <source>proving and submitting…</source>
-        <translation type="unfinished" />
+        <translation>generando la prueba y enviando …</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="697" />
         <source>ready for a new private payment</source>
-        <translation type="unfinished" />
+        <translation>listo para un nuevo pago privado</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="705" />
         <source>enter recipient address</source>
-        <translation type="unfinished" />
+        <translation>ingrese la dirección del destinatario</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="710" />
         <source>recipient is not a valid address for the active network</source>
-        <translation type="unfinished" />
+        <translation>el destinatario no es una dirección válida para la red activa</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="716" />
         <source>invalid amount_una</source>
-        <translation type="unfinished" />
+        <translation>amount_una no válido</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="730" />
         <source>Review Private Payment</source>
-        <translation type="unfinished" />
+        <translation>Revisar el pago privado</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="742" />
         <source>could not persist submission state; nothing submitted</source>
-        <translation type="unfinished" />
+        <translation>no se pudo guardar el estado del envío; no se envió nada</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="777" />
         <source>ready for a new unshield operation</source>
-        <translation type="unfinished" />
+        <translation>listo para una nueva operación de desblindaje</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="799" />
         <source>Review Unshield Operation</source>
-        <translation type="unfinished" />
+        <translation>Revisar la operación de desblindaje</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="933" />
         <source>New Shield Operation</source>
-        <translation type="unfinished" />
+        <translation>Nueva operación de blindaje</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="985" />
         <source>New Unshield Operation</source>
-        <translation type="unfinished" />
+        <translation>Nueva operación de desblindaje</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1038" />
@@ -6787,26 +6787,26 @@ Please try again.</source>
         <location filename="../src/shieldedwidget.cpp" line="1135" />
         <location filename="../src/shieldedwidget.cpp" line="1205" />
         <source>Review and Retry</source>
-        <translation type="unfinished" />
+        <translation>Revisar y reintentar</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1088" />
         <location filename="../src/shieldedwidget.cpp" line="1147" />
         <location filename="../src/shieldedwidget.cpp" line="1154" />
         <source>Proving and submitting…</source>
-        <translation type="unfinished" />
+        <translation>Generando la prueba y enviando …</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1108" />
         <location filename="../src/shieldedwidget.cpp" line="1138" />
         <source>New Private Payment</source>
-        <translation type="unfinished" />
+        <translation>Nuevo pago privado</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1130" />
         <location filename="../src/shieldedwidget.cpp" line="1200" />
         <source>Review Outcome</source>
-        <translation type="unfinished" />
+        <translation>Revisar el resultado</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1131" />
@@ -6817,12 +6817,12 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1136" />
         <source>previous private payment was rejected; review before explicit retry</source>
-        <translation type="unfinished" />
+        <translation>el pago privado anterior fue rechazado; revíselo antes de reintentar de forma explícita</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1206" />
         <source>previous operation was rejected; review before retrying</source>
-        <translation type="unfinished" />
+        <translation>la operación anterior fue rechazada; revísela antes de reintentar</translation>
     </message>
 </context>
 <context>
@@ -6830,22 +6830,22 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="152" />
         <source>Last request: —</source>
-        <translation type="unfinished" />
+        <translation>Última solicitud: —</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="164" />
         <source>&lt;span style='color:#d8a37b;'&gt;rebinding to active wallet…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;revinculando con la billetera activa …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="214" />
         <source>&lt;h2&gt;🏦 Liquidity Vault&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🏦 Bóveda de liquidez&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="215" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Actualizar</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="222" />
@@ -6855,17 +6855,17 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="237" />
         <source>Vault Summary</source>
-        <translation type="unfinished" />
+        <translation>Resumen de la bóveda</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="239" />
         <source>unknown</source>
-        <translation type="unfinished" />
+        <translation>desconocido</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="240" />
         <source>connecting…</source>
-        <translation type="unfinished" />
+        <translation>conectando …</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="241" />
@@ -6886,57 +6886,57 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="249" />
         <source>Runtime:</source>
-        <translation type="unfinished" />
+        <translation>Ejecución:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="251" />
         <source>Connection:</source>
-        <translation type="unfinished" />
+        <translation>Conexión:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="253" />
         <source>Withdrawal queue:</source>
-        <translation type="unfinished" />
+        <translation>Cola de retiros:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="255" />
         <source>Settling:</source>
-        <translation type="unfinished" />
+        <translation>Liquidando:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="257" />
         <source>Vault Deposit Address:</source>
-        <translation type="unfinished" />
+        <translation>Dirección de depósito de la bóveda:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="262" />
         <source>Vault Balance</source>
-        <translation type="unfinished" />
+        <translation>Saldo de la bóveda</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="296" />
         <source>Withdrawal</source>
-        <translation type="unfinished" />
+        <translation>Retiro</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="308" />
         <source>din1p… Taproot address</source>
-        <translation type="unfinished" />
+        <translation>din1p… dirección Taproot</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="314" />
         <source>Review Withdrawal</source>
-        <translation type="unfinished" />
+        <translation>Revisar el retiro</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="320" />
         <source>Last request: –</source>
-        <translation type="unfinished" />
+        <translation>Última solicitud: –</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="325" />
         <source>Status of:</source>
-        <translation type="unfinished" />
+        <translation>Estado de:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="327" />
@@ -6946,82 +6946,82 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="329" />
         <source>Check</source>
-        <translation type="unfinished" />
+        <translation>Comprobar</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="337" />
         <source>Advanced / Operator Details</source>
-        <translation type="unfinished" />
+        <translation>Detalles avanzados / del operador</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="347" />
         <source>Manual withdrawal status lookup:</source>
-        <translation type="unfinished" />
+        <translation>Consulta manual del estado de un retiro:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="350" />
         <source>Activity:</source>
-        <translation type="unfinished" />
+        <translation>Actividad:</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="422" />
         <source>Invalid Vault Amount</source>
-        <translation type="unfinished" />
+        <translation>Monto de bóveda no válido</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="423" />
         <source>Enter a positive DIN amount with no more than 8 decimal places.</source>
-        <translation type="unfinished" />
+        <translation>Ingrese un monto positivo en DIN con un máximo de 8 decimales.</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="427" />
         <source>Invalid Vault Destination</source>
-        <translation type="unfinished" />
+        <translation>Destino de bóveda no válido</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="428" />
         <source>Enter a Taproot Dinero address beginning with din1p…</source>
-        <translation type="unfinished" />
+        <translation>Ingrese una dirección Taproot de Dinero que empiece por din1p…</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="432" />
         <source>Insufficient Vault Balance</source>
-        <translation type="unfinished" />
+        <translation>Saldo insuficiente en la bóveda</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="439" />
         <source>Review Vault Withdrawal</source>
-        <translation type="unfinished" />
+        <translation>Revisar el retiro de la bóveda</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="473" />
         <source>&lt;span style='color:#7bd88f;'&gt;active&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;activa&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="517" />
         <source>&lt;span style='color:#d8a37b;'&gt;not bound&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;sin vincular&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="644" />
         <source>&lt;span style='color:#d8a37b;'&gt;waiting for daemon…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;esperando al daemon …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="647" />
         <source>&lt;span style='color:#d8a37b;'&gt;starting…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;iniciando …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="654" />
         <source>&lt;span style='color:#d8a37b;'&gt;disabled&lt;/span&gt; (set vault=1)</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;desactivada&lt;/span&gt; (establezca vault=1)</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="729" />
         <source>&lt;span style='color:#7bd88f;'&gt;connected&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;conectada&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
@@ -7136,43 +7136,43 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/debugconsole.cpp" line="96" />
         <location filename="../src/debugconsole.cpp" line="153" />
         <source>Log Level:</source>
-        <translation type="unfinished" />
+        <translation>Nivel de registro:</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="47" />
         <location filename="../src/debugconsole.cpp" line="104" />
         <location filename="../src/debugconsole.cpp" line="161" />
         <source>Pause Scroll</source>
-        <translation type="unfinished" />
+        <translation>Pausar el desplazamiento</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="49" />
         <location filename="../src/debugconsole.cpp" line="106" />
         <location filename="../src/debugconsole.cpp" line="163" />
         <source>Clear</source>
-        <translation type="unfinished" />
+        <translation>Limpiar</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="50" />
         <location filename="../src/debugconsole.cpp" line="107" />
         <location filename="../src/debugconsole.cpp" line="164" />
         <source>Export...</source>
-        <translation type="unfinished" />
+        <translation>Exportar …</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="204" />
         <source>Debug Console - Live Logs</source>
-        <translation type="unfinished" />
+        <translation>Consola de depuración: registros en vivo</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="375" />
         <source>Export Failed</source>
-        <translation type="unfinished" />
+        <translation>Falló la exportación</translation>
     </message>
     <message>
         <location filename="../src/debugconsole.cpp" line="384" />
         <source>Export Successful</source>
-        <translation type="unfinished" />
+        <translation>Exportación correcta</translation>
     </message>
 </context>
 <context>
