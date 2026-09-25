@@ -723,139 +723,139 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/escrowwidget.cpp" line="56" />
         <source>0 active contracts</source>
-        <translation type="unfinished" />
+        <translation>0 aktive Verträge</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="59" />
         <source>➕ Create New Escrow</source>
-        <translation type="unfinished" />
+        <translation>➕ Neues Treuhandkonto erstellen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="62" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Aktualisieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="63" />
         <source>📥 Export CSV</source>
-        <translation type="unfinished" />
+        <translation>📥 CSV exportieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="76" />
         <source>Filter:</source>
-        <translation type="unfinished" />
+        <translation>Filter:</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="125" />
         <source>Selected Contract Details</source>
-        <translation type="unfinished" />
+        <translation>Details des gewählten Vertrags</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="140" />
         <source>📋 Copy P2SH</source>
-        <translation type="unfinished" />
+        <translation>📋 P2SH kopieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="142" />
         <source>📱 Show QR</source>
-        <translation type="unfinished" />
+        <translation>📱 QR anzeigen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="145" />
         <source>📜 View Script</source>
-        <translation type="unfinished" />
+        <translation>📜 Skript anzeigen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="147" />
         <source>💾 Export Sighash</source>
-        <translation type="unfinished" />
+        <translation>💾 Sighash exportieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="155" />
         <location filename="../src/escrowwidget.cpp" line="1365" />
         <source>&lt;b&gt;Contract ID:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Vertrags-ID:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="158" />
         <source>&lt;b&gt;P2SH Address:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;P2SH-Adresse:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="165" />
         <location filename="../src/escrowwidget.cpp" line="1368" />
         <source>&lt;b&gt;Amount:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Betrag:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="168" />
         <source>&lt;b&gt;Status:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Status:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="171" />
         <source>&lt;b&gt;Buyer:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Käufer:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="174" />
         <source>&lt;b&gt;Seller:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Verkäufer:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="177" />
         <source>&lt;b&gt;Mediator:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Vermittler:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="180" />
         <source>&lt;b&gt;Lock TXID:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Sperr-TXID:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="183" />
         <source>&lt;b&gt;Refund Height:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Rückerstattungshöhe:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="186" />
         <source>&lt;b&gt;Current Height:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Aktuelle Höhe:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="189" />
         <source>&lt;b&gt;Time Remaining:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Verbleibende Zeit:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="192" />
         <source>&lt;b&gt;Timelock Progress:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Timelock-Fortschritt:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="204" />
         <source>✅ Release Funds to Seller</source>
-        <translation type="unfinished" />
+        <translation>✅ Mittel an den Verkäufer freigeben</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="208" />
         <source>↩️ Refund to Buyer</source>
-        <translation type="unfinished" />
+        <translation>↩️ An den Käufer zurückerstatten</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="212" />
         <source>🔍 View Full Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Alle Details anzeigen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="215" />
         <source>📥 Import Signatures</source>
-        <translation type="unfinished" />
+        <translation>📥 Signaturen importieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="227" />
         <source>&lt;b&gt;Event Log:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ereignisprotokoll:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="291" />
@@ -863,7 +863,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
         <location filename="../src/escrowwidget.cpp" line="431" />
         <location filename="../src/escrowwidget.cpp" line="549" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Keine Auswahl</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="291" />
@@ -871,34 +871,34 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
         <location filename="../src/escrowwidget.cpp" line="431" />
         <location filename="../src/escrowwidget.cpp" line="549" />
         <source>Please select a contract first.</source>
-        <translation type="unfinished" />
+        <translation>Bitte wählen Sie zuerst einen Vertrag.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="297" />
         <source>Release Funds</source>
-        <translation type="unfinished" />
+        <translation>Mittel freigeben</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="325" />
         <location filename="../src/escrowwidget.cpp" line="469" />
         <source>Timelock Not Expired</source>
-        <translation type="unfinished" />
+        <translation>Timelock noch nicht abgelaufen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="337" />
         <source>Refund to Buyer</source>
-        <translation type="unfinished" />
+        <translation>An den Käufer zurückerstatten</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="378" />
         <source>✅ Copied!</source>
-        <translation type="unfinished" />
+        <translation>✅ Kopiert.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="398" />
         <location filename="../src/escrowwidget.cpp" line="811" />
         <source>Export Failed</source>
-        <translation type="unfinished" />
+        <translation>Export fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="398" />
@@ -908,7 +908,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/escrowwidget.cpp" line="418" />
         <source>Export Complete</source>
-        <translation type="unfinished" />
+        <translation>Export abgeschlossen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="424" />
@@ -923,7 +923,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
         <source>Contract Not Found</source>
-        <translation type="unfinished" />
+        <translation>Vertrag nicht gefunden</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
@@ -933,12 +933,12 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/escrowwidget.cpp" line="444" />
         <source>Invalid Status</source>
-        <translation type="unfinished" />
+        <translation>Ungültiger Status</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="451" />
         <source>Export Sighash</source>
-        <translation type="unfinished" />
+        <translation>Sighash exportieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="452" />
@@ -958,23 +958,23 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/escrowwidget.cpp" line="564" />
         <source>Import Failed</source>
-        <translation type="unfinished" />
+        <translation>Import fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="564" />
         <source>Could not read file.</source>
-        <translation type="unfinished" />
+        <translation>Die Datei konnte nicht gelesen werden.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="573" />
         <location filename="../src/escrowwidget.cpp" line="1524" />
         <source>Parse Error</source>
-        <translation type="unfinished" />
+        <translation>Analysefehler</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="584" />
         <source>Invalid File</source>
-        <translation type="unfinished" />
+        <translation>Ungültige Datei</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="592" />
@@ -985,7 +985,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
         <location filename="../src/escrowwidget.cpp" line="607" />
         <location filename="../src/escrowwidget.cpp" line="1546" />
         <source>No Signatures</source>
-        <translation type="unfinished" />
+        <translation>Keine Signaturen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="608" />
@@ -996,7 +996,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
         <location filename="../src/escrowwidget.cpp" line="622" />
         <location filename="../src/escrowwidget.cpp" line="1564" />
         <source>Confirm Broadcast</source>
-        <translation type="unfinished" />
+        <translation>Senden bestätigen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="630" />
@@ -1012,12 +1012,12 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/escrowwidget.cpp" line="747" />
         <source>Contract Created</source>
-        <translation type="unfinished" />
+        <translation>Vertrag erstellt</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="794" />
         <source>Export Successful</source>
-        <translation type="unfinished" />
+        <translation>Export erfolgreich</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="795" />
@@ -1032,7 +1032,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/escrowwidget.cpp" line="830" />
         <source>Swap Failed</source>
-        <translation type="unfinished" />
+        <translation>Tausch fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1022" />
@@ -1064,7 +1064,7 @@ Bridge conversion uses locked exchange rate.</source>
         <location filename="../src/escrowwidget.cpp" line="1075" />
         <location filename="../src/escrowwidget.cpp" line="1080" />
         <source>Validation Error</source>
-        <translation type="unfinished" />
+        <translation>Validierungsfehler</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1075" />
@@ -1079,12 +1079,12 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1110" />
         <source>Contract Details</source>
-        <translation type="unfinished" />
+        <translation>Vertragsdetails</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1205" />
         <source>Redeem Script</source>
-        <translation type="unfinished" />
+        <translation>Redeem-Skript</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1210" />
@@ -1099,12 +1099,12 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1225" />
         <source>📋 Copy Script</source>
-        <translation type="unfinished" />
+        <translation>📋 Skript kopieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1252" />
         <source>No Address</source>
-        <translation type="unfinished" />
+        <translation>Keine Adresse</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1252" />
@@ -1115,23 +1115,23 @@ Bridge conversion uses locked exchange rate.</source>
         <location filename="../src/escrowwidget.cpp" line="1296" />
         <location filename="../src/escrowwidget.cpp" line="1405" />
         <source>QR Generation Failed</source>
-        <translation type="unfinished" />
+        <translation>QR-Erzeugung fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1296" />
         <source>Failed to generate QR code.</source>
-        <translation type="unfinished" />
+        <translation>Der QR-Code konnte nicht erzeugt werden.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1310" />
         <source>📋 Copy to Clipboard</source>
-        <translation type="unfinished" />
+        <translation>📋 In die Zwischenablage kopieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1318" />
         <location filename="../src/escrowwidget.cpp" line="1447" />
         <source>💾 Save QR Image</source>
-        <translation type="unfinished" />
+        <translation>💾 QR-Bild speichern</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1329" />
@@ -1164,22 +1164,22 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1362" />
         <source>Transaction Details</source>
-        <translation type="unfinished" />
+        <translation>Transaktionsdetails</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1371" />
         <source>&lt;b&gt;To Address:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Zieladresse:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1374" />
         <source>&lt;b&gt;Action:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Aktion:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1377" />
         <source>&lt;b&gt;Sighash:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Sighash:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1406" />
@@ -1196,7 +1196,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1440" />
         <source>📋 Copy JSON</source>
-        <translation type="unfinished" />
+        <translation>📋 JSON kopieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1479" />
@@ -1221,12 +1221,12 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1509" />
         <source>✅ Import and Broadcast</source>
-        <translation type="unfinished" />
+        <translation>✅ Importieren und senden</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1515" />
         <source>No Data</source>
-        <translation type="unfinished" />
+        <translation>Keine Daten</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1515" />
@@ -1236,7 +1236,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1535" />
         <source>Invalid Data</source>
-        <translation type="unfinished" />
+        <translation>Ungültige Daten</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1547" />
@@ -1261,7 +1261,7 @@ Please ensure the transaction has been signed.</source>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="200" />
         <source>🔐 Hardware Wallet Integration</source>
-        <translation type="unfinished" />
+        <translation>🔐 Hardware-Wallet-Integration</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="205" />
@@ -1272,7 +1272,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="234" />
         <source>📋 How it works</source>
-        <translation type="unfinished" />
+        <translation>📋 So funktioniert es</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="236" />
@@ -1287,12 +1287,12 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
         <location filename="../src/hardwarewalletwidget.cpp" line="248" />
         <location filename="../src/hardwarewalletwidget.cpp" line="402" />
         <source>Partially Signed Dinero Transaction (PSBT)</source>
-        <translation type="unfinished" />
+        <translation>Teilweise signierte Dinero-Transaktion (PSBT)</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="251" />
         <source>Dinero PSBT (Base64):</source>
-        <translation type="unfinished" />
+        <translation>Dinero-PSBT (Base64):</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="253" />
@@ -1302,12 +1302,12 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="273" />
         <source>📤 Export to Hardware Wallet</source>
-        <translation type="unfinished" />
+        <translation>📤 An Hardware-Wallet exportieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="276" />
         <source>Export Path:</source>
-        <translation type="unfinished" />
+        <translation>Exportpfad:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="278" />
@@ -1323,17 +1323,17 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="295" />
         <source>Export Dinero PSBT to File</source>
-        <translation type="unfinished" />
+        <translation>Dinero-PSBT in Datei exportieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="307" />
         <source>📥 Import from Hardware Wallet</source>
-        <translation type="unfinished" />
+        <translation>📥 Von Hardware-Wallet importieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="310" />
         <source>Import Path:</source>
-        <translation type="unfinished" />
+        <translation>Importpfad:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="312" />
@@ -1343,17 +1343,17 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="328" />
         <source>Import Signed Dinero PSBT</source>
-        <translation type="unfinished" />
+        <translation>Signierte Dinero-PSBT importieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="340" />
         <source>🔍 Analyze Dinero PSBT</source>
-        <translation type="unfinished" />
+        <translation>🔍 Dinero-PSBT analysieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="347" />
         <source>🔌 Sign via Connected USB</source>
-        <translation type="unfinished" />
+        <translation>🔌 Über verbundenes USB signieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="349" />
@@ -1363,7 +1363,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="352" />
         <source>✅ Finalize Dinero PSBT</source>
-        <translation type="unfinished" />
+        <translation>✅ Dinero-PSBT finalisieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="354" />
@@ -1373,12 +1373,12 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="357" />
         <source>📡 Broadcast Transaction</source>
-        <translation type="unfinished" />
+        <translation>📡 Transaktion senden</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="359" />
         <source>Broadcast the last finalized or imported transaction hex.</source>
-        <translation type="unfinished" />
+        <translation>Den zuletzt finalisierten oder importierten Transaktions-Hex senden.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="368" />
@@ -1389,7 +1389,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="385" />
         <source>📋 QR Code Workflow</source>
-        <translation type="unfinished" />
+        <translation>📋 QR-Code-Ablauf</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="387" />
@@ -1407,42 +1407,42 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="405" />
         <source>Paste Partially Signed Dinero Transaction here...</source>
-        <translation type="unfinished" />
+        <translation>Teilweise signierte Dinero-Transaktion hier einfügen …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="421" />
         <source>📱 QR Code Display</source>
-        <translation type="unfinished" />
+        <translation>📱 QR-Code-Anzeige</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="429" />
         <source>QR code will appear here</source>
-        <translation type="unfinished" />
+        <translation>Der QR-Code erscheint hier</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="441" />
         <source>📤 Show QR Code</source>
-        <translation type="unfinished" />
+        <translation>📤 QR-Code anzeigen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="447" />
         <source>📥 Scan Signed QR</source>
-        <translation type="unfinished" />
+        <translation>📥 Signierten QR scannen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="450" />
         <source>Camera scanning requires additional dependencies</source>
-        <translation type="unfinished" />
+        <translation>Das Scannen mit der Kamera erfordert zusätzliche Abhängigkeiten</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="461" />
         <source>Transaction summary will appear after a Dinero PSBT is analyzed.</source>
-        <translation type="unfinished" />
+        <translation>Die Transaktionsübersicht erscheint, nachdem eine Dinero-PSBT analysiert wurde.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="479" />
         <source>Analyze PSBT to show QR code</source>
-        <translation type="unfinished" />
+        <translation>PSBT analysieren, um den QR-Code anzuzeigen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="482" />
@@ -1452,12 +1452,12 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="486" />
         <source>Transaction summary will appear after analysis.</source>
-        <translation type="unfinished" />
+        <translation>Die Transaktionsübersicht erscheint nach der Analyse.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="503" />
         <source>Demo QR unavailable</source>
-        <translation type="unfinished" />
+        <translation>Demo-QR nicht verfügbar</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="524" />
@@ -1473,7 +1473,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="595" />
         <source>🔌 USB Hardware Wallets</source>
-        <translation type="unfinished" />
+        <translation>🔌 USB-Hardware-Wallets</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="597" />
@@ -1491,23 +1491,23 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="612" />
         <source>🔍 Device Detection</source>
-        <translation type="unfinished" />
+        <translation>🔍 Geräteerkennung</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="615" />
         <source>Connected Devices:</source>
-        <translation type="unfinished" />
+        <translation>Verbundene Geräte:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="621" />
         <source>🔄 Detect Devices</source>
-        <translation type="unfinished" />
+        <translation>🔄 Geräte erkennen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="625" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1582" />
         <source>🔌 Connect</source>
-        <translation type="unfinished" />
+        <translation>🔌 Verbinden</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="628" />
@@ -1517,17 +1517,17 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="651" />
         <source>🏷️ Address Verification</source>
-        <translation type="unfinished" />
+        <translation>🏷️ Adressprüfung</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="654" />
         <source>Derivation Path:</source>
-        <translation type="unfinished" />
+        <translation>Ableitungspfad:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="661" />
         <source>📥 Get Address</source>
-        <translation type="unfinished" />
+        <translation>📥 Adresse abrufen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="663" />
@@ -1537,7 +1537,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="666" />
         <source>👁️ Verify on Device</source>
-        <translation type="unfinished" />
+        <translation>👁️ Auf dem Gerät prüfen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="668" />
@@ -1548,27 +1548,27 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
         <location filename="../src/hardwarewalletwidget.cpp" line="671" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1564" />
         <source>No address fetched yet.</source>
-        <translation type="unfinished" />
+        <translation>Noch keine Adresse abgerufen.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="682" />
         <source>🧾 Watch-Only Descriptor Export</source>
-        <translation type="unfinished" />
+        <translation>🧾 Watch-Only-Descriptor-Export</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="685" />
         <source>Account Path:</source>
-        <translation type="unfinished" />
+        <translation>Konto-Pfad:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="692" />
         <source>Descriptor Policy:</source>
-        <translation type="unfinished" />
+        <translation>Descriptor-Richtlinie:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="699" />
         <source>🧾 Export Account Descriptors</source>
-        <translation type="unfinished" />
+        <translation>🧾 Konto-Descriptoren exportieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="701" />
@@ -1578,7 +1578,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="704" />
         <source>📥 Import Into Active Wallet</source>
-        <translation type="unfinished" />
+        <translation>📥 In die aktive Wallet importieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="706" />
@@ -1598,22 +1598,22 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="729" />
         <source>📝 Activity Log</source>
-        <translation type="unfinished" />
+        <translation>📝 Aktivitätsprotokoll</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="761" />
         <source>Exporting PSBT...</source>
-        <translation type="unfinished" />
+        <translation>PSBT wird exportiert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="794" />
         <source>Importing PSBT...</source>
-        <translation type="unfinished" />
+        <translation>PSBT wird importiert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="817" />
         <source>Analyzing PSBT...</source>
-        <translation type="unfinished" />
+        <translation>PSBT wird analysiert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="847" />
@@ -1623,12 +1623,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="866" />
         <source>Finalizing PSBT...</source>
-        <translation type="unfinished" />
+        <translation>PSBT wird finalisiert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="879" />
         <source>Broadcasting final transaction...</source>
-        <translation type="unfinished" />
+        <translation>Endgültige Transaktion wird gesendet …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="891" />
@@ -1663,7 +1663,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1025" />
         <source>Import Watch-Only Descriptors</source>
-        <translation type="unfinished" />
+        <translation>Watch-Only-Descriptoren importieren</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1026" />
@@ -1684,33 +1684,33 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1128" />
         <source>❌ USB operation failed</source>
-        <translation type="unfinished" />
+        <translation>❌ USB-Operation fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1131" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1249" />
         <source>❌ USB signing failed</source>
-        <translation type="unfinished" />
+        <translation>❌ USB-Signierung fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1135" />
         <source>❌ Operation failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Operation fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1153" />
         <source>✅ Export complete</source>
-        <translation type="unfinished" />
+        <translation>✅ Export abgeschlossen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1157" />
         <source>❌ Export failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Export fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1167" />
         <source>❌ Import failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Import fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1184" />
@@ -1720,27 +1720,27 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1189" />
         <source>✅ Analysis complete</source>
-        <translation type="unfinished" />
+        <translation>✅ Analyse abgeschlossen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1194" />
         <source>❌ Analysis failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Analyse fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1266" />
         <source>⚠️ No address returned</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Keine Adresse zurückgegeben</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1267" />
         <source>No address returned.</source>
-        <translation type="unfinished" />
+        <translation>Keine Adresse zurückgegeben.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1314" />
         <source>✅ Account descriptors exported</source>
-        <translation type="unfinished" />
+        <translation>✅ Konto-Descriptoren exportiert</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1322" />
@@ -1765,7 +1765,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1373" />
         <source>❌ Finalize failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Finalisierung fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1392" />
@@ -1775,32 +1775,32 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1395" />
         <source>⚠️ Finalization incomplete</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Finalisierung unvollständig</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1406" />
         <source>❌ Broadcast failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Senden fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1436" />
         <source>⚠️ No USB hardware wallets found</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Keine USB-Hardware-Wallets gefunden</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1492" />
         <source>❌ Device detection failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Geräteerkennung fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1561" />
         <source>ℹ️ USB session closed</source>
-        <translation type="unfinished" />
+        <translation>ℹ️ USB-Sitzung geschlossen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1575" />
         <source>🔌 Disconnect</source>
-        <translation type="unfinished" />
+        <translation>🔌 Trennen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1576" />
@@ -1815,7 +1815,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1637" />
         <source>✅ Signed Dinero PSBT imported</source>
-        <translation type="unfinished" />
+        <translation>✅ Signierte Dinero-PSBT importiert</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1640" />
@@ -1825,7 +1825,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1656" />
         <source>Hardware Wallet Error</source>
-        <translation type="unfinished" />
+        <translation>Hardware-Wallet-Fehler</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1660" />
@@ -5342,27 +5342,27 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="51" />
         <source>➕ Create Offer</source>
-        <translation type="unfinished" />
+        <translation>➕ Angebot erstellen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="54" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Aktualisieren</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="55" />
         <source>📋 My Offers</source>
-        <translation type="unfinished" />
+        <translation>📋 Meine Angebote</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="56" />
         <source>🤝 My Trades</source>
-        <translation type="unfinished" />
+        <translation>🤝 Meine Geschäfte</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="79" />
         <source>&lt;b&gt;Event Log:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ereignisprotokoll:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="100" />
@@ -5372,12 +5372,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="102" />
         <source>🔍 Search</source>
-        <translation type="unfinished" />
+        <translation>🔍 Suchen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="131" />
         <source>Search:</source>
-        <translation type="unfinished" />
+        <translation>Suche:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="134" />
@@ -5387,67 +5387,67 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="136" />
         <source>Asset:</source>
-        <translation type="unfinished" />
+        <translation>Wert:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="182" />
         <source>Selected Offer Details</source>
-        <translation type="unfinished" />
+        <translation>Details des gewählten Angebots</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="195" />
         <source>📊 View Seller Reputation</source>
-        <translation type="unfinished" />
+        <translation>📊 Verkäuferreputation ansehen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="200" />
         <source>&lt;b&gt;Offer ID:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Angebots-ID:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="203" />
         <source>&lt;b&gt;Type:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Typ:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="205" />
         <source>&lt;b&gt;Asset:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Wert:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="208" />
         <source>&lt;b&gt;Amount:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Betrag:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="210" />
         <source>&lt;b&gt;Price:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Preis:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="213" />
         <source>&lt;b&gt;Description:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Beschreibung:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="216" />
         <source>&lt;b&gt;Seller:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Verkäufer:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="220" />
         <source>&lt;b&gt;Seller Reputation:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Verkäuferreputation:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="229" />
         <source>✅ Accept Offer</source>
-        <translation type="unfinished" />
+        <translation>✅ Angebot annehmen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="233" />
         <source>🔍 View Full Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Alle Details anzeigen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="252" />
@@ -5458,37 +5458,37 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="293" />
         <source>❌ Cancel Offer</source>
-        <translation type="unfinished" />
+        <translation>❌ Angebot stornieren</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="297" />
         <source>✏️ Update Offer</source>
-        <translation type="unfinished" />
+        <translation>✏️ Angebot aktualisieren</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="318" />
         <source>Role:</source>
-        <translation type="unfinished" />
+        <translation>Rolle:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="364" />
         <source>✅ Complete Trade</source>
-        <translation type="unfinished" />
+        <translation>✅ Geschäft abschließen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="368" />
         <source>⚠️ Open Dispute</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Streitfall eröffnen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="372" />
         <source>🔍 View Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Details anzeigen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="390" />
         <source>My Reputation</source>
-        <translation type="unfinished" />
+        <translation>Meine Reputation</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="396" />
@@ -5498,32 +5498,32 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="397" />
         <source>0 successful</source>
-        <translation type="unfinished" />
+        <translation>0 erfolgreich</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="398" />
         <source>No ratings yet</source>
-        <translation type="unfinished" />
+        <translation>Noch keine Bewertungen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="400" />
         <source>&lt;b&gt;Average Rating:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Durchschnittliche Bewertung:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="403" />
         <source>&lt;b&gt;Total Trades:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Geschäfte gesamt:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="406" />
         <source>&lt;b&gt;Successful:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Erfolgreich:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="409" />
         <source>&lt;b&gt;Rating Distribution:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Bewertungsverteilung:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="415" />
@@ -5534,7 +5534,7 @@ Label,Address</source>
         <location filename="../src/marketplacewidget.cpp" line="529" />
         <location filename="../src/marketplacewidget.cpp" line="550" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Keine Auswahl</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
@@ -5549,12 +5549,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="556" />
         <source>Cancel Offer</source>
-        <translation type="unfinished" />
+        <translation>Angebot stornieren</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
         <source>Update Offer</source>
-        <translation type="unfinished" />
+        <translation>Angebot aktualisieren</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
@@ -5564,7 +5564,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
         <source>Complete Trade</source>
-        <translation type="unfinished" />
+        <translation>Geschäft abschließen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
@@ -5574,7 +5574,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
         <source>Open Dispute</source>
-        <translation type="unfinished" />
+        <translation>Streitfall eröffnen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
@@ -5584,7 +5584,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
         <source>Trade Details</source>
-        <translation type="unfinished" />
+        <translation>Geschäftsdetails</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
@@ -5594,7 +5594,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
         <source>View Reputation</source>
-        <translation type="unfinished" />
+        <translation>Reputation ansehen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
@@ -5604,7 +5604,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="674" />
         <source>Offer Created</source>
-        <translation type="unfinished" />
+        <translation>Angebot erstellt</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="682" />
@@ -5619,7 +5619,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="693" />
         <source>Trade Created</source>
-        <translation type="unfinished" />
+        <translation>Geschäft erstellt</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="839" />
@@ -5634,12 +5634,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="915" />
         <source>Offer Details</source>
-        <translation type="unfinished" />
+        <translation>Angebotsdetails</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="946" />
         <source>Accept Offer</source>
-        <translation type="unfinished" />
+        <translation>Angebot annehmen</translation>
     </message>
 </context>
 <context>
@@ -7180,12 +7180,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="49" />
         <source>⚡ Lightning Network</source>
-        <translation type="unfinished" />
+        <translation>⚡ Lightning-Netzwerk</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="73" />
         <source>Channel Statistics</source>
-        <translation type="unfinished" />
+        <translation>Kanal-Statistik</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="77" />
@@ -7199,27 +7199,27 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="81" />
         <source>&lt;b&gt;Active Channels:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Aktive Kanäle:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="83" />
         <source>&lt;b&gt;Total Capacity:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Gesamtkapazität:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="85" />
         <source>&lt;b&gt;Local Balance:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Lokales Guthaben:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="87" />
         <source>&lt;b&gt;Remote Balance:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Entferntes Guthaben:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="106" />
         <source>Open New Channel</source>
-        <translation type="unfinished" />
+        <translation>Neuen Kanal öffnen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="110" />
@@ -7239,37 +7239,37 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="119" />
         <source>Peer Node ID:</source>
-        <translation type="unfinished" />
+        <translation>Peer-Node-ID:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="121" />
         <source>Capacity (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Kapazität (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="123" />
         <source>Push Amount (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Push-Betrag (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="125" />
         <source>Min Confirmations:</source>
-        <translation type="unfinished" />
+        <translation>Mindestbestätigungen:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="133" />
         <source>Open Channel</source>
-        <translation type="unfinished" />
+        <translation>Kanal öffnen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="134" />
         <source>Close Selected Channel</source>
-        <translation type="unfinished" />
+        <translation>Gewählten Kanal schließen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="135" />
         <source>Force Close (Emergency)</source>
-        <translation type="unfinished" />
+        <translation>Zwangsschließung (Notfall)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="136" />
@@ -7278,13 +7278,13 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="361" />
         <location filename="../src/lightningwidget.cpp" line="475" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Aktualisieren</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="160" />
         <location filename="../src/lightningwidget.cpp" line="180" />
         <source>Create Invoice</source>
-        <translation type="unfinished" />
+        <translation>Rechnung erstellen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="164" />
@@ -7304,7 +7304,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="174" />
         <source>Description:</source>
-        <translation type="unfinished" />
+        <translation>Beschreibung:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="176" />
@@ -7319,12 +7319,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="192" />
         <source>Generated Invoice</source>
-        <translation type="unfinished" />
+        <translation>Erzeugte Rechnung</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="201" />
         <source>Generate QR Code</source>
-        <translation type="unfinished" />
+        <translation>QR-Code erzeugen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="209" />
@@ -7334,19 +7334,19 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="210" />
         <source>📋 Copy Invoice</source>
-        <translation type="unfinished" />
+        <translation>📋 Rechnung kopieren</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="212" />
         <source>&lt;b&gt;BOLT 11 Invoice:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;BOLT-11-Rechnung:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="223" />
         <location filename="../src/lightningwidget.cpp" line="238" />
         <location filename="../src/lightningwidget.cpp" line="635" />
         <source>Pay Invoice</source>
-        <translation type="unfinished" />
+        <translation>Rechnung bezahlen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="227" />
@@ -7361,17 +7361,17 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="231" />
         <source>Invoice (BOLT 11):</source>
-        <translation type="unfinished" />
+        <translation>Rechnung (BOLT 11):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="233" />
         <source>Custom Amount:</source>
-        <translation type="unfinished" />
+        <translation>Eigener Betrag:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="237" />
         <source>Decode Invoice</source>
-        <translation type="unfinished" />
+        <translation>Rechnung dekodieren</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="249" />
@@ -7381,34 +7381,34 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="250" />
         <source>Decoded Info:</source>
-        <translation type="unfinished" />
+        <translation>Dekodierte Informationen:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="258" />
         <source>&lt;b&gt;Invoice History&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Rechnungsverlauf&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="263" />
         <location filename="../src/lightningwidget.cpp" line="300" />
         <source>Filter:</source>
-        <translation type="unfinished" />
+        <translation>Filter:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="303" />
         <source>Cancel Selected Payment</source>
-        <translation type="unfinished" />
+        <translation>Gewählte Zahlung abbrechen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="323" />
         <source>Payment Details</source>
-        <translation type="unfinished" />
+        <translation>Zahlungsdetails</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="344" />
         <location filename="../src/lightningwidget.cpp" line="359" />
         <source>Register Watchtower</source>
-        <translation type="unfinished" />
+        <translation>Watchtower registrieren</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="348" />
@@ -7423,52 +7423,52 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="353" />
         <source>Watchtower URL:</source>
-        <translation type="unfinished" />
+        <translation>Watchtower-URL:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="355" />
         <source>Reward (una):</source>
-        <translation type="unfinished" />
+        <translation>Belohnung (una):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="360" />
         <source>Unregister Selected</source>
-        <translation type="unfinished" />
+        <translation>Gewählte abmelden</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="386" />
         <source>Watchtower Information</source>
-        <translation type="unfinished" />
+        <translation>Watchtower-Informationen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="410" />
         <source>Network Statistics</source>
-        <translation type="unfinished" />
+        <translation>Netzwerkstatistik</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="418" />
         <source>&lt;b&gt;Total Nodes:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Nodes gesamt:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="420" />
         <source>&lt;b&gt;Total Channels:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Kanäle gesamt:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="422" />
         <source>&lt;b&gt;Network Capacity:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Netzwerkkapazität:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="424" />
         <source>&lt;b&gt;Avg Channel Size:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Durchschnittliche Kanalgröße:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="431" />
         <source>Connect to Peer</source>
-        <translation type="unfinished" />
+        <translation>Mit Peer verbinden</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="434" />
@@ -7478,28 +7478,28 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="435" />
         <source>Connect</source>
-        <translation type="unfinished" />
+        <translation>Verbinden</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="436" />
         <source>Disconnect Selected</source>
-        <translation type="unfinished" />
+        <translation>Gewählte trennen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="446" />
         <location filename="../src/lightningwidget.cpp" line="453" />
         <source>Find Route</source>
-        <translation type="unfinished" />
+        <translation>Route suchen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="450" />
         <source>Destination Node ID</source>
-        <translation type="unfinished" />
+        <translation>Ziel-Node-ID</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="452" />
         <source>Amount (DIN)</source>
-        <translation type="unfinished" />
+        <translation>Betrag (DIN)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="456" />
@@ -7514,12 +7514,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="465" />
         <source>Route:</source>
-        <translation type="unfinished" />
+        <translation>Route:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="473" />
         <source>&lt;b&gt;Network Nodes&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Netzwerk-Nodes&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="515" />
@@ -7556,7 +7556,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="711" />
         <location filename="../src/lightningwidget.cpp" line="740" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Keine Auswahl</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
@@ -7566,7 +7566,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="546" />
         <source>Close Channel</source>
-        <translation type="unfinished" />
+        <translation>Kanal schließen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="547" />
@@ -7583,7 +7583,7 @@ This will create a closing transaction on-chain.</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="563" />
         <source>Force Close Channel</source>
-        <translation type="unfinished" />
+        <translation>Kanal zwangsweise schließen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="564" />
@@ -7625,7 +7625,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
         <source>No Invoice</source>
-        <translation type="unfinished" />
+        <translation>Keine Rechnung</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
@@ -7655,7 +7655,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
         <source>Not Implemented</source>
-        <translation type="unfinished" />
+        <translation>Nicht implementiert</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
