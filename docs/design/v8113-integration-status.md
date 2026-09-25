@@ -86,6 +86,17 @@ These source changes share the public dinero-main history. Separate
 historical branch results do not qualify their combination; this candidate needs
 its own full Linux build and test runs.
 
+## Recovery fixture qualification
+
+The full Linux Tests run `36133996292` failed in the offline CSN replay fixture,
+which selected default regtest magic instead of the daemon's persisted PoW
+profile magic. Strict flatfile framing exposed that mismatch. The fixture now
+validates the complete marker and selects its recorded storage identity while
+holding the stopped test datadir lock. The storage gate remains unchanged.
+Both peer and local-undo recovery pass locally, with malformed/reserved-profile
+rejections and a mismatched-network read failure checked explicitly. Fresh
+full Linux qualification is required for the corrected head.
+
 ## Still required before release
 
 - Connect the typed shared reader to validated mempool, relay, storage and
