@@ -90,7 +90,8 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         block.Header().GetHash() != context.block_hash || block.Header().prev_block_hash != context.parent_hash)
         Reject(Error::Context);
     std::string error;
-    if (!block.Header().IsReservedValid() || !block.CheckIdentityCommitments(require_witness_commitment, error))
+    if (!block.Header().IsReservedValid() || !block.CheckSizeLimits(error) ||
+        !block.CheckIdentityCommitments(require_witness_commitment, error))
         Reject(Error::Body);
     OrderedView view(parent);
     std::set<TxId> ids;

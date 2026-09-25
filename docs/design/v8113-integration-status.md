@@ -31,7 +31,7 @@ This branch collects release implementation for review and qualification against
   spend, reopen, undo and branch replacement pass in temporary stores. This is
   still not wired into the daemon's mixed-transaction block connector.
 - Typed mixed-block candidate reader with shared transaction/witness Merkle and
-  DINW checks. The ChainDB staging adapter requires exact, ordered authorization
+  DINW checks and base/weight accounting enforced before coin lookup. The ChainDB staging adapter requires exact, ordered authorization
   coverage of every Orchard transaction in that candidate and rejects retired
   legacy shielded transactions. This remains a staged format, not live admission.
 - Ordered shared coin processing verifies Orchard and ordinary signatures,
@@ -45,6 +45,8 @@ This branch collects release implementation for review and qualification against
   commitments and supports checked delta rollback on a private clone. A combined
   stateful adapter stages durable delta/checkpoint, forest/height/tip markers and
   coins/Orchard state in one batch; persistent-delta undo survives database reopen.
+  Peer proof targets, paths and ordered metadata are checked against resolved
+  inputs and the authenticated full parent forest.
   Production/CSN integration, transaction indexing and journal coordination remain unfinished.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.

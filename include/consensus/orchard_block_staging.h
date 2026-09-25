@@ -51,7 +51,8 @@ struct StagedOrchardChainstate {
 // Stage authoritative state, delta, forest marker, height index and both tip
 // markers together. The caller supplies authenticated selected-branch headers,
 // with matching persisted header/work records, holds the writer lock, and must complete header/PoW, resource,
-// peer-proof and block-storage/index/journal obligations before committing.
+// block-storage/index/journal obligations before committing. Peer proof data
+// is checked against the resolved coins and full parent forest in this path.
 // This neither commits nor publishes memory and is not full-block admission.
 // An optional checkpoint is in the SAME batch; every block has a durable delta.
 [[nodiscard]] StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(

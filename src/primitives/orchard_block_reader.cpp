@@ -32,9 +32,22 @@ OrchardBlockCandidate OrchardBlockCandidate::DecodeExact(std::span<const uint8_t
     if (count == 0 || count > (bytes.size() - offset) / 10) Invalid();
     std::vector<ParsedTransaction> transactions;
     transactions.reserve(static_cast<size_t>(count));
+    size_t witness_discount=0;
+    bool transaction_sizes_valid=true;
     for (uint64_t i = 0; i < count; ++i) {
         const auto [tx, used] = ParsedTransaction::DecodePrefix(bytes.subspan(offset), TransactionReadMode::StagedOrchard);
         if (used == 0 || used > bytes.size() - offset) Invalid();
+        const auto canonical=tx.Serialize(TxSerializationMode::WithWitness);
+        const auto base=tx.GetBaseSize();
+        const bool exact=canonical.size()==used &&
+            std::equal(canonical.begin(),canonical.end(),bytes.begin()+offset);
+        // Only actual canonical transparent witness bytes receive a discount.
+        // Preserve historical parsing; charge any alternate accepted encoding
+        // fully as base bytes on this NEW block path, never as free padding.
+        const size_t tx_base=exact && base<=used ? base : used;
+        witness_discount+=used-tx_base;
+        if(used>consensus::MAX_TX_SIZE || 3*tx_base+used>consensus::MAX_TX_WEIGHT)
+            transaction_sizes_valid=false;
         transactions.push_back(tx); offset += used;
     }
     // The new candidate format has one explicit suffix flag. This does not
@@ -52,7 +65,16 @@ OrchardBlockCandidate OrchardBlockCandidate::DecodeExact(std::span<const uint8_t
         // also rejects ignored trailing bytes and noncanonical proof encodings.
         if (proof->serialize() != encoded) Invalid();
     } else Invalid();
-    return OrchardBlockCandidate(*header, std::move(transactions), std::move(proof), {bytes.begin(), bytes.end()});
+    // Header, count, suffix flag and full Utreexo payload are base bytes. The
+    // complete Orchard bundle also remains base data through TxidPreimage().
+    return OrchardBlockCandidate(*header, std::move(transactions), std::move(proof),
+        {bytes.begin(), bytes.end()},bytes.size()-witness_discount,transaction_sizes_valid);
+}
+bool OrchardBlockCandidate::CheckSizeLimits(std::string& error) const {
+    if(!transaction_sizes_valid_) {error="transaction-size-or-weight";return false;}
+    if(base_size_>consensus::MAX_BLOCK_SIZE) {error="block-base-size";return false;}
+    if(Weight()>consensus::MAX_BLOCK_WEIGHT) {error="block-weight";return false;}
+    return true;
 }
 bool OrchardBlockCandidate::MatchesTransactionRoot() const {
     std::vector<TxId> ids; ids.reserve(transactions_.size());

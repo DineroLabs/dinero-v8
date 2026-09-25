@@ -64,6 +64,14 @@ static void Mixed(const std::string& base) {
         bool hasCoin(const OutPoint&)const override{throw std::runtime_error("unexpected hasCoin probe");}
         uint32_t getHeight()const override{return 20000;}
     } failing;
+    std::vector<Bytes> oversized;
+    for(unsigned i=0;i<12;++i) {
+        auto large=conflict;large.lockTime=i;large.vout.clear();
+        for(unsigned j=0;j<10;++j)large.vout.emplace_back(AmountUna::Una(1),Bytes(9000,0x61));
+        oversized.push_back(Wire(large));
+    }
+    // Size rejection precedes any coin lookup or expensive authorization.
+    CoinReject(CoinError::Body,[&]{(void)Prepare(c,failing,oversized);});
     bool io=false;
     try{(void)Prepare(c,failing,wires);}catch(const OrchardCoinLookupError&e){io=e.SourceStatus()==Status::Io;}
     Require(io);

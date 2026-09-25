@@ -1,4 +1,4 @@
-#include "orchard_block_coin_test_fixture.h"
+#include "orchard_forest_test_fixture.h"
 #include "consensus/orchard_block_staging.h"
 #include "../storage/shielded_store_fixture.h"
 #include <iomanip>
@@ -250,7 +250,7 @@ static void AtomicForest(const std::string& base,bool checkpoint) {
     const auto computed=PrepareOrchardForestTransition(coins,parent,parent_forest);
     auto header=draft.Header();header.utreexo_root=computed.Root();
     auto bytes=draft.WireBytes();const auto wire=header.SerializeForHash();std::copy(wire.begin(),wire.end(),bytes.begin());
-    const auto block=OrchardBlockCandidate::DecodeExact(bytes);c.block_hash=header.GetHash();
+    const auto block=WithProof(OrchardBlockCandidate::DecodeExact(bytes),MixedProof(coins,parent_forest));c.block_hash=header.GetHash();
     CHECK(db.putHeader(token,parent.GetHash(),parent,20000,arith_uint256(20000),&seed)==Status::Ok);
     CHECK(db.putHeader(token,c.block_hash,header,20001,arith_uint256(20001),&seed)==Status::Ok);
     CHECK(db.putHeightIndex(token,20000,parent.GetHash(),&seed)==Status::Ok);
@@ -274,6 +274,9 @@ static void AtomicForest(const std::string& base,bool checkpoint) {
     CHECK(db.putForestTipMarker(token,{20000,parent.GetHash(),parent.utreexo_root})==Status::Ok);
     UtreexoForest missing;missing.setCanonicalEmptyRoots(true);
     LookupReject(Status::Corruption,[&]{(void)StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,missing,{},true,checkpoint,stale);});
+    CHECK(stale.Count()==0);
+    const auto absent_proof=OrchardBlockCandidate::DecodeExact(bytes);
+    StateReject(StateError::BlockBody,[&]{(void)StageOrchardChainstateConnectUnderLock(db,token,c,absent_proof,parent,parent_forest,{},true,checkpoint,stale);});
     CHECK(stale.Count()==0);
     // A mismatching retained delta must roll back even coins/state already staged.
     const auto key=MakeUtreexoDeltaUndoKey(c.block_hash);

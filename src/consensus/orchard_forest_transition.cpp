@@ -1,6 +1,7 @@
 #include "consensus/orchard_forest_transition.h"
 #include <set>
 #include "consensus/utreexo_canonical_roots_activation.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
 
 namespace dinero::consensus {
 namespace {
@@ -46,6 +47,55 @@ PreparedOrchardForest PrepareOrchardForestTransition(const PreparedOrchardBlockC
     const auto root=Root(*after);
     return PreparedOrchardForest(coins.BlockHash(),root,parent.utreexo_root,forest.isCanonicalEmptyRoots(),
                                  std::move(delta),std::move(after));
+}
+void CheckOrchardBlockUtreexoProof(const OrchardBlockCandidate& block,const PreparedOrchardBlockCoins& coins,
+    const BlockHeader& parent,const UtreexoForest& forest) {
+    if(coins.BlockHash()!=block.Header().GetHash() || parent.GetHash()!=coins.ParentHash() ||
+        block.Header().prev_block_hash!=coins.ParentHash())Reject(Error::Context);
+    if(Root(forest)!=parent.utreexo_root)Reject(Error::ParentCommitment);
+    if(!block.Utreexo())Reject(Error::Proof);
+    const auto& data=*block.Utreexo();const auto& proof=data.spend_proof;
+    if(data.accumulator_root_before!=forest.getCommitment() ||
+        proof.format_version!=GetUtreexoProofFormatVersion(coins.Height()) ||
+        proof.numLeaves!=forest.getNumLeaves() || !proof.isValid())Reject(Error::Proof);
+    std::set<OutPoint> created;
+    for(const auto& tx:coins.Transactions())for(const auto& [point,coin]:tx.created)created.insert(point);
+    std::set<UtreexoHash> expected;
+    size_t index=0;
+    for(const auto& tx:coins.Transactions())for(const auto& [point,coin]:tx.spent) {
+        if(index==data.spent_outputs.size())Reject(Error::Proof);
+        const auto& metadata=data.spent_outputs[index++];
+        if(metadata.value!=coin.value.GetUna() || metadata.scriptPubKey!=coin.scriptPubKey ||
+            metadata.created_height!=coin.height || metadata.is_coinbase!=coin.isCoinbase ||
+            metadata.is_confidential!=coin.is_confidential || metadata.commitment!=coin.commitment)
+            Reject(Error::Proof);
+        if(!created.contains(point) && !expected.insert(Leaf(point,coin)).second)Reject(Error::Proof);
+    }
+    if(index!=data.spent_outputs.size() || expected.size()!=proof.targets.size())Reject(Error::Proof);
+    std::set<UtreexoHash> provided;std::set<uint64_t> positions;
+    size_t sibling_count=0;
+    for(size_t i=0;i<proof.targets.size();++i) {
+        if(proof.targets[i].size()!=32 || !provided.insert(proof.targets[i]).second ||
+            proof.positions[i]>=proof.numLeaves || !positions.insert(proof.positions[i]).second)
+            Reject(Error::Proof);
+        // The shared verifier consumes one sequential path per target but its
+        // historical contract permits an unused suffix. New Orchard framing
+        // requires exactly the paths for these positions, without altering
+        // the accepted historical proof language.
+        uint64_t start=0;
+        for(int h=63;h>=0;--h)if((proof.numLeaves>>h)&1) {
+            const uint64_t size=uint64_t(1)<<h;
+            if(proof.positions[i]>=start && proof.positions[i]-start<size) {
+                sibling_count+=size_t(h);break;
+            }
+            start+=size;
+        }
+    }
+    if(sibling_count!=proof.proof_hashes.size())Reject(Error::Proof);
+    if(provided!=expected)Reject(Error::Proof);
+    if(expected.empty()) {if(!proof.isEmpty())Reject(Error::Proof);return;}
+    if(!forest.verifyBatchProofStateless(proof.targets,proof.positions,proof.proof_hashes,
+        proof.numLeaves,forest.getRoots()))Reject(Error::Proof);
 }
 UtreexoForest UndoOrchardForestTransition(const UtreexoForest& current,const PreparedOrchardForest& transition) {
     if(Root(current)!=transition.root_ || current.getNumLeaves()!=transition.after_->getNumLeaves() ||

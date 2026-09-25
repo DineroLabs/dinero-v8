@@ -44,3 +44,9 @@ by its link map instrumented consistently. Rust and external C dependencies were
 not instrumented; macOS leak detection was disabled. Earlier partial-instrumentation
 runs produced libc++ container-annotation failures, retained in private evidence.
 No sanitizer detector was disabled to obtain the passing reader result.
+
+## Size and weight admission
+
+The candidate records base size from actual consumed transaction bytes. Only a transaction whose full encoding matches its canonical serialization receives the transparent-witness discount. An alternate historical encoding remains parseable but is charged entirely as base data on this new block path; historical replay is unchanged. Header, count, suffix and Utreexo proof bytes are base data. The entire Orchard bundle is included in its txid preimage and remains base data.
+
+The staged coin/state entry points require the existing 100,000-byte transaction, 400,000 transaction-weight, 1,000,000 block-base and 4,000,000 block-weight bounds before coin lookup or proof authorization. Tests cover aggregates crossing the base and weight limits separately, full suffix accounting and rejection before an intentionally failing coin lookup. This does not define an Orchard proof-work budget or replace sigop, header or coinbase rules. Those remain integration obligations.

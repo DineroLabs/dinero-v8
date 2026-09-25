@@ -103,7 +103,8 @@ PreparedOrchardState StageOrchardBlockUnderChainstateLock(ChainDB& db,
     if (block.Header().GetHash() != context.block_hash || block.Header().prev_block_hash != context.parent_hash)
         throw OrchardStateError(OrchardStateErrorCode::Context);
     std::string body_error;
-    if (!block.Header().IsReservedValid() || !block.CheckIdentityCommitments(require_witness_commitment, body_error))
+    if (!block.Header().IsReservedValid() || !block.CheckSizeLimits(body_error) ||
+        !block.CheckIdentityCommitments(require_witness_commitment, body_error))
         throw OrchardStateError(OrchardStateErrorCode::BlockBody);
     std::set<TxId> ids;
     size_t checked = 0;
@@ -309,6 +310,11 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
         catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
     }();
     if(!transition.MatchesHeader(block.Header()))throw OrchardStateError(OrchardStateErrorCode::BlockBody);
+    try{CheckOrchardBlockUtreexoProof(block,prepared.coins,parent,forest);}
+    catch(const OrchardForestError& e) {
+        if(e.Code()!=OrchardForestErrorCode::Proof)throw OrchardStateLookupError(Status::Corruption);
+        throw OrchardStateError(OrchardStateErrorCode::BlockBody);
+    }
     std::string delta,error;
     if(!SerializeUtreexoDelta(transition.Delta(),delta,error))throw OrchardStateLookupError(Status::Corruption);
     const auto key=MakeUtreexoDeltaUndoKey(context.block_hash);

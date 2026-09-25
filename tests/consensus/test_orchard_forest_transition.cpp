@@ -1,4 +1,4 @@
-#include "orchard_block_coin_test_fixture.h"
+#include "orchard_forest_test_fixture.h"
 #include "consensus/orchard_forest_transition.h"
 #include "consensus/chainparams.h"
 #include "consensus/utreexo_delta_codec.h"
@@ -69,6 +69,34 @@ static void RoundTrip(const std::string& base,size_t padding) {
     const auto final_coins=PrepareOrchardBlockCoinsUnderChainstateLock(finalized,c,view,{},true);
     const auto final_transition=PrepareOrchardForestTransition(final_coins,parent,forest);
     Require(final_transition.MatchesHeader(header));
+    const auto proof=MixedProof(final_coins,forest);
+    Require(proof.spent_outputs.size()==3 && proof.spend_proof.targets.size()==2);
+    CheckOrchardBlockUtreexoProof(WithProof(finalized,proof),final_coins,parent,forest);
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(finalized,final_coins,parent,forest);});
+    auto reordered=proof;
+    auto reversed_targets=proof.spend_proof.targets;std::reverse(reversed_targets.begin(),reversed_targets.end());
+    reordered.spend_proof=forest.generateBlockProof(reversed_targets,proof.spend_proof.format_version);
+    CheckOrchardBlockUtreexoProof(WithProof(finalized,reordered),final_coins,parent,forest);
+    auto changed=proof;changed.spend_proof.proof_hashes[0][0]^=1;
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spend_proof.format_version=5;
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spent_outputs.back().value++;
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spent_outputs.front().created_height++;
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spent_outputs.pop_back();
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.accumulator_root_before[0]^=1;
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spend_proof.numLeaves++;
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spend_proof.proof_hashes.push_back(UtreexoHash(32,1));
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spend_proof.positions[1]=changed.spend_proof.positions[0];
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
+    changed=proof;changed.spend_proof.targets.pop_back();changed.spend_proof.positions.pop_back();
+    ForestReject(OrchardForestErrorCode::Proof,[&]{CheckOrchardBlockUtreexoProof(WithProof(finalized,changed),final_coins,parent,forest);});
     auto wrong=header;wrong.utreexo_root.data[0]^=1;Require(!final_transition.MatchesHeader(wrong));
     // The persisted forest representation can be reopened before undo.
     const auto reopened=UtreexoForest::deserialize(final_transition.After().serialize());

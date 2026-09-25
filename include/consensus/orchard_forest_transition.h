@@ -4,7 +4,7 @@
 #include <memory>
 
 namespace dinero::consensus {
-enum class OrchardForestErrorCode { Context, ParentCommitment, MissingLeaf, Delete, Add, Undo };
+enum class OrchardForestErrorCode { Context, ParentCommitment, MissingLeaf, Delete, Add, Undo, Proof };
 class OrchardForestError : public std::runtime_error {
 public:
     explicit OrchardForestError(OrchardForestErrorCode code)
@@ -23,6 +23,11 @@ class PreparedOrchardForest;
 [[nodiscard]] UtreexoForest UndoOrchardForestDelta(const UtreexoForest&,
     const UtreexoDelta&, const BlockHeader& parent, const BlockHeader& current,
     uint32_t current_height);
+// Stateful peer-payload check: metadata must equal every resolved input in
+// transaction order (including ephemeral inputs), while the batch proof covers
+// exactly the external leaves. This does not authenticate a CSN coin snapshot.
+void CheckOrchardBlockUtreexoProof(const OrchardBlockCandidate&,
+    const PreparedOrchardBlockCoins&, const BlockHeader& parent, const UtreexoForest&);
 
 // Stateful computation on one private forest clone. No network-proof bypass:
 // this requires the authenticated full parent forest under the caller's lock.

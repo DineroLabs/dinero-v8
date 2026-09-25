@@ -29,11 +29,50 @@ static Bytes Framing(const std::vector<Bytes>& txs,const Bytes& suffix={0}) {
     const auto header=h.SerializeForHash();Bytes b(header.begin(),header.end());b.push_back(txs.size());
     for(const auto& t:txs)b.insert(b.end(),t.begin(),t.end());b.insert(b.end(),suffix.begin(),suffix.end());return b;
 }
+static void Sizes(const Bytes& orchard) {
+    std::string error;
+    const auto cb=Ordinary(1).Serialize(TxSerializationMode::WithWitness);
+    const auto one=OrchardBlockCandidate::DecodeExact(Framing({cb,orchard}));
+    const auto tx=ParsedTransaction::DecodeExact(orchard,TransactionReadMode::StagedOrchard);
+    Require(one.BaseSize()==130+Ordinary(1).Serialize(TxSerializationMode::WithoutWitness).size()+tx.GetBaseSize());
+    Require(one.Weight()==3*one.BaseSize()+one.WireBytes().size() && one.CheckSizeLimits(error));
+    // The full Utreexo suffix is base data, with no witness discount.
+    consensus::BlockUtreexoData proof;proof.accumulator_root_before.assign(32,0);
+    const auto encoded=proof.serialize();Bytes suffix{1};suffix.insert(suffix.end(),encoded.begin(),encoded.end());
+    const auto extended=OrchardBlockCandidate::DecodeExact(Framing({cb,orchard},suffix));
+    Require(extended.BaseSize()==one.BaseSize()+encoded.size());
+    Require(extended.Weight()==one.Weight()+4*encoded.size());
+    std::vector<Bytes> wires{cb};
+    for(unsigned i=0;i<12;++i) {
+        auto ordinary=Ordinary(10+i);ordinary.vin[0].prevout.vout=0;
+        ordinary.vout.clear();
+        for(unsigned j=0;j<10;++j)ordinary.vout.emplace_back(AmountUna::Una(1),Bytes(9000,0x61));
+        wires.push_back(ordinary.Serialize(TxSerializationMode::WithWitness));
+        const auto block=OrchardBlockCandidate::DecodeExact(Framing(wires));
+        Require(block.CheckSizeLimits(error)==(block.BaseSize()<=1000000));
+    }
+    Require(!OrchardBlockCandidate::DecodeExact(Framing(wires)).CheckSizeLimits(error) && error=="block-base-size");
+    // Witness-heavy transactions remain individually below 100 KB while their
+    // aggregate weight crosses four million before the base crosses one MB.
+    wires={cb};
+    for(unsigned i=0;i<20;++i) {
+        auto ordinary=Ordinary(30+i);ordinary.vin[0].prevout.vout=0;ordinary.witness_version=1;
+        ordinary.vin[0].witness={Bytes(59000,0x61)};ordinary.vout.clear();
+        for(unsigned j=0;j<5;++j)ordinary.vout.emplace_back(AmountUna::Una(1),Bytes(7900,0x61));
+        const auto wire=ordinary.Serialize(TxSerializationMode::WithWitness);Require(wire.size()<100000);
+        wires.push_back(wire);
+        const auto block=OrchardBlockCandidate::DecodeExact(Framing(wires));
+        Require(block.BaseSize()<1000000);
+        Require(block.CheckSizeLimits(error)==(block.Weight()<=4000000));
+    }
+    Require(!OrchardBlockCandidate::DecodeExact(Framing(wires)).CheckSizeLimits(error) && error=="block-weight");
+}
 static_assert(!std::is_default_constructible_v<OrchardBlockCandidate>);
 static_assert(!std::is_convertible_v<OrchardBlockCandidate,Block>);
 int main(int argc,char**argv) {
  try {
     Require(argc==2);const auto orchard=Load(std::string(argv[1])+"/candidate-envelope.bin");
+    Sizes(orchard);
     const auto old=Ordinary(1).Serialize(TxSerializationMode::WithWitness);
     const auto mixed=Framing({old,orchard});const auto parsed=OrchardBlockCandidate::DecodeExact(mixed);
     Require(parsed.Transactions().size()==2 && !parsed.Transactions()[0].IsOrchard() && parsed.Transactions()[1].IsOrchard());

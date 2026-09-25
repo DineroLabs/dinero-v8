@@ -40,3 +40,11 @@ delta forward-replay check also passes. The forest test passes ASan/UBSan with
 all project C++ translation units selected by its link map instrumented; external
 dependencies and Rust remain uninstrumented, and macOS leak detection is off.
 Linux exact-head qualification remains separate.
+
+## Stateful peer proof binding
+
+The combined atomic adapter now requires the candidate's Utreexo payload. Its root-before and leaf count must match the authenticated full parent forest; the selected-height proof format must match. Every spent-output metadata row must equal the resolved coin in transaction/input order, including ephemeral parent/child inputs. The proof target set covers external inputs exactly once and excludes ephemeral inputs. Positions are unique and in range.
+
+The path uses the existing stateless proof verifier with an explicit exact sibling-count check for the per-target path format emitted by the production `generateBlockProof` routine. It does not change historical verification's acceptance rules. Empty external-target proofs carry no hashes or positions. A syntactically canonical body with incorrect metadata, omitted/extra targets, duplicate positions, mismatched root/count/format, altered authentication paths or unused proof hashes fails the new path. Tests also accept regenerated proofs in a different target order.
+
+The fixture initially used the deprecated deduplicated `generateBatchProof` helper, which is incompatible with sequential paths for larger forest shapes. It now uses the same `generateBlockProof` routine as mining. Forest padding 0,1,3,7 exercises different tree/path shapes. This is a stateful cross-check of peer metadata against resolved coins; an independent CSN coin-resolution/authorization path is still required.
