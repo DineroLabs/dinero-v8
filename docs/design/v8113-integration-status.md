@@ -23,8 +23,13 @@ This branch collects release implementation for review and qualification against
   API, starting at zero, including fees, checked bounds and undo. Runtime block
   flow collection is still required; see the pool-guard design document.
 - Immutable upstream Orchard commitment frontier with canonical bounded storage
-  encoding, derived root/size and failure-atomic append. Parent-state matching,
-  anchor eligibility and actual validated block transitions remain unwired.
+  encoding, derived root/size and failure-atomic append.
+- Sealed Orchard state preparation binds parent frontier/root/size, authorization
+  context, selected-history anchors, nullifier freshness and ordered pool flows.
+  A ChainDB adapter stages that result in the caller's batch and distinguishes
+  local corruption/read errors from transaction rejection. Real frontier funding,
+  spend, reopen, undo and branch replacement pass in temporary stores. This is
+  still not wired into the daemon's mixed-transaction block connector.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
@@ -68,7 +73,7 @@ the following rows to test-only work:
 | --- | --- |
 | Shared parsing and authorization | Staged typed reader and authorization components; no live admission |
 | Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
-| Anchors, nullifiers, pool and atomic storage/undo | ChainDB staging, independent pool arithmetic, upstream frontier component and storage recovery tests implemented; validated block transitions and production callers not integrated |
+| Anchors, nullifiers, pool and atomic storage/undo | Sealed Orchard transitions and ChainDB batch adapter implemented, including real frontier and recovery tests; mixed-block coin/fee collection and production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Not implemented |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
 

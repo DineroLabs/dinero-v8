@@ -90,8 +90,17 @@ else()
 endif()
 add_library(dinero_orchard_transparent STATIC
   "${ORCHARD_HOST_ROOT}/src/consensus/orchard_transparent.cpp"
-  "${ORCHARD_HOST_ROOT}/src/consensus/orchard_authorization.cpp")
+  "${ORCHARD_HOST_ROOT}/src/consensus/orchard_authorization.cpp"
+  "${ORCHARD_HOST_ROOT}/src/consensus/orchard_state_transition.cpp")
 target_link_libraries(dinero_orchard_transparent PUBLIC dinero_transaction_reader secp256k1)
+# Storage integration links the real ChainDB only in the repository build.
+# Keeping this separate avoids making the historical database depend on Rust.
+if(TARGET dinero_chainstate)
+  add_library(dinero_orchard_block_staging STATIC
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_staging.cpp")
+  target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate)
+  target_include_directories(dinero_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
+endif()
 if(DINERO_ORCHARD_BUILD_TESTS)
   # Fail closed if the host monetary constant changes or cannot be read.
   # The C++ test compares this host value to both its own value and Rust's ABI.
@@ -125,9 +134,22 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_executable(test_orchard_authorization "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_authorization.cpp")
   target_link_libraries(test_orchard_authorization PRIVATE dinero_orchard_transparent)
   add_test(NAME OrchardAuthorization COMMAND test_orchard_authorization "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  add_executable(test_orchard_state_transition "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_state_transition.cpp")
+  target_link_libraries(test_orchard_state_transition PRIVATE dinero_orchard_transparent)
+  add_test(NAME OrchardStateTransition COMMAND test_orchard_state_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  if(TARGET dinero_orchard_block_staging)
+    add_executable(test_orchard_block_staging
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(test_orchard_block_staging PRIVATE dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    target_include_directories(test_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    add_test(NAME OrchardBlockStaging COMMAND test_orchard_block_staging "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardBlockStaging PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+      ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;storage;integration-staging")
+  endif()
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()
