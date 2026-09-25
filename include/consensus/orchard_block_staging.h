@@ -65,7 +65,9 @@ struct StagedOrchardChainstate {
 // marker, height index and both tip markers together. The caller supplies
 // authenticated selected-branch headers with persisted header/work records,
 // holds the writer lock, and must complete header/PoW, remaining resource,
-// service/flatfile-index obligations before committing. The versioned commit record
+// service/flatfile-index obligations before committing. The exact mixed compact
+// filter is verified before commit and shares the batch; a retained mismatching
+// filter is local corruption. The versioned commit record
 // shares the batch. Peer proof data
 // is checked against the resolved coins and full parent forest in this path.
 // This neither commits nor publishes memory and is not full-block admission.
@@ -78,7 +80,7 @@ struct StagedOrchardChainstate {
 
 // Reads the stored delta, so no pre-restart transition object is required.
 // Returns a private restored forest to publish only after the outer commit.
-// Retains block/header/undo/delta records for reconnect; removes the disconnected
+// Retains block/header/undo/delta/filter records for reconnect; removes the disconnected
 // active transaction/height indexes and checkpoint. Existing transaction-index
 // rows are never overwritten on connect. Same empty-batch/remaining-obligations contract.
 [[nodiscard]] UtreexoForest StageOrchardChainstateDisconnectUnderLock(

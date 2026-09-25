@@ -6,7 +6,7 @@
 namespace dinero::consensus {
 enum class OrchardBlockCoinErrorCode {
     Context, Body, RetiredPool, DuplicateTransaction, MissingCoin, DuplicateInput,
-    OutputCollision, Amount, ImmatureCoinbase, Locks, Script, Reward
+    OutputCollision, Amount, ImmatureCoinbase, Locks, Script, Reward, Filter
 };
 class OrchardBlockCoinError : public std::runtime_error {
 public:

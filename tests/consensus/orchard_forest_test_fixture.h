@@ -28,3 +28,22 @@ static OrchardBlockCandidate WithProof(const OrchardBlockCandidate& block,const 
     const auto bytes=proof.serialize();wire.insert(wire.end(),bytes.begin(),bytes.end());
     return OrchardBlockCandidate::DecodeExact(wire);
 }
+
+// Test-only framing: rebuild the coinbase/transaction Merkle root independently
+// from the production filter checker. DINW remains unchanged (coinbase is zero).
+static OrchardBlockCandidate WithFilterHash(const OrchardBlockCandidate& block,const uint256& hash) {
+    Require(!block.Utreexo());
+    auto coinbase=block.Transactions()[0].Historical();
+    Bytes script{0x6a,37,0x44,0x4e,0x52,0x46,1};
+    script.insert(script.end(),hash.begin(),hash.end());
+    coinbase.vout.emplace_back(AmountUna::Zero(),script);
+    std::vector<Bytes> wires{Wire(coinbase)};
+    for(size_t i=1;i<block.Transactions().size();++i)
+        wires.push_back(block.Transactions()[i].Serialize(TxSerializationMode::WithWitness));
+    std::vector<TxId> ids;
+    for(const auto& bytes:wires)ids.push_back(ParsedTransaction::DecodeExact(bytes,TransactionReadMode::StagedOrchard).GetTxid());
+    auto header=block.Header();header.merkle_root=ComputeTransactionMerkleRoot(ids);
+    const auto prefix=header.SerializeForHash();Bytes bytes(prefix.begin(),prefix.end());bytes.push_back(wires.size());
+    for(const auto& wire:wires)bytes.insert(bytes.end(),wire.begin(),wire.end());bytes.push_back(0);
+    return OrchardBlockCandidate::DecodeExact(bytes);
+}

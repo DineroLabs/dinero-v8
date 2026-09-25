@@ -1,5 +1,6 @@
 #include "orchard_forest_test_fixture.h"
 #include "consensus/orchard_block_staging.h"
+#include "consensus/orchard_block_filter.h"
 #include "../storage/shielded_store_fixture.h"
 #include <iomanip>
 #include <sstream>
@@ -303,7 +304,9 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     const OrchardBlockCandidate& parent,const UtreexoForest& parent_forest,bool checkpoint) {
     auto next=previous;++next.height;next.parent_hash=previous.block_hash;
     View view;view.height=previous.height;
-    const auto draft=CandidateWires(next,{},42);next.block_hash=draft.Header().GetHash();
+    const auto uncommitted=CandidateWires(next,{},42);next.block_hash=uncommitted.Header().GetHash();
+    const auto preliminary=PrepareOrchardBlockCoinsUnderChainstateLock(uncommitted,next,view,{},true);
+    const auto draft=WithFilterHash(uncommitted,BuildOrchardBlockFilter(preliminary).GetHash());next.block_hash=draft.Header().GetHash();
     const auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(draft,next,view,{},true);
     const auto transition=PrepareOrchardForestTransition(coins,parent.Header(),parent_forest);
     auto header=draft.Header();header.utreexo_root=transition.Root();
@@ -355,20 +358,35 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
     OrchardBlockContext c{20001,H(2),parent.GetHash(),20001,keys.domain};
     const auto id=ParsedTransaction::DecodeExact(auth.Orchard().CanonicalBytes(),TransactionReadMode::StagedOrchard).GetTxid();
     const auto child=Child(OutPoint(id,0),UTXOEntry(AmountUna::Una(tx.Outputs()[0].amount_una),tx.Outputs()[0].script_pub_key,c.height,false),keys);
-    const auto draft=CandidateWires(c,{auth.Orchard().CanonicalBytes(),Wire(child)});c.block_hash=draft.Header().GetHash();
+    const auto uncommitted=CandidateWires(c,{auth.Orchard().CanonicalBytes(),Wire(child)});c.block_hash=uncommitted.Header().GetHash();
+    const auto preliminary=PrepareOrchardBlockCoinsUnderChainstateLock(uncommitted,c,view,{},true);
+    const auto draft=WithFilterHash(uncommitted,BuildOrchardBlockFilter(preliminary).GetHash());c.block_hash=draft.Header().GetHash();
     const auto coins=PrepareOrchardBlockCoinsUnderChainstateLock(draft,c,view,{},true);
     const auto computed=PrepareOrchardForestTransition(coins,parent,parent_forest);
     auto header=draft.Header();header.utreexo_root=computed.Root();
     auto bytes=draft.WireBytes();const auto wire=header.SerializeForHash();std::copy(wire.begin(),wire.end(),bytes.begin());
     const auto block=WithProof(OrchardBlockCandidate::DecodeExact(bytes),MixedProof(coins,parent_forest));c.block_hash=header.GetHash();
+    auto no_filter_header=uncommitted.Header();
+    no_filter_header.utreexo_root=PrepareOrchardForestTransition(preliminary,parent,parent_forest).Root();
+    auto no_filter_bytes=uncommitted.WireBytes();const auto no_filter_prefix=no_filter_header.SerializeForHash();
+    std::copy(no_filter_prefix.begin(),no_filter_prefix.end(),no_filter_bytes.begin());
+    const auto no_filter_block=WithProof(OrchardBlockCandidate::DecodeExact(no_filter_bytes),MixedProof(preliminary,parent_forest));
     CHECK(db.putHeader(token,parent.GetHash(),parent,20000,arith_uint256(20000),&seed)==Status::Ok);
     CHECK(db.putHeader(token,c.block_hash,header,20001,arith_uint256(20001),&seed)==Status::Ok);
+    CHECK(db.putHeader(token,no_filter_header.GetHash(),no_filter_header,20001,arith_uint256(20001),&seed)==Status::Ok);
     CHECK(db.putHeightIndex(token,20000,parent.GetHash(),&seed)==Status::Ok);
     CHECK(db.putForestTipMarker(token,{20000,parent.GetHash(),parent.utreexo_root},&seed)==Status::Ok);
     CHECK(db.putUtreexoCheckpointWithChecksum(token,20000,parent_forest.serialize(),&seed)==Status::Ok);
     Tip(db,parent.GetHash(),20000,seed);Commit(db,seed);
     db.close();const auto original=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
     const auto before=parent_forest.dumpInternalState();
+    { auto no_filter=c;no_filter.block_hash=no_filter_header.GetHash();
+      rocksdb::WriteBatch rejected;bool failed=false;
+      try{(void)StageOrchardChainstateConnectUnderLock(db,token,no_filter,no_filter_block,parent,parent_forest,{},true,checkpoint,rejected);}
+      catch(const OrchardBlockCoinError& e){CHECK(e.Code()==OrchardBlockCoinErrorCode::Filter);failed=true;}
+      CHECK(failed && rejected.Count()==0 && db.getOrchardState().status()==Status::NotFound);
+    }
+
     {
         rocksdb::WriteBatch abandoned;
         const auto staged=StageOrchardChainstateConnectUnderLock(db,token,c,block,parent,parent_forest,{},true,checkpoint,abandoned);
@@ -417,6 +435,13 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
     CHECK(storage::RestoreHistoricalForest(db,c.height,reopened,error)==Status::Ok);
     CHECK(reopened.dumpInternalState()==staged.forest.After().dumpInternalState());
     AuditOrchardChainstateTipUnderLock(db,token,c,parent,reopened,true);
+    const auto filter=BuildOrchardBlockFilter(staged.block.coins);
+    CHECK(RequiredValue(db.getBlockFilter(c.block_hash)).data==filter.encoded_data);
+    CHECK(RequiredValue(db.getBlockFilter(c.block_hash)).element_count==filter.element_count);
+    // Count metadata is not part of GCSFilter::GetHash; audit must recompute it.
+    CHECK(db.putBlockFilter(token,c.block_hash,filter.encoded_data,filter.element_count+1)==Status::Ok);
+    LookupReject(Status::Corruption,[&]{AuditOrchardChainstateTipUnderLock(db,token,c,parent,reopened,true);});
+    CHECK(db.putBlockFilter(token,c.block_hash,filter.encoded_data,filter.element_count)==Status::Ok);
     JournalContinuation(db,c,block,reopened,checkpoint);
     const std::string journal_key="orchard_consensus_journal:v1:00004e21:"+c.block_hash.GetHex();
     std::string journal;CHECK(db.getRaw(journal_key,journal)==Status::Ok && journal.size()==36);

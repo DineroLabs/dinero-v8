@@ -50,6 +50,7 @@ This branch collects release implementation for review and qualification against
   commitments and supports checked delta rollback on a private clone. A combined
   stateful adapter stages durable delta/checkpoint, forest/height/tip markers and
   coins/Orchard state in one batch; persistent-delta undo survives database reopen.
+  The mixed compact filter is checked before commit and stored atomically; startup/disconnect rederive bytes and element count from body and checked undo.
   Peer proof targets, paths and ordered metadata are checked against resolved
   inputs and the authenticated full parent forest.
   Exact body storage and active transaction indexes now share that batch.

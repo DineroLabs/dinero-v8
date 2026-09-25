@@ -1,6 +1,8 @@
 #include "consensus/orchard_block_staging.h"
 #include "storage/chain_db.h"
 #include "storage/block_storage.h"
+#include "consensus/orchard_block_filter.h"
+#include "consensus/filter_commitment.h"
 #include <set>
 #include <exception>
 #include <map>
@@ -405,6 +407,7 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     }
     auto prepared=StageOrchardBlockCoinsAndStateUnderChainstateLock(db,token,context,block,mtp,
         require_witness_commitment,batch);
+    const auto filter=CheckOrchardBlockFilter(block,prepared.coins);
     if(prepared.orchard.Parent())CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,
         forest,*prepared.orchard.Parent());
     auto transition=[&] {
@@ -425,6 +428,12 @@ StagedOrchardChainstate StageOrchardChainstateConnectUnderLock(ChainDB& db,
     else if(status!=Status::NotFound)throw OrchardStateLookupError(status);
     batch.Put(key,delta);
     if(checkpoint)StorageCheck(db.putUtreexoCheckpointWithChecksum(token,int(context.height),transition.After().serialize(),&batch));
+    const auto retained_filter=db.getBlockFilter(context.block_hash);
+    if(retained_filter.ok()) {
+        if(retained_filter->data!=filter.encoded_data || retained_filter->element_count!=filter.element_count)
+            throw OrchardStateLookupError(Status::Corruption);
+    } else if(retained_filter.status()!=Status::NotFound)throw OrchardStateLookupError(retained_filter.status());
+    StorageCheck(db.putBlockFilter(token,context.block_hash,filter.encoded_data,filter.element_count,&batch));
     StorageCheck(db.stageOrchardBlock(token,block,require_witness_commitment,batch));
     for(size_t i=0;i<block.Transactions().size();++i)
         StorageCheck(db.putTxIndex(token,block.Transactions()[i].GetTxid().AsUint256(),context.block_hash,uint32_t(i),&batch));
@@ -470,6 +479,45 @@ UtreexoForest StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     if(undo_parent)CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,restored,*undo_parent);
     StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,context,block,
         require_witness_commitment,batch);
+    // Coins/undo have now been checked against the exact body. Reconstruct
+    // the filter independently, including inputs spent within this same block.
+    // The encoded-data hash alone does not authenticate the stored element count.
+    const auto undo=RequiredLocal(db.getUndo(context.block_hash));
+    std::map<OutPoint,std::vector<uint8_t>> scripts_by_coin;
+    std::vector<std::vector<uint8_t>> scripts;
+    for(const auto& coin:undo.spent)
+        scripts_by_coin.emplace(OutPoint(TxId(coin.prev_txid),coin.prev_vout),coin.scriptPubKey);
+    for(const auto& tx:block.Transactions()) {
+        const auto add=[&](uint32_t n,const std::vector<uint8_t>& script) {
+            scripts_by_coin.emplace(OutPoint(tx.GetTxid(),n),script);
+            if(!script.empty() && script.front()!=0x6a)scripts.push_back(script);
+        };
+        if(tx.IsOrchard()) {
+            const auto& outputs=tx.Orchard().Outputs();
+            for(size_t i=0;i<outputs.size();++i)add(uint32_t(i),outputs[i].script_pub_key);
+        } else {
+            const auto& outputs=tx.Historical().vout;
+            for(size_t i=0;i<outputs.size();++i)add(uint32_t(i),outputs[i].scriptPubKey);
+        }
+    }
+    const auto spent_script=[&](const OutPoint& point) {
+        const auto it=scripts_by_coin.find(point);
+        if(it==scripts_by_coin.end())throw OrchardStateLookupError(Status::Corruption);
+        if(!it->second.empty())scripts.push_back(it->second);
+    };
+    for(size_t i=1;i<block.Transactions().size();++i) {
+        const auto& tx=block.Transactions()[i];
+        if(tx.IsOrchard())for(const auto& in:tx.Orchard().Inputs()) {
+            uint256 hash;std::copy(in.txid_wire.begin(),in.txid_wire.end(),hash.begin());
+            spent_script(OutPoint(TxId(hash),in.output_index));
+        } else for(const auto& in:tx.Historical().vin)spent_script(OutPoint(in.prevout.txid,in.prevout.vout));
+    }
+    const auto filter=GCSFilter::Build(scripts,context.parent_hash);
+    const auto stored_filter=RequiredLocal(db.getBlockFilter(context.block_hash));
+    std::string filter_error;
+    if(stored_filter.data!=filter.encoded_data || stored_filter.element_count!=filter.element_count ||
+        !ValidateFilterCommitment(block.Transactions()[0].Historical(),filter.GetHash(),context.height,filter_error))
+        throw OrchardStateLookupError(Status::Corruption);
     for(const auto& tx:block.Transactions())StorageCheck(db.deleteTxIndex(token,tx.GetTxid().AsUint256(),&batch));
     StorageCheck(db.deleteHeightIndex(token,int(context.height),&batch));
     StorageCheck(db.deleteUtreexoCheckpointWithChecksum(token,int(context.height),&batch));
