@@ -219,7 +219,7 @@
     <message>
         <location filename="../src/bridgewidget.cpp" line="268" />
         <source>Effective rate: (direct conversion, minimal fees)</source>
-        <translation type="unfinished" />
+        <translation>Effektivkurs: (direkte Umwandlung, minimale Gebühren)</translation>
     </message>
     <message>
         <location filename="../src/bridgewidget.cpp" line="275" />
@@ -292,7 +292,7 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1567" />
         <source>&lt;p&gt;&lt;b&gt;Important Reminders:&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Keep your seed phrase safe and offline&lt;/li&gt;&lt;li&gt;Never share your seed phrase with anyone&lt;/li&gt;&lt;li&gt;Make multiple backups stored in different locations&lt;/li&gt;&lt;li&gt;Your password encrypts the wallet file, but the seed phrase is the ultimate backup&lt;/li&gt;&lt;/ul&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p&gt;&lt;b&gt;Wichtige Hinweise:&lt;/b&gt;&lt;/p&gt;&lt;ul&gt;&lt;li&gt;Bewahren Sie Ihre Seed-Phrase sicher und offline auf&lt;/li&gt;&lt;li&gt;Geben Sie Ihre Seed-Phrase niemals an andere weiter&lt;/li&gt;&lt;li&gt;Legen Sie mehrere Backups an unterschiedlichen Orten an&lt;/li&gt;&lt;li&gt;Ihr Passwort verschlüsselt die Wallet-Datei, doch die Seed-Phrase ist das entscheidende Backup&lt;/li&gt;&lt;/ul&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1585" />
@@ -302,12 +302,12 @@
     <message>
         <location filename="../src/walletwizard.cpp" line="1590" />
         <source>❌ Error: Wizard not found</source>
-        <translation type="unfinished" />
+        <translation>❌ Fehler: Assistent nicht gefunden</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1600" />
         <source>❌ Error: Pages not found</source>
-        <translation type="unfinished" />
+        <translation>❌ Fehler: Seiten nicht gefunden</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1621" />
@@ -361,7 +361,9 @@
         <source>One or more words don't match your seed phrase.
 
 Please go back and write down your seed phrase carefully.</source>
-        <translation type="unfinished" />
+        <translation>Ein oder mehrere Wörter stimmen nicht mit Ihrer Seed-Phrase überein.
+
+Gehen Sie zurück und notieren Sie Ihre Seed-Phrase sorgfältig.</translation>
     </message>
 </context>
 <context>
@@ -374,12 +376,12 @@ Please go back and write down your seed phrase carefully.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="711" />
         <source>Write down these 12 words in order. Keep them safe and NEVER share them.</source>
-        <translation type="unfinished" />
+        <translation>Notieren Sie diese 12 Wörter der Reihe nach. Bewahren Sie sie sicher auf und geben Sie sie NIEMALS weiter.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="716" />
         <source>⚠️ &lt;b&gt;CRITICAL:&lt;/b&gt; Anyone with these words can access your funds. Write them on paper and store securely. Never take screenshots or save digitally.</source>
-        <translation type="unfinished" />
+        <translation>⚠️ &lt;b&gt;KRITISCH:&lt;/b&gt; Wer diese Wörter besitzt, hat Zugriff auf Ihr Guthaben. Notieren Sie sie auf Papier und bewahren Sie sie sicher auf. Machen Sie niemals Screenshots und speichern Sie sie nicht digital.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="725" />
@@ -417,7 +419,7 @@ Please go back and write down your seed phrase carefully.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="804" />
         <source>❌ Error: Wallet name is missing. Go back and choose a wallet name first.</source>
-        <translation type="unfinished" />
+        <translation>❌ Fehler: Der Wallet-Name fehlt. Gehen Sie zurück und wählen Sie zuerst einen Wallet-Namen.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="836" />
@@ -455,7 +457,9 @@ Click 'Generate Seed' to try again.</source>
         <source>Seed phrase is not available yet.
 
 Wait for seed generation to complete before continuing.</source>
-        <translation type="unfinished" />
+        <translation>Die Seed-Phrase ist noch nicht verfügbar.
+
+Warten Sie, bis die Seed-Erzeugung abgeschlossen ist, bevor Sie fortfahren.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1052" />
@@ -467,7 +471,9 @@ Wait for seed generation to complete before continuing.</source>
         <source>You must write down your seed phrase before continuing.
 
 Without this backup, you cannot recover your wallet if your computer is lost or damaged.</source>
-        <translation type="unfinished" />
+        <translation>Sie müssen Ihre Seed-Phrase notieren, bevor Sie fortfahren.
+
+Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Computer verloren geht oder beschädigt wird.</translation>
     </message>
 </context>
 <context>
@@ -491,7 +497,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/dpiwidget.cpp" line="108" />
         <source>e.g. Order #12345</source>
-        <translation type="unfinished" />
+        <translation>z. B. Bestellung Nr. 12345</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="111" />
@@ -574,7 +580,7 @@ Without this backup, you cannot recover your wallet if your computer is lost or 
     <message>
         <location filename="../src/dpiwidget.cpp" line="238" />
         <source>Paste or scan a DPI invoice from DineroDPI or Dinero-Qt:</source>
-        <translation type="unfinished" />
+        <translation>Fügen Sie eine DPI-Rechnung aus DineroDPI oder Dinero-Qt ein oder scannen Sie sie:</translation>
     </message>
     <message>
         <location filename="../src/dpiwidget.cpp" line="241" />
@@ -1890,7 +1896,9 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
         <source>Please import a valid Taproot descriptor before continuing.
 
 Click the 'Import Taproot Key' button after entering a valid descriptor.</source>
-        <translation type="unfinished" />
+        <translation>Importieren Sie einen gültigen Taproot-Descriptor, bevor Sie fortfahren.
+
+Klicken Sie nach der Eingabe eines gültigen Descriptors auf „Taproot-Schlüssel importieren“.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1972" />
@@ -5332,7 +5340,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="47" />
         <source>&lt;h2&gt;🛒 P2P Marketplace&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🛒 P2P-Marktplatz&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="48" />
@@ -5367,7 +5375,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="100" />
         <source>Search offers by keyword...</source>
-        <translation type="unfinished" />
+        <translation>Angebote nach Stichwort suchen …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="102" />
@@ -5493,7 +5501,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="396" />
         <source>0 total trades</source>
-        <translation type="unfinished" />
+        <translation>0 Geschäfte insgesamt</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="397" />
@@ -5528,7 +5536,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="415" />
         <source>🔍 View Other User's Reputation</source>
-        <translation type="unfinished" />
+        <translation>🔍 Reputation eines anderen Nutzers ansehen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
@@ -5539,12 +5547,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
         <source>Please select an offer first.</source>
-        <translation type="unfinished" />
+        <translation>Bitte wählen Sie zuerst ein Angebot.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="550" />
         <source>Please select an offer to cancel.</source>
-        <translation type="unfinished" />
+        <translation>Bitte wählen Sie ein Angebot zum Stornieren.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="556" />
@@ -5559,7 +5567,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
         <source>Update offer dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Dialog zur Angebotsaktualisierung – demnächst verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
@@ -5569,7 +5577,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
         <source>Complete trade dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Dialog zum Abschluss des Geschäfts – demnächst verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
@@ -5579,7 +5587,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
         <source>Dispute dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Streitfall-Dialog – demnächst verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
@@ -5589,7 +5597,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
         <source>Trade details dialog - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Dialog mit Geschäftsdetails – demnächst verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
@@ -5599,7 +5607,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
         <source>Reputation viewer - coming soon!</source>
-        <translation type="unfinished" />
+        <translation>Reputationsansicht – demnächst verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="674" />
@@ -5614,7 +5622,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="682" />
         <source>Offer cancelled successfully!</source>
-        <translation type="unfinished" />
+        <translation>Das Angebot wurde erfolgreich storniert.</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="693" />
@@ -5624,12 +5632,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="839" />
         <source>Create New Marketplace Offer</source>
-        <translation type="unfinished" />
+        <translation>Neues Marktplatz-Angebot erstellen</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="879" />
         <source>Describe your offer...</source>
-        <translation type="unfinished" />
+        <translation>Beschreiben Sie Ihr Angebot …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="915" />
@@ -5796,7 +5804,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="120" />
         <source>&lt;h2&gt;👥 Pool&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;👥 Pool&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="126" />
@@ -5832,7 +5840,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="187" />
         <source>contents of /etc/dinero-sv2/ops-token</source>
-        <translation type="unfinished" />
+        <translation>Inhalt von /etc/dinero-sv2/ops-token</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="190" />
@@ -5929,7 +5937,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="290" />
         <source>din1p… new fee address</source>
-        <translation type="unfinished" />
+        <translation>din1p… neue Gebührenadresse</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="292" />
@@ -6014,7 +6022,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="390" />
         <source>the din1p... you passed as --payout-address</source>
-        <translation type="unfinished" />
+        <translation>die din1p…, die Sie als --payout-address angegeben haben</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="392" />
@@ -6054,7 +6062,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="619" />
         <source>Review accepted locally; asking the pool to apply the fee policy…</source>
-        <translation type="unfinished" />
+        <translation>Prüfung lokal angenommen; der Pool wird gebeten, die Gebührenrichtlinie anzuwenden …</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="629" />
@@ -6064,7 +6072,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="632" />
         <source>&lt;span style='color:#e06c75;'&gt;Rejected: wrong ops token.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Abgelehnt: falscher Ops-Token.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="641" />
@@ -6104,7 +6112,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1164" />
         <source>&lt;span style='color:#d8a37b;'&gt;Enter your fee address.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Geben Sie Ihre Gebührenadresse ein.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1174" />
@@ -6124,7 +6132,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1253" />
         <source>&lt;span style='color:#e06c75;'&gt;Unexpected reply from the node.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Unerwartete Antwort vom Node.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1265" />
@@ -6325,7 +6333,7 @@ Wipe chain data and restart with a fresh sync?</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="1165" />
         <source>⚠️ &lt;b&gt;Recovery only:&lt;/b&gt; Restore creates a new named wallet from your seed phrase.&lt;br&gt;&lt;br&gt;Existing wallet names cannot be overwritten from this wizard.&lt;br&gt;&lt;br&gt;📱 Import from iOS Wallet: enter your 12-word seed phrase below only when migrating/recovering.</source>
-        <translation type="unfinished" />
+        <translation>⚠️ &lt;b&gt;Nur zur Wiederherstellung:&lt;/b&gt; Die Wiederherstellung erzeugt eine neue benannte Wallet aus Ihrer Seed-Phrase.&lt;br&gt;&lt;br&gt;Vorhandene Wallet-Namen können über diesen Assistenten nicht überschrieben werden.&lt;br&gt;&lt;br&gt;📱 Import aus der iOS-Wallet: Geben Sie Ihre 12-Wort-Seed-Phrase nur bei einer Migration oder Wiederherstellung unten ein.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1174" />
@@ -6347,12 +6355,12 @@ able
     <message>
         <location filename="../src/walletwizard.cpp" line="1199" />
         <source>Optional: BIP-39 Passphrase ("25th word")</source>
-        <translation type="unfinished" />
+        <translation>Optional: BIP-39-Passphrase („25. Wort“)</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1202" />
         <source>Advanced users only. Leave blank if you didn't use a passphrase when creating the wallet.</source>
-        <translation type="unfinished" />
+        <translation>Nur für fortgeschrittene Anwender. Lassen Sie das Feld leer, wenn Sie beim Erstellen der Wallet keine Passphrase verwendet haben.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1211" />
@@ -6367,17 +6375,17 @@ able
     <message>
         <location filename="../src/walletwizard.cpp" line="1217" />
         <source>Enable this if your seed phrase was created by an older version of Dinero that may have had a checksum bug.</source>
-        <translation type="unfinished" />
+        <translation>Aktivieren Sie dies, wenn Ihre Seed-Phrase von einer älteren Dinero-Version stammt, die möglicherweise einen Prüfsummenfehler hatte.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1241" />
         <source>✅ Format looks valid - Full validation on Next &gt;</source>
-        <translation type="unfinished" />
+        <translation>✅ Das Format sieht gültig aus – die vollständige Prüfung erfolgt mit „Weiter“ &gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1244" />
         <source>❌ Invalid seed phrase (must be 12/15/18/21/24 valid BIP-39 words)</source>
-        <translation type="unfinished" />
+        <translation>❌ Ungültige Seed-Phrase (es müssen 12/15/18/21/24 gültige BIP-39-Wörter sein)</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1281" />
@@ -6404,7 +6412,9 @@ able
         <source>The seed phrase you entered is not valid.
 
 Please check that you have entered a valid 12/15/18/21/24-word BIP-39 seed phrase.</source>
-        <translation type="unfinished" />
+        <translation>Die eingegebene Seed-Phrase ist ungültig.
+
+Prüfen Sie, ob Sie eine gültige BIP-39-Seed-Phrase mit 12/15/18/21/24 Wörtern eingegeben haben.</translation>
     </message>
 </context>
 <context>
@@ -6423,7 +6433,8 @@ Please check that you have entered a valid 12/15/18/21/24-word BIP-39 seed phras
         <location filename="../src/walletwizard.cpp" line="1400" />
         <source>This password encrypts your wallet file using AES-256-GCM with Argon2id key derivation.
 You'll need this password to unlock your wallet and send coins.</source>
-        <translation type="unfinished" />
+        <translation>Dieses Passwort verschlüsselt Ihre Wallet-Datei mit AES-256-GCM und Argon2id-Schlüsselableitung.
+Sie benötigen es, um Ihre Wallet zu entsperren und Coins zu senden.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1410" />
@@ -6448,7 +6459,7 @@ You'll need this password to unlock your wallet and send coins.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="1432" />
         <source>⚠️ &lt;b&gt;Important:&lt;/b&gt; If you forget this password, you'll need your seed phrase to restore your wallet.</source>
-        <translation type="unfinished" />
+        <translation>⚠️ &lt;b&gt;Wichtig:&lt;/b&gt; Wenn Sie dieses Passwort vergessen, benötigen Sie Ihre Seed-Phrase, um die Wallet wiederherzustellen.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1457" />
@@ -6458,7 +6469,7 @@ You'll need this password to unlock your wallet and send coins.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="1460" />
         <source>❌ Passwords don't match</source>
-        <translation type="unfinished" />
+        <translation>❌ Die Passwörter stimmen nicht überein</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1507" />
@@ -6470,7 +6481,9 @@ You'll need this password to unlock your wallet and send coins.</source>
         <source>Password must be at least 8 characters long.
 
 For security, use a strong password with letters, numbers, and symbols.</source>
-        <translation type="unfinished" />
+        <translation>Das Passwort muss mindestens 8 Zeichen lang sein.
+
+Verwenden Sie aus Sicherheitsgründen ein starkes Passwort mit Buchstaben, Zahlen und Sonderzeichen.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1514" />
@@ -6482,7 +6495,9 @@ For security, use a strong password with letters, numbers, and symbols.</source>
         <source>The passwords you entered don't match.
 
 Please try again.</source>
-        <translation type="unfinished" />
+        <translation>Die eingegebenen Passwörter stimmen nicht überein.
+
+Bitte versuchen Sie es erneut.</translation>
     </message>
 </context>
 <context>
@@ -6642,7 +6657,7 @@ Please try again.</source>
         <location filename="../src/shieldedwidget.cpp" line="261" />
         <location filename="../src/shieldedwidget.cpp" line="399" />
         <source>To: fresh wallet Taproot address generated by daemon at submit time</source>
-        <translation type="unfinished" />
+        <translation>Ziel: eine neue Taproot-Adresse der Wallet, die der Daemon beim Senden erzeugt</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="271" />
@@ -6733,7 +6748,7 @@ Please try again.</source>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="716" />
         <source>invalid amount_una</source>
-        <translation type="unfinished" />
+        <translation>ungültiges amount_una</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="730" />
@@ -6835,12 +6850,12 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="164" />
         <source>&lt;span style='color:#d8a37b;'&gt;rebinding to active wallet…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;wird neu an die aktive Wallet gebunden …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="214" />
         <source>&lt;h2&gt;🏦 Liquidity Vault&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🏦 Liquiditäts-Vault&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="215" />
@@ -6921,7 +6936,7 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="308" />
         <source>din1p… Taproot address</source>
-        <translation type="unfinished" />
+        <translation>din1p… Taproot-Adresse</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="314" />
@@ -6941,7 +6956,7 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="327" />
         <source>withdrawal_id</source>
-        <translation type="unfinished" />
+        <translation>withdrawal_id</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="329" />
@@ -6996,32 +7011,32 @@ Please try again.</source>
     <message>
         <location filename="../src/vaultpanel.cpp" line="473" />
         <source>&lt;span style='color:#7bd88f;'&gt;active&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;aktiv&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="517" />
         <source>&lt;span style='color:#d8a37b;'&gt;not bound&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;nicht gebunden&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="644" />
         <source>&lt;span style='color:#d8a37b;'&gt;waiting for daemon…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;warte auf den Daemon …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="647" />
         <source>&lt;span style='color:#d8a37b;'&gt;starting…&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;startet …&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="654" />
         <source>&lt;span style='color:#d8a37b;'&gt;disabled&lt;/span&gt; (set vault=1)</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;deaktiviert&lt;/span&gt; (vault=1 setzen)</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="729" />
         <source>&lt;span style='color:#7bd88f;'&gt;connected&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;verbunden&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
@@ -7052,7 +7067,7 @@ Please try again.</source>
     <message>
         <location filename="../src/walletwizard.cpp" line="436" />
         <source>&lt;p&gt;Your Dinero wallet will be protected with:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;12-word BIP-39 seed phrase&lt;/b&gt; (industry standard, 128-bit security)&lt;/li&gt;&lt;li&gt;&lt;b&gt;AES-256-GCM encryption&lt;/b&gt; with Argon2id key derivation&lt;/li&gt;&lt;li&gt;&lt;b&gt;HD wallet&lt;/b&gt; (BIP-32/86 Taproot) for unlimited addresses&lt;/li&gt;&lt;/ul&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p&gt;Ihre Dinero-Wallet wird geschützt durch:&lt;/p&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;12-Wort-BIP-39-Seed-Phrase&lt;/b&gt; (Industriestandard, 128 Bit Sicherheit)&lt;/li&gt;&lt;li&gt;&lt;b&gt;AES-256-GCM-Verschlüsselung&lt;/b&gt; mit Argon2id-Schlüsselableitung&lt;/li&gt;&lt;li&gt;&lt;b&gt;HD-Wallet&lt;/b&gt; (BIP-32/86 Taproot) für unbegrenzt viele Adressen&lt;/li&gt;&lt;/ul&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="447" />
@@ -7089,12 +7104,12 @@ Please try again.</source>
         <location filename="../src/walletwizard.cpp" line="475" />
         <location filename="../src/walletwizard.cpp" line="564" />
         <source>Balances, addresses, send history, and advisory state stay scoped to this wallet only. Existing wallet names cannot be overwritten from the setup wizard.</source>
-        <translation type="unfinished" />
+        <translation>Guthaben, Adressen, Sendeverlauf und Hinweisstatus gelten ausschließlich für diese Wallet. Vorhandene Wallet-Namen können über den Einrichtungsassistenten nicht überschrieben werden.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="554" />
         <source>Taproot descriptor import uses the currently active wallet. Load a wallet first if needed.</source>
-        <translation type="unfinished" />
+        <translation>Der Import eines Taproot-Descriptors verwendet die aktive Wallet. Laden Sie bei Bedarf zuerst eine Wallet.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="603" />
@@ -7106,7 +7121,9 @@ Please try again.</source>
         <source>Taproot descriptor import uses the currently loaded wallet.
 
 Load a wallet first, or cancel this setup flow and reopen it when you are ready to import.</source>
-        <translation type="unfinished" />
+        <translation>Der Import eines Taproot-Descriptors verwendet die geladene Wallet.
+
+Laden Sie zuerst eine Wallet oder brechen Sie die Einrichtung ab und öffnen Sie sie erneut, wenn Sie bereit zum Importieren sind.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="615" />
@@ -7194,7 +7211,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="415" />
         <location filename="../src/lightningwidget.cpp" line="416" />
         <source>0 DIN</source>
-        <translation type="unfinished" />
+        <translation>0 DIN</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="81" />
@@ -7224,17 +7241,17 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="110" />
         <source>Peer Node ID (02abcdef...)</source>
-        <translation type="unfinished" />
+        <translation>Peer-Node-ID (02abcdef…)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="112" />
         <source>Capacity (e.g. 1.0 for 1 DIN)</source>
-        <translation type="unfinished" />
+        <translation>Kapazität (z. B. 1.0 für 1 DIN)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="114" />
         <source>Push amount (optional, 0.0)</source>
-        <translation type="unfinished" />
+        <translation>Push-Betrag (optional, 0.0)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="119" />
@@ -7289,12 +7306,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="164" />
         <source>Amount in DIN (e.g. 0.001)</source>
-        <translation type="unfinished" />
+        <translation>Betrag in DIN (z. B. 0.001)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="166" />
         <source>Description (e.g. Coffee payment)</source>
-        <translation type="unfinished" />
+        <translation>Beschreibung (z. B. Zahlung für Kaffee)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="172" />
@@ -7314,7 +7331,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="181" />
         <source>Create Open Invoice (Flexible Amount)</source>
-        <translation type="unfinished" />
+        <translation>Offene Rechnung erstellen (flexibler Betrag)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="192" />
@@ -7329,7 +7346,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="209" />
         <source>Invoice will appear here...</source>
-        <translation type="unfinished" />
+        <translation>Die Rechnung erscheint hier …</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="210" />
@@ -7351,12 +7368,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="227" />
         <source>Paste BOLT 11 invoice here</source>
-        <translation type="unfinished" />
+        <translation>BOLT-11-Rechnung hier einfügen</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="229" />
         <source>Custom amount (for open invoices)</source>
-        <translation type="unfinished" />
+        <translation>Eigener Betrag (für offene Rechnungen)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="231" />
@@ -7376,7 +7393,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="249" />
         <source>Decoded invoice details will appear here...</source>
-        <translation type="unfinished" />
+        <translation>Die dekodierten Rechnungsdetails erscheinen hier …</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="250" />
@@ -7413,12 +7430,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="348" />
         <source>Watchtower URL (e.g. wt://watchtower.dinero.com:9911)</source>
-        <translation type="unfinished" />
+        <translation>Watchtower-URL (z. B. wt://watchtower.dinero.com:9911)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="350" />
         <source>Reward per appointment (unas)</source>
-        <translation type="unfinished" />
+        <translation>Belohnung pro Auftrag (unas)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="353" />
@@ -7473,7 +7490,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="434" />
         <source>Node ID@host:port (e.g. 02abc@192.168.1.100:9735)</source>
-        <translation type="unfinished" />
+        <translation>Node-ID@Host:Port (z. B. 02abc@192.168.1.100:9735)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="435" />
@@ -7536,7 +7553,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="515" />
         <source>Please enter peer node ID and capacity.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie die Peer-Node-ID und die Kapazität ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="522" />
@@ -7548,7 +7565,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="522" />
         <source>Please enter a valid capacity amount.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie eine gültige Kapazität ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
@@ -7561,7 +7578,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
         <source>Please select a channel to close.</source>
-        <translation type="unfinished" />
+        <translation>Bitte wählen Sie einen Kanal zum Schließen.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="546" />
@@ -7578,7 +7595,7 @@ This will create a closing transaction on-chain.</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="559" />
         <source>Please select a channel to force close.</source>
-        <translation type="unfinished" />
+        <translation>Bitte wählen Sie einen Kanal für die Zwangsschließung.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="563" />
@@ -7598,29 +7615,29 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="595" />
         <source>Please enter amount and description.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie Betrag und Beschreibung ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="602" />
         <location filename="../src/lightningwidget.cpp" line="785" />
         <source>Please enter a valid amount.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie einen gültigen Betrag ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="618" />
         <source>Please enter a description.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie eine Beschreibung ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="631" />
         <location filename="../src/lightningwidget.cpp" line="661" />
         <source>Please enter a BOLT 11 invoice.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie eine BOLT-11-Rechnung ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="636" />
         <source>Are you sure you want to pay this invoice?</source>
-        <translation type="unfinished" />
+        <translation>Möchten Sie diese Rechnung wirklich bezahlen?</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
@@ -7630,27 +7647,27 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
         <source>Create an invoice first.</source>
-        <translation type="unfinished" />
+        <translation>Erstellen Sie zuerst eine Rechnung.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="711" />
         <source>Please select a payment to cancel.</source>
-        <translation type="unfinished" />
+        <translation>Bitte wählen Sie eine Zahlung zum Abbrechen.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="724" />
         <source>Please enter watchtower URL.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie die Watchtower-URL ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="740" />
         <source>Please select a watchtower.</source>
-        <translation type="unfinished" />
+        <translation>Bitte wählen Sie eine Watchtower.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="760" />
         <source>Please enter peer address.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie die Peer-Adresse ein.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
@@ -7660,12 +7677,12 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
         <source>Peer disconnection coming soon.</source>
-        <translation type="unfinished" />
+        <translation>Das Trennen von Peers folgt in Kürze.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="778" />
         <source>Please enter destination and amount.</source>
-        <translation type="unfinished" />
+        <translation>Bitte geben Sie Ziel und Betrag ein.</translation>
     </message>
 </context>
 <context>
@@ -8039,7 +8056,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/discoverysection.cpp" line="138" />
         <source>Discovery — 0 targets known</source>
-        <translation type="unfinished" />
+        <translation>Discovery – 0 Ziele bekannt</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="146" />
@@ -8071,7 +8088,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/discoverysection.cpp" line="182" />
         <source>Discovery — %1 targets known</source>
-        <translation type="unfinished" />
+        <translation>Discovery – %1 Ziele bekannt</translation>
     </message>
     <message>
         <location filename="../src/discoverysection.cpp" line="221" />
@@ -8310,7 +8327,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="172" />
         <source>● %1 block(s) ahead of the peer estimate; peers may still be catching up</source>
-        <translation type="unfinished" />
+        <translation>● %1 Block/Blöcke vor der Peer-Schätzung; die Peers holen möglicherweise noch auf</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="194" />
@@ -8335,7 +8352,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="231" />
         <source>Off. Ordinary direct and Dinero relay connections remain available.</source>
-        <translation type="unfinished" />
+        <translation>Aus. Gewöhnliche direkte Verbindungen und Dinero-Weiterleitungen bleiben verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="236" />
@@ -8363,12 +8380,12 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/peerssection.cpp" line="121" />
         <source>%1 · stale</source>
-        <translation type="unfinished" />
+        <translation>%1 · veraltet</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="124" />
         <source>This peer is %1 blocks behind your current network estimate.</source>
-        <translation type="unfinished" />
+        <translation>Dieser Peer ist %1 Blöcke hinter Ihrer aktuellen Netzwerkschätzung.</translation>
     </message>
     <message>
         <location filename="../src/peerssection.cpp" line="180" />
@@ -8411,12 +8428,12 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/topologysection.cpp" line="109" />
         <source>Topology — %1 nodes / %2 paths</source>
-        <translation type="unfinished" />
+        <translation>Topologie – %1 Nodes / %2 Pfade</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="154" />
         <source>%1 via %2</source>
-        <translation type="unfinished" />
+        <translation>%1 über %2</translation>
     </message>
     <message>
         <location filename="../src/topologysection.cpp" line="201" />
