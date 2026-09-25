@@ -404,7 +404,7 @@ Gehen Sie zurück und notieren Sie Ihre Seed-Phrase sorgfältig.</translation>
     <message>
         <location filename="../src/walletwizard.cpp" line="753" />
         <source>&lt;b&gt;Your BIP39 seed phrase works across Dinero wallets.&lt;/b&gt;&lt;br&gt;&lt;br&gt;✅ &lt;b&gt;Taproot lane:&lt;/b&gt; BIP86 &lt;code&gt;din1p...&lt;/code&gt; addresses for mobile-friendly payments&lt;br&gt;✅ &lt;b&gt;Quantum-safe lane:&lt;/b&gt; purpose 88 P2MR &lt;code&gt;din1r...&lt;/code&gt; addresses using ML-DSA-65 in Qt&lt;br&gt;&lt;br&gt;Mobile restore uses the same seed for Taproot payments. P2MR keys derive from that same seed as mobile support expands.&lt;br&gt;&lt;br&gt;&lt;i&gt;One seed phrase, clear address lanes.&lt;/i&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ihre BIP39-Seed-Phrase funktioniert in allen Dinero-Wallets.&lt;/b&gt;&lt;br&gt;&lt;br&gt;✅ &lt;b&gt;Taproot-Spur:&lt;/b&gt; BIP86-Adressen &lt;code&gt;din1p…&lt;/code&gt; für mobilfreundliche Zahlungen&lt;br&gt;✅ &lt;b&gt;Quantensichere Spur:&lt;/b&gt; P2MR-Adressen mit Purpose 88 &lt;code&gt;din1r…&lt;/code&gt;, die in Qt ML-DSA-65 verwenden&lt;br&gt;&lt;br&gt;Die mobile Wiederherstellung nutzt denselben Seed für Taproot-Zahlungen. P2MR-Schlüssel leiten sich aus demselben Seed ab, sobald die mobile Unterstützung wächst.&lt;br&gt;&lt;br&gt;&lt;i&gt;Eine Seed-Phrase, klar getrennte Adress-Spuren.&lt;/i&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="765" />
@@ -430,7 +430,13 @@ Please check that:
 • ConnectionManager is connected
 
 Click 'Generate Seed' to try again.</source>
-        <translation type="unfinished" />
+        <translation>⏱️ Die Anfrage ist nach 30 Sekunden abgelaufen.
+
+Bitte prüfen Sie, ob:
+• der Daemon läuft
+• der ConnectionManager verbunden ist
+
+Klicken Sie auf „Seed erzeugen“, um es erneut zu versuchen.</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1023" />
@@ -724,7 +730,7 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="55" />
         <source>&lt;h2&gt;⚖️ Smart Contract Escrow&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;⚖️ Smart-Contract-Treuhand&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="56" />
@@ -909,7 +915,7 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="398" />
         <source>Could not open file for writing.</source>
-        <translation type="unfinished" />
+        <translation>Die Datei konnte nicht zum Schreiben geöffnet werden.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="418" />
@@ -919,12 +925,12 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="424" />
         <source>Contract Signing Unavailable</source>
-        <translation type="unfinished" />
+        <translation>Vertragssignierung nicht verfügbar</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="425" />
         <source>Contract fund movement is disabled in v8.1.9. The daemon does not yet produce a canonical signing package bound to the funding outpoint, action, destination, amount, chain, and expiry.</source>
-        <translation type="unfinished" />
+        <translation>Das Bewegen von Vertragsmitteln ist in v8.1.9 deaktiviert. Der Daemon erzeugt noch kein kanonisches Signaturpaket, das an den Finanzierungs-Outpoint, die Aktion, das Ziel, den Betrag, die Chain und den Ablauf gebunden ist.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
@@ -934,7 +940,7 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
         <source>Contract details not loaded.</source>
-        <translation type="unfinished" />
+        <translation>Vertragsdetails sind nicht geladen.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="444" />
@@ -949,17 +955,17 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="452" />
         <source>Export sighash for which action?</source>
-        <translation type="unfinished" />
+        <translation>Für welche Aktion soll der Sighash exportiert werden?</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="543" />
         <source>Contract Broadcast Unavailable</source>
-        <translation type="unfinished" />
+        <translation>Vertragsübertragung nicht verfügbar</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="544" />
         <source>Imported contract signatures cannot be broadcast in v8.1.9 because the daemon cannot validate a bound signing package. No RPC was called.</source>
-        <translation type="unfinished" />
+        <translation>Importierte Vertragssignaturen können in v8.1.9 nicht gesendet werden, weil der Daemon ein gebundenes Signaturpaket nicht prüfen kann. Es wurde kein RPC aufgerufen.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="564" />
@@ -985,7 +991,7 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="592" />
         <source>Contract ID Mismatch</source>
-        <translation type="unfinished" />
+        <translation>Vertrags-ID stimmt nicht überein</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="607" />
@@ -996,7 +1002,7 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="608" />
         <source>No signatures found in file. Please sign the sighash first.</source>
-        <translation type="unfinished" />
+        <translation>In der Datei wurden keine Signaturen gefunden. Signieren Sie zuerst den Sighash.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="622" />
@@ -1008,12 +1014,12 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
         <location filename="../src/escrowwidget.cpp" line="630" />
         <location filename="../src/escrowwidget.cpp" line="1567" />
         <source>Contract Broadcast Disabled</source>
-        <translation type="unfinished" />
+        <translation>Vertragsübertragung deaktiviert</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="631" />
         <source>The signature package was parsed but not submitted. Bound contract signing is not available in v8.1.9.</source>
-        <translation type="unfinished" />
+        <translation>Das Signaturpaket wurde ausgewertet, aber nicht gesendet. Gebundene Vertragssignierung ist in v8.1.9 nicht verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="747" />
@@ -1028,12 +1034,12 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="795" />
         <source>Sighash exported successfully!</source>
-        <translation type="unfinished" />
+        <translation>Sighash erfolgreich exportiert.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="811" />
         <source>Could not write to file.</source>
-        <translation type="unfinished" />
+        <translation>In die Datei konnte nicht geschrieben werden.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="830" />
@@ -1043,28 +1049,29 @@ Ohne dieses Backup können Sie Ihre Wallet nicht wiederherstellen, wenn Ihr Comp
     <message>
         <location filename="../src/escrowwidget.cpp" line="1022" />
         <source>Create New Escrow Contract</source>
-        <translation type="unfinished" />
+        <translation>Neuen Treuhandvertrag erstellen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1028" />
         <source>027... (66 hex characters)</source>
-        <translation type="unfinished" />
+        <translation>027… (66 Hex-Zeichen)</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1031" />
         <source>02c... (66 hex characters)</source>
-        <translation type="unfinished" />
+        <translation>02c… (66 Hex-Zeichen)</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1034" />
         <source>02f... (66 hex characters)</source>
-        <translation type="unfinished" />
+        <translation>02f… (66 Hex-Zeichen)</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1047" />
         <source>Select which currency to release to seller.
 Bridge conversion uses locked exchange rate.</source>
-        <translation type="unfinished" />
+        <translation>Wählen Sie, welche Währung an den Verkäufer freigegeben wird.
+Die Umwandlung über die Bridge nutzt einen festgeschriebenen Kurs.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1075" />
@@ -1075,12 +1082,12 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1075" />
         <source>All public keys are required.</source>
-        <translation type="unfinished" />
+        <translation>Alle öffentlichen Schlüssel sind erforderlich.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1080" />
         <source>Public keys must be 66 hex characters (compressed).</source>
-        <translation type="unfinished" />
+        <translation>Öffentliche Schlüssel müssen 66 Hex-Zeichen lang sein (komprimiert).</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1110" />
@@ -1095,12 +1102,12 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1210" />
         <source>&lt;b&gt;Redeem Script (Hex):&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Redeem-Skript (Hex):&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1218" />
         <source>&lt;b&gt;Decoded Script:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Dekodiertes Skript:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1225" />
@@ -1115,7 +1122,7 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1252" />
         <source>No P2SH address available for this contract.</source>
-        <translation type="unfinished" />
+        <translation>Für diesen Vertrag ist keine P2SH-Adresse verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1296" />
@@ -1155,17 +1162,17 @@ Bridge conversion uses locked exchange rate.</source>
         <location filename="../src/escrowwidget.cpp" line="1331" />
         <location filename="../src/escrowwidget.cpp" line="1460" />
         <source>Failed to save QR code image.</source>
-        <translation type="unfinished" />
+        <translation>Das QR-Code-Bild konnte nicht gespeichert werden.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1351" />
         <source>Sighash QR Code - Offline Signing</source>
-        <translation type="unfinished" />
+        <translation>Sighash-QR-Code – Signieren ohne Netzverbindung</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1357" />
         <source>&lt;h3&gt;📱 Sighash QR Code&lt;/h3&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h3&gt;📱 Sighash-QR-Code&lt;/h3&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1362" />
@@ -1192,12 +1199,14 @@ Bridge conversion uses locked exchange rate.</source>
         <source>Failed to generate QR code. The data may be too large.
 
 Please use the JSON file export method instead.</source>
-        <translation type="unfinished" />
+        <translation>Der QR-Code konnte nicht erzeugt werden. Die Daten sind möglicherweise zu groß.
+
+Bitte verwenden Sie stattdessen den Export als JSON-Datei.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1425" />
         <source>&lt;b&gt;Instructions for Offline Signing:&lt;/b&gt;&lt;br&gt;1. Scan this QR code with your offline signing device&lt;br&gt;2. Sign the sighash with your private key(s)&lt;br&gt;3. The signed transaction can be returned via QR or JSON file&lt;br&gt;4. Use '📥 Import Signatures' to complete the transaction</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Anleitung zum Signieren ohne Netzverbindung:&lt;/b&gt;&lt;br&gt;1. Scannen Sie diesen QR-Code mit Ihrem Offline-Signiergerät&lt;br&gt;2. Signieren Sie den Sighash mit Ihrem privaten Schlüssel oder Ihren Schlüsseln&lt;br&gt;3. Die signierte Transaktion kann per QR oder JSON-Datei zurückgegeben werden&lt;br&gt;4. Verwenden Sie „📥 Signaturen importieren“, um die Transaktion abzuschließen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1440" />
@@ -1207,22 +1216,22 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1479" />
         <source>Import Signed Transaction from QR</source>
-        <translation type="unfinished" />
+        <translation>Signierte Transaktion aus QR importieren</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1485" />
         <source>&lt;h3&gt;📱 Import Signed Transaction&lt;/h3&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h3&gt;📱 Signierte Transaktion importieren&lt;/h3&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1490" />
         <source>&lt;b&gt;Import Methods:&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;Paste JSON Data:&lt;/b&gt; Copy signed transaction JSON and paste below&lt;br&gt;2. &lt;b&gt;Load from File:&lt;/b&gt; Use the '📥 Import Signatures' button instead&lt;br&gt;3. &lt;b&gt;Scan QR (Future):&lt;/b&gt; Camera-based QR scanning coming soon</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Importwege:&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;JSON einfügen:&lt;/b&gt; Kopieren Sie das JSON der signierten Transaktion und fügen Sie es unten ein&lt;br&gt;2. &lt;b&gt;Aus Datei laden:&lt;/b&gt; Verwenden Sie stattdessen „📥 Signaturen importieren“&lt;br&gt;3. &lt;b&gt;QR scannen (später):&lt;/b&gt; Das Scannen per Kamera folgt in Kürze</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1501" />
         <source>Paste signed transaction JSON here...</source>
-        <translation type="unfinished" />
+        <translation>JSON der signierten Transaktion hier einfügen …</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1509" />
@@ -1237,7 +1246,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1515" />
         <source>Please paste the signed transaction JSON.</source>
-        <translation type="unfinished" />
+        <translation>Bitte fügen Sie das JSON der signierten Transaktion ein.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1535" />
@@ -1249,12 +1258,14 @@ Please use the JSON file export method instead.</source>
         <source>No signatures found in the JSON data.
 
 Please ensure the transaction has been signed.</source>
-        <translation type="unfinished" />
+        <translation>In den JSON-Daten wurden keine Signaturen gefunden.
+
+Stellen Sie sicher, dass die Transaktion signiert wurde.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1568" />
         <source>The package was not submitted. Bound contract signing is not available in v8.1.9.</source>
-        <translation type="unfinished" />
+        <translation>Das Paket wurde nicht gesendet. Gebundene Vertragssignierung ist in v8.1.9 nicht verfügbar.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1575" />
@@ -1273,7 +1284,8 @@ Please ensure the transaction has been signed.</source>
         <location filename="../src/hardwarewalletwidget.cpp" line="205" />
         <source>Sign transactions using hardware wallets (Coldcard, Ledger, Trezor, Keystone, etc.)
 PSBT here means Partially Signed Dinero Transaction. It is a binary signing container shown as Base64 for copy/paste, files, and QR transfer.</source>
-        <translation type="unfinished" />
+        <translation>Signieren Sie Transaktionen mit Hardware-Wallets (Coldcard, Ledger, Trezor, Keystone und andere).
+PSBT bedeutet hier teilweise signierte Dinero-Transaktion. Es ist ein binärer Signaturcontainer, der als Base64 für Kopieren, Dateien und QR-Übertragung dargestellt wird.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="234" />
@@ -1287,7 +1299,11 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
 3. Sign Taproot inputs on your hardware wallet or use a connected USB session
 4. Import or finalize the signed Dinero PSBT
 5. Broadcast the extracted final transaction</source>
-        <translation type="unfinished" />
+        <translation>1. Erstellen Sie die unsignierte Transaktion in der DineroCoin-Wallet
+2. Exportieren Sie die teilweise signierte Dinero-Transaktion in eine Datei
+3. Signieren Sie die Taproot-Eingänge auf Ihrer Hardware-Wallet oder über eine verbundene USB-Sitzung
+4. Importieren oder finalisieren Sie die signierte Dinero-PSBT
+5. Senden Sie die extrahierte endgültige Transaktion</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="248" />
@@ -1303,7 +1319,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="253" />
         <source>Paste Partially Signed Dinero Transaction here or create one from the Send tab...</source>
-        <translation type="unfinished" />
+        <translation>Teilweise signierte Dinero-Transaktion hier einfügen oder im Tab Senden erstellen …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="273" />
@@ -1364,7 +1380,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="349" />
         <source>Connect a USB device with direct PSBT-signing support in the USB tab, then sign the PSBT currently loaded here.</source>
-        <translation type="unfinished" />
+        <translation>Verbinden Sie im USB-Tab ein USB-Gerät mit direkter PSBT-Signierung und signieren Sie die hier geladene PSBT.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="352" />
@@ -1374,7 +1390,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="354" />
         <source>Attempt to finalize the current Partially Signed Dinero Transaction and extract a broadcastable transaction.</source>
-        <translation type="unfinished" />
+        <translation>Versuchen, die aktuelle teilweise signierte Dinero-Transaktion zu finalisieren und eine sendefähige Transaktion zu extrahieren.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="357" />
@@ -1408,7 +1424,15 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
 2. Scan with hardware wallet camera
 3. Sign on device
 4. Scan signed Dinero PSBT QR code back</source>
-        <translation type="unfinished" />
+        <translation>Verwenden Sie QR-Codes zum Signieren auf getrennten Geräten wie:
+• Keystone (früher Cobo Vault)
+• Passport von Foundation Devices
+• AirGap Vault
+
+1. Unsignierte Dinero-PSBT als QR-Code anzeigen
+2. Mit der Kamera der Hardware-Wallet scannen
+3. Auf dem Gerät signieren
+4. QR-Code der signierten Dinero-PSBT zurückscannen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="405" />
@@ -1453,7 +1477,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="482" />
         <source>PSBT loaded. Click Show QR Code to analyze and display the signing QR.</source>
-        <translation type="unfinished" />
+        <translation>PSBT geladen. Klicken Sie auf QR-Code anzeigen, um sie zu analysieren und den Signier-QR darzustellen.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="486" />
@@ -1468,13 +1492,13 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="524" />
         <source>No transaction loaded. Scanning this demo QR reads a plain-text placeholder, not a spend request.</source>
-        <translation type="unfinished" />
+        <translation>Keine Transaktion geladen. Das Scannen dieses Demo-QR liest einen Platzhaltertext, keine Ausgabeanforderung.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="543" />
         <location filename="../src/hardwarewalletwidget.cpp" line="547" />
         <source>Analyzing Dinero PSBT before QR display...</source>
-        <translation type="unfinished" />
+        <translation>Dinero-PSBT wird vor der QR-Anzeige analysiert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="595" />
@@ -1492,7 +1516,15 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
 • File / SD Card and QR flows remain the fallback signing paths
 
 Click 'Detect Devices' to check whether this daemon build can see connected USB wallets.</source>
-        <translation type="unfinished" />
+        <translation>Aktueller USB-Status:
+• Die Geräteerkennung ist experimentell und hängt von der USB-Unterstützung des Backends ab
+• Erkannt werden derzeit Ledger- und Trezor-Geräte, sofern verfügbar
+• Ledger-Sitzungen unterstützen Verbinden, Fingerprint-Export und direkte PSBT-Signierung
+• Trezor-Sitzungen können Verbinden, Fingerprint-Export, Adressprüfung, Watch-Only-Descriptor-Export und eingeschränkte direkte BIP86-PSBT-Signierung unterstützen, wenn das Backend mit ENABLE_TREZOR=ON gebaut wurde
+• Die Trezor-USB-Signierung ist auf BIP86-Taproot-PSBTs der aktiven Wallet beschränkt, die zum geladenen Descriptor-Satz passen
+• Datei, SD-Karte und QR bleiben die alternativen Signierwege
+
+Klicken Sie auf „Geräte erkennen“, um zu prüfen, ob dieser Daemon-Build verbundene USB-Wallets sieht.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="612" />
@@ -1518,7 +1550,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="628" />
         <source>Open a supported USB device session after detection. Direct signing availability depends on the device family.</source>
-        <translation type="unfinished" />
+        <translation>Öffnen Sie nach der Erkennung eine Sitzung mit einem unterstützten USB-Gerät. Ob direkt signiert werden kann, hängt von der Gerätefamilie ab.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="651" />
@@ -1538,7 +1570,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="663" />
         <source>Fetch the address for the derivation path from the active USB session.</source>
-        <translation type="unfinished" />
+        <translation>Die Adresse für den Ableitungspfad aus der aktiven USB-Sitzung abrufen.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="666" />
@@ -1548,7 +1580,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="668" />
         <source>Ask the active device to show and confirm the address for this derivation path.</source>
-        <translation type="unfinished" />
+        <translation>Das aktive Gerät bitten, die Adresse für diesen Ableitungspfad anzuzeigen und zu bestätigen.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="671" />
@@ -1579,7 +1611,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="701" />
         <source>Export receive/change descriptors and the account xpub from the active USB session.</source>
-        <translation type="unfinished" />
+        <translation>Empfangs- und Wechsel-Descriptoren sowie den Konto-xpub aus der aktiven USB-Sitzung exportieren.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="704" />
@@ -1589,17 +1621,17 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="706" />
         <source>Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors.</source>
-        <translation type="unfinished" />
+        <translation>Die exportierten Empfangs- und Wechsel-Descriptoren als Watch-Only-Descriptoren in die geladene Wallet importieren.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="712" />
         <source>Exported receive/change descriptors will appear here.</source>
-        <translation type="unfinished" />
+        <translation>Die exportierten Empfangs- und Wechsel-Descriptoren erscheinen hier.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="724" />
         <source>USB capability unknown until detection runs</source>
-        <translation type="unfinished" />
+        <translation>USB-Fähigkeit unbekannt, bis die Erkennung läuft</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="729" />
@@ -1624,7 +1656,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="847" />
         <source>Requesting signature from connected USB device...</source>
-        <translation type="unfinished" />
+        <translation>Signatur wird vom verbundenen USB-Gerät angefordert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="866" />
@@ -1639,32 +1671,32 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="891" />
         <source>🔍 Detecting USB hardware wallets...</source>
-        <translation type="unfinished" />
+        <translation>🔍 USB-Hardware-Wallets werden erkannt …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="902" />
         <source>🔌 Disconnecting active USB session...</source>
-        <translation type="unfinished" />
+        <translation>🔌 Aktive USB-Sitzung wird geschlossen …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="925" />
         <source>🔌 Opening USB session...</source>
-        <translation type="unfinished" />
+        <translation>🔌 USB-Sitzung wird geöffnet …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="952" />
         <source>📥 Fetching address from active USB session...</source>
-        <translation type="unfinished" />
+        <translation>📥 Adresse wird aus der aktiven USB-Sitzung abgerufen …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="982" />
         <source>👁️ Waiting for device address confirmation...</source>
-        <translation type="unfinished" />
+        <translation>👁️ Warte auf die Adressbestätigung am Gerät …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1008" />
         <source>🧾 Exporting account descriptors...</source>
-        <translation type="unfinished" />
+        <translation>🧾 Konto-Descriptoren werden exportiert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1025" />
@@ -1674,18 +1706,18 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1026" />
         <source>Import the exported receive/change descriptors into the currently loaded wallet as watch-only descriptors?</source>
-        <translation type="unfinished" />
+        <translation>Die exportierten Empfangs- und Wechsel-Descriptoren als Watch-Only-Descriptoren in die geladene Wallet importieren?</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1033" />
         <source>📥 Importing watch-only descriptors into the active wallet...</source>
-        <translation type="unfinished" />
+        <translation>📥 Watch-Only-Descriptoren werden in die aktive Wallet importiert …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1116" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1196" />
         <source>❌ PSBT analysis failed; QR was not displayed.</source>
-        <translation type="unfinished" />
+        <translation>❌ PSBT-Analyse fehlgeschlagen; der QR wurde nicht angezeigt.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1128" />
@@ -1721,7 +1753,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1184" />
         <source>✅ Analysis complete; QR ready</source>
-        <translation type="unfinished" />
+        <translation>✅ Analyse abgeschlossen; QR bereit</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1189" />
@@ -1751,22 +1783,22 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1322" />
         <source>⚠️ Descriptor import returned an unexpected response</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Der Descriptor-Import lieferte eine unerwartete Antwort</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1328" />
         <source>⚠️ Descriptor import returned incomplete results</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Der Descriptor-Import lieferte unvollständige Ergebnisse</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1352" />
         <source>❌ Watch-only descriptor import failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Import der Watch-Only-Descriptoren fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1357" />
         <source>✅ Watch-only descriptors imported into the active wallet</source>
-        <translation type="unfinished" />
+        <translation>✅ Watch-Only-Descriptoren in die aktive Wallet importiert</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1373" />
@@ -1776,7 +1808,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1392" />
         <source>✅ Finalized. Ready to broadcast</source>
-        <translation type="unfinished" />
+        <translation>✅ Finalisiert. Bereit zum Senden</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1395" />
@@ -1811,12 +1843,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1576" />
         <source>Close the active USB hardware-wallet session.</source>
-        <translation type="unfinished" />
+        <translation>Die aktive USB-Sitzung mit der Hardware-Wallet schließen.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1631" />
         <source>✅ Signed Dinero PSBT ready to broadcast</source>
-        <translation type="unfinished" />
+        <translation>✅ Signierte Dinero-PSBT bereit zum Senden</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1637" />
@@ -1826,7 +1858,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1640" />
         <source>⚠️ Dinero PSBT still needs more signatures</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Die Dinero-PSBT benötigt noch weitere Signaturen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1656" />
@@ -1836,7 +1868,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1660" />
         <source>Hardware Wallet</source>
-        <translation type="unfinished">Hardware-Wallet</translation>
+        <translation>Hardware-Wallet</translation>
     </message>
 </context>
 <context>
@@ -1854,7 +1886,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/walletwizard.cpp" line="1827" />
         <source>&lt;p style='background: #ff922b; color: white; padding: 8px; border-radius: 4px;'&gt;⚠️ &lt;b&gt;Advanced Feature:&lt;/b&gt; Only use this if you have a Taproot descriptor (e.g., from mining setup or another wallet). For most users, restoring from a seed phrase is recommended.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='background: #ff922b; color: white; padding: 8px; border-radius: 4px;'&gt;⚠️ &lt;b&gt;Erweiterte Funktion:&lt;/b&gt; Verwenden Sie dies nur, wenn Sie einen Taproot-Descriptor haben (z. B. aus einer Mining-Einrichtung oder einer anderen Wallet). Den meisten Anwendern wird die Wiederherstellung aus einer Seed-Phrase empfohlen.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1837" />
@@ -1879,12 +1911,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/walletwizard.cpp" line="1891" />
         <source>&lt;p style='font-size: 10px; color: #e03131; margin-top: 10px;'&gt;&lt;b&gt;Security:&lt;/b&gt; Your wallet must be &lt;b&gt;unlocked&lt;/b&gt; to import private keys. If your wallet is encrypted, unlock it first from the main toolbar.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='font-size: 10px; color: #e03131; margin-top: 10px;'&gt;&lt;b&gt;Sicherheit:&lt;/b&gt; Ihre Wallet muss &lt;b&gt;entsperrt&lt;/b&gt; sein, um private Schlüssel zu importieren. Ist sie verschlüsselt, entsperren Sie sie zuerst über die Hauptleiste.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1899" />
         <source>&lt;p style='font-size: 10px; color: #666;'&gt;&lt;b&gt;Note:&lt;/b&gt; Importing a Taproot descriptor will automatically trigger a blockchain rescan to find any existing transactions. This may take some time depending on blockchain size.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='font-size: 10px; color: #666;'&gt;&lt;b&gt;Hinweis:&lt;/b&gt; Der Import eines Taproot-Descriptors löst automatisch einen erneuten Scan der Blockchain aus, um vorhandene Transaktionen zu finden. Je nach Größe der Blockchain kann das dauern.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1926" />
@@ -1903,12 +1935,12 @@ Klicken Sie nach der Eingabe eines gültigen Descriptors auf „Taproot-Schlüss
     <message>
         <location filename="../src/walletwizard.cpp" line="1972" />
         <source>&lt;span style='color: #e03131;'&gt;Please enter a Taproot descriptor&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color: #e03131;'&gt;Bitte geben Sie einen Taproot-Descriptor ein&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1978" />
         <source>&lt;span style='color: #228be6;'&gt;Importing... (this may take a moment for rescan)&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color: #228be6;'&gt;Wird importiert … (der erneute Scan kann einen Moment dauern)&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="2011" />
@@ -1932,17 +1964,18 @@ Klicken Sie nach der Eingabe eines gültigen Descriptors auf „Taproot-Schlüss
         <location filename="../src/mainwindow.cpp" line="2052" />
         <source>This can take up to ~3 minutes on first start.
 Please wait — do NOT close or restart. The wallet opens automatically once the node is ready.</source>
-        <translation type="unfinished" />
+        <translation>Beim ersten Start kann das bis zu etwa 3 Minuten dauern.
+Bitte warten und NICHT schließen oder neu starten. Die Wallet öffnet sich automatisch, sobald der Node bereit ist.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2057" />
         <source>Almost there — the node is taking a little longer than usual.</source>
-        <translation type="unfinished" />
+        <translation>Fast geschafft – der Node braucht etwas länger als sonst.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2058" />
         <source>Still starting… please keep waiting and do NOT close or restart.</source>
-        <translation type="unfinished" />
+        <translation>Startet noch … bitte weiter warten und NICHT schließen oder neu starten.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2100" />
@@ -1988,12 +2021,12 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2334" />
         <source>Router port mapping will be enabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
-        <translation type="unfinished" />
+        <translation>Die Router-Portweiterleitung wird beim nächsten Daemon-Neustart aktiviert (Datei → Beenden, dann Dinero erneut öffnen).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2336" />
         <source>Router port mapping will be disabled on the next daemon restart (File → Quit, then reopen Dinero).</source>
-        <translation type="unfinished" />
+        <translation>Die Router-Portweiterleitung wird beim nächsten Daemon-Neustart deaktiviert (Datei → Beenden, dann Dinero erneut öffnen).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2340" />
@@ -2008,7 +2041,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2344" />
         <source>&lt;h3&gt;Dinero Wallet&lt;/h3&gt;&lt;p&gt;Version: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Real Money For Free People.&lt;br&gt;Post-quantum, utreexo-native, fair-launched.&lt;/p&gt;&lt;hr&gt;&lt;p style='color:#888;font-size:90%;'&gt;Built from &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href='https://dinero-coin.com'&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href='https://github.com/DineroLabs'&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h3&gt;Dinero-Wallet&lt;/h3&gt;&lt;p&gt;Version: &lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Echtes Geld für freie Menschen.&lt;br&gt;Post-quantum, utreexo-nativ, fair gestartet.&lt;/p&gt;&lt;hr&gt;&lt;p style='color:#888;font-size:90%;'&gt;Gebaut aus &lt;code&gt;DineroLabs/Dinero-Coin&lt;/code&gt; + &lt;code&gt;DineroLabs/dinero-qt&lt;/code&gt;.&lt;/p&gt;&lt;p&gt;&lt;a href='https://dinero-coin.com'&gt;dinero-coin.com&lt;/a&gt; &amp;nbsp;·&amp;nbsp; &lt;a href='https://github.com/DineroLabs'&gt;github.com/DineroLabs&lt;/a&gt;&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2357" />
@@ -2168,7 +2201,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2615" />
         <source>Newest blocks from your node. Double-click one to open it in the explorer.</source>
-        <translation type="unfinished" />
+        <translation>Die neuesten Blöcke Ihres Nodes. Doppelklicken Sie einen, um ihn im Explorer zu öffnen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2621" />
@@ -2178,7 +2211,7 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
     <message>
         <location filename="../src/mainwindow.cpp" line="2623" />
         <source>Search blocks, transactions and addresses in a separate window.</source>
-        <translation type="unfinished" />
+        <translation>Blöcke, Transaktionen und Adressen in einem eigenen Fenster durchsuchen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2644" />
@@ -2288,7 +2321,9 @@ Please wait — do NOT close or restart. The wallet opens automatically once the
         <source>Observed through this local node's P2P connection.
 This is not the remote node's active validated tip.
 Validation requires that node's authenticated blockchain RPC.</source>
-        <translation type="unfinished" />
+        <translation>Beobachtet über die P2P-Verbindung dieses lokalen Nodes.
+Dies ist nicht die aktive, validierte Spitze des entfernten Nodes.
+Eine Validierung erfordert dessen authentifizierte Blockchain-RPC.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2833" />
@@ -2323,7 +2358,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2887" />
         <source>If balance/history looks wrong, rescan blockchain for this wallet.</source>
-        <translation type="unfinished" />
+        <translation>Wenn Guthaben oder Verlauf falsch aussehen, scannen Sie die Blockchain für diese Wallet erneut.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2896" />
@@ -2338,7 +2373,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2913" />
         <source>&lt;b&gt;One seed, two address lanes.&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;BIP39 seed phrase&lt;/b&gt; restores the same wallet across Dinero Qt and mobile. &lt;b&gt;BIP86 Taproot&lt;/b&gt; addresses (&lt;code&gt;din1p...&lt;/code&gt;) are the mobile-friendly payment lane. &lt;b&gt;Purpose 88 P2MR&lt;/b&gt; addresses (&lt;code&gt;din1r...&lt;/code&gt;) are the quantum-safe lane using ML-DSA-65 signatures.&lt;br&gt;&lt;br&gt;✅ Desktop (Qt Wallet) - full node, mining, Taproot, P2MR quantum-safe receive/spend&lt;br&gt;✅ Mobile (iOS Wallet) - seed-compatible Taproot payments; P2MR keys derive from the same seed as mobile support expands</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ein Seed, zwei Adress-Spuren.&lt;/b&gt;&lt;br&gt;&lt;br&gt;Die &lt;b&gt;BIP39-Seed-Phrase&lt;/b&gt; stellt dieselbe Wallet in Dinero Qt und mobil wieder her. &lt;b&gt;BIP86-Taproot&lt;/b&gt;-Adressen (&lt;code&gt;din1p…&lt;/code&gt;) sind die mobilfreundliche Zahlungsspur. &lt;b&gt;P2MR-Adressen mit Purpose 88&lt;/b&gt; (&lt;code&gt;din1r…&lt;/code&gt;) sind die quantensichere Spur mit ML-DSA-65-Signaturen.&lt;br&gt;&lt;br&gt;✅ Desktop (Qt-Wallet) – voller Node, Mining, Taproot, quantensicheres P2MR-Empfangen und -Ausgeben&lt;br&gt;✅ Mobil (iOS-Wallet) – seed-kompatible Taproot-Zahlungen; P2MR-Schlüssel leiten sich aus demselben Seed ab, sobald die mobile Unterstützung wächst</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2924" />
@@ -2348,7 +2383,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2926" />
         <source>Show seed-backup guidance. Hardened wallets may not allow seed phrase re-export after setup.</source>
-        <translation type="unfinished" />
+        <translation>Hinweise zum Seed-Backup anzeigen. Gehärtete Wallets erlauben nach der Einrichtung unter Umständen keinen erneuten Export der Seed-Phrase.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2933" />
@@ -2365,7 +2400,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2940" />
         <source>Total wallet balance: public and shielded funds, including covenant-locked value. See Shielded for funds available for ordinary private payments.</source>
-        <translation type="unfinished" />
+        <translation>Gesamtguthaben der Wallet: öffentliche und Shielded-Mittel, einschließlich in Covenants gebundener Werte. Für Mittel, die für gewöhnliche private Zahlungen verfügbar sind, siehe Shielded.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2944" />
@@ -2400,7 +2435,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="2977" />
         <source>Percentage of transparent spendable funds held in P2MR outputs</source>
-        <translation type="unfinished" />
+        <translation>Anteil der transparenten, ausgabefähigen Mittel, die in P2MR-Outputs liegen</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="2988" />
@@ -2440,7 +2475,7 @@ Validation requires that node's authenticated blockchain RPC.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3041" />
         <source>Combine many small UTXOs into fewer larger ones to reduce fees and improve performance</source>
-        <translation type="unfinished" />
+        <translation>Viele kleine UTXOs zu wenigen größeren zusammenfassen, um Gebühren zu senken und die Leistung zu verbessern</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3050" />
@@ -2466,7 +2501,11 @@ Quantum-Safe: ML-DSA-65 post-quantum signatures
 
 Privacy is a send mode, not an address type.
 Select private/transparent on the Send tab.</source>
-        <translation type="unfinished" />
+        <translation>Taproot: schnelle, kleine Signaturen (secp256k1)
+Quantensicher: ML-DSA-65-Post-Quantum-Signaturen
+
+Privatsphäre ist ein Sendemodus, kein Adresstyp.
+Wählen Sie privat oder transparent im Tab Senden.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3087" />
@@ -2523,7 +2562,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3178" />
         <source>Contracts are programmable spending rules attached to your funds. Vaults lock funds to a specific template. Timelocks release after a duration. Create, fund, track and spend public covenants here. Public covenants require a matching recovery descriptor. Private covenants recover from encrypted funding notes and require separate network activation.</source>
-        <translation type="unfinished" />
+        <translation>Verträge sind programmierbare Ausgaberegeln, die an Ihre Mittel gebunden sind. Vaults binden Mittel an eine bestimmte Vorlage. Timelocks geben sie nach einer Frist frei. Hier erstellen, finanzieren, verfolgen und geben Sie öffentliche Covenants aus. Öffentliche Covenants benötigen einen passenden Wiederherstellungs-Descriptor. Private Covenants werden aus verschlüsselten Finanzierungs-Notes wiederhergestellt und benötigen eine eigene Netzwerkaktivierung.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3188" />
@@ -2538,7 +2577,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3214" />
         <source>Public payments use transparent funds. Private payments and conversions open the Shielded composer, subject to network activation. Covenants currently use public or private funds through their respective covenant controls.</source>
-        <translation type="unfinished" />
+        <translation>Öffentliche Zahlungen nutzen transparente Mittel. Private Zahlungen und Umwandlungen öffnen den Shielded-Composer, abhängig von der Netzwerkaktivierung. Covenants nutzen derzeit öffentliche oder private Mittel über ihre jeweiligen Steuerelemente.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3244" />
@@ -2588,7 +2627,7 @@ Select private/transparent on the Send tab.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="3317" />
         <source>Pending Core contextual lock enforcement verification</source>
-        <translation type="unfinished" />
+        <translation>Ausstehende Prüfung der kontextbezogenen Sperrdurchsetzung in Core</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3322" />
@@ -2596,19 +2635,24 @@ Select private/transparent on the Send tab.</source>
 Timelock: unavailable pending Core lock enforcement
 Payroll: batch payment to multiple recipients (CTV)
 Recovery and custom scripts are not available</source>
-        <translation type="unfinished" />
+        <translation>Einfache Sperre: Mittel an eine Ausgabevorlage gebunden
+Timelock: nicht verfügbar, solange Core die Sperren nicht durchsetzt
+Lohnlauf: Sammelzahlung an mehrere Empfänger (CTV)
+Wiederherstellung und eigene Skripte sind nicht verfügbar</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3336" />
         <source>Your funds will be locked to a specific withdrawal destination.
 Only the preset recipient can receive them.</source>
-        <translation type="unfinished" />
+        <translation>Ihre Mittel werden an ein bestimmtes Auszahlungsziel gebunden.
+Nur der voreingestellte Empfänger kann sie erhalten.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3346" />
         <source>Unavailable in this build. Recovery contracts require a descriptor-backed
 multi-path Taproot profile. The former prototype was not safe for funds.</source>
-        <translation type="unfinished" />
+        <translation>In diesem Build nicht verfügbar. Wiederherstellungsverträge benötigen ein descriptor-gestütztes
+Taproot-Profil mit mehreren Pfaden. Der frühere Prototyp war für Mittel nicht sicher.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3354" />
@@ -2628,14 +2672,16 @@ multi-path Taproot profile. The former prototype was not safe for funds.</source
     <message>
         <location filename="../src/mainwindow.cpp" line="3378" />
         <source>Uses the 2-minute block target. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.</source>
-        <translation type="unfinished" />
+        <translation>Nutzt das 2-Minuten-Blockziel. Die Sperre beginnt mit der Finanzierungsbestätigung und wird in Blöcken gemessen, nicht in Echtzeit.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3387" />
         <source>Payroll: batch payment locked to multiple recipients.
 The CTV template commits to the exact output set.
 Amounts and recipients are public. Choose Private covenants for payments to one or two fixed shielded recipients.</source>
-        <translation type="unfinished" />
+        <translation>Lohnlauf: Sammelzahlung, gebunden an mehrere Empfänger.
+Die CTV-Vorlage legt sich auf die genaue Output-Menge fest.
+Beträge und Empfänger sind öffentlich. Für Zahlungen an einen oder zwei feste Shielded-Empfänger wählen Sie private Covenants.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3410" />
@@ -2681,7 +2727,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3512" />
         <source>Transaction details will appear here after sending...</source>
-        <translation type="unfinished" />
+        <translation>Transaktionsdetails erscheinen hier nach dem Senden …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3522" />
@@ -2806,7 +2852,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3821" />
         <source>Search block height, transaction hash, block hash, or din1/tdin1/rdin1 address...</source>
-        <translation type="unfinished" />
+        <translation>Nach Blockhöhe, Transaktions-Hash, Block-Hash oder din1/tdin1/rdin1-Adresse suchen …</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3823" />
@@ -2816,7 +2862,7 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
     <message>
         <location filename="../src/mainwindow.cpp" line="3830" />
         <source>Search a block, transaction, or address. Latest blocks load from the connected daemon.</source>
-        <translation type="unfinished" />
+        <translation>Suchen Sie einen Block, eine Transaktion oder eine Adresse. Die neuesten Blöcke werden vom verbundenen Daemon geladen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="3846" />
@@ -2849,7 +2895,8 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
         <location filename="../src/mainwindow.cpp" line="4077" />
         <source>&lt;h2&gt;⛏️ Mining&lt;/h2&gt;&lt;p&gt;&lt;b&gt;Use command-line miner:&lt;/b&gt;&lt;/p&gt;&lt;p&gt;1. Generate address in Wallet tab&lt;/p&gt;&lt;p&gt;2. Run in terminal:&lt;/p&gt;&lt;pre&gt;./build/dinero-miner --rpc http://127.0.0.1:20998/ \
   --address YOUR_ADDRESS --threads 8&lt;/pre&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;⛏️ Mining&lt;/h2&gt;&lt;p&gt;&lt;b&gt;Kommandozeilen-Miner verwenden:&lt;/b&gt;&lt;/p&gt;&lt;p&gt;1. Adresse im Tab Wallet erzeugen&lt;/p&gt;&lt;p&gt;2. Im Terminal ausführen:&lt;/p&gt;&lt;pre&gt;./build/dinero-miner --rpc http://127.0.0.1:20998/ \
+  --address IHRE_ADRESSE --threads 8&lt;/pre&gt;</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4124" />
@@ -2857,7 +2904,10 @@ Amounts and recipients are public. Choose Private covenants for payments to one 
 Pool (Stratum V1) = submit shares to a V1 pool (legacy, cleartext).
 Pool (SV2) = Noise-encrypted pool mining. Choose Shared rewards
 for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
-        <translation type="unfinished" />
+        <translation>Solo = direkt mit Ihrem Node minen.
+Pool (Stratum V1) = Shares an einen V1-Pool senden (alt, unverschlüsselt).
+Pool (SV2) = Pool-Mining mit Noise-Verschlüsselung. Wählen Sie geteilte Belohnungen
+für PPLNS-Auszahlungen oder Solo-Belohnungen für einen miner-eigenen Coinbase.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4131" />
@@ -2867,7 +2917,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="4145" />
         <source>Endpoint currently overridden by DINERO_STRATUM_ENDPOINT environment variable.</source>
-        <translation type="unfinished" />
+        <translation>Der Endpunkt wird derzeit durch die Umgebungsvariable DINERO_STRATUM_ENDPOINT überschrieben.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4158" />
@@ -2881,7 +2931,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
         <location filename="../src/mainwindow.cpp" line="9910" />
         <location filename="../src/mainwindow.cpp" line="9994" />
         <source>Start a localhost dinero-stratum server and use it as this pool endpoint.</source>
-        <translation type="unfinished" />
+        <translation>Einen lokalen dinero-stratum-Server starten und als Endpunkt dieses Pools verwenden.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4169" />
@@ -2891,7 +2941,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="4180" />
         <source>SV2 endpoint currently overridden by DINERO_SV2_POOL environment variable.</source>
-        <translation type="unfinished" />
+        <translation>Der SV2-Endpunkt wird derzeit durch die Umgebungsvariable DINERO_SV2_POOL überschrieben.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4193" />
@@ -2901,7 +2951,7 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="4203" />
         <source>64-hex-char static public key of the SV2 pool. Pinned on connect — leave blank only for first-contact TOFU (not recommended).</source>
-        <translation type="unfinished" />
+        <translation>Statischer öffentlicher Schlüssel des SV2-Pools mit 64 Hex-Zeichen. Wird beim Verbinden fixiert; lassen Sie ihn nur beim Erstkontakt nach dem TOFU-Prinzip leer (nicht empfohlen).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4217" />
@@ -2912,7 +2962,8 @@ for PPLNS payouts or Solo rewards for a miner-owned coinbase.</source>
         <location filename="../src/mainwindow.cpp" line="4237" />
         <source>CPU = dinero-sv2-miner (all cores hashing).
 GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</source>
-        <translation type="unfinished" />
+        <translation>CPU = dinero-sv2-miner (alle Kerne hashen).
+GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4251" />
@@ -2923,7 +2974,8 @@ GPU (Metal) = dinero-sv2-gpu-miner (Apple Silicon, ~500 MH/s).</source>
         <location filename="../src/mainwindow.cpp" line="4266" />
         <source>Pool Shared = each accepted share contributes to the pool's PPLNS window.
 Pool Solo = the miner owns the block coinbase, but receives nothing unless it finds a block.</source>
-        <translation type="unfinished" />
+        <translation>Pool geteilt = jeder akzeptierte Share zählt für das PPLNS-Fenster des Pools.
+Pool solo = der Miner besitzt den Coinbase des Blocks, erhält aber nichts, außer er findet einen Block.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4283" />
@@ -2968,7 +3020,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4346" />
         <source>Fill mining address from your wallet (requires unlocked wallet)</source>
-        <translation type="unfinished" />
+        <translation>Mining-Adresse aus Ihrer Wallet übernehmen (erfordert eine entsperrte Wallet)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4349" />
@@ -3085,7 +3137,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4739" />
         <source>Live daemon diagnostics for Utreexo proof caching and proof serving. This is not the asset bridge; it shows whether this node can serve compact proof data to stateless/mobile peers.</source>
-        <translation type="unfinished" />
+        <translation>Live-Diagnose des Daemons für das Zwischenspeichern und Ausliefern von Utreexo-Beweisen. Dies ist nicht die Asset-Bridge; es zeigt, ob dieser Node kompakte Beweisdaten an zustandslose oder mobile Peers liefern kann.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4747" />
@@ -3255,7 +3307,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="4915" />
         <source>Copy P2P status, port mapping, advertised addresses, and peers</source>
-        <translation type="unfinished" />
+        <translation>P2P-Status, Portweiterleitung, angekündigte Adressen und Peers kopieren</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="4923" />
@@ -3320,7 +3372,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5037" />
         <source>Restart Dinero Now</source>
-        <translation type="unfinished" />
+        <translation>Dinero jetzt neu starten</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5050" />
@@ -3330,7 +3382,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5060" />
         <source>Restart Dinero</source>
-        <translation type="unfinished" />
+        <translation>Dinero neu starten</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5061" />
@@ -3340,17 +3392,17 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5063" />
         <source>The wallet and its built-in node shut down cleanly and start again. Any sync or mining in progress pauses until Dinero is back up.</source>
-        <translation type="unfinished" />
+        <translation>Die Wallet und ihr eingebauter Node werden sauber beendet und neu gestartet. Eine laufende Synchronisation oder ein laufendes Mining pausiert, bis Dinero wieder da ist.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5067" />
         <source>Restart Now</source>
-        <translation type="unfinished" />
+        <translation>Jetzt neu starten</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5068" />
         <source>Later</source>
-        <translation type="unfinished" />
+        <translation>Später</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5142" />
@@ -3436,7 +3488,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5266" />
         <source>Return to the bundled or system dinerod on the next daemon start.</source>
-        <translation type="unfinished" />
+        <translation>Beim nächsten Daemon-Start zum mitgelieferten oder System-dinerod zurückkehren.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5269" />
@@ -3446,7 +3498,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5270" />
         <source>Dinero-Qt will use the bundled or system dinerod the next time the daemon is started.</source>
-        <translation type="unfinished" />
+        <translation>Dinero-Qt verwendet beim nächsten Daemon-Start das mitgelieferte oder das System-dinerod.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5279" />
@@ -3461,7 +3513,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5304" />
         <source>Advanced local daemon controls, reconnect tools, and runtime diagnostics. Hidden by default so the main wallet stays calm.</source>
-        <translation type="unfinished" />
+        <translation>Erweiterte Steuerung des lokalen Daemons, Werkzeuge zum Neuverbinden und Laufzeitdiagnose. Standardmäßig ausgeblendet, damit die Haupt-Wallet ruhig bleibt.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5332" />
@@ -3481,7 +3533,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5369" />
         <source>Use these controls when testing daemon startup, connection recovery, or local runtime health.</source>
-        <translation type="unfinished" />
+        <translation>Verwenden Sie diese Steuerelemente beim Testen von Daemon-Start, Verbindungswiederherstellung oder lokaler Laufzeitgesundheit.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5379" />
@@ -3501,7 +3553,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5398" />
         <source>&lt;b&gt;Wallet backup:&lt;/b&gt; copies wallet databases, HD wallet state, and wallet registry from the live daemon data directory. &lt;b&gt;Chain backup:&lt;/b&gt; optional; it can be large and can always be rebuilt by syncing again.</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Wallet-Backup:&lt;/b&gt; kopiert Wallet-Datenbanken, HD-Wallet-Zustand und Wallet-Registry aus dem aktiven Daemon-Datenverzeichnis. &lt;b&gt;Chain-Backup:&lt;/b&gt; optional; es kann groß sein und lässt sich jederzeit durch erneutes Synchronisieren wiederherstellen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5411" />
@@ -3511,7 +3563,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5413" />
         <source>Backup wallets/, hd_wallet/, and wallet_registry.db files from the daemon data directory.</source>
-        <translation type="unfinished" />
+        <translation>Die Dateien wallets/, hd_wallet/ und wallet_registry.db aus dem Daemon-Datenverzeichnis sichern.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5423" />
@@ -3530,7 +3582,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5463" />
         <source>Copies wallets/, hd_wallet/, wallet registry, and the local SV2 pool key.</source>
-        <translation type="unfinished" />
+        <translation>Kopiert wallets/, hd_wallet/, die Wallet-Registry und den lokalen SV2-Pool-Schlüssel.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5468" />
@@ -3540,7 +3592,7 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
     <message>
         <location filename="../src/mainwindow.cpp" line="5470" />
         <source>Backup blockchain/, blocks/, and headers/ from the daemon data directory.</source>
-        <translation type="unfinished" />
+        <translation>blockchain/, blocks/ und headers/ aus dem Daemon-Datenverzeichnis sichern.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5473" />
@@ -3554,17 +3606,21 @@ Pool Solo = the miner owns the block coinbase, but receives nothing unless it fi
 This is optional because the node can resync from the network.
 
 Continue?</source>
-        <translation type="unfinished" />
+        <translation>Chain-Daten können groß sein und das Kopieren kann mehrere Minuten dauern.
+
+Das ist optional, weil der Node sich erneut aus dem Netzwerk synchronisieren kann.
+
+Fortfahren?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5516" />
         <source>Copies blockchain/, blocks/, and headers/. Wallet backup is the critical one.</source>
-        <translation type="unfinished" />
+        <translation>Kopiert blockchain/, blocks/ und headers/. Das Wallet-Backup ist das entscheidende.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5524" />
         <source>Backups are created as timestamped folders. For the cleanest filesystem snapshot, stop mining first and avoid closing the app during the copy.</source>
-        <translation type="unfinished" />
+        <translation>Backups werden als Ordner mit Zeitstempel angelegt. Für die sauberste Momentaufnahme des Dateisystems stoppen Sie zuerst das Mining und schließen Sie die App während des Kopierens nicht.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5532" />
@@ -3580,7 +3636,8 @@ Continue?</source>
         <location filename="../src/mainwindow.cpp" line="5683" />
         <source>Purpose 88 P2MR lane.
 Quantum-safe ML-DSA-65 receive addresses derive from the same BIP39 seed.</source>
-        <translation type="unfinished" />
+        <translation>P2MR-Spur mit Purpose 88.
+Quantensichere ML-DSA-65-Empfangsadressen leiten sich aus demselben BIP39-Seed ab.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5687" />
@@ -3591,7 +3648,8 @@ Quantum-safe ML-DSA-65 receive addresses derive from the same BIP39 seed.</sourc
         <location filename="../src/mainwindow.cpp" line="5688" />
         <source>BIP86 Taproot lane.
 Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
-        <translation type="unfinished" />
+        <translation>BIP86-Taproot-Spur.
+Mobilfreundliche Empfangsadressen leiten sich aus demselben BIP39-Seed ab.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5731" />
@@ -3601,7 +3659,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5732" />
         <source>Generate a quantum-safe ML-DSA-65 receive address (din1r...)</source>
-        <translation type="unfinished" />
+        <translation>Eine quantensichere ML-DSA-65-Empfangsadresse erzeugen (din1r…)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5735" />
@@ -3647,7 +3705,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5814" />
         <source>Continue in Shielded. Availability depends on network activation.</source>
-        <translation type="unfinished" />
+        <translation>In Shielded fortfahren. Die Verfügbarkeit hängt von der Netzwerkaktivierung ab.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5816" />
@@ -3687,7 +3745,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5826" />
         <source>Unshield selected private value to a fresh wallet Taproot address</source>
-        <translation type="unfinished" />
+        <translation>Den gewählten privaten Betrag auf eine neue Taproot-Adresse der Wallet unshielden</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5829" />
@@ -3697,7 +3755,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5853" />
         <source>Open Shielded to send privately or convert funds. The daemon reports activation availability. Use Covenants for private contract controls when activated.</source>
-        <translation type="unfinished" />
+        <translation>Öffnen Sie Shielded, um privat zu senden oder Mittel umzuwandeln. Der Daemon meldet, ob die Aktivierung verfügbar ist. Nutzen Sie Covenants für private Vertragssteuerung, sobald sie aktiviert ist.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5855" />
@@ -3707,17 +3765,17 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="5857" />
         <source>Spend shielded balance privately. Recipient must be a dins1 shielded address.</source>
-        <translation type="unfinished" />
+        <translation>Shielded-Guthaben privat ausgeben. Der Empfänger muss eine Shielded-Adresse dins1 sein.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5860" />
         <source>Send transparent balance into a shielded address. Recipient must be a dins1 shielded address.</source>
-        <translation type="unfinished" />
+        <translation>Transparentes Guthaben an eine Shielded-Adresse senden. Der Empfänger muss eine Shielded-Adresse dins1 sein.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5863" />
         <source>Convert shielded balance to public Taproot. The daemon sends it to a fresh wallet address.</source>
-        <translation type="unfinished" />
+        <translation>Shielded-Guthaben in öffentliches Taproot umwandeln. Der Daemon sendet es an eine neue Adresse der Wallet.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="5866" />
@@ -3742,7 +3800,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="6028" />
         <source>🕶️ Private receive addresses are wallet-generated private addresses. Copy the address directly or view its underlying Taproot details above.</source>
-        <translation type="unfinished" />
+        <translation>🕶️ Private Empfangsadressen sind von der Wallet erzeugte private Adressen. Kopieren Sie die Adresse direkt oder sehen Sie oben ihre zugrunde liegenden Taproot-Details.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="6040" />
@@ -3814,7 +3872,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="7364" />
         <source>Dinero Core currently reports peer activity timestamps, not per-peer ping latency.</source>
-        <translation type="unfinished" />
+        <translation>Dinero Core meldet derzeit Zeitstempel der Peer-Aktivität, nicht die Ping-Latenz je Peer.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="7454" />
@@ -3940,7 +3998,7 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="8277" />
         <source>&lt;h2&gt;🚀 Welcome to Dinero!&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🚀 Willkommen bei Dinero&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="8373" />
@@ -4020,12 +4078,12 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="9390" />
         <source>System-wide GPU telemetry. It may be active even when the selected miner is CPU.</source>
-        <translation type="unfinished" />
+        <translation>Systemweite GPU-Telemetrie. Sie kann aktiv sein, auch wenn als Miner die CPU gewählt ist.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9397" />
         <source>System-wide GPU memory from macOS AGX PerformanceStatistics</source>
-        <translation type="unfinished" />
+        <translation>Systemweiter GPU-Speicher laut macOS AGX PerformanceStatistics</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9399" />
@@ -4055,7 +4113,9 @@ Mobile-friendly receive addresses derive from the same BIP39 seed.</source>
         <source>Your wallet must be unlocked to use wallet addresses for mining.
 
 Would you like to unlock your wallet now?</source>
-        <translation type="unfinished" />
+        <translation>Ihre Wallet muss entsperrt sein, um Wallet-Adressen für das Mining zu nutzen.
+
+Möchten Sie sie jetzt entsperren?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9714" />
@@ -4081,7 +4141,12 @@ Please generate a new Taproot address first:
 1. Go to Receive tab
 2. Click 'New Transparent Address' to generate a Taproot address
 3. Return here and click 'Use Wallet' again</source>
-        <translation type="unfinished" />
+        <translation>In Ihrer Wallet wurden keine Adressen gefunden.
+
+Erzeugen Sie zuerst eine neue Taproot-Adresse:
+1. Gehen Sie zum Tab Empfangen
+2. Klicken Sie auf „Neue transparente Adresse“, um eine Taproot-Adresse zu erzeugen
+3. Kehren Sie hierher zurück und klicken Sie erneut auf „Wallet verwenden“</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9816" />
@@ -4096,7 +4161,7 @@ Please generate a new Taproot address first:
     <message>
         <location filename="../src/mainwindow.cpp" line="9857" />
         <source>Start and connect the daemon before starting the local Stratum server.</source>
-        <translation type="unfinished" />
+        <translation>Starten und verbinden Sie den Daemon, bevor Sie den lokalen Stratum-Server starten.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9869" />
@@ -4107,7 +4172,7 @@ Please generate a new Taproot address first:
     <message>
         <location filename="../src/mainwindow.cpp" line="9870" />
         <source>Set a Taproot or P2MR mining address before starting the local Stratum server.</source>
-        <translation type="unfinished" />
+        <translation>Legen Sie eine Taproot- oder P2MR-Mining-Adresse fest, bevor Sie den lokalen Stratum-Server starten.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9878" />
@@ -4124,7 +4189,9 @@ Please generate a new Taproot address first:
         <source>Could not find dinero-stratum.
 
 Build the Stratum server or set DINERO_STRATUM_PATH.</source>
-        <translation type="unfinished" />
+        <translation>dinero-stratum wurde nicht gefunden.
+
+Bauen Sie den Stratum-Server oder setzen Sie DINERO_STRATUM_PATH.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="9917" />
@@ -4160,7 +4227,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="10937" />
         <source>Hashrate reported by external miner (self-reported)</source>
-        <translation type="unfinished" />
+        <translation>Vom externen Miner gemeldete Hashrate (Eigenangabe)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11284" />
@@ -4175,7 +4242,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11373" />
         <source>Recovery descriptor and watch script are persisted in the active wallet.</source>
-        <translation type="unfinished" />
+        <translation>Der Wiederherstellungs-Descriptor und das Watch-Skript werden in der aktiven Wallet gespeichert.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11376" />
@@ -4190,7 +4257,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11473" />
         <source>Spend from this contract (requires satisfying the covenant conditions)</source>
-        <translation type="unfinished" />
+        <translation>Aus diesem Vertrag ausgeben (erfordert die Erfüllung der Covenant-Bedingungen)</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11488" />
@@ -4205,7 +4272,7 @@ Build the Stratum server or set DINERO_STRATUM_PATH.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="11505" />
         <source>This transaction-history record has no recovery descriptor. The wallet will not guess its spending conditions. Import the original descriptor before attempting a spend.</source>
-        <translation type="unfinished" />
+        <translation>Dieser Eintrag im Transaktionsverlauf hat keinen Wiederherstellungs-Descriptor. Die Wallet rät seine Ausgabebedingungen nicht. Importieren Sie den ursprünglichen Descriptor, bevor Sie eine Ausgabe versuchen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11541" />
@@ -4220,7 +4287,12 @@ Please start the daemon first:
 1. Click 'Start Daemon' button
 2. Wait for connection to establish
 3. Then try starting the miner again.</source>
-        <translation type="unfinished" />
+        <translation>Mining kann nicht gestartet werden – der Daemon ist nicht verbunden.
+
+Starten Sie zuerst den Daemon:
+1. Klicken Sie auf „Daemon starten“
+2. Warten Sie, bis die Verbindung steht
+3. Versuchen Sie dann erneut, den Miner zu starten.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11552" />
@@ -4238,7 +4310,15 @@ Steps to set up mining:
 4. Return here and click 'Use Wallet'
 
 Mining rewards will be sent to your wallet's Taproot address.</source>
-        <translation type="unfinished" />
+        <translation>Legen Sie zuerst eine Mining-Adresse fest.
+
+Schritte zur Einrichtung:
+1. Gehen Sie zum Tab Empfangen
+2. Entsperren Sie Ihre Wallet (falls verschlüsselt)
+3. Klicken Sie auf „Neue transparente Adresse“, um eine Taproot-Adresse zu erzeugen
+4. Kehren Sie hierher zurück und klicken Sie auf „Wallet verwenden“
+
+Mining-Belohnungen gehen an die Taproot-Adresse Ihrer Wallet.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11653" />
@@ -4269,7 +4349,7 @@ Mining rewards will be sent to your wallet's Taproot address.</source>
         <location filename="../src/mainwindow.cpp" line="11742" />
         <location filename="../src/mainwindow.cpp" line="11989" />
         <source>0 hashes</source>
-        <translation type="unfinished" />
+        <translation>0 Hashes</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11743" />
@@ -4288,7 +4368,10 @@ Mining rewards will be sent to your wallet's Taproot address.</source>
 
 Set the Pool Endpoint in the Mining tab, for example:
 127.0.0.1:3333</source>
-        <translation type="unfinished" />
+        <translation>CUDA-GPU-Mining unter Windows verwendet den Stratum-Miner.
+
+Setzen Sie den Pool-Endpunkt im Tab Mining, zum Beispiel:
+127.0.0.1:3333</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="11851" />
@@ -4327,7 +4410,10 @@ Set the Pool Endpoint in the Mining tab, for example:
 
 Set it in the Mining tab (Pool Endpoint), for example:
 127.0.0.1:3333</source>
-        <translation type="unfinished" />
+        <translation>Der Pool-Modus benötigt einen Stratum-Endpunkt.
+
+Setzen Sie ihn im Tab Mining (Pool-Endpunkt), zum Beispiel:
+127.0.0.1:3333</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12103" />
@@ -4349,7 +4435,9 @@ Set it in the Mining tab (Pool Endpoint), for example:
         <source>Could not convert mining address to a scriptPubKey.
 
 SV2 pool mining requires a Taproot (din1p…) or P2MR (din1r…) bech32m address. Generate one in the Receive tab, then click 'Use Wallet'.</source>
-        <translation type="unfinished" />
+        <translation>Die Mining-Adresse konnte nicht in einen scriptPubKey umgewandelt werden.
+
+SV2-Pool-Mining benötigt eine bech32m-Adresse vom Typ Taproot (din1p…) oder P2MR (din1r…). Erzeugen Sie eine im Tab Empfangen und klicken Sie dann auf „Wallet verwenden“.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12325" />
@@ -4361,7 +4449,9 @@ SV2 pool mining requires a Taproot (din1p…) or P2MR (din1r…) bech32m address
         <source>Pool Shared credits its PPLNS ledger to a Taproot (din1p...) address.
 
 Select a Taproot mining address, or choose Pool Solo to keep using this address.</source>
-        <translation type="unfinished" />
+        <translation>Pool geteilt schreibt sein PPLNS-Konto einer Taproot-Adresse (din1p…) gut.
+
+Wählen Sie eine Taproot-Mining-Adresse, oder wählen Sie Pool solo, um diese Adresse weiter zu verwenden.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12637" />
@@ -4376,7 +4466,7 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
     <message>
         <location filename="../src/mainwindow.cpp" line="12758" />
         <source>Wait for the current wallet switch to finish before creating or restoring another wallet.</source>
-        <translation type="unfinished" />
+        <translation>Warten Sie, bis der laufende Wallet-Wechsel abgeschlossen ist, bevor Sie eine weitere Wallet erstellen oder wiederherstellen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12763" />
@@ -4386,7 +4476,7 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
     <message>
         <location filename="../src/mainwindow.cpp" line="12764" />
         <source>A send is in progress. Wait for it to finish before creating or restoring another wallet.</source>
-        <translation type="unfinished" />
+        <translation>Ein Sendevorgang läuft. Warten Sie, bis er abgeschlossen ist, bevor Sie eine weitere Wallet erstellen oder wiederherstellen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12769" />
@@ -4396,7 +4486,7 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
     <message>
         <location filename="../src/mainwindow.cpp" line="12770" />
         <source>Wait for the current wallet scan to finish before creating or restoring another wallet.</source>
-        <translation type="unfinished" />
+        <translation>Warten Sie, bis der laufende Wallet-Scan abgeschlossen ist, bevor Sie eine weitere Wallet erstellen oder wiederherstellen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12817" />
@@ -4434,12 +4524,15 @@ Select a Taproot mining address, or choose Pool Solo to keep using this address.
 
 Use this when balance/history appears missing.
 This can take time and lock some wallet actions until complete.</source>
-        <translation type="unfinished" />
+        <translation>Blockchain nach Wallet-Guthaben und Transaktionsverlauf erneut scannen?
+
+Verwenden Sie das, wenn Guthaben oder Verlauf zu fehlen scheinen.
+Es kann dauern und sperrt einige Wallet-Aktionen bis zum Abschluss.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12942" />
         <source>❌ Wallet out of sync with chain: selected inputs are not in active UTXO set. Rescan wallet and retry.</source>
-        <translation type="unfinished" />
+        <translation>❌ Wallet nicht mit der Chain synchron: Die gewählten Eingänge sind nicht im aktiven UTXO-Satz. Scannen Sie die Wallet erneut und versuchen Sie es noch einmal.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12957" />
@@ -4451,7 +4544,9 @@ This can take time and lock some wallet actions until complete.</source>
         <source>This send failed because selected inputs are not present in the node's current UTXO set.
 
 Run wallet rescan now?</source>
-        <translation type="unfinished" />
+        <translation>Dieser Sendevorgang ist fehlgeschlagen, weil die gewählten Eingänge nicht im aktuellen UTXO-Satz des Nodes vorhanden sind.
+
+Wallet jetzt erneut scannen?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="12974" />
@@ -4469,14 +4564,18 @@ Run wallet rescan now?</source>
         <source>No wallet is loaded.
 
 Create or restore a wallet first. The BIP39 seed phrase is shown during setup and should be written down offline.</source>
-        <translation type="unfinished" />
+        <translation>Es ist keine Wallet geladen.
+
+Erstellen oder stellen Sie zuerst eine wieder her. Die BIP39-Seed-Phrase wird während der Einrichtung angezeigt und sollte offline notiert werden.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13029" />
         <source>Wallet seed export, when supported by the daemon, requires the wallet to be unlocked first.
 
 Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
-        <translation type="unfinished" />
+        <translation>Der Seed-Export der Wallet setzt, sofern der Daemon ihn unterstützt, eine entsperrte Wallet voraus.
+
+Entsperren Sie die Wallet und öffnen Sie dann erneut Seed-Backup / mobile Wiederherstellung.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13039" />
@@ -4491,7 +4590,7 @@ Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13055" />
         <source>Dinero can restore from the BIP39 phrase you wrote down during setup, but this wallet storage cannot reconstruct those words later. The original phrase is converted into wallet seed material, and that conversion is one-way unless a future daemon explicitly stores an encrypted mnemonic backup.</source>
-        <translation type="unfinished" />
+        <translation>Dinero kann aus der BIP39-Phrase wiederherstellen, die Sie bei der Einrichtung notiert haben, aber dieser Wallet-Speicher kann diese Wörter später nicht rekonstruieren. Die ursprüngliche Phrase wird in Seed-Material der Wallet umgewandelt, und diese Umwandlung ist einseitig, solange kein künftiger Daemon ausdrücklich ein verschlüsseltes Mnemonic-Backup speichert.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13061" />
@@ -4504,7 +4603,10 @@ Unlock the wallet, then open Seed Backup / Mobile Restore again.</source>
 
 Taproot payments: m/86'/1448'/0'/0/i, din1p...
 Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...</source>
-        <translation type="unfinished" />
+        <translation>Verwenden Sie für die mobile Wiederherstellung das ursprüngliche Papier-Backup des Seeds.
+
+Taproot-Zahlungen: m/86'/1448'/0'/0/i, din1p…
+Quantensicheres P2MR: m/88'/1448'/0'/0/i, din1r…</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13089" />
@@ -4523,7 +4625,11 @@ Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...</source>
 Anyone with this phrase can access your funds.
 
 Write it down on paper, store it offline, and never share it.</source>
-        <translation type="unfinished" />
+        <translation>Sie sind dabei, Ihre Seed-Phrase anzuzeigen.
+
+Jeder, der diese Phrase hat, kann auf Ihre Mittel zugreifen.
+
+Notieren Sie sie auf Papier, bewahren Sie sie offline auf und geben Sie sie niemals weiter.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13116" />
@@ -4533,7 +4639,7 @@ Write it down on paper, store it offline, and never share it.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13121" />
         <source>&lt;b&gt;Write this phrase down on paper.&lt;/b&gt;&lt;br&gt;Do not screenshot it, upload it, paste it into chat, or store it in cloud notes.</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Schreiben Sie diese Phrase auf Papier.&lt;/b&gt;&lt;br&gt;Machen Sie keine Screenshots, laden Sie sie nicht hoch, fügen Sie sie nicht in Chats ein und speichern Sie sie nicht in Cloud-Notizen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13130" />
@@ -4546,7 +4652,10 @@ Write it down on paper, store it offline, and never share it.</source>
 • Taproot payments: m/86'/1448'/0'/0/i, din1p...
 • Quantum-safe P2MR: m/88'/1448'/0'/0/i, din1r...
 </source>
-        <translation type="unfinished" />
+        <translation>Hinweise zu den Wiederherstellungspfaden:
+• Taproot-Zahlungen: m/86'/1448'/0'/0/i, din1p…
+• Quantensicheres P2MR: m/88'/1448'/0'/0/i, din1r…
+</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13163" />
@@ -4571,7 +4680,7 @@ Write it down on paper, store it offline, and never share it.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13284" />
         <source>Dinero has been waiting 180 seconds for the daemon (dinerod) and is still not connected — the daemon may have failed.</source>
-        <translation type="unfinished" />
+        <translation>Dinero wartet seit 180 Sekunden auf den Daemon (dinerod) und ist noch immer nicht verbunden – der Daemon ist möglicherweise fehlgeschlagen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13347" />
@@ -4601,7 +4710,7 @@ Write it down on paper, store it offline, and never share it.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="13477" />
         <source>Port 20998 is already in use — another Dinero process may be running.</source>
-        <translation type="unfinished" />
+        <translation>Port 20998 ist bereits belegt — möglicherweise läuft ein weiterer Dinero-Prozess.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13543" />
@@ -4634,7 +4743,9 @@ Write it down on paper, store it offline, and never share it.</source>
         <source>Daemon started but RPC not ready yet.
 
 Wait a few more seconds and click 'Reconnect' if needed.</source>
-        <translation type="unfinished" />
+        <translation>Der Daemon ist gestartet, aber die RPC ist noch nicht bereit.
+
+Warten Sie einige Sekunden und klicken Sie bei Bedarf auf „Neu verbinden“.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13687" />
@@ -4646,7 +4757,14 @@ This will:
 • Disconnect GUI from blockchain
 
 Continue?</source>
-        <translation type="unfinished" />
+        <translation>Möchten Sie den Daemon wirklich stoppen?
+
+Dabei wird:
+• das lokale dinerod für dieses Wallet-Datenverzeichnis zum Stoppen aufgefordert
+• die Datenbankdateien werden entsperrt
+• die Oberfläche wird von der Blockchain getrennt
+
+Fortfahren?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13765" />
@@ -4659,7 +4777,10 @@ Continue?</source>
 
 Database files unlocked.
 Click 'Start Daemon' when ready to restart.</source>
-        <translation type="unfinished" />
+        <translation>✅ Alle Daemon-Prozesse gestoppt
+
+Die Datenbankdateien sind entsperrt.
+Klicken Sie auf „Daemon starten“, wenn Sie neu starten möchten.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13823" />
@@ -4698,7 +4819,10 @@ Click 'Start Daemon' when ready to restart.</source>
 
 No unlock is required.
 Use Encrypt Wallet to protect private keys.</source>
-        <translation type="unfinished" />
+        <translation>ℹ️ Die Wallet ist nicht verschlüsselt.
+
+Ein Entsperren ist nicht nötig.
+Verwenden Sie Wallet verschlüsseln, um private Schlüssel zu schützen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13927" />
@@ -4726,7 +4850,11 @@ Use Encrypt Wallet to protect private keys.</source>
 • Taproot signing is now enabled
 • Wallet will auto-lock in 1 hour
 • You can now spend P2TR outputs and sign transactions</source>
-        <translation type="unfinished" />
+        <translation>✅ Wallet erfolgreich entsperrt.
+
+• Die Taproot-Signierung ist jetzt aktiviert
+• Die Wallet sperrt sich in 1 Stunde automatisch
+• Sie können nun P2TR-Outputs ausgeben und Transaktionen signieren</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="13991" />
@@ -4748,7 +4876,11 @@ Use Encrypt Wallet to protect private keys.</source>
 • Taproot signing is now disabled
 • Private keys are secured
 • Unlock to spend or sign transactions</source>
-        <translation type="unfinished" />
+        <translation>🔒 Wallet erfolgreich gesperrt.
+
+• Die Taproot-Signierung ist jetzt deaktiviert
+• Die privaten Schlüssel sind geschützt
+• Entsperren Sie sie, um auszugeben oder zu signieren</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14077" />
@@ -4795,7 +4927,7 @@ Use Encrypt Wallet to protect private keys.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14246" />
         <source>A send is in progress. Wait for it to complete before switching wallets.</source>
-        <translation type="unfinished" />
+        <translation>Ein Sendevorgang läuft. Warten Sie, bis er abgeschlossen ist, bevor Sie die Wallet wechseln.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14252" />
@@ -4870,7 +5002,7 @@ Use Encrypt Wallet to protect private keys.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14460" />
         <source>Hardware-wallet signing is currently wired only for public Taproot transfers</source>
-        <translation type="unfinished" />
+        <translation>Die Signierung mit Hardware-Wallet ist derzeit nur für öffentliche Taproot-Transfers eingerichtet</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14497" />
@@ -4915,7 +5047,7 @@ Use Encrypt Wallet to protect private keys.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14551" />
         <source>Fill mining address from your wallet</source>
-        <translation type="unfinished" />
+        <translation>Mining-Adresse aus Ihrer Wallet übernehmen</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14570" />
@@ -4928,7 +5060,15 @@ Use Encrypt Wallet to protect private keys.</source>
 Make sure you have written down your seed phrase.
 
 Do you want to continue?</source>
-        <translation type="unfinished" />
+        <translation>⚠️  Sie sind dabei, Ihre Wallet zu verschlüsseln.
+
+• Sie benötigen ein Passwort, um sie zu entsperren und Coins auszugeben
+• Die Wallet wird nach der Verschlüsselung gesperrt
+• SICHERN SIE IHRE 12-WORT-SEED-PHRASE – sie ist das einzige Backup.
+
+Stellen Sie sicher, dass Sie sie notiert haben.
+
+Möchten Sie fortfahren?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14600" />
@@ -4944,7 +5084,8 @@ Do you want to continue?</source>
         <location filename="../src/mainwindow.cpp" line="14607" />
         <source>Password should be at least 8 characters for security.
 Consider using a longer, stronger password.</source>
-        <translation type="unfinished" />
+        <translation>Das Passwort sollte aus Sicherheitsgründen mindestens 8 Zeichen haben.
+Erwägen Sie ein längeres, stärkeres Passwort.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14644" />
@@ -4954,7 +5095,7 @@ Consider using a longer, stronger password.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14646" />
         <source>Wallet encrypted and locked. Click to unlock for Taproot signing.</source>
-        <translation type="unfinished" />
+        <translation>Wallet verschlüsselt und gesperrt. Klicken Sie, um sie für die Taproot-Signierung zu entsperren.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14649" />
@@ -4965,12 +5106,18 @@ Consider using a longer, stronger password.</source>
 • You will need your password to spend funds
 
 🚨 IMPORTANT: Make sure you have saved your 12-word seed phrase!</source>
-        <translation type="unfinished" />
+        <translation>✅ Wallet erfolgreich verschlüsselt.
+
+• Ihre Wallet ist jetzt gesperrt und geschützt
+• Die Taproot-Signierung erfordert ein Entsperren mit Passwort
+• Zum Ausgeben von Mitteln brauchen Sie Ihr Passwort
+
+🚨 WICHTIG: Stellen Sie sicher, dass Sie Ihre 12-Wort-Seed-Phrase gesichert haben.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14674" />
         <source>Please unlock your wallet first to derive new addresses.</source>
-        <translation type="unfinished" />
+        <translation>Entsperren Sie zuerst Ihre Wallet, um neue Adressen abzuleiten.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14713" />
@@ -4984,7 +5131,9 @@ Consider using a longer, stronger password.</source>
         <source>❌ Address generation returned an empty address.
 
 Please verify wallet state and try again.</source>
-        <translation type="unfinished" />
+        <translation>❌ Die Adresserzeugung lieferte eine leere Adresse.
+
+Prüfen Sie den Wallet-Zustand und versuchen Sie es erneut.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14734" />
@@ -4999,7 +5148,7 @@ Please verify wallet state and try again.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14781" />
         <source>A public withdrawal destination is required for this covenant.</source>
-        <translation type="unfinished" />
+        <translation>Für dieses Covenant ist ein öffentliches Auszahlungsziel erforderlich.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14786" />
@@ -5010,7 +5159,8 @@ Please verify wallet state and try again.</source>
         <location filename="../src/mainwindow.cpp" line="14830" />
         <source>❌ Error: Shield destination must be a shielded dins1 address.
 Leave recipient blank to shield to your own private lane.</source>
-        <translation type="unfinished" />
+        <translation>❌ Fehler: Das Shield-Ziel muss eine Shielded-Adresse dins1 sein.
+Lassen Sie den Empfänger leer, um in Ihre eigene private Spur zu shielden.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14838" />
@@ -5030,17 +5180,17 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="14922" />
         <source>❌ Error: Failed to prepare hardware-wallet signing flow</source>
-        <translation type="unfinished" />
+        <translation>❌ Fehler: Der Signierablauf für die Hardware-Wallet konnte nicht vorbereitet werden</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14943" />
         <source>❌ Hardware-wallet PSBT cannot spend P2MR inputs yet.</source>
-        <translation type="unfinished" />
+        <translation>❌ Die Hardware-Wallet-PSBT kann P2MR-Eingänge noch nicht ausgeben.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="14963" />
         <source>✅ Hardware-wallet send prepared. Continue in the Hardware Wallet tab.</source>
-        <translation type="unfinished" />
+        <translation>✅ Hardware-Wallet-Sendevorgang vorbereitet. Fahren Sie im Tab Hardware-Wallet fort.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15031" />
@@ -5050,7 +5200,7 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15064" />
         <source>Unsupported send mode. Select a public payment or open the Shielded composer.</source>
-        <translation type="unfinished" />
+        <translation>Nicht unterstützter Sendemodus. Wählen Sie eine öffentliche Zahlung oder öffnen Sie den Shielded-Composer.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15076" />
@@ -5071,22 +5221,22 @@ Leave recipient blank to shield to your own private lane.</source>
         <location filename="../src/mainwindow.cpp" line="15115" />
         <location filename="../src/mainwindow.cpp" line="15143" />
         <source>❌ Contract amount is too small after the fixed spend fee.</source>
-        <translation type="unfinished" />
+        <translation>❌ Der Vertragsbetrag ist nach der festen Ausgabegebühr zu klein.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15130" />
         <source>Timelock funding requires an upgraded node with contextual lock enforcement active.</source>
-        <translation type="unfinished" />
+        <translation>Die Timelock-Finanzierung erfordert einen aktualisierten Node mit aktiver kontextbezogener Sperrdurchsetzung.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15138" />
         <source>❌ Relative timelock must be between 1 and 65,535 blocks.</source>
-        <translation type="unfinished" />
+        <translation>❌ Der relative Timelock muss zwischen 1 und 65.535 Blöcken liegen.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15186" />
         <source>❌ Unknown contract template; refusing to create a fallback script.</source>
-        <translation type="unfinished" />
+        <translation>❌ Unbekannte Vertragsvorlage; es wird kein Ersatzskript erstellt.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15205" />
@@ -5096,7 +5246,7 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15274" />
         <source>Hardware-wallet signing is currently wired only for public Taproot transfers.</source>
-        <translation type="unfinished" />
+        <translation>Die Signierung mit Hardware-Wallet ist derzeit nur für öffentliche Taproot-Transfers eingerichtet.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15286" />
@@ -5106,14 +5256,16 @@ Leave recipient blank to shield to your own private lane.</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="15287" />
         <source>P2MR is a Dinero quantum-safe address type. Current hardware-wallet PSBT signing is Taproot/BIP86 only, so use the normal Send button for P2MR transfers.</source>
-        <translation type="unfinished" />
+        <translation>P2MR ist ein quantensicherer Adresstyp von Dinero. Die aktuelle PSBT-Signierung mit Hardware-Wallet unterstützt nur Taproot/BIP86, verwenden Sie für P2MR-Transfers daher die normale Schaltfläche Senden.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15303" />
         <source>Your wallet must be unlocked to consolidate UTXOs.
 
 Would you like to unlock your wallet now?</source>
-        <translation type="unfinished" />
+        <translation>Ihre Wallet muss entsperrt sein, um UTXOs zu konsolidieren.
+
+Möchten Sie sie jetzt entsperren?</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15324" />
@@ -5196,7 +5348,9 @@ Would you like to unlock your wallet now?</source>
         <source>To request a block template, enter a Taproot mining address first.
 
 Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/tdin1p/rdin1p) address by default.</source>
-        <translation type="unfinished" />
+        <translation>Um eine Block-Vorlage anzufordern, geben Sie zuerst eine Taproot-Mining-Adresse ein.
+
+Tipp: Wallet → Empfangen → Neue transparente Adresse erzeugt standardmäßig eine Taproot-Adresse (din1p/tdin1p/rdin1p).</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15641" />
@@ -5218,7 +5372,9 @@ Tip: Wallet → Receive → New Transparent Address generates a Taproot (din1p/t
         <source>Invalid Dinero address format.
 
 Enter a Dinero transparent or shielded address.</source>
-        <translation type="unfinished" />
+        <translation>Ungültiges Dinero-Adressformat.
+
+Geben Sie eine transparente oder Shielded-Dinero-Adresse ein.</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15658" />
@@ -5251,7 +5407,10 @@ Enter a Dinero transparent or shielded address.</source>
 
 Expected format:
 Label,Address</source>
-        <translation type="unfinished" />
+        <translation>In der CSV-Datei wurden keine gültigen Dinero-Adressen gefunden.
+
+Erwartetes Format:
+Bezeichnung,Adresse</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="15746" />
@@ -5281,58 +5440,58 @@ Label,Address</source>
     <message>
         <location filename="../src/mainwindow.cpp" line="16078" />
         <source>✅ Synced</source>
-        <translation type="unfinished" />
+        <translation>✅ Synchronisiert</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16120" />
         <location filename="../src/mainwindow.cpp" line="16253" />
         <source>P2P disabled</source>
-        <translation type="unfinished" />
+        <translation>P2P deaktiviert</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16123" />
         <source>No peers</source>
-        <translation type="unfinished" />
+        <translation>Keine Peers</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16257" />
         <source>Direct inbound</source>
-        <translation type="unfinished" />
+        <translation>Direkt eingehend</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16261" />
         <source>Tor available</source>
-        <translation type="unfinished" />
+        <translation>Tor verfügbar</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16265" />
         <source>Outbound only</source>
-        <translation type="unfinished" />
+        <translation>Nur ausgehend</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16514" />
         <source>Export Failed</source>
-        <translation type="unfinished" />
+        <translation>Export fehlgeschlagen</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16514" />
         <source>Could not open file for writing</source>
-        <translation type="unfinished" />
+        <translation>Die Datei konnte nicht zum Schreiben geöffnet werden</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16573" />
         <source>Export Successful</source>
-        <translation type="unfinished" />
+        <translation>Export erfolgreich</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16615" />
         <source>Start mining to this address</source>
-        <translation type="unfinished" />
+        <translation>Mining auf diese Adresse starten</translation>
     </message>
     <message>
         <location filename="../src/mainwindow.cpp" line="16880" />
         <source>Connection failed</source>
-        <translation type="unfinished" />
+        <translation>Verbindung fehlgeschlagen</translation>
     </message>
 </context>
 <context>
@@ -5814,12 +5973,12 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="128" />
         <source>&lt;span style='font-size:18px; font-weight:700;'&gt;Bring the cockpit online.&lt;/span&gt; Run your own pool, connect miners, and earn a transparent operator fee.</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='font-size:18px; font-weight:700;'&gt;Übernehmen Sie das Steuer.&lt;/span&gt; Betreiben Sie Ihren eigenen Pool, verbinden Sie Miner und verdienen Sie eine transparente Betreibergebühr.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="135" />
         <source>&lt;p style='margin-top:0;'&gt;A Dinero pool pays every contributing miner &lt;b&gt;directly in the block's coinbase&lt;/b&gt;, split by share weight, the moment a block is found.&lt;/p&gt;&lt;ul style='margin-left:-18px;'&gt;&lt;li&gt;&lt;b&gt;You never hold your miners' coins.&lt;/b&gt; No balances, no payout run, nothing to lose or be blamed for losing.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Your fee is provable.&lt;/b&gt; It is an output in the block — any miner can verify what you took, without trusting you.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You stop depending on someone else's server&lt;/b&gt;, and you choose which transactions go in your blocks.&lt;/li&gt;&lt;li&gt;&lt;b&gt;You can pool with people who never have to trust you&lt;/b&gt; — sharing variance without anyone holding anyone's funds.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Hosting a pool means running a full node too: the pool gets block templates from your node and submits found blocks through it. That is the point — every pool operator is a node operator.&lt;/p&gt;&lt;p style='color:#9fb3c8;'&gt;Setup is one command on a Linux server. See &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; in the dinero-sv2 repository.&lt;/p&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;p style='margin-top:0;'&gt;Ein Dinero-Pool zahlt jeden beitragenden Miner &lt;b&gt;direkt im Coinbase des Blocks&lt;/b&gt; aus, aufgeteilt nach Share-Gewicht, sobald ein Block gefunden wird.&lt;/p&gt;&lt;ul style='margin-left:-18px;'&gt;&lt;li&gt;&lt;b&gt;Sie verwahren nie die Coins Ihrer Miner.&lt;/b&gt; Keine Guthaben, keine Auszahlungsläufe, nichts zu verlieren und nichts, wofür man Sie verantwortlich machen kann.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Ihre Gebühr ist beweisbar.&lt;/b&gt; Sie ist ein Output im Block: Jeder Miner kann prüfen, was Sie genommen haben, ohne Ihnen zu vertrauen.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Sie hängen nicht mehr vom Server eines anderen ab&lt;/b&gt; und entscheiden selbst, welche Transaktionen in Ihre Blöcke kommen.&lt;/li&gt;&lt;li&gt;&lt;b&gt;Sie können mit Leuten poolen, die Ihnen nie vertrauen müssen&lt;/b&gt; – Varianz teilen, ohne dass jemand fremde Mittel hält.&lt;/li&gt;&lt;/ul&gt;&lt;p&gt;Einen Pool zu betreiben heißt auch, einen vollen Node zu betreiben: Der Pool bezieht Block-Vorlagen von Ihrem Node und sendet gefundene Blöcke über ihn. Genau darum geht es – jeder Pool-Betreiber ist Node-Betreiber.&lt;/p&gt;&lt;p style='color:#9fb3c8;'&gt;Die Einrichtung ist ein einziger Befehl auf einem Linux-Server. Siehe &lt;code&gt;docs/RUN-A-POOL.md&lt;/code&gt; im Repository dinero-sv2.&lt;/p&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="161" />
@@ -5830,7 +5989,7 @@ Label,Address</source>
         <location filename="../src/poolpanel.cpp" line="163" />
         <location filename="../src/poolpanel.cpp" line="457" />
         <source>Point this at your pool's read-only status endpoint. It is loopback-only on the pool host by design, so from another machine open an SSH tunnel first:&lt;br/&gt;&lt;code&gt;ssh -N -L 4445:127.0.0.1:4445 you@your.host&lt;/code&gt;</source>
-        <translation type="unfinished" />
+        <translation>Richten Sie dies auf den schreibgeschützten Status-Endpunkt Ihres Pools. Er ist auf dem Pool-Host absichtlich nur lokal erreichbar, öffnen Sie daher von einem anderen Rechner zuerst einen SSH-Tunnel:&lt;br/&gt;&lt;code&gt;ssh -N -L 4445:127.0.0.1:4445 sie@ihr.host&lt;/code&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="180" />
@@ -6012,7 +6171,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="377" />
         <source>Read from your node, not from the pool — so it is still right when the pool is down, and it cannot be overstated by a pool reporting on itself.&lt;br/&gt;&lt;b&gt;Lifetime&lt;/b&gt; is every fee ever paid to this address and only ever rises. &lt;b&gt;Unspent&lt;/b&gt; is what is still sitting there, so it falls when you move funds out.</source>
-        <translation type="unfinished" />
+        <translation>Wird von Ihrem Node gelesen, nicht vom Pool – daher stimmt es auch, wenn der Pool ausfällt, und der Pool kann sich nicht selbst besser darstellen.&lt;br/&gt;&lt;b&gt;Gesamt&lt;/b&gt; ist jede jemals an diese Adresse gezahlte Gebühr und steigt nur. &lt;b&gt;Nicht ausgegeben&lt;/b&gt; ist, was noch dort liegt, und sinkt, wenn Sie Mittel abziehen.</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="388" />
@@ -6032,7 +6191,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="473" />
         <source>&lt;span style='color:#e06c75;'&gt;Use HTTPS, or plain HTTP only through a loopback/SSH-tunnel endpoint such as 127.0.0.1.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Verwenden Sie HTTPS, oder einfaches HTTP nur über einen lokalen Endpunkt bzw. SSH-Tunnel wie 127.0.0.1.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="536" />
@@ -6042,7 +6201,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="580" />
         <source>&lt;span style='color:#d8a37b;'&gt;Connect to the pool before changing its fee.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Verbinden Sie sich mit dem Pool, bevor Sie seine Gebühr ändern.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="585" />
@@ -6057,7 +6216,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="605" />
         <source>&lt;span style='color:#e06c75;'&gt;Not sent: the local fee-policy journal could not be saved.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Nicht gesendet: Das lokale Journal der Gebührenrichtlinie konnte nicht gespeichert werden.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="619" />
@@ -6067,7 +6226,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="629" />
         <source>&lt;span style='color:#d8a37b;'&gt;Runtime fee changes are disabled on this pool. Re-run its installer with &lt;code&gt;--allow-fee-change&lt;/code&gt;.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Gebührenänderungen im laufenden Betrieb sind auf diesem Pool deaktiviert. Führen Sie sein Installationsprogramm erneut mit &lt;code&gt;--allow-fee-change&lt;/code&gt; aus.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="632" />
@@ -6077,37 +6236,37 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="641" />
         <source>&lt;span style='color:#e06c75;'&gt;Safety conflict: the pool did not confirm the exact fee you reviewed. Further changes are locked pending inspection.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Sicherheitskonflikt: Der Pool hat nicht die genaue Gebühr bestätigt, die Sie geprüft haben. Weitere Änderungen sind bis zur Prüfung gesperrt.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="646" />
         <source>&lt;span style='color:#8fbf7f;'&gt;Operator fee changed for the next template and persisted across restart.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#8fbf7f;'&gt;Die Betreibergebühr wurde für die nächste Vorlage geändert und bleibt über den Neustart erhalten.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="727" />
         <source>&lt;span style='color:#d8a37b;'&gt;Fee-change outcome uncertain. Reconnecting to reconcile the live policy.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Ergebnis der Gebührenänderung unklar. Verbinde neu, um die aktive Richtlinie abzugleichen.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1134" />
         <source>&lt;span style='color:#d8a37b;'&gt;A previous fee change has an uncertain outcome. Connect to reconcile it.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Eine frühere Gebührenänderung hat ein unklares Ergebnis. Verbinden Sie sich, um sie abzugleichen.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1144" />
         <source>&lt;span style='color:#7bd88f;'&gt;Reconciled: the requested operator fee is live.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#7bd88f;'&gt;Abgeglichen: Die angeforderte Betreibergebühr ist aktiv.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1148" />
         <source>&lt;span style='color:#d8a37b;'&gt;Reconciled: the previous operator fee remains live.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#d8a37b;'&gt;Abgeglichen: Die vorherige Betreibergebühr bleibt aktiv.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1152" />
         <source>&lt;span style='color:#e06c75;'&gt;Fee-policy reconciliation conflict. Inspect the pool before changing it again.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Konflikt beim Abgleich der Gebührenrichtlinie. Prüfen Sie den Pool, bevor Sie sie erneut ändern.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1164" />
@@ -6117,7 +6276,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1174" />
         <source>reading the chain… (this walks the block history and can take a few seconds)</source>
-        <translation type="unfinished" />
+        <translation>lese die Chain … (durchläuft die Blockhistorie und kann einige Sekunden dauern)</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1175" />
@@ -6127,7 +6286,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1192" />
         <source>&lt;span style='color:#e06c75;'&gt;Unexpected history reply from the node.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Unerwartete Historien-Antwort vom Node.&lt;/span&gt;</translation>
     </message>
     <message>
         <location filename="../src/poolpanel.cpp" line="1253" />
@@ -6137,7 +6296,7 @@ Label,Address</source>
     <message>
         <location filename="../src/poolpanel.cpp" line="1265" />
         <source>&lt;span style='color:#e06c75;'&gt;The node did not return a valid confirmed unspent balance.&lt;/span&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;span style='color:#e06c75;'&gt;Der Node hat kein gültiges bestätigtes, nicht ausgegebenes Guthaben zurückgegeben.&lt;/span&gt;</translation>
     </message>
 </context>
 <context>
@@ -6145,7 +6304,7 @@ Label,Address</source>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="24" />
         <source>Private covenants pay one or two fixed shielded recipients. Amounts and recipients are hidden; the earliest spend height and fee are public. Your wallet recovers the encrypted contract from its funding note. A public funding source reveals the amount entering the shielded pool.</source>
-        <translation type="unfinished" />
+        <translation>Private Covenants zahlen an einen oder zwei festgelegte Shielded-Empfänger. Beträge und Empfänger bleiben verborgen; die früheste Ausgabehöhe und die Gebühr sind öffentlich. Ihre Wallet stellt den verschlüsselten Vertrag aus seiner Finanzierungs-Note wieder her. Eine öffentliche Finanzierungsquelle verrät den Betrag, der in den Shielded Pool fließt.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="26" />
@@ -6175,17 +6334,17 @@ Label,Address</source>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="47" />
         <source>Absolute block height, not a duration. Zero permits spending after confirmation.</source>
-        <translation type="unfinished" />
+        <translation>Absolute Blockhöhe, keine Dauer. Null erlaubt das Ausgeben nach der Bestätigung.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="50" />
         <source>Reserved in the contract. The exact payment outputs cannot be reduced later to raise this fee. Funding fee is additional and estimated by the daemon.</source>
-        <translation type="unfinished" />
+        <translation>Im Vertrag reserviert. Die genauen Zahlungs-Outputs können später nicht verringert werden, um diese Gebühr zu erhöhen. Die Finanzierungsgebühr kommt zusätzlich hinzu und wird vom Daemon geschätzt.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="53" />
         <source>Exact fee paid to fund this contract. If below relay policy, the daemon rejects the transaction without raising the fee.</source>
-        <translation type="unfinished" />
+        <translation>Genaue Gebühr für die Finanzierung dieses Vertrags. Liegt sie unter der Relay-Richtlinie, lehnt der Daemon die Transaktion ab, ohne die Gebühr zu erhöhen.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="62" />
@@ -6202,7 +6361,9 @@ Label,Address</source>
         <source>First check transaction history and refresh recovered contracts. The previous transaction may already have reached the network.
 
 Only continue after checking its outcome. This clears the local hold; it does not resubmit anything. A new funding operation creates a new contract and could duplicate a previously accepted payment.</source>
-        <translation type="unfinished" />
+        <translation>Prüfen Sie zuerst den Transaktionsverlauf und aktualisieren Sie die wiederhergestellten Verträge. Die vorherige Transaktion hat das Netzwerk möglicherweise bereits erreicht.
+
+Fahren Sie erst fort, nachdem Sie ihr Ergebnis geprüft haben. Dies hebt nur die lokale Sperre auf und sendet nichts erneut. Eine neue Finanzierung erzeugt einen neuen Vertrag und könnte eine bereits angenommene Zahlung verdoppeln.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="75" />
@@ -6212,7 +6373,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="78" />
         <source>Previous outcome reviewed. Compose a new operation if needed; nothing was resubmitted.</source>
-        <translation type="unfinished" />
+        <translation>Vorheriges Ergebnis geprüft. Erstellen Sie bei Bedarf einen neuen Vorgang; es wurde nichts erneut gesendet.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="110" />
@@ -6222,7 +6383,7 @@ Only continue after checking its outcome. This clears the local hold; it does no
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="131" />
         <source>No transaction ID returned. Outcome uncertain; check recovered contracts before taking further action.</source>
-        <translation type="unfinished" />
+        <translation>Keine Transaktions-ID zurückgegeben. Ergebnis unklar; prüfen Sie die wiederhergestellten Verträge, bevor Sie weitere Schritte unternehmen.</translation>
     </message>
     <message>
         <location filename="../src/privatecovenantwidget.cpp" line="175" />
@@ -6299,7 +6460,11 @@ Only continue after checking its outcome. This clears the local hold; it does no
 This can happen after a chain reset or major upgrade. Your wallet will be backed up automatically before wiping.
 
 Wipe chain data and restart with a fresh sync?</source>
-        <translation type="unfinished" />
+        <translation>Ihre Chain-Daten stammen aus einer älteren oder inkompatiblen Dinero-Version.
+
+Das kann nach einem Chain-Reset oder einem großen Upgrade passieren. Ihre Wallet wird vor dem Löschen automatisch gesichert.
+
+Chain-Daten löschen und mit einer frischen Synchronisation neu starten?</translation>
     </message>
     <message>
         <location filename="../src/main.cpp" line="1305" />
@@ -6350,7 +6515,14 @@ abandon
 ability
 able
 ...</source>
-        <translation type="unfinished" />
+        <translation>Beispiel:
+abandon ability able about above absent absorb abstract absurd abuse access accident…
+
+Oder ein Wort pro Zeile:
+abandon
+ability
+able
+…</translation>
     </message>
     <message>
         <location filename="../src/walletwizard.cpp" line="1199" />
@@ -6644,7 +6816,7 @@ Bitte versuchen Sie es erneut.</translation>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="243" />
         <source>The daemon selects the smallest confirmed shielded note at least this large. The full selected note minus fee is sent to a fresh wallet Taproot address.</source>
-        <translation type="unfinished" />
+        <translation>Der Daemon wählt die kleinste bestätigte Shielded Note, die mindestens so groß ist. Die gesamte gewählte Note abzüglich Gebühr geht an eine neue Taproot-Adresse der Wallet.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="252" />
@@ -6783,17 +6955,17 @@ Bitte versuchen Sie es erneut.</translation>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1038" />
         <source>outcome uncertain — refresh notes and transaction history before retrying</source>
-        <translation type="unfinished" />
+        <translation>Ergebnis unklar – aktualisieren Sie Notes und Transaktionsverlauf, bevor Sie es erneut versuchen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1043" />
         <source>outcome uncertain — inspect transaction history before starting another shield</source>
-        <translation type="unfinished" />
+        <translation>Ergebnis unklar – prüfen Sie den Transaktionsverlauf, bevor Sie eine weitere Shield-Operation starten</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1048" />
         <source>outcome uncertain — inspect notes and transaction history before retrying</source>
-        <translation type="unfinished" />
+        <translation>Ergebnis unklar – prüfen Sie Notes und Transaktionsverlauf, bevor Sie es erneut versuchen</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1064" />
@@ -6827,7 +6999,7 @@ Bitte versuchen Sie es erneut.</translation>
         <location filename="../src/shieldedwidget.cpp" line="1131" />
         <location filename="../src/shieldedwidget.cpp" line="1201" />
         <source>Previous outcome is uncertain — inspect notes and transaction history, then click Review Outcome to clear this warning. Nothing will be sent by that click.</source>
-        <translation type="unfinished" />
+        <translation>Das vorherige Ergebnis ist unklar – prüfen Sie Notes und Transaktionsverlauf und klicken Sie dann auf Ergebnis prüfen, um diese Warnung zu entfernen. Durch diesen Klick wird nichts gesendet.</translation>
     </message>
     <message>
         <location filename="../src/shieldedwidget.cpp" line="1136" />
@@ -6865,7 +7037,7 @@ Bitte versuchen Sie es erneut.</translation>
     <message>
         <location filename="../src/vaultpanel.cpp" line="222" />
         <source>Custodial deposit / withdrawal ledger backed by the daemon's Track-C vault service. Distinct from on-chain script vaults (see Contracts tab). When the daemon starts with an active wallet and no vault address configured, it auto-binds to your wallet's primary address and tracks deposits there; credits open at K=10 confirmations, settle at K=20. This is a separate vault ledger—not your normal wallet balance. Only new payments received at the Vault Deposit Address after binding are credited; existing wallet funds are never imported automatically.</source>
-        <translation type="unfinished" />
+        <translation>Verwahrtes Ein- und Auszahlungsbuch, gestützt auf den Track-C-Vault-Dienst des Daemons. Unterscheidet sich von On-Chain-Skript-Vaults (siehe Tab Verträge). Startet der Daemon mit aktiver Wallet und ohne konfigurierte Vault-Adresse, bindet er sich automatisch an die primäre Adresse Ihrer Wallet und verfolgt dort Einzahlungen; Gutschriften öffnen bei K=10 Bestätigungen und werden bei K=20 abgeschlossen. Dies ist ein separates Vault-Buch, nicht Ihr normales Wallet-Guthaben. Gutgeschrieben werden nur neue Zahlungen, die nach der Bindung an der Vault-Einzahlungsadresse eingehen; vorhandene Wallet-Mittel werden nie automatisch übernommen.</translation>
     </message>
     <message>
         <location filename="../src/vaultpanel.cpp" line="237" />
@@ -7590,7 +7762,9 @@ Laden Sie zuerst eine Wallet oder brechen Sie die Einrichtung ab und öffnen Sie
         <source>Are you sure you want to close this channel?
 
 This will create a closing transaction on-chain.</source>
-        <translation type="unfinished" />
+        <translation>Möchten Sie diesen Kanal wirklich schließen?
+
+Dadurch wird eine Schließungstransaktion on-chain erstellt.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="559" />
@@ -7610,7 +7784,12 @@ This will broadcast your latest commitment transaction.
 You may lose funds if the peer has a newer state.
 
 Are you absolutely sure?</source>
-        <translation type="unfinished" />
+        <translation>⚠️ WARNUNG: Eine Zwangsschließung sollte nur im Notfall verwendet werden.
+
+Dabei wird Ihre letzte Commitment-Transaktion gesendet.
+Sie können Mittel verlieren, wenn die Gegenstelle einen neueren Stand hat.
+
+Sind Sie ganz sicher?</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="595" />
@@ -7701,7 +7880,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="48" />
         <source>Uses Dinero's included Tor component for Dinero P2P only. Ordinary P2P remains available if Tor cannot start.</source>
-        <translation type="unfinished" />
+        <translation>Nutzt die mitgelieferte Tor-Komponente von Dinero nur für Dinero-P2P. Gewöhnliches P2P bleibt verfügbar, falls Tor nicht starten kann.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="53" />
@@ -7727,7 +7906,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="78" />
         <source>Serves only Dinero P2P traffic within conservative automatic limits; it is not a web proxy or a system-wide relay.</source>
-        <translation type="unfinished" />
+        <translation>Bedient nur Dinero-P2P-Verkehr innerhalb konservativer automatischer Grenzen; es ist kein Web-Proxy und keine systemweite Weiterleitung.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="83" />
@@ -7738,7 +7917,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="94" />
         <source>Allow Dinero to use its included Tor component for private and resilient network connectivity.</source>
-        <translation type="unfinished" />
+        <translation>Erlauben Sie Dinero, seine mitgelieferte Tor-Komponente für private und widerstandsfähige Konnektivität zu nutzen.</translation>
     </message>
     <message>
         <location filename="../src/overviewconnectivitycard.cpp" line="129" />
@@ -7880,7 +8059,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/contributionsection.cpp" line="117" />
         <source>Optional contribution indicator—not a security rating. Nodes behind NAT remain secure.</source>
-        <translation type="unfinished" />
+        <translation>Optionaler Beitragsindikator, keine Sicherheitsbewertung. Nodes hinter NAT bleiben sicher.</translation>
     </message>
 </context>
 <context>
@@ -7954,7 +8133,9 @@ Are you absolutely sure?</source>
         <source>
 
 This is one of your configured bootstrap peers. Ban only if you are debugging.</source>
-        <translation type="unfinished" />
+        <translation>
+
+Dies ist einer Ihrer konfigurierten Bootstrap-Peers. Sperren Sie ihn nur, wenn Sie Fehler suchen.</translation>
     </message>
     <message>
         <location filename="../src/dashboardactioncontroller.cpp" line="181" />
@@ -8146,12 +8327,12 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/identitysection.cpp" line="132" />
         <source>● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic. Listening locally on port %1.</source>
-        <translation type="unfinished" />
+        <translation>● Sicher über eine Dinero-Weiterleitung verbunden. Direkter eingehender Zugriff ist nicht verfügbar; die Wiederherstellung erfolgt automatisch. Lauscht lokal auf Port %1.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="135" />
         <source>● Connected securely through a Dinero relay. Direct inbound access is unavailable; recovery is automatic.</source>
-        <translation type="unfinished" />
+        <translation>● Sicher über eine Dinero-Weiterleitung verbunden. Direkter eingehender Zugriff ist nicht verfügbar; die Wiederherstellung erfolgt automatisch.</translation>
     </message>
     <message>
         <location filename="../src/identitysection.cpp" line="137" />
@@ -8242,7 +8423,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="71" />
         <source>Uses this node's existing authenticated RPC session and local node cookie; no additional credentials are required. Automatic uses only Dinero's included Tor component.</source>
-        <translation type="unfinished" />
+        <translation>Nutzt die bestehende authentifizierte RPC-Sitzung dieses Nodes und das lokale Node-Cookie; zusätzliche Zugangsdaten sind nicht erforderlich. Der automatische Modus nutzt ausschließlich die mitgelieferte Tor-Komponente von Dinero.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="78" />
@@ -8252,7 +8433,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="78" />
         <source>Allow Dinero to use its included Tor component for private and resilient network connectivity.</source>
-        <translation type="unfinished" />
+        <translation>Erlauben Sie Dinero, seine mitgelieferte Tor-Komponente für private und widerstandsfähige Konnektivität zu nutzen.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="88" />
@@ -8272,7 +8453,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="102" />
         <source>Serves encrypted Dinero P2P relay circuits only. It is not a web proxy and cannot relay other software.</source>
-        <translation type="unfinished" />
+        <translation>Bedient ausschließlich verschlüsselte Dinero-P2P-Weiterleitungscircuits. Es ist kein Web-Proxy und kann keine andere Software weiterleiten.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="107" />
@@ -8347,7 +8528,7 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="224" />
         <source>Could not change Tor reachability. Check RPC authorization and the local daemon log.</source>
-        <translation type="unfinished" />
+        <translation>Die Tor-Erreichbarkeit konnte nicht geändert werden. Prüfen Sie die RPC-Autorisierung und das Protokoll des lokalen Daemons.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="231" />
@@ -8367,12 +8548,12 @@ This is one of your configured bootstrap peers. Ban only if you are debugging.</
     <message>
         <location filename="../src/networksection.cpp" line="240" />
         <source>Configured, but the onion service is not active. Check the daemon log; credentials are hidden here.</source>
-        <translation type="unfinished" />
+        <translation>Konfiguriert, aber der Onion-Dienst ist nicht aktiv. Prüfen Sie das Daemon-Protokoll; Zugangsdaten werden hier verborgen.</translation>
     </message>
     <message>
         <location filename="../src/networksection.cpp" line="243" />
         <source>This daemon is older and does not support live Tor controls. Ordinary P2P continues normally.</source>
-        <translation type="unfinished" />
+        <translation>Dieser Daemon ist älter und unterstützt keine Live-Tor-Steuerung. Gewöhnliches P2P läuft normal weiter.</translation>
     </message>
 </context>
 <context>
