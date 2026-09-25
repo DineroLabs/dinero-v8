@@ -11,6 +11,23 @@
 namespace dinero::orchard {
 using Hash = std::array<std::uint8_t, 32>;
 
+// Immutable canonical frontier; only upstream hashing/append creates its root.
+// This is tree structure, NOT authenticated chainstate or an eligible anchor.
+class OrchardFrontier {
+public:
+    [[nodiscard]] static OrchardFrontier Empty();
+    [[nodiscard]] static OrchardFrontier Decode(std::span<const std::uint8_t> bytes);
+    [[nodiscard]] OrchardFrontier Append(std::span<const Hash> commitments) const;
+    const Hash& Root() const noexcept { return root_; }
+    std::uint64_t Size() const noexcept { return size_; }
+    const std::vector<std::uint8_t>& Bytes() const noexcept { return bytes_; }
+private:
+    explicit OrchardFrontier(const DineroOrchardFrontier& result);
+    const Hash root_;
+    const std::uint64_t size_;
+    const std::vector<std::uint8_t> bytes_;
+};
+
 // Draft protocol-v1 limits. Increasing the action limit changes both the
 // accepted inner encoding and the fixed v1 ABI; it requires explicit review.
 inline constexpr std::size_t kMaxActionsV1 = 8;

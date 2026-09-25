@@ -7,6 +7,21 @@ extern "C" {
 #endif
 
 #define DINERO_ORCHARD_V1_MAX_ACTIONS 8
+#define DINERO_ORCHARD_V1_MAX_FRONTIER_BYTES 1073
+
+typedef struct {
+    uint8_t root[32];
+    uint64_t leaf_count;
+    uint32_t encoded_length;
+    uint8_t encoded[DINERO_ORCHARD_V1_MAX_FRONTIER_BYTES];
+} DineroOrchardFrontier;
+int32_t dinero_orchard_frontier_empty_v1(DineroOrchardFrontier*);
+/* Immutable input; non-aliasing writable output. Null commitments allowed
+ * only for zero count. At most MAX_ACTIONS consecutive 32-byte commitments.
+ * Zero count checks/re-exports a frontier. Output unchanged on all failures.
+ * Neither decoding nor append establishes proof validity or chain provenance. */
+int32_t dinero_orchard_frontier_append_v1(const uint8_t*, size_t, const uint8_t*,
+                                        size_t, DineroOrchardFrontier*);
 
 /* ABI-v1 protocol limit. A change requires a reviewed new ABI/codec profile. */
 typedef struct DineroOrchardHandle DineroOrchardHandle;

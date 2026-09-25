@@ -89,7 +89,8 @@ hardcoded eight jobs to override the outer compiler budget.
 
 ## Still to implement
 
-- Pinned Orchard frontier append/serialization and authenticated anchor rules.
+- Connect the pinned Orchard frontier component to authenticated stored state
+  and anchor eligibility rules (see orchard-frontier-2026-09-24.md).
 - Validated block flow collection and proof-derived nullifier/commitment lists.
 - Actual ConnectTip/DisconnectTip and replay/reindex integration, including all
   alternate storage funnels and startup consistency checks.

@@ -4,6 +4,7 @@
 //! the host. No function in this crate declares a Dinero transaction valid.
 
 use nonempty::NonEmpty;
+mod frontier;
 use orchard::{
     bundle::{Authorized, BundleVersion, Flags, TxVersion},
     circuit::VerifyingKey,

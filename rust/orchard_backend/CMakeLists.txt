@@ -43,7 +43,7 @@ add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}"
     ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} build --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     --target-dir "${ORCHARD_TARGET_DIR}"
-  DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs
+  DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs
     include/orchard_backend_ffi.h tests/fixtures/candidate-spend.bundle
     tests/fixtures/candidate-spend.digest tests/fixtures/candidate-spend.effect
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" VERBATIM)

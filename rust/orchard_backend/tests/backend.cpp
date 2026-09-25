@@ -282,6 +282,37 @@ int main(int argc, char** argv) {
         rejected=false;
         try { (void)ParsedBundle::Decode(bytes); } catch (const BackendError&) { rejected=true; }
         Require(rejected);
+        // Canonical upstream frontier survives a storage round-trip; immutable
+        // parents remain usable for rollback and competing branch construction.
+        const auto empty = OrchardFrontier::Empty();
+        Require(empty.Size() == 0 && empty.Bytes().size() == 16);
+        Hash cmx1{}, cmx2{}; cmx1[0]=1; cmx2[0]=3;
+        const std::array<Hash,2> pair{cmx1,cmx2};
+        const auto two = empty.Append(pair);
+        const auto one = empty.Append(std::span(pair).first(1));
+        const auto split = one.Append(std::span(pair).subspan(1));
+        Require(two.Size() == 2 && two.Root() == split.Root() && two.Bytes() == split.Bytes());
+        Require(empty.Size() == 0 && one.Size() == 1 && one.Root() != two.Root());
+        // Orchard's uncommitted leaf is 2: appending it can leave the root
+        // unchanged. Size and canonical frontier must be tracked too.
+        Hash uncommitted{}; uncommitted[0]=2;
+        const auto padded = one.Append(std::span(&uncommitted,1));
+        Require(padded.Root() == one.Root() && padded.Size() == 2 && padded.Bytes() != one.Bytes());
+        const auto reopened = OrchardFrontier::Decode(two.Bytes());
+        Require(reopened.Bytes() == two.Bytes() && reopened.Root() == two.Root());
+        Require(two.Append({}).Bytes() == two.Bytes());
+        Hash invalid_cmx; invalid_cmx.fill(255);
+        const std::array<Hash,2> partially_invalid{cmx1,invalid_cmx};
+        rejected=false;
+        try { (void)empty.Append(partially_invalid); } catch (const BackendError&) { rejected=true; }
+        Require(rejected && empty.Size() == 0);
+        auto trailing=two.Bytes(); trailing.push_back(0); rejected=false;
+        try { (void)OrchardFrontier::Decode(trailing); } catch (const BackendError&) { rejected=true; }
+        Require(rejected);
+        DineroOrchardFrontier ffi{}; ffi.root[0]=99; ffi.leaf_count=123; ffi.encoded_length=77; ffi.encoded[0]=88;
+        Require(dinero_orchard_frontier_append_v1(trailing.data(),trailing.size(),nullptr,0,&ffi) != 0);
+        Require(ffi.root[0]==99 && ffi.leaf_count==123 && ffi.encoded_length==77 && ffi.encoded[0]==88);
+        std::cout << "Orchard canonical frontier, immutable append and FFI failure checks passed\n";
         std::cout << "Orchard C++ ownership, independent digest, " << mutation_checks
                   << " context mutations, payload binding and monetary bounds passed\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

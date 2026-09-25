@@ -22,6 +22,9 @@ This branch collects release implementation for review and qualification against
 - Independent transparent-value pool arithmetic enforced by the storage staging
   API, starting at zero, including fees, checked bounds and undo. Runtime block
   flow collection is still required; see the pool-guard design document.
+- Immutable upstream Orchard commitment frontier with canonical bounded storage
+  encoding, derived root/size and failure-atomic append. Parent-state matching,
+  anchor eligibility and actual validated block transitions remain unwired.
 - Pinned dependency advisory CI gate with saved reports and visible maintenance
   warnings; known vulnerabilities, unsoundness and yanks fail the gate.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
@@ -65,7 +68,7 @@ the following rows to test-only work:
 | --- | --- |
 | Shared parsing and authorization | Staged typed reader and authorization components; no live admission |
 | Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
-| Anchors, nullifiers, pool and atomic storage/undo | ChainDB staging, independent pool arithmetic and storage recovery tests implemented; cryptographic frontier, validated flow collection and production callers not integrated |
+| Anchors, nullifiers, pool and atomic storage/undo | ChainDB staging, independent pool arithmetic, upstream frontier component and storage recovery tests implemented; validated block transitions and production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Not implemented |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
 

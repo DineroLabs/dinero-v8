@@ -3,6 +3,7 @@
 #include <exception>
 #include <string>
 #include <utility>
+#include <algorithm>
 
 namespace dinero::orchard {
 static_assert(kMaxActionsV1 == DINERO_ORCHARD_V1_MAX_ACTIONS);
@@ -15,6 +16,38 @@ BackendError::BackendError(std::int32_t status)
     : std::runtime_error("Orchard backend status " + std::to_string(status)), status_(status) {}
 namespace {
 void Check(std::int32_t status) { if (status != 0) throw BackendError(status); }
+}
+static_assert(sizeof(DineroOrchardFrontier) == 1120);
+static_assert(offsetof(DineroOrchardFrontier, leaf_count) == 32);
+static_assert(offsetof(DineroOrchardFrontier, encoded_length) == 40);
+static_assert(offsetof(DineroOrchardFrontier, encoded) == 44);
+OrchardFrontier::OrchardFrontier(const DineroOrchardFrontier& result)
+    : root_([&] { Hash h; std::copy_n(result.root, 32, h.begin()); return h; }()),
+      size_(result.leaf_count), bytes_([&] {
+        if (result.encoded_length > DINERO_ORCHARD_V1_MAX_FRONTIER_BYTES ||
+            result.encoded_length < 16 || result.leaf_count > (uint64_t{1} << 32))
+            throw BackendError(DINERO_ORCHARD_FORMAT);
+        return std::vector<uint8_t>(result.encoded, result.encoded + result.encoded_length);
+      }()) {}
+OrchardFrontier OrchardFrontier::Empty() {
+    DineroOrchardFrontier result{};
+    Check(dinero_orchard_frontier_empty_v1(&result));
+    return OrchardFrontier(result);
+}
+OrchardFrontier OrchardFrontier::Decode(std::span<const uint8_t> bytes) {
+    DineroOrchardFrontier result{};
+    Check(dinero_orchard_frontier_append_v1(bytes.data(), bytes.size(), nullptr, 0, &result));
+    return OrchardFrontier(result);
+}
+OrchardFrontier OrchardFrontier::Append(std::span<const Hash> commitments) const {
+    if (commitments.size() > DINERO_ORCHARD_V1_MAX_ACTIONS)
+        throw BackendError(DINERO_ORCHARD_LIMIT);
+    // Flatten explicitly rather than depending on array-of-std::array layout.
+    std::vector<uint8_t> flat;
+    for (const auto& cmx : commitments) flat.insert(flat.end(), cmx.begin(), cmx.end());
+    DineroOrchardFrontier result{};
+    Check(dinero_orchard_frontier_append_v1(bytes_.data(), bytes_.size(), flat.data(), commitments.size(), &result));
+    return OrchardFrontier(result);
 }
 ParsedBundle::ParsedBundle(std::shared_ptr<const DineroOrchardHandle> handle,
                            DineroOrchardFacts facts)
