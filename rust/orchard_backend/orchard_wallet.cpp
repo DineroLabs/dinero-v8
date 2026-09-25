@@ -139,6 +139,12 @@ WalletBundlePlan WalletBundlePlan::PrepareSpend(const WalletKeys& keys,std::span
     Check(dinero_orchard_prepare_spend_v1(keys.handle_.get(),wire.data(),wire.size(),anchor.data(),
         outputs.data(),outputs.size(),&handle));return WalletBundlePlan(handle);
 }
+WalletProvingIntent WalletBundlePlan::Intent(const SigningContext& context)const {
+    if(!handle_)throw BackendError(DINERO_ORCHARD_FORMAT);
+    std::vector<Hash> nullifiers;
+    for(uint32_t i=0;i<facts_.action_count;++i){Hash h;std::copy(std::begin(facts_.nullifiers[i]),std::end(facts_.nullifiers[i]),h.begin());nullifiers.push_back(h);}
+    return WalletProvingIntent(context.domain_,context.Digest(facts_),context.inputs_,std::move(nullifiers));
+}
 ProvedWalletBundle WalletBundlePlan::Prove(const SigningContext& context)&& {
     auto consumed=std::move(handle_);
     if(!consumed)throw BackendError(DINERO_ORCHARD_FORMAT);

@@ -101,6 +101,23 @@ private:
     const std::vector<std::uint8_t> bytes_;
     const VerifiedAuthorization authorization_;
 };
+// Immutable intent constructed from the real randomized plan and owned signing
+// context before proving. It is not an authorization or a broadcastable tx.
+class WalletProvingIntent {
+public:
+    const SigningDomain& Domain()const noexcept{return domain_;}
+    const Hash& Message()const noexcept{return message_;}
+    const std::vector<ResolvedInput>& Inputs()const noexcept{return inputs_;}
+    const std::vector<Hash>& Nullifiers()const noexcept{return nullifiers_;}
+private:
+    friend class WalletBundlePlan;
+    WalletProvingIntent(SigningDomain domain,Hash message,std::vector<ResolvedInput> inputs,std::vector<Hash> nullifiers)
+        :domain_(domain),message_(message),inputs_(std::move(inputs)),nullifiers_(std::move(nullifiers)){}
+    SigningDomain domain_;
+    Hash message_;
+    std::vector<ResolvedInput> inputs_;
+    std::vector<Hash> nullifiers_;
+};
 class WalletBundlePlan {
 public:
     [[nodiscard]] static WalletBundlePlan PrepareShield(const WalletKeys&, std::span<const WalletPayment>);
@@ -112,6 +129,7 @@ public:
     WalletBundlePlan(const WalletBundlePlan&) = delete;
     WalletBundlePlan& operator=(const WalletBundlePlan&) = delete;
     const DineroOrchardFacts& UnprovedFacts() const noexcept { return facts_; }
+    [[nodiscard]] WalletProvingIntent Intent(const SigningContext&)const;
     // Consumes this plan, including after a failed attempt. There is no public
     // caller-digest overload. Context must originate from authenticated coins.
     [[nodiscard]] ProvedWalletBundle Prove(const SigningContext&) &&;
