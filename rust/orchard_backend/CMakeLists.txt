@@ -43,7 +43,7 @@ add_custom_command(OUTPUT "${ORCHARD_ARCHIVE}"
     ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} build --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
     --target-dir "${ORCHARD_TARGET_DIR}"
-  DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs
+  DEPENDS Cargo.toml Cargo.lock rust-toolchain.toml src/lib.rs src/frontier.rs src/wallet.rs
     include/orchard_backend_ffi.h tests/fixtures/candidate-spend.bundle
     tests/fixtures/candidate-spend.digest tests/fixtures/candidate-spend.effect
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" VERBATIM)
@@ -51,7 +51,7 @@ add_custom_target(dinero_orchard_rust_build DEPENDS "${ORCHARD_ARCHIVE}")
 add_library(dinero_orchard_rust STATIC IMPORTED)
 set_target_properties(dinero_orchard_rust PROPERTIES IMPORTED_LOCATION "${ORCHARD_ARCHIVE}")
 add_dependencies(dinero_orchard_rust dinero_orchard_rust_build)
-add_library(dinero_orchard_backend STATIC orchard_backend.cpp orchard_signing.cpp orchard_transaction.cpp)
+add_library(dinero_orchard_backend STATIC orchard_backend.cpp orchard_signing.cpp orchard_transaction.cpp orchard_wallet.cpp)
 target_compile_features(dinero_orchard_backend PUBLIC cxx_std_20)
 target_include_directories(dinero_orchard_backend PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include"
   PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
@@ -123,6 +123,9 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   target_compile_definitions(test_orchard_backend PRIVATE DINERO_HOST_MAX_MONEY=${ORCHARD_HOST_MAX_MONEY})
   target_link_libraries(test_orchard_backend PRIVATE dinero_orchard_backend)
   add_test(NAME OrchardBackendCpp COMMAND test_orchard_backend "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  add_executable(test_orchard_wallet tests/wallet.cpp)
+  target_link_libraries(test_orchard_wallet PRIVATE dinero_orchard_backend)
+  add_test(NAME OrchardWalletKeys COMMAND test_orchard_wallet)
   add_executable(test_orchard_transaction_reader "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_transaction_reader.cpp")
   target_link_libraries(test_orchard_transaction_reader PRIVATE dinero_transaction_reader)
   if(TARGET dinero_consensus_core)
@@ -176,6 +179,6 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardWalletKeys OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization OrchardStateTransition PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()

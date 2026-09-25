@@ -73,6 +73,23 @@ int32_t dinero_orchard_free_v1(DineroOrchardHandle*);
 uint64_t dinero_orchard_max_money_v1(void);
 uint32_t dinero_orchard_max_actions_v1(void);
 
+/* Wallet ABI. ZIP32 m/32'/1448'/account', seed 32..252 bytes, account < 2^31.
+ * The caller supplies secret seed material and controls its lifetime/hygiene.
+ * No private spending-key export exists. FVK export is privacy-sensitive.
+ * Scopes: 0 external, 1 internal. Diversifier index: 11 little-endian bytes.
+ * Networks: 0 mainnet, 1 testnet, 2 regtest; every other value is invalid.
+ * Every output is unchanged on failure. Handle free consumes on all statuses. */
+typedef struct DineroOrchardWalletKeys DineroOrchardWalletKeys;
+typedef struct { uint32_t length; uint8_t text[96]; } DineroOrchardAddressText;
+int32_t dinero_orchard_wallet_keys_v1(const uint8_t*, size_t, uint32_t, DineroOrchardWalletKeys**);
+int32_t dinero_orchard_wallet_fvk_v1(const DineroOrchardWalletKeys*, uint8_t output[96]);
+int32_t dinero_orchard_wallet_receiver_v1(const uint8_t fvk[96], uint8_t scope,
+                                        const uint8_t index[11], uint8_t output[43]);
+int32_t dinero_orchard_address_encode_v1(const uint8_t receiver[43], uint8_t network, DineroOrchardAddressText*);
+int32_t dinero_orchard_address_decode_v1(const uint8_t*, size_t, uint8_t network, uint8_t receiver[43]);
+int32_t dinero_orchard_wallet_free_v1(DineroOrchardWalletKeys*);
+uint32_t dinero_orchard_wallet_coin_type_v1(void);
+
 /* All non-null pointers must be valid and aligned; inputs immutable for each
  * call, outputs non-aliasing. Decode/facts leave output unchanged on failure.
  * A handle owns its decoded data, may be read concurrently, and must outlive

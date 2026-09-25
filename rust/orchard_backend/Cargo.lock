@@ -262,6 +262,7 @@ dependencies = [
 name = "dinero-orchard-backend"
 version = "0.1.0"
 dependencies = [
+ "bech32",
  "incrementalmerkletree",
  "nonempty",
  "orchard",
@@ -269,6 +270,8 @@ dependencies = [
  "rand_chacha",
  "sha2",
  "zcash_note_encryption",
+ "zeroize",
+ "zip32",
 ]
 
 [[package]]
