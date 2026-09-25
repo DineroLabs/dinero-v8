@@ -403,6 +403,15 @@ public:
         const storage::OrchardStoredState& expected_tip) const;
     StatusOr<uint256> getOrchardNullifierOwner(const uint256& nullifier) const;
     StatusOr<uint64_t> getOrchardAnchorReferences(const uint256& anchor) const;
+    // Read or project canonical logical-set commitments from the exact held
+    // parent view. Caller holds the writer lock across reads and any commit.
+    // Bounded overlay memory, but scans the existing sets (not yet optimized).
+    // Projection validates storage shape/membership, not proofs or pool flows.
+    StatusOr<storage::OrchardCommitmentSets> getOrchardCommitmentSets(
+        const storage::OrchardStoredState& expected) const;
+    StatusOr<storage::OrchardCommitmentSets> previewOrchardCommitmentSets(
+        const std::optional<storage::OrchardStoredState>& expected_parent,
+        const storage::OrchardStoredState& next, const std::vector<uint256>& nullifiers) const;
 
     // Staged retirement receipt and exact undo. Requires separated storage,
     // the selected validated parent/tip, matching legacy marker, and the same
@@ -769,6 +778,10 @@ private:
     rocksdb::ColumnFamilyHandle* shieldedStateHandle() const {
         return cf_[hasSeparatedShieldedState() ? 9 : idx_utreexo_].get();
     }
+    StatusOr<storage::OrchardCommitmentSets> readOrchardCommitmentSets(
+        const std::optional<storage::OrchardStoredState>& parent,
+        const std::vector<uint256>& added_nullifiers,
+        const std::optional<uint256>& added_anchor) const;
 
     // Key prefixes (1-byte tags)
     static constexpr uint8_t PREFIX_BLOCK = 'b';

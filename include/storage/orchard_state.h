@@ -17,6 +17,15 @@ struct OrchardStoredState {
     std::string frontier;
     bool operator==(const OrchardStoredState&) const = default;
 };
+// Canonical logical-set digests, not RocksDB serialization or undo metadata.
+struct OrchardCommitmentSets {
+    uint256 nullifiers;
+    uint64_t nullifier_count = 0;
+    uint256 anchors;
+    uint64_t anchor_count = 0;
+    uint64_t anchor_references = 0;
+    bool operator==(const OrchardCommitmentSets&) const = default;
+};
 // Storage resource ceilings; these do not establish transaction/block rules.
 inline constexpr std::size_t ORCHARD_STORED_FRONTIER_LIMIT = 4096;
 inline constexpr std::size_t ORCHARD_STORED_BLOCK_NULLIFIER_LIMIT = 16384;

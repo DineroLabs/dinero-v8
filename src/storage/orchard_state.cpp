@@ -1,6 +1,7 @@
 #include "storage/chain_db.h"
 #include "consensus/orchard_pool_balance.h"
 #include "consensus/tx_validation.h"
+#include "crypto/sha256.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -279,5 +280,98 @@ Status ChainDB::stageOrchardDisconnect(const ChainWriteToken& token,
     for (const auto& nf : undo->nullifiers)
         RETURN_IF_ERROR(convertRocksDBStatus(batch.Delete(cf, Key('N', nf))));
     guard.keep(); return Status::Ok;
+}
+
+StatusOr<storage::OrchardCommitmentSets> ChainDB::getOrchardCommitmentSets(
+    const OrchardStoredState& expected) const {
+    if (!Valid(expected)) return Status::Invalid;
+    return readOrchardCommitmentSets(expected, {}, std::nullopt);
+}
+StatusOr<storage::OrchardCommitmentSets> ChainDB::previewOrchardCommitmentSets(
+    const std::optional<OrchardStoredState>& parent, const OrchardStoredState& next,
+    const std::vector<uint256>& nullifiers) const {
+    if (!Transition(parent, next) || nullifiers.size() > storage::ORCHARD_STORED_BLOCK_NULLIFIER_LIMIT ||
+        next.tree_size != (parent ? parent->tree_size : 0) + uint64_t(nullifiers.size()))
+        return Status::Invalid;
+    return readOrchardCommitmentSets(parent, nullifiers, next.anchor);
+}
+StatusOr<storage::OrchardCommitmentSets> ChainDB::readOrchardCommitmentSets(
+    const std::optional<OrchardStoredState>& parent, const std::vector<uint256>& added,
+    const std::optional<uint256>& added_anchor) const {
+    if (!db_) return Status::Internal;
+    if (!hasSeparatedShieldedState()) return Status::Invalid;
+    const auto current = getOrchardState();
+    if (parent) {
+        if (!current.ok()) return current.status();
+        if (*current != *parent) return Status::Invalid;
+    } else {
+        if (current.ok()) return Status::AlreadyExists;
+        if (current.status() != Status::NotFound) return current.status();
+        std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(), shieldedStateHandle()));
+        it->Seek("O1");
+        if (it->Valid() && it->key().starts_with("O1")) return Status::Corruption;
+        if (!it->status().ok()) return convertRocksDBStatus(it->status());
+    }
+    const auto less = [](const uint256& a, const uint256& b) { return std::memcmp(a.data,b.data,32) < 0; };
+    auto inserted = added; std::sort(inserted.begin(),inserted.end(),less);
+    if (std::adjacent_find(inserted.begin(),inserted.end()) != inserted.end()) return Status::Invalid;
+    storage::OrchardCommitmentSets result;
+    crypto::CSHA256 nf_hash, anchor_hash;
+    nf_hash.Write(std::string("ONF1\x01",5)); anchor_hash.Write(std::string("OAN1\x01",5));
+    const auto hash_number = [](crypto::CSHA256& h, uint64_t n) {
+        std::string b; Number(b,n,8); h.Write(b);
+    };
+    const auto emit_nf = [&](const uint256& nf) {
+        if (result.nullifier_count == UINT64_MAX) return false;
+        nf_hash.Write(nf.data,32); ++result.nullifier_count; return true;
+    };
+    size_t inserted_pos = 0;
+    std::unique_ptr<rocksdb::Iterator> it(db_->NewIterator(rocksdb::ReadOptions(),shieldedStateHandle()));
+    std::optional<uint256> previous;
+    for (it->Seek("O1N"); it->Valid() && it->key().starts_with("O1N"); it->Next()) {
+        if (it->key().size()!=35 || it->value().size()!=32) return Status::Corruption;
+        uint256 nf, owner; std::memcpy(nf.data,it->key().data()+3,32); std::memcpy(owner.data,it->value().data(),32);
+        if (owner.IsNull() || (previous && !less(*previous,nf))) return Status::Corruption;
+        previous=nf;
+        while (inserted_pos<inserted.size() && less(inserted[inserted_pos],nf))
+            if (!emit_nf(inserted[inserted_pos++])) return Status::Corruption;
+        if (inserted_pos<inserted.size() && inserted[inserted_pos]==nf) return Status::AlreadyExists;
+        if (!emit_nf(nf)) return Status::Corruption;
+    }
+    if (!it->status().ok()) return convertRocksDBStatus(it->status());
+    while (inserted_pos<inserted.size()) if (!emit_nf(inserted[inserted_pos++])) return Status::Corruption;
+    if (result.nullifier_count != (parent ? parent->tree_size : 0) + uint64_t(inserted.size()))
+        return Status::Corruption;
+    hash_number(nf_hash,result.nullifier_count); nf_hash.Finalize(result.nullifiers.data);
+    bool emitted_new = !added_anchor.has_value(), found_current = !parent.has_value();
+    uint64_t old_references=0;
+    const auto emit_anchor = [&](const uint256& a, uint64_t count) {
+        if (!count || count > UINT64_MAX-result.anchor_references || result.anchor_count==UINT64_MAX) return false;
+        anchor_hash.Write(a.data,32); hash_number(anchor_hash,count);
+        ++result.anchor_count; result.anchor_references+=count; return true;
+    };
+    previous.reset();
+    for (it->Seek("O1A"); it->Valid() && it->key().starts_with("O1A"); it->Next()) {
+        if (it->key().size()!=35 || it->value().size()!=8) return Status::Corruption;
+        uint256 anchor; std::memcpy(anchor.data,it->key().data()+3,32);
+        OrchardRecordReader reader{std::string_view(it->value().data(),it->value().size())};
+        auto count=reader.number(8);
+        if (!parent || !count || count>parent->height || count>parent->height-old_references ||
+            (previous && !less(*previous,anchor))) return Status::Corruption;
+        previous=anchor; old_references+=count;
+        if (anchor==parent->anchor) found_current=true;
+        if (!emitted_new && less(*added_anchor,anchor)) {
+            if (!emit_anchor(*added_anchor,1)) return Status::Corruption;
+            emitted_new=true;
+        }
+        if (!emitted_new && *added_anchor==anchor) { ++count; emitted_new=true; }
+        if (!emit_anchor(anchor,count)) return Status::Corruption;
+    }
+    if (!it->status().ok()) return convertRocksDBStatus(it->status());
+    if (!found_current) return Status::Corruption;
+    if (!emitted_new && !emit_anchor(*added_anchor,1)) return Status::Corruption;
+    hash_number(anchor_hash,result.anchor_count); hash_number(anchor_hash,result.anchor_references);
+    anchor_hash.Finalize(result.anchors.data);
+    return result;
 }
 } // namespace dinero

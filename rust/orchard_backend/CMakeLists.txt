@@ -118,6 +118,10 @@ if(TARGET dinero_chainstate)
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_filter.cpp"
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_forest_transition.cpp")
   target_link_libraries(dinero_orchard_block_coins PUBLIC dinero_orchard_block_reader dinero_orchard_transparent)
+  add_library(dinero_orchard_state_root STATIC
+    "${ORCHARD_HOST_ROOT}/src/consensus/orchard_state_root.cpp")
+  target_link_libraries(dinero_orchard_state_root PUBLIC dinero_orchard_backend dinero_crypto)
+  target_include_directories(dinero_orchard_state_root PUBLIC "${ORCHARD_HOST_ROOT}/include")
   add_library(dinero_orchard_block_staging STATIC
     "${ORCHARD_HOST_ROOT}/src/consensus/orchard_block_staging.cpp")
   target_link_libraries(dinero_orchard_block_staging PUBLIC dinero_orchard_transparent dinero_chainstate dinero_orchard_block_reader dinero_orchard_block_coins)
@@ -244,6 +248,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_utxo_publication PRIVATE dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
     add_test(NAME OrchardMemoryPublication COMMAND test_utxo_publication)
     set_tests_properties(OrchardMemoryPublication PROPERTIES TIMEOUT 60 LABELS "orchard;consensus;integration-staging")
+    add_executable(test_orchard_state_root
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_state_root.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_link_libraries(test_orchard_state_root PRIVATE dinero_orchard_state_root dinero_orchard_block_staging RocksDB::rocksdb)
+    add_test(NAME OrchardStateRoot COMMAND test_orchard_state_root "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardStateRoot PROPERTIES TIMEOUT 120 LABELS "orchard;consensus;storage;integration-staging")
     add_executable(test_orchard_state_commitment
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_state_commitment.cpp"
       "${ORCHARD_HOST_ROOT}/src/consensus/state_commitment.cpp")
