@@ -729,139 +729,139 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="56" />
         <source>0 active contracts</source>
-        <translation type="unfinished" />
+        <translation>0 aktivnih ugovora</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="59" />
         <source>➕ Create New Escrow</source>
-        <translation type="unfinished" />
+        <translation>➕ Napravi novi escrow</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="62" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Osvježi</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="63" />
         <source>📥 Export CSV</source>
-        <translation type="unfinished" />
+        <translation>📥 Izvezi CSV</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="76" />
         <source>Filter:</source>
-        <translation type="unfinished" />
+        <translation>Filter:</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="125" />
         <source>Selected Contract Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji odabranog ugovora</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="140" />
         <source>📋 Copy P2SH</source>
-        <translation type="unfinished" />
+        <translation>📋 Kopiraj P2SH</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="142" />
         <source>📱 Show QR</source>
-        <translation type="unfinished" />
+        <translation>📱 Prikaži QR</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="145" />
         <source>📜 View Script</source>
-        <translation type="unfinished" />
+        <translation>📜 Prikaži skriptu</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="147" />
         <source>💾 Export Sighash</source>
-        <translation type="unfinished" />
+        <translation>💾 Izvezi sighash</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="155" />
         <location filename="../src/escrowwidget.cpp" line="1365" />
         <source>&lt;b&gt;Contract ID:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;ID ugovora:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="158" />
         <source>&lt;b&gt;P2SH Address:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;P2SH adresa:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="165" />
         <location filename="../src/escrowwidget.cpp" line="1368" />
         <source>&lt;b&gt;Amount:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Iznos:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="168" />
         <source>&lt;b&gt;Status:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Status:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="171" />
         <source>&lt;b&gt;Buyer:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Kupac:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="174" />
         <source>&lt;b&gt;Seller:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Prodavac:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="177" />
         <source>&lt;b&gt;Mediator:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Posrednik:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="180" />
         <source>&lt;b&gt;Lock TXID:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;TXID zaključavanja:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="183" />
         <source>&lt;b&gt;Refund Height:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Visina povrata:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="186" />
         <source>&lt;b&gt;Current Height:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Trenutna visina:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="189" />
         <source>&lt;b&gt;Time Remaining:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Preostalo vrijeme:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="192" />
         <source>&lt;b&gt;Timelock Progress:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Napredak timelocka:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="204" />
         <source>✅ Release Funds to Seller</source>
-        <translation type="unfinished" />
+        <translation>✅ Oslobodi sredstva prodavcu</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="208" />
         <source>↩️ Refund to Buyer</source>
-        <translation type="unfinished" />
+        <translation>↩️ Vrati kupcu</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="212" />
         <source>🔍 View Full Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Prikaži sve detalje</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="215" />
         <source>📥 Import Signatures</source>
-        <translation type="unfinished" />
+        <translation>📥 Uvezi potpise</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="227" />
         <source>&lt;b&gt;Event Log:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Zapis događaja:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="291" />
@@ -869,7 +869,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/escrowwidget.cpp" line="431" />
         <location filename="../src/escrowwidget.cpp" line="549" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Nema odabira</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="291" />
@@ -877,44 +877,44 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/escrowwidget.cpp" line="431" />
         <location filename="../src/escrowwidget.cpp" line="549" />
         <source>Please select a contract first.</source>
-        <translation type="unfinished" />
+        <translation>Prvo odaberite ugovor.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="297" />
         <source>Release Funds</source>
-        <translation type="unfinished" />
+        <translation>Oslobodi sredstva</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="325" />
         <location filename="../src/escrowwidget.cpp" line="469" />
         <source>Timelock Not Expired</source>
-        <translation type="unfinished" />
+        <translation>Timelock još nije istekao</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="337" />
         <source>Refund to Buyer</source>
-        <translation type="unfinished" />
+        <translation>Vrati kupcu</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="378" />
         <source>✅ Copied!</source>
-        <translation type="unfinished" />
+        <translation>✅ Kopirano.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="398" />
         <location filename="../src/escrowwidget.cpp" line="811" />
         <source>Export Failed</source>
-        <translation type="unfinished" />
+        <translation>Izvoz nije uspio</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="398" />
         <source>Could not open file for writing.</source>
-        <translation type="unfinished" />
+        <translation>Datoteka se ne može otvoriti za pisanje.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="418" />
         <source>Export Complete</source>
-        <translation type="unfinished" />
+        <translation>Izvoz je završen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="424" />
@@ -929,7 +929,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
         <source>Contract Not Found</source>
-        <translation type="unfinished" />
+        <translation>Ugovor nije pronađen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="436" />
@@ -939,12 +939,12 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="444" />
         <source>Invalid Status</source>
-        <translation type="unfinished" />
+        <translation>Neispravan status</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="451" />
         <source>Export Sighash</source>
-        <translation type="unfinished" />
+        <translation>Izvezi sighash</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="452" />
@@ -964,23 +964,23 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="564" />
         <source>Import Failed</source>
-        <translation type="unfinished" />
+        <translation>Uvoz nije uspio</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="564" />
         <source>Could not read file.</source>
-        <translation type="unfinished" />
+        <translation>Datoteka se ne može pročitati.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="573" />
         <location filename="../src/escrowwidget.cpp" line="1524" />
         <source>Parse Error</source>
-        <translation type="unfinished" />
+        <translation>Greška pri obradi</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="584" />
         <source>Invalid File</source>
-        <translation type="unfinished" />
+        <translation>Neispravna datoteka</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="592" />
@@ -991,7 +991,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/escrowwidget.cpp" line="607" />
         <location filename="../src/escrowwidget.cpp" line="1546" />
         <source>No Signatures</source>
-        <translation type="unfinished" />
+        <translation>Nema potpisa</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="608" />
@@ -1002,7 +1002,7 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
         <location filename="../src/escrowwidget.cpp" line="622" />
         <location filename="../src/escrowwidget.cpp" line="1564" />
         <source>Confirm Broadcast</source>
-        <translation type="unfinished" />
+        <translation>Potvrdi objavu</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="630" />
@@ -1018,32 +1018,32 @@ Bez te kopije ne možete vratiti novčanik ako računar izgubite ili se ošteti.
     <message>
         <location filename="../src/escrowwidget.cpp" line="747" />
         <source>Contract Created</source>
-        <translation type="unfinished" />
+        <translation>Ugovor je napravljen</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="794" />
         <source>Export Successful</source>
-        <translation type="unfinished" />
+        <translation>Izvoz je uspio</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="795" />
         <source>Sighash exported successfully!</source>
-        <translation type="unfinished" />
+        <translation>Sighash je uspješno izvezen.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="811" />
         <source>Could not write to file.</source>
-        <translation type="unfinished" />
+        <translation>U datoteku se ne može pisati.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="830" />
         <source>Swap Failed</source>
-        <translation type="unfinished" />
+        <translation>Zamjena nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1022" />
         <source>Create New Escrow Contract</source>
-        <translation type="unfinished" />
+        <translation>Napravi novi escrow ugovor</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1028" />
@@ -1070,12 +1070,12 @@ Bridge conversion uses locked exchange rate.</source>
         <location filename="../src/escrowwidget.cpp" line="1075" />
         <location filename="../src/escrowwidget.cpp" line="1080" />
         <source>Validation Error</source>
-        <translation type="unfinished" />
+        <translation>Greška provjere</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1075" />
         <source>All public keys are required.</source>
-        <translation type="unfinished" />
+        <translation>Potrebni su svi javni ključevi.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1080" />
@@ -1085,12 +1085,12 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1110" />
         <source>Contract Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji ugovora</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1205" />
         <source>Redeem Script</source>
-        <translation type="unfinished" />
+        <translation>Skripta za otkup</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1210" />
@@ -1105,12 +1105,12 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1225" />
         <source>📋 Copy Script</source>
-        <translation type="unfinished" />
+        <translation>📋 Kopiraj skriptu</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1252" />
         <source>No Address</source>
-        <translation type="unfinished" />
+        <translation>Nema adrese</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1252" />
@@ -1121,23 +1121,23 @@ Bridge conversion uses locked exchange rate.</source>
         <location filename="../src/escrowwidget.cpp" line="1296" />
         <location filename="../src/escrowwidget.cpp" line="1405" />
         <source>QR Generation Failed</source>
-        <translation type="unfinished" />
+        <translation>Generisanje QR koda nije uspjelo</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1296" />
         <source>Failed to generate QR code.</source>
-        <translation type="unfinished" />
+        <translation>QR kod se ne može generisati.</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1310" />
         <source>📋 Copy to Clipboard</source>
-        <translation type="unfinished" />
+        <translation>📋 Kopiraj u međuspremnik</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1318" />
         <location filename="../src/escrowwidget.cpp" line="1447" />
         <source>💾 Save QR Image</source>
-        <translation type="unfinished" />
+        <translation>💾 Sačuvaj sliku QR koda</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1329" />
@@ -1170,22 +1170,22 @@ Bridge conversion uses locked exchange rate.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1362" />
         <source>Transaction Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji transakcije</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1371" />
         <source>&lt;b&gt;To Address:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Adresa primaoca:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1374" />
         <source>&lt;b&gt;Action:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Radnja:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1377" />
         <source>&lt;b&gt;Sighash:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Sighash:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1406" />
@@ -1202,7 +1202,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1440" />
         <source>📋 Copy JSON</source>
-        <translation type="unfinished" />
+        <translation>📋 Kopiraj JSON</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1479" />
@@ -1227,12 +1227,12 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1509" />
         <source>✅ Import and Broadcast</source>
-        <translation type="unfinished" />
+        <translation>✅ Uvezi i objavi</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1515" />
         <source>No Data</source>
-        <translation type="unfinished" />
+        <translation>Nema podataka</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1515" />
@@ -1242,7 +1242,7 @@ Please use the JSON file export method instead.</source>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1535" />
         <source>Invalid Data</source>
-        <translation type="unfinished" />
+        <translation>Neispravni podaci</translation>
     </message>
     <message>
         <location filename="../src/escrowwidget.cpp" line="1547" />
@@ -1267,7 +1267,7 @@ Please ensure the transaction has been signed.</source>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="200" />
         <source>🔐 Hardware Wallet Integration</source>
-        <translation type="unfinished" />
+        <translation>🔐 Integracija hardverskog novčanika</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="205" />
@@ -1278,7 +1278,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="234" />
         <source>📋 How it works</source>
-        <translation type="unfinished" />
+        <translation>📋 Kako radi</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="236" />
@@ -1293,12 +1293,12 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
         <location filename="../src/hardwarewalletwidget.cpp" line="248" />
         <location filename="../src/hardwarewalletwidget.cpp" line="402" />
         <source>Partially Signed Dinero Transaction (PSBT)</source>
-        <translation type="unfinished" />
+        <translation>Djelimično potpisana Dinero transakcija (PSBT)</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="251" />
         <source>Dinero PSBT (Base64):</source>
-        <translation type="unfinished" />
+        <translation>Dinero PSBT (Base64):</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="253" />
@@ -1308,12 +1308,12 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="273" />
         <source>📤 Export to Hardware Wallet</source>
-        <translation type="unfinished" />
+        <translation>📤 Izvezi na hardverski novčanik</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="276" />
         <source>Export Path:</source>
-        <translation type="unfinished" />
+        <translation>Putanja izvoza:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="278" />
@@ -1324,22 +1324,22 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
         <location filename="../src/hardwarewalletwidget.cpp" line="280" />
         <location filename="../src/hardwarewalletwidget.cpp" line="314" />
         <source>Browse...</source>
-        <translation type="unfinished" />
+        <translation>Pregledaj …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="295" />
         <source>Export Dinero PSBT to File</source>
-        <translation type="unfinished" />
+        <translation>Izvezi Dinero PSBT u datoteku</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="307" />
         <source>📥 Import from Hardware Wallet</source>
-        <translation type="unfinished" />
+        <translation>📥 Uvezi s hardverskog novčanika</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="310" />
         <source>Import Path:</source>
-        <translation type="unfinished" />
+        <translation>Putanja uvoza:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="312" />
@@ -1349,17 +1349,17 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="328" />
         <source>Import Signed Dinero PSBT</source>
-        <translation type="unfinished" />
+        <translation>Uvezi potpisani Dinero PSBT</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="340" />
         <source>🔍 Analyze Dinero PSBT</source>
-        <translation type="unfinished" />
+        <translation>🔍 Analiziraj Dinero PSBT</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="347" />
         <source>🔌 Sign via Connected USB</source>
-        <translation type="unfinished" />
+        <translation>🔌 Potpiši preko povezanog USB-a</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="349" />
@@ -1369,7 +1369,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="352" />
         <source>✅ Finalize Dinero PSBT</source>
-        <translation type="unfinished" />
+        <translation>✅ Finaliziraj Dinero PSBT</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="354" />
@@ -1379,7 +1379,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="357" />
         <source>📡 Broadcast Transaction</source>
-        <translation type="unfinished" />
+        <translation>📡 Objavi transakciju</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="359" />
@@ -1395,7 +1395,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="385" />
         <source>📋 QR Code Workflow</source>
-        <translation type="unfinished" />
+        <translation>📋 Rad s QR kodom</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="387" />
@@ -1418,27 +1418,27 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="421" />
         <source>📱 QR Code Display</source>
-        <translation type="unfinished" />
+        <translation>📱 Prikaz QR koda</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="429" />
         <source>QR code will appear here</source>
-        <translation type="unfinished" />
+        <translation>QR kod će se pojaviti ovdje</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="441" />
         <source>📤 Show QR Code</source>
-        <translation type="unfinished" />
+        <translation>📤 Prikaži QR kod</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="447" />
         <source>📥 Scan Signed QR</source>
-        <translation type="unfinished" />
+        <translation>📥 Skeniraj potpisani QR</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="450" />
         <source>Camera scanning requires additional dependencies</source>
-        <translation type="unfinished" />
+        <translation>Skeniranje kamerom zahtijeva dodatne zavisnosti</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="461" />
@@ -1448,7 +1448,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="479" />
         <source>Analyze PSBT to show QR code</source>
-        <translation type="unfinished" />
+        <translation>Analizirajte PSBT da prikažete QR kod</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="482" />
@@ -1458,12 +1458,12 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="486" />
         <source>Transaction summary will appear after analysis.</source>
-        <translation type="unfinished" />
+        <translation>Sažetak transakcije će se pojaviti nakon analize.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="503" />
         <source>Demo QR unavailable</source>
-        <translation type="unfinished" />
+        <translation>Demo QR nije dostupan</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="524" />
@@ -1479,7 +1479,7 @@ PSBT here means Partially Signed Dinero Transaction. It is a binary signing cont
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="595" />
         <source>🔌 USB Hardware Wallets</source>
-        <translation type="unfinished" />
+        <translation>🔌 USB hardverski novčanici</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="597" />
@@ -1497,23 +1497,23 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="612" />
         <source>🔍 Device Detection</source>
-        <translation type="unfinished" />
+        <translation>🔍 Otkrivanje uređaja</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="615" />
         <source>Connected Devices:</source>
-        <translation type="unfinished" />
+        <translation>Povezani uređaji:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="621" />
         <source>🔄 Detect Devices</source>
-        <translation type="unfinished" />
+        <translation>🔄 Otkrij uređaje</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="625" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1582" />
         <source>🔌 Connect</source>
-        <translation type="unfinished" />
+        <translation>🔌 Poveži</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="628" />
@@ -1523,17 +1523,17 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="651" />
         <source>🏷️ Address Verification</source>
-        <translation type="unfinished" />
+        <translation>🏷️ Provjera adrese</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="654" />
         <source>Derivation Path:</source>
-        <translation type="unfinished" />
+        <translation>Putanja izvođenja:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="661" />
         <source>📥 Get Address</source>
-        <translation type="unfinished" />
+        <translation>📥 Preuzmi adresu</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="663" />
@@ -1543,7 +1543,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="666" />
         <source>👁️ Verify on Device</source>
-        <translation type="unfinished" />
+        <translation>👁️ Provjeri na uređaju</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="668" />
@@ -1554,27 +1554,27 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
         <location filename="../src/hardwarewalletwidget.cpp" line="671" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1564" />
         <source>No address fetched yet.</source>
-        <translation type="unfinished" />
+        <translation>Nijedna adresa još nije preuzeta.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="682" />
         <source>🧾 Watch-Only Descriptor Export</source>
-        <translation type="unfinished" />
+        <translation>🧾 Izvoz descriptora samo za praćenje</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="685" />
         <source>Account Path:</source>
-        <translation type="unfinished" />
+        <translation>Putanja računa:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="692" />
         <source>Descriptor Policy:</source>
-        <translation type="unfinished" />
+        <translation>Pravila descriptora:</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="699" />
         <source>🧾 Export Account Descriptors</source>
-        <translation type="unfinished" />
+        <translation>🧾 Izvezi descriptore računa</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="701" />
@@ -1584,7 +1584,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="704" />
         <source>📥 Import Into Active Wallet</source>
-        <translation type="unfinished" />
+        <translation>📥 Uvezi u aktivni novčanik</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="706" />
@@ -1604,22 +1604,22 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="729" />
         <source>📝 Activity Log</source>
-        <translation type="unfinished" />
+        <translation>📝 Zapis aktivnosti</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="761" />
         <source>Exporting PSBT...</source>
-        <translation type="unfinished" />
+        <translation>Izvozim PSBT …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="794" />
         <source>Importing PSBT...</source>
-        <translation type="unfinished" />
+        <translation>Uvozim PSBT …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="817" />
         <source>Analyzing PSBT...</source>
-        <translation type="unfinished" />
+        <translation>Analiziram PSBT …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="847" />
@@ -1629,12 +1629,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="866" />
         <source>Finalizing PSBT...</source>
-        <translation type="unfinished" />
+        <translation>Finaliziram PSBT …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="879" />
         <source>Broadcasting final transaction...</source>
-        <translation type="unfinished" />
+        <translation>Objavljujem konačnu transakciju …</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="891" />
@@ -1669,7 +1669,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1025" />
         <source>Import Watch-Only Descriptors</source>
-        <translation type="unfinished" />
+        <translation>Uvezi descriptore samo za praćenje</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1026" />
@@ -1690,33 +1690,33 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1128" />
         <source>❌ USB operation failed</source>
-        <translation type="unfinished" />
+        <translation>❌ USB operacija nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1131" />
         <location filename="../src/hardwarewalletwidget.cpp" line="1249" />
         <source>❌ USB signing failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Potpisivanje preko USB-a nije uspjelo</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1135" />
         <source>❌ Operation failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Operacija nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1153" />
         <source>✅ Export complete</source>
-        <translation type="unfinished" />
+        <translation>✅ Izvoz je završen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1157" />
         <source>❌ Export failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Izvoz nije uspio</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1167" />
         <source>❌ Import failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Uvoz nije uspio</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1184" />
@@ -1726,27 +1726,27 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1189" />
         <source>✅ Analysis complete</source>
-        <translation type="unfinished" />
+        <translation>✅ Analiza je završena</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1194" />
         <source>❌ Analysis failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Analiza nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1266" />
         <source>⚠️ No address returned</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Nijedna adresa nije vraćena</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1267" />
         <source>No address returned.</source>
-        <translation type="unfinished" />
+        <translation>Nijedna adresa nije vraćena.</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1314" />
         <source>✅ Account descriptors exported</source>
-        <translation type="unfinished" />
+        <translation>✅ Descriptori računa su izvezeni</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1322" />
@@ -1771,7 +1771,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1373" />
         <source>❌ Finalize failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Finaliziranje nije uspjelo</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1392" />
@@ -1781,32 +1781,32 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1395" />
         <source>⚠️ Finalization incomplete</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Finaliziranje nije potpuno</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1406" />
         <source>❌ Broadcast failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Objava nije uspjela</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1436" />
         <source>⚠️ No USB hardware wallets found</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Nije pronađen nijedan USB hardverski novčanik</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1492" />
         <source>❌ Device detection failed</source>
-        <translation type="unfinished" />
+        <translation>❌ Otkrivanje uređaja nije uspjelo</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1561" />
         <source>ℹ️ USB session closed</source>
-        <translation type="unfinished" />
+        <translation>ℹ️ USB sesija je zatvorena</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1575" />
         <source>🔌 Disconnect</source>
-        <translation type="unfinished" />
+        <translation>🔌 Prekini vezu</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1576" />
@@ -1821,7 +1821,7 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1637" />
         <source>✅ Signed Dinero PSBT imported</source>
-        <translation type="unfinished" />
+        <translation>✅ Potpisani Dinero PSBT je uvezen</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1640" />
@@ -1831,12 +1831,12 @@ Click 'Detect Devices' to check whether this daemon build can see connected USB 
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1656" />
         <source>Hardware Wallet Error</source>
-        <translation type="unfinished" />
+        <translation>Greška hardverskog novčanika</translation>
     </message>
     <message>
         <location filename="../src/hardwarewalletwidget.cpp" line="1660" />
         <source>Hardware Wallet</source>
-        <translation type="unfinished" />
+        <translation>Hardverski novčanik</translation>
     </message>
 </context>
 <context>
@@ -5338,37 +5338,37 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="47" />
         <source>&lt;h2&gt;🛒 P2P Marketplace&lt;/h2&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;h2&gt;🛒 P2P tržnica&lt;/h2&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="48" />
         <source>Loading...</source>
-        <translation type="unfinished" />
+        <translation>Učitavam …</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="51" />
         <source>➕ Create Offer</source>
-        <translation type="unfinished" />
+        <translation>➕ Napravi ponudu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="54" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Osvježi</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="55" />
         <source>📋 My Offers</source>
-        <translation type="unfinished" />
+        <translation>📋 Moje ponude</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="56" />
         <source>🤝 My Trades</source>
-        <translation type="unfinished" />
+        <translation>🤝 Moje trgovine</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="79" />
         <source>&lt;b&gt;Event Log:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Zapis događaja:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="100" />
@@ -5378,12 +5378,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="102" />
         <source>🔍 Search</source>
-        <translation type="unfinished" />
+        <translation>🔍 Traži</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="131" />
         <source>Search:</source>
-        <translation type="unfinished" />
+        <translation>Traži:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="134" />
@@ -5393,12 +5393,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="136" />
         <source>Asset:</source>
-        <translation type="unfinished" />
+        <translation>Sredstvo:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="182" />
         <source>Selected Offer Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji odabrane ponude</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="195" />
@@ -5408,37 +5408,37 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="200" />
         <source>&lt;b&gt;Offer ID:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;ID ponude:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="203" />
         <source>&lt;b&gt;Type:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Vrsta:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="205" />
         <source>&lt;b&gt;Asset:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Sredstvo:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="208" />
         <source>&lt;b&gt;Amount:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Iznos:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="210" />
         <source>&lt;b&gt;Price:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Cijena:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="213" />
         <source>&lt;b&gt;Description:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Opis:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="216" />
         <source>&lt;b&gt;Seller:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Prodavac:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="220" />
@@ -5448,53 +5448,53 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="229" />
         <source>✅ Accept Offer</source>
-        <translation type="unfinished" />
+        <translation>✅ Prihvati ponudu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="233" />
         <source>🔍 View Full Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Prikaži sve detalje</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="252" />
         <location filename="../src/marketplacewidget.cpp" line="325" />
         <source>Status:</source>
-        <translation type="unfinished" />
+        <translation>Status:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="293" />
         <source>❌ Cancel Offer</source>
-        <translation type="unfinished" />
+        <translation>❌ Otkaži ponudu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="297" />
         <source>✏️ Update Offer</source>
-        <translation type="unfinished" />
+        <translation>✏️ Ažuriraj ponudu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="318" />
         <source>Role:</source>
-        <translation type="unfinished" />
+        <translation>Uloga:</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="364" />
         <source>✅ Complete Trade</source>
-        <translation type="unfinished" />
+        <translation>✅ Završi trgovinu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="368" />
         <source>⚠️ Open Dispute</source>
-        <translation type="unfinished" />
+        <translation>⚠️ Pokreni spor</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="372" />
         <source>🔍 View Details</source>
-        <translation type="unfinished" />
+        <translation>🔍 Prikaži detalje</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="390" />
         <source>My Reputation</source>
-        <translation type="unfinished" />
+        <translation>Moja reputacija</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="396" />
@@ -5504,27 +5504,27 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="397" />
         <source>0 successful</source>
-        <translation type="unfinished" />
+        <translation>0 uspješnih</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="398" />
         <source>No ratings yet</source>
-        <translation type="unfinished" />
+        <translation>Još nema ocjena</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="400" />
         <source>&lt;b&gt;Average Rating:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Prosječna ocjena:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="403" />
         <source>&lt;b&gt;Total Trades:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ukupno trgovina:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="406" />
         <source>&lt;b&gt;Successful:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Uspješnih:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="409" />
@@ -5540,7 +5540,7 @@ Label,Address</source>
         <location filename="../src/marketplacewidget.cpp" line="529" />
         <location filename="../src/marketplacewidget.cpp" line="550" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Nema odabira</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="529" />
@@ -5555,12 +5555,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="556" />
         <source>Cancel Offer</source>
-        <translation type="unfinished" />
+        <translation>Otkaži ponudu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
         <source>Update Offer</source>
-        <translation type="unfinished" />
+        <translation>Ažuriraj ponudu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="571" />
@@ -5570,7 +5570,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
         <source>Complete Trade</source>
-        <translation type="unfinished" />
+        <translation>Završi trgovinu</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="577" />
@@ -5580,7 +5580,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
         <source>Open Dispute</source>
-        <translation type="unfinished" />
+        <translation>Pokreni spor</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="583" />
@@ -5590,7 +5590,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
         <source>Trade Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji trgovine</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="589" />
@@ -5600,7 +5600,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
         <source>View Reputation</source>
-        <translation type="unfinished" />
+        <translation>Prikaži reputaciju</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="605" />
@@ -5610,12 +5610,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="674" />
         <source>Offer Created</source>
-        <translation type="unfinished" />
+        <translation>Ponuda je napravljena</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="682" />
         <source>Success</source>
-        <translation type="unfinished" />
+        <translation>Uspjeh</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="682" />
@@ -5625,7 +5625,7 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="693" />
         <source>Trade Created</source>
-        <translation type="unfinished" />
+        <translation>Trgovina je napravljena</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="839" />
@@ -5640,12 +5640,12 @@ Label,Address</source>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="915" />
         <source>Offer Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji ponude</translation>
     </message>
     <message>
         <location filename="../src/marketplacewidget.cpp" line="946" />
         <source>Accept Offer</source>
-        <translation type="unfinished" />
+        <translation>Prihvati ponudu</translation>
     </message>
 </context>
 <context>
@@ -7192,12 +7192,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="49" />
         <source>⚡ Lightning Network</source>
-        <translation type="unfinished" />
+        <translation>⚡ Lightning mreža</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="73" />
         <source>Channel Statistics</source>
-        <translation type="unfinished" />
+        <translation>Statistika kanala</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="77" />
@@ -7211,27 +7211,27 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="81" />
         <source>&lt;b&gt;Active Channels:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Aktivni kanali:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="83" />
         <source>&lt;b&gt;Total Capacity:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ukupni kapacitet:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="85" />
         <source>&lt;b&gt;Local Balance:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Lokalno stanje:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="87" />
         <source>&lt;b&gt;Remote Balance:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Udaljeno stanje:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="106" />
         <source>Open New Channel</source>
-        <translation type="unfinished" />
+        <translation>Otvori novi kanal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="110" />
@@ -7251,37 +7251,37 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="119" />
         <source>Peer Node ID:</source>
-        <translation type="unfinished" />
+        <translation>ID čvora:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="121" />
         <source>Capacity (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Kapacitet (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="123" />
         <source>Push Amount (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Početni iznos (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="125" />
         <source>Min Confirmations:</source>
-        <translation type="unfinished" />
+        <translation>Najmanje potvrda:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="133" />
         <source>Open Channel</source>
-        <translation type="unfinished" />
+        <translation>Otvori kanal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="134" />
         <source>Close Selected Channel</source>
-        <translation type="unfinished" />
+        <translation>Zatvori odabrani kanal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="135" />
         <source>Force Close (Emergency)</source>
-        <translation type="unfinished" />
+        <translation>Prisilno zatvaranje (hitno)</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="136" />
@@ -7290,13 +7290,13 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="361" />
         <location filename="../src/lightningwidget.cpp" line="475" />
         <source>🔄 Refresh</source>
-        <translation type="unfinished" />
+        <translation>🔄 Osvježi</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="160" />
         <location filename="../src/lightningwidget.cpp" line="180" />
         <source>Create Invoice</source>
-        <translation type="unfinished" />
+        <translation>Napravi račun</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="164" />
@@ -7311,17 +7311,17 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="172" />
         <source>Amount (DIN):</source>
-        <translation type="unfinished" />
+        <translation>Iznos (DIN):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="174" />
         <source>Description:</source>
-        <translation type="unfinished" />
+        <translation>Opis:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="176" />
         <source>Expiry:</source>
-        <translation type="unfinished" />
+        <translation>Istek:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="181" />
@@ -7331,12 +7331,12 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="192" />
         <source>Generated Invoice</source>
-        <translation type="unfinished" />
+        <translation>Generisani račun</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="201" />
         <source>Generate QR Code</source>
-        <translation type="unfinished" />
+        <translation>Generiši QR kod</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="209" />
@@ -7346,19 +7346,19 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="210" />
         <source>📋 Copy Invoice</source>
-        <translation type="unfinished" />
+        <translation>📋 Kopiraj račun</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="212" />
         <source>&lt;b&gt;BOLT 11 Invoice:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;BOLT 11 račun:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="223" />
         <location filename="../src/lightningwidget.cpp" line="238" />
         <location filename="../src/lightningwidget.cpp" line="635" />
         <source>Pay Invoice</source>
-        <translation type="unfinished" />
+        <translation>Plati račun</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="227" />
@@ -7373,17 +7373,17 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="231" />
         <source>Invoice (BOLT 11):</source>
-        <translation type="unfinished" />
+        <translation>Račun (BOLT 11):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="233" />
         <source>Custom Amount:</source>
-        <translation type="unfinished" />
+        <translation>Prilagođeni iznos:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="237" />
         <source>Decode Invoice</source>
-        <translation type="unfinished" />
+        <translation>Dekodiraj račun</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="249" />
@@ -7393,34 +7393,34 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="250" />
         <source>Decoded Info:</source>
-        <translation type="unfinished" />
+        <translation>Dekodirane informacije:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="258" />
         <source>&lt;b&gt;Invoice History&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Historija računa&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="263" />
         <location filename="../src/lightningwidget.cpp" line="300" />
         <source>Filter:</source>
-        <translation type="unfinished" />
+        <translation>Filter:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="303" />
         <source>Cancel Selected Payment</source>
-        <translation type="unfinished" />
+        <translation>Otkaži odabrano plaćanje</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="323" />
         <source>Payment Details</source>
-        <translation type="unfinished" />
+        <translation>Detalji plaćanja</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="344" />
         <location filename="../src/lightningwidget.cpp" line="359" />
         <source>Register Watchtower</source>
-        <translation type="unfinished" />
+        <translation>Registruj watchtower</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="348" />
@@ -7435,42 +7435,42 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="353" />
         <source>Watchtower URL:</source>
-        <translation type="unfinished" />
+        <translation>Watchtower URL:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="355" />
         <source>Reward (una):</source>
-        <translation type="unfinished" />
+        <translation>Nagrada (una):</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="360" />
         <source>Unregister Selected</source>
-        <translation type="unfinished" />
+        <translation>Ukloni registraciju odabranog</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="386" />
         <source>Watchtower Information</source>
-        <translation type="unfinished" />
+        <translation>Informacije o watchtoweru</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="410" />
         <source>Network Statistics</source>
-        <translation type="unfinished" />
+        <translation>Statistika mreže</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="418" />
         <source>&lt;b&gt;Total Nodes:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ukupno čvorova:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="420" />
         <source>&lt;b&gt;Total Channels:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Ukupno kanala:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="422" />
         <source>&lt;b&gt;Network Capacity:&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Kapacitet mreže:&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="424" />
@@ -7480,7 +7480,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="431" />
         <source>Connect to Peer</source>
-        <translation type="unfinished" />
+        <translation>Poveži se s čvorom</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="434" />
@@ -7490,18 +7490,18 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="435" />
         <source>Connect</source>
-        <translation type="unfinished" />
+        <translation>Poveži</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="436" />
         <source>Disconnect Selected</source>
-        <translation type="unfinished" />
+        <translation>Prekini vezu s odabranim</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="446" />
         <location filename="../src/lightningwidget.cpp" line="453" />
         <source>Find Route</source>
-        <translation type="unfinished" />
+        <translation>Nađi rutu</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="450" />
@@ -7516,22 +7516,22 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="456" />
         <source>Destination:</source>
-        <translation type="unfinished" />
+        <translation>Odredište:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="458" />
         <source>Amount:</source>
-        <translation type="unfinished" />
+        <translation>Iznos:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="465" />
         <source>Route:</source>
-        <translation type="unfinished" />
+        <translation>Ruta:</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="473" />
         <source>&lt;b&gt;Network Nodes&lt;/b&gt;</source>
-        <translation type="unfinished" />
+        <translation>&lt;b&gt;Čvorovi mreže&lt;/b&gt;</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="515" />
@@ -7543,7 +7543,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="760" />
         <location filename="../src/lightningwidget.cpp" line="778" />
         <source>Invalid Input</source>
-        <translation type="unfinished" />
+        <translation>Neispravan unos</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="515" />
@@ -7555,7 +7555,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="602" />
         <location filename="../src/lightningwidget.cpp" line="785" />
         <source>Invalid Amount</source>
-        <translation type="unfinished" />
+        <translation>Neispravan iznos</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="522" />
@@ -7568,7 +7568,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
         <location filename="../src/lightningwidget.cpp" line="711" />
         <location filename="../src/lightningwidget.cpp" line="740" />
         <source>No Selection</source>
-        <translation type="unfinished" />
+        <translation>Nema odabira</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="542" />
@@ -7578,7 +7578,7 @@ Load a wallet first, or cancel this setup flow and reopen it when you are ready 
     <message>
         <location filename="../src/lightningwidget.cpp" line="546" />
         <source>Close Channel</source>
-        <translation type="unfinished" />
+        <translation>Zatvori kanal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="547" />
@@ -7595,7 +7595,7 @@ This will create a closing transaction on-chain.</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="563" />
         <source>Force Close Channel</source>
-        <translation type="unfinished" />
+        <translation>Prisilno zatvori kanal</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="564" />
@@ -7632,17 +7632,17 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="636" />
         <source>Are you sure you want to pay this invoice?</source>
-        <translation type="unfinished" />
+        <translation>Jeste li sigurni da želite platiti ovaj račun?</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
         <source>No Invoice</source>
-        <translation type="unfinished" />
+        <translation>Nema računa</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="671" />
         <source>Create an invoice first.</source>
-        <translation type="unfinished" />
+        <translation>Prvo napravite račun.</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="711" />
@@ -7667,7 +7667,7 @@ Are you absolutely sure?</source>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
         <source>Not Implemented</source>
-        <translation type="unfinished" />
+        <translation>Nije implementirano</translation>
     </message>
     <message>
         <location filename="../src/lightningwidget.cpp" line="770" />
