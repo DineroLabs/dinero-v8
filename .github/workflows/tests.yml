@@ -192,6 +192,17 @@ jobs:
             .github/workflows/core-heavy.yml \
             --baseline scripts/ci/unexecuted_tests_baseline.txt
 
+      # This storage test is registered even with the optional Orchard backend
+      # disabled. Its integration-staging label excludes it from the broad
+      # sweep; the separate Orchard workflow cannot qualify this build's lane.
+      - name: Run legacy retirement storage regression
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/legacy-retirement
+          ctest --test-dir build-tests --output-on-failure --no-tests=error \
+            --output-log build-tests/Testing/legacy-retirement/ctest.log \
+            -R '^OrchardLegacyRetirement$'
+
       # Assertion-integrity ratchet (issue #497). tests/CMakeLists.txt appends
       # -UNDEBUG (/UNDEBUG on MSVC) to the Release test graph, and the
       # AssertionsEnabled test fails at compile time and runtime if assertions
