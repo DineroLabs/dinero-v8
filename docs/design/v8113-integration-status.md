@@ -12,6 +12,10 @@ This branch collects release implementation for review and qualification against
 - Owned consensus-view coin resolution and staged transparent authorization:
   restricted native Taproot/P2WPKH signatures bound to Orchard intent, maturity
   and contextual locks. No production admission caller is enabled.
+- Combined transparent and Orchard authorization for one owned transaction and
+  coin snapshot, with honest synthetic shield and cross-address spend fixtures.
+  This verifies authorization, not anchor membership, unspentness at application
+  time, or an atomic chainstate transition.
 - Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
   outer/inner signing-profile identity.
 - Explicit domain/profile checks across Rust/C++, canonical synthetic vectors,
@@ -28,8 +32,7 @@ its own full Linux build and test runs.
 - Connect the typed shared reader to validated mempool, relay, storage and
   block assembly; current production callers still reject Orchard.
 - Connect the staged coin/signature/spendability components to authenticated
-  runtime state; qualify combined transparent and Orchard authorization,
-  anchors, nullifiers, monetary conservation and activation.
+  runtime state; qualify anchors, nullifiers, pool conservation and activation.
 - Atomic Orchard frontier/pool/nullifier updates with UTXOs, tip and undo;
   disconnect, restart, reindex, crash recovery and cross-boundary reorg tests.
 - Wallet keys/addresses, proof construction, witness maintenance, shield/send/
@@ -44,3 +47,20 @@ the staged backend build option does not activate Orchard transactions.
 
 Security-review materials are maintained separately. This source branch carries
 implementation and appropriate regression tests, not the entire review archive.
+
+## Delivery status
+
+Most release integration remains unimplemented. Component checks do not reduce
+the following rows to test-only work:
+
+| Area | Current state |
+| --- | --- |
+| Shared parsing and authorization | Staged typed reader and authorization components; no live admission |
+| Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
+| Anchors, nullifiers, pool and atomic storage/undo | Orchard chainstate integration not implemented |
+| Wallet keys, addresses, proving, shield/send/unshield | Not implemented |
+| Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
+
+The next state integration must use the authoritative ChainDB write batch for
+Orchard state, coins, tip and undo together. An isolated successful proof test
+or a separate Orchard database commit cannot satisfy that requirement.

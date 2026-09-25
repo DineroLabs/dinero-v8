@@ -88,7 +88,9 @@ else()
   target_include_directories(orchard_historical_codec PUBLIC "${ORCHARD_HOST_ROOT}/include")
   target_link_libraries(dinero_transaction_reader PUBLIC orchard_historical_codec)
 endif()
-add_library(dinero_orchard_transparent STATIC "${ORCHARD_HOST_ROOT}/src/consensus/orchard_transparent.cpp")
+add_library(dinero_orchard_transparent STATIC
+  "${ORCHARD_HOST_ROOT}/src/consensus/orchard_transparent.cpp"
+  "${ORCHARD_HOST_ROOT}/src/consensus/orchard_authorization.cpp")
 target_link_libraries(dinero_orchard_transparent PUBLIC dinero_transaction_reader secp256k1)
 if(DINERO_ORCHARD_BUILD_TESTS)
   # Fail closed if the host monetary constant changes or cannot be read.
@@ -120,9 +122,12 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_executable(test_orchard_transparent "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_transparent.cpp")
   target_link_libraries(test_orchard_transparent PRIVATE dinero_orchard_transparent)
   add_test(NAME OrchardTransparent COMMAND test_orchard_transparent "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  add_executable(test_orchard_authorization "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_authorization.cpp")
+  target_link_libraries(test_orchard_authorization PRIVATE dinero_orchard_transparent)
+  add_test(NAME OrchardAuthorization COMMAND test_orchard_authorization "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2
     --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml" --target-dir "${ORCHARD_TARGET_DIR}"
     -- --test-threads=1)
-  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent PROPERTIES
+  set_tests_properties(OrchardBackendCpp OrchardBackendRust OrchardTransactionReader OrchardCoinSnapshot OrchardTransparent OrchardAuthorization PROPERTIES
     TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
 endif()
