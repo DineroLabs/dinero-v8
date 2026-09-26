@@ -35,6 +35,7 @@
 #include <secp256k1_extrakeys.h> // For x-only/taproot operations
 #include <array>
 #include <atomic>
+#include <limits>
 #include <cassert>               // For assert() in debug builds
 #include "wallet/address.h"
 #include "wallet/key_identity.h"  // Week 1 Day 2: KeyID for descriptor wallet
@@ -8055,89 +8056,70 @@ void WalletManager::onBlockConnected(const Block& block, uint32_t height) {
 }
 
 void WalletManager::onBlockDisconnected(const Block& block, uint32_t height) {
-    if (!hasActiveWallet()) {
-        return;  // No wallet loaded, nothing to do
-    }
+    const auto database_lease = AcquireDatabaseLease();
+    if (!hasActiveWallet()) return;
+    if (height == 0 || height > static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("Wallet disconnect height is out of range");
 
-    WLOG_INFO("WalletManager: 🔄 Processing block disconnect at height " + std::to_string(height));
-
-    // Phase 4B: Full reorg handling
-    // During a blockchain reorganization, we need to:
-    // 1. Remove UTXOs that were created in this block
-    // 2. Mark spent UTXOs as unspent again (restore them)
-
-    int utxos_removed = 0;
-    int utxos_restored = 0;
-    bool tx_history_reverted = false;
-
-    // Step 1: Remove all UTXOs created in this block
-    // We can identify them by matching the height column
-    if (current_wallet_id_ != -1) {
-        sqlite3_stmt* stmt;
-        // Note: Per-wallet database - no wallet_id column needed
-        const char* sql = "DELETE FROM utxos WHERE height = ?";
-
-        int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-        if (rc == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, static_cast<int>(height));
-
-            rc = sqlite3_step(stmt);
-            if (rc == SQLITE_DONE) {
-                utxos_removed = sqlite3_changes(db_);
-            }
-            sqlite3_finalize(stmt);
+    // Failed BEGIN must leave an existing caller transaction untouched. This
+    // transaction covers this ordinary wallet only; the worker's index and
+    // shielded store are separate and may already have committed rollback.
+    exec(db_, "BEGIN IMMEDIATE");
+    try {
+        auto checked = [&](int result, int expected, const char* phase) {
+            if (result != expected)
+                throw std::runtime_error(std::string("Wallet disconnect ") + phase +
+                                         " failed: " + sqlite3_errmsg(db_));
+        };
+        using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+        auto prepare = [&](const char* sql, const char* phase) {
+            sqlite3_stmt* raw = nullptr;
+            const int result = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+            Statement stmt(raw, sqlite3_finalize);
+            checked(result, SQLITE_OK, phase);
+            return stmt;
+        };
+        {
+            auto stmt = prepare("DELETE FROM utxos WHERE height = ?", "delete prepare");
+            checked(sqlite3_bind_int(stmt.get(), 1, static_cast<int>(height)), SQLITE_OK, "delete bind");
+            checked(sqlite3_step(stmt.get()), SQLITE_DONE, "delete");
         }
-    }
-
-    // Step 1.5: Remove wallet transactions confirmed in the disconnected block.
-    // Prevents "phantom confirmed" transaction history after reorg.
-    tx_history_reverted = removeTransactionsAtHeight(height);
-
-    // Step 2: Restore spent UTXOs (mark as unspent)
-    // Scan all transactions in the block to find inputs we own
-    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
-        const auto& tx = block.vtx[tx_idx];
-
-        if (tx.IsCoinbase()) {
-            continue;  // Coinbase has no inputs to restore
+        {
+            // Keep the historical per-wallet schema compatibility of the old
+            // history-removal path, but check every statement and binding.
+            const bool scoped = columnExists(db_, "transactions", "wallet_id");
+            auto stmt = prepare(scoped
+                ? "DELETE FROM transactions WHERE wallet_id = ? AND height = ?"
+                : "DELETE FROM transactions WHERE height = ?", "history prepare");
+            int parameter = 1;
+            if (scoped)
+                checked(sqlite3_bind_int(stmt.get(), parameter++, current_wallet_id_), SQLITE_OK, "history bind");
+            checked(sqlite3_bind_int(stmt.get(), parameter, static_cast<int>(height)), SQLITE_OK, "history bind");
+            checked(sqlite3_step(stmt.get()), SQLITE_DONE, "history");
         }
-
-        // For each input, check if we spent it
-        for (const auto& input : tx.vin) {
-            // Use canonical prevout txid from input for UTXO restoration.
-            std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
-            int prev_vout = static_cast<int>(input.prevout.vout);
-
-            // Try to mark this UTXO as unspent (restore it)
-            if (current_wallet_id_ != -1) {
-                sqlite3_stmt* stmt;
-                // Note: Per-wallet database - no wallet_id column needed
-                const char* sql = "UPDATE utxos SET is_spent = 0 WHERE txid = ? AND vout = ? AND is_spent = 1";
-
-                int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-                if (rc == SQLITE_OK) {
-                    sqlite3_bind_text(stmt, 1, prev_txid.c_str(), -1, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt, 2, prev_vout);
-
-                    rc = sqlite3_step(stmt);
-                    if (rc == SQLITE_DONE && sqlite3_changes(db_) > 0) {
-                        utxos_restored++;
-                    }
-                    sqlite3_finalize(stmt);
+        {
+            auto stmt = prepare("UPDATE utxos SET is_spent = 0 WHERE txid = ? AND vout = ? AND is_spent = 1", "restore prepare");
+            for (const auto& tx : block.vtx) {
+                if (tx.IsCoinbase()) continue;
+                for (const auto& input : tx.vin) {
+                    const std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
+                    checked(sqlite3_reset(stmt.get()), SQLITE_OK, "restore reset");
+                    checked(sqlite3_bind_text(stmt.get(), 1, prev_txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK, "restore bind");
+                    checked(sqlite3_bind_int64(stmt.get(), 2, input.prevout.vout), SQLITE_OK, "restore bind");
+                    checked(sqlite3_step(stmt.get()), SQLITE_DONE, "restore");
                 }
             }
         }
+        checked(sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK, "commit");
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
     }
-
-    // Step 3: Update wallet blockchain height
+    // This remains a later publication/metadata operation, not a durable source
+    // acknowledgment. Never lower the visible height after a failed SQL group.
     setBlockchainHeight(height - 1);
-
-    // sync_meta.last_scanned_height is updated by setBlockchainHeight(height-1) above
-
-    WLOG_INFO("WalletManager: Block " + std::to_string(height) + " disconnected - " +
-                         "removed " + std::to_string(utxos_removed) + " UTXOs, " +
-                         "restored " + std::to_string(utxos_restored) + " UTXOs, " +
-                         "tx history reverted=" + std::string(tx_history_reverted ? "yes" : "no"));
 }
 
 void WalletManager::onMempoolTransaction(const Transaction& tx) {

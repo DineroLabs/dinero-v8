@@ -5,6 +5,15 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- Ordinary WalletManager disconnect now groups output deletion, history removal
+  and input restoration in one checked SQL transaction under the database lease.
+  Failure leaves ordinary rows and height unchanged; the separate index may have
+  already rolled back and needs ordered retry. The actual worker refuses invalid
+  heights and nested active wallet transactions before touching that index. An
+  independent real-worker CTest covers failure/retry/reopen and is required by CI.
+  This does not complete cross-store recovery. See
+  `wallet-ordinary-disconnect-2026-09-26.md`.
+
 - The existing WalletWorker now groups ordinary WalletManager block writes in a
   checked SQLite transaction, distinguishes confirmation lookup from SQL failure,
   and propagates required write failures. Ordinary creation replay preserves

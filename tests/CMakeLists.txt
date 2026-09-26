@@ -6007,6 +6007,44 @@ if(NOT WIN32)
     LABELS "wallet;recovery;persistence;concurrency"
     TIMEOUT 30
   )
+  add_executable(test_wallet_block_disconnect
+    tests/wallet/test_wallet_block_disconnect.cpp
+    src/wallet/wallet_worker.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/vault_test_stubs.cpp
+  )
+  add_dependencies(test_wallet_block_disconnect gtest gtest_main)
+  target_link_libraries(test_wallet_block_disconnect PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_wallet_block_disconnect)
+  target_include_directories(test_wallet_block_disconnect PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_wallet_block_disconnect PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME WalletBlockDisconnect
+    COMMAND test_wallet_block_disconnect)
+  set_tests_properties(WalletBlockDisconnect PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency"
+    TIMEOUT 30
+  )
 endif()
 
 # Phase 29: Covenant Integration Layer Tests

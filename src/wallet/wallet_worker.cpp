@@ -18,6 +18,7 @@
 #include <chrono>
 #include <thread>  // Phase W.1.1: For sleep_for
 #include <mutex>
+#include <limits>
 #include <sqlite3.h>
 
 namespace dinero {
@@ -261,7 +262,12 @@ void WalletWorker::WorkerThread() {
 }
 
 void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block) {
+    if (height == 0 || height > static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("Wallet disconnect height is out of range");
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    if (database_lease && database_lease->Database() &&
+        !sqlite3_get_autocommit(database_lease->Database()))
+        throw std::runtime_error("Wallet disconnect cannot adopt an active transaction");
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing block disconnect: height=" << height
               << " hash=" << block.GetHash().GetHex().substr(0, 16)
