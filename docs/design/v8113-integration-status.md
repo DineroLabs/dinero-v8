@@ -406,3 +406,20 @@ payload. See [outbox replay context](orchard-outbox-replay-context-2026-09-26.md
 Immutable intermediate branch views, account/coordinator integration, baseline
 reconciliation and production provider installation still remain. This is not
 completion of activation history, startup/replay/reindex or user steps 1–4.
+
+### Three-store account recovery (2026-09-26)
+
+The selected service now captures checked source material and builds immutable
+branch-specific account restore views. Retained inputs/timing reverify real
+Orchard authorizations, and branch anchor/nullifier membership reconstructs the
+sealed state transition. `ResumeWalletStores` coordinates existing index,
+ordinary-wallet and authenticated account receipts, applying only lagging
+stores and retrying partial commits after reopen. Authenticated parent links
+drive account undo. The actual adapter is compiled but is not installed in
+notification/startup routing. See [coordinated account recovery](wallet-account-coordinated-recovery-2026-09-26.md).
+
+Missing enrollment, old source without replay context, unproven baselines and
+the explicit capture limits refuse; late-account/rescan/general long-history
+reconciliation and remaining consumer readiness remain required. This does not
+complete provider installation, independent activation history, full startup/
+replay/reindex or user steps 1–4.

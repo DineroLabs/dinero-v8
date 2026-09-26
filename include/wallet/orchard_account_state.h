@@ -96,6 +96,8 @@ public:
 private:
   friend class OrchardOperationArchive;
   friend class OrchardAccountDelivery;
+  static DeliveryCheckpoint ReadDeliveryMetadata(const orchard::WalletStateBytes&,
+      orchard::SigningDomain,const orchard::FullViewingKeyBytes&,uint32_t,const uint256&);
   [[nodiscard]] OrchardAccountState WithParentSnapshotRevision(uint64_t) const;
   void CheckDelivery(const RuntimeOutboxEvent &, const OrchardBlockCandidate &,
                      bool connecting) const;

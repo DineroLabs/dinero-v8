@@ -3,6 +3,7 @@
 #include "consensus/utxo_publication.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "daemon/runtime_block_outbox.h"
+#include "wallet/runtime_account_replay.h"
 #include <iomanip>
 #include <sstream>
 #include "crypto/sha256.h"
@@ -35,6 +36,15 @@
 extern char** environ;
 
 using namespace shielded_store_fixture;
+namespace dinero {
+struct RuntimeAccountReplayTestAccess {
+    static auto Capture(const ChainDB& db,const consensus::OrchardBlockContext& context,size_t page=128) {
+        return RuntimeAccountReplay::Capture([&](RuntimeOutboxCursor after,size_t count){
+            return ReadRuntimeOutboxUnderLock(db,context,after,std::min(page,count));
+        });
+    }
+};
+}
 static const auto token = ChainWriteToken::CreateForTesting();
 static CBlockIndex DiskIndex(const ChainDB& db,const BlockHeader& header,uint32_t height) {
     const auto m=RequiredValue(db.getHeaderMetadata(header.GetHash()));
@@ -665,6 +675,21 @@ static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& co
     CHECK(ReadRuntimeOutboxUnderLock(db,context,cursor).events.empty());
     // Typed records remain readable alongside DNOE02 historical ones.
     CHECK(ReadRuntimeOutboxUnderLock(db,context,{},1).events.front().IsOrchardProfile());
+    const auto historical_view=RuntimeAccountReplayTestAccess::Capture(db,context,1);
+    CHECK(historical_view->Point(cursor).checkpoint.block_hash==historical.header.prev_block_hash);
+    const auto earlier=historical_view->Point(prior.head);
+    CHECK(earlier.lookups.selected_historical_block(height,historical.GetHash())->Serialize()==historical.Serialize());
+    LookupReject(Status::Corruption,[&]{(void)historical_view->Point(cursor).lookups.selected_historical_block(height,historical.GetHash());});
+    // Preserve more than a source page of same-tip historical transitions.
+    for(size_t i=0;i<130;++i){
+        const auto direction=i%2?RuntimeBlockDirection::Disconnect:RuntimeBlockDirection::Connect;
+        auto p=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,direction);CHECK(p);
+        rocksdb::WriteBatch batch;Tip(db,i%2?historical.header.prev_block_hash:historical.GetHash(),i%2?height-1:height,batch);
+        p->StageOrTerminateUnderLock(db,batch);Commit(db,batch);
+    }
+    const auto paged=RuntimeAccountReplayTestAccess::Capture(db,context);
+    CHECK(paged->Head().sequence==cursor.sequence+130&&paged->Point(paged->Head()).checkpoint==historical_view->Point(cursor).checkpoint);
+    CHECK(historical_view->Head()==cursor); // immutable despite later source writes
     rocksdb::WriteBatch missing;missing.Delete("runtime_orchard_outbox:v1:head");Commit(db,missing);
     LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Disconnect);});
 }
@@ -677,6 +702,21 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
     CHECK(captured->next.height==context.height && captured->next.block_hash==context.block_hash);
     CHECK(captured->parent.has_value()==(context.height>context.activation_height));
     CHECK(captured->coin_undo==RequiredValue(db.getUndo(context.block_hash)).Serialize());
+    const auto view=RuntimeAccountReplayTestAccess::Capture(db,context,1);
+    CHECK(view->Head()==all.head&&view->Point({}).checkpoint.block_hash==context.parent_hash);
+    const auto& auths=view->Authorizations(1);CHECK(!auths.empty());
+    const auto& state=view->State(1);CHECK(state.Next()==captured->next&&!state.Nullifiers().empty());
+    for(const auto& event:all.events){
+        const auto point=view->Point(event.cursor);const bool connect=event.direction==RuntimeBlockDirection::Connect;
+        CHECK(point.checkpoint.block_hash==(connect?context.block_hash:context.parent_hash));
+        CHECK(*point.lookups.spent_nullifier(state.Nullifiers().front())==connect);
+        if(connect){
+            CHECK(point.lookups.origin(context.height,context.block_hash,auths.front().Orchard().Txid())->Transaction().CanonicalBytes()==auths.front().Transaction().CanonicalBytes());
+            LookupReject(Status::Corruption,[&]{(void)point.lookups.selected_block(context.height,H(249));});
+        }
+        else LookupReject(Status::Corruption,[&]{(void)point.lookups.selected_block(context.height,context.block_hash);});
+    }
+    auto bad=all.head;bad.digest=H(99);LookupReject(Status::Corruption,[&]{(void)view->Point(bad);});
     for(const auto& e:all.events) {
         CHECK(e.orchard_replay.has_value());
         CHECK(e.orchard_replay->parent==captured->parent && e.orchard_replay->next==captured->next);
@@ -715,6 +755,7 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
         std::copy(digest.data,digest.data+32,head.end()-32);
         rocksdb::WriteBatch replace;replace.Put(key,legacy);replace.Put("runtime_orchard_outbox:v1:head",head);Commit(db,replace);
         CHECK(!ReadRuntimeOutboxUnderLock(db,context).events.back().orchard_replay);
+        LookupReject(Status::Corruption,[&]{(void)RuntimeAccountReplayTestAccess::Capture(db,context);});
         // Re-seal a generated fixture with a replay checkpoint naming another
         // block. The local checksum alone must not accept that mismatch.
         auto mismatched=original.substr(0,original.size()-32);
@@ -817,7 +858,27 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
     TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
     BlockStorage files;CBlockIndex disk_index;
     if(indexed)CHECK(files.init(temp.path)==Status::Ok);
-    Fixture keys(base);const auto auth=Authorized(base,false,20000);const auto& tx=auth.Transaction();
+    Fixture keys(base);
+    const auto auth=[&] {
+#ifdef DINERO_TEST_ORCHARD_INDEX_DELIVERY
+        // A real freshly proven note owned by the integration wallet seed.
+        Fixture f(base);f.view.height=20000;
+        f.outputs[0].script_pub_key=f.view.coins.at(Point(f.inputs[0])).scriptPubKey;
+        f.outputs[1].script_pub_key=f.view.coins.at(Point(f.inputs[1])).scriptPubKey;f.outputs[1].amount_una=51000;
+        const auto wallet_keys=orchard::WalletKeys::FromSeed(std::array<uint8_t,64>{7},0);
+        const auto receiver=wallet_keys.Receiver(orchard::WalletScope::External,{});
+        std::vector<orchard::ResolvedInput> inputs;
+        for(const auto& input:f.inputs){const auto& coin=f.view.coins.at(Point(input));
+            inputs.push_back({input.txid_wire,input.output_index,input.sequence,coin.value.GetUna(),coin.scriptPubKey});}
+        const auto context=orchard::SigningContext::Create(f.domain,f.lock,inputs,f.outputs,f.fee);
+        const std::vector<orchard::WalletPayment> payments{{5000,receiver}};
+        auto plan=orchard::WalletBundlePlan::PrepareShield(wallet_keys,payments);
+        auto proof=std::move(plan).Prove(context);f.bundle=proof.Bytes();f.Sign();
+        return VerifyOrchardAuthorizations(f.Snapshot(),f.domain,20001,{});
+#else
+        return Authorized(base,false,20000);
+#endif
+    }();const auto& tx=auth.Transaction();
     View view;view.height=20000;UtreexoForest parent_forest;parent_forest.setCanonicalEmptyRoots(true);
     rocksdb::WriteBatch seed;
     for(size_t i=0;i<tx.Inputs().size();++i) {

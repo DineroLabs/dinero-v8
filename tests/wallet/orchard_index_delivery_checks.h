@@ -9,6 +9,7 @@
 namespace dinero {
 struct RuntimeWalletRecoveryTestAccess {
  static auto Resume(const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source,WalletManager& w,UTXOIndex& i,uint64_t session){return RuntimeWalletRecovery::Resume(source,w,i,session);}
+ static auto ResumeAccount(const RuntimeAccountReplay& view,const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source,WalletManager& w,UTXOIndex& i,uint64_t session){return RuntimeWalletRecovery::ResumeAccount(view,source,w,i,session,0);}
 };
 struct RuntimeIndexDeliveryTestAccess {
  static auto Read(dinero::UTXOIndex& i,const std::string& id){return RuntimeIndexDelivery::Read(i,id);}
@@ -42,6 +43,8 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     AnnotatedRecursiveMutex lock;std::lock_guard<AnnotatedRecursiveMutex> guard(lock);
     const auto event=ReadRuntimeOutboxUnderLock(db,c).events.front();CHECK(event.cursor.sequence==1);
     WalletManager ordinary(wallet.path/"ordinary");ordinary.create("ordinary");
+    const std::array<uint8_t,64> account_seed{7};
+    CHECK(ordinary.storeMasterSeed(std::vector<uint8_t>(account_seed.begin(),account_seed.end()),"",false));
     auto ordinary_session=ordinary.AcquireDatabaseLease()->Session();
     const auto wallet_identity=ordinary.AcquireDatabaseLease()->EnsureDeliveryIdentity();
     const auto ordinary_sql=[&](const std::string& text) {
@@ -184,6 +187,28 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     // effects commit. Retry from the same checked event closes that prefix.
     CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session));
     CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,event).cursor==first.cursor);
+    using Account=dinero::wallet::OrchardAccountDelivery;
+    const Account::Profile account_profile{c.domain,c.activation_height,0};
+    const auto account_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    auto next_receiver=([&]{
+        const auto lease=ordinary.AcquireDatabaseLease();const auto secret=lease->CopyRecoverySeed(ordinary_session);
+        const auto keys=orchard::WalletKeys::FromSeed(secret->Bytes(),0);
+        const auto initial=dinero::wallet::OrchardAccountState::Begin(c.domain,keys.ExportFullViewingKey(),c.activation_height,c.parent_hash);
+        auto issued=initial.IssueReceiver(orchard::WalletScope::External).first;
+        orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
+        CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        orchard::WalletSnapshotStore::InitializeSchemaUnderTransaction(lease->Database());
+        orchard::WalletSnapshotStore store(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,0},secret->Bytes());
+        CHECK(store.StageReplaceRetaining(0,issued.Encode())==1);
+        CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        return issued.IssueReceiver(orchard::WalletScope::External).second.Raw();
+    })();
+    // Explicit fixture enrollment above is not a production baseline proof.
+    auto account_first=Account::Connect(ordinary,ordinary_session,account_profile,1,account_view->Point({}),event,
+        account_view->Block(1),account_view->State(1),account_view->Authorizations(1));
+    CHECK(account_first.account.Delivery().sequence==1&&account_first.account.ParentSnapshotRevision()==1);
+    CHECK(account_first.account.Scan().BalanceUna()==5000);
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view).revision==account_first.revision);
     const auto ordinary_first=RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);
     CHECK(ordinary_first.has_value());CHECK(ordinary_first->cursor==first.cursor);
     CHECK(ordinary_count("SELECT height FROM tip WHERE rowid=1")==int64_t(c.height));
@@ -342,10 +367,66 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     UtreexoForest parent_forest;std::string error;CHECK(storage::RestoreHistoricalForest(db,c.height-1,parent_forest,error)==Status::Ok);
     auto reconnect=PreparedOrchardChainstateWrite::ConnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,parent_forest,{},true,false,FixtureRetirement(c));
     reconnect->Commit();reconnect.reset();
-    const auto again=ReadRuntimeOutboxUnderLock(db,c,next_cursor).events.front();
+    auto again=ReadRuntimeOutboxUnderLock(db,c,next_cursor).events.front();
     CHECK(RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,again).cursor==again.cursor && index.GetUTXOCount().value()==count);
     CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,again).cursor==again.cursor);
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=0")==int64_t(count));
+    // Account still at event 1 while transparent stores have crossed activation
+    // and more than 128 source transitions. Recover only the lagging account.
+    const auto all_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    const auto all_recover=[&](const RuntimeAccountReplay& view){
+        return RuntimeWalletRecoveryTestAccess::ResumeAccount(view,source,ordinary,index,ordinary_session);
+    };
+    {const auto lease=ordinary.AcquireDatabaseLease();failure([&]{(void)all_recover(*all_view);},"released caller lease");}
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeAccount(*all_view,[&](RuntimeOutboxCursor cursor,size_t n){
+        auto page=source(cursor,n);if(cursor==first.cursor)page.after_tip->first=H(249);return page;
+    },ordinary,index,ordinary_session);},"account source position mismatch");
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*all_view).revision==account_first.revision);
+    bool account_changed=false;
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeAccount(*all_view,[&](RuntimeOutboxCursor cursor,size_t n){
+        auto page=source(cursor,n);
+        if(!account_changed){
+            account_changed=true;const auto lease=ordinary.AcquireDatabaseLease();
+            auto before=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*all_view);
+            auto issued=before.account.IssueReceiver(orchard::WalletScope::External).first;
+            next_receiver=issued.IssueReceiver(orchard::WalletScope::External).second.Raw();
+            const auto seed=lease->CopyRecoverySeed(ordinary_session);orchard::Hash identity{};
+            for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
+            CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+            orchard::WalletSnapshotStore store(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,0},seed->Bytes());
+            CHECK(store.StageReplaceRetaining(before.revision,issued.Encode())==before.revision+1);
+            CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        }
+        return page;
+    },ordinary,index,ordinary_session);},"stores changed during source read");
+    CHECK(account_changed);
+    CHECK(all_recover(*all_view).applied.cursor==again.cursor);
+    const auto caught=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*all_view);
+    CHECK(caught.account.Delivery().sequence==again.cursor.sequence&&caught.account.ParentSnapshotRevision()>1);
+    CHECK(caught.account.Scan().BalanceUna()==5000);
+    CHECK(caught.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
+    CHECK(all_recover(*all_view).account_revision==caught.revision);
+    auto final_down=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,forest,true);
+    final_down->Commit();final_down.reset();
+    const auto down_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    ordinary_sql("CREATE TRIGGER reject_account_recovery BEFORE UPDATE ON orchard_wallet_snapshots BEGIN SELECT RAISE(ABORT,'account recovery');END");
+    failure([&]{(void)all_recover(*down_view);},"Orchard wallet storage integrity, transaction or I/O failure");
+    CHECK(RuntimeIndexDelivery::ReadForWallet(ordinary,index,ordinary_session)->cursor==down_view->Head());
+    CHECK(RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session)->cursor==down_view->Head());
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*down_view).revision==caught.revision);
+    ordinary_sql("DROP TRIGGER reject_account_recovery");
+    const auto old_session=ordinary_session;ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeAccount(*down_view,source,ordinary,index,old_session);},"selection changed");
+    CHECK(all_recover(*down_view).applied.cursor==down_view->Head());
+    const auto undone=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*down_view);
+    CHECK(undone.account.Scan().Checkpoint().block_hash==c.parent_hash&&undone.account.ParentSnapshotRevision()==0);
+    CHECK(undone.account.Scan().BalanceUna()==0);
+    CHECK(undone.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
+    auto final_up=PreparedOrchardChainstateWrite::ConnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,parent_forest,{},true,false,FixtureRetirement(c));
+    final_up->Commit();final_up.reset();
+    const auto up_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    CHECK(all_recover(*up_view).applied.cursor==up_view->Head());
+    again=up_view->Event(up_view->Head().sequence);
     ordinary_sql("DROP TRIGGER runtime_ordinary_utxos_UPDATE");
     failure([&]{(void)RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);},"guard unavailable");
     ordinary_sql("CREATE TRIGGER runtime_ordinary_utxos_UPDATE AFTER UPDATE ON utxos BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END");

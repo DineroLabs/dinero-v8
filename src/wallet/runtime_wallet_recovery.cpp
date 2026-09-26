@@ -81,4 +81,72 @@ RuntimeTransparentRecoveryResult RuntimeWalletRecovery::Resume(
     // a lasting readiness claim or a published process-wide wallet height.
     return {indexed,final_page.head};
 }
+
+RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeAccount(
+        const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,
+        UTXOIndex& index,uint64_t session,uint32_t account_number) {
+    using Account=wallet::OrchardAccountDelivery;
+    {const auto lease=wallet.AcquireDatabaseLease();Require(wallet.database_leases_==1,
+        "Wallet recovery requires released caller lease");}
+    const auto& first=view.Event(1);const auto target=view.Head();
+    const Account::Profile profile{first.context.domain,first.context.activation_height,account_number};
+    struct Snapshot {RuntimeIndexProgress indexed,ordinary;Account::Applied account;};
+    const auto read=[&] {
+        const auto lease=wallet.AcquireDatabaseLease();const auto stores=ReadStores(wallet,index,session);
+        auto account=Account::ReadForReplay(wallet,session,profile,view);
+        Require(account.account.Delivery().sequence,"Wallet recovery account baseline reconciliation required");
+        return Snapshot{stores.first,stores.second,std::move(account)};
+    };
+    auto current=read();
+    const auto account_cursor=[](const Snapshot& s) {
+        const auto& d=s.account.account.Delivery();return RuntimeOutboxCursor{d.sequence,d.digest};
+    };
+    const auto unchanged=[&](const Snapshot& a,const Snapshot& b) {
+        return Same(a.indexed,b.indexed)&&Same(a.ordinary,b.ordinary)&&a.account.revision==b.account.revision&&
+            account_cursor(a)==account_cursor(b);
+    };
+    const auto origin=view.Point({}).checkpoint;
+    for(const auto* p:{&current.indexed,&current.ordinary}) {
+        Require(p->origin_hash==origin.block_hash&&p->origin_height==origin.height,
+            "Wallet recovery source origin mismatch");
+        const auto point=view.Point(p->cursor).checkpoint;
+        Require(p->tip_hash==point.block_hash&&p->tip_height==point.height,"Wallet recovery source position mismatch");
+        CheckPosition(*p,source(p->cursor,1));
+    }
+    const auto initial_account=account_cursor(current);
+    const auto position=source(initial_account,1);
+    const auto& scan=current.account.account.Scan().Checkpoint();
+    Require(position.after_tip&&position.after_tip->first==scan.block_hash&&position.after_tip->second==scan.height,
+        "Wallet recovery account source position mismatch");
+    auto sequence=std::min({current.indexed.cursor.sequence,current.ordinary.cursor.sequence,initial_account.sequence});
+    for(++sequence;sequence<=target.sequence;++sequence) {
+        const auto& event=view.Event(sequence);
+        const auto lease=wallet.AcquireDatabaseLease();
+        Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
+        // Every committed prefix is retained. Failure of a later store never
+        // acknowledges it, erases earlier receipts, or replays an ahead store.
+        if(current.indexed.cursor.sequence<sequence)
+            current.indexed=RuntimeIndexDelivery::ApplyForWallet(wallet,index,session,event);
+        if(current.ordinary.cursor.sequence<sequence)
+            current.ordinary=RuntimeOrdinaryDelivery::ApplyForWallet(wallet,session,event);
+        if(account_cursor(current).sequence<sequence) {
+            const auto before=view.Point(account_cursor(current));
+            if(!event.IsOrchardProfile())
+                current.account=Account::Historical(wallet,session,profile,current.account.revision,before,event);
+            else if(event.direction==RuntimeBlockDirection::Connect)
+                current.account=Account::Connect(wallet,session,profile,current.account.revision,before,event,
+                    view.Block(sequence),view.State(sequence),view.Authorizations(sequence));
+            else
+                current.account=Account::Disconnect(wallet,session,profile,current.account.revision,before,event,
+                    view.Block(sequence),view.Point(event.cursor));
+            Require(account_cursor(current)==event.cursor&&current.account.account.Scan().Checkpoint()==view.Point(event.cursor).checkpoint,
+                "Wallet recovery account applied position mismatch");
+        }
+    }
+    Require(current.indexed.cursor==target&&current.ordinary.cursor==target&&account_cursor(current)==target&&
+        Same(current.indexed,current.ordinary),"Wallet recovery captured head mismatch");
+    const auto final=source(target,1);CheckPosition(current.indexed,final);
+    Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
+    return {current.indexed,current.account.revision,final.head};
+}
 } // namespace dinero

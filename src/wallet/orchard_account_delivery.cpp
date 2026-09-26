@@ -1,4 +1,5 @@
 #include "wallet/orchard_account_delivery.h"
+#include "wallet/runtime_account_replay.h"
 #include "wallet/wallet_manager.h"
 #include <sqlite3.h>
 #include <openssl/crypto.h>
@@ -58,6 +59,15 @@ struct Owner {
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Read(WalletManager& w,uint64_t s,const Profile& p,const RestorePoint& point){
     Owner owner(w,s,p);Transaction tx(owner.lease->Database());auto result=owner.Restore(p,point);tx.Commit();return result;
+}
+OrchardAccountDelivery::Applied OrchardAccountDelivery::ReadForReplay(WalletManager& w,uint64_t s,const Profile& p,const RuntimeAccountReplay& view){
+    const auto& context=view.Event(1).context;
+    Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
+        context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
+    Owner owner(w,s,p);Transaction tx(owner.lease->Database());const auto saved=owner.store.Read();Check(saved.has_value());
+    const auto receipt=OrchardAccountState::ReadDeliveryMetadata(saved->state,p.domain,owner.fvk.bytes,p.activation,view.Point({}).checkpoint.block_hash);
+    const auto point=view.Point({receipt.sequence,receipt.digest});
+    auto result=owner.Restore(p,point);Check(result.revision==saved->revision);tx.Commit();return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Connect(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,
         const RestorePoint& point,const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,

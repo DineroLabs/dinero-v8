@@ -52,6 +52,7 @@ class BlockStorage;
 class RuntimeBlockBody;
 struct RuntimeOutboxCursor;
 struct RuntimeOutboxPage;
+class RuntimeAccountReplay;
 class WalletManager;  // Snapshot wallet rescan (see RescanWalletFromSnapshotUTXOs)
 struct FilePosition;  // #309: storage/block_storage.h
 
@@ -815,6 +816,11 @@ public:
     StatusOr<std::shared_ptr<const RuntimeOutboxPage>> getRuntimeDeliveryPage(
         const RuntimeOutboxCursor& after, size_t maximum_events = 32,
         size_t maximum_bytes = 16 * 1024 * 1024) const;
+    // Capture source material under one selected lock, then build immutable
+    // account branch views without holding that lock during proof verification.
+    // Acquire before wallet ownership. Explicit limits/missing origin material
+    // refuse; this is not baseline certification or all-consumer readiness.
+    StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
     uint64_t getLegacyBodyFallbackReadCount() const;
     uint64_t getLegacyUndoFallbackReadCount() const;
     bool strictArchivalReadsEnabled() const;

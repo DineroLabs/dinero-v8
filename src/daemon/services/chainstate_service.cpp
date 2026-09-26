@@ -5,6 +5,7 @@
 #include "daemon/runtime_block_reader.h"
 #include "daemon/runtime_reorg_store.h"
 #include "daemon/runtime_block_outbox.h"
+#include "wallet/runtime_account_replay.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "consensus/orchard_block_staging.h"
 #endif
@@ -5672,6 +5673,25 @@ StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ChainstateService::getRuntime
             *chain_db_,*profile,after,maximum_events,maximum_bytes));
     } catch (const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
       catch (...) { return Status::Internal; }
+#else
+    return Status::Internal;
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplay() const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        auto material=[this]{
+            std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
+            return RuntimeAccountReplay::ReadSource([this](RuntimeOutboxCursor cursor,size_t count) {
+                const auto page=getRuntimeDeliveryPage(cursor,count);
+                if(!page.ok())throw consensus::OrchardStateLookupError(page.status());
+                return **page;
+            });
+        }();
+        return RuntimeAccountReplay::Build(std::move(material));
+    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+      catch(...){return Status::Internal;}
 #else
     return Status::Internal;
 #endif

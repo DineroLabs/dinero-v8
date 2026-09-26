@@ -506,6 +506,12 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
   }
   return state;
 }
+OrchardAccountState::DeliveryCheckpoint OrchardAccountState::ReadDeliveryMetadata(
+    const WalletStateBytes& bytes,SigningDomain domain,const FullViewingKeyBytes& fvk,
+    uint32_t activation,const uint256& origin) {
+  std::span<const uint8_t> scan;
+  return ReadMetadata(bytes,domain,fvk,activation,origin,scan)->delivery;
+}
 OrchardAccountState OrchardAccountState::Restore(
     const WalletStateBytes &bytes, SigningDomain domain,
     const FullViewingKeyBytes &fvk, uint32_t activation,

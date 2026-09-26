@@ -1,6 +1,6 @@
 #pragma once
 #include "wallet/orchard_account_state.h"
-namespace dinero { class WalletManager; }
+namespace dinero { class WalletManager; class RuntimeAccountReplay; }
 namespace dinero::wallet {
 // A bound account consumer, not notification-provider readiness. Source events,
 // prepared transitions and immutable restore lookups are acquired/validated
@@ -17,6 +17,10 @@ public:
     // Requires an existing encrypted account under the real database identity.
     // No cursor setter, implicit enrollment or rescan reset is exposed here.
     static Applied Read(WalletManager&, uint64_t session, const Profile&, const RestorePoint&);
+    // Authenticated metadata chooses a cursor only inside this owner; full
+    // account restoration against its immutable branch view must then succeed.
+    // No metadata-only spendable account or unauthenticated cursor is exposed.
+    static Applied ReadForReplay(WalletManager&,uint64_t session,const Profile&,const RuntimeAccountReplay&);
     static Applied Connect(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&,
         const OrchardBlockCandidate&, const consensus::PreparedOrchardState&,

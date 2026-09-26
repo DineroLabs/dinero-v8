@@ -139,6 +139,8 @@ if(TARGET dinero_chainstate)
   target_include_directories(dinero_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
   add_library(dinero_orchard_chainstate_write STATIC "${ORCHARD_HOST_ROOT}/src/daemon/orchard_chainstate_write.cpp")
   target_link_libraries(dinero_orchard_chainstate_write PUBLIC dinero_orchard_block_staging)
+  add_library(dinero_orchard_account_replay STATIC "${ORCHARD_HOST_ROOT}/src/wallet/runtime_account_replay.cpp")
+  target_link_libraries(dinero_orchard_account_replay PUBLIC dinero_orchard_chainstate_write dinero_orchard_wallet_account)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
   add_library(dinero_orchard_index_delivery STATIC
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
@@ -149,7 +151,7 @@ if(TARGET dinero_chainstate)
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
   # WalletManager references ChainDB/BlockStorage even in the account-only
   # executable. Keep its archive before the chainstate provider for GNU ld.
-  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_chainstate_write dinero_orchard_wallet_account sqlite3)
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_wallet_account sqlite3)
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
   endif()
@@ -357,7 +359,7 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_executable(test_orchard_block_staging
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
-    target_link_libraries(test_orchard_block_staging PRIVATE dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
+    target_link_libraries(test_orchard_block_staging PRIVATE dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_block_staging dinero_crypto RocksDB::rocksdb)
     target_include_directories(test_orchard_block_staging PRIVATE "${ORCHARD_HOST_ROOT}/src")
     add_test(NAME OrchardBlockStaging COMMAND test_orchard_block_staging "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME OrchardAtomicCrash COMMAND test_orchard_block_staging --crash-lifecycle "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

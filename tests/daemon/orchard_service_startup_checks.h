@@ -644,6 +644,9 @@ static void ServiceDeliverySourceChecks(ChainDB& db,const OrchardBlockContext& c
         cursor=(*next)->next;
     }
     CHECK((*service.getRuntimeDeliveryPage(cursor))->events.empty());
+    const auto replay_view=service.getRuntimeAccountReplay();CHECK(replay_view.ok());
+    CHECK((*replay_view)->Head()==cursor&&(*replay_view)->Point(cursor).checkpoint.block_hash==c.block_hash);
+    CHECK((*replay_view)->State(1).Next().block_hash==c.block_hash);
     CHECK(Access::Verify(service));
     CHECK(snapshot()==rows);
     auto wrong=cursor;wrong.digest.data[0]^=1;
@@ -651,12 +654,15 @@ static void ServiceDeliverySourceChecks(ChainDB& db,const OrchardBlockContext& c
     CHECK(service.getRuntimeDeliveryPage({},129).status()==Status::Invalid);
     Access::StaleMemory(service);
     CHECK(service.getRuntimeDeliveryPage(cursor).status()==Status::Corruption);
+    CHECK(service.getRuntimeAccountReplay().status()==Status::Corruption);
     Access::Set(service,index,forest);
     GetConfig().utreexo_stateless=true;
     CHECK(service.getRuntimeDeliveryPage(cursor).status()==Status::Invalid);
+    CHECK(service.getRuntimeAccountReplay().status()==Status::Invalid);
     GetConfig().utreexo_stateless=false;
     MutableParams().orchard_activation_height=UINT32_MAX;
     CHECK(!service.getRuntimeDeliveryPage(cursor).ok());
+    CHECK(!service.getRuntimeAccountReplay().ok());
     MutableParams().orchard_activation_height=c.activation_height;
     // Missing or wrong source head must refuse actual startup, even though the
     // canonical state, its mandatory consensus journal and memory are intact.
@@ -688,6 +694,9 @@ static void ServiceDeliverySourceChecks(ChainDB& db,const OrchardBlockContext& c
     Access::Set(historical,parent_index,previous);
     const auto down=historical.getRuntimeDeliveryPage(cursor,1);
     CHECK(down.ok() && (*down)->events.size()==1 && (*down)->events[0].direction==RuntimeBlockDirection::Disconnect);
+    const auto rewind_view=historical.getRuntimeAccountReplay();CHECK(rewind_view.ok());
+    CHECK((*rewind_view)->Point((*rewind_view)->Head()).checkpoint.block_hash==c.parent_hash);
+    CHECK((*replay_view)->Point(cursor).checkpoint.block_hash==c.block_hash);
     CHECK(Access::Verify(historical));
     std::string rollback_head;CHECK(db.getRaw(key,rollback_head)==Status::Ok);
     rocksdb::WriteBatch stale;stale.Put(key,head);Commit(db,stale);
