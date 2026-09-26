@@ -5,7 +5,7 @@ namespace dinero::wallet {
 // A bound account consumer, not notification-provider readiness. Source events,
 // prepared transitions and immutable restore lookups are acquired/validated
 // before entering this owner. Lookups must never acquire chain locks or wait on
-// a thread needing the wallet. Initial baseline enrollment is a separate duty.
+// a thread needing the wallet. Transparent baselines and account creation are separate duties.
 class OrchardAccountDelivery {
 public:
     struct Profile { orchard::SigningDomain domain; uint32_t activation, account; };
@@ -30,7 +30,8 @@ public:
     // Discover current rows, then authenticate and fully restore every account
     // in one SQLite snapshot under key ownership. Row locators are not an
     // authenticated catalog: this does not detect prior deletion or certify
-    // initial/late-account enrollment. Only archive rows reached from authenticated
+    // account completeness. A zero receipt must fully restore at the exact
+    // source origin; recovery scans every event to enroll it. Only archive rows reached from authenticated
     // account heads may use derived identities; unrelated rows still refuse.
     static std::vector<Enrolled> ReadEnrolledForReplay(
         WalletManager&,uint64_t session,const RuntimeAccountReplay&);

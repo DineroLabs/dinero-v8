@@ -103,7 +103,6 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
         if(selected_account){
             const Account::Profile profile{first.context.domain,first.context.activation_height,*selected_account};
             auto account=Account::ReadForReplay(wallet,session,profile,view);
-            Require(account.account.Delivery().sequence,"Wallet recovery account baseline reconciliation required");
             accounts.push_back({*selected_account,std::move(account)});
         }else accounts=Account::ReadEnrolledForReplay(wallet,session,view);
         return Snapshot{stores.first,stores.second,std::move(accounts)};
@@ -133,8 +132,19 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
     for(const auto& entry:current.accounts){
         const auto cursor=account_cursor(entry);const auto position=source(cursor,1);
         const auto& scan=entry.state.account.Scan().Checkpoint();
-        Require(position.after_tip&&position.after_tip->first==scan.block_hash&&position.after_tip->second==scan.height,
-            "Wallet recovery account source position mismatch");
+        if(cursor.sequence) {
+            Require(position.after_tip&&position.after_tip->first==scan.block_hash&&position.after_tip->second==scan.height,
+                "Wallet recovery account source position mismatch");
+        } else {
+            // A late account or explicit rescan has no applied event. Its full
+            // authenticated scanner must be empty at this exact source origin;
+            // bind the live source's FIRST event to the immutable replay view.
+            // No cursor is assigned here. ApplyForReplay scans event 1 and
+            // commits its real effects, receipt and retained parent together.
+            Require(cursor.digest.IsNull()&&scan==origin&&!position.events.empty()&&
+                position.events.front().cursor==first.cursor,
+                "Wallet recovery account source origin mismatch");
+        }
         sequence=std::min(sequence,cursor.sequence);
     }
     for(++sequence;sequence<=target.sequence;++sequence) {

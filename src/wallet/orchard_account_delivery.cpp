@@ -62,7 +62,8 @@ struct OrchardAccountDelivery::Owner {
             context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
         const auto saved=store.Read();Check(saved.has_value());
         const auto receipt=OrchardAccountState::ReadDeliveryMetadata(saved->state,p.domain,fvk.bytes,p.activation,view.Point({}).checkpoint.block_hash);
-        Check(receipt.sequence);
+        // A zero receipt is usable only if the FULL encrypted scan restores
+        // at the checked activation origin. It is not an applied cursor.
         auto result=Restore(p,view.Point({receipt.sequence,receipt.digest}));Check(result.revision==saved->revision);return result;
     }
     OrchardAccountDelivery::Applied Reconcile(OrchardAccountDelivery::Applied current,
@@ -163,7 +164,6 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::ReadEnroll
         const auto saved=store.Read();Check(saved&&saved->revision==revision);
         const auto receipt=OrchardAccountState::ReadDeliveryMetadata(saved->state,context.domain,fvk.bytes,
             context.activation_height,view.Point({}).checkpoint.block_hash);
-        if(!receipt.sequence)throw std::runtime_error("Wallet recovery account baseline reconciliation required");
         const auto point=view.Point({receipt.sequence,receipt.digest});
         auto account=OrchardAccountState::Restore(saved->state,context.domain,fvk.bytes,
             context.activation_height,point.checkpoint,point.lookups);

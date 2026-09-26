@@ -216,9 +216,23 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
         CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
         return issued.IssueReceiver(orchard::WalletScope::External).second.Raw();
     })();
-    // Explicit fixture enrollment above is not a production baseline proof.
-    auto account_first=Account::Connect(ordinary,ordinary_session,account_profile,1,account_view->Point({}),event,
-        account_view->Block(1),account_view->State(1),account_view->Authorizations(1));
+    // Creation is an explicit fixture. The actual coordinator must earn the
+    // first source receipt by scanning the first event, not moving a cursor.
+    const auto initial_saved=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view);
+    CHECK(initial_saved.revision==1&&!initial_saved.account.Delivery().sequence&&initial_saved.account.Scan().BalanceUna()==0);
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeAccount(*account_view,
+        [&](RuntimeOutboxCursor cursor,size_t n){auto page=source(cursor,n);
+            if(!cursor.sequence)page.events.front().cursor.digest.data[0]^=1;
+            return page;},ordinary,index,ordinary_session);},"account source origin mismatch");
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view).revision==1);
+    ordinary_sql("CREATE TRIGGER reject_origin_scan BEFORE UPDATE ON orchard_wallet_snapshots BEGIN SELECT RAISE(ABORT,'origin scan');END");
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeAccount(*account_view,source,ordinary,index,ordinary_session);},
+        "Orchard wallet storage integrity, transaction or I/O failure");
+    const auto rejected_origin=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view);
+    CHECK(rejected_origin.revision==1&&!rejected_origin.account.Delivery().sequence&&rejected_origin.account.Scan().BalanceUna()==0);
+    ordinary_sql("DROP TRIGGER reject_origin_scan");
+    CHECK(RuntimeWalletRecoveryTestAccess::ResumeAccount(*account_view,source,ordinary,index,ordinary_session).applied.cursor==event.cursor);
+    auto account_first=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view);
     CHECK(account_first.account.Delivery().sequence==1&&account_first.account.ParentSnapshotRevision()==1);
     CHECK(account_first.account.Scan().BalanceUna()==5000);
     {
@@ -509,11 +523,21 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     };
     const auto primary=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*up_view);
     enroll(7);
-    failure([&]{(void)enrolled_recover(*up_view);},"account baseline reconciliation required");
+    // A late account at the exact origin joins through real replay, even when
+    // the transparent stores and another account already applied >128 events.
+    auto other=Account::ReadForReplay(ordinary,ordinary_session,other_profile,*up_view);
+    CHECK(!other.account.Delivery().sequence&&other.revision==1);
+    const auto late_receiver=other.account.IssueReceiver(orchard::WalletScope::External).second.Raw();
+    ordinary_sql("CREATE TRIGGER reject_late_account BEFORE UPDATE ON orchard_wallet_snapshots WHEN NEW.account=7 BEGIN SELECT RAISE(ABORT,'late account');END");
+    failure([&]{(void)enrolled_recover(*up_view);},"Orchard wallet storage integrity, transaction or I/O failure");
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,other_profile,*up_view).revision==1);
     CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*up_view).revision==primary.revision);
-    auto other=Account::Connect(ordinary,ordinary_session,other_profile,1,account_view->Point({}),event,
-        account_view->Block(1),account_view->State(1),account_view->Authorizations(1));
-    CHECK(other.account.Scan().BalanceUna()==0); // Account 0's note is not account 7's.
+    ordinary_sql("DROP TRIGGER reject_late_account");
+    ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    CHECK(enrolled_recover(*up_view).applied.cursor==up_view->Head());
+    other=Account::ReadForReplay(ordinary,ordinary_session,other_profile,*up_view);
+    CHECK(other.account.Scan().BalanceUna()==0&&other.account.Delivery().sequence==up_view->Head().sequence);
+    CHECK(other.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==late_receiver);
     ordinary_sql("CREATE TEMP TABLE saved_account AS SELECT * FROM orchard_wallet_snapshots WHERE account=7");
     ordinary_sql("UPDATE orchard_wallet_snapshots SET sealed=zeroblob(length(sealed)) WHERE account=7");
     failure([&]{(void)enrolled_recover(*up_view);},"Orchard wallet storage integrity, transaction or I/O failure");
@@ -699,6 +723,41 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(observed_branch.account.Scan().BalanceUna()==5000&&observed_branch.account.Archive().count==1);
     CHECK(observed_branch.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
     CHECK(enrolled_recover(*sibling_view).account_revisions==reconciled_branch.account_revisions);
+    // Explicit authenticated rescan reset keeps issuance, pending reservations
+    // and archive. The owner itself never silently discards a derived scanner.
+    const auto reset_saved=[&](bool wrong_parent){
+        const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(ordinary_session);
+        const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),0);
+        orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
+        orchard::WalletSnapshotStore store(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,0},seed->Bytes());
+        const auto saved=store.Read();CHECK(saved);
+        auto rescan_parent=c.parent_hash;if(wrong_parent)rescan_parent.data[0]^=1;
+        const auto reset=dinero::wallet::OrchardAccountState::RestoreForRescan(saved->state,c.domain,keys.ExportFullViewingKey(),
+            c.activation_height,rescan_parent);
+        CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        const auto revision=store.StageReplaceRetaining(saved->revision,reset.Encode());
+        CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        return revision;
+    };
+    // Even authenticated zero-progress data cannot select an arbitrary origin.
+    const auto wrong_origin_revision=reset_saved(true);
+    failure([&]{(void)enrolled_recover(*sibling_view);},"Orchard wallet scan");
+    const auto reset_revision=reset_saved(false);CHECK(reset_revision==wrong_origin_revision+1);
+    const auto reset=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*sibling_view);
+    CHECK(reset.revision==reset_revision&&!reset.account.Delivery().sequence&&reset.account.Scan().BalanceUna()==0);
+    CHECK(reset.account.Archive().count==1&&reset.account.Operations().Entries().contains(orchard::Hash{219}));
+    ordinary_sql("CREATE TRIGGER reject_rescan_first BEFORE UPDATE ON orchard_wallet_snapshots WHEN NEW.account=0 BEGIN SELECT RAISE(ABORT,'rescan first');END");
+    failure([&]{(void)enrolled_recover(*sibling_view);},"Orchard wallet storage integrity, transaction or I/O failure");
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*sibling_view).revision==reset_revision);
+    ordinary_sql("DROP TRIGGER reject_rescan_first");
+    ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    CHECK(enrolled_recover(*sibling_view).applied.cursor==sibling_view->Head());
+    const auto rescanned=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*sibling_view);
+    CHECK(rescanned.account.Scan().BalanceUna()==5000&&rescanned.account.Delivery()==observed_branch.account.Delivery());
+    CHECK(rescanned.account.Observations().at(orchard::Hash{219}).block_hash==sibling_context.block_hash);
+    CHECK(rescanned.account.Archive().count==1&&rescanned.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
+    const auto rescan_completed=enrolled_recover(*sibling_view);
+    CHECK(enrolled_recover(*sibling_view).account_revisions==rescan_completed.account_revisions);
     auto sibling_disconnect=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,sibling_index,live,sibling_context,sibling,parent,forest,true);
     sibling_disconnect->Commit();sibling_disconnect.reset();const auto sibling_down_view=RuntimeAccountReplayTestAccess::Capture(db,c);
     CHECK(enrolled_recover(*sibling_down_view).applied.cursor==sibling_down_view->Head());

@@ -40,6 +40,10 @@ public:
     // separate obligations. Chain capture happens before wallet ownership.
     static RuntimeWalletRecoveryResult ResumeWalletStores(
         ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session,uint32_t account);
+    // Existing zero-receipt accounts are accepted only with a fully restored
+    // empty scan at the exact source origin (late account or explicit rescan).
+    // Their first receipt is earned by scanning event 1, never set directly.
+    // Missing accounts and transparent baselines are not created/repaired.
     static RuntimeEnrolledWalletRecoveryResult ResumeEnrolledWalletStores(
         ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session);
 private:

@@ -27,6 +27,14 @@ now uses actual bodies from the covered common ancestor; see
 `wallet-archive-branch-replay-2026-09-26.md`.
 This does not install a provider or complete baseline/history qualification.
 
+## Account origin recovery (2026-09-26)
+
+Existing authenticated accounts with an empty scanner at the exact checked
+source origin can now join coordinated recovery. Late accounts and explicit
+rescan results earn their first receipt by scanning the real first event;
+notes, observations and retained parent commit together. No missing account or
+ordinary baseline is created. See `wallet-account-origin-recovery-2026-09-26.md`.
+
 ## Current recovery integration (2026-09-26)
 
 The service-owned immutable branch replay view and authenticated parent-revision
@@ -38,7 +46,8 @@ all applied source positions and retries partial commits across accounts. See
 `wallet-enrolled-account-recovery-2026-09-26.md`.
 
 These APIs are compiled into the daemon but not installed notification/startup
-callers. Baseline/pre-origin/late-account reconciliation, authenticated inventory
+callers. Transparent baseline/pre-origin reconciliation, account creation/key
+discovery, authenticated inventory
 completeness, general long-history operation, remaining configured consumers,
 production installation and independent activation/lifecycle qualification
 remain open. Earlier component notes below describe their original scopes;
