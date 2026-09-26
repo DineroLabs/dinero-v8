@@ -28,6 +28,11 @@ public:
   [[nodiscard]] OrchardAccountState
   RewindDelivery(const RuntimeOutboxEvent &, const OrchardBlockCandidate &,
                  const OrchardAccountState &authenticated_parent) const;
+  // Before activation the pool must be empty. Apply the actual historical
+  // body: move its empty scan checkpoint, observe pending transparent-input
+  // conflicts, or undo those observations. Never discards addresses/Ready data.
+  [[nodiscard]] OrchardAccountState
+  ApplyHistoricalDelivery(const RuntimeOutboxEvent &) const;
   struct ArchiveCheckpoint {
     uint64_t count = 0;
     orchard::Hash head{};

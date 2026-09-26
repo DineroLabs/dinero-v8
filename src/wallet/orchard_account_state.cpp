@@ -1,5 +1,7 @@
 #include "wallet/orchard_account_state.h"
 #include "daemon/runtime_block_outbox.h"
+#include "primitives/block.h"
+#include "consensus/merkle_root.h"
 #include <algorithm>
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
@@ -14,7 +16,7 @@ void Check(bool v) {
   if (!v)
     Fail();
 }
-constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '4'};
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '5'};
 Hash Identity(const FullViewingKeyBytes &fvk) {
   Hash h;
   SHA256(fvk.data(), fvk.size(), h.data());
@@ -113,6 +115,18 @@ public:
         for (const auto &in : tx.Historical().vin)
           input(HashBytes(in.prevout.txid.AsUint256()), in.prevout.vout);
       }
+      ++ordinal;
+    }
+  }
+  explicit BlockObservations(const Block &block) : hash_(block.GetHash()) {
+    bool mutated = false;
+    Check(!block.vtx.empty() && ComputeMerkleRoot(block.vtx, &mutated) == block.header.merkle_root && !mutated);
+    uint32_t ordinal = 0;
+    for (const auto &tx : block.vtx) {
+      const auto id = HashBytes(tx.GetTxid().AsUint256());
+      Check(transactions_.emplace(id, ordinal).second);
+      if (!tx.IsCoinbase()) for (const auto &in : tx.vin)
+        Check(inputs_.emplace(std::make_pair(HashBytes(in.prevout.txid.AsUint256()), in.prevout.vout), Spender{ordinal,id}).second);
       ++ordinal;
     }
   }
@@ -287,6 +301,46 @@ OrchardAccountState OrchardAccountState::RewindDelivery(
   next->delivery = {event.cursor.sequence, event.cursor.digest};
   return OrchardAccountState(std::move(next));
 }
+OrchardAccountState OrchardAccountState::ApplyHistoricalDelivery(
+    const RuntimeOutboxEvent &event) const {
+  const auto &c = event.context;
+  const auto &receipt = data_->delivery;
+  const auto &scan = data_->scan.Checkpoint();
+  Check(receipt.sequence != UINT64_MAX && event.cursor.sequence == receipt.sequence + 1 &&
+        !event.cursor.digest.IsNull() && event.previous_digest == receipt.digest);
+  Check(!event.IsOrchardProfile() && c.activation_height == data_->activation &&
+        DomainEqual(c.domain, data_->domain) && c.height > 0 && c.height <= INT32_MAX &&
+        !c.block_hash.IsNull() && !c.parent_hash.IsNull() &&
+        (event.direction == RuntimeBlockDirection::Connect || event.direction == RuntimeBlockDirection::Disconnect));
+  const bool connecting = event.direction == RuntimeBlockDirection::Connect;
+  Check(scan.height < data_->activation && data_->scan.Notes().empty() &&
+        data_->scan.BalanceUna() == 0 && scan.pool_balance == 0 && scan.tree_size == 0);
+  if (connecting) Check(c.height == scan.height + 1 && c.parent_hash == scan.block_hash);
+  else Check(c.height == scan.height && c.block_hash == scan.block_hash);
+  Check(!event.body.empty() && event.body.size() <= 16*1024*1024);
+  const std::string wire(event.body.begin(), event.body.end());
+  const auto body = Block::Deserialize(event.body);
+  Check(body.has_value() && body->Serialize() == wire && body->GetHash() == c.block_hash &&
+        body->header.prev_block_hash == c.parent_hash);
+  const BlockObservations observed(*body); // Merkle/duplicates and real input IDs.
+  auto next = std::make_shared<Data>(*data_);
+  const auto height = connecting ? c.height : c.height - 1;
+  const auto hash = connecting ? c.block_hash : c.parent_hash;
+  next->scan = OrchardWalletScanState::AtHistoricalTip(data_->domain,data_->fvk,data_->activation,height,hash);
+  if (connecting) {
+    for (const auto &[id,entry] : next->operations.Entries()) {
+      if (next->observations.contains(id)) continue;
+      if (auto observation = observed.Find(entry,c.height)) {
+        Check(observation->outcome == Outcome::Conflicted);
+        next->observations.emplace(id,*observation);
+      }
+    }
+  } else {
+    std::erase_if(next->observations,[&](const auto &item){return item.second.height > height;});
+  }
+  next->delivery = {event.cursor.sequence,event.cursor.digest};
+  return OrchardAccountState(std::move(next));
+}
 OrchardAccountState
 OrchardAccountState::Reserve(const Hash &id,
                              const WalletProvingIntent &intent) const {
@@ -361,7 +415,7 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
   Reader r{bytes.Bytes()};
   auto m = r.Raw(8);
   Check(std::equal(m.begin(), m.begin() + 7, magic.begin()) &&
-        (m[7] >= '1' && m[7] <= '4'));
+        (m[7] >= '1' && m[7] <= '5'));
   const bool has_observations = m[7] >= '2';
   const bool has_archive = m[7] >= '3';
   const bool has_delivery = m[7] >= '4';
@@ -395,7 +449,8 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
       const auto height = r.U32();
       const auto block = HashValue(r.Hash32());
       const auto txid = r.Hash32();
-      Check(height >= activation && !block.IsNull() && txid != Hash{});
+      Check(height > 0 && (height >= activation || (m[7] >= '5' && outcome == 2)) &&
+            !block.IsNull() && txid != Hash{});
       state->observations.emplace(
           id, Observation{static_cast<Outcome>(outcome), height, block, txid});
     }
@@ -457,8 +512,16 @@ void OrchardAccountState::VerifyOperationObservation(
     const Hash &id, const OrchardWalletRestoreLookups &lookups) const {
   const auto &observation = data_->observations.at(id);
   const auto &checkpoint = data_->scan.Checkpoint();
-  Check(observation.height <= checkpoint.height &&
-        bool(lookups.selected_block));
+  Check(observation.height <= checkpoint.height);
+  if (observation.height < data_->activation) {
+    Check(observation.outcome == Outcome::Conflicted && bool(lookups.selected_historical_block));
+    const auto block = lookups.selected_historical_block(observation.height,observation.block_hash);
+    Check(bool(block) && block->GetHash() == observation.block_hash);
+    if (observation.height == checkpoint.height) Check(observation.block_hash == checkpoint.block_hash);
+    Check(BlockObservations(*block).Find(data_->operations.Entries().at(id),observation.height) == observation);
+    return;
+  }
+  Check(bool(lookups.selected_block));
   if (observation.height == checkpoint.height)
     Check(observation.block_hash == checkpoint.block_hash);
   const auto block =

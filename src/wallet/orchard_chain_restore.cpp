@@ -50,6 +50,14 @@ public:
         if (body.Header().SerializeForHash() != Read(db_.getHeader(hash)).SerializeForHash()) Corrupt();
         return body;
     }
+    Block HistoricalBody(const uint256& hash,uint32_t height) const {
+        if (height >= activation_ || Height(hash) != height) Corrupt();
+        const auto body=Read(storage::ReadArchivalBlock(db_,blocks_,hash));
+        bool mutated=false;
+        if (body.vtx.empty() || ComputeMerkleRoot(body.vtx,&mutated)!=body.header.merkle_root || mutated ||
+            body.GetHash()!=hash || body.header.SerializeForHash()!=Read(db_.getHeader(hash)).SerializeForHash()) Corrupt();
+        return body;
+    }
     UTXOEntry Previous(const OutPoint& point, uint32_t origin_height, uint32_t origin_index) const {
         const auto location = Read(db_.getTxLocation(point.txid.AsUint256()));
         const auto height = Height(location.first);
@@ -103,11 +111,24 @@ private:
 OrchardAccountState RestoreOrchardAccountFromChainUnderLock(
     const ChainDB& db, const BlockStorage* blocks, const WalletStateBytes& payload,
     SigningDomain domain, const FullViewingKeyBytes& fvk, uint32_t activation) {
-    const auto checkpoint = Read(db.getOrchardState());
     const auto tip = Read(db.getValidatedTip()), current = Read(db.getTip());
-    if (activation == 0 || activation == UINT32_MAX || checkpoint.height < activation ||
-        checkpoint.height > uint32_t(INT32_MAX) || tip.height != int(checkpoint.height) ||
-        tip.hash != checkpoint.block_hash || current.hash != tip.hash || current.height != tip.height) Corrupt();
+    if (activation == 0 || activation == UINT32_MAX || tip.height < 0 ||
+        current.hash != tip.hash || current.height != tip.height) Corrupt();
+    const bool historical=uint32_t(tip.height)<activation;
+    const auto stored=db.getOrchardState();
+    storage::OrchardStoredState checkpoint;
+    if (historical) {
+        if (stored.status()!=Status::NotFound) {
+            if (!stored.ok()) throw OrchardStateLookupError(stored.status());
+            Corrupt();
+        }
+        const auto frontier=OrchardFrontier::Empty();
+        checkpoint={uint32_t(tip.height),tip.hash,Hash256(frontier.Root()),0,0,
+            std::string(frontier.Bytes().begin(),frontier.Bytes().end())};
+    } else {
+        checkpoint=Read(stored);
+        if (checkpoint.height!=uint32_t(tip.height) || checkpoint.block_hash!=tip.hash) Corrupt();
+    }
     const SelectedArchive archive(db, blocks, activation, checkpoint.height);
     if (archive.Height(tip.hash) != checkpoint.height) Corrupt();
     // At most one authorization is cached, for adjacent notes from one tx.
@@ -158,8 +179,19 @@ OrchardAccountState RestoreOrchardAccountFromChainUnderLock(
     lookups.selected_block = [&](uint32_t height, const uint256& block) {
         return std::make_shared<const OrchardBlockCandidate>(archive.OrchardBody(block, height));
     };
+    lookups.selected_historical_block = [&](uint32_t height,const uint256& block) {
+        return std::make_shared<const Block>(archive.HistoricalBody(block,height));
+    };
     auto restored = OrchardAccountState::Restore(payload, domain, fvk, activation, checkpoint, lookups);
-    if (Read(db.getOrchardState()) != checkpoint || Read(db.getValidatedTip()).hash != tip.hash) Corrupt();
+    if (historical) {
+        const auto after=db.getOrchardState();
+        if (after.status()!=Status::NotFound) {
+            if (!after.ok()) throw OrchardStateLookupError(after.status());
+            Corrupt();
+        }
+    } else if (Read(db.getOrchardState()) != checkpoint) Corrupt();
+    const auto after=Read(db.getValidatedTip()), active=Read(db.getTip());
+    if (after.hash!=tip.hash || after.height!=tip.height || active.hash!=tip.hash || active.height!=tip.height) Corrupt();
     return restored;
 }
 } // namespace dinero::wallet

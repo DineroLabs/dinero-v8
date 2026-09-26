@@ -7,7 +7,9 @@ namespace dinero::wallet {
 // the database is a prerequisite, not performed by this function. Payload must
 // already be authenticated/decrypted by WalletSnapshotStore.
 //
-// Restore only at the current validated Orchard checkpoint. A stale/divergent
+// Restore only at the current validated tip, with its Orchard checkpoint or
+// a checked empty wallet scan below activation (no stored Orchard state). Historical
+// pending-input conflicts require their real selected archival bodies. A stale/divergent
 // wallet must use retained undo or explicit rescan; never silently promote it.
 // Transaction-index entries are locators only: selected block/header/body and
 // exact transaction identity are checked, and previous outputs are read from

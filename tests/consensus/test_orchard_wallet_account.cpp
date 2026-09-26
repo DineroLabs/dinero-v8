@@ -1,6 +1,7 @@
 #include "orchard_block_test_fixture.h"
 #include "wallet/orchard_account_state.h"
 #include "daemon/runtime_block_outbox.h"
+#include "primitives/block.h"
 #include <spawn.h>
 #include <sys/wait.h>
 extern char **environ;
@@ -169,6 +170,91 @@ int main(int argc, char **argv) {
       Require(height == c.height && hash == c.block_hash);
       return std::make_shared<const OrchardBlockCandidate>(block);
     };
+    const auto HistoryRequire=[](bool ok,const char* what) {if(!ok)throw std::runtime_error(what);};
+    // Real historical bodies around the activation parent; these are body and
+    // wallet-effect fixtures, not independently validated historical consensus.
+    Block historyParent; historyParent.header={};historyParent.header.version=1;
+    historyParent.header.prev_block_hash=H(90);historyParent.header.timestamp=20000;
+    Transaction historicalCoinbase;historicalCoinbase.version=2;
+    TxInput historyCb;historyCb.prevout.vout=UINT32_MAX;historyCb.scriptSig={2,32,78};
+    historicalCoinbase.vin={historyCb};historicalCoinbase.vout.emplace_back(AmountUna::Una(1),Bytes{0x51});
+    historyParent.vtx={historicalCoinbase};historyParent.header.merkle_root=ComputeMerkleRoot(historyParent.vtx);
+    auto historyInitial=OrchardAccountState::RestoreForRescan(ready.Encode(),f.domain,fvk,20001,historyParent.GetHash());
+    auto historyContext=c;historyContext.parent_hash=historyParent.GetHash();
+    auto historyBoundary=Candidate(historyContext,auths);historyContext.block_hash=historyBoundary.Header().GetHash();
+    auto historyTransition=PrepareOrchardStateTransition(historyContext,std::nullopt,auths,lookups);
+    auto historicalReceipt=[&](const Block& b,dinero::RuntimeBlockDirection direction,uint64_t sequence,uint8_t digest,uint8_t previous) {
+      auto ec=historyContext;ec.height=20000;ec.block_hash=b.GetHash();ec.parent_hash=b.header.prev_block_hash;
+      const auto wire=b.Serialize();
+      return dinero::RuntimeOutboxEvent{{sequence,H(digest)},previous?H(previous):uint256{},direction,ec,Bytes(wire.begin(),wire.end())};
+    };
+    dinero::RuntimeOutboxEvent historyUp{{1,H(101)},{},dinero::RuntimeBlockDirection::Connect,historyContext,historyBoundary.WireBytes()};
+    auto historyFunded=historyInitial.AdvanceDelivery(historyUp,historyBoundary,historyTransition,auths);
+    auto historyRemove=historyUp;historyRemove.direction=dinero::RuntimeBlockDirection::Disconnect;
+    historyRemove.cursor={2,H(102)};historyRemove.previous_digest=H(101);
+    auto historyEmpty=historyFunded.RewindDelivery(historyRemove,historyBoundary,historyInitial);
+    auto historyDown=historicalReceipt(historyParent,dinero::RuntimeBlockDirection::Disconnect,3,103,102);
+    auto below=historyEmpty.ApplyHistoricalDelivery(historyDown);
+    HistoryRequire(below.Scan().Checkpoint().height==19999 && below.Scan().Checkpoint().block_hash==H(90),"historical applied tip");
+    Require(below.Scan().Notes().empty() && below.Scan().BalanceUna()==0 && below.Observations().empty());
+    auto historyAlternate=historyParent;historyAlternate.header.nonce=17;
+    Transaction historicalConflict;historicalConflict.version=2;
+    TxInput conflictInput;conflictInput.prevout.txid=Point(f.inputs[0]).txid;conflictInput.prevout.vout=Point(f.inputs[0]).vout;historicalConflict.vin={conflictInput};
+    historicalConflict.vout.emplace_back(AmountUna::Una(1),Bytes{0x51});
+    historyAlternate.vtx.push_back(historicalConflict);historyAlternate.header.merkle_root=ComputeMerkleRoot(historyAlternate.vtx);
+    auto historyConnect=historicalReceipt(historyAlternate,dinero::RuntimeBlockDirection::Connect,4,104,103);
+    auto historicalConflicted=below.ApplyHistoricalDelivery(historyConnect);
+    HistoryRequire(historicalConflicted.Observations().contains(id),"historical conflict retained");
+    Require(historicalConflicted.Observations().at(id).outcome==OrchardAccountState::OperationOutcome::Conflicted);
+    Require(historicalConflicted.Observations().at(id).height==20000);
+    const auto historicalConflictTxid=historicalConflict.GetTxid().AsUint256();
+    Hash historicalConflictId{};std::copy(historicalConflictTxid.begin(),historicalConflictTxid.end(),historicalConflictId.begin());
+    Require(historicalConflicted.Observations().at(id).transaction_id==historicalConflictId);
+    Require(historicalConflicted.Delivery().sequence==4 && historicalConflicted.Scan().Checkpoint().block_hash==historyAlternate.GetHash());
+    dinero::wallet::OrchardWalletRestoreLookups historicalLookups;
+    historicalLookups.selected_historical_block=[&](uint32_t height,const uint256& hash) {
+      Require(height==20000 && hash==historyAlternate.GetHash());
+      return std::make_shared<const Block>(historyAlternate);
+    };
+    auto restoredHistorical=OrchardAccountState::Restore(historicalConflicted.Encode(),f.domain,fvk,20001,
+        historicalConflicted.Scan().Checkpoint(),historicalLookups);
+    Require(restoredHistorical.Observations()==historicalConflicted.Observations());
+    Require(restoredHistorical.Operations().Entries().at(id).transaction==ready.Operations().Entries().at(id).transaction);
+    Require(restoredHistorical.IssueReceiver(WalletScope::External).second==historyInitial.IssueReceiver(WalletScope::External).second);
+    AccountReject([&]{(void)OrchardAccountState::Restore(historicalConflicted.Encode(),f.domain,fvk,20001,historicalConflicted.Scan().Checkpoint(),{});});
+    auto wrongHistorical=historicalLookups;wrongHistorical.selected_historical_block=[&](uint32_t,const uint256&) {return std::make_shared<const Block>(historyParent);};
+    AccountReject([&]{(void)OrchardAccountState::Restore(historicalConflicted.Encode(),f.domain,fvk,20001,historicalConflicted.Scan().Checkpoint(),wrongHistorical);});
+    auto oldHistoricalBytes=historicalConflicted.Encode();auto oldHistorical=Bytes(oldHistoricalBytes.Bytes().begin(),oldHistoricalBytes.Bytes().end());oldHistorical[7]='4';
+    AccountReject([&]{(void)OrchardAccountState::RestoreForRescan(WalletStateBytes(oldHistorical),f.domain,fvk,20001,historyParent.GetHash());});
+    auto undoHistory=historicalReceipt(historyAlternate,dinero::RuntimeBlockDirection::Disconnect,5,105,104);
+    auto historicalUndone=historicalConflicted.ApplyHistoricalDelivery(undoHistory);
+    HistoryRequire(historicalUndone.Observations().empty(),"historical conflict reverted");
+    Require(historicalUndone.Scan().Checkpoint()==below.Scan().Checkpoint());
+    auto backHistory=historicalReceipt(historyParent,dinero::RuntimeBlockDirection::Connect,6,106,105);
+    auto historyBack=historicalUndone.ApplyHistoricalDelivery(backHistory);
+    auto historyAgain=historyUp;historyAgain.cursor={7,H(107)};historyAgain.previous_digest=H(106);
+    auto historyRefilled=historyBack.AdvanceDelivery(historyAgain,historyBoundary,historyTransition,auths);
+    Require(historyRefilled.Scan().BalanceUna()==5000 && historyRefilled.Observations().at(id).outcome==OrchardAccountState::OperationOutcome::Confirmed);
+    Require(historyRefilled.Operations().Entries().at(id).transaction==ready.Operations().Entries().at(id).transaction);
+    Require(historyRefilled.Archive()==historyInitial.Archive());
+    AccountReject([&]{(void)historyFunded.ApplyHistoricalDelivery(historyDown);});
+    AccountReject([&]{(void)below.AdvanceDelivery(historyAgain,historyBoundary,historyTransition,auths);});
+    const auto rejectHistorical=[&](auto change) {auto bad=historyConnect;change(bad);AccountReject([&]{(void)below.ApplyHistoricalDelivery(bad);});};
+    rejectHistorical([](auto& e){++e.cursor.sequence;});
+    rejectHistorical([](auto& e){e.previous_digest=H(8);});
+    rejectHistorical([](auto& e){++e.context.domain.branch_id;});
+    rejectHistorical([](auto& e){++e.context.activation_height;});
+    rejectHistorical([](auto& e){--e.context.height;});
+    rejectHistorical([](auto& e){e.context.parent_hash=H(8);});
+    rejectHistorical([](auto& e){e.body.back()^=1;});
+    auto badMerkle=historyAlternate;badMerkle.vtx.back().vout[0].value=AmountUna::Una(2);
+    bool badMerkleRefused=false;
+    try {auto e=historyConnect;const auto wire=badMerkle.Serialize();e.body=Bytes(wire.begin(),wire.end());(void)below.ApplyHistoricalDelivery(e);}
+    catch(const std::exception&){badMerkleRefused=true;}
+    HistoryRequire(badMerkleRefused,"historical Merkle refusal");
+    auto v4bytes=delivered.Encode();auto v4=Bytes(v4bytes.Bytes().begin(),v4bytes.Bytes().end());v4[7]='4';
+    Require(OrchardAccountState::Restore(WalletStateBytes(v4),f.domain,fvk,20001,delivered.Scan().Checkpoint(),restoreLookups).Delivery()==delivered.Delivery());
+
     auto bytes = funded.Encode();
     auto restored = OrchardAccountState::Restore(bytes, f.domain, fvk, 20001,
                                                  funded.Scan().Checkpoint(),
@@ -517,6 +603,31 @@ int main(int argc, char **argv) {
                 actual.Operations().Entries().at(id).transaction == f.Build().CanonicalBytes());
       }
       Require(sqlite3_close(db) == SQLITE_OK);
+    }
+    // Historical conflict/empty-checkpoint receipts also survive a fresh
+    // process exiting immediately before or after the checked SQLite COMMIT.
+    Require(sqlite3_open(path.c_str(), &db)==SQLITE_OK);
+    sql("PRAGMA synchronous=FULL;BEGIN IMMEDIATE;");
+    { WalletSnapshotStore store(db,identity,seed);Require(store.StageReplace(3,below.Encode())==4);sql("COMMIT;"); }
+    Require(sqlite3_close(db)==SQLITE_OK);
+    Require(sqlite3_open(nextPath.c_str(), &db)==SQLITE_OK);
+    sql("PRAGMA synchronous=FULL;BEGIN IMMEDIATE;");
+    { WalletSnapshotStore store(db,identity,seed);Require(store.StageReplace(1,historicalConflicted.Encode())==2);sql("COMMIT;"); }
+    Require(sqlite3_close(db)==SQLITE_OK);
+    for(const char* phase:{"before","after"}) {
+      std::vector<char*> args{argv[0],argv[1],nextPath.data(),path.data(),const_cast<char*>(phase),nullptr};
+      pid_t pid;Require(posix_spawn(&pid,argv[0],nullptr,nullptr,args.data(),environ)==0);
+      int status=0;Require(waitpid(pid,&status,0)==pid && WIFEXITED(status) && WEXITSTATUS(status)==0);
+      Require(sqlite3_open(path.c_str(), &db)==SQLITE_OK);
+      { WalletSnapshotStore store(db,identity,seed);const auto saved=store.Read();
+        const bool committed=std::string(phase)=="after";const auto& expected=committed?historicalConflicted:below;
+        Require(saved && saved->revision==(committed?5:4));
+        auto actual=OrchardAccountState::Restore(saved->state,f.domain,fvk,20001,expected.Scan().Checkpoint(),historicalLookups);
+        Require(actual.Delivery()==expected.Delivery() && actual.Scan().Checkpoint()==expected.Scan().Checkpoint() && actual.Observations()==expected.Observations());
+        Require(actual.Operations().Entries().at(id).transaction==ready.Operations().Entries().at(id).transaction);
+        Require(actual.IssueReceiver(WalletScope::External).second==r2);
+      }
+      Require(sqlite3_close(db)==SQLITE_OK);
     }
     std::cout << "Orchard delivery: ordered receipt with note/rollback effects, legacy formats, "
                  "encrypted atomic rollback and fresh-process pre/post-commit recovery passed\n";

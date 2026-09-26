@@ -1,5 +1,6 @@
 #include "orchard_block_test_fixture.h"
 #include "wallet/orchard_chain_restore.h"
+#include "daemon/runtime_block_outbox.h"
 #include "consensus/orchard_block_staging.h"
 #include "../storage/shielded_store_fixture.h"
 #include "consensus/chainparams.h"
@@ -20,6 +21,55 @@ static void Header(ChainDB& db, const BlockHeader& header, uint32_t height) {
 template<class F> static void RestoreReject(F fn) {
     bool failed=false;try{fn();}catch(const std::exception&){failed=true;}CHECK(failed);
 }
+static void HistoricalRestore(const OrchardAccountState& ready, SigningDomain domain,
+    const FullViewingKeyBytes& fvk,const OutPoint& pending_input) {
+    TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
+    Transaction coinbase;coinbase.version=2;TxInput cb;cb.prevout.vout=UINT32_MAX;cb.scriptSig={2,31,78};
+    coinbase.vin={cb};coinbase.vout.emplace_back(AmountUna::Una(1),Bytes{0x51});
+    Block grand;grand.header={};grand.header.version=1;grand.header.prev_block_hash=H(88);grand.header.timestamp=19999;
+    grand.vtx={coinbase};grand.header.merkle_root=ComputeMerkleRoot(grand.vtx);
+    Block parent=grand;parent.header.prev_block_hash=grand.GetHash();parent.header.timestamp=20000;
+    parent.vtx[0].vin[0].scriptSig={2,32,78};parent.header.merkle_root=ComputeMerkleRoot(parent.vtx);
+    CHECK(db.putHeightIndex(token,19998,H(88))==Status::Ok);Header(db,grand.header,19999);Header(db,parent.header,20000);
+    CHECK(db.putBlock(token,grand.GetHash(),grand)==Status::Ok);CHECK(db.putBlock(token,parent.GetHash(),parent)==Status::Ok);
+    auto account=OrchardAccountState::RestoreForRescan(ready.Encode(),domain,fvk,20001,parent.GetHash());
+    const auto event=[&](const Block& b,RuntimeBlockDirection direction,uint64_t sequence,uint8_t digest,uint8_t previous) {
+        OrchardBlockContext c{20000,b.GetHash(),b.header.prev_block_hash,20001,domain};const auto wire=b.Serialize();
+        return RuntimeOutboxEvent{{sequence,H(digest)},previous?H(previous):uint256{},direction,c,Bytes(wire.begin(),wire.end())};
+    };
+    auto below=account.ApplyHistoricalDelivery(event(parent,RuntimeBlockDirection::Disconnect,1,111,0));
+    CHECK(db.setTip(token,grand.GetHash(),19999,arith_uint256(19999))==Status::Ok);
+    CHECK(db.setValidatedTip(token,grand.GetHash(),19999)==Status::Ok);
+    auto restored=RestoreOrchardAccountFromChainUnderLock(db,nullptr,below.Encode(),domain,fvk,20001);
+    CHECK(restored.Scan().Checkpoint()==below.Scan().Checkpoint() && restored.Delivery()==below.Delivery());
+    auto alternate=parent;alternate.header.nonce=17;
+    Transaction conflict;conflict.version=2;TxInput in;in.prevout.txid=pending_input.txid;in.prevout.vout=pending_input.vout;conflict.vin={in};
+    conflict.vout.emplace_back(AmountUna::Una(1),Bytes{0x51});alternate.vtx.push_back(conflict);
+    alternate.header.merkle_root=ComputeMerkleRoot(alternate.vtx);
+    auto conflicted=below.ApplyHistoricalDelivery(event(alternate,RuntimeBlockDirection::Connect,2,112,111));
+    CHECK(!conflicted.Observations().empty());
+    Header(db,alternate.header,20000);CHECK(db.putBlock(token,alternate.GetHash(),alternate)==Status::Ok);
+    CHECK(db.setTip(token,alternate.GetHash(),20000,arith_uint256(20000))==Status::Ok);
+    CHECK(db.setValidatedTip(token,alternate.GetHash(),20000)==Status::Ok);
+    auto encoded=conflicted.Encode();
+    const auto restore=[&]{return RestoreOrchardAccountFromChainUnderLock(db,nullptr,encoded,domain,fvk,20001);};
+    db.close();const auto rows=Inspect(temp.path);CHECK(db.init(temp.path)==Status::Ok);
+    CHECK(restore().Observations()==conflicted.Observations());
+    CHECK(restore().Delivery()==conflicted.Delivery());
+    db.close();CHECK(Inspect(temp.path)==rows);CHECK(db.init(temp.path)==Status::Ok);
+    RestoreReject([&]{(void)RestoreOrchardAccountFromChainUnderLock(db,nullptr,below.Encode(),domain,fvk,20001);});
+    CHECK(db.putHeightIndex(token,20000,parent.GetHash())==Status::Ok);
+    LookupReject(Status::Corruption,[&]{(void)restore();});
+    CHECK(db.putHeightIndex(token,20000,alternate.GetHash())==Status::Ok);
+    CHECK(db.deleteBlock(token,alternate.GetHash())==Status::Ok);
+    LookupReject(Status::NotFound,[&]{(void)restore();});
+    auto bad=alternate;bad.vtx.back().vout[0].value=AmountUna::Una(2);
+    CHECK(db.putBlock(token,alternate.GetHash(),bad)==Status::Ok);
+    LookupReject(Status::Corruption,[&]{(void)restore();});
+    CHECK(db.putBlock(token,alternate.GetHash(),alternate)==Status::Ok);
+    CHECK(restore().Observations()==conflicted.Observations());
+}
+
 static void Run(const char* fixtures, bool same_block) {
     Fixture f(fixtures);
     TempDir temp; Seed(temp.path); ChainDB db; CHECK(db.init(temp.path)==Status::Ok);
@@ -60,6 +110,7 @@ static void Run(const char* fixtures, bool same_block) {
     auto proved=std::move(plan).Prove(signing);f.bundle=proved.Bytes();f.Sign();
     const std::vector<VerifiedOrchardAuthorizations> auth{VerifyOrchardAuthorizations(f.Snapshot(),f.domain,20001,{})};
     auto ready=reserved.SetReady(Hash{7},auth[0]);
+    if(!same_block) HistoricalRestore(ready,f.domain,fvk,Point(f.inputs[0]));
     OrchardBlockContext context{20001,H(2),parent.GetHash(),20001,f.domain};
     const auto body=same_block?CandidateWires(context,{intermediate.Serialize(TxSerializationMode::WithWitness),auth[0].Orchard().CanonicalBytes()}):Candidate(context,auth);
     const uint32_t origin_index=same_block?2:1;

@@ -48,7 +48,12 @@ OrchardWalletScanState
 OrchardWalletScanState::Begin(SigningDomain domain,
                               const FullViewingKeyBytes &fvk,
                               uint32_t activation, const uint256 &parent) {
-  Check(activation > 0 && activation != UINT32_MAX && !parent.IsNull());
+  return AtHistoricalTip(domain, fvk, activation, activation - 1, parent);
+}
+OrchardWalletScanState OrchardWalletScanState::AtHistoricalTip(
+    SigningDomain domain, const FullViewingKeyBytes &fvk, uint32_t activation,
+    uint32_t height, const uint256 &parent) {
+  Check(activation > 0 && activation != UINT32_MAX && height < activation && !parent.IsNull());
   (void)SigningContext::Create(domain, 0, {}, {}, 0);
   (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
   auto state = std::make_shared<Data>();
@@ -59,7 +64,7 @@ OrchardWalletScanState::Begin(SigningDomain domain,
   uint256 root;
   std::copy(frontier.Root().begin(), frontier.Root().end(), root.begin());
   state->checkpoint = {
-      activation - 1,
+      height,
       parent,
       root,
       0,
@@ -308,7 +313,7 @@ OrchardWalletScanState OrchardWalletScanState::Restore(
     const storage::OrchardStoredState &selected,
     const OrchardWalletRestoreLookups &lookups) {
   Check(activation > 0 && activation != UINT32_MAX &&
-        selected.height >= activation - 1 && selected.height < UINT32_MAX &&
+        selected.height < UINT32_MAX &&
         !selected.block_hash.IsNull());
   (void)SigningContext::Create(domain, 0, {}, {}, 0);
   (void)WalletReceiver::FromViewingKey(fvk, WalletScope::External, {});
@@ -323,7 +328,7 @@ OrchardWalletScanState OrchardWalletScanState::Restore(
   auto frontier = Frontier(checkpoint);
   Check(frontier.Size() == checkpoint.tree_size &&
         frontier.Root() == HashBytes(checkpoint.anchor));
-  if (checkpoint.height == activation - 1)
+  if (checkpoint.height < activation)
     Check(checkpoint.pool_balance == 0 && frontier.Size() == 0);
   const auto count = r.Number(4);
   Check(count <= kMaxWalletNotes && count <= r.bytes.size() / 77);

@@ -4,6 +4,7 @@
 #include "orchard_wallet_storage.h"
 #include "primitives/orchard_block_reader.h"
 #include <memory>
+namespace dinero { struct Block; }
 namespace dinero::wallet {
 struct ScannedOrchardNote {
   std::shared_ptr<const orchard::WalletNote> note;
@@ -28,6 +29,10 @@ struct OrchardWalletRestoreLookups {
   std::function<std::shared_ptr<const OrchardBlockCandidate>(
       uint32_t height, const uint256 &block)>
       selected_block;
+  // For pending-operation conflicts observed before Orchard activation.
+  // Same selected-chain membership contract as selected_block; genuine body.
+  std::function<std::shared_ptr<const Block>(uint32_t, const uint256 &)>
+      selected_historical_block;
 };
 // Immutable derived wallet view. Host supplies a fully validated selected block
 // and holds its chain/wallet snapshot contract. The checks here bind body,
@@ -59,6 +64,10 @@ public:
           const OrchardWalletRestoreLookups &);
 
 private:
+  friend class OrchardAccountState;
+  static OrchardWalletScanState AtHistoricalTip(orchard::SigningDomain,
+      const orchard::FullViewingKeyBytes &, uint32_t activation, uint32_t height,
+      const uint256 &hash);
   struct Data;
   explicit OrchardWalletScanState(std::shared_ptr<const Data> data)
       : data_(std::move(data)) {}

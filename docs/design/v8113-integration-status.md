@@ -1,5 +1,12 @@
 # v8.1.13 integration status
 
+- Orchard account delivery now follows exact historical blocks below activation,
+  moving an empty scan checkpoint and applying/undoing real pending-input
+  conflicts with its existing receipt. DNORAC05 restores those conflicts from
+  selected historical bodies; versions01–04 remain readable. This does not
+  install the account owner/provider or certify historical consensus. See
+  `orchard-account-historical-delivery-2026-09-26.md`.
+
 - Transparent store recovery now connects checked service pages to existing
   index and ordinary receipts, validates both applied source positions, and
   resumes ordered partial commits through a captured head across bounded pages.
