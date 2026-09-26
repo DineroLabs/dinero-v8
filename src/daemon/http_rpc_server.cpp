@@ -15,6 +15,7 @@
 #include <vector>
 #include <cctype>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
 #include <cstdlib>  // std::getenv — DINERO_RPC_DEBUG gate (issue #538)
 
@@ -219,16 +220,31 @@ HttpRpcServer::~HttpRpcServer() {
 }
 
 void HttpRpcServer::start() {
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     if (running_) {
         std::cout << "RPC server already running" << std::endl;
         return;
     }
     
+    if (server_thread_) {
+        throw std::runtime_error("RPC listener must be stopped before restart");
+    }
+    // Bind/listen synchronously so RPCService's existing exception path can
+    // fail daemon startup. A fixed sleep cannot establish listener readiness.
+    const int server_socket = create_server_socket();
+    if (server_socket < 0) {
+        throw std::runtime_error("RPC listener bind/listen failed");
+    }
     shutdown_requested_ = false;
-    server_thread_ = std::make_unique<std::thread>(&HttpRpcServer::server_loop, this);
-    
-    // Wait a bit for server to start
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    running_ = true;
+    try {
+        server_thread_ = std::make_unique<std::thread>(&HttpRpcServer::server_loop, this, server_socket);
+    } catch (...) {
+        running_ = false;
+        shutdown_requested_ = true;
+        close_socket(server_socket);
+        throw;
+    }
     std::cout << "HTTP RPC server started on " << bind_address_ << ":" << port_ << std::endl;
 
     // Security warning: RPC has no TLS — credentials sent as cleartext Base64
@@ -242,6 +258,7 @@ void HttpRpcServer::start() {
 }
 
 void HttpRpcServer::stop() {
+    std::lock_guard<std::mutex> lifecycle(lifecycle_mutex_);
     const bool had_server_thread = static_cast<bool>(server_thread_);
     const bool was_running = running_.load();
     shutdown_requested_ = true;
@@ -309,15 +326,8 @@ void HttpRpcServer::register_builtin_methods() {
     });
 }
 
-void HttpRpcServer::server_loop() {
-    int server_socket = create_server_socket();
-    if (server_socket < 0) {
-        std::cerr << "Failed to create server socket" << std::endl;
-        return;
-    }
-    
-    running_ = true;
-    
+void HttpRpcServer::server_loop(int server_socket) {
+    // Owns the already-listening descriptor after successful thread creation.
     while (!shutdown_requested_) {
         // Accept connections with timeout. Use poll() rather than select():
         // select() cannot handle a file descriptor >= FD_SETSIZE (1024), and a

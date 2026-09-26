@@ -238,6 +238,22 @@ jobs:
               raise SystemExit('Disabled transparent mempool notification consumer test')
           PYCODE
           ctest --test-dir build-orchard-root -R '^MempoolProofStaleness$' --output-on-failure --no-tests=error --output-log orchard-mempool-execution.log
+      - name: Require and execute actual RPC listener startup
+        run: |
+          ctest --test-dir build-orchard-root -R '^RPCListenerStartup$' --show-only=json-v1 > orchard-rpc-startup-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-rpc-startup-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['RPCListenerStartup'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('RPCListenerStartup missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^RPCListenerStartup$' --verbose --no-tests=error --output-log orchard-rpc-startup-execution.log
+          python3 - <<'PYTEST'
+          text = open('orchard-rpc-startup-execution.log').read()
+          for expected in ['PASS occupied RPC listener rejects actual daemon startup', 'PASS same port and datadir reopen with authenticated RPC', 'PASS RPC listener startup and clean shutdown']:
+              if text.count(expected) != 1:
+                  raise SystemExit('RPC startup assertion did not execute exactly once: ' + expected)
+          PYTEST
       - name: Require and execute wallet recovery key ownership
         run: |
           ctest --test-dir build-orchard-root -R '^WalletRecoveryKeys$' --show-only=json-v1 > orchard-wallet-keys-inventory.json
@@ -404,6 +420,8 @@ jobs:
             orchard-root-execution.log
             orchard-mempool-inventory.json
             orchard-mempool-execution.log
+            orchard-rpc-startup-inventory.json
+            orchard-rpc-startup-execution.log
             orchard-wallet-undo-inventory.json
             orchard-wallet-undo-execution.log
             orchard-wallet-keys-inventory.json

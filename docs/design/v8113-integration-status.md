@@ -1,5 +1,13 @@
 # v8.1.13 integration status
 
+## RPC listener startup (2026-09-26)
+
+RPC startup now acquires the actual listening socket before reporting success.
+The required actual-daemon regression covers occupied-port refusal, reopening
+its isolated datadir, authenticated RPC and clean shutdown. See
+`rpc-listener-startup-2026-09-26.md`. This does not complete the recovery/provider
+or activation-history requirements below.
+
 ## Current recovery integration (2026-09-26)
 
 The service-owned immutable branch replay view and authenticated parent-revision

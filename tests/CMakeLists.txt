@@ -59,6 +59,12 @@ if(NOT WIN32)
       set_property(TARGET test_daemon_service_release PROPERTY ${_property} "${_release_property}")
     endif()
   endforeach()
+  add_test(NAME RPCListenerStartup COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_rpc_listener_startup.py
+    $<TARGET_FILE:dinerod>)
+  set_tests_properties(RPCListenerStartup PROPERTIES
+    LABELS "integration;e2e-daemon;rpc;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+
   add_test(NAME DaemonServiceRelease COMMAND python3
     ${CMAKE_SOURCE_DIR}/tests/integration/test_daemon_service_release.py
     $<TARGET_FILE:test_daemon_service_release>)
