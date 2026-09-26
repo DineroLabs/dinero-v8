@@ -207,7 +207,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute all root Orchard lanes
         run: |
@@ -381,6 +381,24 @@ jobs:
                   raise SystemExit('Disabled shared flatfile compatibility test')
           PYCODE
           ctest --test-dir build-orchard-root -R '^(BlockStorageRoundTrip|ArchivalBlockReader)$' --output-on-failure --no-tests=error --output-log orchard-flatfile-execution.log
+      - name: Require and execute snapshot wallet import
+        run: |
+          ctest --test-dir build-orchard-root -R '^(WalletRescanUtxoSet|SnapshotWalletImport)$' --show-only=json-v1 > orchard-wallet-snapshot-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-snapshot-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['SnapshotWalletImport', 'WalletRescanUtxoSet']:
+              raise SystemExit('Missing snapshot wallet import test')
+          if any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Disabled snapshot wallet import test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(WalletRescanUtxoSet|SnapshotWalletImport)$' --verbose --no-tests=error --output-log orchard-wallet-snapshot-execution.log
+          python3 - <<'PYCODE'
+          text = open('orchard-wallet-snapshot-execution.log').read()
+          for marker in ['snapshot effects and progress committed together', 'PASS snapshot_wallet_import']:
+              if text.count(marker) != 1:
+                  raise SystemExit('Missing or duplicate snapshot import execution marker: ' + marker)
+          PYCODE
       - name: Require and execute legacy-state service persistence
         run: |
           ctest --test-dir build-orchard-root -R '^ShieldedStateStartup$' --show-only=json-v1 > orchard-service-persistence-inventory.json
@@ -438,6 +456,8 @@ jobs:
             orchard-wallet-disconnect-execution.log
             orchard-flatfile-inventory.json
             orchard-flatfile-execution.log
+            orchard-wallet-snapshot-inventory.json
+            orchard-wallet-snapshot-execution.log
             orchard-service-persistence-inventory.json
             orchard-service-persistence-execution.log
             orchard-dnrs-legacy-inventory.json

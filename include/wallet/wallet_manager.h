@@ -652,14 +652,15 @@ public:
     // owned by this wallet, complementing the block-replay rescan which cannot
     // see pre-snapshot coins (their block bodies are absent).
     //
-    // `produce` is invoked with a sink callback; call sink(entry) once per coin
-    // in the set. Coins whose scriptPubKey is in watch_scripts are recorded into
-    // the local utxos table (idempotent: INSERT OR IGNORE on the PRIMARY KEY, so
-    // re-running is safe). If snapshot_height exceeds the wallet's current scan
-    // height, the watermark is advanced so a later block-replay rescan starts
-    // above the snapshot instead of clearing/refetching pre-snapshot heights.
-    //
-    // Returns the number of owned UTXOs newly recorded.
+    // The caller supplies a complete, validated immutable source. This function
+    // does not certify snapshot provenance or pre-origin history completeness.
+    // `produce` calls sink once per coin and throws on any incomplete source.
+    // It runs under the wallet database lease and must not acquire chain locks
+    // or wait for another thread that needs the lease. Owned coins, schema and
+    // scan progress commit together with synchronous=FULL. No delivery receipt
+    // is created; existing mutation guards still invalidate tracked progress.
+    // Returns the number of inserted/refreshed owned coins, or -1 on failure.
+    // An existing caller transaction is refused without changing it.
     int rescanUtxoSet(
         const std::function<void(const std::function<void(const UtxoSetEntry&)>&)>& produce,
         uint32_t snapshot_height = 0);

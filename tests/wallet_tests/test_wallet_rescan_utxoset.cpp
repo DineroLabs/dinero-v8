@@ -27,6 +27,9 @@
 #include <cstdint>
 #include <unistd.h>
 #include <sqlite3.h>
+#include <future>
+#include <thread>
+#include <chrono>
 
 #include "wallet/wallet_manager.h"
 #include "consensus/chainparams.h"
@@ -122,10 +125,139 @@ static std::vector<uint8_t> p2tr(uint8_t fill) {
     return spk;
 }
 
+static void atomicSnapshotImport() {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / ("snapshot_import_atomic_" + std::to_string(::getpid()));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    {
+        WalletManager wallet(dir);
+        wallet.create("atomic"); wallet.open("atomic");
+        const auto script = p2tr(0x35);
+        wallet.addWatchScript(script, "m/86'/0'/0'/0/0", false);
+        auto sql = [&](const char* text) {
+            if (sqlite3_exec(wallet.getCurrentDatabase(), text, nullptr, nullptr, nullptr) != SQLITE_OK)
+                throw std::runtime_error(std::string("snapshot test SQL: ") + sqlite3_errmsg(wallet.getCurrentDatabase()));
+        };
+        auto scalar = [&](const char* text) {
+            sqlite3_stmt* raw = nullptr;
+            if (sqlite3_prepare_v2(wallet.getCurrentDatabase(), text, -1, &raw, nullptr) != SQLITE_OK)
+                throw std::runtime_error("snapshot test query prepare");
+            std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(raw, sqlite3_finalize);
+            if (sqlite3_step(raw) != SQLITE_ROW) throw std::runtime_error("snapshot test query step");
+            const auto value = sqlite3_column_int64(raw, 0);
+            if (sqlite3_step(raw) != SQLITE_DONE) throw std::runtime_error("snapshot test query end");
+            return value;
+        };
+        WalletManager::UtxoSetEntry coin;
+        coin.txid_hex = std::string(64, 'a'); coin.amount_una = 5000;
+        coin.script_pubkey = script; coin.height = 4;
+        auto producer = [&](const auto& sink) { sink(coin); };
+        const auto initial_height = wallet.getCurrentBlockchainHeight();
+        const auto initial_scan = scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1");
+        const auto initial_tip = scalar("SELECT COALESCE(MAX(height),0) FROM tip");
+        auto unchanged = [&] {
+            check(scalar("SELECT COUNT(*) FROM utxos") == 0, "failed snapshot leaves no owned outputs");
+            check(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1") == initial_scan,
+                  "failed snapshot preserves scan progress");
+            check(scalar("SELECT COALESCE(MAX(height),0) FROM tip") == initial_tip,
+                  "failed snapshot preserves persisted tip");
+            check(wallet.getCurrentBlockchainHeight() == initial_height,
+                  "failed snapshot preserves published height");
+        };
+        check(wallet.rescanUtxoSet([&](const auto& sink) {
+            sink(coin); throw std::runtime_error("source unavailable before completion");
+        }, 8) == -1, "incomplete producer refuses snapshot completion");
+        unchanged();
+        check(scalar("SELECT COUNT(*) FROM pragma_table_info('utxos') WHERE name='snapshot_anchored'") == 0,
+              "failed snapshot rolls back schema with effects");
+        for (const auto* stage : {"sync_meta", "tip", "utxos"}) {
+            // A trigger exercises a write-stage failure, including after the
+            // coin insertion, rather than just a missing SQL preparation.
+            const std::string trigger = std::string("CREATE TEMP TRIGGER reject_snapshot BEFORE ") +
+                (std::string(stage) == "tip" ? "INSERT" : "UPDATE") + " ON " + stage +
+                " BEGIN SELECT RAISE(ABORT,'snapshot stage unavailable'); END";
+            sql(trigger.c_str());
+            check(wallet.rescanUtxoSet(producer, 8) == -1, std::string("checked snapshot stage ") + stage);
+            unchanged();
+            sql("DROP TRIGGER reject_snapshot");
+        }
+        sql("PRAGMA foreign_keys=ON");
+        sql("CREATE TABLE snapshot_parent(id INTEGER PRIMARY KEY)");
+        sql("CREATE TABLE snapshot_child(id INTEGER REFERENCES snapshot_parent(id) DEFERRABLE INITIALLY DEFERRED)");
+        sql("CREATE TEMP TRIGGER reject_snapshot AFTER INSERT ON utxos BEGIN INSERT INTO snapshot_child VALUES(1); END");
+        check(wallet.rescanUtxoSet(producer, 8) == -1, "deferred COMMIT failure refuses snapshot completion");
+        unchanged();
+        check(scalar("SELECT COUNT(*) FROM snapshot_child") == 0, "COMMIT failure rolls back trigger effects");
+        sql("DROP TRIGGER reject_snapshot");
+        {
+            auto lease = wallet.AcquireDatabaseLease();
+            sql("BEGIN IMMEDIATE");
+            sql("INSERT INTO snapshot_parent VALUES(11)");
+            bool called = false;
+            check(wallet.rescanUtxoSet([&](const auto&) { called=true; }, 8) == -1 && !called,
+                  "borrowed transaction refused before source callback");
+            check(!sqlite3_get_autocommit(wallet.getCurrentDatabase()) &&
+                  scalar("SELECT COUNT(*) FROM snapshot_parent") == 1,
+                  "borrowed transaction remains owned by caller");
+            sql("ROLLBACK");
+        }
+        bool called = false;
+        sqlite3_set_authorizer(wallet.getCurrentDatabase(), [](void*, int op, const char* table,
+                const char*, const char*, const char*) {
+            return op == SQLITE_READ && table && std::string_view(table) == "watch_scripts"
+                ? SQLITE_DENY : SQLITE_OK;
+        }, nullptr);
+        check(wallet.rescanUtxoSet([&](const auto&) { called=true; }, 8) == -1 && !called,
+              "watch ownership read failure refuses source consumption");
+        sqlite3_set_authorizer(wallet.getCurrentDatabase(), nullptr, nullptr);
+        unchanged();
+        std::promise<void> start, attempting, acquired;
+        auto start_signal = start.get_future();
+        auto attempt_signal = attempting.get_future();
+        auto acquired_signal = acquired.get_future();
+        std::thread competitor([&] {
+            start_signal.wait(); attempting.set_value();
+            try { auto lease = wallet.AcquireDatabaseLease(); acquired.set_value(); }
+            catch (...) { acquired.set_exception(std::current_exception()); }
+        });
+        const int recorded = wallet.rescanUtxoSet([&](const auto& sink) {
+            start.set_value(); attempt_signal.wait();
+            check(acquired_signal.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout,
+                  "snapshot producer pins actual wallet ownership");
+            check(wallet.getCurrentBlockchainHeight() == initial_height, "producer can inspect precommit height");
+            sink(coin);
+        }, 8);
+        competitor.join();
+        try { acquired_signal.get(); }
+        catch (...) { check(false, "competing lease acquires after snapshot ownership releases"); }
+        check(recorded == 1, "complete source commits owned output");
+        check(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1") == 8 &&
+              scalar("SELECT height FROM tip WHERE rowid=1") == 8 &&
+              wallet.getCurrentBlockchainHeight() == 8, "snapshot effects and progress committed together");
+        check(scalar("PRAGMA synchronous") == 2, "snapshot transaction uses FULL durability");
+        wallet.open("atomic");
+        check(scalar("SELECT COUNT(*) FROM utxos WHERE amount=5000 AND height=4 AND is_spent=0") == 1 &&
+              scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1") == 8 &&
+              wallet.getCurrentBlockchainHeight() == 8, "reopen retains exact output and progress");
+        check(wallet.rescanUtxoSet(producer, 8) == 1 && scalar("SELECT COUNT(*) FROM utxos") == 1,
+              "retry refreshes one output without duplication");
+        // Missing metadata cannot silently turn a successful import into an
+        // unrecorded scan. Existing output contents must survive that failure.
+        sql("DELETE FROM sync_meta WHERE id=1");
+        coin.amount_una = 6000;
+        check(wallet.rescanUtxoSet(producer, 9) == -1 && scalar("SELECT amount FROM utxos") == 5000 &&
+              wallet.getCurrentBlockchainHeight() == 8, "missing progress row refuses import and preserves prior value");
+    }
+    fs::remove_all(dir);
+}
+
 int main() {
     std::cout << "=== WalletManager::rescanUtxoSet regression test ===" << std::endl;
 
     dinero::SelectParams(dinero::Chain::MAINNET);
+    try { atomicSnapshotImport(); }
+    catch (const std::exception& e) { std::cerr << "snapshot atomicity setup: " << e.what() << '\n'; return 2; }
 
     namespace fs = std::filesystem;
     fs::path dir = fs::temp_directory_path() /

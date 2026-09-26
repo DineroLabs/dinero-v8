@@ -11268,7 +11268,9 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
     // the in-memory consensus_utxo_set_ does NOT hold the snapshot's UTXOs (they
     // are committed in the accumulator, not individually enumerable), so iterating
     // it records zero owned coins. The .dat file is the authoritative full UTXO
-    // set the wallet's pre-snapshot coins actually live in. Format per entry:
+    // set the wallet's pre-snapshot coins actually live in. This reader enforces
+    // complete entry delivery, not snapshot provenance or historical consensus.
+    // Format per entry:
     // txid(32) | vout(u32) | value(u64) | script_len(u32) | script | height(u32) | coinbase(u8)
     const std::string snapshot_dat_path =
         config_ ? config_->GetString("assumeutxo_snapshot", "") : "";
@@ -11283,7 +11285,11 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
             snap.read(reinterpret_cast<char*>(&header.utxo_count), sizeof(header.utxo_count));
             snap.read(reinterpret_cast<char*>(&header.timestamp), sizeof(header.timestamp));
             snap.read(reinterpret_cast<char*>(&header.reserved), sizeof(header.reserved));
-            if (snap && header.magic == consensus::SNAPSHOT_MAGIC) {
+            if (snap && header.magic == consensus::SNAPSHOT_MAGIC &&
+                header.block_height == base_height &&
+                (header.version == consensus::SNAPSHOT_VERSION_V3 ||
+                 header.version == consensus::SNAPSHOT_VERSION_V4 ||
+                 header.version == consensus::SNAPSHOT_VERSION_V5)) {
                 const uint64_t utxo_count = header.utxo_count;
                 return wallet.rescanUtxoSet(
                     [&](const std::function<void(const dinero::WalletManager::UtxoSetEntry&)>& sink) {
@@ -11297,7 +11303,7 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
                             uint32_t script_len = 0;
                             snap.read(reinterpret_cast<char*>(&script_len), sizeof(script_len));
                             if (!snap || script_len > 100000u) {
-                                break;  // truncated/corrupt — stop the scan
+                                throw std::runtime_error("Snapshot wallet entry header unavailable");
                             }
                             std::vector<uint8_t> spk(script_len);
                             snap.read(reinterpret_cast<char*>(spk.data()), script_len);
@@ -11305,8 +11311,9 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
                             snap.read(reinterpret_cast<char*>(&height), sizeof(height));
                             uint8_t is_coinbase = 0;
                             snap.read(reinterpret_cast<char*>(&is_coinbase), 1);
-                            if (!snap) {
-                                break;
+                            if (!snap || height > base_height || is_coinbase > 1 ||
+                                value_raw > uint64_t(INT64_MAX)) {
+                                throw std::runtime_error("Snapshot wallet entry unavailable");
                             }
                             dinero::WalletManager::UtxoSetEntry e;
                             e.txid_hex = txid.GetHex();
@@ -11321,6 +11328,9 @@ int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint
                     base_height);
             }
         }
+        // A configured source failure is not permission to substitute another
+        // UTXO set and report that the requested snapshot scan completed.
+        return -1;
     }
 
     // FALLBACK PATH: in-memory consensus UTXO set (full-set / non-utreexo builds).

@@ -1,5 +1,13 @@
 # v8.1.13 integration status
 
+## Snapshot wallet import (2026-09-26)
+
+The existing snapshot import now pins wallet ownership and commits owned outputs,
+schema and scan progress together in a checked FULL transaction. The configured
+file producer refuses incomplete entry delivery. See
+`wallet-snapshot-import-2026-09-26.md`. Source provenance, complete transparent
+pre-origin reconciliation and production provider installation remain open.
+
 ## RPC listener startup (2026-09-26)
 
 RPC startup now acquires the actual listening socket before reporting success.

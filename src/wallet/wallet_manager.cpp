@@ -6187,160 +6187,186 @@ bool WalletManager::rescanBlockchain(int start_height,
 int WalletManager::rescanUtxoSet(
     const std::function<void(const std::function<void(const UtxoSetEntry&)>&)>& produce,
     uint32_t snapshot_height) {
-    if (!db_) {
-        WLOG_ERR("rescanUtxoSet: wallet database not initialized");
-        return 0;
-    }
-    if (current_wallet_id_ == -1) {
-        WLOG_WARN("rescanUtxoSet: no active wallet (current_wallet_id_ == -1)");
-        return 0;
-    }
+    // Pin the selected database for the complete producer/consumer transaction.
+    // The producer must already own immutable source data and must not acquire
+    // chain locks or wait for another thread that needs this wallet lease.
+    std::unique_ptr<DatabaseLease> database_lease;
+    try { database_lease = AcquireDatabaseLease(); }
+    catch (...) { return -1; }
+    if (!db_ || current_wallet_id_ == -1) return -1;
+    if (!sqlite3_get_autocommit(db_)) return -1; // Never adopt a caller transaction.
 
-    // Load watch_scripts into memory for fast matching (same source as the
-    // block-replay rescan at rescanBlockchain()).
-    std::set<std::vector<uint8_t>> watch_scripts;
-    {
-        const char* sql = "SELECT script_pubkey FROM watch_scripts";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {
-                const void* blob = sqlite3_column_blob(stmt, 0);
-                int blob_size = sqlite3_column_bytes(stmt, 0);
-                if (blob && blob_size > 0) {
-                    watch_scripts.emplace(
-                        static_cast<const uint8_t*>(blob),
-                        static_cast<const uint8_t*>(blob) + blob_size);
-                }
-            }
-            sqlite3_finalize(stmt);
-        }
-    }
-
-    if (watch_scripts.empty()) {
-        WLOG_WARN("rescanUtxoSet: no watch_scripts registered - nothing to match");
-        // Still advance the watermark below so catch-up starts above the snapshot.
-    }
-
-    WLOG_INFO("rescanUtxoSet: scanning snapshot UTXO set against " +
-              std::to_string(watch_scripts.size()) + " watch script(s)");
-
-    // Ensure the snapshot_anchored column exists (idempotent; older wallet DBs
-    // predate it). Coins flagged anchored are trusted by the balance read path
-    // so its "not in live utxo_index_ => spent" inference never re-clobbers them
-    // (snapshot UTXOs live in the utreexo accumulator, never the live index).
-    sqlite3_exec(db_, "ALTER TABLE utxos ADD COLUMN snapshot_anchored INTEGER NOT NULL DEFAULT 0",
-                 nullptr, nullptr, nullptr);
-
-    int recorded = 0;
-    exec(db_, "BEGIN TRANSACTION");
-
-    // Per-coin sink: identical insert path to rescanBlockchain (hex-encode the
-    // scriptPubKey, extractAddressFromScript, upsert INTO utxos).
-    auto sink = [&](const UtxoSetEntry& e) {
-        if (watch_scripts.find(e.script_pubkey) == watch_scripts.end()) {
-            return;  // not ours
-        }
-
-        std::string script_pubkey_hex;
-        script_pubkey_hex.reserve(e.script_pubkey.size() * 2);
-        static constexpr char kHex[] = "0123456789abcdef";
-        for (uint8_t b : e.script_pubkey) {
-            script_pubkey_hex.push_back(kHex[(b >> 4) & 0x0F]);
-            script_pubkey_hex.push_back(kHex[b & 0x0F]);
-        }
-
-        std::string address = extractAddressFromScript(e.script_pubkey);
-        if (address.empty()) {
-            // Preserve row integrity even for unknown script templates.
-            address = "script:" + script_pubkey_hex.substr(0, 16);
-        }
-
-        // A coin present in the snapshot UTXO set is UNSPENT by definition. If a
-        // row already exists (e.g. the wallet's block-replay history, or a prior
-        // failed block-rescan that wrongly flagged it is_spent=1), an INSERT OR
-        // IGNORE would leave the stale is_spent intact and the balance reads 0.
-        // Upsert instead: un-spend the row and refresh authoritative fields.
-        // Coinbase maturity is judged against the snapshot base height.
-        int is_mature = 1;
-        if (e.is_coinbase && snapshot_height < e.height + 100) {
-            is_mature = 0;
-        }
-
-        const char* insert_sql = R"(
-            INSERT INTO utxos
-            (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, is_mature, snapshot_anchored, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)
-            ON CONFLICT DO UPDATE SET
-                is_spent = 0,
-                spent_txid = NULL,
-                spent_height = NULL,
-                wallet_id = excluded.wallet_id,
-                amount = excluded.amount,
-                script_pubkey = excluded.script_pubkey,
-                height = excluded.height,
-                is_coinbase = excluded.is_coinbase,
-                is_mature = excluded.is_mature,
-                snapshot_anchored = 1
-        )";
-
-        sqlite3_stmt* stmt = nullptr;
-        const int prepare_rc = sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr);
-        if (prepare_rc != SQLITE_OK) {
-            throw std::runtime_error(
-                "snapshot UTXO upsert prepare failed: " + std::string(sqlite3_errmsg(db_)));
-        }
-
-        int bind_index = 1;
-        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-        sqlite3_bind_text(stmt, bind_index++, e.txid_hex.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.vout));
-        sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(e.amount_una));
-        sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(e.height));
-        sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0);
-        sqlite3_bind_int(stmt, bind_index++, is_mature);
-        sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-        const int step_rc = sqlite3_step(stmt);
-        if (step_rc != SQLITE_DONE) {
-            const std::string error = sqlite3_errmsg(db_);
-            sqlite3_finalize(stmt);
-            throw std::runtime_error("snapshot UTXO upsert failed: " + error);
-        }
-        if (sqlite3_changes(db_) > 0) {
-            recorded++;
-        }
-        sqlite3_finalize(stmt);
+    auto checked = [&](int result, int expected) {
+        if (result != expected)
+            throw std::runtime_error(std::string("Snapshot wallet SQL failed: ") + sqlite3_errmsg(db_));
     };
-
-    try {
-        produce(sink);
-        exec(db_, "COMMIT");
-    } catch (const std::exception& e) {
-        try {
-            exec(db_, "ROLLBACK");
-        } catch (const std::exception&) {
-            // Preserve the original SQL/producer error below.
+    using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+    auto prepare = [&](const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        const int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+        Statement stmt(raw, sqlite3_finalize);
+        checked(rc, SQLITE_OK);
+        return stmt;
+    };
+    auto has_column = [&](const char* table, const char* column) {
+        const std::string query = std::string("PRAGMA table_info(") + table + ")";
+        auto stmt = prepare(query.c_str());
+        bool found = false;
+        int rc;
+        while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+            const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 1));
+            if (name && std::string_view(name) == column) found = true;
         }
-        WLOG_ERR(std::string("rescanUtxoSet: atomic snapshot import failed: ") + e.what());
+        checked(rc, SQLITE_DONE);
+        return found;
+    };
+    int recorded = 0;
+    bool owned_transaction = false;
+    // Reserve publication ownership before COMMIT; no fallible SQL or lock
+    // acquisition may turn a committed import into an apparent failed import.
+    std::unique_lock<std::mutex> height_lock(height_mu_, std::defer_lock);
+    uint32_t published_height = 0;
+    try {
+        exec(db_, "PRAGMA synchronous=FULL");
+        {
+            auto policy = prepare("PRAGMA synchronous");
+            checked(sqlite3_step(policy.get()), SQLITE_ROW);
+            if (sqlite3_column_int(policy.get(), 0) != 2)
+                throw std::runtime_error("Snapshot wallet durability unavailable");
+            checked(sqlite3_step(policy.get()), SQLITE_DONE);
+        }
+        exec(db_, "BEGIN IMMEDIATE");
+        owned_transaction = true;
+        std::set<std::vector<uint8_t>> watch_scripts;
+        {
+            auto stmt = prepare("SELECT script_pubkey FROM watch_scripts");
+            int rc;
+            while ((rc = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+                const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(stmt.get(), 0));
+                const int size = sqlite3_column_bytes(stmt.get(), 0);
+                if (sqlite3_column_type(stmt.get(), 0) != SQLITE_BLOB || !bytes || size <= 0)
+                    throw std::runtime_error("Snapshot wallet watch script unavailable");
+                watch_scripts.emplace(bytes, bytes + size);
+            }
+            checked(rc, SQLITE_DONE);
+        }
+        if (!has_column("utxos", "snapshot_anchored"))
+            exec(db_, "ALTER TABLE utxos ADD COLUMN snapshot_anchored INTEGER NOT NULL DEFAULT 0");
+        // Per-coin sink: identical insert path to rescanBlockchain (hex-encode the
+        // scriptPubKey, extractAddressFromScript, upsert INTO utxos).
+        auto sink = [&](const UtxoSetEntry& e) {
+            if (watch_scripts.find(e.script_pubkey) == watch_scripts.end()) {
+                return;  // not ours
+            }
+
+            if (e.height > snapshot_height || e.amount_una > uint64_t(INT64_MAX) ||
+                e.txid_hex.size() != 64 || e.txid_hex.find_first_not_of("0123456789abcdef") != std::string::npos)
+                throw std::runtime_error("Snapshot owned coin fields are out of range");
+            std::string script_pubkey_hex;
+            script_pubkey_hex.reserve(e.script_pubkey.size() * 2);
+            static constexpr char kHex[] = "0123456789abcdef";
+            for (uint8_t b : e.script_pubkey) {
+                script_pubkey_hex.push_back(kHex[(b >> 4) & 0x0F]);
+                script_pubkey_hex.push_back(kHex[b & 0x0F]);
+            }
+
+            std::string address = extractAddressFromScript(e.script_pubkey);
+            if (address.empty()) {
+                // Preserve row integrity even for unknown script templates.
+                address = "script:" + script_pubkey_hex.substr(0, 16);
+            }
+
+            // A coin present in the snapshot UTXO set is UNSPENT by definition. If a
+            // row already exists (e.g. the wallet's block-replay history, or a prior
+            // failed block-rescan that wrongly flagged it is_spent=1), an INSERT OR
+            // IGNORE would leave the stale is_spent intact and the balance reads 0.
+            // Upsert instead: un-spend the row and refresh authoritative fields.
+            // Coinbase maturity is judged against the snapshot base height.
+            int is_mature = 1;
+            if (e.is_coinbase && uint64_t(snapshot_height) < uint64_t(e.height) + 100) {
+                is_mature = 0;
+            }
+
+            const char* insert_sql = R"(
+                INSERT INTO utxos
+                (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, is_mature, snapshot_anchored, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)
+                ON CONFLICT DO UPDATE SET
+                    is_spent = 0,
+                    spent_txid = NULL,
+                    spent_height = NULL,
+                    wallet_id = excluded.wallet_id,
+                    amount = excluded.amount,
+                    script_pubkey = excluded.script_pubkey,
+                    height = excluded.height,
+                    is_coinbase = excluded.is_coinbase,
+                    is_mature = excluded.is_mature,
+                    snapshot_anchored = 1
+            )";
+
+            auto statement = prepare(insert_sql);
+            auto* stmt = statement.get();
+
+            int bind_index = 1;
+            checked(sqlite3_bind_int(stmt, bind_index++, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_bind_text(stmt, bind_index++, e.txid_hex.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, e.vout), SQLITE_OK);
+            checked(sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(e.amount_una)), SQLITE_OK);
+            checked(sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, e.height), SQLITE_OK);
+            checked(sqlite3_bind_int(stmt, bind_index++, e.is_coinbase ? 1 : 0), SQLITE_OK);
+            checked(sqlite3_bind_int(stmt, bind_index++, is_mature), SQLITE_OK);
+            checked(sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr)), SQLITE_OK);
+
+            checked(sqlite3_step(stmt), SQLITE_DONE);
+            if (sqlite3_changes(db_) > 0) {
+                if (recorded == INT_MAX) throw std::runtime_error("Snapshot owned coin count exceeded");
+                ++recorded;
+            }
+        };
+        produce(sink);
+        height_lock.lock();
+        published_height = std::max(current_blockchain_height_, snapshot_height);
+        {
+            auto progress = prepare("UPDATE sync_meta SET last_scanned_height=? WHERE id=1");
+            checked(sqlite3_bind_int64(progress.get(), 1, snapshot_height), SQLITE_OK);
+            checked(sqlite3_step(progress.get()), SQLITE_DONE);
+            if (sqlite3_changes(db_) != 1)
+                throw std::runtime_error("Snapshot wallet progress row unavailable");
+        }
+        if (snapshot_height > current_blockchain_height_) {
+            auto tip = prepare("INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height");
+            checked(sqlite3_bind_int64(tip.get(), 1, published_height), SQLITE_OK);
+            checked(sqlite3_step(tip.get()), SQLITE_DONE);
+            // Keep the existing ordinary-wallet display maturity/confirmation
+            // rules, but stage them with the imported coins and progress.
+            const bool scoped = has_column("transactions", "wallet_id");
+            if (has_column("transactions", "height") && has_column("transactions", "confirmations")) {
+                auto tx = prepare(scoped
+                    ? "UPDATE transactions SET confirmations=CASE WHEN ? >= height THEN ?-height+1 ELSE confirmations END WHERE height>0 AND wallet_id=?"
+                    : "UPDATE transactions SET confirmations=CASE WHEN ? >= height THEN ?-height+1 ELSE confirmations END WHERE height>0");
+                checked(sqlite3_bind_int64(tx.get(), 1, published_height), SQLITE_OK);
+                checked(sqlite3_bind_int64(tx.get(), 2, published_height), SQLITE_OK);
+                if (scoped) checked(sqlite3_bind_int(tx.get(), 3, current_wallet_id_), SQLITE_OK);
+                checked(sqlite3_step(tx.get()), SQLITE_DONE);
+            }
+            auto maturity = prepare("UPDATE utxos SET is_mature=CASE WHEN is_coinbase=0 OR ?-height+1>=100 THEN 1 ELSE 0 END WHERE wallet_id=? AND is_spent=0");
+            checked(sqlite3_bind_int64(maturity.get(), 1, published_height), SQLITE_OK);
+            checked(sqlite3_bind_int(maturity.get(), 2, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_step(maturity.get()), SQLITE_DONE);
+        }
+        exec(db_, "COMMIT");
+        owned_transaction = false;
+    } catch (...) {
+        if (owned_transaction && !sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
         return -1;
     }
-
-    WLOG_INFO("rescanUtxoSet: recorded " + std::to_string(recorded) +
-              " owned UTXO(s) from snapshot UTXO set");
-
-    // Advance the wallet's scanned-height watermark to the snapshot base so a
-    // later block-replay catch-up starts ABOVE the snapshot height instead of at
-    // 0. Replaying pre-snapshot heights (whose block bodies are absent on a
-    // fast-synced node) would re-spend/clear the coins we just recorded. Persist
-    // unconditionally to sync_meta (the catch-up keys off last_scanned_height,
-    // not the tip), and also bump the tip if the wallet is behind.
-    persistScanHeight(snapshot_height);
-    if (snapshot_height > current_blockchain_height_) {
-        setBlockchainHeight(snapshot_height);
-    }
-
+    current_blockchain_height_ = published_height;
+    height_lock.unlock();
+    height_cv_.notify_all();
     return recorded;
 }
 
