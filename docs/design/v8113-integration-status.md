@@ -1,5 +1,13 @@
 # v8.1.13 integration status
 
+## Outbox-origin ordinary facts (2026-09-26)
+
+The service can prepare projected ordinary creations, spends and exact relevant
+transaction facts from checked-origin ancestry using owned historical replay. See
+`wallet-origin-projection-2026-09-26.md`. Complete successful origin capture and
+ordered index/ordinary adoption remain unqualified; local sends/pending state,
+CT epochs, discovery, provider installation and steps 1–4 remain open.
+
 ## Selected wallet history source (2026-09-26)
 
 A service-owned archival source now validates captured genesis-to-tip bodies before

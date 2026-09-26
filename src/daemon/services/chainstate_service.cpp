@@ -1,3 +1,5 @@
+#include "wallet/runtime_origin_projection.h"
+#include "wallet/runtime_index_delivery.h"
 #include "wallet/selected_history.h"
 #include <sqlite3.h>
 #include "consensus/utreexo_maturity_leaf_activation.h"
@@ -5692,6 +5694,70 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
             });
         }();
         return RuntimeAccountReplay::Build(std::move(material));
+    } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
+      catch(...){return Status::Internal;}
+#else
+    return Status::Internal;
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::getRuntimeWalletOrigin(
+        WalletManager& wallet,uint64_t session) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session);
+        RuntimeOutboxCursor head;
+        std::vector<uint256> ancestry;
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            const auto page=getRuntimeDeliveryPage({},1);
+            if(!page.ok())return page.status();
+            if(safe_mode_active_ || (*page)->events.size()!=1)return Status::Invalid;
+            result->first_=(*page)->events.front();head=(*page)->head;
+            const auto& first=result->first_;
+            if(first.cursor.sequence!=1 || first.direction!=RuntimeBlockDirection::Connect ||
+               first.context.height!=first.context.activation_height || !first.context.height)
+                return Status::Invalid;
+            auto expected=first.context.parent_hash;
+            // Operational ancestry cap, not a resident-memory certificate.
+            // Retains hashes only; full bodies are read/validated one at a time.
+            if(first.context.height>1000000)return Status::Invalid;
+            for(uint32_t remaining=first.context.height;remaining;--remaining) {
+                const auto header=chain_db_->getHeader(expected);
+                const auto height=chain_db_->getBlockHeight(expected);
+                if(!header.ok() || !height.ok() || *height<0 || uint32_t(*height)!=remaining-1 ||
+                   header->GetHash()!=expected)return Status::Corruption;
+                ancestry.push_back(expected);expected=header->prev_block_hash;
+            }
+            if(!expected.IsNull() || ancestry.back()!=uint256::FromHexUnsafe(Params().genesis_hash))
+                return Status::Corruption;
+            std::reverse(ancestry.begin(),ancestry.end());
+        }
+        assumeutxo::AssumeUtxoReplayEngine replay;
+        for(uint32_t height=0;height<ancestry.size();++height) {
+            std::optional<Block> owned;
+            {
+                std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+                if(!chain_db_)return Status::Internal;
+                const auto body=storage::ReadArchivalBlock(*chain_db_,block_storage_.get(),ancestry[height]);
+                if(!body.ok())return body.status();
+                if(body->GetHash()!=ancestry[height])return Status::Corruption;
+                owned=*body;
+            }
+            std::string error;
+            if(height==0 ? !replay.SeedGenesis(*owned,error) :
+                !replay.ConnectAndAdvance(*owned,height,ancestry[height],error))return Status::Invalid;
+            result->AppendValidated(*owned,height);
+        }
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            const auto page=getRuntimeDeliveryPage({},1);
+            if(!page.ok())return page.status();
+            if(safe_mode_active_ || (*page)->head!=head || (*page)->events.size()!=1 ||
+               (*page)->events.front().cursor!=result->first_.cursor)return Status::Invalid;
+        }
+        RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,*result);
+        return std::shared_ptr<const RuntimeWalletOriginProjection>(result.release());
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
 #else

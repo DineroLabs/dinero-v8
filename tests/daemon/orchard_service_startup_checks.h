@@ -4,6 +4,7 @@
 // Included only by the dedicated service test target, after the shared honest
 // chain fixture. This access shim never enters a library or daemon build.
 #include "daemon/services/chainstate_service.h"
+#include "wallet/wallet_manager.h"
 #include "daemon/services/logger_service.h"
 #include "daemon/config.h"
 #include "consensus/orchard_header.h"
@@ -645,6 +646,12 @@ static void ServiceDeliverySourceChecks(ChainDB& db,const OrchardBlockContext& c
     }
     CHECK((*service.getRuntimeDeliveryPage(cursor))->events.empty());
     const auto replay_view=service.getRuntimeAccountReplay();CHECK(replay_view.ok());
+    // This indexed fixture has a valid local outbox but generated prehistory.
+    // The origin source must independently refuse it, never certify its markers.
+    WalletManager origin_wallet(path/"origin-wallet");origin_wallet.create("origin");
+    const auto origin_session=origin_wallet.AcquireDatabaseLease()->Session();
+    CHECK(!service.getRuntimeWalletOrigin(origin_wallet,origin_session).ok());
+
     CHECK((*replay_view)->Head()==cursor&&(*replay_view)->Point(cursor).checkpoint.block_hash==c.block_hash);
     CHECK((*replay_view)->State(1).Next().block_hash==c.block_hash);
     CHECK(Access::Verify(service));

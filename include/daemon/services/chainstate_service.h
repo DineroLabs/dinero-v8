@@ -53,7 +53,8 @@ class RuntimeBlockBody;
 struct RuntimeOutboxCursor;
 struct RuntimeOutboxPage;
 class RuntimeAccountReplay;
-class WalletManager;  // Snapshot wallet rescan (see RescanWalletFromSnapshotUTXOs)
+class WalletManager;
+class RuntimeWalletOriginProjection;
 struct FilePosition;  // #309: storage/block_storage.h
 
 namespace consensus {
@@ -828,6 +829,13 @@ public:
     // Acquire before wallet ownership. Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Checked outbox-origin facts for the captured ordinary script domain.
+    // Captures wallet identity briefly, releases it before all chain reads,
+    // independently replays one actual body at a time and rechecks both domains.
+    // No baseline adoption, pending/send policy, account discovery or readiness.
+    StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> getRuntimeWalletOrigin(
+        WalletManager&,uint64_t expected_session) const;
+
     uint64_t getLegacyBodyFallbackReadCount() const;
     uint64_t getLegacyUndoFallbackReadCount() const;
     bool strictArchivalReadsEnabled() const;

@@ -273,6 +273,9 @@ jobs:
           owned = re.findall(r'\[ RUN\s+\] (SelectedWalletHistory\.\S+)', open('orchard-history-replay-execution.log').read())
           if owned != ['SelectedWalletHistory.ValidatesBeforeEffectsAndUsesOwnedBodies']:
               raise SystemExit('Selected wallet history service case did not execute exactly once')
+          projection = re.findall(r'\[ RUN\s+\] (RuntimeOriginProjection\.\S+)', open('orchard-history-replay-execution.log').read())
+          if sorted(projection) != ['RuntimeOriginProjection.BindsCapturedWalletAndScriptDomain', 'RuntimeOriginProjection.KeepsSpentCoinsAndExactTransactionHistory']:
+              raise SystemExit('Origin projection case did not execute exactly once')
           PYTEST
       - name: Require and execute wallet recovery key ownership
         run: |

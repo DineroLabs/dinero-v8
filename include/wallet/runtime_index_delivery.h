@@ -1,11 +1,14 @@
 #pragma once
 #include "daemon/runtime_block_outbox.h"
 #include <optional>
+#include <memory>
 #include <string>
 
 namespace dinero {
 class UTXOIndex;
 class WalletManager;
+class ChainstateService;
+class RuntimeWalletOriginProjection;
 struct RuntimeIndexProgress {
     RuntimeOutboxCursor cursor;
     uint256 origin_hash, tip_hash;
@@ -34,6 +37,10 @@ private:
 // Acquire the selected checked source before this call. Initial adoption does
 // not certify the pre-origin baseline or key ownership.
 class RuntimeOrdinaryDelivery {
+    friend class ChainstateService;
+    friend struct RuntimeOriginProjectionTestAccess;
+    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t);
+    static void CheckOriginDomain(WalletManager&,const RuntimeWalletOriginProjection&);
 public:
     static std::optional<RuntimeIndexProgress> ReadForWallet(WalletManager&, uint64_t expected_session);
     static RuntimeIndexProgress ApplyForWallet(WalletManager&, uint64_t expected_session, const RuntimeOutboxEvent&);

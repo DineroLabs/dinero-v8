@@ -1,4 +1,5 @@
 #include "wallet/runtime_index_delivery.h"
+#include "wallet/runtime_origin_projection.h"
 #include "wallet/wallet_manager.h"
 #include "primitives/orchard_block_reader.h"
 #include "primitives/block.h"
@@ -311,6 +312,66 @@ std::optional<Receipt> OrdinaryRead(sqlite3* db,const std::string& identity,cons
 }
 void OrdinaryInt(sqlite3* db,const char* sql,int64_t value){Statement statement(db,sql);statement.Int(1,value);statement.Done();}
 } // namespace
+
+std::unique_ptr<RuntimeWalletOriginProjection> RuntimeOrdinaryDelivery::CaptureOriginDomain(
+        WalletManager& wallet,uint64_t session) {
+    const auto lease=wallet.AcquireDatabaseLease();
+    if(wallet.database_leases_!=1 || lease->Session()!=session)
+        Fail("Origin projection wallet ownership changed");
+    auto result=std::unique_ptr<RuntimeWalletOriginProjection>(new RuntimeWalletOriginProjection());
+    result->identity_=lease->EnsureDeliveryIdentity();result->session_=session;
+    OrdinaryTransaction transaction(lease->Database());
+    const auto domain=OrdinaryScripts(lease->Database());
+    result->scripts_=domain.addresses;result->scripts_digest_=domain.digest;
+    transaction.Commit();return result;
+}
+void RuntimeOrdinaryDelivery::CheckOriginDomain(WalletManager& wallet,const RuntimeWalletOriginProjection& source) {
+    const auto lease=wallet.AcquireDatabaseLease();
+    if(wallet.database_leases_!=1 || lease->Session()!=source.session_ ||
+       lease->EnsureDeliveryIdentity()!=source.identity_)Fail("Origin projection wallet ownership changed");
+    OrdinaryTransaction transaction(lease->Database());
+    if(OrdinaryScripts(lease->Database()).digest!=source.scripts_digest_)
+        Fail("Origin projection script domain changed");
+    transaction.Commit();
+}
+void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t height) {
+    // The service calls this only AFTER owned consensus replay of this body.
+    // Failure discards the entire in-memory projection, never wallet state.
+    constexpr size_t limit=64*1024*1024;
+    const auto charge=[&](size_t n) {
+        if(n>limit-retained_bytes_)Fail("Origin projection material limit");
+        retained_bytes_+=n;
+    };
+    if(block.header.timestamp>uint64_t(INT64_MAX))Fail("Origin projection time out of range");
+    for(const auto& tx:block.vtx) {
+        const auto id=tx.GetTxid();uint64_t credited=0,debited=0;bool relevant=false;
+        auto sum=[](uint64_t& n,uint64_t value) {
+            if(value>uint64_t(INT64_MAX) || n>uint64_t(INT64_MAX)-value)
+                Fail("Origin projection amount out of range");
+            n+=value;
+        };
+        if(!tx.IsCoinbase())for(const auto& input:tx.vin) {
+            const auto owned=coins_.find(input.prevout);if(owned==coins_.end())continue;
+            if(owned->second.spent)Fail("Origin projection repeated owned spend");
+            owned->second.spent=Spend{id,height,block.header.timestamp};
+            sum(debited,owned->second.output.value.GetUna());relevant=true;
+        }
+        for(size_t i=0;i<tx.vout.size();++i) {
+            const auto& output=tx.vout[i];
+            if(output.is_confidential)Fail("Origin projection CT history unsupported");
+            if(!scripts_.count(output.scriptPubKey))continue;
+            if(i>UINT32_MAX)Fail("Origin projection output index out of range");
+            charge(sizeof(Coin)+output.scriptPubKey.size());
+            if(!coins_.emplace(TxOutPoint{id,uint32_t(i)},Coin{output,height,block.header.timestamp,tx.IsCoinbase(),{}}).second)
+                Fail("Origin projection repeated owned creation");
+            sum(credited,output.value.GetUna());relevant=true;
+        }
+        if(relevant) {
+            charge(tx.Serialize(TxSerializationMode::WithWitness).size()+sizeof(History));
+            history_.push_back({tx,height,block.header.timestamp,credited,debited});
+        }
+    }
+}
 
 std::optional<RuntimeIndexProgress> RuntimeOrdinaryDelivery::ReadForWallet(WalletManager& wallet,uint64_t session) {
     const auto lease=wallet.AcquireDatabaseLease();if(lease->Session()!=session)Fail("Wallet delivery selection changed");

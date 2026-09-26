@@ -41,6 +41,8 @@
 #include "daemon/services/chainstate_service.h"
 #include "storage/chain_db.h"
 #include "wallet/wallet_manager.h"
+#include "wallet/runtime_origin_projection.h"
+#include "wallet/runtime_index_delivery.h"
 #include <sqlite3.h>
 #include <filesystem>
 #include <future>
@@ -61,6 +63,16 @@
 #include "primitives/transaction.h"
 
 namespace dinero {
+
+struct RuntimeOriginProjectionTestAccess {
+    static auto Capture(WalletManager& wallet,uint64_t session) {return RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session);}
+    static void Check(WalletManager& wallet,const RuntimeWalletOriginProjection& p) {RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,p);}
+    static auto Create(const std::vector<uint8_t>& script) {
+        auto p=std::unique_ptr<RuntimeWalletOriginProjection>(new RuntimeWalletOriginProjection());
+        p->scripts_[script]="fixture";return p;
+    }
+    static void Append(RuntimeWalletOriginProjection& p,const Block& b,uint32_t height) {p.AppendValidated(b,height);}
+};
 
 struct ShieldedStateStartupTestAccess {
     static void Select(ChainstateService& service, CBlockIndex& tip) {
@@ -491,6 +503,57 @@ TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
     EXPECT_EQ(count(),1);
     sql("DROP TRIGGER selected_fail;");
     EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
+}
+
+
+TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
+    const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(getpid()));
+    WalletManager wallet(dir);wallet.create("origin");wallet.open("origin");
+    const auto session=wallet.AcquireDatabaseLease()->Session();
+    {const auto lease=wallet.AcquireDatabaseLease();
+     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Capture(wallet,session),std::runtime_error);}
+    auto p=RuntimeOriginProjectionTestAccess::Capture(wallet,session);
+    EXPECT_NO_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p));
+    wallet.addWatchScript({0,20,1,2,3},"fixture-domain-path",false);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p),std::runtime_error);
+    p=RuntimeOriginProjectionTestAccess::Capture(wallet,session);
+    EXPECT_NO_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p));
+    wallet.open("origin");
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Check(wallet,*p),std::runtime_error);
+}
+
+TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
+    // Projection arithmetic only. Consensus authorization is tested separately
+    // by the existing owned replay suite; these spends are deliberately unsigned.
+    auto source=BuildDeterministicChain(3);ASSERT_EQ(source.size(),3u);
+    const auto owned=source[0].vtx[0].vout[0].scriptPubKey;
+    auto p=RuntimeOriginProjectionTestAccess::Create(owned);
+    RuntimeOriginProjectionTestAccess::Append(*p,source[0],1);
+    const auto point=TxOutPoint{source[0].vtx[0].GetTxid(),0};
+    const auto amount=source[0].vtx[0].vout[0].value.GetUna();
+    Transaction self;self.version=2;TxInput input;input.prevout=point;self.vin.push_back(input);
+    TxOutput change;change.value=AmountUna::Una(amount-100);change.scriptPubKey=owned;self.vout.push_back(change);
+    auto replacement=source[1];replacement.vtx.push_back(self);
+    RuntimeOriginProjectionTestAccess::Append(*p,replacement,2);
+    ASSERT_EQ(p->Coins().size(),2u);ASSERT_TRUE(p->Coins().at(point).spent);
+    EXPECT_EQ(p->Coins().at(point).spent->txid,self.GetTxid());
+    EXPECT_EQ(p->Coins().at(point).spent->height,2u);
+    EXPECT_EQ(p->Coins().at(point).spent->time,uint64_t(replacement.header.timestamp));
+    ASSERT_EQ(p->Transactions().size(),2u);
+    EXPECT_EQ(p->Transactions()[1].credited,amount-100);
+    EXPECT_EQ(p->Transactions()[1].debited,amount);
+    EXPECT_EQ(p->Transactions()[1].transaction.Serialize(TxSerializationMode::WithWitness),self.Serialize(TxSerializationMode::WithWitness));
+    auto outgoing=self;outgoing.vin[0].prevout={self.GetTxid(),0};
+    outgoing.vout[0].scriptPubKey=source[2].vtx[0].vout[0].scriptPubKey;
+    auto last=source[2];last.vtx.push_back(outgoing);
+    RuntimeOriginProjectionTestAccess::Append(*p,last,3);
+    ASSERT_EQ(p->Transactions().size(),3u);EXPECT_EQ(p->Transactions().back().credited,0u);
+    EXPECT_EQ(p->Transactions().back().debited,amount-100);
+    EXPECT_TRUE(p->Coins().at({self.GetTxid(),0}).spent.has_value());
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*p,last,3),std::runtime_error);
+    auto unsupported=source[0];unsupported.vtx[0].vout[0].is_confidential=true;
+    auto other=RuntimeOriginProjectionTestAccess::Create(owned);
+    EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*other,unsupported,1),std::runtime_error);
 }
 
 }  // namespace dinero
