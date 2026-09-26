@@ -5,6 +5,13 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- Stateful historical connect/disconnect retains delivery records after an
+  Orchard outbox origin, including transitions below activation. Preparation
+  occurs before historical memory changes; the record joins the existing
+  canonical batch. Unsupported runtime/CSN paths refuse a retained delivery
+  history. This closes a source-level handoff gap, not production consumer
+  recovery or whole-node reorg qualification. See the historical-delivery design.
+
 - Pinned Orchard backend, immutable C++ signing context and bounded draft outer
   transaction envelope, with exact-source component and root-build CI jobs.
 - Typed shared reader with historical-format regression tests and a default

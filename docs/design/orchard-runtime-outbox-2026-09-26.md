@@ -42,9 +42,11 @@ The first record identifies the start of coverage, not delivery before it.
 
 ## Remaining production obligations
 
-The log currently records indexed Orchard transitions only. Historical
-transitions crossing the activation boundary still require a durable whole-reorg
-intent and recovery against the canonical selected chain. Incomplete progress
+The log starts with indexed Orchard transitions. Once an origin exists, the
+stateful historical ConnectTip/DisconnectTip paths retain subsequent historical
+transitions in their canonical batches, including rollback below activation.
+See orchard-historical-delivery-2026-09-26.md. Whole-reorg intent still records
+preparation and must be reconciled against committed events and canonical state. Incomplete progress
 counts remain lower bounds, including in-process callback failures. No production
 `RuntimeBlockNotifications` implementation is installed by this change.
 

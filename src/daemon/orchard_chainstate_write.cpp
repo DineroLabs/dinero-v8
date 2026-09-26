@@ -1,6 +1,7 @@
 #include "daemon/orchard_chainstate_write.h"
 #include "daemon/runtime_block_outbox.h"
 #include "crypto/sha256.h"
+#include "consensus/merkle_root.h"
 #include <algorithm>
 #include <cstring>
 #include "common/annotated_mutex.h"
@@ -99,7 +100,7 @@ std::string EncodeHead(const RuntimeOutboxCursor& c) {
     std::string bytes="DNOH01";Number(bytes,c.sequence,8);Hash(bytes,c.digest);Seal(bytes);return bytes;
 }
 std::string Encode(const RuntimeOutboxEvent& e) {
-    std::string bytes="DNOE01";Number(bytes,e.cursor.sequence,8);Hash(bytes,e.previous_digest);
+    std::string bytes=e.IsOrchardProfile()?"DNOE01":"DNOE02";Number(bytes,e.cursor.sequence,8);Hash(bytes,e.previous_digest);
     Number(bytes,e.direction==RuntimeBlockDirection::Connect?1:2,1);
     Number(bytes,e.context.domain.network_code,1);
     bytes.append(reinterpret_cast<const char*>(e.context.domain.genesis_wire.data()),32);
@@ -110,7 +111,7 @@ std::string Encode(const RuntimeOutboxEvent& e) {
 }
 RuntimeOutboxEvent Decode(const std::string& bytes,uint64_t sequence,const OrchardBlockContext& profile) {
     auto r=Checked(bytes,maximum_record_bytes);
-    if(r.Take(6)!="DNOE01")Corrupt();
+    const auto format=r.Take(6);if(format!="DNOE01" && format!="DNOE02")Corrupt();
     RuntimeOutboxEvent e;e.cursor.sequence=r.Number(8);e.previous_digest=r.Hash();
     const auto direction=r.Number(1);if(direction!=1 && direction!=2)Corrupt();
     e.direction=direction==1?RuntimeBlockDirection::Connect:RuntimeBlockDirection::Disconnect;
@@ -121,14 +122,23 @@ RuntimeOutboxEvent Decode(const std::string& bytes,uint64_t sequence,const Orcha
     const auto size=r.Number(4);
     if(!size || size>maximum_record_bytes-overhead || r.bytes.size()!=size || !Profile(e.context) ||
         !SameProfile(e.context,profile) || e.cursor.sequence!=sequence || !sequence ||
-        (sequence==1)!=e.previous_digest.IsNull() || e.context.height<e.context.activation_height ||
+        (sequence==1)!=e.previous_digest.IsNull() || !e.context.height ||
+        (format=="DNOE01" && !e.IsOrchardProfile()) ||
+        (format=="DNOE02" && e.IsOrchardProfile()) ||
         e.context.height>INT32_MAX || e.context.block_hash.IsNull() || e.context.parent_hash.IsNull())Corrupt();
     const auto body=r.Take(size);e.body.assign(body.begin(),body.end());
     e.cursor.digest=Digest(std::string_view(bytes).substr(0,bytes.size()-32));
     try {
-        const auto parsed=OrchardBlockCandidate::DecodeExact(e.body);std::string error;
-        if(parsed.Header().GetHash()!=e.context.block_hash || parsed.Header().prev_block_hash!=e.context.parent_hash ||
-            !parsed.CheckIdentityCommitments(false,error))Corrupt();
+        if(e.IsOrchardProfile()) {
+            const auto parsed=OrchardBlockCandidate::DecodeExact(e.body);std::string error;
+            if(parsed.Header().GetHash()!=e.context.block_hash || parsed.Header().prev_block_hash!=e.context.parent_hash ||
+                !parsed.CheckIdentityCommitments(false,error))Corrupt();
+        } else {
+            const auto parsed=Block::Deserialize(e.body);
+            if(!parsed || parsed->Serialize()!=std::string(body) ||
+                parsed->header.GetHash()!=e.context.block_hash || parsed->header.prev_block_hash!=e.context.parent_hash ||
+                ComputeMerkleRoot(parsed->vtx)!=parsed->header.merkle_root)Corrupt();
+        }
     } catch(const std::bad_alloc&) { throw; }
       catch(const OrchardStateLookupError&) { throw; }
       catch(...) { Corrupt(); }
@@ -181,6 +191,45 @@ RuntimeOutboxPage ReadRuntimeOutboxUnderLock(const ChainDB& db,const OrchardBloc
     }
     if(page.next.sequence==page.head.sequence && page.next!=page.head)Corrupt();
     return page;
+}
+
+std::optional<PreparedHistoricalRuntimeOutbox> PreparedHistoricalRuntimeOutbox::PrepareUnderLock(
+    const ChainDB& db,const OrchardBlockContext& profile,const Block& block,uint32_t height,
+    RuntimeBlockDirection direction) {
+    using namespace outbox_detail;
+    const auto raw=Raw(db,head_key);
+    // Preserve historical databases without a coverage origin, but never hide
+    // an orphaned first record after a missing head.
+    if(!raw) { if(Raw(db,Key(1)))Corrupt();return {}; }
+    if(!Profile(profile) || !height || height>=profile.activation_height || height>INT32_MAX ||
+        (direction!=RuntimeBlockDirection::Connect && direction!=RuntimeBlockDirection::Disconnect))
+        throw OrchardStateLookupError(Status::Invalid);
+    const auto previous=CheckedHead(db,raw,profile);
+    if(previous.sequence==UINT64_MAX)throw OrchardStateLookupError(Status::Invalid);
+    auto context=profile;context.height=height;context.block_hash=block.header.GetHash();context.parent_hash=block.header.prev_block_hash;
+    const auto tip=RequiredDisk(db.getTip());
+    if(tip.hash!=(direction==RuntimeBlockDirection::Connect?context.parent_hash:context.block_hash) ||
+       tip.height!=int32_t(direction==RuntimeBlockDirection::Connect?height-1:height))Corrupt();
+    const auto wire=block.Serialize();
+    if(wire.size()>maximum_record_bytes-overhead)throw OrchardStateLookupError(Status::Invalid);
+    RuntimeOutboxEvent event{{previous.sequence+1,{}},previous.digest,direction,context,{wire.begin(),wire.end()}};
+    PreparedHistoricalRuntimeOutbox prepared;
+    prepared.before_=*raw;prepared.key_=Key(event.cursor.sequence);prepared.record_=Encode(event);
+    // Validate the exact retained representation before any historical state
+    // mutation. This is body identity, not historical consensus replay.
+    event=Decode(prepared.record_,event.cursor.sequence,profile);
+    if(Raw(db,prepared.key_))Corrupt();
+    prepared.head_=EncodeHead(event.cursor);prepared.tip_hash_=tip.hash;prepared.tip_height_=tip.height;
+    prepared.thread_=std::this_thread::get_id();return prepared;
+}
+void PreparedHistoricalRuntimeOutbox::StageOrTerminateUnderLock(const ChainDB& db,rocksdb::WriteBatch& batch) noexcept {
+    try {
+        using namespace outbox_detail;
+        const auto tip=RequiredDisk(db.getTip());
+        if(staged_ || thread_!=std::this_thread::get_id() || Raw(db,head_key)!=std::optional<std::string>(before_) ||
+           Raw(db,key_) || tip.hash!=tip_hash_ || tip.height!=tip_height_)std::terminate();
+        batch.Put(key_,record_);batch.Put(head_key,head_);staged_=true;
+    } catch(...) { std::terminate(); }
 }
 
 struct PreparedOrchardChainstateWrite::Impl {

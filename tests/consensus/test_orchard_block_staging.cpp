@@ -3,6 +3,8 @@
 #include "consensus/utxo_publication.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "daemon/runtime_block_outbox.h"
+#include <iomanip>
+#include <sstream>
 #include "crypto/sha256.h"
 #include "common/annotated_mutex.h"
 #include "storage/block_storage.h"
@@ -595,6 +597,66 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     CHECK(restored.forest.dumpInternalState()==parent_forest.dumpInternalState());
     CHECK(RequiredValue(db.getOrchardState())==parent_state);
 }
+static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& context,
+                                    const OrchardBlockCandidate& mixed) {
+    TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
+    Block historical;historical.vtx.push_back(mixed.Transactions().front().Historical());
+    historical.header.version=1;historical.header.prev_block_hash=H(93);
+    historical.header.timestamp=91;historical.header.merkle_root=ComputeMerkleRoot(historical.vtx);
+    const auto height=context.activation_height-1;
+    // Ordinary historical stores have no delivery origin and remain untouched.
+    CHECK(!PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Connect));
+    const auto prior=ReadRuntimeOutboxUnderLock(source,context);
+    rocksdb::WriteBatch seed;
+    const auto key=[](uint64_t n){std::ostringstream s;s<<"runtime_orchard_outbox:v1:event:"<<std::hex<<std::setfill('0')<<std::setw(16)<<n;return s.str();};
+    for(uint64_t i=1;i<=prior.head.sequence;++i) {
+        std::string value;CHECK(source.getRaw(key(i),value)==Status::Ok);seed.Put(key(i),value);
+    }
+    std::string head;CHECK(source.getRaw("runtime_orchard_outbox:v1:head",head)==Status::Ok);
+    seed.Put("runtime_orchard_outbox:v1:head",head);
+    Tip(db,historical.header.prev_block_hash,height-1,seed);Commit(db,seed);
+    auto wrong=context;++wrong.domain.branch_id;
+    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,wrong,historical,height,RuntimeBlockDirection::Connect);});
+    LookupReject(Status::Invalid,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,context.activation_height,RuntimeBlockDirection::Connect);});
+    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Disconnect);});
+    auto damaged=historical;damaged.header.merkle_root=H(92);
+    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,damaged,height,RuntimeBlockDirection::Connect);});
+    {
+        auto abandoned=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Connect);
+        CHECK(abandoned);rocksdb::WriteBatch uncommitted;Tip(db,historical.GetHash(),height,uncommitted);
+        abandoned->StageOrTerminateUnderLock(db,uncommitted);
+    }
+    db.close();CHECK(db.init(temp.path)==Status::Ok);
+    CHECK(ReadRuntimeOutboxUnderLock(db,context).head==prior.head);
+    CHECK(RequiredValue(db.getTip()).hash==historical.header.prev_block_hash);
+    // A down/up cycle ends at the same canonical tip. Its effects still have
+    // distinct ordered records: a consumer cannot infer delivery from tip alone.
+    for(auto direction:{RuntimeBlockDirection::Connect,RuntimeBlockDirection::Disconnect,RuntimeBlockDirection::Connect}) {
+        auto prepared=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,direction);CHECK(prepared);
+        rocksdb::WriteBatch canonical;
+        Tip(db,direction==RuntimeBlockDirection::Connect?historical.GetHash():historical.header.prev_block_hash,
+            direction==RuntimeBlockDirection::Connect?height:height-1,canonical);
+        prepared->StageOrTerminateUnderLock(db,canonical);Commit(db,canonical);
+        db.close();CHECK(db.init(temp.path)==Status::Ok);
+    }
+    const auto replay=ReadRuntimeOutboxUnderLock(db,context,prior.head);
+    CHECK(replay.events.size()==3 && replay.next.sequence==prior.head.sequence+3);
+    CHECK(replay.events[0].direction==RuntimeBlockDirection::Connect && replay.events[1].direction==RuntimeBlockDirection::Disconnect);
+    auto cursor=prior.head;
+    for(const auto& event:replay.events) {
+        CHECK(!event.IsOrchardProfile() && event.context.height==height && event.context.block_hash==historical.GetHash());
+        CHECK(event.previous_digest==cursor.digest);
+        CHECK(Block::Deserialize(event.body)->Serialize()==historical.Serialize());
+        const auto page=ReadRuntimeOutboxUnderLock(db,context,cursor,1);CHECK(page.events.size()==1 && page.next==event.cursor);
+        cursor=event.cursor;
+    }
+    CHECK(RequiredValue(db.getTip()).hash==historical.GetHash());
+    CHECK(ReadRuntimeOutboxUnderLock(db,context,cursor).events.empty());
+    // Existing DNOE01 entries remain readable alongside DNOE02 historical ones.
+    CHECK(ReadRuntimeOutboxUnderLock(db,context,{},1).events.front().IsOrchardProfile());
+    rocksdb::WriteBatch missing;missing.Delete("runtime_orchard_outbox:v1:head");Commit(db,missing);
+    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Disconnect);});
+}
 static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
                                const OrchardBlockCandidate& block) {
     const auto all=ReadRuntimeOutboxUnderLock(db,context);
@@ -1000,7 +1062,7 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
         Commit(db,disconnect);
         std::move(rollback).PublishAfterCommitUnderLock();
     }
-    if(indexed)OutboxReplayChecks(db,c,block);
+    if(indexed) { OutboxReplayChecks(db,c,block); HistoricalOutboxChecks(db,c,block); }
     CHECK(live.GetBestBlock()==parent.GetHash() && live.GetHeight()==c.height-1);
     CHECK(live.SnapshotForestCommitment()==parent_forest.getCommitment());
     for(const auto& change:reverse_changes) CHECK(live.HaveCoin(change.outpoint)==bool(change.after));

@@ -122,6 +122,18 @@ namespace dinero {
 extern std::recursive_mutex g_block_index_mutex;
 
 namespace {
+// A retained delivery log survives rollback below activation. Unsupported
+// execution paths must not create an unrecorded canonical transition.
+bool HasRuntimeDeliveryHistory(const ChainDB& db) {
+    std::string value;
+    const auto head=db.getRaw("runtime_orchard_outbox:v1:head",value);
+    if(head==Status::Ok)return true;
+    if(head!=Status::NotFound)throw std::runtime_error("runtime delivery head unavailable");
+    const auto first=db.getRaw("runtime_orchard_outbox:v1:event:0000000000000001",value);
+    if(first!=Status::NotFound)throw std::runtime_error("runtime delivery head missing or unavailable");
+    return false;
+}
+
 constexpr const char* kActivationLastErrorKey = "activation_last_error";
 constexpr const char* kActivationLastErrorTimeKey = "activation_last_error_time";
 constexpr const char* kActivationFailureStreakKey = "activation_failure_streak";
@@ -14011,6 +14023,7 @@ bool ChainstateService::DisconnectOrchardTip(CBlockIndex* tip) {
 }
 
 bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
+    std::unique_lock<AnnotatedRecursiveMutex> delivery_lock(activation_mutex_);
     std::cout << "🔧 [DisconnectTip] ENTRY: height=" << (tip_to_disconnect ? tip_to_disconnect->height : -1) << std::endl;
     std::cout << std::flush;
 
@@ -14025,6 +14038,19 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     // A mixed body must never pass through the historical Block decoder.
     if (consensus::OrchardActiveForHeight(Params(),tip_to_disconnect->height))
         return DisconnectOrchardTip(tip_to_disconnect);
+    bool runtime_delivery_history=false;
+    try {
+        runtime_delivery_history=HasRuntimeDeliveryHistory(*chain_db_);
+        if(runtime_delivery_history) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if(GetConfig().utreexo_stateless || !consensus::SelectedOrchardBlockContext(
+                    BlockHeader{},Params().orchard_activation_height)) { return false; }
+#else
+            return false;
+#endif
+        }
+    } catch(...) { return false; }
+
     if (!block_validator_) {
         std::cout << "❌ [DisconnectTip] NULL block_validator_" << std::endl;
         logger_->error("[DisconnectTip] BlockValidator not initialized");
@@ -14070,6 +14096,19 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         return false;
     }
     Block block = block_result.value();
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;
+    try {
+        if(runtime_delivery_history) {
+            const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+            if(!profile) { return false; }
+            historical_delivery=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(
+                *chain_db_,*profile,block,tip_to_disconnect->height,RuntimeBlockDirection::Disconnect);
+            if(!historical_delivery) { return false; }
+        }
+    } catch(...) { return false; }
+#endif
+
     std::cout << "✅ [DisconnectTip] Block read, vtx.size()=" << block.vtx.size() << std::endl;
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -14762,6 +14801,9 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         }
     }
 
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(historical_delivery)historical_delivery->StageOrTerminateUnderLock(*chain_db_,rollback_batch);
+#endif
     const auto write_status = chain_db_->writeBatch(token, std::move(rollback_batch), true);
     if (write_status != Status::Ok) {
         logger_->error("[DisconnectTip] Failed to commit rollback batch, status=" +
@@ -14951,6 +14993,7 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
 
 bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,
                                    bool* out_consensus_invalid) {
+    std::unique_lock<AnnotatedRecursiveMutex> delivery_lock(activation_mutex_);
     auto fail = [&](const std::string& reason) {
         if (out_error) {
             *out_error = reason;
@@ -14979,6 +15022,20 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
     // Select the typed route before any historical decoder or validator path.
     if (consensus::OrchardActiveForHeight(Params(),tip_to_connect->height))
         return ConnectOrchardTip(tip_to_connect,out_error,out_consensus_invalid);
+
+    bool runtime_delivery_history=false;
+    try {
+        runtime_delivery_history=HasRuntimeDeliveryHistory(*chain_db_);
+        if(runtime_delivery_history) {
+            if(tip_to_connect->height<=1)return fail("runtime-delivery-bootstrap-unavailable");
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            if(GetConfig().utreexo_stateless || !consensus::SelectedOrchardBlockContext(
+                    BlockHeader{},Params().orchard_activation_height)) { return fail("historical-runtime-delivery-unavailable"); }
+#else
+            return fail("historical-runtime-delivery-unavailable");
+#endif
+        }
+    } catch(...) { return fail("historical-runtime-delivery-unavailable"); }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase G Safety Assertion: In-Order Commit Check
@@ -15055,6 +15112,19 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         return fail("read-block-failed-status-" + std::to_string(static_cast<int>(block_result.status())));
     }
     Block block = block_result.value();
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::optional<PreparedHistoricalRuntimeOutbox> historical_delivery;
+    try {
+        if(runtime_delivery_history) {
+            const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+            if(!profile) { return fail("historical-runtime-delivery-preparation-failed"); }
+            historical_delivery=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(
+                *chain_db_,*profile,block,tip_to_connect->height,RuntimeBlockDirection::Connect);
+            if(!historical_delivery) { return fail("historical-runtime-delivery-preparation-failed"); }
+        }
+    } catch(...) { return fail("historical-runtime-delivery-preparation-failed"); }
+#endif
+
     std::cout << "✅ [ConnectTip] Block read successfully, vtx.size()=" << block.vtx.size() << std::endl;
 
     // === CT DIAGNOSTIC: Log every tx and output in the block ===
@@ -16194,6 +16264,9 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
             return fail("commit-batch-incomplete-missing-" + *missing);
         }
 
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if(historical_delivery)historical_delivery->StageOrTerminateUnderLock(*chain_db_,utxo_batch);
+#endif
         auto utxo_status = chain_db_->writeBatch(token, ccb.ReleaseBatch(), true);
 
         // After the outer rocksdb commit succeeds, close the
@@ -16797,6 +16870,10 @@ bool ChainstateService::CommitConnectedBlockBookkeeping(CBlockIndex* block_index
     };
 
     if (!block_index || !chain_db_) return fail("null-block-index-or-db");
+    try {
+        if(HasRuntimeDeliveryHistory(*chain_db_))return fail("runtime-delivery-csn-replay-unavailable");
+    } catch(...) { return fail("runtime-delivery-history-unavailable"); }
+
 
     std::string delta_blob;
     std::string delta_error;
