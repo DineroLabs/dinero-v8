@@ -1,6 +1,7 @@
 #pragma once
 #include "wallet/orchard_operation_queue.h"
 #include "wallet/orchard_scan_state.h"
+namespace dinero { struct RuntimeOutboxEvent; }
 namespace dinero::wallet {
 // One encrypted account payload couples scan state, issued-address counters and
 // pending spends. Reorg changes derived scan and chain observations, never
@@ -8,6 +9,25 @@ namespace dinero::wallet {
 // exposing results.
 class OrchardAccountState {
 public:
+  struct DeliveryCheckpoint {
+    uint64_t sequence = 0;
+    uint256 digest;
+    bool operator==(const DeliveryCheckpoint &) const = default;
+  };
+  const DeliveryCheckpoint &Delivery() const noexcept;
+  // This receipt covers this Orchard account only, not other consumers.
+  // The event must come from ReadRuntimeOutboxUnderLock with the selected
+  // profile. Its digest is a source receipt, not independently certified here.
+  // Only these operations advance delivery; there is no cursor-only setter.
+  // Persist the returned account with WalletSnapshotStore in the SAME wallet
+  // transaction as any other wallet effects before publishing/acknowledging.
+  [[nodiscard]] OrchardAccountState
+  AdvanceDelivery(const RuntimeOutboxEvent &, const OrchardBlockCandidate &,
+                  const consensus::PreparedOrchardState &,
+                  std::span<const consensus::VerifiedOrchardAuthorizations>) const;
+  [[nodiscard]] OrchardAccountState
+  RewindDelivery(const RuntimeOutboxEvent &, const OrchardBlockCandidate &,
+                 const OrchardAccountState &authenticated_parent) const;
   struct ArchiveCheckpoint {
     uint64_t count = 0;
     orchard::Hash head{};
@@ -31,6 +51,7 @@ public:
   Advance(const consensus::OrchardBlockContext &, const OrchardBlockCandidate &,
           const consensus::PreparedOrchardState &,
           std::span<const consensus::VerifiedOrchardAuthorizations>) const;
+  // Untracked scan operations refuse an account with a delivery receipt.
   // Parent must be the authenticated retained common ancestor. Same-height
   // replacement requires rewinding first; an identical checkpoint is a no-op.
   [[nodiscard]] OrchardAccountState
@@ -56,6 +77,9 @@ public:
   // For divergent/stale derived cache: keep authenticated issuance and pending
   // operations, reset only the scanner to the known activation parent. A full
   // rescan and fresh node admission are required before spending/broadcast.
+  // Clears delivery acknowledgment: no cursor may skip the discarded scan.
+  // A delivery owner must replay from the source origin or explicitly reconcile
+  // the complete rescan before it can report synchronized readiness.
   [[nodiscard]] static OrchardAccountState
   RestoreForRescan(const orchard::WalletStateBytes &, orchard::SigningDomain,
                    const orchard::FullViewingKeyBytes &, uint32_t activation,
@@ -63,6 +87,14 @@ public:
 
 private:
   friend class OrchardOperationArchive;
+  void CheckDelivery(const RuntimeOutboxEvent &, const OrchardBlockCandidate &,
+                     bool connecting) const;
+  [[nodiscard]] OrchardAccountState
+  AdvanceScan(const consensus::OrchardBlockContext &, const OrchardBlockCandidate &,
+              const consensus::PreparedOrchardState &,
+              std::span<const consensus::VerifiedOrchardAuthorizations>) const;
+  [[nodiscard]] OrchardAccountState
+  RewindScan(const OrchardAccountState &) const;
   [[nodiscard]] OrchardAccountState WithArchive(ArchiveCheckpoint) const;
   [[nodiscard]] OrchardAccountState
   RemoveObservedOperation(const orchard::Hash &) const;

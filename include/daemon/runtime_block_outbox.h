@@ -5,6 +5,7 @@
 namespace rocksdb { class WriteBatch; }
 
 namespace dinero {
+class ChainDB;
 // Local delivery log, not a consensus commitment or a validity certificate.
 // Indexed Orchard writes append atomically with canonical state. Records are
 // retained across rollback. The first entry establishes a coverage origin;

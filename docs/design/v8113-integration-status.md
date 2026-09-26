@@ -5,6 +5,15 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- Orchard account snapshots now bind a delivery sequence/digest to actual scan
+  advancement or immediate-parent rollback. The receipt shares the encrypted
+  payload and SQLite commit with notes, pending operations and address counters.
+  Fresh-process exits before/after commit cover state/receipt atomicity. This is
+  account-side delivery support, not an installed production wallet provider:
+  source verification, transparent wallet effects, historical events below
+  activation and rescan reconciliation still need the owning recovery service.
+  See `orchard-wallet-delivery-2026-09-26.md`.
+
 - Miner longpoll now observes actual shared tip publication, including rollback
   and same-height branch replacement. It precedes fallible downstream callbacks
   and is silent on an unchanged identity. RPC waiting captures generation before

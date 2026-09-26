@@ -1,4 +1,5 @@
 #include "wallet/orchard_account_state.h"
+#include "daemon/runtime_block_outbox.h"
 #include <algorithm>
 #include <openssl/crypto.h>
 #include <openssl/sha.h>
@@ -13,7 +14,7 @@ void Check(bool v) {
   if (!v)
     Fail();
 }
-constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '3'};
+constexpr std::array<uint8_t, 8> magic{'D', 'N', 'O', 'R', 'A', 'C', '0', '4'};
 Hash Identity(const FullViewingKeyBytes &fvk) {
   Hash h;
   SHA256(fvk.data(), fvk.size(), h.data());
@@ -158,6 +159,7 @@ struct OrchardAccountState::Data {
   OrchardOperationQueue operations;
   std::map<Hash, Observation> observations;
   ArchiveCheckpoint archive;
+  DeliveryCheckpoint delivery;
   std::array<DiversifierIndex, 2> next{};
   std::array<bool, 2> exhausted{};
   Data(SigningDomain d, const FullViewingKeyBytes &f, uint32_t a,
@@ -198,6 +200,13 @@ OrchardAccountState OrchardAccountState::Advance(
     const OrchardBlockContext &context, const OrchardBlockCandidate &block,
     const PreparedOrchardState &prepared,
     std::span<const VerifiedOrchardAuthorizations> authorizations) const {
+  Check(data_->delivery.sequence == 0);
+  return AdvanceScan(context, block, prepared, authorizations);
+}
+OrchardAccountState OrchardAccountState::AdvanceScan(
+    const OrchardBlockContext &context, const OrchardBlockCandidate &block,
+    const PreparedOrchardState &prepared,
+    std::span<const VerifiedOrchardAuthorizations> authorizations) const {
   auto next = std::make_shared<Data>(*data_);
   next->scan = data_->scan.Advance(context, block, prepared, authorizations);
   const BlockObservations observed(block);
@@ -211,6 +220,11 @@ OrchardAccountState OrchardAccountState::Advance(
 }
 OrchardAccountState
 OrchardAccountState::RewindScanFrom(const OrchardAccountState &parent) const {
+  Check(data_->delivery.sequence == 0);
+  return RewindScan(parent);
+}
+OrchardAccountState
+OrchardAccountState::RewindScan(const OrchardAccountState &parent) const {
   Check(DomainEqual(data_->domain, parent.data_->domain) &&
         data_->activation == parent.data_->activation &&
         data_->fvk == parent.data_->fvk);
@@ -222,6 +236,55 @@ OrchardAccountState::RewindScanFrom(const OrchardAccountState &parent) const {
   std::erase_if(next->observations, [&](const auto &item) {
     return item.second.height > checkpoint.height;
   });
+  return OrchardAccountState(std::move(next));
+}
+const OrchardAccountState::DeliveryCheckpoint &
+OrchardAccountState::Delivery() const noexcept { return data_->delivery; }
+void OrchardAccountState::CheckDelivery(
+    const RuntimeOutboxEvent &event, const OrchardBlockCandidate &block,
+    bool connecting) const {
+  const auto &current = data_->delivery;
+  const auto &context = event.context;
+  Check(current.sequence != UINT64_MAX &&
+        event.cursor.sequence == current.sequence + 1 &&
+        !event.cursor.digest.IsNull() && event.previous_digest == current.digest);
+  Check(event.direction == (connecting ? RuntimeBlockDirection::Connect
+                                      : RuntimeBlockDirection::Disconnect));
+  Check(event.IsOrchardProfile() &&
+        context.activation_height == data_->activation &&
+        DomainEqual(context.domain, data_->domain) &&
+        context.block_hash == block.Header().GetHash() &&
+        context.parent_hash == block.Header().prev_block_hash &&
+        event.body == block.WireBytes());
+  const auto &scan = data_->scan.Checkpoint();
+  if (connecting) {
+    Check(scan.height != UINT32_MAX && context.height == scan.height + 1 &&
+          context.parent_hash == scan.block_hash);
+  } else {
+    Check(context.height == scan.height && context.block_hash == scan.block_hash);
+  }
+}
+OrchardAccountState OrchardAccountState::AdvanceDelivery(
+    const RuntimeOutboxEvent &event, const OrchardBlockCandidate &block,
+    const PreparedOrchardState &prepared,
+    std::span<const VerifiedOrchardAuthorizations> authorizations) const {
+  CheckDelivery(event, block, true);
+  auto applied = AdvanceScan(event.context, block, prepared, authorizations);
+  auto next = std::make_shared<Data>(*applied.data_);
+  next->delivery = {event.cursor.sequence, event.cursor.digest};
+  return OrchardAccountState(std::move(next));
+}
+OrchardAccountState OrchardAccountState::RewindDelivery(
+    const RuntimeOutboxEvent &event, const OrchardBlockCandidate &block,
+    const OrchardAccountState &parent) const {
+  CheckDelivery(event, block, false);
+  const auto &checkpoint = parent.Scan().Checkpoint();
+  Check(checkpoint.height != UINT32_MAX &&
+        checkpoint.height + 1 == event.context.height &&
+        checkpoint.block_hash == event.context.parent_hash);
+  auto applied = RewindScan(parent);
+  auto next = std::make_shared<Data>(*applied.data_);
+  next->delivery = {event.cursor.sequence, event.cursor.digest};
   return OrchardAccountState(std::move(next));
 }
 OrchardAccountState
@@ -285,6 +348,9 @@ WalletStateBytes OrchardAccountState::Encode() const {
   w.U32(uint32_t(data_->archive.count));
   w.U32(uint32_t(data_->archive.count >> 32));
   w.Raw(data_->archive.head);
+  w.U32(uint32_t(data_->delivery.sequence));
+  w.U32(uint32_t(data_->delivery.sequence >> 32));
+  w.Raw(HashBytes(data_->delivery.digest));
   return WalletStateBytes(w.bytes);
 }
 std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
@@ -295,9 +361,10 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
   Reader r{bytes.Bytes()};
   auto m = r.Raw(8);
   Check(std::equal(m.begin(), m.begin() + 7, magic.begin()) &&
-        (m[7] >= '1' && m[7] <= '3'));
+        (m[7] >= '1' && m[7] <= '4'));
   const bool has_observations = m[7] >= '2';
-  const bool has_archive = m[7] == '3';
+  const bool has_archive = m[7] >= '3';
+  const bool has_delivery = m[7] >= '4';
   Check(r.Raw(1)[0] == domain.network_code &&
         r.Hash32() == domain.genesis_wire && r.U32() == domain.branch_id &&
         r.U32() == activation && r.Hash32() == Identity(fvk));
@@ -338,6 +405,12 @@ std::shared_ptr<OrchardAccountState::Data> OrchardAccountState::ReadMetadata(
     state->archive.count = low | (high << 32);
     state->archive.head = r.Hash32();
     Check((state->archive.count == 0) == (state->archive.head == Hash{}));
+  }
+  if (has_delivery) {
+    const uint64_t low = r.U32(), high = r.U32();
+    state->delivery.sequence = low | (high << 32);
+    state->delivery.digest = HashValue(r.Hash32());
+    Check((state->delivery.sequence == 0) == state->delivery.digest.IsNull());
   }
   Check(r.bytes.empty());
   state->operations =
@@ -432,6 +505,7 @@ OrchardAccountState OrchardAccountState::RestoreForRescan(
     const uint256 &parent) {
   std::span<const uint8_t> ignored;
   auto state = ReadMetadata(bytes, domain, fvk, activation, parent, ignored);
+  state->delivery = {};
   state->observations
       .clear(); // Rescan rebuilds chain observations, never signed bytes.
   return OrchardAccountState(std::move(state));

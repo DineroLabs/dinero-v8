@@ -1,5 +1,9 @@
 #include "orchard_block_test_fixture.h"
 #include "wallet/orchard_account_state.h"
+#include "daemon/runtime_block_outbox.h"
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
 #include <filesystem>
 #include <sqlite3.h>
 #include <unistd.h>
@@ -15,8 +19,32 @@ template <class F> static void AccountReject(F fn) {
 }
 int main(int argc, char **argv) {
   try {
-    Require(argc == 2);
+    Require(argc == 2 || argc == 5);
     Fixture f(argv[1]);
+    if (argc == 5) {
+      // Fresh process: exit without SQLite/C++ cleanup at either boundary.
+      sqlite3 *source = nullptr, *target = nullptr;
+      Require(sqlite3_open(argv[2], &source) == SQLITE_OK);
+      WalletStorageIdentity identity{WalletNetwork::Regtest,
+                                     f.domain.genesis_wire, Hash{44}, 0};
+      const std::array<uint8_t, 64> seed{7};
+      WalletStateBytes next = [&] {
+        WalletSnapshotStore store(source, identity, seed);
+        return std::move(store.Read()->state);
+      }();
+      Require(sqlite3_close(source) == SQLITE_OK);
+      Require(sqlite3_open(argv[3], &target) == SQLITE_OK);
+      Require(sqlite3_exec(target, "PRAGMA synchronous=FULL;BEGIN IMMEDIATE;",
+                           nullptr, nullptr, nullptr) == SQLITE_OK);
+      WalletSnapshotStore store(target, identity, seed);
+      const auto prior = store.Read();
+      Require(prior.has_value());
+      Require(store.StageReplace(prior->revision, next) == prior->revision + 1);
+      if (std::string(argv[4]) == "after")
+        Require(sqlite3_exec(target, "COMMIT;", nullptr, nullptr, nullptr) == SQLITE_OK);
+      else Require(std::string(argv[4]) == "before");
+      _exit(0);
+    }
     auto keys = WalletKeys::FromSeed(std::array<uint8_t, 64>{7}, 0);
     const auto fvk = keys.ExportFullViewingKey();
     auto initial = OrchardAccountState::Begin(f.domain, fvk, 20001, H(1));
@@ -67,6 +95,49 @@ int main(int argc, char **argv) {
     Require(funded.Observations().at(id).outcome ==
             OrchardAccountState::OperationOutcome::Confirmed);
     Require(funded.Observations().at(id).block_hash == c.block_hash);
+    // Ordered source receipts are inseparable from applying real note effects.
+    // Synthetic receipt digests here are not evidence of source-log validation.
+    dinero::RuntimeOutboxEvent received{{1, H(71)}, {},
+        dinero::RuntimeBlockDirection::Connect, c, block.WireBytes()};
+    auto delivered = ready.AdvanceDelivery(received, block, transition, auths);
+    Require(delivered.Scan().BalanceUna() == 5000 &&
+            delivered.Delivery().sequence == 1 && delivered.Delivery().digest == H(71));
+    Require(delivered.Observations() == funded.Observations());
+    auto removed = received;
+    removed.direction = dinero::RuntimeBlockDirection::Disconnect;
+    removed.previous_digest = H(71);
+    removed.cursor = {2, H(72)};
+    auto rolled = delivered.RewindDelivery(removed, block, initial);
+    Require(rolled.Scan().BalanceUna() == 0 && rolled.Delivery().sequence == 2 &&
+            rolled.Delivery().digest == H(72) && rolled.Observations().empty());
+    Require(rolled.Operations().Entries().at(id).transaction ==
+            ready.Operations().Entries().at(id).transaction);
+    auto again = received;
+    again.previous_digest = H(72);
+    again.cursor = {3, H(73)};
+    auto redelivered = rolled.AdvanceDelivery(again, block, transition, auths);
+    Require(redelivered.Scan().Checkpoint() == delivered.Scan().Checkpoint() &&
+            redelivered.Delivery().sequence == 3 && redelivered.Delivery().digest == H(73));
+    AccountReject([&] { (void)delivered.AdvanceDelivery(received, block, transition, auths); });
+    AccountReject([&] { (void)redelivered.RewindDelivery(removed, block, initial); });
+    AccountReject([&] { (void)delivered.RewindScanFrom(initial); });
+    AccountReject([&] { (void)rolled.Advance(c, block, transition, auths); });
+    AccountReject([&] { (void)delivered.RewindDelivery(removed, block, delivered); });
+    const auto rejectDelivery = [&](auto mutate) {
+      auto bad = received;
+      mutate(bad);
+      AccountReject([&] { (void)ready.AdvanceDelivery(bad, block, transition, auths); });
+    };
+    rejectDelivery([](auto &e) { e.cursor.sequence = 2; });
+    rejectDelivery([](auto &e) { e.cursor.digest = {}; });
+    rejectDelivery([](auto &e) { e.previous_digest = H(9); });
+    rejectDelivery([](auto &e) { e.direction = dinero::RuntimeBlockDirection::Disconnect; });
+    rejectDelivery([](auto &e) { e.context.domain.branch_id++; });
+    rejectDelivery([](auto &e) { e.context.activation_height++; });
+    rejectDelivery([](auto &e) { e.context.height++; });
+    rejectDelivery([](auto &e) { e.context.parent_hash = H(9); });
+    rejectDelivery([](auto &e) { e.context.block_hash = H(9); });
+    rejectDelivery([](auto &e) { e.body.back() ^= 1; });
     auto rewound = funded.RewindScanFrom(initial);
     Require(rewound.Observations().empty());
     Require(rewound.Scan().BalanceUna() == 0 &&
@@ -107,6 +178,17 @@ int main(int argc, char **argv) {
                 f.Build().CanonicalBytes());
     Require(restored.Observations() == funded.Observations());
     Require(restored.IssueReceiver(WalletScope::External).second == r2);
+    auto receiptRestored = OrchardAccountState::Restore(
+        delivered.Encode(), f.domain, fvk, 20001, delivered.Scan().Checkpoint(), restoreLookups);
+    Require(receiptRestored.Delivery() == delivered.Delivery() &&
+            receiptRestored.Scan().BalanceUna() == 5000);
+    Require(delivered.IssueReceiver(WalletScope::External).first.Delivery() == delivered.Delivery());
+    auto restartedScan = OrchardAccountState::RestoreForRescan(
+        delivered.Encode(), f.domain, fvk, 20001, H(1));
+    Require(restartedScan.Delivery().sequence == 0 && restartedScan.Delivery().digest.IsNull() &&
+            restartedScan.Scan().BalanceUna() == 0);
+    Require(restartedScan.Operations().Entries().at(id).transaction ==
+            delivered.Operations().Entries().at(id).transaction);
     auto rescan = OrchardAccountState::RestoreForRescan(bytes, f.domain, fvk,
                                                         20001, H(1));
     Require(rescan.Scan().BalanceUna() == 0 &&
@@ -242,7 +324,7 @@ int main(int argc, char **argv) {
     auto oldBytes = initial.Encode();
     std::vector<uint8_t> old(oldBytes.Bytes().begin(), oldBytes.Bytes().end());
     old[7] = '1';
-    old.resize(old.size() - 44);
+    old.resize(old.size() - 84);
     Require(OrchardAccountState::RestoreForRescan(WalletStateBytes(old),
                                                   f.domain, fvk, 20001, H(1))
                 .Observations()
@@ -250,15 +332,25 @@ int main(int argc, char **argv) {
     auto prior =
         std::vector<uint8_t>(bytes.Bytes().begin(), bytes.Bytes().end());
     prior[7] = '2';
-    prior.resize(prior.size() - 40);
+    prior.resize(prior.size() - 80);
     auto priorRestored = OrchardAccountState::Restore(
         WalletStateBytes(prior), f.domain, fvk, 20001,
         funded.Scan().Checkpoint(), restoreLookups);
     Require(priorRestored.Observations() == funded.Observations() &&
             priorRestored.Archive().count == 0);
+    auto v3 = std::vector<uint8_t>(bytes.Bytes().begin(), bytes.Bytes().end());
+    v3[7] = '3'; v3.resize(v3.size() - 40);
+    auto v3Restored = OrchardAccountState::Restore(WalletStateBytes(v3), f.domain,
+        fvk, 20001, funded.Scan().Checkpoint(), restoreLookups);
+    Require(v3Restored.Delivery().sequence == 0 && v3Restored.Observations() == funded.Observations());
+    auto malformed = delivered.Encode();
+    auto badDelivery = std::vector<uint8_t>(malformed.Bytes().begin(), malformed.Bytes().end());
+    std::fill(badDelivery.end() - 32, badDelivery.end(), 0);
+    AccountReject([&] { (void)OrchardAccountState::RestoreForRescan(
+        WalletStateBytes(badDelivery), f.domain, fvk, 20001, H(1)); });
     auto badReceipt =
         std::vector<uint8_t>(bytes.Bytes().begin(), bytes.Bytes().end());
-    const auto receiptStart = badReceipt.size() - 141;
+    const auto receiptStart = badReceipt.size() - 181;
     badReceipt[receiptStart + 32] =
         0; // Unknown outcome, not a missing observation.
     AccountReject([&] {
@@ -345,7 +437,7 @@ int main(int argc, char **argv) {
     WalletSnapshotStore::InitializeSchemaUnderTransaction(db);
     {
       WalletSnapshotStore store(db, identity, seed);
-      Require(store.StageReplace(0, bytes) == 1);
+      Require(store.StageReplace(0, delivered.Encode()) == 1);
       sql("COMMIT;");
     }
     Require(sqlite3_close(db) == SQLITE_OK);
@@ -362,17 +454,20 @@ int main(int argc, char **argv) {
               account.Operations().Entries().at(id).transaction ==
                   f.Build().CanonicalBytes());
       Require(account.Observations() == funded.Observations());
+      Require(account.Delivery() == delivered.Delivery());
       sql("BEGIN IMMEDIATE;");
-      Require(store.StageReplace(1, rewound.Encode()) == 2);
+      Require(store.StageReplace(1, rolled.Encode()) == 2);
       sql("ROLLBACK;");
       auto retained = store.Read();
       Require(retained && retained->revision == 1);
+      Require(OrchardAccountState::Restore(retained->state, f.domain, fvk,
+          20001, funded.Scan().Checkpoint(), restoreLookups).Delivery() == delivered.Delivery());
       Require(OrchardAccountState::Restore(retained->state, f.domain, fvk,
                                            20001, funded.Scan().Checkpoint(),
                                            restoreLookups)
                   .Observations() == funded.Observations());
       sql("BEGIN IMMEDIATE;");
-      Require(store.StageReplace(1, rewound.Encode()) == 2);
+      Require(store.StageReplace(1, rolled.Encode()) == 2);
       sql("COMMIT;");
     }
     Require(sqlite3_close(db) == SQLITE_OK);
@@ -387,9 +482,44 @@ int main(int argc, char **argv) {
       Require(after.Observations().empty() &&
               after.Operations().Entries().at(id).transaction ==
                   f.Build().CanonicalBytes());
+      Require(after.Delivery() == rolled.Delivery());
       Require(after.IssueReceiver(WalletScope::External).second == r2);
     }
     Require(sqlite3_close(db) == SQLITE_OK);
+    // A separately encrypted next snapshot is test-process input only.
+    // The worker does the production StageReplace in a real SQLite transaction.
+    auto nextPath = (cleanup.p / "next.sqlite").string();
+    Require(sqlite3_open(nextPath.c_str(), &db) == SQLITE_OK);
+    sql("PRAGMA synchronous=FULL;BEGIN IMMEDIATE;");
+    WalletSnapshotStore::InitializeSchemaUnderTransaction(db);
+    { WalletSnapshotStore store(db, identity, seed);
+      Require(store.StageReplace(0, redelivered.Encode()) == 1); sql("COMMIT;"); }
+    Require(sqlite3_close(db) == SQLITE_OK);
+    for (const char *phase : {"before", "after"}) {
+      std::vector<char *> args{argv[0], argv[1], nextPath.data(), path.data(),
+                              const_cast<char *>(phase), nullptr};
+      pid_t pid;
+      Require(posix_spawn(&pid, argv[0], nullptr, nullptr, args.data(), environ) == 0);
+      int status = 0;
+      Require(waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+      Require(sqlite3_open(path.c_str(), &db) == SQLITE_OK);
+      { WalletSnapshotStore store(db, identity, seed);
+        const auto saved = store.Read();
+        const bool committed = std::string(phase) == "after";
+        const auto &expected = committed ? redelivered : rolled;
+        Require(saved && saved->revision == (committed ? 3 : 2));
+        auto actual = OrchardAccountState::Restore(saved->state, f.domain, fvk,
+            20001, expected.Scan().Checkpoint(), restoreLookups);
+        Require(actual.Delivery() == expected.Delivery() &&
+                actual.Scan().BalanceUna() == (committed ? 5000 : 0) &&
+                actual.Observations() == expected.Observations());
+        Require(actual.IssueReceiver(WalletScope::External).second == r2 &&
+                actual.Operations().Entries().at(id).transaction == f.Build().CanonicalBytes());
+      }
+      Require(sqlite3_close(db) == SQLITE_OK);
+    }
+    std::cout << "Orchard delivery: ordered receipt with note/rollback effects, legacy formats, "
+                 "encrypted atomic rollback and fresh-process pre/post-commit recovery passed\n";
     std::cout << "Orchard account: atomic typed snapshot, address non-reuse "
                  "across restart/reorg/rescan, pending-byte preservation and "
                  "real received note passed\n";
