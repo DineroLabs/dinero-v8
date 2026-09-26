@@ -147,10 +147,29 @@ RuntimeOutboxEvent Decode(const std::string& bytes,uint64_t sequence,const Orcha
 RuntimeOutboxEvent Read(const ChainDB& db,uint64_t sequence,const OrchardBlockContext& profile) {
     const auto bytes=Raw(db,Key(sequence));if(!bytes)Corrupt();return Decode(*bytes,sequence,profile);
 }
+using TransitionTip = std::pair<uint256,uint32_t>;
+TransitionTip Before(const RuntimeOutboxEvent& e) {
+    return e.direction==RuntimeBlockDirection::Connect ?
+        TransitionTip{e.context.parent_hash,e.context.height-1} :
+        TransitionTip{e.context.block_hash,e.context.height};
+}
+TransitionTip After(const RuntimeOutboxEvent& e) {
+    return e.direction==RuntimeBlockDirection::Connect ?
+        TransitionTip{e.context.block_hash,e.context.height} :
+        TransitionTip{e.context.parent_hash,e.context.height-1};
+}
+void CheckCanonicalTip(const ChainDB& db,const TransitionTip& expected) {
+    const auto tip=RequiredDisk(db.getTip());
+    if(tip.height<0 || tip.hash!=expected.first || uint32_t(tip.height)!=expected.second)Corrupt();
+}
 RuntimeOutboxCursor CheckedHead(const ChainDB& db,const std::optional<std::string>& raw,
                                const OrchardBlockContext& profile) {
     if(!raw) { if(Raw(db,Key(1)))Corrupt();return {}; }
-    const auto head=Head(*raw);if(Read(db,head.sequence,profile).cursor!=head)Corrupt();
+    const auto head=Head(*raw);const auto event=Read(db,head.sequence,profile);
+    if(event.cursor!=head)Corrupt();
+    // Even an EOF cursor must describe the current durable generation. This
+    // also prevents appending onto a retained log from another canonical tip.
+    CheckCanonicalTip(db,After(event));
     if(head.sequence!=UINT64_MAX && Raw(db,Key(head.sequence+1)))Corrupt();
     return head;
 }
@@ -162,6 +181,7 @@ std::optional<std::string> Append(const ChainDB& db,rocksdb::WriteBatch& batch,
     if(head.sequence==UINT64_MAX)throw OrchardStateLookupError(Status::Invalid);
     RuntimeOutboxEvent event{{head.sequence+1,{}},head.digest,
         connecting?RuntimeBlockDirection::Connect:RuntimeBlockDirection::Disconnect,context,block.WireBytes()};
+    CheckCanonicalTip(db,Before(event));
     const auto key=Key(event.cursor.sequence);
     if(Raw(db,key))Corrupt();
     const auto bytes=Encode(event);
@@ -177,17 +197,23 @@ RuntimeOutboxPage ReadRuntimeOutboxUnderLock(const ChainDB& db,const OrchardBloc
         maximum_bytes>16*1024*1024)throw OrchardStateLookupError(Status::Invalid);
     RuntimeOutboxPage page;page.head=CheckedHead(db,Raw(db,head_key),profile);page.next=after;
     if(after.sequence>page.head.sequence || (!after.sequence && !after.digest.IsNull()))Corrupt();
-    if(after.sequence && Read(db,after.sequence,profile).cursor!=after)Corrupt();
+    std::optional<TransitionTip> previous_tip;
+    if(after.sequence) {
+        const auto previous=Read(db,after.sequence,profile);
+        if(previous.cursor!=after)Corrupt();
+        previous_tip=After(previous);
+    }
     size_t used=0;
     while(page.next.sequence<page.head.sequence && page.events.size()<maximum_events) {
         auto event=Read(db,page.next.sequence+1,profile);
-        if(event.previous_digest!=page.next.digest)Corrupt();
+        if(event.previous_digest!=page.next.digest ||
+            (previous_tip && *previous_tip!=Before(event)))Corrupt();
         const auto charge=event.body.size()+overhead;
         if(charge>maximum_bytes-used) {
             if(page.events.empty())throw OrchardStateLookupError(Status::Invalid);
             break;
         }
-        used+=charge;page.next=event.cursor;page.events.push_back(std::move(event));
+        used+=charge;previous_tip=After(event);page.next=event.cursor;page.events.push_back(std::move(event));
     }
     if(page.next.sequence==page.head.sequence && page.next!=page.head)Corrupt();
     return page;

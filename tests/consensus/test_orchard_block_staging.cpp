@@ -597,12 +597,23 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     CHECK(restored.forest.dumpInternalState()==parent_forest.dumpInternalState());
     CHECK(RequiredValue(db.getOrchardState())==parent_state);
 }
+static Block HistoricalDeliveryParent() {
+    // A real historical encoding for source continuity, not a claim that this
+    // generated parent's historical scripts/PoW/UTXO provenance were replayed.
+    Block block{};Transaction coinbase;coinbase.vin.resize(1);
+    coinbase.vin[0].prevout=TxOutPoint(TxId(uint256{}),UINT32_MAX);
+    coinbase.vin[0].scriptSig={1,1};coinbase.vout.emplace_back(AmountUna::Zero(),std::vector<uint8_t>{0x51});
+    block.vtx.push_back(coinbase);block.header.version=1;
+    block.header.prev_block_hash=H(93);block.header.timestamp=20000;
+    block.header.merkle_root=ComputeMerkleRoot(block.vtx);return block;
+}
 static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& context,
                                     const OrchardBlockCandidate& mixed) {
     TempDir temp;Seed(temp.path);ChainDB db;CHECK(db.init(temp.path)==Status::Ok);
-    Block historical;historical.vtx.push_back(mixed.Transactions().front().Historical());
-    historical.header.version=1;historical.header.prev_block_hash=H(93);
-    historical.header.timestamp=91;historical.header.merkle_root=ComputeMerkleRoot(historical.vtx);
+    auto historical=HistoricalDeliveryParent();
+    historical.header=RequiredValue(source.getHeader(context.parent_hash));
+    CHECK(historical.GetHash()==context.parent_hash &&
+        historical.header.merkle_root==ComputeMerkleRoot(historical.vtx));
     const auto height=context.activation_height-1;
     // Ordinary historical stores have no delivery origin and remain untouched.
     CHECK(!PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Connect));
@@ -614,24 +625,24 @@ static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& co
     }
     std::string head;CHECK(source.getRaw("runtime_orchard_outbox:v1:head",head)==Status::Ok);
     seed.Put("runtime_orchard_outbox:v1:head",head);
-    Tip(db,historical.header.prev_block_hash,height-1,seed);Commit(db,seed);
+    Tip(db,historical.GetHash(),height,seed);Commit(db,seed);
     auto wrong=context;++wrong.domain.branch_id;
     LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,wrong,historical,height,RuntimeBlockDirection::Connect);});
     LookupReject(Status::Invalid,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,context.activation_height,RuntimeBlockDirection::Connect);});
-    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Disconnect);});
-    auto damaged=historical;damaged.header.merkle_root=H(92);
-    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,damaged,height,RuntimeBlockDirection::Connect);});
+    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Connect);});
+    auto damaged=historical;damaged.vtx.front().vout.front().value=AmountUna::Una(1);
+    LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,damaged,height,RuntimeBlockDirection::Disconnect);});
     {
-        auto abandoned=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Connect);
-        CHECK(abandoned);rocksdb::WriteBatch uncommitted;Tip(db,historical.GetHash(),height,uncommitted);
+        auto abandoned=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Disconnect);
+        CHECK(abandoned);rocksdb::WriteBatch uncommitted;Tip(db,historical.header.prev_block_hash,height-1,uncommitted);
         abandoned->StageOrTerminateUnderLock(db,uncommitted);
     }
     db.close();CHECK(db.init(temp.path)==Status::Ok);
     CHECK(ReadRuntimeOutboxUnderLock(db,context).head==prior.head);
-    CHECK(RequiredValue(db.getTip()).hash==historical.header.prev_block_hash);
+    CHECK(RequiredValue(db.getTip()).hash==historical.GetHash());
     // A down/up cycle ends at the same canonical tip. Its effects still have
     // distinct ordered records: a consumer cannot infer delivery from tip alone.
-    for(auto direction:{RuntimeBlockDirection::Connect,RuntimeBlockDirection::Disconnect,RuntimeBlockDirection::Connect}) {
+    for(auto direction:{RuntimeBlockDirection::Disconnect,RuntimeBlockDirection::Connect,RuntimeBlockDirection::Disconnect}) {
         auto prepared=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,direction);CHECK(prepared);
         rocksdb::WriteBatch canonical;
         Tip(db,direction==RuntimeBlockDirection::Connect?historical.GetHash():historical.header.prev_block_hash,
@@ -641,7 +652,7 @@ static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& co
     }
     const auto replay=ReadRuntimeOutboxUnderLock(db,context,prior.head);
     CHECK(replay.events.size()==3 && replay.next.sequence==prior.head.sequence+3);
-    CHECK(replay.events[0].direction==RuntimeBlockDirection::Connect && replay.events[1].direction==RuntimeBlockDirection::Disconnect);
+    CHECK(replay.events[0].direction==RuntimeBlockDirection::Disconnect && replay.events[1].direction==RuntimeBlockDirection::Connect);
     auto cursor=prior.head;
     for(const auto& event:replay.events) {
         CHECK(!event.IsOrchardProfile() && event.context.height==height && event.context.block_hash==historical.GetHash());
@@ -650,7 +661,7 @@ static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& co
         const auto page=ReadRuntimeOutboxUnderLock(db,context,cursor,1);CHECK(page.events.size()==1 && page.next==event.cursor);
         cursor=event.cursor;
     }
-    CHECK(RequiredValue(db.getTip()).hash==historical.GetHash());
+    CHECK(RequiredValue(db.getTip()).hash==historical.header.prev_block_hash);
     CHECK(ReadRuntimeOutboxUnderLock(db,context,cursor).events.empty());
     // Existing DNOE01 entries remain readable alongside DNOE02 historical ones.
     CHECK(ReadRuntimeOutboxUnderLock(db,context,{},1).events.front().IsOrchardProfile());
@@ -672,6 +683,44 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
     CHECK(seen==all.events.size());
     const auto empty=ReadRuntimeOutboxUnderLock(db,context,cursor);
     CHECK(empty.events.empty() && empty.next==empty.head);
+    const auto canonical_tip=RequiredValue(db.getTip());
+    rocksdb::WriteBatch shifted;Tip(db,H(87),canonical_tip.height,shifted);Commit(db,shifted);
+    bool canonical_head_refused=false;
+    try {(void)ReadRuntimeOutboxUnderLock(db,context,cursor);}
+    catch(const OrchardStateLookupError& e) {CHECK(e.SourceStatus()==Status::Corruption);canonical_head_refused=true;}
+    CHECK(canonical_head_refused); // An EOF cursor cannot certify a different canonical tip.
+    rocksdb::WriteBatch restore_tip;Tip(db,canonical_tip.hash,canonical_tip.height,restore_tip);Commit(db,restore_tip);
+    // Reframe an internally checksummed test log with a repeated connect.
+    // Digest links alone cannot establish transition continuity. Keep the head
+    // post-state and canonical tip consistent to isolate the adjacent check.
+    std::vector<std::pair<std::string,std::string>> originals;
+    RuntimeOutboxCursor reframed;
+    rocksdb::WriteBatch discontinuous;
+    for(size_t i=0;i<all.events.size();++i) {
+        char suffix[17];std::snprintf(suffix,sizeof(suffix),"%016llx",static_cast<unsigned long long>(i+1));
+        const std::string key="runtime_orchard_outbox:v1:event:"+std::string(suffix);
+        std::string bytes;CHECK(db.getRaw(key,bytes)==Status::Ok);originals.emplace_back(key,bytes);
+        if(i==1)bytes[46]=bytes[46]==1?2:1;
+        std::copy(reframed.digest.data,reframed.digest.data+32,bytes.begin()+14);
+        crypto::CSHA256().Write(reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size()-32).Finalize(reframed.digest.data);
+        std::copy(reframed.digest.data,reframed.digest.data+32,bytes.end()-32);
+        reframed.sequence=i+1;discontinuous.Put(key,bytes);
+    }
+    std::string head;CHECK(db.getRaw("runtime_orchard_outbox:v1:head",head)==Status::Ok);
+    originals.emplace_back("runtime_orchard_outbox:v1:head",head);
+    std::copy(reframed.digest.data,reframed.digest.data+32,head.begin()+14);
+    uint256 head_digest;crypto::CSHA256().Write(reinterpret_cast<const uint8_t*>(head.data()),head.size()-32).Finalize(head_digest.data);
+    std::copy(head_digest.data,head_digest.data+32,head.end()-32);
+    discontinuous.Put("runtime_orchard_outbox:v1:head",head);
+    const auto& last=all.events.back();const bool end_connect=(all.events.size()==2) ?
+        last.direction!=RuntimeBlockDirection::Connect : last.direction==RuntimeBlockDirection::Connect;
+    Tip(db,end_connect?context.block_hash:context.parent_hash,context.height-(end_connect?0:1),discontinuous);
+    Commit(db,discontinuous);
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context);});
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,all.events.front().cursor,1);});
+    rocksdb::WriteBatch continuous;
+    for(const auto& [key,bytes]:originals)continuous.Put(key,bytes);
+    Tip(db,canonical_tip.hash,canonical_tip.height,continuous);Commit(db,continuous);
     LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,{},0);});
     LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,{},129);});
     LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,{},1,1);});
@@ -727,7 +776,7 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
         stored.height=coin.height;stored.coinbase=coin.isCoinbase;
         CHECK(db.putCoin(token,point.txid.AsUint256(),point.vout,stored,&seed)==Status::Ok);
     }
-    BlockHeader parent{};parent.version=1;parent.timestamp=20000;
+    BlockHeader parent=HistoricalDeliveryParent().header;
     const auto parent_root=parent_forest.getCommitment();std::copy(parent_root.begin(),parent_root.end(),parent.utreexo_root.begin());
     if(contextual_headers)parent=ServiceFixtureParent(parent.utreexo_root);
     const auto parent_work=contextual_headers ? GetBlockProof(BuildCanonicalGenesis(Params()).header.difficulty) : arith_uint256(20000);
@@ -1115,6 +1164,11 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
 int main(int argc,char**argv) {
     try { SelectParams(Chain::REGTEST);
 #ifdef DINERO_TEST_ORCHARD_SERVICE_STARTUP
+        if(argc==3 && std::string(argv[1])=="--service-delivery-source") {
+            AtomicForest(argv[2],false,{},true,true,ServiceDeliverySourceChecks);
+            AtomicForest(argv[2],true,{},true,true,ServiceDeliverySourceChecks);
+            std::cout<<"OrchardServiceDeliverySource PASS\n";return 0;
+        }
         if(argc==3 && std::string(argv[1])=="--service-startup") {
             AtomicForest(argv[2],false,{},false,false,ServiceStartupChecks);
             AtomicForest(argv[2],true,{},false,false,ServiceStartupChecks);

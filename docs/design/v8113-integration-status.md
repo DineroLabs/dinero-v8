@@ -5,6 +5,13 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- The existing delivery reader now binds its head (including EOF) to the durable
+  canonical tip and checks visited adjacent transition identities. The service
+  exposes checked pages under its activation lock and its actual startup gate
+  refuses inconsistent retained delivery history even below activation. This is
+  source verification, not per-store completion or an installed recovery
+  provider. See `orchard-delivery-source-2026-09-26.md`.
+
 - Existing wallet connect/disconnect/reorg queues now bind a process-local
   wallet session at enqueue and compare it under the processing lease before
   any store effect. Replacement and same-name reopen invalidate old jobs; empty

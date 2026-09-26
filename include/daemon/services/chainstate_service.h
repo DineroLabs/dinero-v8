@@ -50,6 +50,8 @@ namespace dinero {
 class ChainManager;
 class BlockStorage;
 class RuntimeBlockBody;
+struct RuntimeOutboxCursor;
+struct RuntimeOutboxPage;
 class WalletManager;  // Snapshot wallet rescan (see RescanWalletFromSnapshotUTXOs)
 struct FilePosition;  // #309: storage/block_storage.h
 
@@ -807,6 +809,12 @@ public:
     // Orchard builds expose a mixed body without fabricating legacy transactions.
     // Default builds return Internal (reader unavailable). Not admission.
     StatusOr<std::shared_ptr<const RuntimeBlockBody>> getRuntimeBlockByHash(const uint256& hash) const;
+    // Copies a bounded, checked canonical delivery page under the selected
+    // writer lock. Acquire this before wallet ownership. A page is replay
+    // material, not proof that a consumer has applied it or is still caught up.
+    StatusOr<std::shared_ptr<const RuntimeOutboxPage>> getRuntimeDeliveryPage(
+        const RuntimeOutboxCursor& after, size_t maximum_events = 32,
+        size_t maximum_bytes = 16 * 1024 * 1024) const;
     uint64_t getLegacyBodyFallbackReadCount() const;
     uint64_t getLegacyUndoFallbackReadCount() const;
     bool strictArchivalReadsEnabled() const;

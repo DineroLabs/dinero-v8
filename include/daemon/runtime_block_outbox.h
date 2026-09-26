@@ -57,7 +57,11 @@ private:
 // Hold the selected writer lock for a consistent view. Only domain and
 // activation_height are used from selected_profile. Cursor must be the last
 // durably APPLIED consumer checkpoint (or zero). Checks sequence/digest links,
-// framing/domain/body identity; does not replay proof/script validation.
+// framing/domain/body identity and adjacent transition hash/height continuity.
+// The retained head must end at the persisted canonical tip, including EOF
+// reads. Only visited adjacency is checked; this is not a full historical
+// audit or proof/script validation. Head/predecessor reads are additional to
+// the returned-page byte budget, which is not a resident-memory bound.
 // Throws OrchardStateLookupError for absent/corrupt records or bad bounds.
 // A budget too small for the next record fails, never impersonates end-of-log.
 // No acknowledgement/deletion API: consumers must atomically checkpoint with

@@ -4,6 +4,7 @@
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/runtime_block_reader.h"
 #include "daemon/runtime_reorg_store.h"
+#include "daemon/runtime_block_outbox.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "consensus/orchard_block_staging.h"
 #endif
@@ -1983,6 +1984,26 @@ bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
     };
     if (!consensus::OrchardProfileConfigurationValid(Params()))
         return fail_orchard("invalid selected profile");
+    // Retained delivery history remains mandatory below activation too. Probe
+    // the origin as well as the head so a missing head cannot hide the log.
+    if (chain_db_) {
+        std::string delivery;
+        const auto head_status=chain_db_->getRaw("runtime_orchard_outbox:v1:head",delivery);
+        const auto origin_status=chain_db_->getRaw("runtime_orchard_outbox:v1:event:0000000000000001",delivery);
+        if ((head_status!=Status::Ok && head_status!=Status::NotFound) ||
+            (origin_status!=Status::Ok && origin_status!=Status::NotFound))
+            return fail_orchard("cannot read delivery origin");
+        if (head_status==Status::Ok || origin_status==Status::Ok) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            // This bounded check covers origin/head and current service state;
+            // consumers still validate every page from their applied cursor.
+            if (!getRuntimeDeliveryPage({},1).ok())
+                return fail_orchard("delivery source disagrees with restored chainstate");
+#else
+            return fail_orchard("delivery source support unavailable");
+#endif
+        }
+    }
     const bool selected_orchard = active_tip_ &&
         consensus::OrchardActiveForHeight(Params(), active_tip_->height);
     const auto orchard_state = chain_db_ ? chain_db_->getOrchardState() :
@@ -5624,6 +5645,33 @@ StatusOr<std::shared_ptr<const RuntimeBlockBody>> ChainstateService::getRuntimeB
     auto body = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, metadata->height);
     if (!body.ok()) return body.status();
     return std::make_shared<const RuntimeBlockBody>(std::move(*body));
+#else
+    return Status::Internal;
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ChainstateService::getRuntimeDeliveryPage(
+        const RuntimeOutboxCursor& after, size_t maximum_events, size_t maximum_bytes) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::lock_guard<AnnotatedRecursiveMutex> activation_guard(activation_mutex_);
+    if (!chain_db_ || !active_tip_ || !consensus_utxo_set_) return Status::Internal;
+    if (GetConfig().utreexo_stateless || !consensus::OrchardProfileConfigurationValid(Params()))
+        return Status::Invalid;
+    const auto profile=consensus::SelectedOrchardBlockContext(BlockHeader{},Params().orchard_activation_height);
+    if (!profile) return Status::Invalid;
+    const auto tip=chain_db_->getTip();
+    const auto validated=chain_db_->getValidatedTip();
+    if (!tip.ok()) return tip.status();
+    if (!validated.ok()) return validated.status();
+    if (tip->height<0 || tip->hash!=active_tip_->hash || uint32_t(tip->height)!=active_tip_->height ||
+        validated->hash!=tip->hash || validated->height!=tip->height ||
+        consensus_utxo_set_->GetBestBlock()!=tip->hash ||
+        consensus_utxo_set_->GetHeight()!=uint32_t(tip->height)) return Status::Corruption;
+    try {
+        return std::make_shared<const RuntimeOutboxPage>(ReadRuntimeOutboxUnderLock(
+            *chain_db_,*profile,after,maximum_events,maximum_bytes));
+    } catch (const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
+      catch (...) { return Status::Internal; }
 #else
     return Status::Internal;
 #endif

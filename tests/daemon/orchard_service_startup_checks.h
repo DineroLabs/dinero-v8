@@ -620,3 +620,77 @@ static void ServiceStartupChecks(ChainDB& db,const OrchardBlockContext& c,
     }
     std::cout<<"Service startup: optional legacy flag, missing journal, stale memory, locators, undo, domain, inactive profile and unsupported CSN checked\n";
 }
+
+// The service owns source selection and locking. These generated stores have
+// real indexed commits, but do not claim independently validated prehistory.
+static void ServiceDeliverySourceChecks(ChainDB& db,const OrchardBlockContext& c,
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
+    using Access=dinero::ShieldedStateStartupTestAccess;
+    struct Restore { ChainParams p; NodeConfig c; ~Restore(){MutableParams()=p;GetConfig()=c;} } restore{Params(),GetConfig()};
+    MutableParams().orchard_activation_height=c.activation_height;
+    MutableParams().orchard_branch_id=c.domain.branch_id;
+    MutableParams().enforce_witness_commitment=true;
+    MutableParams().witness_commitment_enforcement_height=c.activation_height;
+    GetConfig().utreexo_stateless=false;GetConfig().consensus_atomic_persist=false;
+    auto files=std::make_shared<BlockStorage>();CHECK(files->init(path)==Status::Ok);
+    auto index=DiskIndex(db,block.Header(),c.height);
+    ChainstateService service;service.setChainDB(&db);service.setBlockStorage(files);Access::Set(service,index,forest);
+    const auto snapshot=[&] { db.close();auto rows=Inspect(path);CHECK(db.init(path)==Status::Ok);return rows; };
+    const auto rows=snapshot();
+    const auto page=service.getRuntimeDeliveryPage({},1);CHECK(page.ok() && (*page)->events.size()==1);
+    auto cursor=(*page)->next;
+    while(cursor!=(*page)->head) {
+        const auto next=service.getRuntimeDeliveryPage(cursor,1);CHECK(next.ok() && (*next)->events.size()==1);
+        cursor=(*next)->next;
+    }
+    CHECK((*service.getRuntimeDeliveryPage(cursor))->events.empty());
+    CHECK(Access::Verify(service));
+    CHECK(snapshot()==rows);
+    auto wrong=cursor;wrong.digest.data[0]^=1;
+    CHECK(service.getRuntimeDeliveryPage(wrong).status()==Status::Corruption);
+    CHECK(service.getRuntimeDeliveryPage({},129).status()==Status::Invalid);
+    Access::StaleMemory(service);
+    CHECK(service.getRuntimeDeliveryPage(cursor).status()==Status::Corruption);
+    Access::Set(service,index,forest);
+    GetConfig().utreexo_stateless=true;
+    CHECK(service.getRuntimeDeliveryPage(cursor).status()==Status::Invalid);
+    GetConfig().utreexo_stateless=false;
+    MutableParams().orchard_activation_height=UINT32_MAX;
+    CHECK(!service.getRuntimeDeliveryPage(cursor).ok());
+    MutableParams().orchard_activation_height=c.activation_height;
+    // Missing or wrong source head must refuse actual startup, even though the
+    // canonical state, its mandatory consensus journal and memory are intact.
+    const std::string key="runtime_orchard_outbox:v1:head";
+    std::string head;CHECK(db.getRaw(key,head)==Status::Ok);
+    rocksdb::WriteBatch remove;remove.Delete(key);Commit(db,remove);
+    CHECK(!service.getRuntimeDeliveryPage(cursor).ok());
+    CHECK(!Access::Verify(service) && service.IsInSafeMode());
+    rocksdb::WriteBatch replace;replace.Put(key,head);Commit(db,replace);
+    CHECK(snapshot()==rows);
+    // Real indexed boundary rollback retains the source log below activation.
+    // The ordinary optional journal must not bypass that retained source gate.
+    const auto parent=RequiredValue(db.getHeader(c.parent_hash));
+    ConsensusUTXOSet live;live.ReplaceForestGuarded(forest);live.SetBestBlock(c.block_hash,c.height);
+    CHECK(db.forEachUTXO([&](const uint256& hash,uint32_t n,const Coin& coin) {
+        CHECK(live.AddCoin(OutPoint(TxId(hash),n),MemoryCoin(coin)));return true;
+    })==Status::Ok);
+    AnnotatedRecursiveMutex activation;
+    auto rollback=PreparedOrchardChainstateWrite::DisconnectIndexed(activation,db,token,*files,index,live,c,block,parent,forest,true);
+    rollback->Commit();rollback.reset();
+    UtreexoForest previous;std::string restore_error;
+    CHECK(storage::RestoreHistoricalForest(db,c.height-1,previous,restore_error)==Status::Ok);
+    CBlockIndex parent_index;parent_index.hash=parent.GetHash();parent_index.prev_hash=parent.prev_block_hash;
+    parent_index.height=c.height-1;parent_index.version=parent.version;
+    parent_index.merkle_root=parent.merkle_root;parent_index.timestamp=parent.timestamp;
+    parent_index.bits=parent.difficulty;parent_index.nonce=parent.nonce;
+    parent_index.chainwork=RequiredValue(db.getBlockWork(c.parent_hash)).GetHex();
+    ChainstateService historical;historical.setChainDB(&db);historical.setBlockStorage(files);
+    Access::Set(historical,parent_index,previous);
+    const auto down=historical.getRuntimeDeliveryPage(cursor,1);
+    CHECK(down.ok() && (*down)->events.size()==1 && (*down)->events[0].direction==RuntimeBlockDirection::Disconnect);
+    CHECK(Access::Verify(historical));
+    std::string rollback_head;CHECK(db.getRaw(key,rollback_head)==Status::Ok);
+    rocksdb::WriteBatch stale;stale.Put(key,head);Commit(db,stale);
+    CHECK(!Access::Verify(historical) && historical.IsInSafeMode());
+    rocksdb::WriteBatch restored;restored.Put(key,rollback_head);Commit(db,restored);
+}
