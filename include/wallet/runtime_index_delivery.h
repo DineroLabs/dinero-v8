@@ -5,6 +5,7 @@
 
 namespace dinero {
 class UTXOIndex;
+class WalletManager;
 struct RuntimeIndexProgress {
     RuntimeOutboxCursor cursor;
     uint256 origin_hash, tip_hash;
@@ -16,6 +17,13 @@ struct RuntimeIndexProgress {
 // baseline completeness, other wallet stores or all-consumer readiness.
 class RuntimeIndexDelivery {
 public:
+    // Pins the selected wallet and durably establishes its database binding
+    // before touching the index. Source acquisition precedes this call; the
+    // caller captures the intended session before releasing wallet ownership.
+    static std::optional<RuntimeIndexProgress> ReadForWallet(WalletManager&, UTXOIndex&, uint64_t expected_session);
+    static RuntimeIndexProgress ApplyForWallet(WalletManager&, UTXOIndex&, uint64_t expected_session, const RuntimeOutboxEvent&);
+private:
+    friend struct RuntimeIndexDeliveryTestAccess;
     static std::optional<RuntimeIndexProgress> Read(UTXOIndex&, const std::string& wallet_identity);
     static RuntimeIndexProgress Apply(UTXOIndex&, const std::string& wallet_identity,
                                       const RuntimeOutboxEvent&);

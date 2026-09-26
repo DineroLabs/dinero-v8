@@ -44,11 +44,12 @@ consistency protection, not authentication against arbitrary database edits.
 The event remains a POD and must come from the selected service's checked
 `getRuntimeDeliveryPage` / outbox reader. This API checks body identity but does
 not independently certify source digests, consensus validity or complete prior
-history. Obtain source pages before acquiring wallet/index ownership. A future
-production owner must bind a stable persistent wallet identity under the wallet
-lease, validate the applied cursor against the source, reconcile the pre-origin
-baseline and coordinate other stores before exposing readiness. A process-local
-wallet session or an arbitrary string is not a persistent identity certificate.
+history. Obtain source pages before acquiring wallet/index ownership. Public entry points now derive the database binding under an actual wallet
+lease and require the intended live session; see
+`wallet-delivery-binding-2026-09-26.md`. The complete production owner still must
+validate the applied cursor, wallet/script ownership and pre-origin baseline,
+and coordinate other stores before exposing readiness. A database identity
+alone is not a baseline or key-ownership certificate.
 
 No production notification provider is installed by this change. Ordinary
 WalletManager, note and Orchard-account effects still need their own durable
@@ -58,7 +59,7 @@ Baseline invalidation has no permissive reset API. Late-account/rescan recovery,
 all-consumer readiness, independently validated activation history and full
 startup/replay/reindex qualification remain open. Mainnet activation is unset.
 
-## Qualification
+## Initial 2e6b qualification
 
 The independent mandatory `OrchardIndexDelivery` CTest uses a real SQLite index
 and events obtained from the checked source reader over generated indexed

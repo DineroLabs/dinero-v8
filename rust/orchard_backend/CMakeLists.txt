@@ -140,9 +140,11 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_chainstate_write STATIC "${ORCHARD_HOST_ROOT}/src/daemon/orchard_chainstate_write.cpp")
   target_link_libraries(dinero_orchard_chainstate_write PUBLIC dinero_orchard_block_staging)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
-  add_library(dinero_orchard_index_delivery STATIC "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp")
+  add_library(dinero_orchard_index_delivery STATIC
+    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
+    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_index_delivery.cpp")
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
-  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_orchard_chainstate_write sqlite3)
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_orchard_chainstate_write dinero_wallet sqlite3)
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
   endif()
@@ -324,6 +326,8 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_test(NAME OrchardStateCommitment COMMAND test_orchard_state_commitment)
     set_tests_properties(OrchardStateCommitment PROPERTIES TIMEOUT 60 LABELS "orchard;consensus;encoding;integration-staging")
     add_executable(test_orchard_index_delivery
+      "${ORCHARD_HOST_ROOT}/src/daemon/lightning_stubs.cpp"
+      "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/wallet/utxo_index.cpp"
       "${ORCHARD_HOST_ROOT}/src/sqlite_open.cpp"

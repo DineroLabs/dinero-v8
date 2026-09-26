@@ -5,6 +5,14 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- Public index recovery entry points now pin the actual WalletManager lease,
+  reject stale process sessions, and use a persistent database ID committed
+  before index effects. Caller-supplied identity methods are private. Reopen,
+  same-name different wallets and a switch during blocked index access are
+  covered. This still needs validated wallet/script baselines and coordinated
+  progress across the other stores; no provider is installed. See
+  `wallet-delivery-binding-2026-09-26.md`.
+
 - A store-owned index delivery consumer applies real historical/Orchard
   transparent effects and ordered source progress in one checked SQLite
   transaction. Ordinary index writes invalidate that progress atomically;

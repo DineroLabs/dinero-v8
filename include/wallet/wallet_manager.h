@@ -243,6 +243,10 @@ public:
         [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
         // Process-local identity only, never a durable delivery checkpoint.
         [[nodiscard]] uint64_t Session() const noexcept { return session_; }
+        // Creates/reads a persistent database identity under this lease. Its
+        // checked transaction commits before any separate-store delivery.
+        // Does not certify key ownership, source history or recovery readiness.
+        [[nodiscard]] std::string EnsureDeliveryIdentity();
     private:
         friend class WalletManager;
         explicit DatabaseLease(WalletManager&);

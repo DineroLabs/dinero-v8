@@ -6007,6 +6007,11 @@ if(NOT WIN32)
     LABELS "wallet;recovery;persistence;concurrency"
     TIMEOUT 30
   )
+  add_test(NAME WalletDeliveryBindingIdentity
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDeliveryBindingTest.StableDatabaseIdentitySurvivesReopenAndMetadataChanges)
+  add_test(NAME WalletDeliveryBindingFailures
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDeliveryBindingTest.FailedWritesAndCommitDoNotPublishIdentity)
+  set_tests_properties(WalletDeliveryBindingIdentity WalletDeliveryBindingFailures PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery")
   add_test(NAME WalletQueuedIdentity
     COMMAND test_wallet_database_lease --gtest_filter=WalletQueuedIdentityTest.*)
   set_tests_properties(WalletQueuedIdentity PROPERTIES

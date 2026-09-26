@@ -59,6 +59,48 @@ protected:
     std::unique_ptr<dinero::WalletManager> wallet;
 };
 
+class WalletDeliveryBindingTest : public WalletDatabaseLeaseTest {};
+TEST_F(WalletDeliveryBindingTest, StableDatabaseIdentitySurvivesReopenAndMetadataChanges) {
+    wallet->open("owner");
+    std::string identity;
+    { auto lease=wallet->AcquireDatabaseLease();identity=lease->EnsureDeliveryIdentity();
+      EXPECT_EQ(identity.size(),71u);EXPECT_EQ(lease->EnsureDeliveryIdentity(),identity); }
+    wallet->open("owner");EXPECT_EQ(wallet->AcquireDatabaseLease()->EnsureDeliveryIdentity(),identity);
+    { auto lease=wallet->AcquireDatabaseLease();
+      Exec(lease->Database(),"UPDATE wallet_meta SET name='display-name-changed' WHERE id=1");
+      EXPECT_EQ(lease->EnsureDeliveryIdentity(),identity); }
+    wallet->create("other");wallet->open("other");
+    EXPECT_NE(wallet->AcquireDatabaseLease()->EnsureDeliveryIdentity(),identity);
+    wallet.reset();wallet=std::make_unique<dinero::WalletManager>(path);wallet->open("owner");
+    EXPECT_EQ(wallet->AcquireDatabaseLease()->EnsureDeliveryIdentity(),identity);
+    dinero::WalletManager empty(path/"empty");
+    EXPECT_THROW(empty.AcquireDatabaseLease()->EnsureDeliveryIdentity(),std::runtime_error);
+}
+TEST_F(WalletDeliveryBindingTest, FailedWritesAndCommitDoNotPublishIdentity) {
+    wallet->open("owner");auto lease=wallet->AcquireDatabaseLease();auto* db=lease->Database();
+    const auto fails=[&](const char* expected) {
+        try { (void)lease->EnsureDeliveryIdentity();ADD_FAILURE()<<"Expected identity refusal"; }
+        catch(const std::runtime_error& error){EXPECT_EQ(std::string(error.what()),expected);}
+    };
+    Exec(db,"CREATE TRIGGER reject_schema BEFORE UPDATE ON wallet_meta BEGIN SELECT RAISE(ABORT,'identity schema failure'); END");
+    fails("Wallet delivery identity write failed");
+    { sqlite3_stmt* stmt=nullptr;ASSERT_EQ(sqlite3_prepare_v2(db,"SELECT count(*) FROM pragma_table_info('wallet_meta') WHERE name='runtime_delivery_id'",-1,&stmt,nullptr),SQLITE_OK);
+      ASSERT_EQ(sqlite3_step(stmt),SQLITE_ROW);EXPECT_EQ(sqlite3_column_int(stmt,0),0);sqlite3_finalize(stmt); }
+    Exec(db,"DROP TRIGGER reject_schema; ALTER TABLE wallet_meta ADD COLUMN runtime_delivery_id BLOB");
+    const auto absent=[&] { sqlite3_stmt* s=nullptr;ASSERT_EQ(sqlite3_prepare_v2(db,"SELECT runtime_delivery_id FROM wallet_meta WHERE id=1",-1,&s,nullptr),SQLITE_OK);
+        ASSERT_EQ(sqlite3_step(s),SQLITE_ROW);EXPECT_EQ(sqlite3_column_type(s,0),SQLITE_NULL);sqlite3_finalize(s); };
+    Exec(db,"CREATE TRIGGER reject_delivery BEFORE UPDATE ON wallet_meta BEGIN SELECT RAISE(ABORT,'identity write failure'); END");
+    fails("Wallet delivery identity write failed");absent();
+    Exec(db,"DROP TRIGGER reject_delivery; CREATE TABLE delivery_parent(id INTEGER PRIMARY KEY); CREATE TABLE delivery_child(id INTEGER REFERENCES delivery_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_commit AFTER UPDATE ON wallet_meta BEGIN INSERT INTO delivery_child VALUES(99); END");
+    fails("Wallet delivery identity SQL failed");absent();
+    Exec(db,"DROP TRIGGER reject_commit; BEGIN IMMEDIATE; UPDATE wallet_meta SET name='pending' WHERE id=1");
+    fails("Wallet delivery identity ownership unavailable");EXPECT_EQ(sqlite3_get_autocommit(db),0);
+    Exec(db,"ROLLBACK");absent();
+    const auto identity=lease->EnsureDeliveryIdentity();EXPECT_FALSE(identity.empty());
+    Exec(db,"UPDATE wallet_meta SET runtime_delivery_id=x'00' WHERE id=1");
+    fails("Wallet delivery identity malformed");
+}
+
 TEST_F(WalletDatabaseLeaseTest, SerializesConnectionAndPinsWalletThroughSwitch) {
     wallet->create("other");
     wallet->open("owner");

@@ -262,6 +262,26 @@ jobs:
               raise SystemExit('Disabled wallet database ownership test')
           PYCODE
           ctest --test-dir build-orchard-root -R '^WalletDatabaseLease$' --output-on-failure --no-tests=error --output-log orchard-wallet-lease-execution.log
+      - name: Require and execute persistent wallet delivery binding
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletDeliveryBinding(Identity|Failures)$' --show-only=json-v1 > orchard-wallet-binding-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-binding-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['WalletDeliveryBindingFailures', 'WalletDeliveryBindingIdentity']:
+              raise SystemExit('Missing wallet delivery binding registrations')
+          for test in tests:
+              if any(p['name'] == 'DISABLED' and p['value'] for p in test.get('properties', [])):
+                  raise SystemExit('Disabled wallet delivery binding test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^WalletDeliveryBinding(Identity|Failures)$' --verbose --output-on-failure --no-tests=error --output-log orchard-wallet-binding-execution.log
+          python3 - <<'PYCODE'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletDeliveryBindingTest\.\S+)', open('orchard-wallet-binding-execution.log').read())
+          expected = ['WalletDeliveryBindingTest.StableDatabaseIdentitySurvivesReopenAndMetadataChanges', 'WalletDeliveryBindingTest.FailedWritesAndCommitDoNotPublishIdentity']
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Missing actual wallet delivery binding executions')
+          PYCODE
       - name: Require and execute queued wallet identity
         run: |
           ctest --test-dir build-orchard-root -R '^WalletQueuedIdentity$' --show-only=json-v1 > orchard-wallet-queue-inventory.json
@@ -371,6 +391,8 @@ jobs:
             orchard-wallet-undo-execution.log
             orchard-wallet-lease-inventory.json
             orchard-wallet-lease-execution.log
+            orchard-wallet-binding-inventory.json
+            orchard-wallet-binding-execution.log
             orchard-wallet-queue-inventory.json
             orchard-wallet-queue-execution.log
             orchard-wallet-block-inventory.json

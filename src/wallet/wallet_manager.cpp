@@ -2978,6 +2978,84 @@ WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
     ++owner_.database_leases_;
 }
 
+std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Wallet delivery identity used on another thread");
+    if (!db_ || name_.empty() || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Wallet delivery identity ownership unavailable");
+    struct Statement {
+        sqlite3_stmt* stmt = nullptr;
+        Statement(sqlite3* db, const char* sql) {
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+                sqlite3_finalize(stmt);
+                throw std::runtime_error("Wallet delivery identity prepare failed");
+            }
+        }
+        ~Statement() { sqlite3_finalize(stmt); }
+    };
+    const auto sql = [&](const char* text) {
+        if (sqlite3_exec(db_, text, nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Wallet delivery identity SQL failed");
+    };
+    sql("PRAGMA synchronous=FULL");
+    {
+        Statement policy(db_, "PRAGMA synchronous");
+        if (sqlite3_step(policy.stmt) != SQLITE_ROW || sqlite3_column_int(policy.stmt, 0) != 2 ||
+            sqlite3_step(policy.stmt) != SQLITE_DONE)
+            throw std::runtime_error("Wallet delivery identity durability unavailable");
+    }
+    sql("BEGIN IMMEDIATE"); // Failed BEGIN never adopts another transaction.
+    try {
+        { Statement selected(db_, "SELECT id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(selected.stmt) != SQLITE_ROW || sqlite3_step(selected.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Wallet delivery identity metadata unavailable"); }
+        bool column = false;
+        { Statement columns(db_, "PRAGMA table_info(wallet_meta)");
+          int rc;
+          while ((rc = sqlite3_step(columns.stmt)) == SQLITE_ROW) {
+              const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(columns.stmt, 1));
+              if (name && std::string_view(name) == "runtime_delivery_id") column = true;
+          }
+          if (rc != SQLITE_DONE) throw std::runtime_error("Wallet delivery identity schema read failed"); }
+        if (!column) sql("ALTER TABLE wallet_meta ADD COLUMN runtime_delivery_id BLOB");
+        std::array<unsigned char, 32> id{};
+        bool create = false;
+        { Statement read(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(read.stmt) != SQLITE_ROW)
+              throw std::runtime_error("Wallet delivery identity read failed");
+          create = sqlite3_column_type(read.stmt, 0) == SQLITE_NULL;
+          if (!create) {
+              if (sqlite3_column_type(read.stmt, 0) != SQLITE_BLOB || sqlite3_column_bytes(read.stmt, 0) != int(id.size()))
+                  throw std::runtime_error("Wallet delivery identity malformed");
+              const auto* bytes = sqlite3_column_blob(read.stmt, 0);
+              if (!bytes) throw std::runtime_error("Wallet delivery identity read failed");
+              std::memcpy(id.data(), bytes, id.size());
+          }
+          if (sqlite3_step(read.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Wallet delivery identity read failed"); }
+        if (create && RAND_bytes(id.data(), int(id.size())) != 1)
+            throw std::runtime_error("Wallet delivery identity randomness unavailable");
+        if (std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; }))
+            throw std::runtime_error("Wallet delivery identity malformed");
+        if (create) {
+            Statement write(db_, "UPDATE wallet_meta SET runtime_delivery_id=? WHERE id=1 AND runtime_delivery_id IS NULL");
+            if (sqlite3_bind_blob(write.stmt, 1, id.data(), int(id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+                throw std::runtime_error("Wallet delivery identity write failed");
+        }
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "DNWI01:";
+        for (auto byte : id) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+        sql("COMMIT");
+        return result; // No allocation or diagnostics after the durable commit.
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
+    }
+}
+
 WalletManager::DatabaseLease::~DatabaseLease() noexcept {
     if (thread_ != std::this_thread::get_id()) std::terminate();
     // Entry was in autocommit and no other thread can use this connection.
