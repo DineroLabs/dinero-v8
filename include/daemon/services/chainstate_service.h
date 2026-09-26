@@ -1140,6 +1140,8 @@ private:
     };
 
     bool VerifyForkPointForestUnderLock(CBlockIndex*);
+    bool PrepareRuntimeReorgUnderLock(const std::vector<CBlockIndex*>& disconnect,
+        const std::vector<CBlockIndex*>& connect, std::unique_ptr<RuntimeReorgTransition>&);
     bool DisconnectOrchardTip(CBlockIndex*);
     bool ConnectOrchardTip(CBlockIndex*, std::string*, bool*);
 

@@ -9493,6 +9493,15 @@ void ChainstateService::ActivateBestChain() {
         return;
     }
 
+    // Prepare exact mixed/historical transaction material before any rollback,
+    // CSN forest restore or wallet transaction. Per-block consumers alone cannot
+    // recover transactions after a partially successful replacement branch.
+    std::unique_ptr<RuntimeReorgTransition> runtime_reorg;
+    if (!PrepareRuntimeReorgUnderLock(disconnect_path, connect_path, runtime_reorg)) {
+        if (logger_) logger_->warning("[ActivateBestChain] Runtime reorg handoff unavailable; canonical state unchanged");
+        return;
+    }
+
     // Log reorg details
     if (!disconnect_path.empty() || !connect_path.empty()) {
         if (logger_) {
@@ -9988,7 +9997,7 @@ void ChainstateService::ActivateBestChain() {
     // Collect transactions from blocks being disconnected (for mempool reconciliation).
     // Use ancestor-first order so tx chains from disconnected blocks replay cleanly.
     std::vector<Transaction> disconnected_txs;
-    AppendTransactionsFromBlocks(
+    if (!runtime_reorg) AppendTransactionsFromBlocks(
         chain_db_,
         block_storage_.get(),
         disconnect_path,
@@ -10105,6 +10114,7 @@ void ChainstateService::ActivateBestChain() {
 
             return; // Abort reorg on failure
         }
+        if (runtime_reorg) runtime_reorg->Disconnected();
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -10262,8 +10272,11 @@ void ChainstateService::ActivateBestChain() {
             return; // Abort reorg on failure
             }
         }
+        if (runtime_reorg) runtime_reorg->Connected();
         std::cout << "✅ [ActivateBestChain] ConnectTip SUCCEEDED for height " << block_index->height << std::endl;
 
+        // Mixed reorgs use the prepared typed plan, never the legacy decoder.
+        if (runtime_reorg || consensus::OrchardActiveForHeight(Params(), block_index->height)) continue;
         // Collect transactions from connected block (for mempool reconciliation)
         auto block_result = ReadStoredBlock(block_index->hash);
         if (block_result.status() == Status::Ok) {
@@ -10354,6 +10367,10 @@ void ChainstateService::ActivateBestChain() {
                          " transactions restored");
         }
     }
+
+    // Finish the retained transaction handoff before declaring recovery complete.
+    // Early returns run the same callback through the scope destructor.
+    runtime_reorg.reset();
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Crash Safety: Clear reorg marker on success (Priority 4 FIX)
@@ -12953,6 +12970,8 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
 
     std::vector<CBlockIndex*> manually_disconnected_blocks;
     CBlockIndex* post_disconnect_tip = active_tip_;
+    std::unique_ptr<RuntimeReorgTransition> runtime_reorg;
+    bool typed_reorg = false;
 
     // Step 1: If block is in the active chain, disconnect back to its parent
     if (active_tip_) {
@@ -12970,6 +12989,15 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                 logger_->info("[InvalidateBlock] Block is in active chain — disconnecting " +
                              std::to_string(active_tip_->height - target->height + 1) + " blocks");
             }
+
+            std::vector<CBlockIndex*> planned_disconnects;
+            for (auto* p=active_tip_;p && p!=target->pprev;p=p->pprev) planned_disconnects.push_back(p);
+            if (!PrepareRuntimeReorgUnderLock(planned_disconnects, {}, runtime_reorg)) {
+                error="Runtime invalidation transaction handoff unavailable";
+                return false;
+            }
+            typed_reorg=bool(runtime_reorg);
+            manually_disconnected_blocks.reserve(planned_disconnects.size());
 
             // The CSN DisconnectTip path only rolls back coins and shielded
             // bookkeeping. ABC normally rewinds its forest first; the manual
@@ -13022,6 +13050,7 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                             std::to_string(to_disconnect->height);
                     return false;
                 }
+                if (runtime_reorg) runtime_reorg->Disconnected();
                 // DisconnectTip sets active_tip_ to pprev
                 PublishActiveTipLocked(to_disconnect->pprev, TipPublishReason::kRollback);
             }
@@ -13101,10 +13130,15 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
         AddCandidate(target->pprev);
     }
 
+    // Retain/readmit the disconnected typed transactions before a separate
+    // replacement activation. Fresh admission handles already-confirmed IDs;
+    // the provider must not discard its durable intent on a partial failure.
+    runtime_reorg.reset();
+
     // Step 4: Re-evaluate best chain (may switch to a fork)
     ActivateBestChain();
 
-    if (!manually_disconnected_blocks.empty()) {
+    if (!typed_reorg && !manually_disconnected_blocks.empty()) {
         auto* daemon_ctx = DaemonContext::instance();
         if (daemon_ctx && daemon_ctx->mempool && daemon_ctx->mempool->isInitialized()) {
             std::vector<Transaction> disconnected_txs;
@@ -13817,6 +13851,41 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
 void ChainstateService::setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications> notifications) {
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     runtime_block_notifications_=std::move(notifications);
+}
+
+bool ChainstateService::PrepareRuntimeReorgUnderLock(
+    const std::vector<CBlockIndex*>& disconnect, const std::vector<CBlockIndex*>& connect,
+    std::unique_ptr<RuntimeReorgTransition>& out) {
+    activation_mutex_.AssertHeld("PrepareRuntimeReorgUnderLock");
+    if (out) return false;
+    if (disconnect.empty()) return true;
+    const auto uses_orchard=[](const auto& path) {
+        return std::any_of(path.begin(),path.end(),[](const auto* p) {
+            return p && p->height >= 0 && consensus::OrchardActiveForHeight(Params(),p->height);
+        });
+    };
+    if (!uses_orchard(disconnect) && !uses_orchard(connect)) return true;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!chain_db_ || !block_storage_ || GetConfig().utreexo_stateless ||
+        !runtime_block_notifications_ || active_tip_!=disconnect.front()) return false;
+    try {
+        const auto consumers=runtime_block_notifications_;
+        auto plan=ReadRuntimeReorgPlanUnderLock(*chain_db_,block_storage_.get(),disconnect,connect);
+        if (!plan) return false;
+        auto prepared=consumers->PrepareReorg(plan);
+        if (!prepared) return false;
+        // Own the prepared handoff before any further refusal, so cancellation
+        // (zero committed blocks) is delivered as well.
+        std::unique_ptr<RuntimeReorgTransition> transition;
+        try { transition=std::make_unique<RuntimeReorgTransition>(std::move(prepared),disconnect.size(),connect.size()); }
+        catch (...) { if (prepared) prepared->Finish({}); throw; }
+        if (active_tip_!=disconnect.front() || runtime_block_notifications_!=consumers) return false;
+        out=std::move(transition);
+        return true;
+    } catch (...) { return false; }
+#else
+    return false;
+#endif
 }
 
 bool ChainstateService::VerifyForkPointForestUnderLock(CBlockIndex* fork) {

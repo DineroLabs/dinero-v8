@@ -76,6 +76,12 @@ This branch collects release implementation for review and qualification against
   before activation. Dedicated service-fixture coverage verifies missing material,
   wrong restored forest and stale fork selection without canonical writes.
   Full reorg orchestration and production consumers remain unfinished.
+- Best-chain activation and explicit invalidation now prepare complete typed
+  reorg body plans before rollback. A consumer must durably retain the plan;
+  per-block-only providers refuse. Exact committed prefixes survive early-return
+  reporting, and mixed bodies never enter the legacy transaction collector.
+  The production recovery/readmission provider remains unimplemented. See the
+  service-reorg-plan design for operational bounds and qualification limits.
 - The actual startup undo-coverage walk now routes retained Orchard bodies under
   the activation lock, restoring and reversing a private forest across the
   requested window. Exact indexed/embedded body and undo, commit records,

@@ -1,9 +1,48 @@
 #pragma once
 #include <cstdint>
+#include <cstddef>
+#include <exception>
 #include <memory>
 
 namespace dinero {
 class RuntimeBlockBody;
+class RuntimeReorgPlan;
+struct RuntimeReorgProgress { size_t disconnected = 0, connected = 0; };
+
+// Preparation must durably retain the complete plan before returning. On restart
+// the consumer resolves committed progress from canonical chainstate, not from
+// the last callback: the process can stop between commit and notification.
+class PreparedRuntimeReorgNotifications {
+public:
+    virtual ~PreparedRuntimeReorgNotifications() = default;
+    virtual void Finish(RuntimeReorgProgress) noexcept = 0;
+};
+
+// Reports exact committed prefixes on success AND every partial/early exit.
+// Disconnect order is tip-first; readmission reverses that committed prefix.
+class RuntimeReorgTransition final {
+public:
+    RuntimeReorgTransition(std::unique_ptr<PreparedRuntimeReorgNotifications> prepared,
+                          size_t disconnects, size_t connects)
+        : prepared_(std::move(prepared)), disconnects_(disconnects), connects_(connects) {
+        if (!prepared_) std::terminate();
+    }
+    RuntimeReorgTransition(const RuntimeReorgTransition&) = delete;
+    RuntimeReorgTransition& operator=(const RuntimeReorgTransition&) = delete;
+    ~RuntimeReorgTransition() { prepared_->Finish(progress_); }
+    void Disconnected() noexcept {
+        if (progress_.connected || progress_.disconnected == disconnects_) std::terminate();
+        ++progress_.disconnected;
+    }
+    void Connected() noexcept {
+        if (progress_.disconnected != disconnects_ || progress_.connected == connects_) std::terminate();
+        ++progress_.connected;
+    }
+private:
+    std::unique_ptr<PreparedRuntimeReorgNotifications> prepared_;
+    const size_t disconnects_, connects_;
+    RuntimeReorgProgress progress_;
+};
 enum class RuntimeBlockDirection { Connect, Disconnect };
 
 // Trusted daemon consumers prepare their complete typed block event before the
@@ -19,6 +58,11 @@ public:
 class RuntimeBlockNotifications {
 public:
     virtual ~RuntimeBlockNotifications() = default;
+    // Default refusal keeps a per-block-only consumer from silently losing
+    // disconnected transactions. The owned plan includes historical transactions
+    // when the fork crosses the activation boundary. No admission is implied.
+    [[nodiscard]] virtual std::unique_ptr<PreparedRuntimeReorgNotifications> PrepareReorg(
+        std::shared_ptr<const RuntimeReorgPlan>) { return {}; }
     [[nodiscard]] virtual std::unique_ptr<PreparedRuntimeBlockNotifications> Prepare(
         const RuntimeBlockBody&, uint32_t height, RuntimeBlockDirection) = 0;
 };

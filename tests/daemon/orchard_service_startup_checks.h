@@ -48,6 +48,11 @@ struct ShieldedStateStartupTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
         return s.ConnectTip(tip,&error,&invalid);
     }
+    static bool Reorg(ChainstateService& s,const std::vector<CBlockIndex*>& old_path,
+        const std::vector<CBlockIndex*>& new_path,std::unique_ptr<RuntimeReorgTransition>& prepared) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
+        return s.PrepareRuntimeReorgUnderLock(old_path,new_path,prepared);
+    }
     static bool ForkPoint(ChainstateService& s,CBlockIndex* fork) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
         return s.VerifyForkPointForestUnderLock(fork);
@@ -88,7 +93,7 @@ struct ShieldedStateStartupTestAccess {
 };
 }
 static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c,
-    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path,bool reconnect=false,bool fork_audit=false) {
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path,bool reconnect=false,bool fork_audit=false,bool reorg_check=false) {
     using Access=dinero::ShieldedStateStartupTestAccess;
     const auto old_params=Params();const auto old_config=GetConfig();
     struct Restore { ChainParams p;NodeConfig c;~Restore(){MutableParams()=p;GetConfig()=c;} } restore{old_params,old_config};
@@ -117,7 +122,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     if(c.height==c.activation_height) {
         JournalContinuation(db,c,block,forest,true,[&](const OrchardBlockContext& next,
             const OrchardBlockCandidate& child,const UtreexoForest& child_forest) {
-            ServiceDisconnectChecksImpl(db,next,child,child_forest,path,reconnect,fork_audit);
+            ServiceDisconnectChecksImpl(db,next,child,child_forest,path,reconnect,fork_audit,reorg_check);
         },true);
     }
 
@@ -125,9 +130,35 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     const auto parent_header=RequiredValue(db.getHeader(c.parent_hash));
     CBlockIndex parent=reconnect && c.height>c.activation_height ? DiskIndex(db,parent_header,c.height-1) : CBlockIndex(parent_header,c.height-1);parent.chainwork=RequiredValue(db.getBlockWork(c.parent_hash)).GetHex();
     index.pprev=&parent;
+    std::unique_ptr<CBlockIndex> grandparent_index;
+    if(reorg_check && c.height>c.activation_height) {
+        grandparent_index=std::make_unique<CBlockIndex>(RequiredValue(db.getHeader(parent_header.prev_block_hash)),c.height-2);
+        parent.pprev=grandparent_index.get();
+        std::vector<CBlockIndex*> old_path{&index,&parent}, new_path{&parent,&index};
+        const auto plan=ReadRuntimeReorgPlanUnderLock(db,files.get(),old_path,new_path);
+        CHECK(plan && plan->disconnect.size()==2 && plan->connect.size()==2);
+        CHECK(plan->disconnect[0].hash==index.hash && plan->disconnect[1].hash==parent.hash);
+        CHECK(plan->connect[0].hash==parent.hash && plan->connect[1].hash==index.hash);
+        CHECK(plan->disconnect[1].body.Orchard().Transactions().size()>1);
+        const auto saved=RequiredValue(db.getHeaderMetadata(parent.hash));auto missing=saved;missing.data_size=0;
+        CHECK(db.putHeaderMetadata(token,parent.hash,missing)==Status::Ok);
+        CHECK(!ReadRuntimeReorgPlanUnderLock(db,files.get(),old_path,new_path)); // No prefix on missing ancestor.
+        CHECK(!ReadRuntimeReorgPlanUnderLock(db,files.get(),old_path,{})); // Invalidation has no replacement path to catch it again.
+        CHECK(db.putHeaderMetadata(token,parent.hash,saved)==Status::Ok);
+    }
     struct Notifications final:RuntimeBlockNotifications {
         ChainDB& db;ChainstateService& service;const CBlockIndex& before;const CBlockIndex& after;
         const std::vector<uint8_t>& wire;RuntimeBlockDirection direction;bool refuse=false,published=false,coherent=false;unsigned prepared=0;
+        bool allow_reorg=false;unsigned finishes=0;RuntimeReorgProgress progress;
+        std::shared_ptr<const RuntimeReorgPlan> retained;
+        struct ReorgPrepared final:PreparedRuntimeReorgNotifications {
+            Notifications& owner;explicit ReorgPrepared(Notifications& n):owner(n){}
+            void Finish(RuntimeReorgProgress p) noexcept override { owner.progress=p;++owner.finishes; }
+        };
+        std::unique_ptr<PreparedRuntimeReorgNotifications> PrepareReorg(std::shared_ptr<const RuntimeReorgPlan> plan) override {
+            if (!allow_reorg) return {};
+            retained=std::move(plan);return std::make_unique<ReorgPrepared>(*this);
+        }
         Notifications(ChainDB& d,ChainstateService& s,const CBlockIndex& b,const CBlockIndex& a,const std::vector<uint8_t>& w,RuntimeBlockDirection dir=RuntimeBlockDirection::Disconnect)
           :db(d),service(s),before(b),after(a),wire(w),direction(dir){}
         struct Prepared final:PreparedRuntimeBlockNotifications {
@@ -160,7 +191,38 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     ++parent.timestamp;CHECK(!Access::Disconnect(service,&index));--parent.timestamp;
     GetConfig().utreexo_stateless=true;CHECK(!Access::Disconnect(service,&index));GetConfig().utreexo_stateless=false;
     db.close();CHECK(Inspect(path)==original);CHECK(db.init(path)==Status::Ok);
+    std::unique_ptr<RuntimeReorgTransition> reorg;
+    if(reorg_check) {
+        CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg); // Per-block readiness is insufficient.
+        notifications->allow_reorg=true;
+        CHECK(Access::Reorg(service,{&index},{&index},reorg) && reorg);
+        CHECK(notifications->retained->disconnect.size()==1 && notifications->retained->connect.size()==1);
+        CHECK(notifications->retained->disconnect[0].body.Serialize()==block.WireBytes());
+        const auto& typed=notifications->retained->disconnect[0].body.Orchard().Transactions();
+        CHECK(typed.size()==block.Transactions().size());
+        bool found_orchard=false;
+        for(size_t i=0;i<typed.size();++i) {
+            CHECK(typed[i].GetTxid()==block.Transactions()[i].GetTxid());
+            CHECK(typed[i].Serialize(TxSerializationMode::WithWitness)==block.Transactions()[i].Serialize(TxSerializationMode::WithWitness));
+            found_orchard |= typed[i].IsOrchard();
+        }
+        if(c.height==c.activation_height) CHECK(found_orchard); // Mixed boundary fixture includes a real authorized bundle.
+        reorg.reset();CHECK(notifications->finishes==1 && notifications->progress.disconnected==0 && notifications->progress.connected==0);
+        auto absent=RequiredValue(db.getHeaderMetadata(index.hash));const auto saved=absent;absent.data_size=0;
+        CHECK(db.putHeaderMetadata(token,index.hash,absent)==Status::Ok);
+        CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg);
+        CHECK(db.putHeaderMetadata(token,index.hash,saved)==Status::Ok);
+        CBlockIndex wrong_parent=parent;wrong_parent.hash=H(81);auto* old=index.pprev;index.pprev=&wrong_parent;
+        CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg);index.pprev=old;
+        std::vector<CBlockIndex*> one{&index};
+        CHECK(!ReadRuntimeReorgPlanUnderLock(db,files.get(),one,one,1)); // Byte budget refuses the complete attempt.
+        CHECK(!ReadRuntimeReorgPlanUnderLock(db,files.get(),one,one,64*1024*1024,1));
+        CHECK(!Access::Reorg(service,{&index,&index},{},reorg) && !reorg); // Broken ancestry.
+        db.close();CHECK(Inspect(path)==original);CHECK(db.init(path)==Status::Ok);
+        CHECK(Access::Reorg(service,{&index},{&index},reorg));
+    }
     CHECK(Access::Disconnect(service,&index));
+    if(reorg) reorg->Disconnected();
     CHECK(notifications->published && notifications->coherent && notifications->prepared==2);
     CHECK(Access::TipIs(service,&parent) && RequiredValue(db.getTip()).hash==c.parent_hash);
     if(c.height==c.activation_height) {
@@ -214,6 +276,10 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
             CHECK(!Access::Connect(service,&index,error,invalid) && !invalid);index.chainwork=saved;
             Access::SeedPositions(service);
             CHECK(Access::Connect(service,&index,error,invalid));
+            if(reorg) {
+                reorg->Connected();reorg.reset();
+                CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==1);
+            }
             CHECK(!invalid && connected->published && connected->coherent && connected->prepared==2);
             CheckMemoryCoins(db,Access::Coins(service));
             CHECK((index.status&BLOCK_VALID_MASK)==BLOCK_VALID_MASK);
@@ -225,6 +291,11 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
             CHECK(Access::Disconnect(service,&index));
         }
     }
+    if(reorg) {
+        reorg.reset(); // Refused activation-boundary reconnect reports only the committed rollback.
+        CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==0);
+    }
+    if(reorg_check) CHECK(notifications->retained->disconnect[0].body.Serialize()==block.WireBytes());
     if(outer_parent_metadata)CHECK(db.putHeaderMetadata(token,c.parent_hash,*outer_parent_metadata)==Status::Ok);
     std::cout<<"Actual service typed disconnect: notification readiness, atomic rollback, memory and observer ordering checked\n";
 }
@@ -239,6 +310,10 @@ static void ServiceConnectChecks(ChainDB& db,const OrchardBlockContext& c,
 static void ServiceForkPointChecks(ChainDB& db,const OrchardBlockContext& c,
     const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
     ServiceDisconnectChecksImpl(db,c,block,forest,path,true,true);
+}
+static void ServiceReorgPlanChecks(ChainDB& db,const OrchardBlockContext& c,
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
+    ServiceDisconnectChecksImpl(db,c,block,forest,path,true,false,true);
 }
 static void ServiceUndoCoverageChecks(ChainDB& db,const OrchardBlockContext& c,
     const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {

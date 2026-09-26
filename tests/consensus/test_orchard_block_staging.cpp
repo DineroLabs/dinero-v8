@@ -956,6 +956,11 @@ int main(int argc,char**argv) {
             AtomicForest(argv[2],true,{},false,false,ServiceStartupChecks);
             std::cout<<"OrchardServiceStartup PASS\n";return 0;
         }
+        if(argc==3 && std::string(argv[1])=="--service-reorg-plan") {
+            AtomicForest(argv[2],false,{},false,false,ServiceReorgPlanChecks,true);
+            AtomicForest(argv[2],true,{},false,false,ServiceReorgPlanChecks,true);
+            std::cout<<"OrchardServiceReorgPlan PASS\n";return 0;
+        }
         if(argc==3 && std::string(argv[1])=="--service-fork-point") {
             AtomicForest(argv[2],false,{},false,false,ServiceForkPointChecks,true);
             AtomicForest(argv[2],true,{},false,false,ServiceForkPointChecks,true);
