@@ -261,18 +261,14 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
     if (params_obj.isMember("longpollid") && params_obj["longpollid"].isString()) {
         const std::string client_longpollid = params_obj["longpollid"].asString();
         if (!client_longpollid.empty()) {
-            auto cur_tip = chain_db->getTip();
-            const std::string current_best = cur_tip.ok() ? cur_tip.value().hash.GetHex() : "";
-            if (!current_best.empty() && client_longpollid == current_best) {
-                // Snapshot generation BEFORE waiting so a concurrent
-                // block-connect doesn't race past our observation.
-                auto& notifier = dinero::rpc::LongPollNotifier::instance();
-                const uint64_t seen_generation = notifier.currentGeneration();
-                notifier.waitForChange(seen_generation, std::chrono::milliseconds(8000));
-                // Fall through to template build; state reads below will
-                // pick up whatever the tip is now.
-            }
-            // client_longpollid != current_best: client is behind, give
+            auto& notifier = dinero::rpc::LongPollNotifier::instance();
+            notifier.waitIfCurrentTip([&] {
+                const auto tip = chain_db->getTip();
+                return tip.ok() && client_longpollid == tip->hash.GetHex();
+            }, std::chrono::milliseconds(8000));
+            // Build against fresh state below, including when a tip transition
+            // happened between the generation snapshot and the database read.
+            // A different current tip means the client is behind: give
             // them a fresh template immediately (no wait).
         }
     }

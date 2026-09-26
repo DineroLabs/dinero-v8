@@ -15,6 +15,8 @@ namespace fs = std::filesystem;
 using dinero::storage::MigrateShieldedStateCopy;
 constexpr dinero::storage::ShieldedMigrationLimits limits{32768, 1, 16384, 100};
 std::string executable;
+int Child(const fs::path& source, const fs::path& copy, const std::string& stage,
+          const char* mode = "--child");
 
 namespace dinero::storage {
 ShieldedMigrationResult MigrateShieldedStateCopyForTesting(const fs::path&, const fs::path&,
@@ -119,6 +121,71 @@ void Happy(const std::string& mode) {
         CHECK(again.ok && again.ready && again.operation == report.operation); CHECK(Inspect(copy) == completed);
     }
 }
+void NamedComparatorFence() {
+    CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
+    ValidSeed(source); Clone(source, copy);
+    const auto result = MigrateShieldedStateCopy(source, copy, limits, true);
+    CHECK(result.ok && result.ready && result.selected_rows > 0);
+    rocksdb::Options options;
+    options.create_if_missing = options.create_missing_column_families = false;
+    std::vector<std::string> names;
+    CHECK(rocksdb::DB::ListColumnFamilies(options, copy.string(), &names).ok());
+    CHECK(std::find(names.begin(), names.end(), "shielded_state_v1") != names.end());
+    std::vector<rocksdb::ColumnFamilyDescriptor> descriptors;
+    for (const auto& name : names) descriptors.emplace_back(name, rocksdb::ColumnFamilyOptions{});
+    std::vector<rocksdb::ColumnFamilyHandle*> handles;
+    rocksdb::DB* raw = nullptr;
+    const auto open = rocksdb::DB::OpenForReadOnly(options, copy.string(), descriptors, &handles, &raw);
+    if (raw) {
+        for (auto* handle : handles) raw->DestroyColumnFamilyHandle(handle);
+        delete raw;
+    }
+    // RED on the old migration engine: its default-name tenth family opens.
+    // The release guard requires rejection before a legacy-compatible DB handle.
+    CHECK(!open.ok());
+    CHECK(open.ToString().find("does not match existing comparator") != std::string::npos);
+}
+void NamedComparatorAtCreation() {
+    CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
+    ValidSeed(source); Clone(source, copy);
+    CHECK(Child(source, copy, "after_create") == 86);
+    rocksdb::Options options;
+    std::vector<std::string> names;
+    CHECK(rocksdb::DB::ListColumnFamilies(options, copy.string(), &names).ok());
+    CHECK(std::find(names.begin(), names.end(), "shielded_state_v1") != names.end());
+    std::vector<rocksdb::ColumnFamilyDescriptor> descriptors;
+    for (const auto& name : names) descriptors.emplace_back(name, rocksdb::ColumnFamilyOptions{});
+    std::vector<rocksdb::ColumnFamilyHandle*> handles;
+    rocksdb::DB* raw = nullptr;
+    const auto status = rocksdb::DB::OpenForReadOnly(options, copy.string(), descriptors, &handles, &raw);
+    if (raw) {
+        for (auto* handle : handles) raw->DestroyColumnFamilyHandle(handle);
+        delete raw;
+    }
+    CHECK(!status.ok());
+    CHECK(status.ToString().find("does not match existing comparator") != std::string::npos);
+    // The interrupted copy remains outside normal ChainDB admission, and
+    // the supported migration can still resume through the named descriptor.
+    ChainDB db; CHECK(db.init(copy) != Status::Ok);
+    const auto resumed = MigrateShieldedStateCopy(source, copy, limits, true);
+    CHECK(resumed.ok && resumed.ready);
+}
+void RejectDefaultComparatorTenth() {
+    CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
+    ValidSeed(source); Clone(source, copy);
+    {
+        Raw raw(copy, legacy);
+        rocksdb::ColumnFamilyHandle* handle = nullptr;
+        Setup(raw.db->CreateColumnFamily(rocksdb::ColumnFamilyOptions{}, shielded, &handle).ok(),
+              "create unsupported default-comparator tenth family");
+        raw.handles.push_back(handle);
+    }
+    const auto before = Raw(copy, {}, false).rows();
+    const auto result = MigrateShieldedStateCopy(source, copy, limits, true);
+    CHECK(!result.ok && !result.ready);
+    CHECK(result.error.find("does not match existing comparator") != std::string::npos);
+    CHECK(Raw(copy, {}, false).rows() == before);
+}
 void Refusal(const std::string& fault) {
     CanonicalTemp temp; const auto source = temp.path / "original", copy = temp.path / "copy";
     ValidSeed(source);
@@ -181,7 +248,7 @@ void Ownership(const std::string& fault) {
     const auto report = MigrateShieldedStateCopy(src_arg, dst_arg, limits, true);
     CHECK(!report.ok); held.close(); CHECK(Inspect(source) == before && Inspect(copy) == candidate_before);
 }
-int Child(const fs::path& source, const fs::path& copy, const std::string& stage, const char* mode = "--child") {
+int Child(const fs::path& source, const fs::path& copy, const std::string& stage, const char* mode) {
     const auto pid = fork(); Setup(pid >= 0, "fork");
     if (pid == 0) {
         execl(executable.c_str(), executable.c_str(), mode, source.c_str(), copy.c_str(), stage.c_str(), nullptr);
@@ -271,6 +338,9 @@ int main(int argc, char** argv) {
     }
     std::map<std::string, std::function<void()>> cases;
     for (const std::string mode : {"inspect", "move", "empty", "optional_absent", "byte_batches"}) cases[mode] = [=] { Happy(mode); };
+    cases["named_comparator_fence"] = NamedComparatorFence;
+    cases["named_comparator_at_creation"] = NamedComparatorAtCreation;
+    cases["reject_default_comparator_tenth"] = RejectDefaultComparatorTenth;
     cases["lock_handoff"] = Handoff;
     cases["changed_source"] = ChangedSource;
     cases["replaced_identity"] = ReplacedIdentity;

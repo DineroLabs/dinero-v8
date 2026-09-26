@@ -18,6 +18,8 @@
 #include <chrono>
 #include <thread>  // Phase W.1.1: For sleep_for
 #include <mutex>
+#include <limits>
+#include <sqlite3.h>
 
 namespace dinero {
 
@@ -91,6 +93,34 @@ static std::string ScriptPubKeyToAddress(const std::vector<uint8_t>& scriptPubKe
 static std::shared_ptr<WalletWorker> g_wallet_worker;
 static std::mutex g_wallet_worker_mutex;
 
+// The WalletManager lease must outlive this transaction. This owns only the
+// ordinary wallet connection, not the separate index or shielded note store.
+class WalletBlockTransaction {
+public:
+    explicit WalletBlockTransaction(sqlite3* db) : db_(db) {
+        if (db_) Check("BEGIN IMMEDIATE", "begin");
+    }
+    ~WalletBlockTransaction() noexcept {
+        if (db_ && !sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+    }
+    WalletBlockTransaction(const WalletBlockTransaction&) = delete;
+    WalletBlockTransaction& operator=(const WalletBlockTransaction&) = delete;
+    void Commit() {
+        if (db_) Check("COMMIT", "commit");
+        db_ = nullptr;
+    }
+private:
+    void Check(const char* sql, const char* phase) {
+        if (sqlite3_exec(db_, sql, nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw std::runtime_error(std::string("Wallet block ") + phase +
+                                     " failed: " + sqlite3_errmsg(db_));
+    }
+    sqlite3* db_;
+};
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WALLET WORKER IMPLEMENTATION
 // ═══════════════════════════════════════════════════════════════════════════
@@ -142,7 +172,7 @@ void WalletWorker::QueueBlockConnected(uint32_t height, const std::string& hash,
         return;
     }
 
-    job_queue_.push(WalletJob::MakeConnect(height, hash, transactions));
+    job_queue_.push(BindJob(WalletJob::MakeConnect(height, hash, transactions)));
     std::cerr << "[WalletWorker] 📥 Queued block connect: height=" << height
               << " hash=" << hash.substr(0, 16) << "... "
               << "txs=" << transactions.size() << std::endl;
@@ -154,7 +184,7 @@ void WalletWorker::QueueReorg(const ReorgDiff& diff) {
         return;
     }
 
-    job_queue_.push(WalletJob::MakeReorg(diff));
+    job_queue_.push(BindJob(WalletJob::MakeReorg(diff)));
     std::cerr << "[WalletWorker] 📥 Queued reorg: disconnect=" << diff.disconnect.size()
               << " connect=" << diff.connect.size() << std::endl;
 }
@@ -165,7 +195,7 @@ void WalletWorker::QueueBlockDisconnected(uint32_t height, const Block& block) {
         return;
     }
 
-    job_queue_.push(WalletJob::MakeDisconnect(height, block));
+    job_queue_.push(BindJob(WalletJob::MakeDisconnect(height, block)));
     std::cerr << "[WalletWorker] 📥 Queued block disconnect: height=" << height
               << " hash=" << block.GetHash().GetHex().substr(0, 16) << "... "
               << "txs=" << block.vtx.size() << std::endl;
@@ -183,6 +213,7 @@ bool WalletWorker::RescanSynchronously(ChainDB* chain_db, int start_height, std:
 
     try {
         constexpr int kDefaultGapLimit = 20;
+        const auto database_lease = wallet_manager_->AcquireDatabaseLease();
         const bool ok = wallet_manager_->rescanBlockchain(start_height, kDefaultGapLimit, chain_db);
         if (!ok && error) {
             *error = "WalletManager::rescanBlockchain returned false";
@@ -197,6 +228,39 @@ bool WalletWorker::RescanSynchronously(ChainDB* chain_db, int start_height, std:
     }
 }
 
+WalletJob WalletWorker::BindJob(WalletJob job) {
+    if (wallet_manager_) {
+        const auto lease = wallet_manager_->AcquireDatabaseLease();
+        job.wallet_session = lease->Session();
+    }
+    return job;
+}
+
+void WalletWorker::ProcessJob(const WalletJob& job) {
+    if (static_cast<bool>(wallet_manager_) != job.wallet_session.has_value())
+        throw std::runtime_error("Wallet job has no matching manager binding");
+    switch (job.type) {
+        case JobType::Connect:
+            ProcessConnect(job.height, job.hash, job.transactions, job.wallet_session);
+            break;
+        case JobType::Disconnect:
+            ProcessDisconnect(job.height, job.block, job.wallet_session);
+            break;
+        case JobType::Reorg:
+            ProcessReorg(job.diff, job.wallet_session);
+            break;
+    }
+}
+
+// Run only with the lease held, before touching any wallet store or observer.
+static void CheckWalletJobSession(const WalletManager::DatabaseLease* lease,
+                                 std::optional<uint64_t> expected) {
+    if (expected && (!lease || lease->Session() != *expected))
+        throw std::runtime_error("Wallet job session changed; canonical recovery required");
+    if (expected && !lease->Database())
+        throw std::runtime_error("Wallet job has no selected database; canonical recovery required");
+}
+
 void WalletWorker::WorkerThread() {
     std::cerr << "[WalletWorker] Worker thread started (thread_id=" << std::this_thread::get_id() << ")" << std::endl;
 
@@ -209,17 +273,7 @@ void WalletWorker::WorkerThread() {
         }
 
         try {
-            switch (job.type) {
-                case JobType::Connect:
-                    ProcessConnect(job.height, job.hash, job.transactions);
-                    break;
-                case JobType::Disconnect:
-                    ProcessDisconnect(job.height, job.block);
-                    break;
-                case JobType::Reorg:
-                    ProcessReorg(job.diff);
-                    break;
-            }
+            ProcessJob(job);
         } catch (const std::exception& e) {
             std::cerr << "[WalletWorker] ❌ ERROR processing job: " << e.what() << std::endl;
         } catch (...) {
@@ -230,7 +284,15 @@ void WalletWorker::WorkerThread() {
     std::cerr << "[WalletWorker] Worker thread exiting" << std::endl;
 }
 
-void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block) {
+void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block,
+                                     std::optional<uint64_t> session) {
+    if (height == 0 || height > static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("Wallet disconnect height is out of range");
+    const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    CheckWalletJobSession(database_lease.get(), session);
+    if (database_lease && database_lease->Database() &&
+        !sqlite3_get_autocommit(database_lease->Database()))
+        throw std::runtime_error("Wallet disconnect cannot adopt an active transaction");
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing block disconnect: height=" << height
               << " hash=" << block.GetHash().GetHex().substr(0, 16)
@@ -261,7 +323,8 @@ void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block) {
 }
 
 void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
-                                  const std::vector<Transaction>& transactions) {
+                                  const std::vector<Transaction>& transactions,
+                                  std::optional<uint64_t> session) {
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing block connect: height=" << height
               << " hash=" << hash.substr(0, 16) << "... txs=" << transactions.size() << std::endl;
@@ -283,6 +346,8 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
         std::ofstream(path + ".exited") << height << '\n';
     }
 
+    const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    CheckWalletJobSession(database_lease.get(), session);
     if (wallet_manager_) {
         std::string shielded_error;
         if (!wallet::shielded_ops::ProcessConfirmedBlock(*wallet_manager_, height, transactions, &shielded_error) &&
@@ -292,20 +357,21 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
         }
     }
 
-    if (wallet_manager_) {
-        wallet_manager_->setBlockchainHeight(height);
-    }
-
     // Check if UTXO index is available
     if (!utxo_index_) {
         std::cerr << "[WalletWorker] ⚠️  UTXO index not available, skipping block scan" << std::endl;
         return;
     }
 
+    if (database_lease && !database_lease->Database())
+        throw std::runtime_error("Wallet block requires a selected database");
+    WalletBlockTransaction wallet_transaction(database_lease ? database_lease->Database() : nullptr);
     try {
         int utxos_added = 0;
         int utxos_spent = 0;
 
+        std::vector<WalletUTXO> observed_outputs;
+        utxo_index_->ApplyAtomically([&] {
         // Scan all transactions in the block
         for (const auto& tx : transactions) {
             // Phase M.4.3-D: GetTxid() returns TxId, use directly
@@ -314,7 +380,10 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
             bool is_coinbase = tx.IsCoinbase();
             bool existing_history_confirmed = false;
             if (wallet_manager_ && !is_coinbase) {
-                existing_history_confirmed = wallet_manager_->confirmTransaction(txid_hex, height);
+                std::string confirmation_error;
+                existing_history_confirmed = wallet_manager_->confirmTransaction(txid_hex, height, &confirmation_error);
+                if (!confirmation_error.empty())
+                    throw std::runtime_error("Wallet block confirmation failed: " + confirmation_error);
             }
 
             // Phase 35.1.1: Track if this transaction affects wallet (for history)
@@ -330,7 +399,8 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                     dinero::WalletUTXO spent_utxo;  // Phase M.3: WalletUTXO
                     if (utxo_index_->GetUTXO(input.prevout.txid, input.prevout.vout, spent_utxo)) {
                         // This input spends our UTXO - mark it as spent in memory
-                        utxo_index_->SpendUTXO(input.prevout.txid, input.prevout.vout, height);
+                        if (!utxo_index_->SpendUTXO(input.prevout.txid, input.prevout.vout, height))
+                            throw std::runtime_error("Wallet UTXO block spend failed");
                         utxos_spent++;
                         tx_spends_wallet_inputs = true;
 
@@ -339,24 +409,18 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                         // Deleting it here made onBlockDisconnected()'s
                         // UPDATE ... SET is_spent=0 a no-op (#287).
                         if (wallet_manager_) {
-                            try {
-                                const bool marked = wallet_manager_->spendUTXO(
-                                    input.prevout.txid.AsUint256().GetHex(),
-                                    input.prevout.vout
-                                );
-                                if (marked) {
-                                    std::cerr << "[WalletWorker] Marked UTXO spent in database: "
-                                              << input.prevout.txid.AsUint256().GetHex().substr(0, 16) << "..." << ":"
-                                              << input.prevout.vout << std::endl;
-                                } else {
-                                    std::cerr << "[WalletWorker] WARNING: spendUTXO returned false for: "
-                                              << input.prevout.txid.AsUint256().GetHex().substr(0, 16) << "..." << ":"
-                                              << input.prevout.vout << std::endl;
-                                }
-                            } catch (const std::exception& e) {
-                                std::cerr << "[WalletWorker] WARNING: Failed to mark UTXO spent in database: "
-                                          << e.what() << std::endl;
+                            const bool marked = wallet_manager_->spendUTXO(
+                                input.prevout.txid.AsUint256().GetHex(),
+                                input.prevout.vout
+                            );
+                            if (marked) {
+                                std::cerr << "[WalletWorker] Marked UTXO spent in database: "
+                                          << input.prevout.txid.AsUint256().GetHex().substr(0, 16) << "..." << ":"
+                                          << input.prevout.vout << std::endl;
+                            } else {
+                                throw std::runtime_error("Wallet block ordinary spend failed");
                             }
+
                         }
                         // Phase M.4.3-B Step 1: Unwrap TxId for logging
                         // Phase M.6.2: Extract raw value for display
@@ -396,86 +460,65 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                         is_coinbase
                     );
 
-                    utxo_index_->AddUTXO(new_utxo);
+                    if (!utxo_index_->AddUTXO(new_utxo))
+                        throw std::runtime_error("Wallet UTXO block insert failed");
                     utxos_added++;
 
-                    // Track C: Liquidity Vault auto-observer.
-                    // No-op when the vault isn't running or the
-                    // scriptPubKey doesn't match the configured
-                    // operator address. Decoding to address +
-                    // matching live in vault_runtime.cpp; the wallet
-                    // pipeline just hands over the raw outpoint +
-                    // value + height + block hash.
-                    {
-                        std::array<uint8_t, 32> txid_raw{};
-                        std::memcpy(txid_raw.data(),
-                                    txid.AsUint256().begin(), 32);
-                        dinero::vault::ObserveWalletOutput(
-                            txid_raw, static_cast<uint32_t>(vout),
-                            output.scriptPubKey,
-                            static_cast<uint64_t>(effective_value.GetUna()),
-                            static_cast<uint64_t>(height), hash);
-                    }
+                    observed_outputs.push_back(new_utxo);
 
                     // ✅ CRITICAL FIX: Persist UTXO to wallet database
                     if (wallet_manager_) {
-                        try {
-                            // Convert scriptPubKey to address
-                            std::string address = ScriptPubKeyToAddress(output.scriptPubKey);
-                            if (address.empty()) {
-                                std::cerr << "[WalletWorker] ⚠️  Failed to convert scriptPubKey to address, skipping database persistence" << std::endl;
+                        // Convert scriptPubKey to address
+                        std::string address = ScriptPubKeyToAddress(output.scriptPubKey);
+                        if (address.empty()) {
+                            std::cerr << "[WalletWorker] ⚠️  Failed to convert scriptPubKey to address, skipping database persistence" << std::endl;
+                        } else {
+                            // Convert scriptPubKey bytes to hex string
+                            std::string script_hex;
+                            for (uint8_t byte : output.scriptPubKey) {
+                                char buf[3];
+                                snprintf(buf, sizeof(buf), "%02x", byte);
+                                script_hex += buf;
+                            }
+
+                            // Phase M.6.2: Use effective_value (includes rewound CT amount)
+                            const bool persisted = wallet_manager_->addUTXO(
+                                txid_hex,
+                                static_cast<uint32_t>(vout),
+                                effective_value.GetInt64(),
+                                address,
+                                script_hex,
+                                height,
+                                is_coinbase
+                            );
+                            if (persisted) {
+                                std::cerr << "[WalletWorker] 💾 Persisted UTXO to database: "
+                                          << txid_hex.substr(0, 16) << "..." << ":" << vout
+                                          << " (" << address << ")" << std::endl;
                             } else {
-                                // Convert scriptPubKey bytes to hex string
-                                std::string script_hex;
-                                for (uint8_t byte : output.scriptPubKey) {
-                                    char buf[3];
-                                    snprintf(buf, sizeof(buf), "%02x", byte);
-                                    script_hex += buf;
-                                }
+                                throw std::runtime_error("Wallet block ordinary insert failed");
+                            }
 
-                                // Phase M.6.2: Use effective_value (includes rewound CT amount)
-                                const bool persisted = wallet_manager_->addUTXO(
-                                    txid_hex,
-                                    static_cast<uint32_t>(vout),
-                                    effective_value.GetInt64(),
-                                    address,
-                                    script_hex,
-                                    height,
-                                    is_coinbase
-                                );
-                                if (persisted) {
-                                    std::cerr << "[WalletWorker] 💾 Persisted UTXO to database: "
-                                              << txid_hex.substr(0, 16) << "..." << ":" << vout
-                                              << " (" << address << ")" << std::endl;
-                                } else {
-                                    std::cerr << "[WalletWorker] ❌ addUTXO failed for: "
-                                              << txid_hex.substr(0, 16) << "..." << ":" << vout
-                                              << " (" << address << ")" << std::endl;
-                                }
-
-                                // Auto-label coinbase addresses with block height
-                                if (persisted && is_coinbase) {
-                                    try {
-                                        std::string coinbase_label = "Coinbase block #" + std::to_string(height);
-                                        wallet_manager_->setAddressLabel(address, coinbase_label, true);  // is_system=true
-                                        std::cerr << "[WalletWorker] 🏷️  Auto-labeled mining address: " << coinbase_label << std::endl;
-                                    } catch (const std::exception& e) {
-                                        // Non-fatal - label is optional
-                                        std::cerr << "[WalletWorker] ⚠️  Failed to auto-label coinbase address: " << e.what() << std::endl;
-                                    }
-                                }
-
-                                // Phase 35.1.1: Track for transaction history
-                                tx_affects_wallet = true;
-                                total_received += static_cast<double>(effective_value.GetUna()) / 1e8;
-                                if (receiving_address.empty()) {
-                                    receiving_address = address;
+                            // Auto-label coinbase addresses with block height
+                            if (persisted && is_coinbase) {
+                                try {
+                                    std::string coinbase_label = "Coinbase block #" + std::to_string(height);
+                                    wallet_manager_->setAddressLabel(address, coinbase_label, true);  // is_system=true
+                                    std::cerr << "[WalletWorker] 🏷️  Auto-labeled mining address: " << coinbase_label << std::endl;
+                                } catch (const std::exception& e) {
+                                    // Non-fatal - label is optional
+                                    std::cerr << "[WalletWorker] ⚠️  Failed to auto-label coinbase address: " << e.what() << std::endl;
                                 }
                             }
-                        } catch (const std::exception& e) {
-                            std::cerr << "[WalletWorker] ⚠️  Failed to persist UTXO to database: "
-                                      << e.what() << std::endl;
+
+                            // Phase 35.1.1: Track for transaction history
+                            tx_affects_wallet = true;
+                            total_received += static_cast<double>(effective_value.GetUna()) / 1e8;
+                            if (receiving_address.empty()) {
+                                receiving_address = address;
+                            }
                         }
+
                     }
 
                     // Phase M.4.3-D: Convert TxId to hex for logging
@@ -489,46 +532,53 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
 
             // Phase 35.1.1: Record transaction in history if it affects wallet
             if (tx_affects_wallet && wallet_manager_) {
-                try {
-                    if ((tx_spends_wallet_inputs || existing_history_confirmed) && !is_coinbase) {
-                        continue;  // Change/self-spend history is recorded by the originating RPC.
-                    }
-
-                    std::string category = is_coinbase
-                        ? "generate"
-                        : "receive";
-                    std::string label = is_coinbase
-                        ? "Mining reward"
-                        : "";
-
-                    // Use current time as transaction time (block timestamp not available in this context)
-                    int64_t tx_time = static_cast<int64_t>(std::time(nullptr));
-
-                    std::cerr << "[WalletWorker] Phase 35.1.1: Recording transaction: "
-                              << txid_hex.substr(0, 16) << "..."
-                              << " (category=" << category << ", amount=" << total_received << " DIN)" << std::endl;
-
-                    // Phase 36: Pass block height for reorg support
-                    bool tx_added = wallet_manager_->addTransaction(
-                        txid_hex,  // Phase M.4.3-D: Explicit boundary
-                        receiving_address,
-                        total_received,
-                        category,
-                        is_coinbase,
-                        label,
-                        tx_time,
-                        height  // Phase 36: Track block height for reorg handling
-                    );
-
-                    if (tx_added) {
-                        std::cerr << "[WalletWorker] ✅ Transaction recorded in history" << std::endl;
-                    } else {
-                        std::cerr << "[WalletWorker] ⚠️  Failed to record transaction in history" << std::endl;
-                    }
-                } catch (const std::exception& e) {
-                    std::cerr << "[WalletWorker] ⚠️  Exception recording transaction: " << e.what() << std::endl;
+                if ((tx_spends_wallet_inputs || existing_history_confirmed) && !is_coinbase) {
+                    continue;  // Change/self-spend history is recorded by the originating RPC.
                 }
+
+                std::string category = is_coinbase
+                    ? "generate"
+                    : "receive";
+                std::string label = is_coinbase
+                    ? "Mining reward"
+                    : "";
+
+                // Use current time as transaction time (block timestamp not available in this context)
+                int64_t tx_time = static_cast<int64_t>(std::time(nullptr));
+
+                std::cerr << "[WalletWorker] Phase 35.1.1: Recording transaction: "
+                          << txid_hex.substr(0, 16) << "..."
+                          << " (category=" << category << ", amount=" << total_received << " DIN)" << std::endl;
+
+                // Phase 36: Pass block height for reorg support
+                bool tx_added = wallet_manager_->addTransaction(
+                    txid_hex,  // Phase M.4.3-D: Explicit boundary
+                    receiving_address,
+                    total_received,
+                    category,
+                    is_coinbase,
+                    label,
+                    tx_time,
+                    height  // Phase 36: Track block height for reorg handling
+                );
+
+                if (tx_added) {
+                    std::cerr << "[WalletWorker] ✅ Transaction recorded in history" << std::endl;
+                } else {
+                    throw std::runtime_error("Wallet block history insert failed");
+                }
+
             }
+        }
+
+        }); // Index commits first. A subsequent wallet commit failure requires ordered replay.
+        wallet_transaction.Commit();
+        // Neither height nor external observations acknowledge an uncommitted wallet.
+        for (const auto& output : observed_outputs) {
+            std::array<uint8_t, 32> txid_raw{};
+            std::memcpy(txid_raw.data(), output.txid.AsUint256().begin(), 32);
+            dinero::vault::ObserveWalletOutput(txid_raw, output.vout, output.spk,
+                output.value.GetUna(), height, hash);
         }
 
         // ✅ CRITICAL FIX: Update wallet's blockchain height for correct confirmation calculation
@@ -547,7 +597,9 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
     }
 }
 
-void WalletWorker::ProcessReorg(const ReorgDiff& diff) {
+void WalletWorker::ProcessReorg(const ReorgDiff& diff, std::optional<uint64_t> session) {
+    const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    CheckWalletJobSession(database_lease.get(), session);
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing reorg: disconnect=" << diff.disconnect.size()
               << " connect=" << diff.connect.size() << std::endl;

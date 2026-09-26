@@ -36,7 +36,8 @@ public:
     // Week 2: Dependency injection for service access
     void set_daemon_context(DaemonContext* ctx) { daemon_context_ = ctx; }
 
-    // Server lifecycle
+    // Server lifecycle: start returns only after bind/listen and thread creation.
+    // Startup failure throws; RPCService must not announce readiness.
     void start();
     void stop();
     bool is_running() const { return running_; }
@@ -78,9 +79,10 @@ private:
 
     // Server thread
     std::unique_ptr<std::thread> server_thread_;
+    std::mutex lifecycle_mutex_;
     
     // Server implementation
-    void server_loop();
+    void server_loop(int server_socket);
     void handle_connection(int client_socket);
     std::string process_http_request(const std::string& request);
     Json::Value process_rpc_call(const Json::Value& request);

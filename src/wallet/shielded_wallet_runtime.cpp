@@ -254,6 +254,19 @@ struct ShieldedRuntime {
 std::mutex                       g_runtime_mutex;
 std::unique_ptr<ShieldedRuntime> g_runtime;
 
+// Every public runtime entry pins the selected wallet before serializing the
+// process-wide runtime. Keep this member order: releasing the runtime before
+// the database lease also preserves the worker's wallet -> runtime lock order.
+// Nested worker/rescan calls share an outer lease's transaction ownership.
+class RuntimeWalletLock {
+public:
+    explicit RuntimeWalletLock(dinero::WalletManager& wallet)
+        : database_(wallet.AcquireDatabaseLease()), runtime_(g_runtime_mutex) {}
+private:
+    std::unique_ptr<dinero::WalletManager::DatabaseLease> database_;
+    std::lock_guard<std::mutex> runtime_;
+};
+
 // Fails CLOSED — see the twin in shielded_wallet_ops.cpp. An ignored
 // RAND_bytes failure leaves the buffer all-zero, and this feeds cv blinding
 // factors and range-proof nonces; zero rcv makes cv = value*V, brute-forceable,
@@ -594,7 +607,7 @@ bool EnsureRuntimeLocked(dinero::WalletManager& wallet, std::string* error) {
 } // namespace
 
 bool EnsureWalletRuntime(dinero::WalletManager& wallet, std::string* error) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     return EnsureRuntimeLocked(wallet, error);
 }
 
@@ -607,7 +620,7 @@ ShieldResult PrepareShield(ShieldParams params, dinero::WalletManager& wallet) {
         return out;
     }
 
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         out.status = OpStatus::StoreError;
@@ -664,7 +677,7 @@ ShieldResult PrepareShield(ShieldParams params, dinero::WalletManager& wallet) {
 }
 
 UnshieldResult UnshieldConfirmed(UnshieldParams params, dinero::WalletManager& wallet) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         UnshieldResult out;
@@ -679,7 +692,7 @@ bool ProcessConfirmedBlock(dinero::WalletManager& wallet,
                            uint32_t height,
                            const std::vector<dinero::Transaction>& transactions,
                            std::string* error) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, error)) {
         return false;
     }
@@ -758,7 +771,7 @@ bool RescanConfirmedBlock(dinero::WalletManager& wallet,
                           uint32_t height,
                           const std::vector<dinero::Transaction>& transactions,
                           std::string* error) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, error)) {
         return false;
     }
@@ -873,7 +886,7 @@ bool ProcessDisconnectedBlock(dinero::WalletManager& wallet,
                               const dinero::Block& block,
                               std::string* error) {
     (void)height;
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, error)) {
         return false;
     }
@@ -926,7 +939,7 @@ bool ProcessDisconnectedBlock(dinero::WalletManager& wallet,
 }
 
 std::vector<ShieldedNote> ListShieldedNotes(dinero::WalletManager& wallet, bool include_pending) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, nullptr)) {
         return {};
     }
@@ -935,13 +948,13 @@ std::vector<ShieldedNote> ListShieldedNotes(dinero::WalletManager& wallet, bool 
 
 std::vector<OutgoingShieldedNote> ListOutgoingShieldedNotes(
     dinero::WalletManager& wallet) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, nullptr)) return {};
     return g_runtime->store.ListOutgoingNotes();
 }
 
 uint64_t GetShieldedBalance(dinero::WalletManager& wallet) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, nullptr)) {
         return 0;
     }
@@ -949,7 +962,7 @@ uint64_t GetShieldedBalance(dinero::WalletManager& wallet) {
 }
 
 uint64_t GetShieldedTreeSize(dinero::WalletManager& wallet) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, nullptr)) {
         return 0;
     }
@@ -961,7 +974,7 @@ bool RollbackPendingTransaction(
     const std::vector<sh::Hash>& spend_nullifiers,
     const std::vector<sh::Hash>& pending_commitments,
     std::string* error) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, error)) {
         return false;
     }
@@ -975,7 +988,7 @@ bool RollbackPendingTransaction(
 
 std::optional<ShieldedNote> SelectUnshieldNote(dinero::WalletManager& wallet,
                                                uint64_t min_value_una) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, nullptr)) {
         return std::nullopt;
     }
@@ -1000,7 +1013,7 @@ AttachUnshieldResult AttachUnshieldInputBundle(dinero::Transaction& tx,
                                                dinero::WalletManager& wallet,
                                                bool persist,
                                                std::optional<UnshieldAutoFee> auto_fee) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         AttachUnshieldResult err{};
@@ -1094,7 +1107,7 @@ AttachShieldResult AttachShieldOutputBundle(dinero::Transaction& tx,
                                             dinero::WalletManager& wallet,
                                             uint32_t current_height,
                                             bool persist) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         AttachShieldResult err{};
@@ -1201,7 +1214,7 @@ AttachShieldResult AttachAddressedShieldOutputBundle(
     dinero::WalletManager& wallet,
     const std::array<uint8_t, 512>* recipient_memo,
     bool persist, const std::array<uint8_t,512>* covenant_memo) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         AttachShieldResult err{};
@@ -1299,7 +1312,7 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
                                                uint64_t fee_una,
                                                dinero::WalletManager& wallet,
                                                bool persist) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         AttachTransferResult err{};
@@ -1416,7 +1429,7 @@ AttachTransferResult AttachTransferInputBundle(dinero::Transaction& tx,
 std::optional<std::vector<ShieldedNote>> SelectTransferNotesForValue(
     dinero::WalletManager& wallet,
     uint64_t target_value_una) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, nullptr)) {
         return std::nullopt;
     }
@@ -1455,7 +1468,7 @@ AttachMultiTransferResult AttachMultiTransferInputBundle(
     uint64_t fee_una,
     dinero::WalletManager& wallet,
     bool persist) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         AttachMultiTransferResult err{};
@@ -1607,7 +1620,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
     dinero::WalletManager& wallet,
     const std::string* recipient_memo_utf8,
     bool persist, const std::array<uint8_t,512>* covenant_memo) {
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     std::string init_error;
     if (!EnsureRuntimeLocked(wallet, &init_error)) {
         AttachAddressedTransferResult err{};
@@ -1837,7 +1850,7 @@ AttachAddressedTransferResult AttachAddressedTransferInputBundle(
 AttachUnshieldResult AttachPrivateCovenantInputBundle(dinero::Transaction& tx,
     uint64_t leaf_index, const sh::Hash& expected_commitment, dinero::WalletManager& wallet, bool persist) {
     AttachUnshieldResult result{};
-    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    RuntimeWalletLock lock(wallet);
     if (!EnsureRuntimeLocked(wallet, &result.error)) return result;
     const auto activation = dinero::Params().shielded_private_covenant_activation_height;
     const auto height = wallet.getBlockchainHeight();

@@ -1,0 +1,450 @@
+# v8.1.13 integration status
+
+## RPC listener startup (2026-09-26)
+
+RPC startup now acquires the actual listening socket before reporting success.
+The required actual-daemon regression covers occupied-port refusal, reopening
+its isolated datadir, authenticated RPC and clean shutdown. See
+`rpc-listener-startup-2026-09-26.md`. This does not complete the recovery/provider
+or activation-history requirements below.
+
+## Current recovery integration (2026-09-26)
+
+The service-owned immutable branch replay view and authenticated parent-revision
+locators are implemented. The existing index, ordinary wallet and bound Orchard
+account consumers share an ordered coordinator. The new enrolled-account entry
+point discovers and fully restores all current account snapshot rows, checks
+all applied source positions and retries partial commits across accounts. See
+`wallet-account-coordinated-recovery-2026-09-26.md` and
+`wallet-enrolled-account-recovery-2026-09-26.md`.
+
+These APIs are compiled into the daemon but not installed notification/startup
+callers. Baseline/pre-origin/late-account reconciliation, authenticated inventory
+completeness, general long-history operation, remaining configured consumers,
+production installation and independent activation/lifecycle qualification
+remain open. Earlier component notes below describe their original scopes;
+account integration and automatic parent locators are no longer missing.
+
+- A bound Orchard account consumer now pins the selected wallet keys, applies
+  account effects and retains authenticated parent snapshots in one SQLite
+  commit. Key changes serialize with recovery; missing parent history refuses.
+  Service-owned replay views/parent locators, coordinator integration and
+  production installation remain open. See
+  `orchard-bound-account-recovery-2026-09-26.md`.
+
+- Orchard account delivery now follows exact historical blocks below activation,
+  moving an empty scan checkpoint and applying/undoing real pending-input
+  conflicts with its existing receipt. DNORAC05 restores those conflicts from
+  selected historical bodies; versions01–04 remain readable. This does not
+  install the account owner/provider or certify historical consensus. See
+  `orchard-account-historical-delivery-2026-09-26.md`.
+
+- Transparent store recovery now connects checked service pages to existing
+  index and ordinary receipts, validates both applied source positions, and
+  resumes ordered partial commits through a captured head across bounded pages.
+  Missing baselines refuse; the result covers these stores only. Account/note
+  integration, all-consumer readiness and production installation remain open.
+  See `wallet-store-recovery-2026-09-26.md`.
+
+- Ordinary wallet source delivery now commits real typed UTXO/history effects,
+  derived metadata and a per-store cursor together under the persistent wallet
+  lease. Ordered retry can distinguish a committed index prefix from pending
+  ordinary effects. See `wallet-ordinary-delivery-2026-09-26.md`. Production
+  all-store recovery, account/note integration and first-boundary history remain
+  unfinished; this is not an installed notification provider or activation.
+
+This branch collects release implementation for review and qualification against
+`dinero-main`. It is a draft candidate, not a release or an activation decision.
+
+## Included source
+
+- Public index recovery entry points now pin the actual WalletManager lease,
+  reject stale process sessions, and use a persistent database ID committed
+  before index effects. Caller-supplied identity methods are private. Reopen,
+  same-name different wallets and a switch during blocked index access are
+  covered. This still needs validated wallet/script baselines and coordinated
+  progress across the other stores; no provider is installed. See
+  `wallet-delivery-binding-2026-09-26.md`.
+
+- A store-owned index delivery consumer applies real historical/Orchard
+  transparent effects and ordered source progress in one checked SQLite
+  transaction. Ordinary index writes invalidate that progress atomically;
+  resets preserve invalidation, including empty indexes. Checked source,
+  persistent wallet binding and pre-origin baseline reconciliation remain
+  caller obligations. This is one index consumer, not an installed production
+  provider or all-wallet readiness. See `orchard-index-delivery-2026-09-26.md`.
+
+- The existing delivery reader now binds its head (including EOF) to the durable
+  canonical tip and checks visited adjacent transition identities. The service
+  exposes checked pages under its activation lock and its actual startup gate
+  refuses inconsistent retained delivery history even below activation. This is
+  source verification, not per-store completion or an installed recovery
+  provider. See `orchard-delivery-source-2026-09-26.md`.
+
+- Existing wallet connect/disconnect/reorg queues now bind a process-local
+  wallet session at enqueue and compare it under the processing lease before
+  any store effect. Replacement and same-name reopen invalidate old jobs; empty
+  selection cannot retarget work. This is transient ownership, not a source
+  cursor or durable recovery acknowledgment. See
+  `wallet-queued-identity-2026-09-26.md`.
+
+- Ordinary WalletManager disconnect now groups output deletion, history removal
+  and input restoration in one checked SQL transaction under the database lease.
+  Failure leaves ordinary rows and height unchanged; the separate index may have
+  already rolled back and needs ordered retry. The actual worker refuses invalid
+  heights and nested active wallet transactions before touching that index. An
+  independent real-worker CTest covers failure/retry/reopen and is required by CI.
+  This does not complete cross-store recovery. See
+  `wallet-ordinary-disconnect-2026-09-26.md`.
+
+- The existing WalletWorker now groups ordinary WalletManager block writes in a
+  checked SQLite transaction, distinguishes confirmation lookup from SQL failure,
+  and propagates required write failures. Ordinary creation replay preserves
+  recorded spends. The index commits first; a later ordinary-wallet commit failure
+  leaves a prefix requiring ordered replay and does not advance worker height.
+  Real two-store worker tests cover failure/retry/reopen. This is not a durable
+  source cursor or complete recovery provider. See
+  `wallet-ordinary-block-atomicity-2026-09-26.md`.
+
+- The existing WalletWorker connect path now commits a block's UTXO-index changes
+  together, checks mutation failures and defers height/vault observations until
+  index commit. Real-worker failure/retry/same-block-spend tests and real SQLite
+  transaction ownership tests cover this path. WalletManager and note databases
+  remain separate; this is not the complete durable recovery provider. See
+  `wallet-block-index-atomicity-2026-09-26.md`.
+
+- Existing wallet worker connect/disconnect/reorg and synchronous rescan now pin
+  the selected WalletManager database and serialize its SQLite connection for
+  the whole job. Wallet create/open/close cannot replace that database during a
+  lease; reentrant switches refuse. Borrowed transactions are not adopted, and
+  unfinished leased transactions roll back before the last owner releases. All
+  legacy shielded runtime entry points now pin the wallet before their shared
+  runtime lock; nested scans preserve the owning rescan transaction. This establishes
+  connection ownership, not atomic commits across wallet stores or durable
+  delivery completion. See `wallet-database-ownership-2026-09-26.md`.
+
+- The actual wallet UTXO index rollback now checks transaction acquisition,
+  deletion, un-spending and commit. Any SQL failure aborts its own transaction;
+  nested caller transactions are refused without being committed or rolled back.
+  A mandatory real-SQLite regression injects failures at both statements and
+  commit, then checks retry/reopen. Creation replay now preserves a recorded
+  spend height, including after reopen; explicit undo still restores unspent
+  outputs. Real index regressions cover stale replay and import compatibility.
+  This repairs existing consumer prerequisites;
+  it does not install the complete Orchard recovery provider.
+
+- Orchard account snapshots now bind a delivery sequence/digest to actual scan
+  advancement or immediate-parent rollback. The receipt shares the encrypted
+  payload and SQLite commit with notes, pending operations and address counters.
+  Fresh-process exits before/after commit cover state/receipt atomicity. This is
+  account-side delivery support, not an installed production wallet provider:
+  source verification, transparent wallet effects, historical events below
+  activation and rescan reconciliation still need the owning recovery service.
+  See `orchard-wallet-delivery-2026-09-26.md`.
+
+- Miner longpoll now observes actual shared tip publication, including rollback
+  and same-height branch replacement. It precedes fallible downstream callbacks
+  and is silent on an unchanged identity. RPC waiting captures generation before
+  reading the tip, closing a missed-wake window. This is an installed built-in
+  notification consumer; durable wallet and other consumer recovery remain open.
+
+- Stateful historical connect/disconnect retains delivery records after an
+  Orchard outbox origin, including transitions below activation. Preparation
+  occurs before historical memory changes; the record joins the existing
+  canonical batch. Unsupported runtime/CSN paths refuse a retained delivery
+  history. This closes a source-level handoff gap, not production consumer
+  recovery or whole-node reorg qualification. See the historical-delivery design.
+
+- Pinned Orchard backend, immutable C++ signing context and bounded draft outer
+  transaction envelope, with exact-source component and root-build CI jobs.
+- Typed shared reader with historical-format regression tests and a default
+  legacy-parser rejection boundary for marked Orchard envelopes.
+- Transparent mempool reconciliation now accepts typed connected-block effects.
+  The mixed-body adapter extracts actual Orchard and ordinary transaction IDs
+  and transparent prevouts; the existing historical callback delegates to the
+  same eviction/staleness path. Both callbacks remove the full unconfirmed
+  descendant branch of a conflict while retaining children of confirmed
+  transactions; replay leaves survivors intact. The focused test uses the real
+  coin overlay and runs explicitly in the Orchard CI workflow. This is a prerequisite for production block
+  notification, not Orchard admission: nullifier conflicts, wallet events,
+  relay and production notification providers remain open.
+- Daemon stored-body queries now have selected-height typed routing under the
+  activation lock. The optional build can return exact mixed-body bytes from
+  indexed flatfiles after identity checks; historical hex queries retain their
+  old parser before activation. This is read-only query integration, not
+  ConnectTip, admission or relay. See the runtime-reader design document.
+- Owned consensus-view coin resolution and staged transparent authorization:
+  restricted native Taproot/P2WPKH signatures bound to Orchard intent, maturity
+  and contextual locks. No production admission caller is enabled.
+- Combined transparent and Orchard authorization for one owned transaction and
+  coin snapshot, with honest synthetic shield and cross-address spend fixtures.
+  This verifies authorization, not anchor membership, unspentness at application
+  time, or an atomic chainstate transition.
+- ChainDB staging for Orchard block state, nullifier ownership, anchor references
+  and undo, tested with companion coin/tip writes on generated RocksDB stores.
+  Actual service routes now invoke staging through the indexed owner; activation
+  history and production downstream consumers remain required.
+- A daemon commit owner now holds the activation lock and a private full-state
+  batch through synchronous write and prepared memory publication. Abandonment,
+  single-use/thread checks and storage-error fail-stop behavior are covered on
+  generated stores. No late batch writes are exposed. Production connector,
+  active-tip and startup wiring remain unfinished; see the commit-owner design.
+- Indexed commit preparation now fsyncs exact mixed-body and conventional undo
+  records before staging their locators with the full chainstate batch. Memory
+  availability flags publish after commit. Existing locators must read back the
+  exact bytes; stale metadata aborts before writing. This prepares service-index
+  coordination but does not enable production ConnectTip or claim validity flags.
+  See the indexed-commit design and its isolated restart scope.
+- The actual shared active-tip setter now publishes pointer and observer identity
+  under the observer mutex before best-effort diagnostics. Allocation failure
+  during logging cannot interrupt publication after a durable commit. The real
+  service regression covers advancement, rollback and null-tip transitions with
+  thread-local allocation refusal. Other post-commit consumers remain unfinished;
+  see the service-tip-publication design.
+- The actual activation-time startup journal gate now requires the Orchard
+  tip-local consistency audit, exact indexed body/undo and restored-memory
+  agreement. Failure enters safe mode and does not consume the one-shot gate.
+  Historical journal behavior stays optional before activation. This is not yet
+  complete startup/replay/reindex or production connection; see the service
+  startup audit design and generated-store qualification scope.
+- The actual DisconnectTip now has a typed Orchard route using the indexed
+  atomic owner and parent-tip publication. It requires a prepared typed consumer
+  event before committing, invalidates stale position-cache entries, and publishes
+  the event after durable and in-memory state agree. Generated-store tests invoke
+  the real service for descendant and activation-boundary rollback. No production
+  notification provider is installed yet, so live Orchard rollback still refuses;
+  Boundary connection and end-to-end integration remain unfinished. See the service
+  disconnect design for this readiness condition and fixture scope.
+- The actual ConnectTip now routes Orchard descendants through selected contextual
+  header/work checks, mandatory parent audit, the indexed atomic owner and typed
+  prepared notifications. Validity flags join the commit, then memory, active tip
+  and events publish in order. First activation still requires a service-owned
+  validated historical accounting source; no production notification provider is
+  installed. Generated-state reconnect tests are not live-node qualification.
+  See the service-connect design and its remaining readiness boundaries.
+- ActivateBestChain now uses a shared locked fork-point forest check after
+  disconnect. Selected Orchard forks require exact indexed mixed bodies and
+  agreement of active/live/durable/validated/forest-marker identities; the live
+  forest must match the authenticated body root. Historical parsing remains
+  before activation. Dedicated service-fixture coverage verifies missing material,
+  wrong restored forest and stale fork selection without canonical writes.
+  Full reorg orchestration and production consumers remain unfinished.
+- Best-chain activation and explicit invalidation now prepare complete typed
+  reorg body plans before rollback. A consumer must durably retain the plan;
+  per-block-only providers refuse. Completed plans report exact counts; interrupted
+  plans require canonical recovery because legacy callbacks may fail after a
+  durable write. Mixed bodies never enter the legacy transaction collector.
+  The service now synchronously retains the whole intent and the outbox origin
+  before returning readiness. Recovery reads exact typed plans without source
+  flatfiles; cancelled attempts remain. The production recovery/readmission
+  provider and consumer checkpoints remain unimplemented. See the reorg-plan
+  and reorg-intent-store designs for bounds and qualification limits.
+- Indexed Orchard transitions now append exact delivery records and a checked
+  sequence head in the same synchronous chainstate batch. Rollback retains the
+  history, and bounded readers check cursor/domain/body identity. This supplies
+  durable per-block replay material; production consumers, per-consumer cursors,
+  reorg-intent reconciliation and coordinated startup remain unfinished. See
+  orchard-runtime-outbox-2026-09-26.md.
+- The actual startup undo-coverage walk now routes retained Orchard bodies under
+  the activation lock, restoring and reversing a private forest across the
+  requested window. Exact indexed/embedded body and undo, commit records,
+  coin/delta correspondence, filters and indexes are checked without database
+  writes. Missing Orchard material enters safe mode instead of ending the old
+  historical walk as success. This is bounded retained-material coverage, not
+  historical consensus replay or stateless support; see the service undo-coverage
+  design. The separate tip-local audit remains mandatory.
+- The actual legacy persistence helpers now preserve frozen retirement state.
+  Shutdown/notifications can confirm an unchanged cache without rewriting it;
+  legacy marker rebinding and snapshot replacement refuse while retirement exists.
+  This covers helper writes, not the complete snapshot/startup/Orchard connector.
+- Independent transparent-value pool arithmetic enforced by the storage staging
+  API, starting at zero, including fees, checked bounds and undo. Runtime block
+  flow collection is still required; see the pool-guard design document.
+- Immutable upstream Orchard commitment frontier with canonical bounded storage
+  encoding, derived root/size and failure-atomic append.
+- Sealed Orchard state preparation binds parent frontier/root/size, authorization
+  context, selected-history anchors, nullifier freshness and ordered pool flows.
+  A ChainDB adapter stages that result in the caller's batch and distinguishes
+  local corruption/read errors from transaction rejection. Real frontier funding,
+  spend, reopen, undo and branch replacement pass in temporary stores. This is
+  still not wired into the daemon's mixed-transaction block connector.
+- Typed mixed-block candidate reader with shared transaction/witness Merkle and
+  DINW checks and base/weight accounting enforced before coin lookup. The ChainDB staging adapter requires exact, ordered authorization
+  coverage of every Orchard transaction in that candidate and rejects retired
+  legacy shielded transactions. This remains a staged format, not live admission.
+- Contextual header component checks selected-parent height/linkage, network,
+  MTP/future time, exact shared ASERT difficulty and proof of work using owned
+  branch values. Competing timing-boundary branches are tested. Live admission
+  still needs to invoke it and complete fork-choice/resource obligations. Configured checkpoints now bind to candidate ancestry, including competing branches; runtime replay/reindex routing remains unfinished.
+- Selected-network Orchard activation/signing context is now explicit. All
+  network defaults remain inactive; public schedules must match the joint
+  release profile, and the staged header gate rejects caller context that
+  disagrees with the selected height/branch. No runtime caller is enabled.
+- Draft mixed-block resource accounting caps aggregate bundles/actions before coin lookup or proof verification, counts static scripts and resolved input signature work including same-block children, and returns charged usage. Runtime/miner callers and loaded-platform capacity qualification remain open.
+- Ordered shared coin processing verifies Orchard and ordinary signatures,
+  supports same-block children, prevents cross-family double spending and binds
+  the coinbase limit to the same validated fees. Stateful ChainDB adapters stage
+  coins, conventional undo and Orchard state together and reverse them after
+  checking exact body/undo coverage. Synthetic connect/reopen/disconnect/reconnect
+  tests pass; production service integration remains unfinished.
+- Stateful mixed forest computation uses the actual transaction identities and
+  creation-height leaf rules, excludes transient outputs, checks parent/header
+  commitments and supports checked delta rollback on a private clone. A combined
+  stateful adapter stages durable delta/checkpoint, forest/height/tip markers and
+  coins/Orchard state in one batch; persistent-delta undo survives database reopen.
+  The mixed compact filter is checked before commit and stored atomically; startup/disconnect rederive bytes and element count from body and checked undo.
+  Peer proof targets, paths and ordered metadata are checked against resolved
+  inputs and the authenticated full parent forest.
+  Exact body storage and active transaction indexes now share that batch.
+  A versioned commit record shares the batch; tip-local startup auditing and eight process-exit boundaries pass on generated stores. Production/CSN integration and service/flatfile-index coordination remain unfinished.
+- Prepared in-memory publication checks the live coin/tip/root view and
+  allocates changed-coin nodes before the durable batch. Connect/disconnect
+  publication updates coins, forest and tip without C++ allocation after commit.
+  Temporary-store integration and allocation-failure checks cover this primitive;
+  ChainstateService still needs to own and invoke the complete sequence.
+- Full staged disconnect returns a restart-safe reverse coin patch from checked
+  body/undo, bound to the exact forest delta and restored parent leaves. Fresh
+  processes rebuild the current memory view from storage and qualify both
+  directions through pre-commit, post-commit and post-publication exits. This
+  closes patch reconstruction for the staged adapter; runtime ownership and
+  coordinated legacy state handling remain unfinished.
+- Explicit staged DNRS v2 encoding is separate from the legacy v1 parser and
+  lookup; existing callers and historical SHR1 behavior stay unchanged. Fixed
+  wire vectors and rejection cases qualify the encoding boundary only. Composite
+  root construction and retirement storage are staged below; authenticated
+  retirement derivation and live enforcement remain open.
+- Staged legacy retirement storage now records an ancestry-bound frozen receipt,
+  advances the legacy tip marker atomically, and provides exact boundary undo.
+  Synthetic-store tests cover Orchard companion batches, reopen and process exits.
+  The full staged connector below binds it to DNRS and checks frozen contents.
+  Historical monetary accounting and production runtime enforcement remain
+  required; this does not retire a live pool.
+- Draft composite state-root construction binds retirement/profile/ancestry,
+  Orchard frontier/pool and canonical logical nullifier/anchor sets. Read-only
+  ChainDB projection and independent Python vectors are tested. This scans
+  existing sets. Reverse projection now checks stored undo, removed-nullifier
+  ownership and restored anchor membership before writing rollback state.
+  Full staged connect/disconnect now enforces current and parent DNRS v2,
+  rederives the frozen legacy SHR1 from ChainDB contents, and includes retirement
+  receipt/undo/marker writes in the same authoritative batch. Runtime callers,
+  integration of selected-history boundary accounting and loaded capacity remain open.
+- A read-only selected-history accounting adapter now derives the current legacy
+  epoch's public pool flows from authenticated bodies and original prevouts,
+  with explicit fees, reset handling and fail-closed incomplete/unknown amounts.
+  A selected boundary factory now binds that result to reconstructed frozen
+  contents and the selected parent's legacy DNRS where active. It requires
+  independently validated archival history. Production callers, CSN/pruned
+  accounting sources and complete supply reconciliation remain unfinished;
+  this is not historical consensus replay.
+- Wallet primitives now include opaque ZIP32 account keys, external/internal receivers, watch-only parity and an explicit-network Bech32m address profile. Fresh shield/send/unshield bundle construction uses OS randomness and an owned transaction signing context, then decodes and verifies before returning. Received notes are opaque; incremental witnesses check roots, preserve prior state and resume from a canonical checkpoint-bound encoding. No wallet database or RPC caller is enabled.
+- Encrypted wallet snapshots stage in the caller-owned SQLite transaction with companion wallet records, checked revisions and process-exit recovery tests. Typed scan state now tracks receipts/spends and witnesses and restores from an encrypted snapshot against an exact selected checkpoint and authenticated origin callbacks. A selected archival ChainDB restore adapter now authenticates origins and resolves historical or ordered same-block prevouts from original bodies, with read-only reopen coverage. Indexed flatfile bodies now restore through the same typed authentication gate when the embedded copy is absent. Pruned/archive coverage, stale-checkpoint recovery, coordinated startup and live callers remain unfinished.
+- Pending-operation component reserves inputs before proving, freezes fully authorized canonical bytes before broadcast, and restores encrypted Reserved/Ready states through process-exit boundaries. Live selection, service job integration, admission, broadcast and confirmation/reorg archival remain unfinished.
+- Bounded proof executor stages one worker and four total jobs/results, checks
+  exact durable reservation intent and discards cancelled active results. It is
+  not wired into wallet RPCs; active proofs cannot be preempted and production
+  shutdown drain time is not yet qualified.
+- Account advancement records confirmation/conflict evidence for pending operations, including transparent-input and nullifier conflicts. Encrypted restore rechecks selected-block evidence; rewind/rescan reverses derived observations while retaining signed bytes and reservations. Encrypted completed-operation archival now stages history and pending removal atomically, retains exact signed bytes, and supports authenticated bounded pagination and selected-chain reactivation. Runtime reconciliation/backlog and live admission/rebroadcast remain unfinished.
+- Account snapshots combine scanner, pending operations and durable external/internal address counters. Rewind and explicit rescan reset only derived scan state; they preserve address issuance and frozen pending transactions. These are staged wallet components, not live RPC callers.
+- Pinned dependency advisory CI gate with saved reports and visible maintenance
+  warnings; known vulnerabilities, unsoundness and yanks fail the gate.
+- Empty-scriptSig envelope rule, host-aligned 100,000-byte ceiling and a shared
+  outer/inner signing-profile identity.
+- Explicit domain/profile checks across Rust/C++, canonical synthetic vectors,
+  transaction identity and authorization-binding tests.
+- Shielded database compatibility guard for stopped-copy migration.
+- Independent mandatory shielded proof/codec test registrations and CI checks.
+
+These source changes share the public dinero-main history. Separate
+historical branch results do not qualify their combination; this candidate needs
+its own full Linux build and test runs.
+
+## Recovery fixture qualification
+
+The full Linux Tests run `36133996292` failed in the offline CSN replay fixture,
+which selected default regtest magic instead of the daemon's persisted PoW
+profile magic. Strict flatfile framing exposed that mismatch. The fixture now
+validates the complete marker and selects its recorded storage identity while
+holding the stopped test datadir lock. The storage gate remains unchanged.
+Both peer and local-undo recovery pass locally, with malformed/reserved-profile
+rejections and a mismatched-network read failure checked explicitly. Fresh
+full Linux qualification is required for the corrected head.
+
+## Still required before release
+
+- Connect the typed shared reader to validated mempool, relay, storage and
+  block assembly. Typed service descendant connect/disconnect routes now exist,
+  but production notification providers and the validated activation-history
+  source are missing, so live admission/connection remains disabled.
+- Connect the staged coin/signature/spendability components to authenticated
+  runtime state; qualify anchors, nullifiers, pool conservation and activation.
+- Atomic Orchard frontier/pool/nullifier updates with UTXOs, tip and undo;
+  disconnect, restart, reindex, crash recovery and cross-boundary reorg tests.
+- Wallet keys/addresses, proof construction, witness maintenance, shield/send/
+  unshield and durable interrupted-operation recovery.
+- Complete old/new compatibility, platform, loaded-node and combined lifecycle
+  qualification, including production binary provenance.
+
+The new pool starts empty under the owner's release-scope decision. Historical
+validation, transparent funds and consistent retired-value accounting remain
+requirements. Mainnet activation is unset; this branch deploys nothing. Enabling
+the staged backend build option does not activate Orchard transactions.
+
+Security-review materials are maintained separately. This source branch carries
+implementation and appropriate regression tests, not the entire review archive.
+
+## Delivery status
+
+Most release integration remains unimplemented. Component checks do not reduce
+the following rows to test-only work:
+
+| Area | Current state |
+| --- | --- |
+| Shared parsing and authorization | Typed daemon stored-body queries now route by selected height; exact candidate-bound authorization remains staged; no live admission |
+| Mempool, relay, block assembly and acceptance | Typed transparent conflict/staleness reconciliation staged; Orchard admission, nullifier conflicts, relay, mining and production block notifications not implemented |
+| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation, ChainDB coin/state/undo staging and private-clone forest transitions implemented; durable forest/tip/height staging implemented; body/active transaction indexes and versioned commit record staged together; tip-local audit and process-exit boundaries tested; typed service descendant routes implemented; activation history and production consumer readiness still missing |
+| Wallet keys, addresses, proving, shield/send/unshield | Staged ZIP32 keys/receivers, note reception, incremental witnesses and fresh shield/send/unshield proofs; canonical witness persistence and encrypted snapshot storage staged; typed scan/checkpoint restore implemented as a component; origin callbacks, operation job/archival callbacks and live wallet integration not implemented; combined account snapshots, address counters and Reserved/Ready persistence implemented as components |
+| Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
+
+The next state integration must use the authoritative ChainDB write batch for
+Orchard state, coins, tip and undo together. An isolated successful proof test
+or a separate Orchard database commit cannot satisfy that requirement.
+
+### Authenticated automatic account parent selection (2026-09-26)
+
+Bound connect now persists its actual parent snapshot revision in the encrypted
+account payload (DNORAC06); bound disconnect uses that authenticated locator and
+restores the preceding parent link. Intervening non-chain revisions do not retarget
+undo. Legacy accounts without a link refuse automatic typed undo. See
+[account parent links](orchard-account-parent-links-2026-09-26.md).
+The prior aea Linux run failed at the new account test's GNU static link order
+before root tests; the wallet archive now precedes its chainstate dependency.
+This remains a bound consumer component, not installed three-store recovery,
+production notification readiness or completion of steps 1–4.
+
+### Retained canonical replay context (2026-09-26)
+
+The existing outbox now retains DNOE03 replay context captured from the actual
+sealed indexed write: parent/next Orchard checkpoints, canonical coin undo and
+validation-time MTP answers. Disconnect reuses a checked connect-event locator;
+old records expose absent context explicitly. Record/page budgets cover the new
+payload. See [outbox replay context](orchard-outbox-replay-context-2026-09-26.md).
+Immutable intermediate branch views, account/coordinator integration, baseline
+reconciliation and production provider installation still remain. This is not
+completion of activation history, startup/replay/reindex or user steps 1–4.
+
+### Three-store account recovery (2026-09-26)
+
+The selected service now captures checked source material and builds immutable
+branch-specific account restore views. Retained inputs/timing reverify real
+Orchard authorizations, and branch anchor/nullifier membership reconstructs the
+sealed state transition. `ResumeWalletStores` coordinates existing index,
+ordinary-wallet and authenticated account receipts, applying only lagging
+stores and retrying partial commits after reopen. Authenticated parent links
+drive account undo. The actual adapter is compiled but is not installed in
+notification/startup routing. See [coordinated account recovery](wallet-account-coordinated-recovery-2026-09-26.md).
+
+Missing enrollment, old source without replay context, unproven baselines and
+the explicit capture limits refuse; late-account/rescan/general long-history
+reconciliation and remaining consumer readiness remain required. This does not
+complete provider installation, independent activation history, full startup/
+replay/reindex or user steps 1–4.

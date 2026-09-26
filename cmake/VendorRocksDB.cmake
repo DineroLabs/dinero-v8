@@ -120,7 +120,11 @@ if(DINERO_USE_VENDORED_DEPS)
     )
   endif()
 
-  set(_rocksdb_build_parallel 8)
+  set(DINERO_ROCKSDB_BUILD_JOBS 8 CACHE STRING "Maximum compiler jobs in the nested RocksDB build")
+  if(NOT DINERO_ROCKSDB_BUILD_JOBS MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "DINERO_ROCKSDB_BUILD_JOBS must be a positive integer")
+  endif()
+  set(_rocksdb_build_parallel ${DINERO_ROCKSDB_BUILD_JOBS})
   if(MSVC)
     # RocksDB compiles many translation units into one static library target.
     # Visual Studio parallel builds otherwise race on rocksdb.pdb and fail with

@@ -133,6 +133,7 @@ struct BalanceDetail {
 // ║                                                                           ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 class UTXOIndex {
+    friend class RuntimeIndexDelivery;
 public:
     explicit UTXOIndex(const std::string& db_path);
     ~UTXOIndex();
@@ -141,10 +142,17 @@ public:
     bool Initialize();
 
     // UTXO operations (wallet layer - not consensus interface)
+    // Creation replay preserves an existing spend height. Undo must use
+    // RevertBlock; re-adding an unspent output is not rollback evidence.
     bool AddUTXO(const WalletUTXO& utxo);
     bool SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height);
     bool DeleteUTXO(const TxId& txid, uint32_t vout);
     bool IsUTXOSpent(const TxId& txid, uint32_t vout) const;
+
+    // Runs synchronous index operations under one mutex and owned transaction.
+    // Callback must check every mutation result. Throws on acquisition/commit
+    // failure; unwinding aborts owned writes. Other wallet stores are separate.
+    void ApplyAtomically(const std::function<void()>& writes);
 
     // Transaction control (for atomic bulk operations like snapshot import)
     // Phase 46: Crash Safety - CRITICAL-002 fix
@@ -193,6 +201,8 @@ public:
     
     // Block processing
     void ProcessBlock(int height, const std::vector<std::string>& block_txs);
+    // Owns one SQLite transaction; throws on failure with no partial rollback.
+    // Refuses an existing caller transaction without committing or aborting it.
     void RevertBlock(int height);
 
     // Priority 3 FIX: Validate wallet UTXOs against consensus
@@ -239,7 +249,8 @@ private:
     std::map<std::vector<uint8_t>, std::string> watched_scripts_;
     
     // ✅ Fine-grained locking for thread safety
-    mutable std::mutex db_mutex_;       // Protects all SQLite operations (not thread-safe)
+    mutable std::recursive_mutex db_mutex_;       // Protects all SQLite operations (not thread-safe)
+    bool atomic_write_active_ = false;
     mutable std::mutex scripts_mutex_;  // Protects watched_scripts_ map
 };
 

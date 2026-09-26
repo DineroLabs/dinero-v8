@@ -2,6 +2,7 @@
 #include "consensus/csn_replay_data.h"
 #include "daemon/replay_metadata_recovery.h"
 #include "daemon/iservice.h"
+#include "daemon/runtime_block_notifications.h"
 #include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
@@ -48,6 +49,10 @@ namespace dinero {
 // Phase 39 Step 2: Forward declaration (header deleted)
 class ChainManager;
 class BlockStorage;
+class RuntimeBlockBody;
+struct RuntimeOutboxCursor;
+struct RuntimeOutboxPage;
+class RuntimeAccountReplay;
 class WalletManager;  // Snapshot wallet rescan (see RescanWalletFromSnapshotUTXOs)
 struct FilePosition;  // #309: storage/block_storage.h
 
@@ -259,9 +264,12 @@ public:
     //                template generation + block connect, require
     //                operator safemode.exit. Return false.
     //
-    // Returns true if state is consistent (or unverifiable due to
-    // absent row), false if a mismatch was detected and safe mode
-    // was entered.
+    // The optional behavior above is historical only. A selected/persisted
+    // Orchard tip or retirement receipt requires the mandatory typed startup
+    // audit and restored stateful view, independent of the legacy flag. Missing
+    // rows, unsupported runtime/profile or inconsistent local state enter safe
+    // mode and return false. ActivateBestChain must stop without consuming its
+    // startup verification flag. This method acquires the activation lock.
     bool VerifyConsensusJournalAtActiveTip();
 
     // Phase 11a: Utreexo forest accessor (for extracting root hash)
@@ -313,6 +321,11 @@ public:
     // failures (missing-utxo, I/O) un-poisoned.
     bool ConnectTip(class CBlockIndex* tip_to_connect, std::string* out_error = nullptr,
                     bool* out_consensus_invalid = nullptr);
+
+    // Mixed-body transitions require a complete typed consumer implementation.
+    // Absence/refusal prevents the durable write; this is not an optional event.
+    void setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications>);
+
 
     // CSN reorg: Bookkeeping-only connect (no ConnectBlock, no forest mutation).
     // Writes coin changes, an UndoRecord (spent/created + shielded fields),
@@ -793,6 +806,21 @@ public:
     void PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos);
     bool hasFlatfileBlockByHash(const uint256& hash) const;
     StatusOr<Block> getBlockByHash(const uint256& hash) const;
+    // Selected-height typed read, under the service activation lock. Optional
+    // Orchard builds expose a mixed body without fabricating legacy transactions.
+    // Default builds return Internal (reader unavailable). Not admission.
+    StatusOr<std::shared_ptr<const RuntimeBlockBody>> getRuntimeBlockByHash(const uint256& hash) const;
+    // Copies a bounded, checked canonical delivery page under the selected
+    // writer lock. Acquire this before wallet ownership. A page is replay
+    // material, not proof that a consumer has applied it or is still caught up.
+    StatusOr<std::shared_ptr<const RuntimeOutboxPage>> getRuntimeDeliveryPage(
+        const RuntimeOutboxCursor& after, size_t maximum_events = 32,
+        size_t maximum_bytes = 16 * 1024 * 1024) const;
+    // Capture source material under one selected lock, then build immutable
+    // account branch views without holding that lock during proof verification.
+    // Acquire before wallet ownership. Explicit limits/missing origin material
+    // refuse; this is not baseline certification or all-consumer readiness.
+    StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
     uint64_t getLegacyBodyFallbackReadCount() const;
     uint64_t getLegacyUndoFallbackReadCount() const;
     bool strictArchivalReadsEnabled() const;
@@ -1125,6 +1153,12 @@ private:
         uint64_t nullifier_count{0};
     };
 
+    bool VerifyForkPointForestUnderLock(CBlockIndex*);
+    bool PrepareRuntimeReorgUnderLock(const std::vector<CBlockIndex*>& disconnect,
+        const std::vector<CBlockIndex*>& connect, std::unique_ptr<RuntimeReorgTransition>&);
+    bool DisconnectOrchardTip(CBlockIndex*);
+    bool ConnectOrchardTip(CBlockIndex*, std::string*, bool*);
+
     bool LoadShieldedState();
     bool LoadSeparatedShieldedState();
     bool PersistShieldedState() const;
@@ -1331,6 +1365,9 @@ private:
      * already holds it. Lock acquisition belongs at the OUTER operation
      * boundary, where the order is visible and taken once.
      */
+    // After asserting the caller's activation lock, publication uses fixed-size
+    // copies under the observer mutex. Synchronization failure is fatal; logging
+    // is best-effort after publication and cannot throw back to a committed caller.
     void PublishActiveTipLocked(CBlockIndex* tip, TipPublishReason reason);
 
     /**
@@ -1753,6 +1790,7 @@ private:
         std::string& error);
 
     std::mutex csn_replay_records_mutex_;
+    std::shared_ptr<RuntimeBlockNotifications> runtime_block_notifications_;
 
 };
 

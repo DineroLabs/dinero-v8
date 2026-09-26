@@ -35,6 +35,7 @@
 #include <secp256k1_extrakeys.h> // For x-only/taproot operations
 #include <array>
 #include <atomic>
+#include <limits>
 #include <cassert>               // For assert() in debug builds
 #include "wallet/address.h"
 #include "wallet/key_identity.h"  // Week 1 Day 2: KeyID for descriptor wallet
@@ -1673,6 +1674,8 @@ void WalletManager::createWithInitialSeed(
     const std::vector<uint8_t>& initial_master_seed,
     const std::string* authoritative_mnemonic,
     const std::string& bip39_passphrase) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
     if (initial_master_seed.size() != 64) {
         throw std::invalid_argument("Initial wallet seed must be exactly 64 bytes");
     }
@@ -1827,6 +1830,7 @@ void WalletManager::createWithInitialSeed(
         std::vector<uint8_t> previous_master_seed = master_seed_;
 
         try {
+            AdvanceDatabaseSession();
             db_ = new_wallet_db;
             current_ = cleanName;
             current_wallet_id_ = 1;  // Per-wallet DB always has id=1
@@ -1846,6 +1850,7 @@ void WalletManager::createWithInitialSeed(
                 }
             }
         } catch (...) {
+            AdvanceDatabaseSession();
             db_ = previous_db;
             current_ = previous_current;
             current_wallet_id_ = previous_wallet_id;
@@ -1856,6 +1861,7 @@ void WalletManager::createWithInitialSeed(
             throw;
         }
 
+        AdvanceDatabaseSession();
         db_ = previous_db;
         current_ = previous_current;
         current_wallet_id_ = previous_wallet_id;
@@ -1899,6 +1905,8 @@ void WalletManager::createWithInitialSeed(
 }
 
 void WalletManager::open(const std::string& name) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot switch wallet during database delivery");
     WLOG_INFO("[OPEN] Opening wallet: " + name);
 
     // Check if wallet exists in registry
@@ -1931,6 +1939,8 @@ void WalletManager::open(const std::string& name) {
         throw std::runtime_error("Wallet database file not found: " + walletPath);
     }
 
+    // From this point even a failed open may replace or clear the selection.
+    AdvanceDatabaseSession();
     // Close current wallet if open
     if (db_) {
         WLOG_INFO("[OPEN] Closing currently open wallet: " + current_);
@@ -2024,6 +2034,8 @@ void WalletManager::open(const std::string& name) {
 }
 
 void WalletManager::rename(const std::string& oldName, const std::string& newName) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot rename wallet during database delivery");
     const std::string cleanNewName = sanitize(newName);
     if (cleanNewName.empty()) {
         throw std::invalid_argument("Invalid new wallet name");
@@ -2057,6 +2069,7 @@ void WalletManager::rename(const std::string& oldName, const std::string& newNam
     
     // Update current wallet name if it was the renamed one
     if (current_ == oldName) {
+        AdvanceDatabaseSession();
         current_ = cleanNewName;
     }
     
@@ -2543,6 +2556,9 @@ void WalletManager::removeAddress(const std::string& addr) {
 }
 
 void WalletManager::close() {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot close wallet during database delivery");
+    AdvanceDatabaseSession();
     if (utxo_index_) {
         utxo_index_->ClearRegisteredAddresses();
     }
@@ -2779,6 +2795,7 @@ std::string WalletManager::sanitize(const std::string& in) {
 }
 
 void WalletManager::unload() {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     if (!hasActiveWallet()) {
         return;
     }
@@ -2807,6 +2824,9 @@ int WalletManager::getWalletId(const std::string& name) const {
 }
 
 void WalletManager::setCurrentWallet(const std::string& name, int wallet_id) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot select wallet during database delivery");
+    AdvanceDatabaseSession();
     current_ = name;
     current_wallet_id_ = wallet_id;
 }
@@ -2936,6 +2956,148 @@ void WalletManager::assertNoRetiredLegacyCoinTypeInWalletDatabase(const std::str
     }
 }
 
+void WalletManager::AdvanceDatabaseSession() noexcept {
+    // Exhaustion must not reuse an identity while a queued job still owns it.
+    if (database_session_ == UINT64_MAX) std::terminate();
+    ++database_session_;
+}
+
+WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
+    : owner_(owner), lock_(owner.database_lifecycle_mutex_),
+      thread_(std::this_thread::get_id()), db_(owner.db_), name_(owner.current_),
+      session_(owner.database_session_) {
+    if (db_) {
+        sqlite_mutex_ = sqlite3_db_mutex(db_);
+        if (!sqlite_mutex_) throw std::runtime_error("Wallet database requires serialized SQLite");
+        sqlite3_mutex_enter(sqlite_mutex_);
+        if (!sqlite3_get_autocommit(db_) && owner_.database_leases_ == 0) {
+            sqlite3_mutex_leave(sqlite_mutex_);
+            throw std::runtime_error("Wallet database already has an active transaction");
+        }
+    }
+    ++owner_.database_leases_;
+}
+
+std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
+    if (thread_ != std::this_thread::get_id())
+        throw std::logic_error("Wallet delivery identity used on another thread");
+    if (!db_ || name_.empty() || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Wallet delivery identity ownership unavailable");
+    struct Statement {
+        sqlite3_stmt* stmt = nullptr;
+        Statement(sqlite3* db, const char* sql) {
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+                sqlite3_finalize(stmt);
+                throw std::runtime_error("Wallet delivery identity prepare failed");
+            }
+        }
+        ~Statement() { sqlite3_finalize(stmt); }
+    };
+    const auto sql = [&](const char* text) {
+        if (sqlite3_exec(db_, text, nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Wallet delivery identity SQL failed");
+    };
+    sql("PRAGMA synchronous=FULL");
+    {
+        Statement policy(db_, "PRAGMA synchronous");
+        if (sqlite3_step(policy.stmt) != SQLITE_ROW || sqlite3_column_int(policy.stmt, 0) != 2 ||
+            sqlite3_step(policy.stmt) != SQLITE_DONE)
+            throw std::runtime_error("Wallet delivery identity durability unavailable");
+    }
+    sql("BEGIN IMMEDIATE"); // Failed BEGIN never adopts another transaction.
+    try {
+        { Statement selected(db_, "SELECT id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(selected.stmt) != SQLITE_ROW || sqlite3_step(selected.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Wallet delivery identity metadata unavailable"); }
+        bool column = false;
+        { Statement columns(db_, "PRAGMA table_info(wallet_meta)");
+          int rc;
+          while ((rc = sqlite3_step(columns.stmt)) == SQLITE_ROW) {
+              const auto* name = reinterpret_cast<const char*>(sqlite3_column_text(columns.stmt, 1));
+              if (name && std::string_view(name) == "runtime_delivery_id") column = true;
+          }
+          if (rc != SQLITE_DONE) throw std::runtime_error("Wallet delivery identity schema read failed"); }
+        if (!column) sql("ALTER TABLE wallet_meta ADD COLUMN runtime_delivery_id BLOB");
+        std::array<unsigned char, 32> id{};
+        bool create = false;
+        { Statement read(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+          if (sqlite3_step(read.stmt) != SQLITE_ROW)
+              throw std::runtime_error("Wallet delivery identity read failed");
+          create = sqlite3_column_type(read.stmt, 0) == SQLITE_NULL;
+          if (!create) {
+              if (sqlite3_column_type(read.stmt, 0) != SQLITE_BLOB || sqlite3_column_bytes(read.stmt, 0) != int(id.size()))
+                  throw std::runtime_error("Wallet delivery identity malformed");
+              const auto* bytes = sqlite3_column_blob(read.stmt, 0);
+              if (!bytes) throw std::runtime_error("Wallet delivery identity read failed");
+              std::memcpy(id.data(), bytes, id.size());
+          }
+          if (sqlite3_step(read.stmt) != SQLITE_DONE)
+              throw std::runtime_error("Wallet delivery identity read failed"); }
+        if (create && RAND_bytes(id.data(), int(id.size())) != 1)
+            throw std::runtime_error("Wallet delivery identity randomness unavailable");
+        if (std::all_of(id.begin(), id.end(), [](auto byte) { return byte == 0; }))
+            throw std::runtime_error("Wallet delivery identity malformed");
+        if (create) {
+            Statement write(db_, "UPDATE wallet_meta SET runtime_delivery_id=? WHERE id=1 AND runtime_delivery_id IS NULL");
+            if (sqlite3_bind_blob(write.stmt, 1, id.data(), int(id.size()), SQLITE_TRANSIENT) != SQLITE_OK ||
+                sqlite3_step(write.stmt) != SQLITE_DONE || sqlite3_changes(db_) != 1)
+                throw std::runtime_error("Wallet delivery identity write failed");
+        }
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "DNWI01:";
+        for (auto byte : id) { result += hex[byte >> 4]; result += hex[byte & 15]; }
+        sql("COMMIT");
+        return result; // No allocation or diagnostics after the durable commit.
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
+    }
+}
+
+WalletManager::RecoverySeed::RecoverySeed(WalletManager& owner, std::span<const uint8_t> seed)
+    : owner_(owner), thread_(std::this_thread::get_id()) {
+    if (seed.size() != bytes_.size()) throw std::runtime_error("Wallet recovery seed unavailable");
+    std::copy(seed.begin(), seed.end(), bytes_.begin());
+    ++owner_.recovery_seeds_;
+}
+WalletManager::RecoverySeed::~RecoverySeed() noexcept {
+    OPENSSL_cleanse(bytes_.data(), bytes_.size());
+    if (thread_ != std::this_thread::get_id() || owner_.recovery_seeds_ != 1)
+        std::terminate();
+    --owner_.recovery_seeds_;
+}
+std::unique_ptr<WalletManager::RecoverySeed>
+WalletManager::DatabaseLease::CopyRecoverySeed(uint64_t expected_session) {
+    if (thread_ != std::this_thread::get_id() || !db_ || name_.empty() ||
+        expected_session != session_ || owner_.database_session_ != session_ || owner_.recovery_seeds_)
+        throw std::runtime_error("Wallet recovery key ownership unavailable");
+    owner_.checkUnlockTimeout();
+    if (owner_.wallet_locked_ || owner_.master_seed_.size() != 64)
+        throw std::runtime_error("Wallet recovery seed unavailable");
+    return std::unique_ptr<RecoverySeed>(new RecoverySeed(owner_,owner_.master_seed_));
+}
+
+WalletManager::DatabaseLease::~DatabaseLease() noexcept {
+    if (thread_ != std::this_thread::get_id()) std::terminate();
+    if (owner_.database_leases_ == 1 && owner_.recovery_seeds_) std::terminate();
+    // Entry was in autocommit and no other thread can use this connection.
+    // An unfinished transaction therefore belongs to this lease group, never
+    // an unrelated caller. Nested same-thread operations must not roll back
+    // the outer job; the last lease prevents it escaping into the next job.
+    if (owner_.database_leases_ == 1 && db_ && !sqlite3_get_autocommit(db_)) {
+        if (sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+    }
+    --owner_.database_leases_;
+    if (sqlite_mutex_) sqlite3_mutex_leave(sqlite_mutex_);
+}
+
+std::unique_ptr<WalletManager::DatabaseLease> WalletManager::AcquireDatabaseLease() {
+    return std::unique_ptr<DatabaseLease>(new DatabaseLease(*this));
+}
+
 sqlite3* WalletManager::getCurrentDatabase() const {
     return db_;
 }
@@ -3025,6 +3187,8 @@ std::string WalletManager::getMiningAddress(const std::string& wallet, const std
 
 // Wallet encryption/decryption methods
 void WalletManager::encryptWallet(const std::string& passphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (wallet_encrypted_) {
         throw std::runtime_error("Wallet is already encrypted");
     }
@@ -3182,6 +3346,8 @@ void WalletManager::encryptWallet(const std::string& passphrase) {
 }
 
 void WalletManager::decryptWallet(const std::string& passphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3206,6 +3372,8 @@ void WalletManager::decryptWallet(const std::string& passphrase) {
 }
 
 void WalletManager::changePassphrase(const std::string& oldPassphrase, const std::string& newPassphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3328,6 +3496,8 @@ void WalletManager::derivePrimaryAddresses() {
 }
 
 void WalletManager::lockWallet() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3347,6 +3517,8 @@ void WalletManager::lockWallet() {
 }
 
 void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSeconds) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3530,6 +3702,7 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
 // ═══════════════════════════════════════════════════════════════
 
 std::optional<std::array<uint8_t, 32>> WalletManager::GetV7PqMasterKey() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (wallet_locked_ || !pq_master_key_loaded_) {
         return std::nullopt;
     }
@@ -3541,6 +3714,7 @@ std::optional<std::array<uint8_t, 32>> WalletManager::GetV7PqMasterKey() const {
 
 std::vector<WalletManager::ShieldedIncomingViewingKey>
 WalletManager::GetShieldedIncomingViewingKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_incoming_viewing_keys_.empty()) {
         return shielded_incoming_viewing_keys_;
     }
@@ -3566,6 +3740,7 @@ WalletManager::GetShieldedIncomingViewingKeys() const {
 
 std::vector<WalletManager::ShieldedOutgoingViewingKey>
 WalletManager::GetShieldedOutgoingViewingKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_outgoing_viewing_keys_.empty()) {
         return shielded_outgoing_viewing_keys_;
     }
@@ -3589,6 +3764,7 @@ WalletManager::GetShieldedOutgoingViewingKeys() const {
 
 std::vector<WalletManager::ShieldedRecipientViewingAuthority>
 WalletManager::GetShieldedRecipientViewingAuthorities() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_recipient_viewing_authorities_.empty()) {
         return shielded_recipient_viewing_authorities_;
     }
@@ -3625,6 +3801,7 @@ std::optional<WalletManager::V7Bip32Material>
 WalletManager::DeriveV7Bip32Material(uint32_t account,
                                      uint32_t change,
                                      uint32_t address_index) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (wallet_locked_ || master_seed_.empty()) {
         return std::nullopt;
     }
@@ -3654,10 +3831,12 @@ WalletManager::DeriveV7Bip32Material(uint32_t account,
 }
 
 bool WalletManager::isWalletEncrypted() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     return getSetting("wallet_encrypted") == "1";
 }
 
 bool WalletManager::isWalletLocked() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!isWalletEncrypted()) {
         return false;
     }
@@ -4257,11 +4436,13 @@ std::string WalletManager::decryptData(const std::string& encryptedData, const s
 }
 
 void WalletManager::checkUnlockTimeout() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (unlock_timeout_ > 0 && unlock_time_ > 0) {
         int64_t currentTime = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         
         if (currentTime - unlock_time_ >= unlock_timeout_) {
+            if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
             wallet_locked_ = true;
             secureClearString(encryption_key_);
             clearPrivateKeyCache();
@@ -4790,13 +4971,16 @@ bool WalletManager::addTransaction(const std::string& txid, const std::string& a
     }
 }
 
-bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height) {
+bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height, std::string* error) {
+    if (error) error->clear();
     if (!db_ || current_wallet_id_ == -1 || txid.empty() || height == 0) {
+        if (error) *error = "Wallet confirmation requires a selected wallet and valid identity";
         return false;
     }
 
     if (!columnExists(db_, "transactions", "height") ||
         !columnExists(db_, "transactions", "confirmations")) {
+        if (error) *error = "transactions table lacks height/confirmations columns";
         WLOG_WARN("confirmTransaction: transactions table lacks height/confirmations columns");
         return false;
     }
@@ -4821,22 +5005,29 @@ bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height)
         ? SqlLog::prepare(&stmt, db_, sql_with_wallet_id, "confirm-transaction(with-wallet-id)")
         : SqlLog::prepare(&stmt, db_, sql_without_wallet_id, "confirm-transaction(no-wallet-id)");
     if (!prepared) {
+        if (error) *error = sqlite3_errmsg(db_);
         return false;
     }
 
     int bind_index = 1;
-    sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-    sqlite3_bind_int(stmt, bind_index++, confirmations);
-    if (has_wallet_id) {
-        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+    int bound = sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
+    if (bound == SQLITE_OK) bound = sqlite3_bind_int(stmt, bind_index++, confirmations);
+    if (bound == SQLITE_OK && has_wallet_id)
+        bound = sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+    if (bound == SQLITE_OK)
+        bound = sqlite3_bind_text(stmt, bind_index++, txid.c_str(), -1, SQLITE_STATIC);
+    if (bound != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(db_);
+        sqlite3_finalize(stmt);
+        return false;
     }
-    sqlite3_bind_text(stmt, bind_index++, txid.c_str(), -1, SQLITE_STATIC);
 
     const int result = sqlite3_step(stmt);
     const int changes = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
 
     if (result != SQLITE_DONE) {
+        if (error) *error = sqlite3_errmsg(db_);
         WLOG_ERR("Failed to confirm transaction " + txid + ": " +
                  std::string(sqlite3_errmsg(db_)));
         return false;
@@ -4949,6 +5140,7 @@ double WalletManager::calculateMiningReward(uint32_t height) const {
 
 // Address generation methods
 std::string WalletManager::getNewAddress(const std::string& label, const std::string& address_type) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for address generation");
         return "";
@@ -5275,6 +5467,7 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
 }
 
 std::string WalletManager::getNewChangeAddress(const std::string& label, const std::string& address_type) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for change address generation");
         return "";
@@ -5672,6 +5865,8 @@ bool WalletManager::rescanBlockchain(int start_height,
         WLOG_ERR("rescanBlockchain: ChainDB is null - cannot scan");
         return false;
     }
+
+    const auto database_lease = AcquireDatabaseLease();
 
     if (!db_) {
         WLOG_ERR("rescanBlockchain: Wallet database not initialized");
@@ -6445,9 +6640,15 @@ bool WalletManager::addUTXO(const std::string& txid, int vout, int64_t amount,
 
     sqlite3_stmt* stmt;
     const char* sql = R"(
-        INSERT OR REPLACE INTO utxos
+        INSERT INTO utxos
         (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON CONFLICT DO UPDATE SET
+            address=excluded.address, amount=excluded.amount,
+            script_pubkey=excluded.script_pubkey, height=excluded.height,
+            is_coinbase=excluded.is_coinbase
+        WHERE utxos.wallet_id=excluded.wallet_id
+          AND utxos.txid=excluded.txid AND utxos.vout=excluded.vout
     )";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -6469,9 +6670,10 @@ bool WalletManager::addUTXO(const std::string& txid, int vout, int64_t amount,
     sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
     
     rc = sqlite3_step(stmt);
+    const int changed = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
 
-    if (rc == SQLITE_DONE) {
+    if (rc == SQLITE_DONE && changed == 1) {
         WLOG_INFO("[addUTXO] ✅ Successfully added UTXO " + txid + ":" + std::to_string(vout));
         return true;
     } else {
@@ -6533,6 +6735,7 @@ bool WalletManager::removeUTXO(const std::string& txid, int vout) {
 // ═══════════════════════════════════════════════════════════════
 
 std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(const std::string& script_pubkey) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address (display string)
     // Check if wallet is active and unlocked
     if (!hasActiveWallet()) {
@@ -6929,6 +7132,7 @@ std::optional<std::string> WalletManager::getScriptPubKeyForAddress(const std::s
 }
 
 std::string WalletManager::getPrivateKeyForPath(const std::string& derivation_path) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     WLOG_INFO("🔑 getPrivateKeyForPath() called with path: " + derivation_path);
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -7107,6 +7311,7 @@ bool WalletManager::validateWIF(const std::string& wif, bool& is_compressed, boo
 }
 
 std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (privkey.size() != 32) {
         WLOG_ERR("Invalid private key length");
         return "";
@@ -7263,12 +7468,14 @@ std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey,
 }
 
 void WalletManager::cachePrivateKey(const std::string& address, const std::vector<uint8_t>& key) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // Store private key in cache (in memory only while wallet is unlocked)
     private_key_cache_[address] = key;
     WLOG_DEBUG("Cached private key for address: " + address);
 }
 
 void WalletManager::clearPrivateKeyCache() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // Securely clear all cached private keys
     for (auto& pair : private_key_cache_) {
         secureClearBytes(pair.second);
@@ -7280,6 +7487,8 @@ void WalletManager::clearPrivateKeyCache() {
 bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
                                     const std::string& passphrase,
                                     bool reset_address_state) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!db_ || current_wallet_id_ < 0) {
         WLOG_ERR("No active wallet to store master seed");
         return false;
@@ -7531,6 +7740,7 @@ bool WalletManager::storeAuthoritativeBip39Mnemonic(
     const std::string& mnemonic,
     const std::string& bip39_passphrase,
     std::string* error_out) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         SetRecoveryError(error_out, "no active wallet");
         return false;
@@ -7604,6 +7814,7 @@ bool WalletManager::storeAuthoritativeBip39Mnemonic(
 
 std::optional<Bip39RecoveryMaterial> WalletManager::loadAuthoritativeBip39Mnemonic(
     std::string* error_out) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         SetRecoveryError(error_out, "no active wallet");
         return std::nullopt;
@@ -7724,6 +7935,7 @@ bool WalletManager::acknowledgeBip39Backup(const std::string& mnemonic,
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::loadMasterSeed(const std::string& passphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         WLOG_ERR("No active wallet to load master seed from");
         return std::nullopt;
@@ -7997,89 +8209,70 @@ void WalletManager::onBlockConnected(const Block& block, uint32_t height) {
 }
 
 void WalletManager::onBlockDisconnected(const Block& block, uint32_t height) {
-    if (!hasActiveWallet()) {
-        return;  // No wallet loaded, nothing to do
-    }
+    const auto database_lease = AcquireDatabaseLease();
+    if (!hasActiveWallet()) return;
+    if (height == 0 || height > static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("Wallet disconnect height is out of range");
 
-    WLOG_INFO("WalletManager: 🔄 Processing block disconnect at height " + std::to_string(height));
-
-    // Phase 4B: Full reorg handling
-    // During a blockchain reorganization, we need to:
-    // 1. Remove UTXOs that were created in this block
-    // 2. Mark spent UTXOs as unspent again (restore them)
-
-    int utxos_removed = 0;
-    int utxos_restored = 0;
-    bool tx_history_reverted = false;
-
-    // Step 1: Remove all UTXOs created in this block
-    // We can identify them by matching the height column
-    if (current_wallet_id_ != -1) {
-        sqlite3_stmt* stmt;
-        // Note: Per-wallet database - no wallet_id column needed
-        const char* sql = "DELETE FROM utxos WHERE height = ?";
-
-        int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-        if (rc == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, static_cast<int>(height));
-
-            rc = sqlite3_step(stmt);
-            if (rc == SQLITE_DONE) {
-                utxos_removed = sqlite3_changes(db_);
-            }
-            sqlite3_finalize(stmt);
+    // Failed BEGIN must leave an existing caller transaction untouched. This
+    // transaction covers this ordinary wallet only; the worker's index and
+    // shielded store are separate and may already have committed rollback.
+    exec(db_, "BEGIN IMMEDIATE");
+    try {
+        auto checked = [&](int result, int expected, const char* phase) {
+            if (result != expected)
+                throw std::runtime_error(std::string("Wallet disconnect ") + phase +
+                                         " failed: " + sqlite3_errmsg(db_));
+        };
+        using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+        auto prepare = [&](const char* sql, const char* phase) {
+            sqlite3_stmt* raw = nullptr;
+            const int result = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+            Statement stmt(raw, sqlite3_finalize);
+            checked(result, SQLITE_OK, phase);
+            return stmt;
+        };
+        {
+            auto stmt = prepare("DELETE FROM utxos WHERE height = ?", "delete prepare");
+            checked(sqlite3_bind_int(stmt.get(), 1, static_cast<int>(height)), SQLITE_OK, "delete bind");
+            checked(sqlite3_step(stmt.get()), SQLITE_DONE, "delete");
         }
-    }
-
-    // Step 1.5: Remove wallet transactions confirmed in the disconnected block.
-    // Prevents "phantom confirmed" transaction history after reorg.
-    tx_history_reverted = removeTransactionsAtHeight(height);
-
-    // Step 2: Restore spent UTXOs (mark as unspent)
-    // Scan all transactions in the block to find inputs we own
-    for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
-        const auto& tx = block.vtx[tx_idx];
-
-        if (tx.IsCoinbase()) {
-            continue;  // Coinbase has no inputs to restore
+        {
+            // Keep the historical per-wallet schema compatibility of the old
+            // history-removal path, but check every statement and binding.
+            const bool scoped = columnExists(db_, "transactions", "wallet_id");
+            auto stmt = prepare(scoped
+                ? "DELETE FROM transactions WHERE wallet_id = ? AND height = ?"
+                : "DELETE FROM transactions WHERE height = ?", "history prepare");
+            int parameter = 1;
+            if (scoped)
+                checked(sqlite3_bind_int(stmt.get(), parameter++, current_wallet_id_), SQLITE_OK, "history bind");
+            checked(sqlite3_bind_int(stmt.get(), parameter, static_cast<int>(height)), SQLITE_OK, "history bind");
+            checked(sqlite3_step(stmt.get()), SQLITE_DONE, "history");
         }
-
-        // For each input, check if we spent it
-        for (const auto& input : tx.vin) {
-            // Use canonical prevout txid from input for UTXO restoration.
-            std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
-            int prev_vout = static_cast<int>(input.prevout.vout);
-
-            // Try to mark this UTXO as unspent (restore it)
-            if (current_wallet_id_ != -1) {
-                sqlite3_stmt* stmt;
-                // Note: Per-wallet database - no wallet_id column needed
-                const char* sql = "UPDATE utxos SET is_spent = 0 WHERE txid = ? AND vout = ? AND is_spent = 1";
-
-                int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-                if (rc == SQLITE_OK) {
-                    sqlite3_bind_text(stmt, 1, prev_txid.c_str(), -1, SQLITE_STATIC);
-                    sqlite3_bind_int(stmt, 2, prev_vout);
-
-                    rc = sqlite3_step(stmt);
-                    if (rc == SQLITE_DONE && sqlite3_changes(db_) > 0) {
-                        utxos_restored++;
-                    }
-                    sqlite3_finalize(stmt);
+        {
+            auto stmt = prepare("UPDATE utxos SET is_spent = 0 WHERE txid = ? AND vout = ? AND is_spent = 1", "restore prepare");
+            for (const auto& tx : block.vtx) {
+                if (tx.IsCoinbase()) continue;
+                for (const auto& input : tx.vin) {
+                    const std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
+                    checked(sqlite3_reset(stmt.get()), SQLITE_OK, "restore reset");
+                    checked(sqlite3_bind_text(stmt.get(), 1, prev_txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK, "restore bind");
+                    checked(sqlite3_bind_int64(stmt.get(), 2, input.prevout.vout), SQLITE_OK, "restore bind");
+                    checked(sqlite3_step(stmt.get()), SQLITE_DONE, "restore");
                 }
             }
         }
+        checked(sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr), SQLITE_OK, "commit");
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        throw;
     }
-
-    // Step 3: Update wallet blockchain height
+    // This remains a later publication/metadata operation, not a durable source
+    // acknowledgment. Never lower the visible height after a failed SQL group.
     setBlockchainHeight(height - 1);
-
-    // sync_meta.last_scanned_height is updated by setBlockchainHeight(height-1) above
-
-    WLOG_INFO("WalletManager: Block " + std::to_string(height) + " disconnected - " +
-                         "removed " + std::to_string(utxos_removed) + " UTXOs, " +
-                         "restored " + std::to_string(utxos_restored) + " UTXOs, " +
-                         "tx history reverted=" + std::string(tx_history_reverted ? "yes" : "no"));
 }
 
 void WalletManager::onMempoolTransaction(const Transaction& tx) {
@@ -8712,6 +8905,7 @@ void WalletManager::storeTaprootKey(const std::string& address,
                                     const std::array<uint8_t, 32>& internal_pubkey,
                                     const std::array<uint8_t, 32>& output_pubkey,
                                     const std::string& label) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         WLOG_ERR("[storeTaprootKey] No wallet database open");
         return;
@@ -8929,6 +9123,7 @@ bool WalletManager::storeUnencryptedWallet(
     uint32_t master_fingerprint,
     bool seed_already_stored
 ) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     try {
         // Per-wallet DB: No wallet_id needed (always id=1)
         if (!db_) {
@@ -9039,6 +9234,7 @@ bool WalletManager::HaveKey(const wallet::KeyID& key_id) const {
 }
 
 std::optional<wallet::WalletKey> WalletManager::GetKey(const wallet::KeyID& key_id) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         return std::nullopt;
     }
@@ -9119,6 +9315,7 @@ std::optional<wallet::WalletKey> WalletManager::GetKey(const wallet::KeyID& key_
 }
 
 std::optional<wallet::WalletKey> WalletManager::GetKeyByOutputKeyID(const wallet::KeyID& output_key_id) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         return std::nullopt;
     }
@@ -9200,6 +9397,7 @@ std::optional<wallet::WalletKey> WalletManager::GetKeyByOutputKeyID(const wallet
 }
 
 std::vector<wallet::WalletKey> WalletManager::GetAllKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     std::vector<wallet::WalletKey> keys;
 
     if (!db_) {
@@ -9260,10 +9458,12 @@ bool WalletManager::AddKey(const wallet::WalletKey& key) {
 }
 
 bool WalletManager::HaveMasterSeed() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     return !master_seed_.empty();
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::GetMasterSeed() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (master_seed_.empty()) {
         return std::nullopt;
     }
@@ -9272,6 +9472,7 @@ std::optional<std::vector<uint8_t>> WalletManager::GetMasterSeed() const {
 
 std::optional<std::vector<uint8_t>> WalletManager::DerivePrivateKey(
     const wallet::KeyOriginInfo& origin) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
 
     if (master_seed_.empty()) {
         // Defensive recovery: try reloading seed from DB if wallet is currently unlocked.

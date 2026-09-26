@@ -59,6 +59,12 @@ if(NOT WIN32)
       set_property(TARGET test_daemon_service_release PROPERTY ${_property} "${_release_property}")
     endif()
   endforeach()
+  add_test(NAME RPCListenerStartup COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_rpc_listener_startup.py
+    $<TARGET_FILE:dinerod>)
+  set_tests_properties(RPCListenerStartup PROPERTIES
+    LABELS "integration;e2e-daemon;rpc;mandatory" TIMEOUT 300 RUN_SERIAL TRUE)
+
   add_test(NAME DaemonServiceRelease COMMAND python3
     ${CMAKE_SOURCE_DIR}/tests/integration/test_daemon_service_release.py
     $<TARGET_FILE:test_daemon_service_release>)
@@ -1085,6 +1091,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_shielded_state_startup.cpp)
     ${CMAKE_SOURCE_DIR}/include
   )
   add_test(NAME ShieldedStateStartup COMMAND test_shielded_state_startup)
+  add_test(NAME OrchardServicePersistence COMMAND test_shielded_state_startup retired_persistence)
+  set_tests_properties(OrchardServicePersistence PROPERTIES
+    LABELS "orchard;daemon;shielded;storage;smoke" TIMEOUT 120)
   set_tests_properties(ShieldedStateStartup PROPERTIES
     LABELS "daemon;shielded;storage;smoke"
     TIMEOUT 120
@@ -2698,40 +2707,17 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_shielded_cv_binding.cpp)
   endif()
   add_test(NAME ShieldedCvBinding COMMAND test_shielded_cv_binding)
 
-  # Spartan proof-system soundness regression (standalone require_zero_error).
-  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/zk/test_spartan_soundness.cpp)
-    add_executable(test_spartan_soundness
-      tests/zk/test_spartan_soundness.cpp
-      tests/zk/test_compact_spartan.cpp
-      src/consensus/shielded/compact_spartan_codec.cpp
-    )
-    add_dependencies(test_spartan_soundness gtest dinero_zk)
-    target_link_libraries(test_spartan_soundness PRIVATE
-      GTest::gtest
-      GTest::gtest_main
-      dinero_zk
-      dinero_crypto
-    )
-    target_include_directories(test_spartan_soundness BEFORE PRIVATE
-      ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
-      ${CMAKE_SOURCE_DIR}/include
-      ${CMAKE_SOURCE_DIR}/src
-    )
-    if(APPLE)
-      target_link_libraries(test_spartan_soundness PRIVATE "-framework Security")
-    endif()
-    add_test(NAME SpartanSoundness COMMAND test_spartan_soundness)
-    set_tests_properties(SpartanSoundness PROPERTIES
-      LABELS "zk;spartan;soundness;mandatory"
-      TIMEOUT 300
-    )
-  endif()
   set_tests_properties(ShieldedCvBinding PROPERTIES
     LABELS "shielded;consensus;cv-binding;mandatory"
     TIMEOUT 1800
   )
   message(STATUS "Shielded cv-binding tests enabled")
 endif()
+
+# Required proof/codec suites have independent targets and fail configuration
+# if either source is missing. Neither depends on the optional cv-binding file.
+include(${CMAKE_SOURCE_DIR}/tests/cmake/ShieldedProofTests.cmake)
+dinero_register_shielded_proof_tests(${CMAKE_SOURCE_DIR})
 
 # cv-binding audit 2026-07-01: ec_add_complete selector-binding regression test
 if(TARGET dinero_zk AND TARGET gtest)
@@ -4263,6 +4249,20 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_template_determinism.cpp)
   )
   message(STATUS "✅ Block Template Determinism test enabled")
 endif()
+
+# Real SQLite wallet rollback, independent of the mock correctness suite below.
+add_executable(test_wallet_revert_atomic
+  tests/utxo/test_wallet_revert_atomic.cpp
+  src/wallet/utxo_index.cpp
+  src/sqlite_open.cpp
+  src/primitives/uint256.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_wallet_revert_atomic PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wallet_revert_atomic PRIVATE sqlite3 Threads::Threads)
+add_test(NAME WalletRevertAtomic COMMAND test_wallet_revert_atomic)
+set_tests_properties(WalletRevertAtomic PROPERTIES LABELS "wallet;utxo;storage" TIMEOUT 60)
 
 # Priority 3: UTXO Index Correctness Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/utxo/test_utxo_index_correctness.cpp)
@@ -5974,6 +5974,104 @@ if(NOT WIN32)
     LABELS "wallet;covenant;recovery;persistence;migration"
     TIMEOUT 30
   )
+
+  add_executable(test_wallet_database_lease
+    tests/wallet/test_wallet_database_lease.cpp
+    src/wallet/wallet_worker.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/vault_test_stubs.cpp
+  )
+  add_dependencies(test_wallet_database_lease gtest gtest_main)
+  target_link_libraries(test_wallet_database_lease PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_wallet_database_lease)
+  target_include_directories(test_wallet_database_lease PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_wallet_database_lease PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME WalletDatabaseLease
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDatabaseLeaseTest.*)
+  set_tests_properties(WalletDatabaseLease PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency"
+    TIMEOUT 30
+  )
+  add_test(NAME WalletRecoveryKeys
+    COMMAND test_wallet_database_lease --gtest_filter=WalletRecoveryKeyTest.*)
+  set_tests_properties(WalletRecoveryKeys PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery;concurrency")
+  add_test(NAME WalletDeliveryBindingIdentity
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDeliveryBindingTest.StableDatabaseIdentitySurvivesReopenAndMetadataChanges)
+  add_test(NAME WalletDeliveryBindingFailures
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDeliveryBindingTest.FailedWritesAndCommitDoNotPublishIdentity)
+  set_tests_properties(WalletDeliveryBindingIdentity WalletDeliveryBindingFailures PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletQueuedIdentity
+    COMMAND test_wallet_database_lease --gtest_filter=WalletQueuedIdentityTest.*)
+  set_tests_properties(WalletQueuedIdentity PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency" TIMEOUT 30)
+  foreach(stage Insert Spend History Confirmation Commit)
+    string(TOLOWER "${stage}" stage_lower)
+    add_test(NAME WalletOrdinaryBlock${stage}
+      COMMAND test_wallet_database_lease
+        --gtest_filter=DeliveryStages/WalletOrdinaryBlockTest.ChecksOrdinaryWalletWritesAndCommitBeforeHeight/${stage_lower})
+    set_tests_properties(WalletOrdinaryBlock${stage} PROPERTIES
+      LABELS "wallet;recovery;persistence" TIMEOUT 30)
+  endforeach()
+
+  add_executable(test_wallet_block_disconnect
+    tests/wallet/test_wallet_block_disconnect.cpp
+    src/wallet/wallet_worker.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/vault_test_stubs.cpp
+  )
+  add_dependencies(test_wallet_block_disconnect gtest gtest_main)
+  target_link_libraries(test_wallet_block_disconnect PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_wallet_block_disconnect)
+  target_include_directories(test_wallet_block_disconnect PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_wallet_block_disconnect PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME WalletBlockDisconnect
+    COMMAND test_wallet_block_disconnect)
+  set_tests_properties(WalletBlockDisconnect PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency"
+    TIMEOUT 30
+  )
 endif()
 
 # Phase 29: Covenant Integration Layer Tests
@@ -7511,6 +7609,32 @@ target_include_directories(test_shielded_state_storage PRIVATE
 )
 add_test(NAME ShieldedStateStorage COMMAND test_shielded_state_storage)
 set_tests_properties(ShieldedStateStorage PROPERTIES LABELS "storage;smoke" TIMEOUT 120)
+
+add_executable(test_legacy_retirement
+  tests/storage/test_legacy_retirement.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_legacy_retirement PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_legacy_retirement PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME OrchardLegacyRetirement COMMAND test_legacy_retirement)
+set_tests_properties(OrchardLegacyRetirement PROPERTIES LABELS "orchard;storage;integration-staging" TIMEOUT 120)
+
+add_executable(test_orchard_state_storage
+  tests/storage/test_orchard_state_storage.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_orchard_state_storage PRIVATE
+  dinero_chainstate dinero_crypto RocksDB::rocksdb OpenSSL::Crypto
+)
+target_include_directories(test_orchard_state_storage PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include
+)
+add_test(NAME OrchardStateStorage COMMAND test_orchard_state_storage)
+set_tests_properties(OrchardStateStorage PROPERTIES LABELS "orchard;storage;smoke" TIMEOUT 120)
 
 # Generated offline-copy qualification only. Not installed or linked into
 # dinerod/NodeCore: whole-datadir eligibility and cutover remain separate gates.
@@ -12354,11 +12478,13 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_proof_staleness.cpp)
   add_executable(test_mempool_proof_staleness
     tests/mempool/test_mempool_proof_staleness.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
+    src/mempool/coins_view_mempool.cpp
     src/daemon/mempool.cpp
     src/mining/address_validator.cpp
     src/daemon/bech32_decode.cpp
     src/common/logger.cpp
   )
+  target_compile_definitions(test_mempool_proof_staleness PRIVATE DINERO_TEST_REAL_COINS_VIEW=1)
   target_link_libraries(test_mempool_proof_staleness PRIVATE
     dinero_chainstate
     dinero_consensus
@@ -13589,3 +13715,10 @@ add_test(NAME ReplayMetadataRecoveryQueue COMMAND test_replay_metadata_recovery)
 set_tests_properties(ReplayMetadataRecoveryQueue PROPERTIES
     LABELS "daemon;utreexo;recovery;regression"
     TIMEOUT 30)
+
+# Always-on parser boundary: no Rust/backend enablement is required to reject
+# the new marked family in historical transaction/block readers.
+add_executable(test_orchard_legacy_boundary tests/consensus/test_orchard_legacy_boundary.cpp)
+target_link_libraries(test_orchard_legacy_boundary PRIVATE dinero_consensus_core)
+add_test(NAME OrchardLegacyBoundary COMMAND test_orchard_legacy_boundary)
+set_tests_properties(OrchardLegacyBoundary PROPERTIES LABELS "consensus;serialization;orchard" TIMEOUT 30)

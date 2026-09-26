@@ -234,6 +234,40 @@ def fixture(node, blockhash, downgrade=False):
     return records[0]
 
 
+def check_fixture_profile(node, blockhash):
+    require(node.process is None, "profile checks require a stopped fixture")
+    marker = node.path / "regtest-pow-profile"
+    original = marker.read_bytes()
+    prefix = b"regtest-pow-profile-v1\n"
+    require(original.startswith(prefix) and len(original) == len(prefix) + 65,
+            "daemon did not persist the full PoW profile")
+    # This is only a temporary regtest directory created by this harness.
+    # Mismatched framing must still fail; restoring the profile must recover
+    # the exact same body. Never relax BlockStorage's network check.
+    wrong_magic = b"12345678" if original[len(prefix):len(prefix) + 8] != b"12345678" else b"87654321"
+    cases = [
+        ("short", prefix + b"a\n", "invalid PoW fixture profile"),
+        ("nonhex", prefix + b"g" * 64 + b"\n", "invalid PoW fixture profile"),
+        ("trailing", original + b"extra", "invalid PoW fixture profile"),
+        ("reserved", prefix + b"fabfb5da" + b"0" * 56 + b"\n", "reserved PoW fixture profile magic"),
+        ("wrong-network", prefix + wrong_magic + original[len(prefix) + 8:], "cannot read target archival body: Corruption"),
+    ]
+    try:
+        for label, value, reason in cases:
+            marker.write_bytes(value)
+            result = subprocess.run([str(FIXTURE), "--regtest-fixture", "--datadir", str(node.path),
+                                     "--hash", blockhash, "--inspect"],
+                                    capture_output=True, text=True, timeout=30)
+            (WORK / f"profile-{label}.log").write_text(result.stdout + result.stderr)
+            require(result.returncode != 0 and reason in result.stderr,
+                    f"fixture did not reject {label} profile: {result.stdout}\n{result.stderr}")
+    finally:
+        marker.write_bytes(original)
+    fixture(node, blockhash)
+    RECEIPT["fixture_profile_rejections"] = [label for label, _, _ in cases]
+    print("PASS strict fixture profile framing, network mismatch rejection and restored body read", flush=True)
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -319,6 +353,7 @@ def main():
     # No source peer is available during downgrade, restart and reconsider.
     full.stop()
     csn.stop()
+    check_fixture_profile(csn, first_block)
     originals = {}
     for blockhash in (first_block, second_block):
         record = fixture(csn, blockhash, downgrade=True)

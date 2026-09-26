@@ -1,6 +1,7 @@
 #pragma once
 
 #include "consensus/outpoint.h"  // Phase M.0: Canonical OutPoint
+#include "daemon/connected_block_effects.h"
 #include "primitives/uint256.h"  // Phase M.0: uint256 type
 #include "daemon/interfaces/ingress_types.h"  // Step 5: Canonical ingress types
 #include <unordered_map>
@@ -300,10 +301,18 @@ public:
     size_t onBlockConnected(const Block& block, uint32_t height,
                             const std::vector<uint8_t>& new_root = {});
 
+    // Caller must derive these effects from the exact validated block body.
+    // This reconciles the legacy transparent pool only; Orchard nullifier
+    // conflicts need the separate Orchard admission pool before activation.
+    size_t onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
+                            const std::vector<uint8_t>& new_root = {});
+
     /**
      * Process a disconnected block: mark all TXs stale (root changed).
      */
     void onBlockDisconnected(const Block& block, uint32_t height);
+    // Typed mixed-body disconnect has the same proof-staleness effect.
+    void onBlockDisconnected(uint32_t height);
 
     /** Get count of transactions with stale proofs. */
     size_t getStaleCount() const;

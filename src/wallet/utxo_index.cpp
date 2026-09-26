@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <iostream>
 #include <cassert>
+#include <memory>
+#include <stdexcept>
 
 namespace dinero {
 
@@ -82,6 +84,8 @@ UTXOIndex::~UTXOIndex() {
 }
 
 bool UTXOIndex::Initialize() {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (atomic_write_active_) return false;
     // M.5.2: Guard against re-initialization (lifecycle safety)
     // If already initialized, clean up first to prevent memory leaks
     if (db_ != nullptr) {
@@ -292,7 +296,9 @@ bool UTXOIndex::PrepareStatements() {
     //   blinding_factor and value when the incoming blinding_factor is NULL
     //   (CT rangeproof rewind failed — wallet was locked at scan time).
     //   This prevents losing recovered CT data across daemon restarts.
-    //   All other fields are updated normally (on-chain data can't change).
+    // Creation replay cannot erase or replace a recorded spend. Only explicit
+    // rollback may restore an existing spent row to unspent; an import may
+    // still supply spend metadata when the row has none.
     const char* add_sql = R"(
         INSERT INTO wallet_utxos
         (txid, vout, value, spk, path, height, spend_height, is_coinbase,
@@ -306,7 +312,7 @@ bool UTXOIndex::PrepareStatements() {
           spk              = excluded.spk,
           path             = excluded.path,
           height           = excluded.height,
-          spend_height     = excluded.spend_height,
+          spend_height     = COALESCE(wallet_utxos.spend_height, excluded.spend_height),
           is_coinbase      = excluded.is_coinbase,
           utreexo_position = excluded.utreexo_position,
           is_confidential  = excluded.is_confidential,
@@ -429,7 +435,7 @@ bool UTXOIndex::AddUTXO(const WalletUTXO& utxo) {
     }
 
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     sqlite3_reset(stmt_add_utxo_);
 
@@ -499,7 +505,7 @@ bool UTXOIndex::AddUTXO(const WalletUTXO& utxo) {
 
 bool UTXOIndex::SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height) {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     sqlite3_reset(stmt_spend_utxo_);
 
@@ -519,7 +525,7 @@ bool UTXOIndex::SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height) {
 
 bool UTXOIndex::DeleteUTXO(const TxId& txid, uint32_t vout) {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     // Permanently delete UTXO from database (used during reorg to remove outputs from disconnected blocks)
     const char* delete_sql = "DELETE FROM wallet_utxos WHERE txid = ? AND vout = ?";
@@ -550,7 +556,7 @@ bool UTXOIndex::DeleteUTXO(const TxId& txid, uint32_t vout) {
 
 bool UTXOIndex::IsUTXOSpent(const TxId& txid, uint32_t vout) const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     sqlite3_reset(stmt_is_spent_);
 
@@ -569,7 +575,7 @@ bool UTXOIndex::IsUTXOSpent(const TxId& txid, uint32_t vout) const {
 
 std::vector<WalletUTXO> UTXOIndex::GetUnspentUTXOs() const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     std::vector<WalletUTXO> utxos;
     sqlite3_reset(stmt_get_unspent_);
@@ -617,7 +623,7 @@ std::vector<WalletUTXO> UTXOIndex::GetUnspentUTXOs() const {
 
 std::optional<WalletUTXO> UTXOIndex::GetUTXO(const TxId& txid, uint32_t vout) const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     sqlite3_reset(stmt_get_utxo_);
 
@@ -698,7 +704,7 @@ bool UTXOIndex::GetUTXO(const TxId& txid, uint32_t vout, WalletUTXO& utxo) const
 // Phase M.6.2: Return AmountUna for type safety
 AmountUna UTXOIndex::GetBalance() const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     sqlite3_reset(stmt_get_balance_);
 
@@ -713,7 +719,7 @@ AmountUna UTXOIndex::GetBalance() const {
 // Phase M.6.2: Return AmountUna for type safety
 AmountUna UTXOIndex::GetBalanceForPath(const std::string& path_prefix) const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = R"(
         SELECT COALESCE(SUM(value), 0)
@@ -741,7 +747,7 @@ AmountUna UTXOIndex::GetBalanceForPath(const std::string& path_prefix) const {
 
 // Phase 44.1: UTXO count for AssumeUTXO verification
 Result<uint64_t> UTXOIndex::GetUTXOCount() const {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     // M.5.2 FIX: Correct table name (was "utxos", should be "wallet_utxos")
     const char* sql = "SELECT COUNT(*) FROM wallet_utxos WHERE spend_height IS NULL";
@@ -763,7 +769,7 @@ Result<uint64_t> UTXOIndex::GetUTXOCount() const {
 
 BalanceDetail UTXOIndex::GetBalanceWithMaturity(int current_height) const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     BalanceDetail result;
 
@@ -886,7 +892,9 @@ void UTXOIndex::ClearRegisteredAddresses() {
 
 void UTXOIndex::ProcessBlock(int height, const std::vector<std::string>& block_txs) {
     // ✅ LOCK: Protect entire SQLite transaction (must be atomic)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (atomic_write_active_)
+        throw std::logic_error("Cannot replace owned wallet UTXO transaction");
     
     // Begin transaction for atomic block processing
     sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, nullptr);
@@ -908,43 +916,37 @@ void UTXOIndex::ProcessBlock(int height, const std::vector<std::string>& block_t
 }
 
 void UTXOIndex::RevertBlock(int height) {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (!db_ || height < 0)
+        throw std::invalid_argument("Invalid wallet UTXO rollback context");
 
-    // Begin transaction for atomic revert
-    sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, nullptr);
-
+    const auto exec = [&](const char* sql) {
+        if (sqlite3_exec(db_, sql, nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Wallet UTXO rollback transaction failed");
+    };
+    // Acquire our own transaction before changing any rows. A failed BEGIN
+    // (including an existing caller transaction) must not reach COMMIT/ROLLBACK.
+    exec("BEGIN IMMEDIATE");
     try {
-        // 1. Delete UTXOs created at this height
-        const char* delete_sql = "DELETE FROM wallet_utxos WHERE height = ?";
-        sqlite3_stmt* stmt_del;
-        if (sqlite3_prepare_v2(db_, delete_sql, -1, &stmt_del, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt_del, 1, height);
-            sqlite3_step(stmt_del);
-            int deleted = sqlite3_changes(db_);
-            sqlite3_finalize(stmt_del);
-            if (deleted > 0) {
-                std::cout << "INFO: Reverted " << deleted << " UTXOs created at height " << height << std::endl;
-            }
-        }
-
-        // 2. Un-spend UTXOs that were spent at this height
-        const char* unspend_sql = "UPDATE wallet_utxos SET spend_height = NULL WHERE spend_height = ?";
-        sqlite3_stmt* stmt_unspend;
-        if (sqlite3_prepare_v2(db_, unspend_sql, -1, &stmt_unspend, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt_unspend, 1, height);
-            sqlite3_step(stmt_unspend);
-            int unspent = sqlite3_changes(db_);
-            sqlite3_finalize(stmt_unspend);
-            if (unspent > 0) {
-                std::cout << "INFO: Un-spent " << unspent << " UTXOs at height " << height << std::endl;
-            }
-        }
-
-        sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr);
+        const auto apply = [&](const char* sql) {
+            sqlite3_stmt* raw = nullptr;
+            const auto prepared = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+            std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(raw, sqlite3_finalize);
+            if (prepared != SQLITE_OK ||
+                sqlite3_bind_int(stmt.get(), 1, height) != SQLITE_OK ||
+                sqlite3_step(stmt.get()) != SQLITE_DONE)
+                throw std::runtime_error("Wallet UTXO rollback statement failed");
+        };
+        apply("DELETE FROM wallet_utxos WHERE height = ?");
+        apply("UPDATE wallet_utxos SET spend_height = NULL WHERE spend_height = ?");
+        exec("COMMIT");
     } catch (...) {
-        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
-        std::cerr << "ERROR: Failed to revert block " << height << std::endl;
+        // Some SQLite errors already abort the transaction. Otherwise ensure
+        // partial deletions/un-spends cannot survive into a subsequent write.
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_))
+            std::terminate();
         throw;
     }
 }
@@ -954,7 +956,7 @@ void UTXOIndex::RevertBlock(int height) {
 // This should be called after reorg completes to ensure consistency
 size_t UTXOIndex::ValidateAgainstConsensus(std::function<bool(const TxId& txid, uint32_t vout)> consensus_has_utxo) {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     size_t phantom_count = 0;
     std::vector<std::pair<std::string, uint32_t>> to_delete;
@@ -1025,7 +1027,9 @@ void UTXOIndex::ScanBlockIdempotent(int height, const std::string& block_hash,
                                                                 std::vector<std::pair<std::string, uint32_t>>,
                                                                 bool>>& transactions) {
     // ✅ LOCK: Protect entire SQLite transaction (must be atomic)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (atomic_write_active_)
+        throw std::logic_error("Cannot replace owned wallet UTXO transaction");
 
     // Begin transaction for atomic block processing
     sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, nullptr);
@@ -1192,7 +1196,7 @@ std::vector<uint8_t> TransactionProcessor::ExtractTaprootPubkey(const std::vecto
 
 bool UTXOIndex::AddConfidentialUTXO(const ZKOutput& zk_output) {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     // Use INSERT OR REPLACE for idempotency
     const char* sql = R"(
@@ -1240,7 +1244,7 @@ bool UTXOIndex::AddConfidentialUTXO(const ZKOutput& zk_output) {
 
 std::vector<WalletUTXO> UTXOIndex::GetConfidentialUTXOs() const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     std::vector<WalletUTXO> utxos;
 
@@ -1375,8 +1379,32 @@ std::vector<ZKOutput> UTXOIndex::ScanForNewConfidentialOutputs(
 // Transaction Control (Crash Safety - CRITICAL-002 fix)
 // ═══════════════════════════════════════════════════════════════════════════
 
+void UTXOIndex::ApplyAtomically(const std::function<void()>& writes) {
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (!db_ || atomic_write_active_ || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Wallet UTXO write ownership unavailable");
+    if (sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK)
+        throw std::runtime_error("Wallet UTXO write begin failed");
+    atomic_write_active_ = true;
+    try {
+        writes();
+        if (sqlite3_get_autocommit(db_) ||
+            sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Wallet UTXO write commit failed");
+        atomic_write_active_ = false;
+    } catch (...) {
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_))
+            std::terminate();
+        atomic_write_active_ = false;
+        throw;
+    }
+}
+
 bool UTXOIndex::BeginTransaction() {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (atomic_write_active_) return false;
 
     char* err_msg = nullptr;
     int rc = sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, &err_msg);
@@ -1392,7 +1420,8 @@ bool UTXOIndex::BeginTransaction() {
 }
 
 bool UTXOIndex::CommitTransaction() {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (atomic_write_active_) return false;
 
     char* err_msg = nullptr;
     int rc = sqlite3_exec(db_, "COMMIT", nullptr, nullptr, &err_msg);
@@ -1408,7 +1437,8 @@ bool UTXOIndex::CommitTransaction() {
 }
 
 bool UTXOIndex::RollbackTransaction() {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (atomic_write_active_) return false;
 
     char* err_msg = nullptr;
     int rc = sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, &err_msg);
@@ -1431,7 +1461,8 @@ bool UTXOIndex::ClearAll() {
     // ⚠️ DANGER: This deletes ALL UTXOs and metadata
     // Only use for AssumeUTXO rollback on validation failure
 
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
+    if (atomic_write_active_) return false;
 
     g_logger.warning("[UTXOIndex] ⚠️  ClearAll() called - deleting ALL UTXOs and metadata");
 
@@ -1447,7 +1478,12 @@ bool UTXOIndex::ClearAll() {
 
     // Delete all UTXOs
     // M.5.2 FIX: Correct table name (was "utxos", should be "wallet_utxos")
-    rc = sqlite3_exec(db_, "DELETE FROM wallet_utxos", nullptr, nullptr, &err_msg);
+    // A reset invalidates even a tracked index with zero owned rows.
+    rc = sqlite3_exec(db_,
+        "INSERT OR REPLACE INTO utxo_metadata(key,value) SELECT 'runtime_delivery:v1:invalidated','1' "
+        "WHERE EXISTS(SELECT 1 FROM utxo_metadata WHERE key='runtime_delivery:v1:receipt');"
+        "DELETE FROM utxo_metadata WHERE key='runtime_delivery:v1:receipt';"
+        "DELETE FROM wallet_utxos", nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
         std::string error = err_msg ? err_msg : "Unknown error";
         g_logger.error("[UTXOIndex] Failed to delete UTXOs: " + error);
@@ -1457,7 +1493,7 @@ bool UTXOIndex::ClearAll() {
     }
 
     // Delete all metadata
-    rc = sqlite3_exec(db_, "DELETE FROM utxo_metadata", nullptr, nullptr, &err_msg);
+    rc = sqlite3_exec(db_, "DELETE FROM utxo_metadata WHERE key NOT GLOB 'runtime_delivery:*'", nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
         std::string error = err_msg ? err_msg : "Unknown error";
         g_logger.error("[UTXOIndex] Failed to delete metadata: " + error);
@@ -1484,7 +1520,8 @@ bool UTXOIndex::ClearAll() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool UTXOIndex::SetMetadata(const std::string& key, const std::string& value) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (key.starts_with("runtime_delivery:")) return false;
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = "INSERT OR REPLACE INTO utxo_metadata (key, value) VALUES (?, ?)";
     sqlite3_stmt* stmt = nullptr;
@@ -1511,7 +1548,7 @@ bool UTXOIndex::SetMetadata(const std::string& key, const std::string& value) {
 }
 
 std::optional<std::string> UTXOIndex::GetMetadata(const std::string& key) const {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = "SELECT value FROM utxo_metadata WHERE key = ?";
     sqlite3_stmt* stmt = nullptr;
@@ -1539,7 +1576,8 @@ std::optional<std::string> UTXOIndex::GetMetadata(const std::string& key) const 
 }
 
 bool UTXOIndex::DeleteMetadata(const std::string& key) {
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    if (key.starts_with("runtime_delivery:")) return false;
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = "DELETE FROM utxo_metadata WHERE key = ?";
     sqlite3_stmt* stmt = nullptr;
@@ -1567,7 +1605,7 @@ bool UTXOIndex::DeleteMetadata(const std::string& key) {
 // Phase 11a: Get Utreexo position for proof generation
 std::optional<uint64_t> UTXOIndex::getUtreexoPosition(const TxId& txid, uint32_t vout) const {
     // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
-    std::lock_guard<std::mutex> lock(db_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     if (!stmt_get_position_) {
         g_logger.error("[UTXOIndex] getUtreexoPosition: stmt_get_position_ not prepared");

@@ -139,6 +139,15 @@ struct StateCommitmentLookup {
     uint256 root;        ///< meaningful only when status == Ok
 };
 
+// Explicit encoding selection only, never an activation decision. Existing
+// entry points below remain strictly legacy v1. The staged Orchard v2 encoding
+// has a different state preimage contract; an SHR1 root must not be substituted.
+enum class StateCommitmentEncoding : uint8_t { Legacy = 1, Orchard = 2 };
+static_assert(static_cast<uint8_t>(StateCommitmentEncoding::Legacy) == StateCommitment::VERSION);
+std::vector<uint8_t> BuildStateCommitmentScript(const uint256& root, StateCommitmentEncoding);
+std::optional<uint256> ParseStateCommitmentScript(const std::vector<uint8_t>&, StateCommitmentEncoding);
+StateCommitmentLookup FindStateCommitment(const Transaction&, StateCommitmentEncoding);
+
 /// Canonical encoder. The single place the byte layout is written.
 std::vector<uint8_t> BuildStateCommitmentScript(const uint256& root);
 

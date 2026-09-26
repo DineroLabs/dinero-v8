@@ -7,6 +7,9 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <memory>
+#include <thread>
+#include <span>
 #ifdef FFI_WALLET_ONLY
 // iOS doesn't support std::filesystem::path - use std::string instead
 #else
@@ -21,6 +24,7 @@
 #include "wallet/key_origin.h"  // Week 1 Day 5: KeyOriginInfo
 
 struct sqlite3; // forward decl
+struct sqlite3_mutex;
 
 // Forward declarations
 class HDWallet;
@@ -110,7 +114,7 @@ public:
 
     std::string current() const { return current_; }
     bool hasActiveWallet() const { return !current_.empty(); }
-    bool isLocked() const { return wallet_locked_; }
+    bool isLocked() const { std::lock_guard<std::recursive_mutex> lock(database_lifecycle_mutex_); return wallet_locked_; }
     std::string getCurrentWalletName() const { return current_; }
 
     // Labels and Address Book
@@ -227,7 +231,61 @@ public:
                          const std::array<uint8_t, 32>& output_pubkey,
                          const std::string& label);
 
-    // Database access for RPC handlers
+    // Pins the selected database against open/close/create and holds SQLite's
+    // recursive connection mutex across a complete wallet job. Existing raw
+    // SQLite callers cannot interleave statements with this lease. It does not
+    // make separate wallet databases atomic or acknowledge chain delivery.
+    class DatabaseLease;
+    // A recovery key copy is wiped on destruction. It must not be published or
+    // retained beyond the owning database lease by a recovery consumer.
+    class RecoverySeed {
+    public:
+        ~RecoverySeed() noexcept;
+        RecoverySeed(const RecoverySeed&) = delete;
+        RecoverySeed& operator=(const RecoverySeed&) = delete;
+        [[nodiscard]] std::span<const uint8_t> Bytes() const noexcept { return bytes_; }
+    private:
+        friend class DatabaseLease;
+        explicit RecoverySeed(WalletManager&, std::span<const uint8_t>);
+        WalletManager& owner_;
+        const std::thread::id thread_;
+        std::array<uint8_t, 64> bytes_{};
+    };
+    class DatabaseLease {
+    public:
+        ~DatabaseLease() noexcept;
+        DatabaseLease(const DatabaseLease&) = delete;
+        DatabaseLease& operator=(const DatabaseLease&) = delete;
+        [[nodiscard]] sqlite3* Database() const noexcept { return db_; }
+        [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
+        // Process-local identity only, never a durable delivery checkpoint.
+        [[nodiscard]] uint64_t Session() const noexcept { return session_; }
+        // Creates/reads a persistent database identity under this lease. Its
+        // checked transaction commits before any separate-store delivery.
+        // Does not certify key ownership, source history or recovery readiness.
+        [[nodiscard]] std::string EnsureDeliveryIdentity();
+        // Checks the intended session and unlock timeout under this lease.
+        // Refuses locked/missing keys; never reloads or unlocks the wallet.
+        // Keep this lease until effects encrypted with the returned key commit.
+        [[nodiscard]] std::unique_ptr<RecoverySeed> CopyRecoverySeed(uint64_t expected_session);
+    private:
+        friend class WalletManager;
+        explicit DatabaseLease(WalletManager&);
+        WalletManager& owner_;
+        std::unique_lock<std::recursive_mutex> lock_;
+        const std::thread::id thread_;
+        sqlite3* db_ = nullptr;
+        sqlite3_mutex* sqlite_mutex_ = nullptr;
+        std::string name_;
+        uint64_t session_ = 0;
+    };
+    // May return a lease with no selected database. Outermost entry refuses an
+    // already active transaction. Nested same-thread leases share the outer
+    // transaction; the last lease rolls back any transaction left open;
+    // commit must be checked by the caller before publishing memory/readiness.
+    [[nodiscard]] std::unique_ptr<DatabaseLease> AcquireDatabaseLease();
+
+    // Legacy borrowed access: this pointer alone does not pin wallet lifetime.
     sqlite3* getCurrentDatabase() const;
     
     // Wallet encryption/decryption
@@ -611,7 +669,9 @@ public:
     bool addTransaction(const std::string& txid, const std::string& address, double amount,
                        const std::string& category, bool is_coinbase = false,
                        const std::string& label = "", int64_t time = 0, uint32_t height = 0);
-    bool confirmTransaction(const std::string& txid, uint32_t height);
+    // False with an empty error means no matching history. Optional error
+    // distinguishes SQL failure for checked block delivery callers.
+    bool confirmTransaction(const std::string& txid, uint32_t height, std::string* error = nullptr);
 
     // Phase 36: Remove transactions from orphaned blocks during reorg
     bool removeTransactionsAtHeight(uint32_t height);
@@ -891,6 +951,8 @@ private:
     std::filesystem::path dataDir_;
 #endif
     std::string current_;
+    friend class RuntimeOrdinaryDelivery;
+    friend class RuntimeWalletRecovery;
     int current_wallet_id_ = -1;
 
     // ═══════════════════════════════════════════════════════════════
@@ -898,6 +960,11 @@ private:
     // ═══════════════════════════════════════════════════════════════
     sqlite3* db_ = nullptr;               // Current wallet's database (wallet_<name>.db)
     sqlite3* registry_db_ = nullptr;      // Wallet registry database (wallet_registry.db)
+    mutable std::recursive_mutex database_lifecycle_mutex_;
+    size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
+    size_t recovery_seeds_ = 0; // same lock; recovery seed must die before last lease
+    uint64_t database_session_ = 1; // same lock; invalidates queued jobs on replacement
+    void AdvanceDatabaseSession() noexcept;
     
     // Encryption state
     bool wallet_encrypted_ = false;

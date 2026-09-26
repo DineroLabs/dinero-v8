@@ -1,4 +1,5 @@
 #include "storage/chain_db.h"
+#include "storage/shielded_cf_comparator.h"
 #include "common/serialization.h"
 #include "common/json_adapter.h"
 #include "consensus/undo.h"
@@ -403,7 +404,8 @@ Status ChainDB::initAttempt(const std::filesystem::path& dir, bool allow_lock_re
         const std::unordered_set<std::string> found(names.begin(), names.end());
         if (found.size() != names.size()) return Status::Corruption;
         const bool separated = found.count(kShieldedFamily) != 0;
-        if (separated) descriptors.emplace_back(kShieldedFamily, descriptors[idx_utreexo_].options);
+        if (separated) descriptors.emplace_back(
+            kShieldedFamily, storage::ShieldedStateColumnFamilyOptions(descriptors[idx_utreexo_].options));
         for (const auto& name : names) {
             if (std::none_of(descriptors.begin(), descriptors.end(), [&](const auto& d) { return d.name == name; })) {
                 std::cerr << "ChainDB::init: Unsupported column family: " << name << '\n';
@@ -557,6 +559,14 @@ StatusOr<Block> ChainDB::getBlock(const uint256& hash) const {
     }
     
     return std::move(block);
+}
+
+StatusOr<std::vector<uint8_t>> ChainDB::getBlockEncoding(const uint256& hash) const {
+    if (!db_) return Status::Internal;
+    std::string value;
+    const auto status=db_->Get(rocksdb::ReadOptions(),cf_[idx_blocks_].get(),makeBlockKey(hash),&value);
+    if (!status.ok()) return convertRocksDBStatus(status);
+    return std::vector<uint8_t>(value.begin(),value.end());
 }
 
 Status ChainDB::hasBlock(const uint256& hash) const {

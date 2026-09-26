@@ -124,7 +124,7 @@ jobs:
       # feature flags that are OFF here (e.g. DINERO_ENABLE_QUIC) are not
       # registered at all and cannot be checked by this gate.
       - name: CTest integrity gate (registered => built)
-        run: python3 scripts/ci/check_ctest_integrity.py build-tests
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests --require-shielded-proof-tests
 
       # The execution gate's own parser self-test. It runs FIRST and needs no
       # build directory. The gate's answer is only as good as its model of how
@@ -136,6 +136,9 @@ jobs:
       # Running it as a plain step rather than registering it with CTest is
       # deliberate: a self-test for the unexecuted-test gate must not be able
       # to become an unexecuted test.
+      - name: Shielded proof registration self-test
+        run: python3 tests/cmake/test_shielded_proof_registration.py
+
       - name: Execution-gate parser self-test
         run: python3 scripts/ci/test_check_mandatory_tests_execute.py
 
@@ -188,6 +191,17 @@ jobs:
             .github/workflows/tests.yml \
             .github/workflows/core-heavy.yml \
             --baseline scripts/ci/unexecuted_tests_baseline.txt
+
+      # This storage test is registered even with the optional Orchard backend
+      # disabled. Its integration-staging label excludes it from the broad
+      # sweep; the separate Orchard workflow cannot qualify this build's lane.
+      - name: Run legacy retirement storage regression
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p build-tests/Testing/legacy-retirement
+          ctest --test-dir build-tests --output-on-failure --no-tests=error \
+            --output-log build-tests/Testing/legacy-retirement/ctest.log \
+            -R '^OrchardLegacyRetirement$'
 
       # Assertion-integrity ratchet (issue #497). tests/CMakeLists.txt appends
       # -UNDEBUG (/UNDEBUG on MSVC) to the Release test graph, and the
@@ -326,7 +340,7 @@ jobs:
           set +e
           failed=""
           ran=0
-          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
+          for t in CompactDefaultActivation PowEnforcedRegtest CheckpointForkAcceptance BlockAcceptorFeeLifecycle CsnCpfpDisconnect CsnReplayMetadataRecovery CsnReplayMetadataLocalUndo SixtySecondActivation SixtySecondShieldedLifecycle DaemonServiceRelease RPCListenerStartup CsnManualInvalidation CsnStoredProofRetry ColdStartConsensus MiningPolicyE2E CovenantWalletMultinodeLifecycle ContextualLocksLifecycle ParallelBlockDownloadTargeted CrossSeedRestartReorgParity CrossSeedTeardownLifecycle UtreexoLiveReorgStateRestoration SnapshotFormatPolicyRuntime SnapshotBindingMutations SnapshotNullifierRestart CSNSnapshotProofRestart CSNSnapshotHistory StateCommitmentMining CsnEpochResetCrashAtomicity ShieldedNullifierCrashBoundary ShieldedPromotionBoundary ShieldedOutgoingRecoveryLifecycle ShieldedAuthRelayLifecycle UtreexoBatchProofCanonicalCoins PrivateCovenantLifecycle ReconsiderRestartBoundary GenerationToctouBarrier InvalidityRestartSticky CSNShieldedReorgInvertibility AssumeUtxoCorruptCheckpointRecovery ConsensusIntrospectionRpc ConnectTipRestartEquivalence RecoveryMarkerRestartEquivalence RestartChurnBoringnessGate ShieldedRootMultinodeDeepReorg DeferredBaseChildForgedRoot MinorityTipHeaderRelay GetChainTipsValidFork; do
             echo "=== $t ==="
             ctest --test-dir build-tests \
               --output-on-failure \
@@ -843,7 +857,7 @@ jobs:
       # Same gate as the default lane, now over a registry that INCLUDES
       # the QUIC family: registered => built, in this configuration too.
       - name: CTest integrity gate (registered => built)
-        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic
+        run: python3 scripts/ci/check_ctest_integrity.py build-tests-quic --require-shielded-proof-tests
 
       - name: OpenSSL version assertion (policy pin 3.5.7)
         run: bash scripts/ci/check_openssl_version.sh build-tests-quic 3.5.7
