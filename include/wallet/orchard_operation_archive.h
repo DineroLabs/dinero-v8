@@ -72,6 +72,7 @@ public:
       const std::function<StatusOr<uint256>(uint32_t)> &selected_hash);
 
 private:
+  friend class OrchardAccountDelivery;
   orchard::WalletStorageIdentity RecordIdentity(const orchard::Hash &) const;
   void CheckCurrent(uint64_t, const OrchardAccountState &) const;
   sqlite3 *db_;

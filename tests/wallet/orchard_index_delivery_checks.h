@@ -1,6 +1,7 @@
 #pragma once
 #include "wallet/runtime_index_delivery.h"
 #include "wallet/runtime_wallet_recovery.h"
+#include "wallet/orchard_operation_archive.h"
 #include "wallet/utxo_index.h"
 #include "wallet/wallet_manager.h"
 #include <future>
@@ -196,6 +197,17 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
         const auto keys=orchard::WalletKeys::FromSeed(secret->Bytes(),0);
         const auto initial=dinero::wallet::OrchardAccountState::Begin(c.domain,keys.ExportFullViewingKey(),c.activation_height,c.parent_hash);
         auto issued=initial.IssueReceiver(orchard::WalletScope::External).first;
+        // A genuine pending shield intent conflicts with the included transaction's
+        // actual transparent inputs. Its completed archive shares this same DB.
+        const auto& auth=account_view->Authorizations(1).front();
+        const auto& tx=auth.Transaction();const auto& coins=auth.Transparent().Snapshot().Coins();
+        std::vector<orchard::ResolvedInput> resolved;
+        for(size_t i=0;i<tx.Inputs().size();++i){const auto& in=tx.Inputs()[i];const auto& coin=coins[i];
+            resolved.push_back({in.txid_wire,in.output_index,in.sequence,coin.value.GetUna(),coin.scriptPubKey});}
+        const auto signing=orchard::SigningContext::Create(c.domain,tx.LockTime(),resolved,tx.Outputs(),tx.ExplicitFee());
+        const std::vector<orchard::WalletPayment> payments{{5000,keys.Receiver(orchard::WalletScope::External,{})}};
+        auto pending=orchard::WalletBundlePlan::PrepareShield(keys,payments);
+        issued=issued.Reserve(orchard::Hash{219},pending.Intent(signing));
         orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
         CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
         orchard::WalletSnapshotStore::InitializeSchemaUnderTransaction(lease->Database());
@@ -209,6 +221,32 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
         account_view->Block(1),account_view->State(1),account_view->Authorizations(1));
     CHECK(account_first.account.Delivery().sequence==1&&account_first.account.ParentSnapshotRevision()==1);
     CHECK(account_first.account.Scan().BalanceUna()==5000);
+    {
+        const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(ordinary_session);
+        orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
+        CHECK(account_first.account.Observations().contains(orchard::Hash{219}));
+        CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        dinero::wallet::OrchardOperationArchive archive(lease->Database(),
+            {orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,0},c.domain,seed->Bytes());
+        auto archived=archive.StageCompleted(account_first.revision,account_first.account,orchard::Hash{219},account_view->Point(first.cursor).lookups);
+        CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        account_first={archived.revision,std::move(archived.account)};
+    }
+    CHECK(account_first.account.Archive().count==1&&account_first.account.Operations().Entries().empty());
+    const auto archived_enrolled=Account::ReadEnrolledForReplay(ordinary,ordinary_session,*account_view);
+    CHECK(archived_enrolled.size()==1&&archived_enrolled.front().state.account.Archive().count==1);
+    // Missing or tampered reachable archive rows must refuse, without writes.
+    const auto owned_id_hex=wallet_identity.substr(7);
+    ordinary_sql("CREATE TEMP TABLE saved_archive AS SELECT * FROM orchard_wallet_snapshots WHERE wallet_id!=X'"+owned_id_hex+"'");
+    CHECK(ordinary_count("SELECT count(*) FROM saved_archive")==1);
+    ordinary_sql("DELETE FROM orchard_wallet_snapshots WHERE wallet_id!=X'"+owned_id_hex+"'");
+    failure([&]{(void)Account::ReadEnrolledForReplay(ordinary,ordinary_session,*account_view);},"Orchard operation archive");
+    ordinary_sql("INSERT INTO orchard_wallet_snapshots SELECT * FROM saved_archive");
+    ordinary_sql("UPDATE orchard_wallet_snapshots SET sealed=zeroblob(length(sealed)) WHERE wallet_id!=X'"+owned_id_hex+"'");
+    failure([&]{(void)Account::ReadEnrolledForReplay(ordinary,ordinary_session,*account_view);},"Orchard wallet storage");
+    ordinary_sql("UPDATE orchard_wallet_snapshots SET sealed=(SELECT sealed FROM saved_archive) WHERE wallet_id!=X'"+owned_id_hex+"'");
+    CHECK(Account::ReadEnrolledForReplay(ordinary,ordinary_session,*account_view).size()==1);
+
     CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*account_view).revision==account_first.revision);
     const auto ordinary_first=RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);
     CHECK(ordinary_first.has_value());CHECK(ordinary_first->cursor==first.cursor);
@@ -518,6 +556,30 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(enrolled_recover(*multi_up_view).account_revisions.size()==3);
     CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*multi_up_view).account.Scan().BalanceUna()==5000);
     again=multi_up_view->Event(multi_up_view->Head().sequence);
+    // A fully authenticated archive revision change must be detected even when
+    // account source receipts stay unchanged and every store is caught up.
+    bool archive_changed=false;
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeEnrolled(*multi_up_view,[&](RuntimeOutboxCursor cursor,size_t n){
+        const auto page=source(cursor,n);
+        if(!archive_changed){
+            archive_changed=true;const auto lease=ordinary.AcquireDatabaseLease();
+            const auto enrolled=Account::ReadEnrolledForReplay(ordinary,ordinary_session,*multi_up_view);
+            CHECK(enrolled.front().archive_revisions.size()==1);
+            const auto id=enrolled.front().archive_revisions.front().first;
+            const auto seed=lease->CopyRecoverySeed(ordinary_session);
+            CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+            orchard::WalletSnapshotStore store(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,id,0},seed->Bytes());
+            auto before=store.Read();CHECK(before);
+            CHECK(store.StageReplace(before->revision,before->state)==before->revision+1);
+            CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        }
+        return page;
+    },ordinary,index,ordinary_session);},"stores changed during source read");
+    CHECK(archive_changed);
+    const auto authenticated_archive=Account::ReadEnrolledForReplay(ordinary,ordinary_session,*multi_up_view);
+    CHECK(authenticated_archive.front().archive_revisions.size()==1&&authenticated_archive.front().archive_revisions.front().second==2);
+    CHECK(enrolled_recover(*multi_up_view).account_revisions.size()==3);
+
     ordinary_sql("DROP TRIGGER runtime_ordinary_utxos_UPDATE");
     failure([&]{(void)RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);},"guard unavailable");
     ordinary_sql("CREATE TRIGGER runtime_ordinary_utxos_UPDATE AFTER UPDATE ON utxos BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END");

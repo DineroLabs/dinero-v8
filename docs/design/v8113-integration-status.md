@@ -8,6 +8,14 @@ its isolated datadir, authenticated RPC and clean shutdown. See
 `rpc-listener-startup-2026-09-26.md`. This does not complete the recovery/provider
 or activation-history requirements below.
 
+## Authenticated archive inventory (2026-09-26)
+
+Enrolled-account recovery now recognizes completed-operation records through
+actual authenticated archive links in the shared snapshot table, refuses
+unclaimed/missing/corrupt rows, and rechecks archive revisions during recovery.
+See `wallet-archive-inventory-recovery-2026-09-26.md`. This does not certify an
+account-complete baseline or automatically reactivate disconnected archives.
+
 ## Current recovery integration (2026-09-26)
 
 The service-owned immutable branch replay view and authenticated parent-revision

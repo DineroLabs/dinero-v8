@@ -1,5 +1,9 @@
 #include "wallet/orchard_account_delivery.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/orchard_operation_archive.h"
+#include <algorithm>
+#include <map>
+#include <set>
 #include "wallet/wallet_manager.h"
 #include <sqlite3.h>
 #include <openssl/crypto.h>
@@ -80,23 +84,29 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::ReadEnroll
     } rows;
     Check(sqlite3_prepare_v2(owner.lease->Database(),
         "SELECT wallet_id,account,revision FROM orchard_wallet_snapshots ORDER BY account",-1,&rows.p,nullptr)==SQLITE_OK);
-    std::vector<Enrolled> result;
+    using Locator=std::pair<orchard::Hash,uint32_t>;
+    std::map<Locator,uint64_t> inventory;
     int rc;
     while((rc=sqlite3_step(rows.p))==SQLITE_ROW){
-        // Never silently omit foreign identities or malformed account locators.
         Check(sqlite3_column_type(rows.p,0)==SQLITE_BLOB&&sqlite3_column_bytes(rows.p,0)==32);
-        Check(CRYPTO_memcmp(sqlite3_column_blob(rows.p,0),owner.identity.wallet_id.data(),32)==0);
         Check(sqlite3_column_type(rows.p,1)==SQLITE_INTEGER&&sqlite3_column_type(rows.p,2)==SQLITE_INTEGER);
         const auto number=sqlite3_column_int64(rows.p,1),revision=sqlite3_column_int64(rows.p,2);
         Check(number>=0&&number<0x80000000LL&&revision>0);
-        Check(result.empty()||result.back().number<uint32_t(number));
-        // Operational refusal, never truncation or a claim that a subset is ready.
+        orchard::Hash id{};std::copy_n(static_cast<const uint8_t*>(sqlite3_column_blob(rows.p,0)),32,id.begin());
+        // Operational refusal before effects, never a truncated inventory.
+        if(inventory.size()>=65536)throw std::runtime_error("Orchard account recovery inventory capacity exceeded");
+        Check(inventory.emplace(Locator{id,uint32_t(number)},uint64_t(revision)).second);
+    }
+    Check(rc==SQLITE_DONE);
+    std::vector<Enrolled> result;std::set<Locator> authenticated;
+    for(const auto& [locator,revision]:inventory){
+        if(locator.first!=owner.identity.wallet_id)continue;
         if(result.size()>=1024)throw std::runtime_error("Orchard account recovery capacity exceeded");
-        auto identity=owner.identity;identity.account=uint32_t(number);
+        auto identity=owner.identity;identity.account=locator.second;
         const auto keys=orchard::WalletKeys::FromSeed(owner.seed->Bytes(),identity.account);
         Owner::ViewingKey fvk(keys);
         orchard::WalletSnapshotStore store(owner.lease->Database(),identity,owner.seed->Bytes());
-        const auto saved=store.Read();Check(saved&&saved->revision==uint64_t(revision));
+        const auto saved=store.Read();Check(saved&&saved->revision==revision);
         const auto receipt=OrchardAccountState::ReadDeliveryMetadata(saved->state,context.domain,fvk.bytes,
             context.activation_height,view.Point({}).checkpoint.block_hash);
         if(!receipt.sequence)throw std::runtime_error("Wallet recovery account baseline reconciliation required");
@@ -104,10 +114,32 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::ReadEnroll
         auto account=OrchardAccountState::Restore(saved->state,context.domain,fvk.bytes,
             context.activation_height,point.checkpoint,point.lookups);
         Check(account.ParentSnapshotRevision()<saved->revision);
-        result.push_back({identity.account,{saved->revision,std::move(account)}});
+        Check(authenticated.insert(locator).second);
+        // Archive records deliberately use derived wallet IDs in this SAME
+        // snapshot table. Recognize only records reached from the restored
+        // account's authenticated head; unrelated rows remain a hard refusal.
+        std::vector<std::pair<orchard::Hash,uint64_t>> archive_revisions;
+        OrchardOperationArchive archive(owner.lease->Database(),identity,context.domain,owner.seed->Bytes());
+        auto cursor=archive.Begin(account);
+        Check(cursor.Remaining()<=inventory.size());
+        while(cursor.Remaining()){
+            const auto page=archive.List(cursor,64);
+            Check(!page.entries.empty());
+            for(const auto& located:page.entries){
+                const auto record=archive.Read(located.Id());
+                const auto record_identity=archive.RecordIdentity(located.Id());
+                const Locator record_locator{record_identity.wallet_id,record_identity.account};
+                const auto found=inventory.find(record_locator);
+                Check(found!=inventory.end()&&found->second==record.revision&&
+                    record.sequence==located.Sequence()&&authenticated.insert(record_locator).second);
+                archive_revisions.emplace_back(record_identity.wallet_id,record.revision);
+            }
+            cursor=page.next;
+        }
+        result.push_back({identity.account,{saved->revision,std::move(account)},std::move(archive_revisions)});
     }
-    Check(rc==SQLITE_DONE);
     if(result.empty())throw std::runtime_error("Wallet recovery account baseline reconciliation required");
+    Check(authenticated.size()==inventory.size());
     tx.Commit();return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Connect(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,

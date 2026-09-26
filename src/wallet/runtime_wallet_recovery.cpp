@@ -116,7 +116,8 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
         if(!Same(a.indexed,b.indexed)||!Same(a.ordinary,b.ordinary)||a.accounts.size()!=b.accounts.size())return false;
         for(size_t i=0;i<a.accounts.size();++i)
             if(a.accounts[i].number!=b.accounts[i].number||a.accounts[i].state.revision!=b.accounts[i].state.revision||
-               account_cursor(a.accounts[i])!=account_cursor(b.accounts[i]))return false;
+               account_cursor(a.accounts[i])!=account_cursor(b.accounts[i])||
+               a.accounts[i].archive_revisions!=b.accounts[i].archive_revisions)return false;
         return true;
     };
     const auto origin=view.Point({}).checkpoint;
