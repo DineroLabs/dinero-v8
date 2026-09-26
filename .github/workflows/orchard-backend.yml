@@ -234,6 +234,8 @@ jobs:
               raise SystemExit('Missing actual successful wallet-origin capture execution')
           if log.count('OrchardOriginAdoption dual domains/ordered receipts/rollback/reopen PASS') != 1:
               raise SystemExit('Missing actual wallet-origin adoption execution')
+          if log.count('OrchardOriginSignedSpends consensus history/first event/metadata/rollback/undo PASS') != 1:
+              raise SystemExit('Missing actual signed-spend origin recovery execution')
           PYCODE
       - name: Require and execute transparent mempool notification consumer
         run: |

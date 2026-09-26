@@ -600,6 +600,27 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64
     OrdinaryGuards(db,true);
     if(origin)OrdinaryOrigin(db,wallet.current_wallet_id_,scripts,*origin,true);
     if(event.direction==RuntimeBlockDirection::Disconnect) {
+        // Keep existing history for transactions that spent our coins. A
+        // disconnect removes confirmation, not the recorded local metadata.
+        // Inspect before deleting same-block creations, which can themselves
+        // be inputs to a later transaction in this block. This is history
+        // retention only, not pending admission or reservation restoration.
+        for(const auto& effect:effects) {
+            bool owned_spend=false;
+            const auto id=effect.id.AsUint256().GetHex();
+            for(const auto& point:effect.spent) {
+                Statement owned(db,"SELECT 1 FROM utxos WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=1 AND spent_txid=? AND spent_height=?");
+                owned.Int(1,wallet.current_wallet_id_);owned.Text(2,point.txid.AsUint256().GetHex());owned.Int(3,point.vout);
+                owned.Text(4,id);owned.Int(5,event.context.height);
+                const auto rc=sqlite3_step(owned.value);
+                if(rc==SQLITE_ROW) {owned_spend=true;if(sqlite3_step(owned.value)!=SQLITE_DONE)Fail("Ordinary undo spend history read failed");}
+                else if(rc!=SQLITE_DONE)Fail("Ordinary undo spend history read failed");
+            }
+            if(owned_spend) {
+                Statement retain(db,"UPDATE transactions SET height=0,confirmations=0 WHERE wallet_id=? AND txid=? AND height=?");
+                retain.Int(1,wallet.current_wallet_id_);retain.Text(2,id);retain.Int(3,event.context.height);retain.Done();
+            }
+        }
         OrdinaryInt(db,"DELETE FROM utxos WHERE height=?",event.context.height);
         OrdinaryInt(db,"DELETE FROM transactions WHERE height=?",event.context.height);
         for(const auto& effect:effects)for(const auto& point:effect.spent) {

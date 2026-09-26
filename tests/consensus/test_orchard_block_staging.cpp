@@ -1297,7 +1297,8 @@ int main(int argc,char**argv) {
 #endif
 #ifdef DINERO_TEST_ORCHARD_SERVICE_STARTUP
         if(argc==3 && std::string(argv[1])=="--service-delivery-source") {
-            ServiceOriginCaptureChecks();
+            ServiceOriginCaptureChecks(argv[2]);
+            ServiceOriginCaptureChecks(argv[2],true);
             AtomicForest(argv[2],false,{},true,true,ServiceDeliverySourceChecks);
             AtomicForest(argv[2],true,{},true,true,ServiceDeliverySourceChecks);
             std::cout<<"OrchardServiceDeliverySource PASS\n";return 0;

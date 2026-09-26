@@ -1,3 +1,13 @@
+## Signed-spend recovery and history undo (2026-09-26)
+
+A new actual service case covers independently replayed signed pre-origin spends,
+first-event owned change spends, existing send metadata and ordinary undo. It
+exposed deletion of the existing send history on disconnect. Checked ordinary
+recovery now unconfirms that history using exact owned input/spender facts in the
+same transaction as coin undo and the existing receipt. The full daemon, three
+affected CTests, fresh 203-project-C++ sanitizer build and copied controls pass.
+Exact Linux qualification remains pending. See [scope and checks](wallet-origin-signed-spends-2026-09-26.md).
+
 ## Optional backend build correction (2026-09-26)
 
 The backend-OFF full/QUIC PR builds exposed unconditional Orchard header imports.
