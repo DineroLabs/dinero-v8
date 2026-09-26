@@ -1,3 +1,12 @@
+## First-event history preflight (2026-09-26)
+
+Known-script origin adoption now refuses missing originating history for an
+owned spend in actual event 1 before the independent index commits. The writer
+and first-event retry also check it. No categories, fees or pending ownership are
+inferred. The full daemon, three affected CTests, fresh 203-project-C++ sanitizer
+build and copied controls pass. Exact Linux qualification remains pending; see
+[scope](wallet-origin-first-history-2026-09-26.md).
+
 ## Signed-spend recovery and history undo (2026-09-26)
 
 A new actual service case covers independently replayed signed pre-origin spends,

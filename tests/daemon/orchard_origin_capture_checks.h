@@ -175,6 +175,12 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
         const auto old_id=historical_spend.GetTxid().AsUint256().GetHex();
         const auto first_id=boundary_spend.GetTxid().AsUint256().GetHex();
         CHECK(wallet.addTransaction(old_id,"local self transfer",-0.00000123,"send",false,"origin label",123456,0));
+        // Pre-origin history alone cannot account for a new owned spend in
+        // event 1. Refuse before the independent index can commit a prefix.
+        CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**source)!=Status::Ok);
+        CHECK(!RuntimeIndexDelivery::ReadForWallet(wallet,wallet_index,session));
+        CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(wallet,session));
+        std::cout<<"OrchardOriginFirstHistory missing first-event metadata refuses before stores PASS\n";
         CHECK(wallet.addTransaction(first_id,"pending self transfer",-0.00000123,"send",false,"boundary label",123457,0));
         const auto pending_id=H(240).GetHex();
         CHECK(wallet.addTransaction(pending_id,"unconfirmed local record",-0.00000123,"send",false,"pending label",123458,0));

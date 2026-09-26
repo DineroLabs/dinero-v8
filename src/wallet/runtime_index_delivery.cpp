@@ -391,7 +391,8 @@ std::optional<Receipt> OrdinaryRead(sqlite3* db,const std::string& identity,cons
 // originated history require explicit reconciliation, never guessed categories
 // or blanket deletion. Live lock/abandonment sets are not touched here.
 void OrdinaryOrigin(sqlite3* db,int wallet_id,const OrdinaryOwnership& scripts,
-                    const RuntimeWalletOriginProjection& source,bool write,const RuntimeOutboxEvent* applied=nullptr) {
+                    const RuntimeWalletOriginProjection& source,bool write,const RuntimeOutboxEvent* applied=nullptr,
+                    const RuntimeOutboxEvent* first_event=nullptr) {
     const auto text=[](sqlite3_stmt* row,int n) {
         const auto* p=reinterpret_cast<const char*>(sqlite3_column_text(row,n));
         return p?std::string(p,sqlite3_column_bytes(row,n)):std::string();
@@ -439,6 +440,25 @@ void OrdinaryOrigin(sqlite3* db,int wallet_id,const OrdinaryOwnership& scripts,
         if(sqlite3_column_int64(txs.value,2)>0 && !history.count(id) && !first_ids.count(id))Fail("Origin orphan history reconciliation required");
     }
     if(rc!=SQLITE_DONE)Fail("Origin history inventory failed");
+    // Event 1 can spend a pre-origin owned coin, or a known owned output
+    // created earlier in that same event. Existing local history is required
+    // for either case; selected-chain amounts cannot establish send metadata.
+    if(!first_event)first_event=applied;
+    if(first_event) {
+        if(first_event->cursor.sequence!=1 || first_event->direction!=RuntimeBlockDirection::Connect)
+            Fail("Origin first history event mismatch");
+        std::set<TxOutPoint> owned;
+        for(const auto& [point,coin]:source.Coins())
+            if(!coin.spent && scripts.addresses.count(coin.output.scriptPubKey))owned.insert(point);
+        for(const auto& effect:Effects(*first_event)) {
+            bool spends=false;
+            for(const auto& point:effect.spent)spends|=owned.erase(point)!=0;
+            if(spends && !existing.count(effect.id.AsUint256().GetHex()))
+                Fail("Origin first-event originated history reconciliation required");
+            for(const auto& output:effect.created)
+                if(scripts.addresses.count(output.script))owned.insert(TxOutPoint{output.txid,output.n});
+        }
+    }
     for(const auto& [id,h]:history) {
         bool spends=false,receives=false;uint64_t credit=0;std::string address;
         for(const auto& in:h->transaction.vin) {
@@ -554,7 +574,7 @@ void RuntimeOrdinaryDelivery::AdoptOrigin(WalletManager& wallet,UTXOIndex& index
       if(receipt) {
           if(receipt->progress.cursor!=source.first_.cursor)Fail("Origin adoption already advanced");
           OrdinaryOrigin(lease->Database(),wallet.current_wallet_id_,domain,source,false,&source.first_);
-      } else OrdinaryOrigin(lease->Database(),wallet.current_wallet_id_,domain,source,false);
+      } else OrdinaryOrigin(lease->Database(),wallet.current_wallet_id_,domain,source,false,nullptr,&source.first_);
       transaction.Commit(); }
     // Index holds its script/database locks through ordinary commit, while the
     // actual wallet lease pins the other domain. A failed second store leaves
@@ -598,7 +618,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64
         Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_invalid INTEGER NOT NULL DEFAULT 0");
     }
     OrdinaryGuards(db,true);
-    if(origin)OrdinaryOrigin(db,wallet.current_wallet_id_,scripts,*origin,true);
+    if(origin)OrdinaryOrigin(db,wallet.current_wallet_id_,scripts,*origin,true,nullptr,&origin->first_);
     if(event.direction==RuntimeBlockDirection::Disconnect) {
         // Keep existing history for transactions that spent our coins. A
         // disconnect removes confirmation, not the recorded local metadata.
