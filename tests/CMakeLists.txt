@@ -12382,8 +12382,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_proof_staleness.cpp)
     ${CMAKE_SOURCE_DIR}/src
   )
   if(APPLE)
-    target_compile_definitions(test_mempool_proof_staleness PRIVATE DINERO_TEST_REAL_COINS_VIEW=1)
-  target_link_libraries(test_mempool_proof_staleness PRIVATE
+    target_link_libraries(test_mempool_proof_staleness PRIVATE
       "-framework Security"
       "-framework CoreFoundation"
     )
