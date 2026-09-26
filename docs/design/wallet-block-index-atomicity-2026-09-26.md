@@ -76,3 +76,15 @@ cross-boundary recovery and all-consumer readiness still need the production
 owner. The index opener's WAL synchronous policy is unchanged; this is SQL
 failure atomicity, not power-loss qualification. No Orchard provider, activation,
 production database or installed binary is changed by this work.
+
+### Declared test target correction
+
+The first Linux workflow stopped while linking WalletDatabaseLease: the CMake
+executable omitted `wallet_worker.cpp`, which belongs to the daemon core rather
+than the wallet library. The earlier local review harness supplied that object
+directly, so its passing execution did not verify the declared target's complete
+link inputs. The target now explicitly compiles the real worker. A fresh CMake
+configuration, the actual `cmake --build ... --target test_wallet_database_lease`
+command and its CTest registration pass without manually injecting any objects.
+Linux qualification of the correction remains a separate required result. No
+assertion, timeout or production behavior was changed by this build repair.

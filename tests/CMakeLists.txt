@@ -5971,6 +5971,7 @@ if(NOT WIN32)
 
   add_executable(test_wallet_database_lease
     tests/wallet/test_wallet_database_lease.cpp
+    src/wallet/wallet_worker.cpp
     src/daemon/lightning_stubs.cpp
     tests/stubs/mempool_test_stubs.cpp
     tests/stubs/vault_test_stubs.cpp
