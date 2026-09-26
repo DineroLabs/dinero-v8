@@ -12360,11 +12360,13 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_proof_staleness.cpp)
   add_executable(test_mempool_proof_staleness
     tests/mempool/test_mempool_proof_staleness.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
+    src/mempool/coins_view_mempool.cpp
     src/daemon/mempool.cpp
     src/mining/address_validator.cpp
     src/daemon/bech32_decode.cpp
     src/common/logger.cpp
   )
+  target_compile_definitions(test_mempool_proof_staleness PRIVATE DINERO_TEST_REAL_COINS_VIEW=1)
   target_link_libraries(test_mempool_proof_staleness PRIVATE
     dinero_chainstate
     dinero_consensus
@@ -12380,7 +12382,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_proof_staleness.cpp)
     ${CMAKE_SOURCE_DIR}/src
   )
   if(APPLE)
-    target_link_libraries(test_mempool_proof_staleness PRIVATE
+    target_compile_definitions(test_mempool_proof_staleness PRIVATE DINERO_TEST_REAL_COINS_VIEW=1)
+  target_link_libraries(test_mempool_proof_staleness PRIVATE
       "-framework Security"
       "-framework CoreFoundation"
     )

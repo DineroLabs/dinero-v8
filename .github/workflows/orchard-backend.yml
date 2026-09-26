@@ -207,7 +207,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute all root Orchard lanes
         run: |
@@ -225,6 +225,19 @@ jobs:
                   raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
           PYCODE
           ctest --test-dir build-orchard-root -R '^(OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardMemoryPublication|OrchardStateCommitment|OrchardStateRoot|OrchardLegacyAccounting|OrchardRuntimeReader|OrchardRuntimeOutbox|OrchardCommitOwner|OrchardIndexedCommit|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardServiceReorgPlan|OrchardServiceForkPoint|OrchardServiceConnect|OrchardServiceDisconnect|OrchardServicePersistence|OrchardServiceStartup|OrchardServiceUndoCoverage|OrchardBlockFilter|OrchardWalletScan|OrchardLegacyBoundary|OrchardLegacyRetirement)$' --output-on-failure --no-tests=error --output-log orchard-root-execution.log
+      - name: Require and execute transparent mempool notification consumer
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolProofStaleness$' --show-only=json-v1 > orchard-mempool-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-mempool-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['MempoolProofStaleness']:
+              raise SystemExit('Missing transparent mempool notification consumer test')
+          props = {p['name']: p['value'] for p in tests[0].get('properties', [])}
+          if props.get('DISABLED'):
+              raise SystemExit('Disabled transparent mempool notification consumer test')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^MempoolProofStaleness$' --output-on-failure --no-tests=error --output-log orchard-mempool-execution.log
       - name: Require and execute shared flatfile compatibility lanes
         run: |
           ctest --test-dir build-orchard-root -R '^(BlockStorageRoundTrip|ArchivalBlockReader)$' --show-only=json-v1 > orchard-flatfile-inventory.json
@@ -276,6 +289,8 @@ jobs:
             orchard-root-source.txt
             orchard-root-inventory.json
             orchard-root-execution.log
+            orchard-mempool-inventory.json
+            orchard-mempool-execution.log
             orchard-flatfile-inventory.json
             orchard-flatfile-execution.log
             orchard-service-persistence-inventory.json

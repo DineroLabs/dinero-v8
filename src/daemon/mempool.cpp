@@ -2817,22 +2817,46 @@ size_t Mempool::onBlockConnected(const ConnectedBlockEffects& effects, uint32_t 
     std::unordered_set<uint256> confirmed_txids(
         effects.confirmed_txids.begin(), effects.confirmed_txids.end());
 
-    // 3. Find conflicting mempool TXs (double-spends) and confirmed TXs
+    // Collect the entire conflicting branch BEFORE removal changes dependency
+    // indexes. A confirmed parent merely moved into chainstate; its children
+    // remain eligible. An unconfirmed conflicting parent and all its children
+    // must leave together. Use actual stored prevouts so recovery/test entries
+    // with no cached parent index receive the same reconciliation.
+    std::unordered_map<uint256, std::vector<uint256>> children;
+    std::unordered_set<uint256> conflicts;
+    std::vector<uint256> conflict_queue;
     std::vector<uint256> to_remove;
+    to_remove.reserve(m_transactions.size());
     for (const auto& [txid, entry] : m_transactions) {
-        // Remove if confirmed in this block
-        if (confirmed_txids.count(txid) > 0) {
+        if (confirmed_txids.count(txid)) {
             to_remove.push_back(txid);
             continue;
         }
-        // Remove if any input conflicts with block
         for (const auto& spent : entry.spends) {
-            if (block_spends.count(spent) > 0) {
-                to_remove.push_back(txid);
+            if (block_spends.count(spent)) {
+                conflicts.insert(txid);
+                conflict_queue.push_back(txid);
                 break;
             }
         }
     }
+    if (!conflict_queue.empty()) {
+        for (const auto& [txid, entry] : m_transactions) {
+            for (const auto& spent : entry.spends) {
+                const auto& parent = spent.txid.AsUint256();
+                if (m_transactions.count(parent)) children[parent].push_back(txid);
+            }
+        }
+    }
+    for (size_t i = 0; i < conflict_queue.size(); ++i) {
+        const auto found = children.find(conflict_queue[i]);
+        if (found == children.end()) continue;
+        for (const auto& child : found->second) {
+            if (!confirmed_txids.count(child) && conflicts.insert(child).second)
+                conflict_queue.push_back(child);
+        }
+    }
+    to_remove.insert(to_remove.end(), conflict_queue.begin(), conflict_queue.end());
 
     // 4. Remove conflicting and confirmed TXs
     size_t evicted = 0;

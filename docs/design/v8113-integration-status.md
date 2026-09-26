@@ -12,7 +12,10 @@ This branch collects release implementation for review and qualification against
 - Transparent mempool reconciliation now accepts typed connected-block effects.
   The mixed-body adapter extracts actual Orchard and ordinary transaction IDs
   and transparent prevouts; the existing historical callback delegates to the
-  same eviction/staleness path. This is a prerequisite for production block
+  same eviction/staleness path. Both callbacks remove the full unconfirmed
+  descendant branch of a conflict while retaining children of confirmed
+  transactions; replay leaves survivors intact. The focused test uses the real
+  coin overlay and runs explicitly in the Orchard CI workflow. This is a prerequisite for production block
   notification, not Orchard admission: nullifier conflicts, wallet events,
   relay and production notification providers remain open.
 - Daemon stored-body queries now have selected-height typed routing under the

@@ -207,6 +207,44 @@ static void test_typed_block_effects_reconcile_transparent_pool() {
     TEST_ASSERT(pool.getStats().last_connected_height == 11, "Connected height must advance");
 }
 
+// Notifications must remove the entire branch of an unconfirmed conflict,
+// but retain children of a transaction which actually confirmed. Test both
+// the shared typed effect path and its historical adapter, including replay.
+static void test_block_effects_remove_conflict_descendants(bool typed) {
+    Mempool pool(nullptr);
+    const auto source = makeTxId(280);
+    auto conflict = makeTx({{source, 0}}, 8000);
+    conflict.vout.push_back(conflict.vout.front());
+    const auto conflict_id = addTxToMempool(pool, conflict);
+    const auto left = addTxToMempool(pool, makeTx({{TxId(conflict_id), 0}}, 6000));
+    const auto right = addTxToMempool(pool, makeTx({{TxId(conflict_id), 1}}, 5000));
+    const auto join = addTxToMempool(pool, makeTx({{TxId(left), 0}, {TxId(right), 0}}, 4000));
+    const auto leaf = addTxToMempool(pool, makeTx({{TxId(join), 0}}, 3000));
+    const auto confirmed = makeTx({{makeTxId(281), 0}}, 7000);
+    const auto confirmed_id = addTxToMempool(pool, confirmed);
+    const auto surviving_child = addTxToMempool(pool, makeTx({{TxId(confirmed_id), 0}}, 6000));
+    const auto independent = addTxToMempool(pool, makeTx({{makeTxId(282), 0}}, 5000));
+    pool.refreshProof(surviving_child, makeFakeRoot(0x50), 10);
+    pool.refreshProof(independent, makeFakeRoot(0x50), 10);
+    ConnectedBlockEffects effects;
+    effects.confirmed_txids = {confirmed_id};
+    effects.spent_transparent_inputs = {OutPoint(source, 0)};
+    const auto block = makeBlock(11, {makeTx({{source, 0}}, 7500), confirmed});
+    const auto apply = [&] {
+        return typed ? pool.onBlockConnected(effects, 11, makeFakeRoot(0x51))
+                     : pool.onBlockConnected(block, 11, makeFakeRoot(0x51));
+    };
+    TEST_ASSERT(apply() == 5, "Conflict eviction must include each descendant exactly once");
+    for (const auto& id : {conflict_id, left, right, join, leaf, confirmed_id})
+        TEST_ASSERT(!pool.hasTransaction(id), "Removed branch and confirmed TX must be absent");
+    TEST_ASSERT(pool.hasTransaction(surviving_child), "Child of confirmed TX must survive");
+    TEST_ASSERT(pool.hasTransaction(independent), "Independent TX must survive");
+    TEST_ASSERT(pool.size() == 2 && pool.getStaleCount() == 2, "Surviving proofs must be stale");
+    TEST_ASSERT(pool.getCoinsView().createdCount() == 2, "Removed descendant outputs must leave overlay");
+    TEST_ASSERT(pool.getCoinsView().spentCount() == 2, "Removed descendant inputs must leave overlay");
+    TEST_ASSERT(apply() == 0 && pool.size() == 2, "Replayed notification must preserve survivors");
+}
+
 // Test 4: no staleness without root
 static void test_no_staleness_without_root() {
     std::cout << "Test 4: no staleness without root..." << std::endl;
@@ -522,6 +560,8 @@ int main() {
     test_conflict_eviction();
     test_confirmed_tx_removed();
     test_typed_block_effects_reconcile_transparent_pool();
+    test_block_effects_remove_conflict_descendants(true);
+    test_block_effects_remove_conflict_descendants(false);
     test_no_staleness_without_root();
     test_addunchecked_rejects_private_transactions();
     test_refresh_clears_staleness();
