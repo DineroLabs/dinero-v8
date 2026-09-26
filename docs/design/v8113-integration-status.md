@@ -1,3 +1,14 @@
+## Same-block originated history (2026-09-26)
+
+The actual service fixture now qualifies signed parent/child spends within the
+first canonical event: missing child metadata refuses before either receipt,
+ordered adoption survives reopen, and failures after parent effects or parent
+unconfirmation roll back ordinary state. Actual undo/reconnect preserves both
+send records. Production code is unchanged. Fresh declared builds, full daemon,
+three CTests, all 203 linked project C++ sanitizer units and two copied controls
+pass. Exact Linux remains pending. This does not complete discovery, pending
+ownership or provider integration; see [scope](wallet-origin-same-block-2026-09-26.md).
+
 ## First-event history preflight (2026-09-26)
 
 Known-script origin adoption now refuses missing originating history for an

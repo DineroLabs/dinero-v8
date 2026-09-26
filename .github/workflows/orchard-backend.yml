@@ -238,6 +238,8 @@ jobs:
               raise SystemExit('Missing actual signed-spend origin recovery execution')
           if log.count('OrchardOriginFirstHistory missing first-event metadata refuses before stores PASS') != 1:
               raise SystemExit('Missing actual first-event originated-history preflight execution')
+          if log.count('OrchardOriginSameBlock signed child/history preflight/rollback/undo/reconnect PASS') != 1:
+              raise SystemExit('Missing actual same-block originated-history recovery execution')
           PYCODE
       - name: Require and execute transparent mempool notification consumer
         run: |

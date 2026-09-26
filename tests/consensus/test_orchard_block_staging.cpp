@@ -1299,6 +1299,7 @@ int main(int argc,char**argv) {
         if(argc==3 && std::string(argv[1])=="--service-delivery-source") {
             ServiceOriginCaptureChecks(argv[2]);
             ServiceOriginCaptureChecks(argv[2],true);
+            ServiceOriginCaptureChecks(argv[2],true,true);
             AtomicForest(argv[2],false,{},true,true,ServiceDeliverySourceChecks);
             AtomicForest(argv[2],true,{},true,true,ServiceDeliverySourceChecks);
             std::cout<<"OrchardServiceDeliverySource PASS\n";return 0;

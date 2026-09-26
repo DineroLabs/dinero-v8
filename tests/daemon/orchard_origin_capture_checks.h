@@ -10,7 +10,8 @@
 
 // A separate, genesis-bound regtest history. Unlike AtomicForest's deliberately
 // synthetic prehistory, every origin ancestor passes the owned replay engine.
-static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool signed_history=false) {
+static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool signed_history=false, bool same_block=false) {
+    CHECK(!same_block || signed_history);
     using Access=dinero::ShieldedStateStartupTestAccess;
     struct Restore { ChainParams p; NodeConfig c; ~Restore(){MutableParams()=p;GetConfig()=c;} } restore{Params(),GetConfig()};
     auto& params=MutableParams();
@@ -18,7 +19,7 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
     const uint32_t origin_height=activation_height-1;
     const Fixture keys(fixture_base);
     const auto signed_script=keys.view.coins.at(Point(keys.inputs[0])).scriptPubKey;
-    Transaction historical_spend,boundary_spend;
+    Transaction historical_spend,boundary_spend,boundary_child;
     params.orchard_activation_height=activation_height;params.orchard_branch_id=0xa1b2c3d4;
     params.shielded_activation_height=1;
     params.state_commitment_activation_height=UINT32_MAX;
@@ -121,6 +122,12 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
         const auto* coin=live.GetCoin(change);CHECK(coin && !coin->isCoinbase);
         boundary_spend=Child(change,*coin,keys);
         boundary_transactions.push_back(Wire(boundary_spend));
+        if(same_block) {
+            const auto& output=boundary_spend.vout.at(0);
+            const UTXOEntry created(output.value,output.scriptPubKey,activation_height,false);
+            boundary_child=Child(OutPoint(boundary_spend.GetTxid(),0),created,keys);
+            boundary_transactions.push_back(Wire(boundary_child));
+        }
     }
     auto bare=WithParentTiming(CandidateWires(context,boundary_transactions),parent);context.block_hash=bare.Header().GetHash();
     const auto initial=PrepareOrchardBlockCoinsUnderChainstateLock(bare,context,view,{},true);
@@ -180,13 +187,24 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
         CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**source)!=Status::Ok);
         CHECK(!RuntimeIndexDelivery::ReadForWallet(wallet,wallet_index,session));
         CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(wallet,session));
-        std::cout<<"OrchardOriginFirstHistory missing first-event metadata refuses before stores PASS\n";
+        if(!same_block)std::cout<<"OrchardOriginFirstHistory missing first-event metadata refuses before stores PASS\n";
         CHECK(wallet.addTransaction(first_id,"pending self transfer",-0.00000123,"send",false,"boundary label",123457,0));
+        const auto child_id=same_block?boundary_child.GetTxid().AsUint256().GetHex():std::string();
+        if(same_block) {
+            // The second signed transaction spends an output created earlier
+            // in the same canonical event, absent from the origin projection.
+            CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**source)!=Status::Ok);
+            CHECK(!RuntimeIndexDelivery::ReadForWallet(wallet,wallet_index,session));
+            CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(wallet,session));
+            CHECK(wallet.addTransaction(child_id,"same block self transfer",-0.00000123,"send",false,"child label",123459,0));
+        }
         const auto pending_id=H(240).GetHex();
         CHECK(wallet.addTransaction(pending_id,"unconfirmed local record",-0.00000123,"send",false,"pending label",123458,0));
         // Local metadata is fixture setup through the real API; neither history
         // rows nor this test establish a durable pending/broadcast owner.
-        CHECK(sqlite3_exec(wallet.getCurrentDatabase(),"CREATE TRIGGER reject_signed_spend BEFORE UPDATE OF is_spent ON utxos WHEN NEW.spent_height=103 BEGIN SELECT RAISE(ABORT,'signed event failure'); END",nullptr,nullptr,nullptr)==SQLITE_OK);
+        const std::string spend_failure="CREATE TRIGGER reject_signed_spend BEFORE UPDATE OF is_spent ON utxos WHEN NEW.spent_height=103"+
+            (same_block?" AND NEW.spent_txid='"+child_id+"'":std::string())+" BEGIN SELECT RAISE(ABORT,'signed event failure'); END";
+        CHECK(sqlite3_exec(wallet.getCurrentDatabase(),spend_failure.c_str(),nullptr,nullptr,nullptr)==SQLITE_OK);
         CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**source)!=Status::Ok);
         CHECK(RuntimeIndexDelivery::ReadForWallet(wallet,wallet_index,session)->cursor==(*source)->FirstCursor());
         CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(wallet,session));
@@ -211,9 +229,15 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
         };
         metadata(old_id,"local self transfer","origin label",123456,101);
         metadata(first_id,"pending self transfer","boundary label",123457,activation_height);
-        CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==2);
+        CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")== (same_block?3:2));
         CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE spent_height=101 AND spent_txid='"+old_id+"'")==1);
         CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE spent_height=103 AND spent_txid='"+first_id+"'")==1);
+        if(same_block) {
+            metadata(child_id,"same block self transfer","child label",123459,activation_height);
+            CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE txid='"+first_id+"' AND spent_txid='"+child_id+"' AND spent_height=103")==1);
+            CHECK(wallet_index.GetUTXO(boundary_spend.GetTxid(),0)->spend_height==activation_height);
+            CHECK(!wallet_index.GetUTXO(boundary_child.GetTxid(),0)->spend_height);
+        }
         CHECK(scalar("SELECT COUNT(*) FROM transactions WHERE category='receive'")==0);
         // Undo the actual canonical boundary, then consume its checked outbox
         // event. Origin history stays confirmed; boundary local metadata must
@@ -226,18 +250,26 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
         RuntimeIndexDelivery::ApplyForWallet(wallet,wallet_index,current_session,event);
         // Unconfirmation and coin undo must roll back together if SQL fails,
         // while the separately committed index prefix remains retryable.
-        CHECK(sqlite3_exec(wallet.getCurrentDatabase(),"CREATE TRIGGER reject_unconfirm BEFORE UPDATE OF height ON transactions WHEN OLD.height=103 AND NEW.height=0 BEGIN SELECT RAISE(ABORT,'unconfirmation failure'); END",nullptr,nullptr,nullptr)==SQLITE_OK);
+        const std::string undo_failure="CREATE TRIGGER reject_unconfirm BEFORE UPDATE OF height ON transactions WHEN OLD.height=103 AND NEW.height=0"+
+            (same_block?" AND OLD.txid='"+child_id+"'":std::string())+" BEGIN SELECT RAISE(ABORT,'unconfirmation failure'); END";
+        CHECK(sqlite3_exec(wallet.getCurrentDatabase(),undo_failure.c_str(),nullptr,nullptr,nullptr)==SQLITE_OK);
         bool refused=false;try{RuntimeOrdinaryDelivery::ApplyForWallet(wallet,current_session,event);}catch(const std::runtime_error&){refused=true;}
         CHECK(refused);
         CHECK(RuntimeOrdinaryDelivery::ReadForWallet(wallet,current_session)->cursor==(*retry)->FirstCursor());
-        CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==2);
+        CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")== (same_block?3:2));
         metadata(first_id,"pending self transfer","boundary label",123457,activation_height);
+        if(same_block)metadata(child_id,"same block self transfer","child label",123459,activation_height);
         CHECK(sqlite3_exec(wallet.getCurrentDatabase(),"DROP TRIGGER reject_unconfirm",nullptr,nullptr,nullptr)==SQLITE_OK);
         wallet.open("origin");const auto undo_session=wallet.AcquireDatabaseLease()->Session();
         RuntimeIndexDelivery::ApplyForWallet(wallet,wallet_index,undo_session,event);
         RuntimeOrdinaryDelivery::ApplyForWallet(wallet,undo_session,event);
         metadata(old_id,"local self transfer","origin label",123456,101);
         metadata(first_id,"pending self transfer","boundary label",123457,0);
+        if(same_block) {
+            metadata(child_id,"same block self transfer","child label",123459,0);
+            CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE txid='"+child_id+"'")==0);
+            CHECK(!wallet_index.GetUTXO(boundary_child.GetTxid(),0));
+        }
         CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==1);
         CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE txid='"+old_id+"' AND is_spent=0 AND spent_txid IS NULL AND spent_height IS NULL")==1);
         CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE txid='"+first_id+"'")==0);
@@ -256,8 +288,12 @@ static void ServiceOriginCaptureChecks(const std::string& fixture_base, bool sig
         metadata(first_id,"pending self transfer","boundary label",123457,activation_height);
         metadata(pending_id,"unconfirmed local record","pending label",123458,0);
         CHECK(RuntimeOrdinaryDelivery::ReadForWallet(wallet,undo_session)->cursor==again.cursor);
-        CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==2);
-        std::cout<<"OrchardOriginSignedSpends consensus history/first event/metadata/rollback/undo PASS\n";
+        CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")== (same_block?3:2));
+        if(same_block) {
+            metadata(child_id,"same block self transfer","child label",123459,activation_height);
+            CHECK(scalar("SELECT COUNT(*) FROM utxos WHERE txid='"+first_id+"' AND spent_txid='"+child_id+"' AND spent_height=103")==1);
+            std::cout<<"OrchardOriginSameBlock signed child/history preflight/rollback/undo/reconnect PASS\n";
+        } else std::cout<<"OrchardOriginSignedSpends consensus history/first event/metadata/rollback/undo PASS\n";
         return;
     }
     struct Observe { ChainstateService* service; unsigned reads=0; bool unlocked=true; } observe{&service};
