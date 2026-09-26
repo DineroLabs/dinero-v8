@@ -241,6 +241,8 @@ public:
         DatabaseLease& operator=(const DatabaseLease&) = delete;
         [[nodiscard]] sqlite3* Database() const noexcept { return db_; }
         [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
+        // Process-local identity only, never a durable delivery checkpoint.
+        [[nodiscard]] uint64_t Session() const noexcept { return session_; }
     private:
         friend class WalletManager;
         explicit DatabaseLease(WalletManager&);
@@ -250,6 +252,7 @@ public:
         sqlite3* db_ = nullptr;
         sqlite3_mutex* sqlite_mutex_ = nullptr;
         std::string name_;
+        uint64_t session_ = 0;
     };
     // May return a lease with no selected database. Outermost entry refuses an
     // already active transaction. Nested same-thread leases share the outer
@@ -932,6 +935,8 @@ private:
     sqlite3* registry_db_ = nullptr;      // Wallet registry database (wallet_registry.db)
     mutable std::recursive_mutex database_lifecycle_mutex_;
     size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
+    uint64_t database_session_ = 1; // same lock; invalidates queued jobs on replacement
+    void AdvanceDatabaseSession() noexcept;
     
     // Encryption state
     bool wallet_encrypted_ = false;

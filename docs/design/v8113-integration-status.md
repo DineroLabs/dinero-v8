@@ -5,6 +5,13 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- Existing wallet connect/disconnect/reorg queues now bind a process-local
+  wallet session at enqueue and compare it under the processing lease before
+  any store effect. Replacement and same-name reopen invalidate old jobs; empty
+  selection cannot retarget work. This is transient ownership, not a source
+  cursor or durable recovery acknowledgment. See
+  `wallet-queued-identity-2026-09-26.md`.
+
 - Ordinary WalletManager disconnect now groups output deletion, history removal
   and input restoration in one checked SQL transaction under the database lease.
   Failure leaves ordinary rows and height unchanged; the separate index may have

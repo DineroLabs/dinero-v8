@@ -6007,6 +6007,10 @@ if(NOT WIN32)
     LABELS "wallet;recovery;persistence;concurrency"
     TIMEOUT 30
   )
+  add_test(NAME WalletQueuedIdentity
+    COMMAND test_wallet_database_lease --gtest_filter=WalletQueuedIdentityTest.*)
+  set_tests_properties(WalletQueuedIdentity PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency" TIMEOUT 30)
   foreach(stage Insert Spend History Confirmation Commit)
     string(TOLOWER "${stage}" stage_lower)
     add_test(NAME WalletOrdinaryBlock${stage}

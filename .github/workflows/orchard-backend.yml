@@ -262,6 +262,25 @@ jobs:
               raise SystemExit('Disabled wallet database ownership test')
           PYCODE
           ctest --test-dir build-orchard-root -R '^WalletDatabaseLease$' --output-on-failure --no-tests=error --output-log orchard-wallet-lease-execution.log
+      - name: Require and execute queued wallet identity
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletQueuedIdentity$' --show-only=json-v1 > orchard-wallet-queue-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests = json.load(open('orchard-wallet-queue-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletQueuedIdentity']:
+              raise SystemExit('WalletQueuedIdentity registration missing')
+          if any(p['name'] == 'DISABLED' and p['value'] for p in tests[0].get('properties', [])):
+              raise SystemExit('WalletQueuedIdentity disabled')
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^WalletQueuedIdentity$' --verbose --output-on-failure --no-tests=error --output-log orchard-wallet-queue-execution.log
+          python3 - <<'PYCODE'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletQueuedIdentityTest\.\S+)', open('orchard-wallet-queue-execution.log').read())
+          expected = ['WalletQueuedIdentityTest.RejectsReplacedAndReopenedWalletBeforeAnyStoreEffect', 'WalletQueuedIdentityTest.EmptySelectionAndMissingBindingCannotRetargetWork']
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Missing actual queued identity executions')
+          PYCODE
       - name: Require and execute ordinary wallet commit failure stages
         run: |
           ctest --test-dir build-orchard-root -R '^WalletOrdinaryBlock(Insert|Spend|History|Confirmation|Commit)$' --show-only=json-v1 > orchard-wallet-block-inventory.json
@@ -352,6 +371,8 @@ jobs:
             orchard-wallet-undo-execution.log
             orchard-wallet-lease-inventory.json
             orchard-wallet-lease-execution.log
+            orchard-wallet-queue-inventory.json
+            orchard-wallet-queue-execution.log
             orchard-wallet-block-inventory.json
             orchard-wallet-block-execution.log
             orchard-wallet-disconnect-inventory.json

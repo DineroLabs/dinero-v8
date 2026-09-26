@@ -8,6 +8,7 @@
 #include <thread>
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include "wallet/transaction.h"  // Need full definition for std::vector<Transaction>
 #include "primitives/block.h"
 
@@ -50,6 +51,9 @@ struct WalletJob {
     ReorgDiff diff;
     std::vector<Transaction> transactions;  // Transaction data for block scanning
     Block block;                            // Full block for disconnect rollback
+    // Captured under the manager lease at enqueue. A replaced or reopened wallet
+    // must recover from canonical source; this transient job cannot be retargeted.
+    std::optional<uint64_t> wallet_session;
 
     // Constructors for different job types
     static WalletJob MakeConnect(uint32_t h, const std::string& hash_hex,
@@ -167,10 +171,14 @@ public:
 private:
     friend struct WalletWorkerTestAccess;
     void WorkerThread();
+    WalletJob BindJob(WalletJob);
+    void ProcessJob(const WalletJob&);
     void ProcessConnect(uint32_t height, const std::string& hash,
-                        const std::vector<Transaction>& transactions);
-    void ProcessDisconnect(uint32_t height, const Block& block);
-    void ProcessReorg(const ReorgDiff& diff);
+                        const std::vector<Transaction>& transactions,
+                        std::optional<uint64_t> session = std::nullopt);
+    void ProcessDisconnect(uint32_t height, const Block& block,
+                           std::optional<uint64_t> session = std::nullopt);
+    void ProcessReorg(const ReorgDiff& diff, std::optional<uint64_t> session = std::nullopt);
 
     BlockingQueue<WalletJob> job_queue_;
     std::atomic<bool> running_;

@@ -12,6 +12,11 @@
 
 namespace dinero {
 struct WalletWorkerTestAccess {
+    // Exercise the real enqueue and dispatch code with a deterministic pause
+    // between them, without racing a background thread against wallet setup.
+    static void EnableQueue(WalletWorker& worker) { worker.running_.store(true); }
+    static WalletJob Take(WalletWorker& worker) { return worker.job_queue_.pop(); }
+    static void Dispatch(WalletWorker& worker, const WalletJob& job) { worker.ProcessJob(job); }
     static void Connect(WalletWorker& worker, uint32_t height,
                         const std::vector<Transaction>& transactions) {
         worker.ProcessConnect(height, std::string(64, '1'), transactions);
@@ -220,6 +225,116 @@ TEST_F(WalletDatabaseLeaseTest, RealWorkerCommitsIndexBlockTogether) {
     EXPECT_FALSE(index.GetUTXO(second.GetTxid(), 0)->spend_height);
     EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}));
     EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0)->spend_height, 20);
+}
+
+class WalletQueuedIdentityTest : public WalletDatabaseLeaseTest {};
+
+TEST_F(WalletQueuedIdentityTest, RejectsReplacedAndReopenedWalletBeforeAnyStoreEffect) {
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    wallet->create("other");
+    wallet->open("owner");
+    const auto session = wallet->AcquireDatabaseLease()->Session();
+    dinero::UTXOIndex index((path / "queue-index.sqlite").string());
+    ASSERT_TRUE(index.Initialize());
+    const std::vector<uint8_t> script{0x00, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                                    11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    index.RegisterAddress(script, "m/84'/1448'/0'/0/0");
+    dinero::uint256 hash; hash.begin()[0] = 7;
+    const dinero::TxId seed(hash);
+    ASSERT_TRUE(index.AddUTXO(dinero::WalletUTXO(seed, 0, dinero::AmountUna::Una(1000),
+        script, "m/84'/1448'/0'/0/0", 20, false)));
+    dinero::Transaction tx;
+    tx.vin.resize(1); tx.vin[0].prevout = dinero::TxOutPoint(seed, 0);
+    tx.vout.emplace_back(dinero::AmountUna::Una(800), script);
+    dinero::Block block; block.vtx = {tx};
+    dinero::WalletWorker worker(&index, wallet.get());
+    dinero::WalletWorkerTestAccess::EnableQueue(worker);
+    worker.QueueBlockConnected(21, std::string(64, '2'), {tx});
+    worker.QueueBlockDisconnected(20, block);
+    dinero::ReorgDiff diff; diff.disconnect.emplace_back(20, std::string(64, '3'));
+    worker.QueueReorg(diff);
+    std::vector<dinero::WalletJob> jobs;
+    for (int i = 0; i < 3; ++i) {
+        jobs.push_back(dinero::WalletWorkerTestAccess::Take(worker));
+        ASSERT_EQ(jobs.back().wallet_session, session);
+    }
+    wallet->open("other");
+    wallet->setBlockchainHeight(10);
+    sqlite3* other = wallet->getCurrentDatabase();
+    Exec(other, "CREATE TABLE lease_probe(value INTEGER)");
+    // Any ordinary block operation on the replacement wallet must be absent.
+    Exec(other, "CREATE TRIGGER capture_insert AFTER INSERT ON utxos BEGIN INSERT INTO lease_probe VALUES(1); END");
+    Exec(other, "CREATE TRIGGER capture_delete AFTER DELETE ON utxos BEGIN INSERT INTO lease_probe VALUES(2); END");
+    auto refuses = [&](const dinero::WalletJob& job) {
+        std::string error;
+        try { dinero::WalletWorkerTestAccess::Dispatch(worker, job); }
+        catch (const std::runtime_error& e) { error = e.what(); }
+        EXPECT_EQ(error, "Wallet job session changed; canonical recovery required");
+        ASSERT_TRUE(index.GetUTXO(seed, 0));
+        EXPECT_FALSE(index.GetUTXO(seed, 0)->spend_height);
+        EXPECT_FALSE(index.GetUTXO(tx.GetTxid(), 0));
+    };
+    for (const auto& job : jobs) refuses(job);
+    EXPECT_EQ(Count(other), 0);
+    EXPECT_EQ(wallet->getBlockchainHeight(), 10);
+    wallet->open("owner");
+    ASSERT_NE(wallet->AcquireDatabaseLease()->Session(), session);
+    // Same name and possibly reused SQLite address do not restore the old session.
+    for (const auto& job : jobs) refuses(job);
+    ASSERT_TRUE(wallet->addUTXO(seed.AsUint256().GetHex(), 0, 1000, "seed", "0014", 20, false));
+    worker.QueueBlockConnected(21, std::string(64, '2'), {tx});
+    const auto current = dinero::WalletWorkerTestAccess::Take(worker);
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Dispatch(worker, current));
+    ASSERT_TRUE(index.GetUTXO(seed, 0));
+    EXPECT_EQ(index.GetUTXO(seed, 0)->spend_height, 21);
+    EXPECT_TRUE(index.GetUTXO(tx.GetTxid(), 0));
+    EXPECT_EQ(wallet->getBlockchainHeight(), 21);
+}
+
+TEST_F(WalletQueuedIdentityTest, EmptySelectionAndMissingBindingCannotRetargetWork) {
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    wallet->unload();
+    dinero::WalletWorker worker(nullptr, wallet.get());
+    dinero::WalletWorkerTestAccess::EnableQueue(worker);
+    worker.QueueBlockConnected(1, std::string(64, '1'), {});
+    const auto unselected = dinero::WalletWorkerTestAccess::Take(worker);
+    ASSERT_TRUE(unselected.wallet_session);
+    const auto empty_session = wallet->AcquireDatabaseLease()->Session();
+    EXPECT_EQ(unselected.wallet_session, empty_session);
+    std::string empty_error;
+    try { dinero::WalletWorkerTestAccess::Dispatch(worker, unselected); }
+    catch (const std::runtime_error& e) { empty_error = e.what(); }
+    EXPECT_EQ(empty_error, "Wallet job has no selected database; canonical recovery required");
+    wallet->open("owner");
+    auto session = wallet->AcquireDatabaseLease()->Session();
+    EXPECT_NE(session, empty_session);
+    std::string error;
+    try { dinero::WalletWorkerTestAccess::Dispatch(worker, unselected); }
+    catch (const std::runtime_error& e) { error = e.what(); }
+    EXPECT_EQ(error, "Wallet job session changed; canonical recovery required");
+    auto unbound = dinero::WalletJob::MakeConnect(1, std::string(64, '1'), {});
+    error.clear();
+    try { dinero::WalletWorkerTestAccess::Dispatch(worker, unbound); }
+    catch (const std::runtime_error& e) { error = e.what(); }
+    EXPECT_EQ(error, "Wallet job has no matching manager binding");
+    {
+        auto lease = wallet->AcquireDatabaseLease();
+        EXPECT_EQ(lease->Session(), session);
+        EXPECT_EQ(wallet->AcquireDatabaseLease()->Session(), session);
+        EXPECT_THROW(wallet->open("owner"), std::logic_error);
+        EXPECT_EQ(lease->Session(), session);
+    }
+    // A refusal before touching the selection must not discard valid jobs.
+    EXPECT_THROW(wallet->open("missing"), std::runtime_error);
+    EXPECT_EQ(wallet->AcquireDatabaseLease()->Session(), session);
+    EXPECT_THROW(wallet->create("owner"), std::runtime_error);
+    EXPECT_EQ(wallet->AcquireDatabaseLease()->Session(), session);
+    dinero::WalletWorker index_only;
+    dinero::WalletWorkerTestAccess::EnableQueue(index_only);
+    index_only.QueueBlockConnected(1, std::string(64, '1'), {});
+    const auto job = dinero::WalletWorkerTestAccess::Take(index_only);
+    EXPECT_FALSE(job.wallet_session);
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Dispatch(index_only, job));
 }
 
 class WalletOrdinaryBlockTest : public WalletDatabaseLeaseTest,

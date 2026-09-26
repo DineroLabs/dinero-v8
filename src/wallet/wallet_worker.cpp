@@ -172,7 +172,7 @@ void WalletWorker::QueueBlockConnected(uint32_t height, const std::string& hash,
         return;
     }
 
-    job_queue_.push(WalletJob::MakeConnect(height, hash, transactions));
+    job_queue_.push(BindJob(WalletJob::MakeConnect(height, hash, transactions)));
     std::cerr << "[WalletWorker] 📥 Queued block connect: height=" << height
               << " hash=" << hash.substr(0, 16) << "... "
               << "txs=" << transactions.size() << std::endl;
@@ -184,7 +184,7 @@ void WalletWorker::QueueReorg(const ReorgDiff& diff) {
         return;
     }
 
-    job_queue_.push(WalletJob::MakeReorg(diff));
+    job_queue_.push(BindJob(WalletJob::MakeReorg(diff)));
     std::cerr << "[WalletWorker] 📥 Queued reorg: disconnect=" << diff.disconnect.size()
               << " connect=" << diff.connect.size() << std::endl;
 }
@@ -195,7 +195,7 @@ void WalletWorker::QueueBlockDisconnected(uint32_t height, const Block& block) {
         return;
     }
 
-    job_queue_.push(WalletJob::MakeDisconnect(height, block));
+    job_queue_.push(BindJob(WalletJob::MakeDisconnect(height, block)));
     std::cerr << "[WalletWorker] 📥 Queued block disconnect: height=" << height
               << " hash=" << block.GetHash().GetHex().substr(0, 16) << "... "
               << "txs=" << block.vtx.size() << std::endl;
@@ -228,6 +228,39 @@ bool WalletWorker::RescanSynchronously(ChainDB* chain_db, int start_height, std:
     }
 }
 
+WalletJob WalletWorker::BindJob(WalletJob job) {
+    if (wallet_manager_) {
+        const auto lease = wallet_manager_->AcquireDatabaseLease();
+        job.wallet_session = lease->Session();
+    }
+    return job;
+}
+
+void WalletWorker::ProcessJob(const WalletJob& job) {
+    if (static_cast<bool>(wallet_manager_) != job.wallet_session.has_value())
+        throw std::runtime_error("Wallet job has no matching manager binding");
+    switch (job.type) {
+        case JobType::Connect:
+            ProcessConnect(job.height, job.hash, job.transactions, job.wallet_session);
+            break;
+        case JobType::Disconnect:
+            ProcessDisconnect(job.height, job.block, job.wallet_session);
+            break;
+        case JobType::Reorg:
+            ProcessReorg(job.diff, job.wallet_session);
+            break;
+    }
+}
+
+// Run only with the lease held, before touching any wallet store or observer.
+static void CheckWalletJobSession(const WalletManager::DatabaseLease* lease,
+                                 std::optional<uint64_t> expected) {
+    if (expected && (!lease || lease->Session() != *expected))
+        throw std::runtime_error("Wallet job session changed; canonical recovery required");
+    if (expected && !lease->Database())
+        throw std::runtime_error("Wallet job has no selected database; canonical recovery required");
+}
+
 void WalletWorker::WorkerThread() {
     std::cerr << "[WalletWorker] Worker thread started (thread_id=" << std::this_thread::get_id() << ")" << std::endl;
 
@@ -240,17 +273,7 @@ void WalletWorker::WorkerThread() {
         }
 
         try {
-            switch (job.type) {
-                case JobType::Connect:
-                    ProcessConnect(job.height, job.hash, job.transactions);
-                    break;
-                case JobType::Disconnect:
-                    ProcessDisconnect(job.height, job.block);
-                    break;
-                case JobType::Reorg:
-                    ProcessReorg(job.diff);
-                    break;
-            }
+            ProcessJob(job);
         } catch (const std::exception& e) {
             std::cerr << "[WalletWorker] ❌ ERROR processing job: " << e.what() << std::endl;
         } catch (...) {
@@ -261,10 +284,12 @@ void WalletWorker::WorkerThread() {
     std::cerr << "[WalletWorker] Worker thread exiting" << std::endl;
 }
 
-void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block) {
+void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block,
+                                     std::optional<uint64_t> session) {
     if (height == 0 || height > static_cast<uint32_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("Wallet disconnect height is out of range");
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    CheckWalletJobSession(database_lease.get(), session);
     if (database_lease && database_lease->Database() &&
         !sqlite3_get_autocommit(database_lease->Database()))
         throw std::runtime_error("Wallet disconnect cannot adopt an active transaction");
@@ -298,7 +323,8 @@ void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block) {
 }
 
 void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
-                                  const std::vector<Transaction>& transactions) {
+                                  const std::vector<Transaction>& transactions,
+                                  std::optional<uint64_t> session) {
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing block connect: height=" << height
               << " hash=" << hash.substr(0, 16) << "... txs=" << transactions.size() << std::endl;
@@ -321,6 +347,7 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
     }
 
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    CheckWalletJobSession(database_lease.get(), session);
     if (wallet_manager_) {
         std::string shielded_error;
         if (!wallet::shielded_ops::ProcessConfirmedBlock(*wallet_manager_, height, transactions, &shielded_error) &&
@@ -570,8 +597,9 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
     }
 }
 
-void WalletWorker::ProcessReorg(const ReorgDiff& diff) {
+void WalletWorker::ProcessReorg(const ReorgDiff& diff, std::optional<uint64_t> session) {
     const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    CheckWalletJobSession(database_lease.get(), session);
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing reorg: disconnect=" << diff.disconnect.size()
               << " connect=" << diff.connect.size() << std::endl;

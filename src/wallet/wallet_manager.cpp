@@ -1830,6 +1830,7 @@ void WalletManager::createWithInitialSeed(
         std::vector<uint8_t> previous_master_seed = master_seed_;
 
         try {
+            AdvanceDatabaseSession();
             db_ = new_wallet_db;
             current_ = cleanName;
             current_wallet_id_ = 1;  // Per-wallet DB always has id=1
@@ -1849,6 +1850,7 @@ void WalletManager::createWithInitialSeed(
                 }
             }
         } catch (...) {
+            AdvanceDatabaseSession();
             db_ = previous_db;
             current_ = previous_current;
             current_wallet_id_ = previous_wallet_id;
@@ -1859,6 +1861,7 @@ void WalletManager::createWithInitialSeed(
             throw;
         }
 
+        AdvanceDatabaseSession();
         db_ = previous_db;
         current_ = previous_current;
         current_wallet_id_ = previous_wallet_id;
@@ -1936,6 +1939,8 @@ void WalletManager::open(const std::string& name) {
         throw std::runtime_error("Wallet database file not found: " + walletPath);
     }
 
+    // From this point even a failed open may replace or clear the selection.
+    AdvanceDatabaseSession();
     // Close current wallet if open
     if (db_) {
         WLOG_INFO("[OPEN] Closing currently open wallet: " + current_);
@@ -2029,6 +2034,8 @@ void WalletManager::open(const std::string& name) {
 }
 
 void WalletManager::rename(const std::string& oldName, const std::string& newName) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot rename wallet during database delivery");
     const std::string cleanNewName = sanitize(newName);
     if (cleanNewName.empty()) {
         throw std::invalid_argument("Invalid new wallet name");
@@ -2062,6 +2069,7 @@ void WalletManager::rename(const std::string& oldName, const std::string& newNam
     
     // Update current wallet name if it was the renamed one
     if (current_ == oldName) {
+        AdvanceDatabaseSession();
         current_ = cleanNewName;
     }
     
@@ -2550,6 +2558,7 @@ void WalletManager::removeAddress(const std::string& addr) {
 void WalletManager::close() {
     std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     if (database_leases_ != 0) throw std::logic_error("Cannot close wallet during database delivery");
+    AdvanceDatabaseSession();
     if (utxo_index_) {
         utxo_index_->ClearRegisteredAddresses();
     }
@@ -2786,6 +2795,7 @@ std::string WalletManager::sanitize(const std::string& in) {
 }
 
 void WalletManager::unload() {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     if (!hasActiveWallet()) {
         return;
     }
@@ -2814,6 +2824,9 @@ int WalletManager::getWalletId(const std::string& name) const {
 }
 
 void WalletManager::setCurrentWallet(const std::string& name, int wallet_id) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot select wallet during database delivery");
+    AdvanceDatabaseSession();
     current_ = name;
     current_wallet_id_ = wallet_id;
 }
@@ -2943,9 +2956,16 @@ void WalletManager::assertNoRetiredLegacyCoinTypeInWalletDatabase(const std::str
     }
 }
 
+void WalletManager::AdvanceDatabaseSession() noexcept {
+    // Exhaustion must not reuse an identity while a queued job still owns it.
+    if (database_session_ == UINT64_MAX) std::terminate();
+    ++database_session_;
+}
+
 WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
     : owner_(owner), lock_(owner.database_lifecycle_mutex_),
-      thread_(std::this_thread::get_id()), db_(owner.db_), name_(owner.current_) {
+      thread_(std::this_thread::get_id()), db_(owner.db_), name_(owner.current_),
+      session_(owner.database_session_) {
     if (db_) {
         sqlite_mutex_ = sqlite3_db_mutex(db_);
         if (!sqlite_mutex_) throw std::runtime_error("Wallet database requires serialized SQLite");
