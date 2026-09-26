@@ -41,8 +41,10 @@
 #include "daemon/services/chainstate_service.h"
 #include "storage/chain_db.h"
 #include "wallet/wallet_manager.h"
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/runtime_index_delivery.h"
+#endif
 #include <sqlite3.h>
 #include <filesystem>
 #include <future>
@@ -64,6 +66,7 @@
 
 namespace dinero {
 
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
 struct RuntimeOriginProjectionTestAccess {
     static auto Capture(WalletManager& wallet,uint64_t session) {return RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session);}
     static void Check(WalletManager& wallet,const RuntimeWalletOriginProjection& p) {RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,p);}
@@ -73,6 +76,7 @@ struct RuntimeOriginProjectionTestAccess {
     }
     static void Append(RuntimeWalletOriginProjection& p,const Block& b,uint32_t height) {p.AppendValidated(b,height);}
 };
+#endif
 
 struct ShieldedStateStartupTestAccess {
     static void Select(ChainstateService& service, CBlockIndex& tip) {
@@ -506,6 +510,7 @@ TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
 }
 
 
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
 TEST(RuntimeOriginProjection, BindsCapturedWalletAndScriptDomain) {
     const auto dir=std::filesystem::temp_directory_path()/("origin_wallet_domain_"+std::to_string(getpid()));
     WalletManager wallet(dir);wallet.create("origin");wallet.open("origin");
@@ -555,6 +560,18 @@ TEST(RuntimeOriginProjection, KeepsSpentCoinsAndExactTransactionHistory) {
     auto other=RuntimeOriginProjectionTestAccess::Create(owned);
     EXPECT_THROW(RuntimeOriginProjectionTestAccess::Append(*other,unsupported,1),std::runtime_error);
 }
+
+#else
+TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
+    ChainstateService service;
+    WalletManager wallet(std::filesystem::temp_directory_path()/("origin_backend_off_"+std::to_string(getpid())));
+    // No wallet or chain is opened: the absent implementation must refuse
+    // without acquiring either source or silently constructing a projection.
+    const auto origin=service.getRuntimeWalletOrigin(wallet,0);
+    EXPECT_FALSE(origin.ok());
+    EXPECT_EQ(origin.status(),Status::Internal);
+}
+#endif
 
 }  // namespace dinero
 

@@ -1,11 +1,11 @@
-#include "wallet/runtime_origin_projection.h"
-#include "wallet/runtime_index_delivery.h"
 #include "wallet/selected_history.h"
 #include <sqlite3.h>
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "wallet/runtime_origin_projection.h"
+#include "wallet/runtime_index_delivery.h"
 #include "daemon/runtime_block_reader.h"
 #include "daemon/runtime_reorg_store.h"
 #include "daemon/runtime_block_outbox.h"

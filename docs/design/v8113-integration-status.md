@@ -1,3 +1,15 @@
+## Optional backend build correction (2026-09-26)
+
+The backend-OFF full/QUIC PR builds exposed unconditional Orchard header imports.
+The service and replay tests now follow the actual optional implementation
+boundary, with a disabled-backend API refusal test and generated-command checks.
+Earlier macro-removal checks retained backend include paths and did not qualify
+a complete OFF configuration. See [scope correction and verification](orchard-backend-boundary-2026-09-26.md).
+Fresh backend-OFF and backend-ON daemon builds and affected tests pass, with
+explicit ten/eleven replay-case inventories. The actual service fixture passed
+with all 203 linked project C++ translation units freshly instrumented. Exact
+Linux full/QUIC checks are still required; recovery and release gates remain open.
+
 ## Known-script origin adoption (2026-09-26)
 
 Actual service capture now includes optional index scripts/paths and database path

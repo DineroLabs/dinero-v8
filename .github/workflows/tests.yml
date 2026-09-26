@@ -111,9 +111,40 @@ jobs:
       - name: Verify generated C++20 compile commands
         run: cmake --build build-tests --target check_first_party_compile_commands_cxx20
 
+      - name: Verify Orchard backend is absent from the default graph
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          cache = Path('build-tests/CMakeCache.txt').read_text()
+          assert 'DINERO_BUILD_ORCHARD_BACKEND:BOOL=OFF' in cache
+          commands = json.loads(Path('build-tests/compile_commands.json').read_text())
+          for suffix in ['/src/daemon/services/chainstate_service.cpp', '/tests/daemon/test_assumeutxo_replay.cpp']:
+              entries = [e for e in commands if e['file'].endswith(suffix)]
+              assert entries, suffix
+              for entry in entries:
+                  assert 'DINERO_HAS_ORCHARD_RUNTIME_READER' not in entry['command'], suffix
+                  assert 'DINERO_TEST_ORCHARD_ORIGIN' not in entry['command'], suffix
+                  assert '/rust/orchard_backend' not in entry['command'], suffix
+          PYCODE
+
       - name: Full default build
         id: build
         run: cmake --build build-tests -j
+
+      - name: Verify default-backend replay and origin refusal
+        run: |
+          set -euo pipefail
+          mkdir -p build-tests/Testing
+          ctest --test-dir build-tests -R '^AssumeUtxoReplay$' --verbose --no-tests=error \
+            | tee build-tests/Testing/orchard-backend-off-replay.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log = Path('build-tests/Testing/orchard-backend-off-replay.log').read_text()
+          assert log.count('[ RUN      ] RuntimeOriginProjection.UnavailableWithoutBackend') == 1
+          assert log.count('[       OK ] RuntimeOriginProjection.UnavailableWithoutBackend') == 1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
 
       # CI integrity gate: every test registered with CTest in THIS build
       # configuration must have a runnable executable. A registered-but-

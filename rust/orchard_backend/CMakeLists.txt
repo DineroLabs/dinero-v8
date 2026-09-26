@@ -152,6 +152,12 @@ if(TARGET dinero_chainstate)
   # WalletManager references ChainDB/BlockStorage even in the account-only
   # executable. Keep its archive before the chainstate provider for GNU ld.
   target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_wallet dinero_orchard_account_replay dinero_orchard_chainstate_write dinero_orchard_operation_archive dinero_orchard_wallet_account sqlite3)
+  if(TARGET test_assumeutxo_replay)
+    # The service's reader definition is source-local. Bind the projection
+    # tests to the actual optional implementation rather than inheriting it.
+    target_compile_definitions(test_assumeutxo_replay PRIVATE DINERO_TEST_ORCHARD_ORIGIN=1)
+    target_link_libraries(test_assumeutxo_replay PRIVATE dinero_orchard_index_delivery)
+  endif()
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
   endif()
