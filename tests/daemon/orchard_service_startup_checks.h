@@ -35,6 +35,10 @@ struct ShieldedStateStartupTestAccess {
         s.consensus_utxo_set_->SetBestBlock(tip.hash,tip.height);
         s.PublishActiveTip(&tip,ChainstateService::TipPublishReason::kStartupLoad);
     }
+    static bool TryChain(ChainstateService& s) {
+        if (!s.activation_mutex_.try_lock()) return false;
+        s.activation_mutex_.unlock(); return true;
+    }
     static bool Verify(ChainstateService& s) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
         return s.VerifyConsensusJournalAtActiveTip();

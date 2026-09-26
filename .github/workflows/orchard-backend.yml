@@ -225,6 +225,14 @@ jobs:
                   raise SystemExit(f'Inactive or mislabeled root test: {test["name"]}')
           PYCODE
           ctest --test-dir build-orchard-root -R '^(OrchardAccountDelivery|OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardMemoryPublication|OrchardStateCommitment|OrchardStateRoot|OrchardLegacyAccounting|OrchardRuntimeReader|OrchardRuntimeOutbox|OrchardCommitOwner|OrchardIndexDelivery|OrchardIndexedCommit|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardServiceReorgPlan|OrchardServiceForkPoint|OrchardServiceConnect|OrchardServiceDeliverySource|OrchardServiceDisconnect|OrchardServicePersistence|OrchardServiceStartup|OrchardServiceUndoCoverage|OrchardBlockFilter|OrchardWalletScan|OrchardLegacyBoundary|OrchardLegacyRetirement)$' --output-on-failure --no-tests=error --output-log orchard-root-execution.log
+          cp build-orchard-root/Testing/Temporary/LastTest.log orchard-root-detailed-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log = Path('orchard-root-detailed-execution.log').read_text()
+          marker = 'OrchardOriginCapture validated ancestors/canonical boundary/immutable projection/reopen PASS'
+          if log.count(marker) != 1:
+              raise SystemExit('Missing actual successful wallet-origin capture execution')
+          PYCODE
       - name: Require and execute transparent mempool notification consumer
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolProofStaleness$' --show-only=json-v1 > orchard-mempool-inventory.json
@@ -459,6 +467,7 @@ jobs:
             orchard-root-source.txt
             orchard-root-inventory.json
             orchard-root-execution.log
+            orchard-root-detailed-execution.log
             orchard-mempool-inventory.json
             orchard-mempool-execution.log
             orchard-history-replay-inventory.json

@@ -4,8 +4,10 @@
 
 The service can prepare projected ordinary creations, spends and exact relevant
 transaction facts from checked-origin ancestry using owned historical replay. See
-`wallet-origin-projection-2026-09-26.md`. Complete successful origin capture and
-ordered index/ordinary adoption remain unqualified; local sends/pending state,
+`wallet-origin-projection-2026-09-26.md`. The successful service path is now
+exercised over a short independently replayed regtest ancestry and actual indexed
+boundary (see `wallet-origin-capture-qualification-2026-09-26.md`). Ordered
+index/ordinary adoption remains unqualified; local sends/pending state,
 CT epochs, discovery, provider installation and steps 1–4 remain open.
 
 ## Selected wallet history source (2026-09-26)

@@ -20,6 +20,11 @@ The captured script set is the currently known ordinary domain, not complete key
 
 ## Qualification scope
 
+The original component qualification below is supplemented by
+[successful service-origin capture qualification](wallet-origin-capture-qualification-2026-09-26.md).
+That later regression qualifies a short regtest success path, while adoption and
+production activation-history qualification remain open.
+
 The new projection regression covers spent creations, exact transaction retention, outgoing-only spends, self-spend credits/debits, duplicate-spend refusal and CT refusal. Its unsigned spend fixtures test projection arithmetic, not consensus authorization. Existing owned-replay tests exercise validation separately. Actual wallet-domain tests cover caller-held lease refusal, script changes and same-name reopen/session changes. The actual checked-service fixture has generated prehistory and must refuse origin certification despite its valid local outbox records. A successful complete service-origin capture over independently valid activation history is **not yet qualified**; neither is adoption, startup, reindex, whole-node crash or release readiness.
 
 Fresh declared targets and the full daemon built locally. Three unique CTests passed: `AssumeUtxoReplay` (eight replay cases, the previous selected-source case and two new projection/domain cases), `OrchardServiceDeliverySource` and `OrchardIndexDelivery`. ASan/UBSan covered all 202 linked project C++ translation units in the replay/projection executable; the final test-only correction was rebuilt with the other 201 current-turn objects retained. Projection and wallet-domain methods executed there; the new service-origin method's rejection path was tested in the separate normal service suite. The initial sanitizer finding was a test assertion binding a reference to a packed header field; comparison by value preserves the assertion. External/Rust libraries remained uninstrumented and macOS leak detection was off. This does not close the separate ARM RocksDB gate or qualify successful service-origin capture.
