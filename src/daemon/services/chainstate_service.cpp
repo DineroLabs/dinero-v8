@@ -3,6 +3,7 @@
 #include "daemon/services/chainstate_service.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/runtime_block_reader.h"
+#include "daemon/runtime_reorg_store.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "consensus/orchard_block_staging.h"
 #endif
@@ -13883,6 +13884,8 @@ bool ChainstateService::PrepareRuntimeReorgUnderLock(
         try { transition=std::make_unique<RuntimeReorgTransition>(std::move(prepared),disconnect.size(),connect.size()); }
         catch (...) { if (prepared) prepared->Finish({}); throw; }
         if (active_tip_!=disconnect.front() || runtime_block_notifications_!=consumers) return false;
+        ChainWriteToken token;
+        (void)PersistRuntimeReorgIntentUnderLock(*chain_db_,token,*plan);
         out=std::move(transition);
         return true;
     } catch (...) { return false; }

@@ -81,8 +81,11 @@ This branch collects release implementation for review and qualification against
   per-block-only providers refuse. Completed plans report exact counts; interrupted
   plans require canonical recovery because legacy callbacks may fail after a
   durable write. Mixed bodies never enter the legacy transaction collector.
-  The production recovery/readmission provider remains unimplemented. See the
-  service-reorg-plan design for operational bounds and qualification limits.
+  The service now synchronously retains the whole intent and the outbox origin
+  before returning readiness. Recovery reads exact typed plans without source
+  flatfiles; cancelled attempts remain. The production recovery/readmission
+  provider and consumer checkpoints remain unimplemented. See the reorg-plan
+  and reorg-intent-store designs for bounds and qualification limits.
 - Indexed Orchard transitions now append exact delivery records and a checked
   sequence head in the same synchronous chainstate batch. Rollback retains the
   history, and bounded readers check cursor/domain/body identity. This supplies

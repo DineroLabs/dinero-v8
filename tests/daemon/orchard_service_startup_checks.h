@@ -1,3 +1,4 @@
+#include "daemon/runtime_reorg_store.h"
 #pragma once
 // Included only by the dedicated service test target, after the shared honest
 // chain fixture. This access shim never enters a library or daemon build.
@@ -149,7 +150,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     struct Notifications final:RuntimeBlockNotifications {
         ChainDB& db;ChainstateService& service;const CBlockIndex& before;const CBlockIndex& after;
         const std::vector<uint8_t>& wire;RuntimeBlockDirection direction;bool refuse=false,published=false,coherent=false;unsigned prepared=0;
-        bool allow_reorg=false;unsigned finishes=0;RuntimeReorgProgress progress;
+        bool allow_reorg=false,close_on_prepare=false;unsigned finishes=0;RuntimeReorgProgress progress;
         std::shared_ptr<const RuntimeReorgPlan> retained;
         struct ReorgPrepared final:PreparedRuntimeReorgNotifications {
             Notifications& owner;explicit ReorgPrepared(Notifications& n):owner(n){}
@@ -157,7 +158,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
         };
         std::unique_ptr<PreparedRuntimeReorgNotifications> PrepareReorg(std::shared_ptr<const RuntimeReorgPlan> plan) override {
             if (!allow_reorg) return {};
-            retained=std::move(plan);return std::make_unique<ReorgPrepared>(*this);
+            retained=std::move(plan);if(close_on_prepare)db.close();return std::make_unique<ReorgPrepared>(*this);
         }
         Notifications(ChainDB& d,ChainstateService& s,const CBlockIndex& b,const CBlockIndex& a,const std::vector<uint8_t>& w,RuntimeBlockDirection dir=RuntimeBlockDirection::Disconnect)
           :db(d),service(s),before(b),after(a),wire(w),direction(dir){}
@@ -191,11 +192,22 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     ++parent.timestamp;CHECK(!Access::Disconnect(service,&index));--parent.timestamp;
     GetConfig().utreexo_stateless=true;CHECK(!Access::Disconnect(service,&index));GetConfig().utreexo_stateless=false;
     db.close();CHECK(Inspect(path)==original);CHECK(db.init(path)==Status::Ok);
-    std::unique_ptr<RuntimeReorgTransition> reorg;
+    std::unique_ptr<RuntimeReorgTransition> reorg;RuntimeOutboxCursor retained_intent;
     if(reorg_check) {
+        RuntimeOutboxCursor prior_intent;
+        while(const auto previous=ReadRuntimeReorgIntentUnderLock(db,prior_intent))prior_intent=previous->cursor;
         CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg); // Per-block readiness is insufficient.
-        notifications->allow_reorg=true;
+        notifications->allow_reorg=true;notifications->close_on_prepare=true;
+        CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg);
+        CHECK(notifications->finishes==1 && !notifications->progress.complete);
+        CHECK(db.init(path)==Status::Ok);notifications->close_on_prepare=false;
+        CHECK(RequiredValue(db.getTip()).hash==index.hash);
+        CHECK(!ReadRuntimeReorgIntentUnderLock(db,prior_intent));
         CHECK(Access::Reorg(service,{&index},{&index},reorg) && reorg);
+        const auto durable=ReadRuntimeReorgIntentUnderLock(db,prior_intent);
+        CHECK(durable && durable->plan->disconnect[0].body.Serialize()==block.WireBytes());
+        retained_intent=durable->cursor;
+        CHECK(durable->plan->connect[0].body.Serialize()==block.WireBytes());
         CHECK(notifications->retained->disconnect.size()==1 && notifications->retained->connect.size()==1);
         CHECK(notifications->retained->disconnect[0].body.Serialize()==block.WireBytes());
         const auto& typed=notifications->retained->disconnect[0].body.Orchard().Transactions();
@@ -207,10 +219,36 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
             found_orchard |= typed[i].IsOrchard();
         }
         if(c.height==c.activation_height) CHECK(found_orchard); // Mixed boundary fixture includes a real authorized bundle.
-        reorg.reset();CHECK(notifications->finishes==1 && notifications->progress.disconnected==0 && notifications->progress.connected==0 && !notifications->progress.complete);
+        // The service must retain intent even if no transition ever returns
+        // success. Reopen before reading; locators are unnecessary to recover it.
+        db.close();auto prepared_rows=Inspect(path);CHECK(db.init(path)==Status::Ok);
+        auto canonical_rows=prepared_rows,original_rows=original;
+        for(auto* rows:{&canonical_rows,&original_rows})for(auto& [cf,values]:*rows)
+            for(auto it=values.begin();it!=values.end();) {
+                if(it->first.starts_with("runtime_reorg_intent:v1:"))it=values.erase(it);else ++it;
+            }
+        CHECK(canonical_rows==original_rows);
+        const auto reopened_intent=ReadRuntimeReorgIntentUnderLock(db,prior_intent);
+        CHECK(reopened_intent && reopened_intent->cursor==durable->cursor);
+        CHECK(reopened_intent->plan->disconnect[0].body.Serialize()==block.WireBytes());
+        CHECK(!ReadRuntimeReorgIntentUnderLock(db,durable->cursor));
+        auto bad_cursor=durable->cursor;bad_cursor.digest.data[0]^=1;
+        LookupReject(Status::Corruption,[&]{(void)ReadRuntimeReorgIntentUnderLock(db,bad_cursor);});
+        ++MutableParams().orchard_branch_id;
+        LookupReject(Status::Corruption,[&]{(void)ReadRuntimeReorgIntentUnderLock(db,prior_intent);});
+        --MutableParams().orchard_branch_id;
+        std::ostringstream record_key;record_key<<"runtime_reorg_intent:v1:record:"<<std::hex<<std::setw(16)<<std::setfill('0')<<durable->cursor.sequence;
+        for(const auto& key:std::vector<std::string>{"runtime_reorg_intent:v1:head",record_key.str()}) {
+            std::string saved;CHECK(db.getRaw(key,saved)==Status::Ok);
+            auto damaged=saved;damaged.back()^=1;rocksdb::WriteBatch corrupt;corrupt.Put(key,damaged);Commit(db,corrupt);
+            LookupReject(Status::Corruption,[&]{(void)ReadRuntimeReorgIntentUnderLock(db,prior_intent);});
+            rocksdb::WriteBatch repair;repair.Put(key,saved);Commit(db,repair);
+        }
+        reorg.reset();CHECK(notifications->finishes==2 && notifications->progress.disconnected==0 && notifications->progress.connected==0 && !notifications->progress.complete);
         auto absent=RequiredValue(db.getHeaderMetadata(index.hash));const auto saved=absent;absent.data_size=0;
         CHECK(db.putHeaderMetadata(token,index.hash,absent)==Status::Ok);
         CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg);
+        CHECK(ReadRuntimeReorgIntentUnderLock(db,prior_intent)->plan->disconnect[0].body.Serialize()==block.WireBytes());
         CHECK(db.putHeaderMetadata(token,index.hash,saved)==Status::Ok);
         CBlockIndex wrong_parent=parent;wrong_parent.hash=H(81);auto* old=index.pprev;index.pprev=&wrong_parent;
         CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg);index.pprev=old;
@@ -218,8 +256,33 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
         CHECK(!ReadRuntimeReorgPlanUnderLock(db,files.get(),one,one,1)); // Byte budget refuses the complete attempt.
         CHECK(!ReadRuntimeReorgPlanUnderLock(db,files.get(),one,one,64*1024*1024,1));
         CHECK(!Access::Reorg(service,{&index,&index},{},reorg) && !reorg); // Broken ancestry.
-        db.close();CHECK(Inspect(path)==original);CHECK(db.init(path)==Status::Ok);
+        db.close();CHECK(Inspect(path)==prepared_rows);CHECK(db.init(path)==Status::Ok);
         CHECK(Access::Reorg(service,{&index},{&index},reorg));
+        if(c.height==c.activation_height) {
+            // Independent typed framing fixture crossing the profile boundary.
+            // Headers are generated identities, not mined/validated history.
+            TempDir recovery;Seed(recovery.path);ChainDB store;CHECK(store.init(recovery.path)==Status::Ok);
+            Block historical;historical.header=parent_header;
+            historical.vtx.push_back(block.Transactions().front().Historical());
+            historical.header.merkle_root=ComputeMerkleRoot(historical.vtx);
+            auto mixed_bytes=block.WireBytes();auto mixed_header=block.Header();
+            mixed_header.prev_block_hash=historical.GetHash();const auto header_bytes=mixed_header.Serialize();
+            CHECK(header_bytes.size()==128);std::copy(header_bytes.begin(),header_bytes.end(),mixed_bytes.begin());
+            auto mixed=OrchardBlockCandidate::DecodeExact(mixed_bytes);
+            const auto profile=SelectedOrchardBlockContext(mixed.Header(),c.height);CHECK(profile);
+            RuntimeReorgBlock old{historical.GetHash(),c.height-1,RuntimeBlockBody(historical)};
+            RuntimeReorgBlock next{mixed.Header().GetHash(),c.height,RuntimeBlockBody(mixed,*profile)};
+            RuntimeReorgPlan across{{next,old},{old,next}};
+            rocksdb::WriteBatch seed;Tip(store,next.hash,next.height,seed);Commit(store,seed);
+            const auto saved=PersistRuntimeReorgIntentUnderLock(store,token,across);
+            store.close();CHECK(store.init(recovery.path)==Status::Ok);
+            const auto recovered=ReadRuntimeReorgIntentUnderLock(store);
+            CHECK(recovered && recovered->cursor==saved && recovered->plan->disconnect.size()==2 && recovered->plan->connect.size()==2);
+            CHECK(!recovered->plan->disconnect[1].body.IsOrchardProfile());
+            CHECK(recovered->plan->disconnect[1].body.Historical().Serialize()==historical.Serialize());
+            CHECK(recovered->plan->connect[0].body.Historical().Serialize()==historical.Serialize());
+            CHECK(recovered->plan->connect[1].body.Orchard().WireBytes()==mixed_bytes);
+        }
     }
     if(reorg && c.height==c.activation_height) {
         struct InterruptedAfterCommit {};
@@ -229,7 +292,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
             CHECK(Access::Disconnect(service,&index));
             throw InterruptedAfterCommit{}; // Legacy callback failure before the caller records success.
         } catch (const InterruptedAfterCommit&) { interrupted=true; }
-        CHECK(interrupted && notifications->finishes==2);
+        CHECK(interrupted && notifications->finishes==3);
         CHECK(!notifications->progress.complete && notifications->progress.disconnected==0 && notifications->progress.connected==0);
         CHECK(RequiredValue(db.getTip()).hash==parent.hash); // Zero returned successes does NOT mean zero durable changes.
     } else {
@@ -291,7 +354,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
             CHECK(Access::Connect(service,&index,error,invalid));
             if(reorg) {
                 reorg->Connected();reorg->Complete();reorg.reset();
-                CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==1 && notifications->progress.complete);
+                CHECK(notifications->finishes==3 && notifications->progress.disconnected==1 && notifications->progress.connected==1 && notifications->progress.complete);
             }
             CHECK(!invalid && connected->published && connected->coherent && connected->prepared==2);
             CheckMemoryCoins(db,Access::Coins(service));
@@ -306,9 +369,13 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     }
     if(reorg) {
         reorg.reset(); // Refused activation-boundary reconnect reports only the committed rollback.
-        CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==0 && !notifications->progress.complete);
+        CHECK(notifications->finishes==3 && notifications->progress.disconnected==1 && notifications->progress.connected==0 && !notifications->progress.complete);
     }
-    if(reorg_check) CHECK(notifications->retained->disconnect[0].body.Serialize()==block.WireBytes());
+    if(reorg_check) {
+        CHECK(notifications->retained->disconnect[0].body.Serialize()==block.WireBytes());
+        const auto persisted=ReadRuntimeReorgIntentUnderLock(db,retained_intent);
+        CHECK(persisted && persisted->plan->disconnect[0].body.Serialize()==block.WireBytes());
+    }
     if(outer_parent_metadata)CHECK(db.putHeaderMetadata(token,c.parent_hash,*outer_parent_metadata)==Status::Ok);
     std::cout<<"Actual service typed disconnect: notification readiness, atomic rollback, memory and observer ordering checked\n";
 }
