@@ -149,15 +149,8 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
         // all earlier store/account prefixes for the next owned recovery pass.
         for(auto& entry:current.accounts)if(account_cursor(entry).sequence<sequence) {
             const Account::Profile profile{first.context.domain,first.context.activation_height,entry.number};
-            auto& account=entry.state;const auto before=view.Point(account_cursor(entry));
-            if(!event.IsOrchardProfile())
-                account=Account::Historical(wallet,session,profile,account.revision,before,event);
-            else if(event.direction==RuntimeBlockDirection::Connect)
-                account=Account::Connect(wallet,session,profile,account.revision,before,event,
-                    view.Block(sequence),view.State(sequence),view.Authorizations(sequence));
-            else
-                account=Account::Disconnect(wallet,session,profile,account.revision,before,event,
-                    view.Block(sequence),view.Point(event.cursor));
+            auto& account=entry.state;
+            account=Account::ApplyForReplay(wallet,session,profile,account.revision,view,sequence);
             Require(account_cursor(entry)==event.cursor&&account.account.Scan().Checkpoint()==view.Point(event.cursor).checkpoint,
                 "Wallet recovery account applied position mismatch");
         }
@@ -165,6 +158,17 @@ RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
     Require(current.indexed.cursor==target&&current.ordinary.cursor==target&&Same(current.indexed,current.ordinary),
         "Wallet recovery captured head mismatch");
     for(const auto& entry:current.accounts)Require(account_cursor(entry)==target,"Wallet recovery captured head mismatch");
+    // Also reconcile an already-applied prefix from an older owner. This has
+    // no invented source movement; archive reservations commit with the actual
+    // account revision, under the same complete-inventory recheck as delivery.
+    {
+        const auto lease=wallet.AcquireDatabaseLease();
+        Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
+        for(auto& entry:current.accounts){
+            const Account::Profile profile{first.context.domain,first.context.activation_height,entry.number};
+            entry.state=Account::ReconcileForReplay(wallet,session,profile,entry.state.revision,view);
+        }
+    }
     const auto final=source(target,1);CheckPosition(current.indexed,final);
     Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
     std::vector<std::pair<uint32_t,uint64_t>> revisions;

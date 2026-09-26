@@ -207,6 +207,31 @@ wallet::OrchardAccountDelivery::RestorePoint RuntimeAccountReplay::Point(Runtime
     lookup.selected_historical_block=[data,tip](uint32_t height,const uint256& hash){const auto& n=data->Ancestor(tip,height,hash);Require(bool(n.historical));return n.historical;};
     return {data->At(tip).checkpoint,std::move(lookup)};
 }
+std::function<StatusOr<uint256>(uint32_t)> RuntimeAccountReplay::SelectedHashes(RuntimeOutboxCursor cursor) const {
+    (void)Point(cursor); // Validate cursor/digest before publishing a callback.
+    const auto tip=data_->positions[cursor.sequence];const auto data=data_;
+    return [data,tip](uint32_t height)->StatusOr<uint256>{
+        auto hash=tip;auto expected=data->At(tip).height;
+        if(height>expected)return Status::NotFound;
+        for(;;){
+            const auto it=data->nodes.find(hash);
+            if(it==data->nodes.end())return Status::NotFound;
+            if(it->second.height!=expected)return Status::Corruption;
+            if(expected==height)return hash;
+            hash=it->second.parent;--expected;
+        }
+    };
+}
+bool RuntimeAccountReplay::IsAncestorOf(RuntimeOutboxCursor cursor,const uint256& block,uint32_t height) const {
+    const auto point=Point(cursor).checkpoint;auto hash=block;
+    if(height<point.height)return false;
+    for(;;){
+        const auto it=data_->nodes.find(hash);
+        Require(it!=data_->nodes.end()&&it->second.height==height);
+        if(height==point.height)return hash==point.block_hash;
+        hash=it->second.parent;--height;
+    }
+}
 const OrchardBlockCandidate& RuntimeAccountReplay::Block(uint64_t sequence) const{
     const auto& n=data_->At(Event(sequence).context.block_hash);Require(bool(n.block));return *n.block;
 }

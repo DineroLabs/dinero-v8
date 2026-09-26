@@ -14,7 +14,16 @@ Enrolled-account recovery now recognizes completed-operation records through
 actual authenticated archive links in the shared snapshot table, refuses
 unclaimed/missing/corrupt rows, and rechecks archive revisions during recovery.
 See `wallet-archive-inventory-recovery-2026-09-26.md`. This does not certify an
-account-complete baseline or automatically reactivate disconnected archives.
+account-complete baseline. Ordered ancestor reactivation is described below.
+
+## Archived operation reactivation (2026-09-26)
+
+Coordinated account delivery now restores archived pending reservations during
+ordered undo in the same transaction as account effects and source progress.
+Already-applied ancestor checkpoints are reconciled too. Immutable branch
+identity checks refuse missing ancestry and already-diverged checkpoints that
+need observation replay. See `wallet-archive-reactivation-2026-09-26.md`.
+This does not install a provider or complete baseline/history qualification.
 
 ## Current recovery integration (2026-09-26)
 

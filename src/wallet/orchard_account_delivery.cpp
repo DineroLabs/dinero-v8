@@ -25,7 +25,8 @@ orchard::WalletStorageIdentity Identity(const std::string& id,const OrchardAccou
     for(size_t i=0;i<hash.size();++i)hash[i]=(digit(id[7+2*i])<<4)|digit(id[8+2*i]);
     return {static_cast<orchard::WalletNetwork>(p.domain.network_code),p.domain.genesis_wire,hash,p.account};
 }
-struct Owner {
+} // namespace
+struct OrchardAccountDelivery::Owner {
     struct ViewingKey {
         orchard::FullViewingKeyBytes bytes;
         explicit ViewingKey(const orchard::WalletKeys& keys):bytes(keys.ExportFullViewingKey()){}
@@ -55,12 +56,63 @@ struct Owner {
         Check(account.ParentSnapshotRevision()<saved->revision);
         return {saved->revision,std::move(account)};
     }
+    OrchardAccountDelivery::Applied RestoreReplay(const OrchardAccountDelivery::Profile& p,const RuntimeAccountReplay& view){
+        const auto& context=view.Event(1).context;
+        Check(context.activation_height==p.activation&&context.domain.network_code==p.domain.network_code&&
+            context.domain.genesis_wire==p.domain.genesis_wire&&context.domain.branch_id==p.domain.branch_id);
+        const auto saved=store.Read();Check(saved.has_value());
+        const auto receipt=OrchardAccountState::ReadDeliveryMetadata(saved->state,p.domain,fvk.bytes,p.activation,view.Point({}).checkpoint.block_hash);
+        Check(receipt.sequence);
+        auto result=Restore(p,view.Point({receipt.sequence,receipt.digest}));Check(result.revision==saved->revision);return result;
+    }
+    OrchardAccountDelivery::Applied Reconcile(OrchardAccountDelivery::Applied current,
+            const OrchardAccountDelivery::Profile& p,const RuntimeAccountReplay& view){
+        const auto receipt=current.account.Delivery();
+        const auto selected=view.SelectedHashes({receipt.sequence,receipt.digest});
+        OrchardOperationArchive archive(lease->Database(),identity,p.domain,seed->Bytes());
+        auto cursor=archive.Begin(current.account);
+        while(cursor.Remaining()){
+            const auto page=archive.List(cursor,64);Check(!page.entries.empty());
+            for(const auto& located:page.entries){
+                const auto record=archive.Read(located.Id());
+                // Fully restored pending entries already own their reservations
+                // and may carry a newer observation. Never replace their bytes.
+                if(current.account.Operations().Entries().contains(located.Id()))continue;
+                if(record.observation.height<=current.account.Scan().Checkpoint().height){
+                    const auto hash=selected(record.observation.height);
+                    if(!hash.ok())throw consensus::OrchardStateLookupError(hash.status());
+                    Check(!hash->IsNull());
+                    if(*hash==record.observation.block_hash)continue;
+                }
+                // Ordered undo restores at an actual ancestor of the recorded
+                // cause, BEFORE new-branch blocks are scanned. An older owner
+                // already beyond that fork needs observation replay; refusing
+                // is required rather than silently missing new-branch conflicts.
+                if(!view.IsAncestorOf({receipt.sequence,receipt.digest},record.observation.block_hash,record.observation.height))
+                    throw std::runtime_error("Orchard archive branch reconciliation required");
+                auto staged=archive.StageReactivate(current.revision,current.account,located,selected);
+                current={staged.revision,std::move(staged.account)};
+            }
+            cursor=page.next;
+        }
+        return current;
+    }
+    OrchardAccountDelivery::Applied Undo(const OrchardAccountDelivery::Profile& p,
+            const OrchardAccountDelivery::Applied& current,const RuntimeOutboxEvent& event,
+            const OrchardBlockCandidate& block,const OrchardAccountDelivery::RestorePoint& parent){
+        const auto parent_revision=current.account.ParentSnapshotRevision();
+        Check(parent_revision&&parent_revision<current.revision);
+        auto retained=store.ReadRetained(parent_revision);
+        auto prior=OrchardAccountState::Restore(retained.state,p.domain,fvk.bytes,p.activation,parent.checkpoint,parent.lookups);
+        Check(prior.ParentSnapshotRevision()<parent_revision);
+        return Replace(current.revision,current.account.RewindDelivery(event,block,prior)
+            .WithParentSnapshotRevision(prior.ParentSnapshotRevision()));
+    }
     OrchardAccountDelivery::Applied Replace(uint64_t expected,OrchardAccountState account){
         auto encoded=account.Encode();const auto revision=store.StageReplaceRetaining(expected,encoded);
         return {revision,std::move(account)};
     }
 };
-}
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Read(WalletManager& w,uint64_t s,const Profile& p,const RestorePoint& point){
     Owner owner(w,s,p);Transaction tx(owner.lease->Database());auto result=owner.Restore(p,point);tx.Commit();return result;
 }
@@ -142,6 +194,27 @@ std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::ReadEnroll
     Check(authenticated.size()==inventory.size());
     tx.Commit();return result;
 }
+OrchardAccountDelivery::Applied OrchardAccountDelivery::ApplyForReplay(WalletManager& w,uint64_t session,const Profile& p,
+        uint64_t expected,const RuntimeAccountReplay& view,uint64_t sequence){
+    const auto& event=view.Event(sequence);
+    Owner owner(w,session,p);Transaction tx(owner.lease->Database());
+    auto current=owner.RestoreReplay(p,view);Check(current.revision==expected);
+    current=owner.Reconcile(std::move(current),p,view);
+    auto result=[&]{
+        if(!event.IsOrchardProfile())return owner.Replace(current.revision,current.account.ApplyHistoricalDelivery(event));
+        if(event.direction==RuntimeBlockDirection::Connect)
+            return owner.Replace(current.revision,current.account.AdvanceDelivery(event,view.Block(sequence),view.State(sequence),view.Authorizations(sequence))
+                .WithParentSnapshotRevision(current.revision));
+        return owner.Undo(p,current,event,view.Block(sequence),view.Point(event.cursor));
+    }();
+    result=owner.Reconcile(std::move(result),p,view);tx.Commit();return result;
+}
+OrchardAccountDelivery::Applied OrchardAccountDelivery::ReconcileForReplay(WalletManager& w,uint64_t session,const Profile& p,
+        uint64_t expected,const RuntimeAccountReplay& view){
+    Owner owner(w,session,p);Transaction tx(owner.lease->Database());
+    auto current=owner.RestoreReplay(p,view);Check(current.revision==expected);
+    auto result=owner.Reconcile(std::move(current),p,view);tx.Commit();return result;
+}
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Connect(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,
         const RestorePoint& point,const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,
         const consensus::PreparedOrchardState& state,std::span<const consensus::VerifiedOrchardAuthorizations> auths){
@@ -151,13 +224,7 @@ OrchardAccountDelivery::Applied OrchardAccountDelivery::Connect(WalletManager& w
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Disconnect(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,
         const RestorePoint& point,const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,const RestorePoint& parent){
     Owner owner(w,s,p);Transaction tx(owner.lease->Database());auto current=owner.Restore(p,point);Check(current.revision==expected);
-    const auto parent_revision=current.account.ParentSnapshotRevision();
-    Check(parent_revision && parent_revision<expected);
-    auto retained=owner.store.ReadRetained(parent_revision);
-    auto prior=OrchardAccountState::Restore(retained.state,p.domain,owner.fvk.bytes,p.activation,parent.checkpoint,parent.lookups);
-    Check(prior.ParentSnapshotRevision()<parent_revision);
-    auto result=owner.Replace(expected,current.account.RewindDelivery(event,block,prior)
-        .WithParentSnapshotRevision(prior.ParentSnapshotRevision()));tx.Commit();return result;
+    auto result=owner.Undo(p,current,event,block,parent);tx.Commit();return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Historical(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,
         const RestorePoint& point,const RuntimeOutboxEvent& event){

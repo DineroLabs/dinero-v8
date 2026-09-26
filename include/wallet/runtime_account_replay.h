@@ -13,6 +13,9 @@ public:
     RuntimeOutboxCursor Head() const;
     const RuntimeOutboxEvent& Event(uint64_t sequence) const;
     wallet::OrchardAccountDelivery::RestorePoint Point(RuntimeOutboxCursor) const;
+    // Immutable branch identity at a covered height; missing ancestry refuses.
+    std::function<StatusOr<uint256>(uint32_t)> SelectedHashes(RuntimeOutboxCursor) const;
+    bool IsAncestorOf(RuntimeOutboxCursor,const uint256& block,uint32_t height) const;
     const OrchardBlockCandidate& Block(uint64_t sequence) const;
     const consensus::PreparedOrchardState& State(uint64_t sequence) const;
     const std::vector<consensus::VerifiedOrchardAuthorizations>& Authorizations(uint64_t sequence) const;

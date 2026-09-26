@@ -34,6 +34,13 @@ public:
     // account heads may use derived identities; unrelated rows still refuse.
     static std::vector<Enrolled> ReadEnrolledForReplay(
         WalletManager&,uint64_t session,const RuntimeAccountReplay&);
+    // Recovery entry points use an immutable selected source view captured
+    // before wallet ownership. Reconcile every referenced archive before/after
+    // effects in the SAME account transaction. Missing ancestry/capacity refuses.
+    static Applied ApplyForReplay(WalletManager&,uint64_t session,const Profile&,
+        uint64_t expected_revision,const RuntimeAccountReplay&,uint64_t sequence);
+    static Applied ReconcileForReplay(WalletManager&,uint64_t session,const Profile&,
+        uint64_t expected_revision,const RuntimeAccountReplay&);
     static Applied Connect(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&,
         const OrchardBlockCandidate&, const consensus::PreparedOrchardState&,
@@ -46,5 +53,7 @@ public:
         const OrchardBlockCandidate&, const RestorePoint& parent);
     static Applied Historical(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&);
+private:
+    struct Owner;
 };
 } // namespace dinero::wallet

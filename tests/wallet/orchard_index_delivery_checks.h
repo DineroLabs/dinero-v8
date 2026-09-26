@@ -439,10 +439,25 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
         return page;
     },ordinary,index,ordinary_session);},"stores changed during source read");
     CHECK(account_changed);
+    // Fail the second account update: undo staged its receipt, but archive
+    // reservation reactivation must fail atomically with that same receipt.
+    const auto before_reactivation=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*all_view);
+    CHECK(before_reactivation.account.Operations().Entries().empty());
+    ordinary_sql("CREATE TRIGGER reject_reactivation BEFORE UPDATE ON orchard_wallet_snapshots WHEN OLD.wallet_id=X'"+owned_id_hex+
+        "' AND OLD.account=0 AND OLD.revision="+std::to_string(before_reactivation.revision+1)+
+        " BEGIN SELECT RAISE(ABORT,'reactivation');END");
+    failure([&]{(void)all_recover(*all_view);},"Orchard wallet storage integrity, transaction or I/O failure");
+    const auto failed_reactivation=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*all_view);
+    CHECK(failed_reactivation.revision==before_reactivation.revision);
+    CHECK(failed_reactivation.account.Delivery()==before_reactivation.account.Delivery());
+    CHECK(failed_reactivation.account.Operations().Entries().empty());
+    ordinary_sql("DROP TRIGGER reject_reactivation");
     CHECK(all_recover(*all_view).applied.cursor==again.cursor);
     const auto caught=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*all_view);
     CHECK(caught.account.Delivery().sequence==again.cursor.sequence&&caught.account.ParentSnapshotRevision()>1);
     CHECK(caught.account.Scan().BalanceUna()==5000);
+    CHECK(caught.account.Operations().Entries().contains(orchard::Hash{219}));
+    CHECK(caught.account.Observations().contains(orchard::Hash{219}));
     CHECK(caught.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
     CHECK(all_recover(*all_view).account_revision==caught.revision);
     auto final_down=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,forest,true);
@@ -460,6 +475,15 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     const auto undone=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*down_view);
     CHECK(undone.account.Scan().Checkpoint().block_hash==c.parent_hash&&undone.account.ParentSnapshotRevision()==0);
     CHECK(undone.account.Scan().BalanceUna()==0);
+    CHECK(undone.account.Operations().Entries().contains(orchard::Hash{219}));
+    CHECK(!undone.account.Observations().contains(orchard::Hash{219}));
+    CHECK(undone.account.Archive().count==1);
+    CHECK(down_view->SelectedHashes(down_view->Head())(c.height-1).value()==c.parent_hash);
+    CHECK(!down_view->SelectedHashes(down_view->Head())(c.height).ok());
+    CHECK(all_view->SelectedHashes(first.cursor)(c.height).value()==c.block_hash);
+    CHECK(all_view->SelectedHashes(first.cursor)(c.height-1).value()==c.parent_hash);
+    CHECK(down_view->IsAncestorOf(down_view->Head(),c.block_hash,c.height));
+    CHECK(!all_view->IsAncestorOf(first.cursor,c.parent_hash,c.height-1));
     CHECK(undone.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
     auto final_up=PreparedOrchardChainstateWrite::ConnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,parent_forest,{},true,false,FixtureRetirement(c));
     final_up->Commit();final_up.reset();
@@ -579,6 +603,38 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     const auto authenticated_archive=Account::ReadEnrolledForReplay(ordinary,ordinary_session,*multi_up_view);
     CHECK(authenticated_archive.front().archive_revisions.size()==1&&authenticated_archive.front().archive_revisions.front().second==2);
     CHECK(enrolled_recover(*multi_up_view).account_revisions.size()==3);
+
+    // Already-applied old-owner prefix: archive while connected, then use the
+    // low-level delivery API to undo without host reconciliation. The real
+    // coordinator must reactivate even with every source cursor already at EOF.
+    auto archived_current=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*multi_up_view);
+    {
+        const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(ordinary_session);
+        orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
+        CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        dinero::wallet::OrchardOperationArchive archive(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,0},c.domain,seed->Bytes());
+        auto staged=archive.StageCompleted(archived_current.revision,archived_current.account,orchard::Hash{219},multi_up_view->Point(multi_up_view->Head()).lookups);
+        CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        archived_current={staged.revision,std::move(staged.account)};
+    }
+    CHECK(archived_current.account.Operations().Entries().empty());
+    // Connected cause is still selected: no spurious reactivation/revision.
+    CHECK(enrolled_recover(*multi_up_view).account_revisions.front().second==archived_current.revision);
+    auto archive_down=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,forest,true);
+    archive_down->Commit();archive_down.reset();
+    const auto archive_down_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    const auto legacy_undo=Account::Disconnect(ordinary,ordinary_session,account_profile,archived_current.revision,
+        multi_up_view->Point(multi_up_view->Head()),archive_down_view->Event(archive_down_view->Head().sequence),block,
+        archive_down_view->Point(archive_down_view->Head()));
+    CHECK(legacy_undo.account.Operations().Entries().empty());
+    const auto repaired=enrolled_recover(*archive_down_view);
+    const auto reactivated=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*archive_down_view);
+    CHECK(reactivated.revision==legacy_undo.revision+1);
+    CHECK(reactivated.account.Operations().Entries().contains(orchard::Hash{219}));
+    CHECK(!reactivated.account.Observations().contains(orchard::Hash{219}));
+    CHECK(reactivated.account.Archive().count==1&&reactivated.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
+    CHECK(enrolled_recover(*archive_down_view).account_revisions==repaired.account_revisions);
+    again=archive_down_view->Event(archive_down_view->Head().sequence);
 
     ordinary_sql("DROP TRIGGER runtime_ordinary_utxos_UPDATE");
     failure([&]{(void)RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);},"guard unavailable");
