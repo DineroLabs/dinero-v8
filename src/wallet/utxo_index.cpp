@@ -1478,7 +1478,12 @@ bool UTXOIndex::ClearAll() {
 
     // Delete all UTXOs
     // M.5.2 FIX: Correct table name (was "utxos", should be "wallet_utxos")
-    rc = sqlite3_exec(db_, "DELETE FROM wallet_utxos", nullptr, nullptr, &err_msg);
+    // A reset invalidates even a tracked index with zero owned rows.
+    rc = sqlite3_exec(db_,
+        "INSERT OR REPLACE INTO utxo_metadata(key,value) SELECT 'runtime_delivery:v1:invalidated','1' "
+        "WHERE EXISTS(SELECT 1 FROM utxo_metadata WHERE key='runtime_delivery:v1:receipt');"
+        "DELETE FROM utxo_metadata WHERE key='runtime_delivery:v1:receipt';"
+        "DELETE FROM wallet_utxos", nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
         std::string error = err_msg ? err_msg : "Unknown error";
         g_logger.error("[UTXOIndex] Failed to delete UTXOs: " + error);
@@ -1488,7 +1493,7 @@ bool UTXOIndex::ClearAll() {
     }
 
     // Delete all metadata
-    rc = sqlite3_exec(db_, "DELETE FROM utxo_metadata", nullptr, nullptr, &err_msg);
+    rc = sqlite3_exec(db_, "DELETE FROM utxo_metadata WHERE key NOT GLOB 'runtime_delivery:*'", nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
         std::string error = err_msg ? err_msg : "Unknown error";
         g_logger.error("[UTXOIndex] Failed to delete metadata: " + error);
@@ -1515,6 +1520,7 @@ bool UTXOIndex::ClearAll() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 bool UTXOIndex::SetMetadata(const std::string& key, const std::string& value) {
+    if (key.starts_with("runtime_delivery:")) return false;
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = "INSERT OR REPLACE INTO utxo_metadata (key, value) VALUES (?, ?)";
@@ -1570,6 +1576,7 @@ std::optional<std::string> UTXOIndex::GetMetadata(const std::string& key) const 
 }
 
 bool UTXOIndex::DeleteMetadata(const std::string& key) {
+    if (key.starts_with("runtime_delivery:")) return false;
     std::lock_guard<std::recursive_mutex> lock(db_mutex_);
 
     const char* sql = "DELETE FROM utxo_metadata WHERE key = ?";

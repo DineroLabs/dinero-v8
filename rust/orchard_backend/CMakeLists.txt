@@ -140,6 +140,13 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_chainstate_write STATIC "${ORCHARD_HOST_ROOT}/src/daemon/orchard_chainstate_write.cpp")
   target_link_libraries(dinero_orchard_chainstate_write PUBLIC dinero_orchard_block_staging)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
+  add_library(dinero_orchard_index_delivery STATIC "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp")
+  target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_orchard_chainstate_write sqlite3)
+  if(TARGET dinero_core)
+    target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
+  endif()
+
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_chainstate_write)
   endif()
@@ -316,6 +323,16 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_orchard_state_commitment PRIVATE dinero_core)
     add_test(NAME OrchardStateCommitment COMMAND test_orchard_state_commitment)
     set_tests_properties(OrchardStateCommitment PROPERTIES TIMEOUT 60 LABELS "orchard;consensus;encoding;integration-staging")
+    add_executable(test_orchard_index_delivery
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
+      "${ORCHARD_HOST_ROOT}/src/wallet/utxo_index.cpp"
+      "${ORCHARD_HOST_ROOT}/src/sqlite_open.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_compile_definitions(test_orchard_index_delivery PRIVATE DINERO_TEST_ORCHARD_INDEX_DELIVERY=1)
+    target_include_directories(test_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    target_link_libraries(test_orchard_index_delivery PRIVATE dinero_orchard_index_delivery)
+    add_test(NAME OrchardIndexDelivery COMMAND test_orchard_index_delivery --index-delivery "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardIndexDelivery PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;wallet;storage;integration-staging")
     add_executable(test_orchard_block_staging
       "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_block_staging.cpp"
       "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")

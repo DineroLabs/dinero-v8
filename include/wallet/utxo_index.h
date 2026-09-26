@@ -133,6 +133,7 @@ struct BalanceDetail {
 // ║                                                                           ║
 // ╚═══════════════════════════════════════════════════════════════════════════╝
 class UTXOIndex {
+    friend class RuntimeIndexDelivery;
 public:
     explicit UTXOIndex(const std::string& db_path);
     ~UTXOIndex();

@@ -1161,8 +1161,18 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
 #ifdef DINERO_TEST_ORCHARD_SERVICE_STARTUP
 #include "../daemon/orchard_service_startup_checks.h"
 #endif
+#ifdef DINERO_TEST_ORCHARD_INDEX_DELIVERY
+#include "../wallet/orchard_index_delivery_checks.h"
+#endif
 int main(int argc,char**argv) {
     try { SelectParams(Chain::REGTEST);
+#ifdef DINERO_TEST_ORCHARD_INDEX_DELIVERY
+        if(argc==3 && std::string(argv[1])=="--index-delivery") {
+            AtomicForest(argv[2],false,{},true,true,IndexDeliveryChecks);
+            AtomicForest(argv[2],true,{},true,true,IndexDeliveryChecks);
+            std::cout<<"OrchardIndexDelivery PASS\n";return 0;
+        }
+#endif
 #ifdef DINERO_TEST_ORCHARD_SERVICE_STARTUP
         if(argc==3 && std::string(argv[1])=="--service-delivery-source") {
             AtomicForest(argv[2],false,{},true,true,ServiceDeliverySourceChecks);

@@ -5,6 +5,14 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- A store-owned index delivery consumer applies real historical/Orchard
+  transparent effects and ordered source progress in one checked SQLite
+  transaction. Ordinary index writes invalidate that progress atomically;
+  resets preserve invalidation, including empty indexes. Checked source,
+  persistent wallet binding and pre-origin baseline reconciliation remain
+  caller obligations. This is one index consumer, not an installed production
+  provider or all-wallet readiness. See `orchard-index-delivery-2026-09-26.md`.
+
 - The existing delivery reader now binds its head (including EOF) to the durable
   canonical tip and checks visited adjacent transition identities. The service
   exposes checked pages under its activation lock and its actual startup gate
