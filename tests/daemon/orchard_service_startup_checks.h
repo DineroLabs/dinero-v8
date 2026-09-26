@@ -48,6 +48,13 @@ struct ShieldedStateStartupTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
         return s.ConnectTip(tip,&error,&invalid);
     }
+    static bool ForkPoint(ChainstateService& s,CBlockIndex* fork) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
+        return s.VerifyForkPointForestUnderLock(fork);
+    }
+    static void RestoreForest(ChainstateService& s,const consensus::UtreexoForest& f) {
+        s.consensus_utxo_set_->ReplaceForestGuarded(f);
+    }
     static void SeedPositions(ChainstateService& s) {
         s.utxo_position_index_=std::make_unique<indexing::UTXOPositionIndex>();
         s.utxo_position_index_->AddPosition(TxId(uint256{}),0,42);
@@ -81,7 +88,7 @@ struct ShieldedStateStartupTestAccess {
 };
 }
 static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c,
-    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path,bool reconnect=false) {
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path,bool reconnect=false,bool fork_audit=false) {
     using Access=dinero::ShieldedStateStartupTestAccess;
     const auto old_params=Params();const auto old_config=GetConfig();
     struct Restore { ChainParams p;NodeConfig c;~Restore(){MutableParams()=p;GetConfig()=c;} } restore{old_params,old_config};
@@ -110,7 +117,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     if(c.height==c.activation_height) {
         JournalContinuation(db,c,block,forest,true,[&](const OrchardBlockContext& next,
             const OrchardBlockCandidate& child,const UtreexoForest& child_forest) {
-            ServiceDisconnectChecksImpl(db,next,child,child_forest,path,reconnect);
+            ServiceDisconnectChecksImpl(db,next,child,child_forest,path,reconnect,fork_audit);
         },true);
     }
 
@@ -164,6 +171,22 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     }
     CheckMemoryCoins(db,Access::Coins(service));
     CHECK(!Access::Disconnect(service,&index)); // Never replay undo against its parent.
+    if(fork_audit && c.height>c.activation_height) {
+        db.close();const auto unchanged=Inspect(path);CHECK(db.init(path)==Status::Ok);
+        CHECK(Access::ForkPoint(service,&parent)); // Mixed body must never enter the historical decoder.
+        CHECK(!Access::ForkPoint(service,&index)); // Header for another state is not a fork-point receipt.
+        const auto good_forest=Access::Coins(service).GetForest();
+        Access::EmptyForest(service);CHECK(!Access::ForkPoint(service,&parent));
+        Access::RestoreForest(service,good_forest);
+        CHECK(Access::ForkPoint(service,&parent));
+        const auto metadata=RequiredValue(db.getHeaderMetadata(parent.hash));auto absent=metadata;
+        absent.status_flags &= ~BLOCK_HAVE_DATA;
+        CHECK(db.putHeaderMetadata(token,parent.hash,absent)==Status::Ok);
+        CHECK(!Access::ForkPoint(service,&parent));
+        CHECK(db.putHeaderMetadata(token,parent.hash,metadata)==Status::Ok);
+        CHECK(Access::ForkPoint(service,&parent));
+        db.close();CHECK(Inspect(path)==unchanged);CHECK(db.init(path)==Status::Ok);
+    }
     if(reconnect) {
         std::string error;bool invalid=false;
         auto connected=std::make_shared<Notifications>(db,service,parent,index,block.WireBytes(),RuntimeBlockDirection::Connect);
@@ -212,6 +235,10 @@ static void ServiceDisconnectChecks(ChainDB& db,const OrchardBlockContext& c,
 static void ServiceConnectChecks(ChainDB& db,const OrchardBlockContext& c,
     const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
     ServiceDisconnectChecksImpl(db,c,block,forest,path,true);
+}
+static void ServiceForkPointChecks(ChainDB& db,const OrchardBlockContext& c,
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
+    ServiceDisconnectChecksImpl(db,c,block,forest,path,true,true);
 }
 static void ServiceUndoCoverageChecks(ChainDB& db,const OrchardBlockContext& c,
     const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {

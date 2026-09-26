@@ -69,6 +69,13 @@ This branch collects release implementation for review and qualification against
   validated historical accounting source; no production notification provider is
   installed. Generated-state reconnect tests are not live-node qualification.
   See the service-connect design and its remaining readiness boundaries.
+- ActivateBestChain now uses a shared locked fork-point forest check after
+  disconnect. Selected Orchard forks require exact indexed mixed bodies and
+  agreement of active/live/durable/validated/forest-marker identities; the live
+  forest must match the authenticated body root. Historical parsing remains
+  before activation. Dedicated service-fixture coverage verifies missing material,
+  wrong restored forest and stale fork selection without canonical writes.
+  Full reorg orchestration and production consumers remain unfinished.
 - The actual startup undo-coverage walk now routes retained Orchard bodies under
   the activation lock, restoring and reversing a private forest across the
   requested window. Exact indexed/embedded body and undo, commit records,

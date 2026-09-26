@@ -1139,6 +1139,7 @@ private:
         uint64_t nullifier_count{0};
     };
 
+    bool VerifyForkPointForestUnderLock(CBlockIndex*);
     bool DisconnectOrchardTip(CBlockIndex*);
     bool ConnectOrchardTip(CBlockIndex*, std::string*, bool*);
 

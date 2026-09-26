@@ -35,8 +35,9 @@ connections therefore remain disabled pending complete wallet, mempool, relay,
 proof-cache, oracle and long-poll consumer handling. Ordinary confidential
 transaction compatibility, comprehensive body failure classification, complete
 ActivateBestChain/replay/reindex/startup routing, CSN and pruned history remain
-unfinished. In particular, the existing reorg fork-point reader outside ConnectTip
-still needs typed routing. No network activation is configured.
+unfinished. The reorg fork-point reader now has selected typed routing; that
+check alone does not qualify the whole reorg orchestration. No network activation
+is configured.
 
 ## Qualification scope
 

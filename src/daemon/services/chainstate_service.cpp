@@ -10115,52 +10115,13 @@ void ChainstateService::ActivateBestChain() {
     // this base would silently diverge from consensus.
     // ═══════════════════════════════════════════════════════════════════════════
     if (!disconnect_path.empty() && consensus_utxo_set_ && fork_point) {
-        auto fp_block_result = ReadStoredBlock(fork_point->hash);
-        if (fp_block_result.status() != Status::Ok) {
-            if (logger_) {
-                logger_->error("[ActivateBestChain] Cannot load fork-point block " +
-                               fork_point->hash.GetHex() +
-                               " for post-disconnect root validation — ABORTING REORG");
-            }
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-            }
+        if (!VerifyForkPointForestUnderLock(fork_point)) {
+            if (logger_) logger_->error("[ActivateBestChain] Fork-point body/state verification failed; aborting reorg");
+            if (wallet_transaction_started && utxo_index_) utxo_index_->RollbackTransaction();
             return;
         }
-        const uint256& expected_fp_root = fp_block_result.value().header.utreexo_root;
-
-        auto forest_commitment = consensus_utxo_set_->SnapshotForestCommitment();
-        if (forest_commitment.size() != 32) {
-            if (logger_) {
-                logger_->error("[ActivateBestChain] Invalid forest commitment size after disconnect: " +
-                               std::to_string(forest_commitment.size()) + " — ABORTING REORG");
-            }
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-            }
-            return;
-        }
-        uint256 forest_root;
-        std::memcpy(forest_root.begin(), forest_commitment.data(), 32);
-
-        if (forest_root != expected_fp_root) {
-            if (logger_) {
-                logger_->error("[ActivateBestChain] FORK-POINT ROOT MISMATCH after disconnect");
-                logger_->error("  fork height=" + std::to_string(fork_point->height) +
-                               " block=" + fork_point->hash.GetHex());
-                logger_->error("  forest:   " + forest_root.GetHex());
-                logger_->error("  expected: " + expected_fp_root.GetHex());
-                logger_->error("  ABORTING REORG — disconnect deltas produced wrong state");
-            }
-            if (wallet_transaction_started && utxo_index_) {
-                utxo_index_->RollbackTransaction();
-            }
-            return;
-        }
-        if (logger_) {
-            logger_->info("[ActivateBestChain] Post-disconnect forest root verified at fork height " +
-                          std::to_string(fork_point->height));
-        }
+        if (logger_) logger_->info("[ActivateBestChain] Post-disconnect forest root verified at fork height " +
+                                   std::to_string(fork_point->height));
     }
 
     // Collect transactions from blocks being connected (to filter from reconciliation)
@@ -13856,6 +13817,51 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
 void ChainstateService::setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications> notifications) {
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     runtime_block_notifications_=std::move(notifications);
+}
+
+bool ChainstateService::VerifyForkPointForestUnderLock(CBlockIndex* fork) {
+    activation_mutex_.AssertHeld("fork-point forest verification");
+    if (!fork || !consensus_utxo_set_) return false;
+    try {
+        uint256 expected;
+        if (consensus::OrchardActiveForHeight(Params(),fork->height)) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            // The fork-point check is against the restored selected state, not
+            // a header-only or side-branch root with the same claimed height.
+            if (!chain_db_ || !block_storage_ || fork!=active_tip_ || GetConfig().utreexo_stateless ||
+                consensus_utxo_set_->GetBestBlock()!=fork->hash || consensus_utxo_set_->GetHeight()!=fork->height)
+                return false;
+            const auto tip=chain_db_->getTip();const auto validated=chain_db_->getValidatedTip();
+            const auto marker=chain_db_->getForestTipMarker();
+            const auto metadata=chain_db_->getHeaderMetadata(fork->hash);
+            if (!tip.ok() || !validated.ok() || !marker.ok() || !metadata.ok() ||
+                tip->hash!=fork->hash || tip->height!=int32_t(fork->height) ||
+                validated->hash!=fork->hash || validated->height!=int32_t(fork->height) ||
+                marker->block_hash!=fork->hash || marker->height!=int32_t(fork->height) ||
+                !(metadata->status_flags&BLOCK_HAVE_DATA) ||
+                ((metadata->status_flags|fork->status)&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)) ||
+                std::tie(fork->status,fork->file_number,fork->data_pos,fork->data_size)!=
+                std::tie(metadata->status_flags,metadata->file_number,metadata->data_pos,metadata->data_size))
+                return false;
+            const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),fork->hash,fork->height);
+            if (!body.ok() || !body->IsOrchardProfile()) return false;
+            expected=body->Orchard().Header().utreexo_root;
+            if(marker->forest_root!=expected) return false;
+#else
+            return false;
+#endif
+        } else {
+            const auto block=ReadStoredBlock(fork->hash);
+            if (!block.ok()) return false;
+            expected=block->header.utreexo_root;
+        }
+        const auto commitment=consensus_utxo_set_->SnapshotForestCommitment();
+        return commitment.size()==32 && std::equal(commitment.begin(),commitment.end(),expected.begin());
+    } catch (const std::exception&) {
+        // Missing/corrupt retained material is an unavailable local check, not
+        // evidence that an alternative branch is consensus-invalid.
+        return false;
+    }
 }
 
 bool ChainstateService::DisconnectOrchardTip(CBlockIndex* tip) {
