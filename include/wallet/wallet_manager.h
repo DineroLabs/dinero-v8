@@ -48,6 +48,8 @@ class ILogger;  // Dependency injection for logging
 class UTXOIndex;  // UTXO indexing for address registration
 class ChainDB;  // Chain database for UTXO discovery during rescan
 class BlockStorage;
+class SelectedWalletHistory;
+class ChainstateService;
 
 namespace lightning {
     class LightningService;  // Forward declaration for Lightning integration
@@ -956,6 +958,9 @@ private:
     std::filesystem::path dataDir_;
 #endif
     std::string current_;
+    friend class ChainstateService;
+    bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
+                              const SelectedWalletHistory*, uint64_t expected_session);
     friend class RuntimeOrdinaryDelivery;
     friend class RuntimeWalletRecovery;
     int current_wallet_id_ = -1;

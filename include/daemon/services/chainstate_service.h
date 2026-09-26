@@ -185,6 +185,13 @@ public:
     // WalletService startup sweep, and wallet.importmnemonic when the mnemonic
     // is imported only after snapshot activation.
     int RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height);
+    // Independently replay and own selected historical bodies before wallet
+    // effects. Returns the captured height, not lasting chain/wallet readiness.
+    // Bounded archival/stateful pre-Orchard support; failures never substitute
+    // mutable or unvalidated source. Caller must not hold a wallet lease.
+    std::optional<uint32_t> RescanWalletFromSelectedHistory(
+        WalletManager&, int start_height, int gap_limit, std::string* error = nullptr);
+
 
     // v7 shielded pool state accessors.
     consensus::shielded::CommitmentTree* GetShieldedCommitmentTree() { return &shielded_tree_; }

@@ -1,5 +1,14 @@
 # v8.1.13 integration status
 
+## Selected wallet history source (2026-09-26)
+
+A service-owned archival source now validates captured genesis-to-tip bodies before
+wallet ownership and supplies immutable data to the checked ordinary rescan. See
+`wallet-selected-history-source-2026-09-26.md`. It is bounded, pre-Orchard and
+stateful; it is not installed in the rescan RPC or recovery provider. Complete
+outbox-origin projection, CT/history/discovery, long-history support and baseline
+adoption remain required. Steps 1–4 are not complete.
+
 ## Checked ordinary block rescan (2026-09-26)
 
 The existing wallet block-rescan path now commits required ordinary effects,

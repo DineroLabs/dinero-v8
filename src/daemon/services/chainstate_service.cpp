@@ -1,3 +1,5 @@
+#include "wallet/selected_history.h"
+#include <sqlite3.h>
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
@@ -11261,6 +11263,97 @@ uint32_t ChainstateService::GetSnapshotWalletRecoveryBaseHeight() const {
         return 0;
     }
     return header.block_height;
+}
+
+std::optional<uint32_t> ChainstateService::RescanWalletFromSelectedHistory(
+    WalletManager& wallet, int start_height, int gap_limit, std::string* error) {
+    if (error) error->clear();
+    const auto fail = [&](const char* why) -> std::optional<uint32_t> {
+        if (error) *error = why;
+        return std::nullopt;
+    };
+    try {
+        uint64_t session = 0;
+        {
+            const auto lease = wallet.AcquireDatabaseLease();
+            if (!lease->Database() || wallet.database_leases_ != 1 ||
+                !sqlite3_get_autocommit(lease->Database()))
+                return fail("selected-history-wallet-ownership-unavailable");
+            session = lease->Session();
+        } // No wallet ownership during selected-chain acquisition or validation.
+        auto owned = std::unique_ptr<SelectedWalletHistory>(new SelectedWalletHistory());
+        uint32_t height = 0;
+        const auto selected = [&]() {
+            if (!chain_db_ || !active_tip_ || !consensus_utxo_set_ ||
+                GetConfig().utreexo_stateless || safe_mode_active_) return false;
+            const auto tip = chain_db_->getTip();
+            const auto validated = chain_db_->getValidatedTip();
+            return tip.ok() && validated.ok() && tip->height >= 0 &&
+                tip->hash == active_tip_->hash && uint32_t(tip->height) == active_tip_->height &&
+                validated->hash == tip->hash && validated->height == tip->height &&
+                consensus_utxo_set_->GetBestBlock() == tip->hash &&
+                consensus_utxo_set_->GetHeight() == uint32_t(tip->height);
+        };
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            if (!selected()) return fail("selected-history-chain-identity-unavailable");
+            height = active_tip_->height;
+            if (start_height < 0 || uint32_t(start_height) > height || gap_limit < 0)
+                return fail("selected-history-scan-range-invalid");
+            // Explicit operational bounds; never truncate a scan or grant a
+            // receipt. Serialized charge is not a resident-memory bound.
+            constexpr uint32_t max_blocks = 100000;
+            constexpr size_t max_material = 256 * 1024 * 1024;
+            if (height >= max_blocks || height >= Params().orchard_activation_height)
+                return fail("selected-history-profile-or-size-unsupported");
+            owned->tip_ = active_tip_->hash;
+            owned->network_ = Params().network_id;
+            owned->genesis_ = uint256::FromHexUnsafe(Params().genesis_hash);
+            uint256 expected = owned->tip_;
+            size_t material = 0;
+            for (uint64_t remaining = uint64_t(height) + 1; remaining; --remaining) {
+                const auto at = static_cast<uint32_t>(remaining - 1);
+                const auto stored_height = chain_db_->getBlockHeight(expected);
+                const auto body = storage::ReadArchivalBlock(*chain_db_, block_storage_.get(), expected);
+                if (!stored_height.ok() || *stored_height < 0 || uint32_t(*stored_height) != at ||
+                    !body.ok() || body->GetHash() != expected)
+                    return fail("selected-history-ancestry-or-body-unavailable");
+                const auto bytes = body->Serialize().size();
+                if (bytes > max_material - material)
+                    return fail("selected-history-material-limit");
+                material += bytes;
+                expected = body->header.prev_block_hash;
+                owned->blocks_.push_back(*body);
+            }
+            if (!expected.IsNull() || owned->blocks_.back().GetHash() != owned->genesis_)
+                return fail("selected-history-genesis-mismatch");
+            std::reverse(owned->blocks_.begin(), owned->blocks_.end());
+        } // Expensive independent replay holds neither chain nor wallet ownership.
+        assumeutxo::AssumeUtxoReplayEngine replay;
+        std::string validation_error;
+        if (!replay.SeedGenesis(owned->blocks_.front(), validation_error))
+            return fail("selected-history-genesis-validation-failed");
+        for (uint32_t h = 1; h <= height; ++h) {
+            const auto& block = owned->blocks_[h];
+            if (!replay.ConnectAndAdvance(block, h, block.GetHash(), validation_error))
+                return fail("selected-history-consensus-validation-failed");
+        }
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+            if (!selected() || active_tip_->hash != owned->tip_ || active_tip_->height != height ||
+                Params().network_id != owned->network_ ||
+                uint256::FromHexUnsafe(Params().genesis_hash) != owned->genesis_)
+                return fail("selected-history-source-changed");
+        }
+        // Const ownership is local and no source callback reaches the wallet.
+        // A later chain change still needs ordinary catch-up/reorg processing.
+        const auto immutable = std::unique_ptr<const SelectedWalletHistory>(owned.release());
+        if (!wallet.RescanBlockchainImpl(start_height, gap_limit, nullptr, nullptr, immutable.get(), session))
+            return fail("selected-history-wallet-apply-failed");
+        return height;
+    } catch (...) {
+        return fail("selected-history-unavailable");
+    }
 }
 
 int ChainstateService::RescanWalletFromSnapshotUTXOs(WalletManager& wallet, uint32_t base_height) {

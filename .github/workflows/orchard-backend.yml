@@ -270,6 +270,9 @@ jobs:
           expected = ['ReplayReproducesDirectDigest', 'TamperedBlockFailsValidation', 'SeedGenesisAddsRecordsNotLeaves', 'CapturesUndoTailWindow', 'ExposesProvenSetAndStateRefs', 'RequiresSelectedGenesisAndContiguousIdentity', 'OwnsHeaderValidationBeforeCoinEffects', 'TimeLocksUseOwnedAncestryWithoutGlobalIndex']
           if sorted(actual) != sorted('AssumeUtxoReplay.' + name for name in expected):
               raise SystemExit('Historical replay cases did not execute exactly once')
+          owned = re.findall(r'\[ RUN\s+\] (SelectedWalletHistory\.\S+)', open('orchard-history-replay-execution.log').read())
+          if owned != ['SelectedWalletHistory.ValidatesBeforeEffectsAndUsesOwnedBodies']:
+              raise SystemExit('Selected wallet history service case did not execute exactly once')
           PYTEST
       - name: Require and execute wallet recovery key ownership
         run: |

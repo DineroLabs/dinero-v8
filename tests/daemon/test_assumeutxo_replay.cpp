@@ -38,6 +38,13 @@
 // ============================================================================
 
 #include <gtest/gtest.h>
+#include "daemon/services/chainstate_service.h"
+#include "storage/chain_db.h"
+#include "wallet/wallet_manager.h"
+#include <sqlite3.h>
+#include <filesystem>
+#include <future>
+#include <unistd.h>
 
 #include <string>
 #include <vector>
@@ -54,6 +61,18 @@
 #include "primitives/transaction.h"
 
 namespace dinero {
+
+struct ShieldedStateStartupTestAccess {
+    static void Select(ChainstateService& service, CBlockIndex& tip) {
+        service.active_tip_ = &tip;
+        service.consensus_utxo_set_ = std::make_unique<consensus::ConsensusUTXOSet>();
+        service.consensus_utxo_set_->SetBestBlock(tip.hash,tip.height);
+    }
+    static bool TryChain(ChainstateService& service) {
+        if (!service.activation_mutex_.try_lock()) return false;
+        service.activation_mutex_.unlock(); return true;
+    }
+};
 
 namespace {
 
@@ -396,6 +415,82 @@ TEST(AssumeUtxoReplay, TimeLocksUseOwnedAncestryWithoutGlobalIndex) {
     ASSERT_TRUE(engine.ConnectAndAdvance(chain[101], 102, chain[101].GetHash(), error)) << error;
 
 
+}
+
+
+TEST(SelectedWalletHistory, ValidatesBeforeEffectsAndUsesOwnedBodies) {
+    const auto dir=std::filesystem::temp_directory_path()/("selected_wallet_history_"+std::to_string(getpid()));
+    std::filesystem::create_directories(dir);
+    WalletManager wallet(dir/"wallet"); wallet.create("selected"); wallet.open("selected");
+    auto blocks=BuildDeterministicChain(3); ASSERT_EQ(blocks.size(),3u);
+    wallet.addWatchScript(blocks.front().vtx.front().vout.front().scriptPubKey,"m/84'/1'/0'/0/0",false);
+    auto sql=[&](const char* statement) { ASSERT_EQ(sqlite3_exec(wallet.getCurrentDatabase(),statement,nullptr,nullptr,nullptr),SQLITE_OK); };
+    auto count=[&]() {
+        sqlite3_stmt* st=nullptr;
+        if(sqlite3_prepare_v2(wallet.getCurrentDatabase(),"SELECT COUNT(*) FROM utxos",-1,&st,nullptr)!=SQLITE_OK) throw std::runtime_error("query");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> row(st,sqlite3_finalize);
+        if(sqlite3_step(st)!=SQLITE_ROW) throw std::runtime_error("row");
+        return sqlite3_column_int64(st,0);
+    };
+    ChainDB db; ASSERT_EQ(db.init(dir/"chain"),Status::Ok);
+    const auto token=ChainWriteToken::CreateForTesting();
+    auto store=[&](const Block& body,uint32_t h) {
+        EXPECT_EQ(db.putBlock(token,body.GetHash(),body),Status::Ok);
+        EXPECT_EQ(db.putHeader(token,body.GetHash(),body.header,h,arith_uint256(h+1)),Status::Ok);
+    };
+    store(SelectedGenesis(),0);
+    for(uint32_t i=0;i<blocks.size();++i)store(blocks[i],i+1);
+    CBlockIndex tip(blocks.back().header,3);
+    ASSERT_EQ(db.setTip(token,tip.hash,3,arith_uint256(4)),Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(token,tip.hash,3),Status::Ok);
+    ChainstateService service; service.setChainDB(&db); ShieldedStateStartupTestAccess::Select(service,tip);
+    std::string error;
+    { const auto lease=wallet.AcquireDatabaseLease();
+      EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+      EXPECT_EQ(error,"selected-history-wallet-ownership-unavailable"); }
+    EXPECT_EQ(count(),0);
+    // Height indices deliberately point elsewhere. Actual ancestry is by hash.
+    ASSERT_EQ(db.putHeightIndex(token,1,SelectedGenesis().GetHash()),Status::Ok);
+    auto corrupt=blocks[0];corrupt.vtx[0].vout[0].value=AmountUna::Una(1);
+    ASSERT_EQ(db.putBlock(token,blocks[0].GetHash(),corrupt),Status::Ok);
+    EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+    EXPECT_EQ(error,"selected-history-consensus-validation-failed");EXPECT_EQ(count(),0);
+    store(blocks[0],1);
+    // A selected, internally identified body must still pass actual consensus.
+    auto invalid=blocks.back();invalid.header.utreexo_root.SetNull();store(invalid,3);
+    tip=CBlockIndex(invalid.header,3);ShieldedStateStartupTestAccess::Select(service,tip);
+    ASSERT_EQ(db.setTip(token,tip.hash,3,arith_uint256(4)),Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(token,tip.hash,3),Status::Ok);
+    EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+    EXPECT_EQ(error,"selected-history-consensus-validation-failed");EXPECT_EQ(count(),0);
+    tip=CBlockIndex(blocks.back().header,3);ShieldedStateStartupTestAccess::Select(service,tip);
+    ASSERT_EQ(db.setTip(token,tip.hash,3,arith_uint256(4)),Status::Ok);
+    ASSERT_EQ(db.setValidatedTip(token,tip.hash,3),Status::Ok);
+    struct Observe { ChainstateService* service; ChainDB* db; const Block* corrupt; bool ran=false,unlocked=false; } observe{&service,&db,&corrupt};
+    sqlite3_set_authorizer(wallet.getCurrentDatabase(),[](void* opaque,int action,const char* table,const char*,const char*,const char*) {
+        auto& o=*static_cast<Observe*>(opaque);
+        if(!o.ran && action==SQLITE_READ && table && std::string_view(table)=="watch_scripts") {
+            o.ran=true;
+            o.unlocked=std::async(std::launch::async,[&]{return ShieldedStateStartupTestAccess::TryChain(*o.service);}).get();
+            // Mutate backing storage after acquisition: wallet effects must use
+            // the owned, already validated body, not read the database again.
+            if(o.db->putBlock(ChainWriteToken::CreateForTesting(),o.corrupt->GetHash(),*o.corrupt)!=Status::Ok) return SQLITE_DENY;
+        }
+        return SQLITE_OK;
+    },&observe);
+    EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
+    sqlite3_set_authorizer(wallet.getCurrentDatabase(),nullptr,nullptr);
+    EXPECT_TRUE(observe.ran);EXPECT_TRUE(observe.unlocked);EXPECT_EQ(count(),1);
+    EXPECT_EQ(wallet.getCurrentBlockchainHeight(),3u);
+    store(blocks[0],1);
+    wallet.open("selected");
+    EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
+    EXPECT_EQ(count(),1);
+    sql("CREATE TRIGGER selected_fail BEFORE UPDATE ON sync_meta BEGIN SELECT RAISE(ABORT,'fixture'); END;");
+    EXPECT_FALSE(service.RescanWalletFromSelectedHistory(wallet,0,0,&error));
+    EXPECT_EQ(count(),1);
+    sql("DROP TRIGGER selected_fail;");
+    EXPECT_EQ(service.RescanWalletFromSelectedHistory(wallet,0,0,&error),std::optional<uint32_t>(3))<<error;
 }
 
 }  // namespace dinero

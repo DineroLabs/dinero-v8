@@ -1,3 +1,4 @@
+#include "wallet/selected_history.h"
 #include "wallet/wallet_manager.h"
 #include "consensus/coin_type.h"
 #include "consensus/subsidy.h"   // For ConsensusSubsidy::UNA_PER_DIN
@@ -5861,14 +5862,24 @@ bool WalletManager::rescanBlockchain(int start_height,
                                      int gap_limit,
                                      dinero::ChainDB* chain_db,
                                      dinero::BlockStorage* block_storage) {
-    if (!chain_db) return false;
+    return RescanBlockchainImpl(start_height, gap_limit, chain_db, block_storage, nullptr, 0);
+}
+
+bool WalletManager::RescanBlockchainImpl(int start_height, int gap_limit,
+                                        ChainDB* chain_db, BlockStorage* block_storage,
+                                        const SelectedWalletHistory* prepared, uint64_t expected_session) {
+    if (!chain_db && !prepared) return false;
     std::unique_ptr<DatabaseLease> database_lease;
     try { database_lease = AcquireDatabaseLease(); }
     catch (...) { return false; }
     if (!db_ || current_wallet_id_ == -1 || !sqlite3_get_autocommit(db_)) return false;
+    if (prepared && (database_leases_ != 1 || !expected_session ||
+        database_lease->Session() != expected_session || prepared->blocks_.empty() ||
+        prepared->network_ != Params().network_id ||
+        prepared->genesis_ != uint256::FromHexUnsafe(Params().genesis_hash))) return false;
 
-    // This legacy entry point still reads mutable archival chain data. Checked
-    // wallet durability is not a selected-history or recovery-baseline certificate.
+    // The prepared path reads only owned immutable bodies. The legacy path
+    // still reads mutable archival data. Neither grants a recovery receipt.
     auto checked = [&](int result, int expected) {
         if (result != expected)
             throw std::runtime_error(std::string("Block rescan SQL failed: ") + sqlite3_errmsg(db_));
@@ -5899,9 +5910,15 @@ bool WalletManager::rescanBlockchain(int start_height,
     std::unique_lock<std::mutex> height_lock(height_mu_, std::defer_lock);
     uint32_t tip_height = 0;
     try {
-        const auto tip = chain_db->getTip();
-        if (!tip.ok() || tip->height < 0) return false;
-        tip_height = static_cast<uint32_t>(tip->height);
+        if (prepared) {
+            if (prepared->blocks_.size() > uint64_t(INT32_MAX) + 1 ||
+                prepared->blocks_.back().GetHash() != prepared->tip_) return false;
+            tip_height = static_cast<uint32_t>(prepared->blocks_.size() - 1);
+        } else {
+            const auto tip = chain_db->getTip();
+            if (!tip.ok() || tip->height < 0) return false;
+            tip_height = static_cast<uint32_t>(tip->height);
+        }
         start_height = std::max(start_height, 0);
         if (static_cast<uint32_t>(start_height) > tip_height) return true;
         if (gap_limit < 0) return false;
@@ -5942,11 +5959,15 @@ bool WalletManager::rescanBlockchain(int start_height,
         // height cannot wrap to zero and repeatedly replay the source.
         for (uint64_t cursor = static_cast<uint32_t>(start_height); cursor <= tip_height; ++cursor) {
             const auto height = static_cast<uint32_t>(cursor);
-            const auto hash = chain_db->getBlockHashByHeight(height);
-            if (!hash.ok()) throw std::runtime_error("Block rescan source height unavailable");
-            const auto source = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, *hash);
-            if (!source.ok()) throw std::runtime_error("Block rescan source body unavailable");
-            const auto& block = *source;
+            std::optional<Block> legacy_body;
+            if (!prepared) {
+                const auto hash = chain_db->getBlockHashByHeight(height);
+                if (!hash.ok()) throw std::runtime_error("Block rescan source height unavailable");
+                const auto source = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, *hash);
+                if (!source.ok()) throw std::runtime_error("Block rescan source body unavailable");
+                legacy_body = *source;
+            }
+            const auto& block = prepared ? prepared->blocks_[height] : *legacy_body;
             for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {
                 const auto& tx = block.vtx[tx_index];
                 const std::string txid = tx.GetTxid().AsUint256().GetHex();
