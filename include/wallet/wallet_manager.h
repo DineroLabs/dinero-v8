@@ -930,6 +930,7 @@ private:
     std::filesystem::path dataDir_;
 #endif
     std::string current_;
+    friend class RuntimeOrdinaryDelivery;
     int current_wallet_id_ = -1;
 
     // ═══════════════════════════════════════════════════════════════

@@ -28,4 +28,14 @@ private:
     static RuntimeIndexProgress Apply(UTXOIndex&, const std::string& wallet_identity,
                                       const RuntimeOutboxEvent&);
 };
+// Ordinary wallet UTXOs/history and their source progress share the selected
+// wallet SQLite transaction. This is independent of the index/account receipts:
+// a coordinator must reconcile every store before declaring wallet readiness.
+// Acquire the selected checked source before this call. Initial adoption does
+// not certify the pre-origin baseline or key ownership.
+class RuntimeOrdinaryDelivery {
+public:
+    static std::optional<RuntimeIndexProgress> ReadForWallet(WalletManager&, uint64_t expected_session);
+    static RuntimeIndexProgress ApplyForWallet(WalletManager&, uint64_t expected_session, const RuntimeOutboxEvent&);
+};
 } // namespace dinero

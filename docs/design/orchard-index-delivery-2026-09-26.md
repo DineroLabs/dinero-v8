@@ -51,9 +51,9 @@ validate the applied cursor, wallet/script ownership and pre-origin baseline,
 and coordinate other stores before exposing readiness. A database identity
 alone is not a baseline or key-ownership certificate.
 
-No production notification provider is installed by this change. Ordinary
-WalletManager, note and Orchard-account effects still need their own durable
-progress and ordered recovery after partial commits. Account receipts, complete
+No production notification provider is installed by this change. Ordinary WalletManager effects now have their own receipt; see
+`wallet-ordinary-delivery-2026-09-26.md`. Note and Orchard-account integration
+and coordinated recovery after partial commits remain unfinished. Account receipts, complete
 reorg intent and canonical delivery logs already exist and must be reused.
 Baseline invalidation has no permissive reset API. Late-account/rescan recovery,
 all-consumer readiness, independently validated activation history and full

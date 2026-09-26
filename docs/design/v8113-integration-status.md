@@ -1,5 +1,12 @@
 # v8.1.13 integration status
 
+- Ordinary wallet source delivery now commits real typed UTXO/history effects,
+  derived metadata and a per-store cursor together under the persistent wallet
+  lease. Ordered retry can distinguish a committed index prefix from pending
+  ordinary effects. See `wallet-ordinary-delivery-2026-09-26.md`. Production
+  all-store recovery, account/note integration and first-boundary history remain
+  unfinished; this is not an installed notification provider or activation.
+
 This branch collects release implementation for review and qualification against
 `dinero-main`. It is a draft candidate, not a release or an activation decision.
 

@@ -1,4 +1,5 @@
 #include "wallet/runtime_index_delivery.h"
+#include "wallet/wallet_manager.h"
 #include "primitives/orchard_block_reader.h"
 #include "primitives/block.h"
 #include <algorithm>
@@ -73,12 +74,12 @@ uint256 Profile(const consensus::OrchardBlockContext& c) {
     Number(bytes,c.domain.branch_id,4);Number(bytes,c.activation_height,4);return Digest(bytes);
 }
 struct Receipt { RuntimeIndexProgress progress;uint256 profile; };
-Receipt Decode(const std::string& bytes,const std::string& identity,const uint256& scripts) {
+Receipt Decode(const std::string& bytes,const std::string& identity,const uint256& scripts, std::string_view magic="DNUI01") {
     if(bytes.size()<32)Fail("Index delivery receipt malformed");
     Reader tail{std::string_view(bytes).substr(bytes.size()-32)};
     const auto payload=bytes.substr(0,bytes.size()-32);
     if(tail.Hash()!=Digest(payload))Fail("Index delivery receipt checksum mismatch");
-    Reader r{payload};if(r.Take(6)!="DNUI01" || r.Take(r.Number(2))!=identity || r.Hash()!=scripts)
+    Reader r{payload};if(r.Take(6)!=magic || r.Take(r.Number(2))!=identity || r.Hash()!=scripts)
         Fail("Index delivery ownership changed; baseline reconciliation required");
     Receipt result;result.profile=r.Hash();auto& p=result.progress;
     p.cursor.sequence=r.Number(8);p.cursor.digest=r.Hash();p.origin_height=r.Number(4);p.origin_hash=r.Hash();
@@ -87,8 +88,8 @@ Receipt Decode(const std::string& bytes,const std::string& identity,const uint25
         p.tip_height>INT32_MAX || p.origin_height>INT32_MAX)Fail("Index delivery receipt malformed");
     return result;
 }
-std::string Encode(const Receipt& receipt,const std::string& identity,const uint256& scripts) {
-    std::string s="DNUI01";Number(s,identity.size(),2);s+=identity;Hash(s,scripts);Hash(s,receipt.profile);
+std::string Encode(const Receipt& receipt,const std::string& identity,const uint256& scripts, std::string_view magic="DNUI01") {
+    std::string s(magic);Number(s,identity.size(),2);s+=identity;Hash(s,scripts);Hash(s,receipt.profile);
     const auto& p=receipt.progress;Number(s,p.cursor.sequence,8);Hash(s,p.cursor.digest);
     Number(s,p.origin_height,4);Hash(s,p.origin_hash);Number(s,p.tip_height,4);Hash(s,p.tip_hash);Hash(s,Digest(s));return s;
 }
@@ -117,7 +118,7 @@ using Tip=std::pair<uint256,uint32_t>;
 Tip Before(const RuntimeOutboxEvent& e){return e.direction==RuntimeBlockDirection::Connect?Tip{e.context.parent_hash,e.context.height-1}:Tip{e.context.block_hash,e.context.height};}
 Tip After(const RuntimeOutboxEvent& e){return e.direction==RuntimeBlockDirection::Connect?Tip{e.context.block_hash,e.context.height}:Tip{e.context.parent_hash,e.context.height-1};}
 struct Output { TxId txid;uint32_t n;uint64_t amount;std::vector<uint8_t> script;bool coinbase; };
-struct Effect {std::vector<TxOutPoint> spent;std::vector<Output> created;};
+struct Effect {TxId id; bool coinbase=false; uint64_t time=0; std::vector<TxOutPoint> spent;std::vector<Output> created;};
 std::vector<Effect> Effects(const RuntimeOutboxEvent& e) {
     const auto& c=e.context;
     if(!c.height || c.height>INT32_MAX || c.block_hash.IsNull() || c.parent_hash.IsNull() ||
@@ -126,9 +127,9 @@ std::vector<Effect> Effects(const RuntimeOutboxEvent& e) {
         !e.cursor.sequence || e.cursor.digest.IsNull() || (e.cursor.sequence==1)!=e.previous_digest.IsNull() ||
         (e.direction!=RuntimeBlockDirection::Connect && e.direction!=RuntimeBlockDirection::Disconnect))
         Fail("Index delivery event malformed");
-    std::vector<Effect> result;
+    std::vector<Effect> result;uint64_t timestamp=0;
     const auto historical=[&](const Transaction& tx) {
-        Effect effect;const auto id=tx.GetTxid();const bool coinbase=tx.IsCoinbase();
+        Effect effect;const auto id=tx.GetTxid();const bool coinbase=tx.IsCoinbase();effect.id=id;effect.coinbase=coinbase;
         if(!coinbase)for(const auto& input:tx.vin)effect.spent.push_back(input.prevout);
         for(size_t n=0;n<tx.vout.size();++n) {
             const auto& output=tx.vout[n];
@@ -138,12 +139,12 @@ std::vector<Effect> Effects(const RuntimeOutboxEvent& e) {
         result.push_back(std::move(effect));
     };
     if(e.IsOrchardProfile()) {
-        const auto block=OrchardBlockCandidate::DecodeExact(e.body);std::string error;
+        const auto block=OrchardBlockCandidate::DecodeExact(e.body);std::string error;timestamp=block.Header().timestamp;
         if(block.Header().GetHash()!=c.block_hash || block.Header().prev_block_hash!=c.parent_hash ||
             !block.CheckIdentityCommitments(false,error))Fail("Index delivery body mismatch");
         for(const auto& tx:block.Transactions()) {
             if(!tx.IsOrchard()){historical(tx.Historical());continue;}
-            Effect effect;for(const auto& input:tx.Orchard().Inputs()) {
+            Effect effect;effect.id=tx.GetTxid();for(const auto& input:tx.Orchard().Inputs()) {
                 uint256 hash;std::copy(input.txid_wire.begin(),input.txid_wire.end(),hash.begin());
                 effect.spent.emplace_back(TxId(hash),input.output_index);
             }
@@ -156,8 +157,10 @@ std::vector<Effect> Effects(const RuntimeOutboxEvent& e) {
         if(!block || block->Serialize()!=std::string(e.body.begin(),e.body.end()) || block->GetHash()!=c.block_hash ||
             block->header.prev_block_hash!=c.parent_hash || consensus::ComputeMerkleRoot(block->vtx)!=block->header.merkle_root)
             Fail("Index delivery body mismatch");
-        for(const auto& tx:block->vtx)historical(tx);
+        timestamp=block->header.timestamp;for(const auto& tx:block->vtx)historical(tx);
     }
+    if(timestamp>uint64_t(INT64_MAX))Fail("Delivery timestamp out of range");
+    for(auto& effect:result)effect.time=timestamp;
     return result;
 }
 } // namespace
@@ -224,5 +227,170 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
         Exec(index.db_,"DELETE FROM utxo_metadata WHERE key='runtime_delivery:v1:invalidated'");
     });
     return next.progress;
+}
+
+namespace {
+// Progress stays in the existing wallet database. No independent delivery log.
+class OrdinaryTransaction {
+    sqlite3* db;
+public:
+    explicit OrdinaryTransaction(sqlite3* value):db(value){Exec(db,"BEGIN IMMEDIATE");}
+    ~OrdinaryTransaction(){if(!sqlite3_get_autocommit(db) && sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db))std::terminate();}
+    void Commit(){Exec(db,"COMMIT");}
+};
+bool OrdinaryColumns(sqlite3* db) {
+    Statement query(db,"PRAGMA table_info(wallet_meta)");int rc;unsigned found=0;
+    while((rc=sqlite3_step(query.value))==SQLITE_ROW) {
+        const auto* name=reinterpret_cast<const char*>(sqlite3_column_text(query.value,1));
+        if(!name)Fail("Ordinary delivery schema malformed");
+        if(std::string_view(name)=="runtime_ordinary_receipt")found|=1;
+        if(std::string_view(name)=="runtime_ordinary_invalid")found|=2;
+    }
+    if(rc!=SQLITE_DONE || (found!=0 && found!=3))Fail("Ordinary delivery schema incomplete");
+    return found==3;
+}
+std::string OrdinaryTrigger(const char* table,const char* action) {
+    return std::string("CREATE TRIGGER runtime_ordinary_")+table+"_"+action+" AFTER "+action+" ON "+table+
+        " BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END";
+}
+void OrdinaryGuards(sqlite3* db,bool create) {
+    for(const auto* table:{"utxos","transactions","watch_scripts","addresses","tip","sync_meta"})for(const auto* action:{"INSERT","UPDATE","DELETE"}) {
+        const auto expected=OrdinaryTrigger(table,action);
+        if(create){auto sql=expected;sql.insert(15,"IF NOT EXISTS ");Exec(db,sql.c_str());}
+        Statement query(db,"SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?");
+        query.Text(1,std::string("runtime_ordinary_")+table+"_"+action);
+        if(sqlite3_step(query.value)!=SQLITE_ROW)Fail("Ordinary delivery guard unavailable");
+        const auto* text=reinterpret_cast<const char*>(sqlite3_column_text(query.value,0));
+        if(!text || std::string(text,sqlite3_column_bytes(query.value,0))!=expected || sqlite3_step(query.value)!=SQLITE_DONE)
+            Fail("Ordinary delivery guard changed");
+    }
+}
+std::string Hex(const std::vector<uint8_t>& bytes) {
+    constexpr char digits[]="0123456789abcdef";std::string out;out.reserve(bytes.size()*2);
+    for(const auto b:bytes){out+=digits[b>>4];out+=digits[b&15];}return out;
+}
+std::vector<uint8_t> Unhex(std::string_view value) {
+    if(value.empty() || value.size()%2)Fail("Ordinary delivery address script malformed");
+    auto nibble=[](char c)->int {if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;if(c>='A'&&c<='F')return c-'A'+10;return -1;};
+    std::vector<uint8_t> out;out.reserve(value.size()/2);
+    for(size_t i=0;i<value.size();i+=2){const int a=nibble(value[i]),b=nibble(value[i+1]);if(a<0||b<0)Fail("Ordinary delivery address script malformed");out.push_back(uint8_t(a*16+b));}return out;
+}
+struct OrdinaryOwnership {std::map<std::vector<uint8_t>,std::string> addresses;uint256 digest;};
+OrdinaryOwnership OrdinaryScripts(sqlite3* db) {
+    OrdinaryOwnership result;std::map<std::vector<uint8_t>,std::string> paths;
+    Statement watched(db,"SELECT script_pubkey,path FROM watch_scripts ORDER BY script_pubkey");int rc;
+    while((rc=sqlite3_step(watched.value))==SQLITE_ROW) {
+        const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(watched.value,0));const int n=sqlite3_column_bytes(watched.value,0);
+        if(sqlite3_column_type(watched.value,0)!=SQLITE_BLOB || !bytes || n<=0 || n>10000)Fail("Ordinary delivery watched script malformed");
+        std::vector<uint8_t> script(bytes,bytes+n);const auto* path=reinterpret_cast<const char*>(sqlite3_column_text(watched.value,1));
+        paths[script]=path?std::string(path,sqlite3_column_bytes(watched.value,1)):std::string();result.addresses[script]="";
+    }
+    if(rc!=SQLITE_DONE)Fail("Ordinary delivery scripts read failed");
+    Statement addresses(db,"SELECT script_pubkey,address FROM addresses WHERE script_pubkey IS NOT NULL AND script_pubkey<>'' ORDER BY script_pubkey,address");
+    while((rc=sqlite3_step(addresses.value))==SQLITE_ROW) {
+        const auto* script=reinterpret_cast<const char*>(sqlite3_column_text(addresses.value,0));const auto* address=reinterpret_cast<const char*>(sqlite3_column_text(addresses.value,1));
+        if(!script || !address)Fail("Ordinary delivery address malformed");
+        auto bytes=Unhex(std::string_view(script,sqlite3_column_bytes(addresses.value,0)));std::string display(address,sqlite3_column_bytes(addresses.value,1));
+        auto& selected=result.addresses[bytes];if(!selected.empty() && selected!=display)Fail("Ordinary delivery ambiguous address");selected=std::move(display);
+    }
+    if(rc!=SQLITE_DONE)Fail("Ordinary delivery addresses read failed");
+    std::string binding;Hash(binding,Scripts(paths));Hash(binding,Scripts(result.addresses));result.digest=Digest(binding);return result;
+}
+std::optional<Receipt> OrdinaryRead(sqlite3* db,const std::string& identity,const uint256& scripts) {
+    if(!OrdinaryColumns(db))return {};
+    Statement query(db,"SELECT runtime_ordinary_receipt,runtime_ordinary_invalid FROM wallet_meta WHERE id=1");
+    if(sqlite3_step(query.value)!=SQLITE_ROW)Fail("Ordinary delivery metadata unavailable");
+    if(sqlite3_column_type(query.value,1)!=SQLITE_INTEGER || sqlite3_column_int64(query.value,1)!=0)Fail("Ordinary delivery invalidated; baseline reconciliation required");
+    std::optional<Receipt> result;
+    if(sqlite3_column_type(query.value,0)!=SQLITE_NULL) {
+        const auto* bytes=static_cast<const char*>(sqlite3_column_blob(query.value,0));const int n=sqlite3_column_bytes(query.value,0);
+        if(sqlite3_column_type(query.value,0)!=SQLITE_BLOB || !bytes || n<1 || n>2048)Fail("Ordinary delivery receipt malformed");
+        result=Decode(std::string(bytes,n),identity,scripts,"DNOW01");OrdinaryGuards(db,false);
+    }
+    if(sqlite3_step(query.value)!=SQLITE_DONE)Fail("Ordinary delivery metadata read failed");return result;
+}
+void OrdinaryInt(sqlite3* db,const char* sql,int64_t value){Statement statement(db,sql);statement.Int(1,value);statement.Done();}
+} // namespace
+
+std::optional<RuntimeIndexProgress> RuntimeOrdinaryDelivery::ReadForWallet(WalletManager& wallet,uint64_t session) {
+    const auto lease=wallet.AcquireDatabaseLease();if(lease->Session()!=session)Fail("Wallet delivery selection changed");
+    const auto identity=lease->EnsureDeliveryIdentity();auto* db=lease->Database();
+    OrdinaryTransaction transaction(db);const auto scripts=OrdinaryScripts(db);const auto receipt=OrdinaryRead(db,identity,scripts.digest);
+    transaction.Commit();return receipt?std::optional(receipt->progress):std::nullopt;
+}
+RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event) {
+    const auto effects=Effects(event); // Exact typed decoding before taking wallet ownership.
+    const auto lease=wallet.AcquireDatabaseLease();if(lease->Session()!=session)Fail("Wallet delivery selection changed");
+    const auto identity=lease->EnsureDeliveryIdentity();auto* db=lease->Database();
+    if(wallet.current_wallet_id_<0)Fail("Ordinary delivery wallet unavailable");
+    OrdinaryTransaction transaction(db);
+    { Statement foreign(db,"SELECT 1 FROM utxos WHERE wallet_id<>? UNION ALL SELECT 1 FROM transactions WHERE wallet_id<>? LIMIT 1");
+      foreign.Int(1,wallet.current_wallet_id_);foreign.Int(2,wallet.current_wallet_id_);const auto rc=sqlite3_step(foreign.value);
+      if(rc==SQLITE_ROW)Fail("Ordinary delivery baseline wallet mismatch");if(rc!=SQLITE_DONE)Fail("Ordinary delivery ownership read failed"); }
+    const auto scripts=OrdinaryScripts(db);const auto old=OrdinaryRead(db,identity,scripts.digest);
+    const auto before=Before(event),after=After(event);const auto profile=Profile(event.context);
+    if(old && old->progress.cursor==event.cursor) {
+        if(old->profile!=profile || Tip{old->progress.tip_hash,old->progress.tip_height}!=after)Fail("Ordinary delivery replay mismatch");
+        transaction.Commit();return old->progress;
+    }
+    if(old) {
+        const auto& p=old->progress;
+        if(p.cursor.sequence==UINT64_MAX || event.cursor.sequence!=p.cursor.sequence+1 || event.previous_digest!=p.cursor.digest || old->profile!=profile || Tip{p.tip_hash,p.tip_height}!=before)
+            Fail("Ordinary delivery source discontinuity");
+    } else {
+        if(event.cursor.sequence!=1)Fail("Ordinary delivery origin unavailable");
+        Statement ahead(db,"SELECT 1 FROM utxos WHERE height>? OR spent_height>? UNION ALL SELECT 1 FROM transactions WHERE height>? LIMIT 1");
+        ahead.Int(1,before.second);ahead.Int(2,before.second);ahead.Int(3,before.second);const auto rc=sqlite3_step(ahead.value);
+        if(rc==SQLITE_ROW)Fail("Ordinary delivery baseline ahead of origin");if(rc!=SQLITE_DONE)Fail("Ordinary delivery baseline read failed");
+    }
+    if(!OrdinaryColumns(db)) {
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_receipt BLOB");
+        Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_invalid INTEGER NOT NULL DEFAULT 0");
+    }
+    OrdinaryGuards(db,true);
+    if(event.direction==RuntimeBlockDirection::Disconnect) {
+        OrdinaryInt(db,"DELETE FROM utxos WHERE height=?",event.context.height);
+        OrdinaryInt(db,"DELETE FROM transactions WHERE height=?",event.context.height);
+        for(const auto& effect:effects)for(const auto& point:effect.spent) {
+            Statement restore(db,"UPDATE utxos SET is_spent=0,spent_txid=NULL,spent_height=NULL WHERE txid=? AND vout=?");
+            restore.Text(1,point.txid.AsUint256().GetHex());restore.Int(2,point.vout);restore.Done();
+        }
+    } else for(const auto& effect:effects) {
+        const auto id=effect.id.AsUint256().GetHex();
+        Statement confirmation(db,"UPDATE transactions SET height=?,confirmations=1 WHERE wallet_id=? AND txid=?");
+        confirmation.Int(1,event.context.height);confirmation.Int(2,wallet.current_wallet_id_);confirmation.Text(3,id);confirmation.Done();const bool existing_history=sqlite3_changes(db)>0;
+        bool spends=false,owns_output=false;uint64_t received=0;std::string receiving_address;
+        for(const auto& point:effect.spent) {
+            Statement spend(db,"UPDATE utxos SET is_spent=1,spent_txid=?,spent_height=? WHERE wallet_id=? AND txid=? AND vout=?");
+            spend.Text(1,id);spend.Int(2,event.context.height);spend.Int(3,wallet.current_wallet_id_);spend.Text(4,point.txid.AsUint256().GetHex());spend.Int(5,point.vout);spend.Done();spends|=sqlite3_changes(db)>0;
+        }
+        for(const auto& output:effect.created) {
+            const auto owned=scripts.addresses.find(output.script);if(owned==scripts.addresses.end())continue;
+            if(output.amount>uint64_t(INT64_MAX) || received>uint64_t(INT64_MAX)-output.amount)Fail("Ordinary delivery amount out of range");
+            owns_output=true;received+=output.amount;if(receiving_address.empty())receiving_address=owned->second;
+            Statement add(db,"INSERT INTO utxos(wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at) VALUES(?,?,?,?,?,?,?,?,0,?) ON CONFLICT DO UPDATE SET address=excluded.address,amount=excluded.amount,script_pubkey=excluded.script_pubkey,height=excluded.height,is_coinbase=excluded.is_coinbase WHERE utxos.wallet_id=excluded.wallet_id AND utxos.txid=excluded.txid AND utxos.vout=excluded.vout");
+            add.Int(1,wallet.current_wallet_id_);add.Text(2,id);add.Int(3,output.n);add.Text(4,owned->second);add.Int(5,output.amount);add.Text(6,Hex(output.script));add.Int(7,event.context.height);add.Int(8,output.coinbase);add.Int(9,effect.time);add.Done();
+            if(sqlite3_changes(db)!=1)Fail("Ordinary delivery output ownership mismatch");
+        }
+        // Preserve originating send/self-spend history, as the existing worker
+        // does. New receive/mining rows use exact source data and a checked write.
+        if(owns_output && (effect.coinbase || (!spends && !existing_history))) {
+            Statement history(db,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,1,?,'',?,?,?) ON CONFLICT(wallet_id,txid,address,category) DO UPDATE SET amount=excluded.amount,confirmations=1,height=excluded.height,is_coinbase=excluded.is_coinbase");
+            history.Int(1,wallet.current_wallet_id_);history.Text(2,id);history.Text(3,receiving_address);
+            if(sqlite3_bind_double(history.value,4,double(received)/100000000.0)!=SQLITE_OK)Fail("Ordinary delivery history bind failed");
+            history.Text(5,effect.coinbase?"generate":"receive");history.Int(6,effect.time);history.Int(7,effect.coinbase);history.Int(8,event.context.height);history.Done();
+        }
+    }
+    // Derived ordinary metadata belongs to the same commit, without publishing
+    // process-wide height or claiming other consumers have caught up.
+    OrdinaryInt(db,"UPDATE utxos SET confirmations=CASE WHEN height>0 THEN MAX(0,?-height+1) ELSE 0 END",after.second);
+    Exec(db,"UPDATE utxos SET is_mature=CASE WHEN is_coinbase=0 OR confirmations>=100 THEN 1 ELSE 0 END");
+    OrdinaryInt(db,"UPDATE transactions SET confirmations=CASE WHEN height>0 THEN MAX(0,?-height+1) ELSE 0 END",after.second);
+    OrdinaryInt(db,"INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height",after.second);
+    Receipt next;next.profile=profile;next.progress={event.cursor,old?old->progress.origin_hash:before.first,after.first,old?old->progress.origin_height:before.second,after.second};
+    const auto bytes=Encode(next,identity,scripts.digest,"DNOW01");
+    Statement checkpoint(db,"UPDATE wallet_meta SET runtime_ordinary_receipt=?,runtime_ordinary_invalid=0 WHERE id=1");checkpoint.Blob(1,bytes);checkpoint.Done();
+    if(sqlite3_changes(db)!=1)Fail("Ordinary delivery receipt unavailable");
+    transaction.Commit();return next.progress;
 }
 } // namespace dinero
