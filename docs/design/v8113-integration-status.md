@@ -5,6 +5,14 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- Existing wallet worker connect/disconnect/reorg and synchronous rescan now pin
+  the selected WalletManager database and serialize its SQLite connection for
+  the whole job. Wallet create/open/close cannot replace that database during a
+  lease; reentrant switches refuse. Borrowed transactions are not adopted, and
+  unfinished leased transactions roll back before release. This establishes
+  connection ownership, not atomic commits across wallet stores or durable
+  delivery completion. See `wallet-database-ownership-2026-09-26.md`.
+
 - The actual wallet UTXO index rollback now checks transaction acquisition,
   deletion, un-spending and commit. Any SQL failure aborts its own transaction;
   nested caller transactions are refused without being committed or rolled back.

@@ -7,6 +7,8 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <memory>
+#include <thread>
 #ifdef FFI_WALLET_ONLY
 // iOS doesn't support std::filesystem::path - use std::string instead
 #else
@@ -21,6 +23,7 @@
 #include "wallet/key_origin.h"  // Week 1 Day 5: KeyOriginInfo
 
 struct sqlite3; // forward decl
+struct sqlite3_mutex;
 
 // Forward declarations
 class HDWallet;
@@ -227,7 +230,33 @@ public:
                          const std::array<uint8_t, 32>& output_pubkey,
                          const std::string& label);
 
-    // Database access for RPC handlers
+    // Pins the selected database against open/close/create and holds SQLite's
+    // recursive connection mutex across a complete wallet job. Existing raw
+    // SQLite callers cannot interleave statements with this lease. It does not
+    // make separate wallet databases atomic or acknowledge chain delivery.
+    class DatabaseLease {
+    public:
+        ~DatabaseLease() noexcept;
+        DatabaseLease(const DatabaseLease&) = delete;
+        DatabaseLease& operator=(const DatabaseLease&) = delete;
+        [[nodiscard]] sqlite3* Database() const noexcept { return db_; }
+        [[nodiscard]] const std::string& WalletName() const noexcept { return name_; }
+    private:
+        friend class WalletManager;
+        explicit DatabaseLease(WalletManager&);
+        WalletManager& owner_;
+        std::unique_lock<std::recursive_mutex> lock_;
+        const std::thread::id thread_;
+        sqlite3* db_ = nullptr;
+        sqlite3_mutex* sqlite_mutex_ = nullptr;
+        std::string name_;
+    };
+    // May return a lease with no selected database. Entry refuses an already
+    // active transaction. Any transaction left open at exit is rolled back;
+    // commit must be checked by the caller before publishing memory/readiness.
+    [[nodiscard]] std::unique_ptr<DatabaseLease> AcquireDatabaseLease();
+
+    // Legacy borrowed access: this pointer alone does not pin wallet lifetime.
     sqlite3* getCurrentDatabase() const;
     
     // Wallet encryption/decryption
@@ -898,6 +927,8 @@ private:
     // ═══════════════════════════════════════════════════════════════
     sqlite3* db_ = nullptr;               // Current wallet's database (wallet_<name>.db)
     sqlite3* registry_db_ = nullptr;      // Wallet registry database (wallet_registry.db)
+    mutable std::recursive_mutex database_lifecycle_mutex_;
+    size_t database_leases_ = 0; // protected by database_lifecycle_mutex_
     
     // Encryption state
     bool wallet_encrypted_ = false;

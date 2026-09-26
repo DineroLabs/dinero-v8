@@ -5968,6 +5968,43 @@ if(NOT WIN32)
     LABELS "wallet;covenant;recovery;persistence;migration"
     TIMEOUT 30
   )
+
+  add_executable(test_wallet_database_lease
+    tests/wallet/test_wallet_database_lease.cpp
+    src/daemon/lightning_stubs.cpp
+    tests/stubs/mempool_test_stubs.cpp
+  )
+  add_dependencies(test_wallet_database_lease gtest gtest_main)
+  target_link_libraries(test_wallet_database_lease PRIVATE
+    dinero_wallet
+    dinero_chainstate
+    dinero_consensus
+    dinero_crypto
+    jsoncpp_static
+    OpenSSL::Crypto
+    secp256k1
+    RocksDB::rocksdb
+    sqlite3
+    gtest
+    gtest_main
+  )
+  link_zstd_if_needed(test_wallet_database_lease)
+  target_include_directories(test_wallet_database_lease PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+  )
+  if(APPLE)
+    target_link_libraries(
+      test_wallet_database_lease PRIVATE "-framework Security")
+  endif()
+  add_test(
+    NAME WalletDatabaseLease
+    COMMAND test_wallet_database_lease)
+  set_tests_properties(WalletDatabaseLease PROPERTIES
+    LABELS "wallet;recovery;persistence;concurrency"
+    TIMEOUT 30
+  )
 endif()
 
 # Phase 29: Covenant Integration Layer Tests

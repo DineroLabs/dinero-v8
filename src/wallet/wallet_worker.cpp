@@ -183,6 +183,7 @@ bool WalletWorker::RescanSynchronously(ChainDB* chain_db, int start_height, std:
 
     try {
         constexpr int kDefaultGapLimit = 20;
+        const auto database_lease = wallet_manager_->AcquireDatabaseLease();
         const bool ok = wallet_manager_->rescanBlockchain(start_height, kDefaultGapLimit, chain_db);
         if (!ok && error) {
             *error = "WalletManager::rescanBlockchain returned false";
@@ -231,6 +232,7 @@ void WalletWorker::WorkerThread() {
 }
 
 void WalletWorker::ProcessDisconnect(uint32_t height, const Block& block) {
+    const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing block disconnect: height=" << height
               << " hash=" << block.GetHash().GetHex().substr(0, 16)
@@ -283,6 +285,7 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
         std::ofstream(path + ".exited") << height << '\n';
     }
 
+    const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     if (wallet_manager_) {
         std::string shielded_error;
         if (!wallet::shielded_ops::ProcessConfirmedBlock(*wallet_manager_, height, transactions, &shielded_error) &&
@@ -548,6 +551,7 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
 }
 
 void WalletWorker::ProcessReorg(const ReorgDiff& diff) {
+    const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     auto start = std::chrono::steady_clock::now();
     std::cerr << "[WalletWorker] Processing reorg: disconnect=" << diff.disconnect.size()
               << " connect=" << diff.connect.size() << std::endl;

@@ -1673,6 +1673,8 @@ void WalletManager::createWithInitialSeed(
     const std::vector<uint8_t>& initial_master_seed,
     const std::string* authoritative_mnemonic,
     const std::string& bip39_passphrase) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
     if (initial_master_seed.size() != 64) {
         throw std::invalid_argument("Initial wallet seed must be exactly 64 bytes");
     }
@@ -1899,6 +1901,8 @@ void WalletManager::createWithInitialSeed(
 }
 
 void WalletManager::open(const std::string& name) {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot switch wallet during database delivery");
     WLOG_INFO("[OPEN] Opening wallet: " + name);
 
     // Check if wallet exists in registry
@@ -2543,6 +2547,8 @@ void WalletManager::removeAddress(const std::string& addr) {
 }
 
 void WalletManager::close() {
+    std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
+    if (database_leases_ != 0) throw std::logic_error("Cannot close wallet during database delivery");
     if (utxo_index_) {
         utxo_index_->ClearRegisteredAddresses();
     }
@@ -2934,6 +2940,38 @@ void WalletManager::assertNoRetiredLegacyCoinTypeInWalletDatabase(const std::str
 
         sqlite3_finalize(stmt);
     }
+}
+
+WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
+    : owner_(owner), lock_(owner.database_lifecycle_mutex_),
+      thread_(std::this_thread::get_id()), db_(owner.db_), name_(owner.current_) {
+    if (db_) {
+        sqlite_mutex_ = sqlite3_db_mutex(db_);
+        if (!sqlite_mutex_) throw std::runtime_error("Wallet database requires serialized SQLite");
+        sqlite3_mutex_enter(sqlite_mutex_);
+        if (!sqlite3_get_autocommit(db_)) {
+            sqlite3_mutex_leave(sqlite_mutex_);
+            throw std::runtime_error("Wallet database already has an active transaction");
+        }
+    }
+    ++owner_.database_leases_;
+}
+
+WalletManager::DatabaseLease::~DatabaseLease() noexcept {
+    if (thread_ != std::this_thread::get_id()) std::terminate();
+    // Entry was in autocommit and no other thread can use this connection.
+    // An unfinished transaction therefore belongs to this lease, never an
+    // unrelated caller. Do not allow it to escape into the next wallet job.
+    if (db_ && !sqlite3_get_autocommit(db_)) {
+        if (sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+    }
+    --owner_.database_leases_;
+    if (sqlite_mutex_) sqlite3_mutex_leave(sqlite_mutex_);
+}
+
+std::unique_ptr<WalletManager::DatabaseLease> WalletManager::AcquireDatabaseLease() {
+    return std::unique_ptr<DatabaseLease>(new DatabaseLease(*this));
 }
 
 sqlite3* WalletManager::getCurrentDatabase() const {
