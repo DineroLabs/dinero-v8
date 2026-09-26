@@ -1,4 +1,5 @@
 #include "primitives/orchard_block_reader.h"
+#include "daemon/orchard_connected_block_effects.h"
 #include "consensus/merkle_root.h"
 #include "consensus/witness_commitment.h"
 #include <fstream>
@@ -76,6 +77,19 @@ int main(int argc,char**argv) {
     const auto old=Ordinary(1).Serialize(TxSerializationMode::WithWitness);
     const auto mixed=Framing({old,orchard});const auto parsed=OrchardBlockCandidate::DecodeExact(mixed);
     Require(parsed.Transactions().size()==2 && !parsed.Transactions()[0].IsOrchard() && parsed.Transactions()[1].IsOrchard());
+    const auto effects=BuildOrchardConnectedBlockEffects(parsed);
+    Require(effects.confirmed_txids.size()==2 && effects.spent_transparent_inputs.size()==2);
+    Require(effects.confirmed_txids[0]==parsed.Transactions()[0].GetTxid().AsUint256());
+    Require(effects.confirmed_txids[1]==parsed.Transactions()[1].GetTxid().AsUint256());
+    // The independent Python wire vector fixes two transparent prevouts.
+    for (size_t i=0;i<2;++i) {
+        const unsigned first=i==0?32:64;
+        const unsigned index=i==0?3:9;
+        const auto& spent=effects.spent_transparent_inputs[i];
+        for (size_t byte=0;byte<32;++byte)
+            Require(spent.txid.AsUint256().data[byte]==first+byte);
+        Require(spent.vout==index);
+    }
     Require(parsed.WireBytes()==mixed && parsed.MatchesTransactionRoot() && !parsed.Utreexo());
     Require(!Block::Deserialize(mixed)); // No live admission route has opened.
     // Independent two-leaf SHA256d oracle, without the common Merkle routine.

@@ -2797,22 +2797,25 @@ void Mempool::rebuildCoinsViewLocked() {
 
 size_t Mempool::onBlockConnected(const Block& block, uint32_t height,
                                   const std::vector<uint8_t>& new_root) {
+    ConnectedBlockEffects effects;
+    effects.confirmed_txids.reserve(block.vtx.size());
+    for (const auto& tx : block.vtx) {
+        effects.confirmed_txids.push_back(tx.GetTxid().AsUint256());
+        if (!tx.IsCoinbase()) for (const auto& input : tx.vin)
+            effects.spent_transparent_inputs.emplace_back(input.prevout.txid, input.prevout.vout);
+    }
+    return onBlockConnected(effects, height, new_root);
+}
+
+size_t Mempool::onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
+                                  const std::vector<uint8_t>& new_root) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 
-    // 1. Collect all inputs spent in this block
-    std::unordered_set<OutPoint> block_spends;
-    for (const auto& tx : block.vtx) {
-        if (tx.IsCoinbase()) continue;
-        for (const auto& input : tx.vin) {
-            block_spends.insert(OutPoint{input.prevout.txid, input.prevout.vout});
-        }
-    }
+    std::unordered_set<OutPoint> block_spends(
+        effects.spent_transparent_inputs.begin(), effects.spent_transparent_inputs.end());
 
-    // 2. Collect confirmed txids (all transactions in the block)
-    std::unordered_set<uint256> confirmed_txids;
-    for (const auto& tx : block.vtx) {
-        confirmed_txids.insert(tx.GetTxid().AsUint256());
-    }
+    std::unordered_set<uint256> confirmed_txids(
+        effects.confirmed_txids.begin(), effects.confirmed_txids.end());
 
     // 3. Find conflicting mempool TXs (double-spends) and confirmed TXs
     std::vector<uint256> to_remove;
@@ -2867,7 +2870,11 @@ size_t Mempool::onBlockConnected(const Block& block, uint32_t height,
     return evicted;
 }
 
-void Mempool::onBlockDisconnected(const Block& block, uint32_t height) {
+void Mempool::onBlockDisconnected(const Block&, uint32_t height) {
+    onBlockDisconnected(height);
+}
+
+void Mempool::onBlockDisconnected(uint32_t height) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 
     // All mempool TXs become stale — the accumulator root changed backward

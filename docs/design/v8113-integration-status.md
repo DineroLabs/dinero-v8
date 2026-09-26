@@ -9,6 +9,12 @@ This branch collects release implementation for review and qualification against
   transaction envelope, with exact-source component and root-build CI jobs.
 - Typed shared reader with historical-format regression tests and a default
   legacy-parser rejection boundary for marked Orchard envelopes.
+- Transparent mempool reconciliation now accepts typed connected-block effects.
+  The mixed-body adapter extracts actual Orchard and ordinary transaction IDs
+  and transparent prevouts; the existing historical callback delegates to the
+  same eviction/staleness path. This is a prerequisite for production block
+  notification, not Orchard admission: nullifier conflicts, wallet events,
+  relay and actual ConnectTip/DisconnectTip routing remain open.
 - Daemon stored-body queries now have selected-height typed routing under the
   activation lock. The optional build can return exact mixed-body bytes from
   indexed flatfiles after identity checks; historical hex queries retain their
@@ -192,7 +198,7 @@ the following rows to test-only work:
 | Area | Current state |
 | --- | --- |
 | Shared parsing and authorization | Typed daemon stored-body queries now route by selected height; exact candidate-bound authorization remains staged; no live admission |
-| Mempool, relay, block assembly and acceptance | Orchard integration not implemented |
+| Mempool, relay, block assembly and acceptance | Typed transparent conflict/staleness reconciliation staged; Orchard admission, nullifier conflicts, relay, mining and production block notifications not implemented |
 | Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation, ChainDB coin/state/undo staging and private-clone forest transitions implemented; durable forest/tip/height staging implemented; body/active transaction indexes and versioned commit record staged together; tip-local audit and process-exit boundaries tested; production callers not integrated |
 | Wallet keys, addresses, proving, shield/send/unshield | Staged ZIP32 keys/receivers, note reception, incremental witnesses and fresh shield/send/unshield proofs; canonical witness persistence and encrypted snapshot storage staged; typed scan/checkpoint restore implemented as a component; origin callbacks, operation job/archival callbacks and live wallet integration not implemented; combined account snapshots, address counters and Reserved/Ready persistence implemented as components |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |

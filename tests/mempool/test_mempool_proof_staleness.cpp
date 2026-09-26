@@ -182,6 +182,31 @@ static void test_confirmed_tx_removed() {
     std::cout << "  PASSED" << std::endl;
 }
 
+static void test_typed_block_effects_reconcile_transparent_pool() {
+    Mempool pool(nullptr);
+    const TxId shared = makeTxId(270);
+    const auto conflicting = makeTx({{shared, 0}}, 501);
+    const auto confirmed = makeTx({{makeTxId(271), 0}}, 502);
+    const auto unrelated = makeTx({{makeTxId(272), 0}}, 503);
+    const auto conflict_id = addTxToMempool(pool, conflicting);
+    const auto confirmed_id = addTxToMempool(pool, confirmed);
+    const auto unrelated_id = addTxToMempool(pool, unrelated);
+    pool.refreshProof(unrelated_id, makeFakeRoot(0x30), 10);
+
+    // Effects may originate from a mixed body whose Orchard transaction
+    // spends the same ordinary outpoint; no legacy Block can hold that body.
+    ConnectedBlockEffects effects;
+    effects.confirmed_txids.push_back(confirmed_id);
+    effects.spent_transparent_inputs.emplace_back(shared, 0);
+    const auto evicted = pool.onBlockConnected(effects, 11, makeFakeRoot(0x31));
+    TEST_ASSERT(evicted == 1, "Mixed-body spend must evict conflicting legacy TX");
+    TEST_ASSERT(!pool.hasTransaction(conflict_id), "Conflicting TX must be absent");
+    TEST_ASSERT(!pool.hasTransaction(confirmed_id), "Confirmed TX must be absent");
+    TEST_ASSERT(pool.hasTransaction(unrelated_id), "Unrelated TX must remain");
+    TEST_ASSERT(pool.getStaleCount() == 1, "Remaining proof must become stale");
+    TEST_ASSERT(pool.getStats().last_connected_height == 11, "Connected height must advance");
+}
+
 // Test 4: no staleness without root
 static void test_no_staleness_without_root() {
     std::cout << "Test 4: no staleness without root..." << std::endl;
@@ -321,6 +346,15 @@ static void test_block_disconnect_marks_stale() {
     TEST_ASSERT(pool.getStaleCount() == 1, "Stale after disconnect");
 
     std::cout << "  PASSED" << std::endl;
+}
+
+static void test_typed_block_disconnect_marks_stale() {
+    Mempool pool(nullptr);
+    auto tx = makeTx({{makeTxId(801), 0}});
+    const auto txid = addTxToMempool(pool, tx);
+    pool.refreshProof(txid, makeFakeRoot(0x40), 10);
+    pool.onBlockDisconnected(10);
+    TEST_ASSERT(pool.getStaleCount() == 1, "Mixed-body disconnect must stale ordinary proofs");
 }
 
 // Test 10: multiple blocks cumulative
@@ -487,6 +521,7 @@ int main() {
     test_staleness_marked_on_block_connect();
     test_conflict_eviction();
     test_confirmed_tx_removed();
+    test_typed_block_effects_reconcile_transparent_pool();
     test_no_staleness_without_root();
     test_addunchecked_rejects_private_transactions();
     test_refresh_clears_staleness();
@@ -494,6 +529,7 @@ int main() {
     test_get_stale_tx_ids();
     test_stats_include_staleness();
     test_block_disconnect_marks_stale();
+    test_typed_block_disconnect_marks_stale();
     test_multiple_blocks_cumulative();
     test_non_csn_tx_unaffected();
     test_refresh_then_stale_again();
