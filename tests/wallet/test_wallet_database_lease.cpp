@@ -221,4 +221,80 @@ TEST_F(WalletDatabaseLeaseTest, RealWorkerCommitsIndexBlockTogether) {
     EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}));
     EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0)->spend_height, 20);
 }
+
+TEST_F(WalletDatabaseLeaseTest, RealWorkerChecksOrdinaryWalletWritesAndCommitBeforeHeight) {
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    const std::vector<uint8_t> script{0x00, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+                                    11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+    auto scalar = [](sqlite3* db, const char* sql) {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK)
+            throw std::runtime_error("prepare state query");
+        const int rc = sqlite3_step(stmt);
+        const int result = rc == SQLITE_ROW ? sqlite3_column_int(stmt, 0) : -1;
+        sqlite3_finalize(stmt);
+        return result;
+    };
+    for (const std::string stage : {"insert", "spend", "history", "confirmation", "commit"}) {
+        SCOPED_TRACE(stage);
+        wallet->create("block-" + stage);
+        sqlite3* db = wallet->getCurrentDatabase();
+        dinero::UTXOIndex index((path / (stage + "-index.sqlite")).string());
+        ASSERT_TRUE(index.Initialize());
+        index.RegisterAddress(script, "m/84'/1448'/0'/0/0");
+        dinero::uint256 hash; hash.begin()[0] = 2;
+        dinero::Transaction first;
+        first.vin.resize(1); first.vin[0].prevout = dinero::TxOutPoint(dinero::TxId(hash), 0);
+        first.vout.emplace_back(dinero::AmountUna::Una(800), script);
+        dinero::Transaction second;
+        second.vin.resize(1); second.vin[0].prevout = dinero::TxOutPoint(first.GetTxid(), 0);
+        second.vout.emplace_back(dinero::AmountUna::Una(600), script);
+        const auto first_id = first.GetTxid().AsUint256().GetHex();
+        if (stage == "confirmation") {
+            ASSERT_TRUE(wallet->addTransaction(first_id, "pending", 0.000008, "receive", false));
+            Exec(db, "CREATE TRIGGER fail_block BEFORE UPDATE ON transactions BEGIN SELECT RAISE(ABORT, 'test confirmation'); END");
+        } else if (stage == "insert") {
+            Exec(db, "CREATE TRIGGER fail_block BEFORE INSERT ON utxos WHEN NEW.amount=600 BEGIN SELECT RAISE(ABORT, 'test ordinary insert'); END");
+        } else if (stage == "spend") {
+            Exec(db, "CREATE TRIGGER fail_block BEFORE UPDATE OF is_spent ON utxos BEGIN SELECT RAISE(ABORT, 'test ordinary spend'); END");
+        } else if (stage == "history") {
+            Exec(db, "CREATE TRIGGER fail_block BEFORE INSERT ON transactions BEGIN SELECT RAISE(ABORT, 'test ordinary history'); END");
+        } else {
+            Exec(db, "PRAGMA foreign_keys=ON; CREATE TABLE commit_parent(id INTEGER PRIMARY KEY); CREATE TABLE commit_child(id INTEGER REFERENCES commit_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_block AFTER INSERT ON utxos BEGIN INSERT INTO commit_child VALUES(1); END");
+        }
+        const int initial_history = scalar(db, "SELECT count(*) FROM transactions");
+        const auto initial_height = wallet->getBlockchainHeight();
+        dinero::WalletWorker worker(&index, wallet.get());
+        std::string error;
+        try { dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}); }
+        catch (const std::runtime_error& e) { error = e.what(); }
+        if (stage == "confirmation") EXPECT_EQ(error, "Wallet block confirmation failed: test confirmation");
+        else if (stage == "commit") EXPECT_EQ(error, "Wallet block commit failed: FOREIGN KEY constraint failed");
+        else if (stage == "history") EXPECT_EQ(error, "Wallet block history insert failed");
+        else EXPECT_EQ(error, "Wallet block ordinary " + stage + " failed");
+        EXPECT_EQ(sqlite3_get_autocommit(db), 1);
+        EXPECT_EQ(scalar(db, "SELECT count(*) FROM utxos"), 0);
+        EXPECT_EQ(scalar(db, "SELECT count(*) FROM transactions"), initial_history);
+        if (stage == "confirmation") EXPECT_EQ(scalar(db, "SELECT height FROM transactions LIMIT 1"), 0);
+        EXPECT_EQ(wallet->getBlockchainHeight(), initial_height);
+        // Index commits before ordinary-wallet COMMIT. This is a recoverable
+        // prefix to replay, not a claim of atomicity between the two databases.
+        EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0).has_value(), stage == "commit");
+        Exec(db, "DROP TRIGGER fail_block");
+        EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}));
+        EXPECT_EQ(wallet->getBlockchainHeight(), 20);
+        EXPECT_EQ(scalar(db, "SELECT count(*) FROM utxos"), 2);
+        EXPECT_EQ(scalar(db, "SELECT is_spent FROM utxos WHERE amount=800"), 1);
+        EXPECT_EQ(scalar(db, "SELECT is_spent FROM utxos WHERE amount=600"), 0);
+        EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0)->spend_height, 20);
+        EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}));
+        // A creation-only replay may not erase a recorded spend in either store.
+        EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 20, {first}));
+        EXPECT_EQ(scalar(db, "SELECT is_spent FROM utxos WHERE amount=800"), 1);
+        EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0)->spend_height, 20);
+        wallet->open("owner");
+        wallet->open("block-" + stage);
+        EXPECT_EQ(scalar(wallet->getCurrentDatabase(), "SELECT is_spent FROM utxos WHERE amount=800"), 1);
+    }
+}
 } // namespace

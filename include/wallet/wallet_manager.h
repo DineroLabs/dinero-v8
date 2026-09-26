@@ -641,7 +641,9 @@ public:
     bool addTransaction(const std::string& txid, const std::string& address, double amount,
                        const std::string& category, bool is_coinbase = false,
                        const std::string& label = "", int64_t time = 0, uint32_t height = 0);
-    bool confirmTransaction(const std::string& txid, uint32_t height);
+    // False with an empty error means no matching history. Optional error
+    // distinguishes SQL failure for checked block delivery callers.
+    bool confirmTransaction(const std::string& txid, uint32_t height, std::string* error = nullptr);
 
     // Phase 36: Remove transactions from orphaned blocks during reorg
     bool removeTransactionsAtHeight(uint32_t height);

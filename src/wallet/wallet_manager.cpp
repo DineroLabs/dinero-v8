@@ -4829,13 +4829,16 @@ bool WalletManager::addTransaction(const std::string& txid, const std::string& a
     }
 }
 
-bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height) {
+bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height, std::string* error) {
+    if (error) error->clear();
     if (!db_ || current_wallet_id_ == -1 || txid.empty() || height == 0) {
+        if (error) *error = "Wallet confirmation requires a selected wallet and valid identity";
         return false;
     }
 
     if (!columnExists(db_, "transactions", "height") ||
         !columnExists(db_, "transactions", "confirmations")) {
+        if (error) *error = "transactions table lacks height/confirmations columns";
         WLOG_WARN("confirmTransaction: transactions table lacks height/confirmations columns");
         return false;
     }
@@ -4860,22 +4863,29 @@ bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height)
         ? SqlLog::prepare(&stmt, db_, sql_with_wallet_id, "confirm-transaction(with-wallet-id)")
         : SqlLog::prepare(&stmt, db_, sql_without_wallet_id, "confirm-transaction(no-wallet-id)");
     if (!prepared) {
+        if (error) *error = sqlite3_errmsg(db_);
         return false;
     }
 
     int bind_index = 1;
-    sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-    sqlite3_bind_int(stmt, bind_index++, confirmations);
-    if (has_wallet_id) {
-        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+    int bound = sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
+    if (bound == SQLITE_OK) bound = sqlite3_bind_int(stmt, bind_index++, confirmations);
+    if (bound == SQLITE_OK && has_wallet_id)
+        bound = sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
+    if (bound == SQLITE_OK)
+        bound = sqlite3_bind_text(stmt, bind_index++, txid.c_str(), -1, SQLITE_STATIC);
+    if (bound != SQLITE_OK) {
+        if (error) *error = sqlite3_errmsg(db_);
+        sqlite3_finalize(stmt);
+        return false;
     }
-    sqlite3_bind_text(stmt, bind_index++, txid.c_str(), -1, SQLITE_STATIC);
 
     const int result = sqlite3_step(stmt);
     const int changes = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
 
     if (result != SQLITE_DONE) {
+        if (error) *error = sqlite3_errmsg(db_);
         WLOG_ERR("Failed to confirm transaction " + txid + ": " +
                  std::string(sqlite3_errmsg(db_)));
         return false;
@@ -6486,9 +6496,15 @@ bool WalletManager::addUTXO(const std::string& txid, int vout, int64_t amount,
 
     sqlite3_stmt* stmt;
     const char* sql = R"(
-        INSERT OR REPLACE INTO utxos
+        INSERT INTO utxos
         (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        ON CONFLICT DO UPDATE SET
+            address=excluded.address, amount=excluded.amount,
+            script_pubkey=excluded.script_pubkey, height=excluded.height,
+            is_coinbase=excluded.is_coinbase
+        WHERE utxos.wallet_id=excluded.wallet_id
+          AND utxos.txid=excluded.txid AND utxos.vout=excluded.vout
     )";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -6510,9 +6526,10 @@ bool WalletManager::addUTXO(const std::string& txid, int vout, int64_t amount,
     sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
     
     rc = sqlite3_step(stmt);
+    const int changed = sqlite3_changes(db_);
     sqlite3_finalize(stmt);
 
-    if (rc == SQLITE_DONE) {
+    if (rc == SQLITE_DONE && changed == 1) {
         WLOG_INFO("[addUTXO] ✅ Successfully added UTXO " + txid + ":" + std::to_string(vout));
         return true;
     } else {

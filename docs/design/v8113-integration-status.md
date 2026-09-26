@@ -5,6 +5,15 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- The existing WalletWorker now groups ordinary WalletManager block writes in a
+  checked SQLite transaction, distinguishes confirmation lookup from SQL failure,
+  and propagates required write failures. Ordinary creation replay preserves
+  recorded spends. The index commits first; a later ordinary-wallet commit failure
+  leaves a prefix requiring ordered replay and does not advance worker height.
+  Real two-store worker tests cover failure/retry/reopen. This is not a durable
+  source cursor or complete recovery provider. See
+  `wallet-ordinary-block-atomicity-2026-09-26.md`.
+
 - The existing WalletWorker connect path now commits a block's UTXO-index changes
   together, checks mutation failures and defers height/vault observations until
   index commit. Real-worker failure/retry/same-block-spend tests and real SQLite
