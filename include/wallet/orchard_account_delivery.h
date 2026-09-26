@@ -1,0 +1,32 @@
+#pragma once
+#include "wallet/orchard_account_state.h"
+namespace dinero { class WalletManager; }
+namespace dinero::wallet {
+// A bound account consumer, not notification-provider readiness. Source events,
+// prepared transitions and immutable restore lookups are acquired/validated
+// before entering this owner. Lookups must never acquire chain locks or wait on
+// a thread needing the wallet. Initial baseline enrollment is a separate duty.
+class OrchardAccountDelivery {
+public:
+    struct Profile { orchard::SigningDomain domain; uint32_t activation, account; };
+    struct RestorePoint {
+        storage::OrchardStoredState checkpoint;
+        OrchardWalletRestoreLookups lookups;
+    };
+    struct Applied { uint64_t revision; OrchardAccountState account; };
+    // Requires an existing encrypted account under the real database identity.
+    // No cursor setter, implicit enrollment or rescan reset is exposed here.
+    static Applied Read(WalletManager&, uint64_t session, const Profile&, const RestorePoint&);
+    static Applied Connect(WalletManager&, uint64_t session, const Profile&,
+        uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&,
+        const OrchardBlockCandidate&, const consensus::PreparedOrchardState&,
+        std::span<const consensus::VerifiedOrchardAuthorizations>);
+    // Parent revision is a locator only. Its AEAD and immediate-parent scan
+    // identity are checked before any write. Missing history refuses recovery.
+    static Applied Disconnect(WalletManager&, uint64_t session, const Profile&,
+        uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&,
+        const OrchardBlockCandidate&, uint64_t parent_revision, const RestorePoint& parent);
+    static Applied Historical(WalletManager&, uint64_t session, const Profile&,
+        uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&);
+};
+} // namespace dinero::wallet

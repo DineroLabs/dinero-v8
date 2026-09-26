@@ -3056,8 +3056,32 @@ std::string WalletManager::DatabaseLease::EnsureDeliveryIdentity() {
     }
 }
 
+WalletManager::RecoverySeed::RecoverySeed(WalletManager& owner, std::span<const uint8_t> seed)
+    : owner_(owner), thread_(std::this_thread::get_id()) {
+    if (seed.size() != bytes_.size()) throw std::runtime_error("Wallet recovery seed unavailable");
+    std::copy(seed.begin(), seed.end(), bytes_.begin());
+    ++owner_.recovery_seeds_;
+}
+WalletManager::RecoverySeed::~RecoverySeed() noexcept {
+    OPENSSL_cleanse(bytes_.data(), bytes_.size());
+    if (thread_ != std::this_thread::get_id() || owner_.recovery_seeds_ != 1)
+        std::terminate();
+    --owner_.recovery_seeds_;
+}
+std::unique_ptr<WalletManager::RecoverySeed>
+WalletManager::DatabaseLease::CopyRecoverySeed(uint64_t expected_session) {
+    if (thread_ != std::this_thread::get_id() || !db_ || name_.empty() ||
+        expected_session != session_ || owner_.database_session_ != session_ || owner_.recovery_seeds_)
+        throw std::runtime_error("Wallet recovery key ownership unavailable");
+    owner_.checkUnlockTimeout();
+    if (owner_.wallet_locked_ || owner_.master_seed_.size() != 64)
+        throw std::runtime_error("Wallet recovery seed unavailable");
+    return std::unique_ptr<RecoverySeed>(new RecoverySeed(owner_,owner_.master_seed_));
+}
+
 WalletManager::DatabaseLease::~DatabaseLease() noexcept {
     if (thread_ != std::this_thread::get_id()) std::terminate();
+    if (owner_.database_leases_ == 1 && owner_.recovery_seeds_) std::terminate();
     // Entry was in autocommit and no other thread can use this connection.
     // An unfinished transaction therefore belongs to this lease group, never
     // an unrelated caller. Nested same-thread operations must not roll back
@@ -3163,6 +3187,8 @@ std::string WalletManager::getMiningAddress(const std::string& wallet, const std
 
 // Wallet encryption/decryption methods
 void WalletManager::encryptWallet(const std::string& passphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (wallet_encrypted_) {
         throw std::runtime_error("Wallet is already encrypted");
     }
@@ -3320,6 +3346,8 @@ void WalletManager::encryptWallet(const std::string& passphrase) {
 }
 
 void WalletManager::decryptWallet(const std::string& passphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3344,6 +3372,8 @@ void WalletManager::decryptWallet(const std::string& passphrase) {
 }
 
 void WalletManager::changePassphrase(const std::string& oldPassphrase, const std::string& newPassphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3466,6 +3496,8 @@ void WalletManager::derivePrimaryAddresses() {
 }
 
 void WalletManager::lockWallet() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3485,6 +3517,8 @@ void WalletManager::lockWallet() {
 }
 
 void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSeconds) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!wallet_encrypted_) {
         throw std::runtime_error("Wallet is not encrypted");
     }
@@ -3668,6 +3702,7 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
 // ═══════════════════════════════════════════════════════════════
 
 std::optional<std::array<uint8_t, 32>> WalletManager::GetV7PqMasterKey() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (wallet_locked_ || !pq_master_key_loaded_) {
         return std::nullopt;
     }
@@ -3679,6 +3714,7 @@ std::optional<std::array<uint8_t, 32>> WalletManager::GetV7PqMasterKey() const {
 
 std::vector<WalletManager::ShieldedIncomingViewingKey>
 WalletManager::GetShieldedIncomingViewingKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_incoming_viewing_keys_.empty()) {
         return shielded_incoming_viewing_keys_;
     }
@@ -3704,6 +3740,7 @@ WalletManager::GetShieldedIncomingViewingKeys() const {
 
 std::vector<WalletManager::ShieldedOutgoingViewingKey>
 WalletManager::GetShieldedOutgoingViewingKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_outgoing_viewing_keys_.empty()) {
         return shielded_outgoing_viewing_keys_;
     }
@@ -3727,6 +3764,7 @@ WalletManager::GetShieldedOutgoingViewingKeys() const {
 
 std::vector<WalletManager::ShieldedRecipientViewingAuthority>
 WalletManager::GetShieldedRecipientViewingAuthorities() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!shielded_recipient_viewing_authorities_.empty()) {
         return shielded_recipient_viewing_authorities_;
     }
@@ -3763,6 +3801,7 @@ std::optional<WalletManager::V7Bip32Material>
 WalletManager::DeriveV7Bip32Material(uint32_t account,
                                      uint32_t change,
                                      uint32_t address_index) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (wallet_locked_ || master_seed_.empty()) {
         return std::nullopt;
     }
@@ -3792,10 +3831,12 @@ WalletManager::DeriveV7Bip32Material(uint32_t account,
 }
 
 bool WalletManager::isWalletEncrypted() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     return getSetting("wallet_encrypted") == "1";
 }
 
 bool WalletManager::isWalletLocked() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!isWalletEncrypted()) {
         return false;
     }
@@ -4395,11 +4436,13 @@ std::string WalletManager::decryptData(const std::string& encryptedData, const s
 }
 
 void WalletManager::checkUnlockTimeout() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (unlock_timeout_ > 0 && unlock_time_ > 0) {
         int64_t currentTime = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         
         if (currentTime - unlock_time_ >= unlock_timeout_) {
+            if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
             wallet_locked_ = true;
             secureClearString(encryption_key_);
             clearPrivateKeyCache();
@@ -5097,6 +5140,7 @@ double WalletManager::calculateMiningReward(uint32_t height) const {
 
 // Address generation methods
 std::string WalletManager::getNewAddress(const std::string& label, const std::string& address_type) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for address generation");
         return "";
@@ -5423,6 +5467,7 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
 }
 
 std::string WalletManager::getNewChangeAddress(const std::string& label, const std::string& address_type) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for change address generation");
         return "";
@@ -6690,6 +6735,7 @@ bool WalletManager::removeUTXO(const std::string& txid, int vout) {
 // ═══════════════════════════════════════════════════════════════
 
 std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(const std::string& script_pubkey) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address (display string)
     // Check if wallet is active and unlocked
     if (!hasActiveWallet()) {
@@ -7086,6 +7132,7 @@ std::optional<std::string> WalletManager::getScriptPubKeyForAddress(const std::s
 }
 
 std::string WalletManager::getPrivateKeyForPath(const std::string& derivation_path) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     WLOG_INFO("🔑 getPrivateKeyForPath() called with path: " + derivation_path);
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -7264,6 +7311,7 @@ bool WalletManager::validateWIF(const std::string& wif, bool& is_compressed, boo
 }
 
 std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (privkey.size() != 32) {
         WLOG_ERR("Invalid private key length");
         return "";
@@ -7420,12 +7468,14 @@ std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey,
 }
 
 void WalletManager::cachePrivateKey(const std::string& address, const std::vector<uint8_t>& key) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // Store private key in cache (in memory only while wallet is unlocked)
     private_key_cache_[address] = key;
     WLOG_DEBUG("Cached private key for address: " + address);
 }
 
 void WalletManager::clearPrivateKeyCache() {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // Securely clear all cached private keys
     for (auto& pair : private_key_cache_) {
         secureClearBytes(pair.second);
@@ -7437,6 +7487,8 @@ void WalletManager::clearPrivateKeyCache() {
 bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
                                     const std::string& passphrase,
                                     bool reset_address_state) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!db_ || current_wallet_id_ < 0) {
         WLOG_ERR("No active wallet to store master seed");
         return false;
@@ -7688,6 +7740,7 @@ bool WalletManager::storeAuthoritativeBip39Mnemonic(
     const std::string& mnemonic,
     const std::string& bip39_passphrase,
     std::string* error_out) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         SetRecoveryError(error_out, "no active wallet");
         return false;
@@ -7761,6 +7814,7 @@ bool WalletManager::storeAuthoritativeBip39Mnemonic(
 
 std::optional<Bip39RecoveryMaterial> WalletManager::loadAuthoritativeBip39Mnemonic(
     std::string* error_out) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         SetRecoveryError(error_out, "no active wallet");
         return std::nullopt;
@@ -7881,6 +7935,7 @@ bool WalletManager::acknowledgeBip39Backup(const std::string& mnemonic,
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::loadMasterSeed(const std::string& passphrase) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_ || current_wallet_id_ < 0) {
         WLOG_ERR("No active wallet to load master seed from");
         return std::nullopt;
@@ -8850,6 +8905,7 @@ void WalletManager::storeTaprootKey(const std::string& address,
                                     const std::array<uint8_t, 32>& internal_pubkey,
                                     const std::array<uint8_t, 32>& output_pubkey,
                                     const std::string& label) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         WLOG_ERR("[storeTaprootKey] No wallet database open");
         return;
@@ -9067,6 +9123,7 @@ bool WalletManager::storeUnencryptedWallet(
     uint32_t master_fingerprint,
     bool seed_already_stored
 ) {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     try {
         // Per-wallet DB: No wallet_id needed (always id=1)
         if (!db_) {
@@ -9177,6 +9234,7 @@ bool WalletManager::HaveKey(const wallet::KeyID& key_id) const {
 }
 
 std::optional<wallet::WalletKey> WalletManager::GetKey(const wallet::KeyID& key_id) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         return std::nullopt;
     }
@@ -9257,6 +9315,7 @@ std::optional<wallet::WalletKey> WalletManager::GetKey(const wallet::KeyID& key_
 }
 
 std::optional<wallet::WalletKey> WalletManager::GetKeyByOutputKeyID(const wallet::KeyID& output_key_id) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (!db_) {
         return std::nullopt;
     }
@@ -9338,6 +9397,7 @@ std::optional<wallet::WalletKey> WalletManager::GetKeyByOutputKeyID(const wallet
 }
 
 std::vector<wallet::WalletKey> WalletManager::GetAllKeys() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     std::vector<wallet::WalletKey> keys;
 
     if (!db_) {
@@ -9398,10 +9458,12 @@ bool WalletManager::AddKey(const wallet::WalletKey& key) {
 }
 
 bool WalletManager::HaveMasterSeed() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     return !master_seed_.empty();
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::GetMasterSeed() const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (master_seed_.empty()) {
         return std::nullopt;
     }
@@ -9410,6 +9472,7 @@ std::optional<std::vector<uint8_t>> WalletManager::GetMasterSeed() const {
 
 std::optional<std::vector<uint8_t>> WalletManager::DerivePrivateKey(
     const wallet::KeyOriginInfo& origin) const {
+    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
 
     if (master_seed_.empty()) {
         // Defensive recovery: try reloading seed from DB if wallet is currently unlocked.

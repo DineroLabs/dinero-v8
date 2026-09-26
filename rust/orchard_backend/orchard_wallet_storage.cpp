@@ -22,6 +22,18 @@ struct Statement {
     void Int(int index,uint64_t value){Check(value<=uint64_t(INT64_MAX));Check(sqlite3_bind_int64(p,index,sqlite3_int64(value))==SQLITE_OK);}
 };
 void Exec(sqlite3* db,const char* sql){Check(sqlite3_exec(db,sql,nullptr,nullptr,nullptr)==SQLITE_OK);}
+struct RetainSavepoint {
+    sqlite3* db;bool complete=false;
+    explicit RetainSavepoint(sqlite3* p):db(p){Exec(db,"SAVEPOINT orchard_snapshot_retention");}
+    ~RetainSavepoint(){
+        if(!complete){
+            const auto a=sqlite3_exec(db,"ROLLBACK TO orchard_snapshot_retention",nullptr,nullptr,nullptr);
+            const auto b=sqlite3_exec(db,"RELEASE orchard_snapshot_retention",nullptr,nullptr,nullptr);
+            if((a!=SQLITE_OK||b!=SQLITE_OK)&&!sqlite3_get_autocommit(db))std::terminate();
+        }
+    }
+    void Release(){Exec(db,"RELEASE orchard_snapshot_retention");complete=true;}
+};
 void Durable(sqlite3* db,bool writing){
     Check(db&&sqlite3_db_readonly(db,"main")==0);
     if(writing)Check(sqlite3_get_autocommit(db)==0);
@@ -116,5 +128,40 @@ uint64_t WalletSnapshotStore::StageReplace(uint64_t expected,const WalletStateBy
     if(expected==0){stmt.Blob(1,identity_.wallet_id);stmt.Int(2,identity_.account);stmt.Int(3,revision);stmt.Blob(4,sealed);}
     else{stmt.Int(1,revision);stmt.Blob(2,sealed);stmt.Blob(3,identity_.wallet_id);stmt.Int(4,identity_.account);stmt.Int(5,expected);}
     Check(sqlite3_step(stmt.p)==SQLITE_DONE&&sqlite3_changes(db_)==1);return revision;
+}
+uint64_t WalletSnapshotStore::StageReplaceRetaining(uint64_t expected,const WalletStateBytes& state){
+    Durable(db_,true);
+    RetainSavepoint savepoint(db_);
+    const auto previous=Read();Check(previous?previous->revision==expected:expected==0);
+    Exec(db_,"CREATE TABLE IF NOT EXISTS orchard_wallet_retained(wallet_id BLOB NOT NULL,account INTEGER NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),sealed BLOB NOT NULL,PRIMARY KEY(wallet_id,account,revision)) WITHOUT ROWID;");
+    if(previous){
+        // Preserve the original authenticated envelope. If this revision is
+        // already retained, authenticate it and require identical plaintext.
+        Statement found(db_,"SELECT sealed FROM orchard_wallet_retained WHERE wallet_id=? AND account=? AND revision=?");
+        found.Blob(1,identity_.wallet_id);found.Int(2,identity_.account);found.Int(3,expected);
+        const auto rc=sqlite3_step(found.p);
+        if(rc==SQLITE_ROW){
+            Check(sqlite3_column_type(found.p,0)==SQLITE_BLOB);
+            const auto n=sqlite3_column_bytes(found.p,0);const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(found.p,0));
+            Check(p&&n>=29&&n<=int(kMaxStateBytes+29));auto retained=Open(expected,{p,size_t(n)});
+            Check(std::equal(retained.Bytes().begin(),retained.Bytes().end(),previous->state.Bytes().begin(),previous->state.Bytes().end()));
+            Check(sqlite3_step(found.p)==SQLITE_DONE);
+        }else{
+            Check(rc==SQLITE_DONE);
+            Statement keep(db_,"INSERT INTO orchard_wallet_retained(wallet_id,account,revision,sealed) SELECT wallet_id,account,revision,sealed FROM orchard_wallet_snapshots WHERE wallet_id=? AND account=? AND revision=?");
+            keep.Blob(1,identity_.wallet_id);keep.Int(2,identity_.account);keep.Int(3,expected);
+            Check(sqlite3_step(keep.p)==SQLITE_DONE&&sqlite3_changes(db_)==1);
+        }
+    }
+    const auto revision=StageReplace(expected,state);savepoint.Release();return revision;
+}
+LoadedWalletState WalletSnapshotStore::ReadRetained(uint64_t revision)const{
+    const auto current=Read();Check(current&&revision>0&&revision<current->revision);
+    Statement stmt(db_,"SELECT sealed FROM orchard_wallet_retained WHERE wallet_id=? AND account=? AND revision=?");
+    stmt.Blob(1,identity_.wallet_id);stmt.Int(2,identity_.account);stmt.Int(3,revision);
+    Check(sqlite3_step(stmt.p)==SQLITE_ROW&&sqlite3_column_type(stmt.p,0)==SQLITE_BLOB);
+    const auto n=sqlite3_column_bytes(stmt.p,0);const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(stmt.p,0));
+    Check(p&&n>=29&&n<=int(kMaxStateBytes+29));auto state=Open(revision,{p,size_t(n)});
+    Check(sqlite3_step(stmt.p)==SQLITE_DONE);return {revision,std::move(state)};
 }
 } // namespace dinero::orchard

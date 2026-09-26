@@ -1,5 +1,12 @@
 # v8.1.13 integration status
 
+- A bound Orchard account consumer now pins the selected wallet keys, applies
+  account effects and retains authenticated parent snapshots in one SQLite
+  commit. Key changes serialize with recovery; missing parent history refuses.
+  Service-owned replay views/parent locators, coordinator integration and
+  production installation remain open. See
+  `orchard-bound-account-recovery-2026-09-26.md`.
+
 - Orchard account delivery now follows exact historical blocks below activation,
   moving an empty scan checkpoint and applying/undoing real pending-input
   conflicts with its existing receipt. DNORAC05 restores those conflicts from

@@ -59,6 +59,50 @@ protected:
     std::unique_ptr<dinero::WalletManager> wallet;
 };
 
+class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};
+TEST_F(WalletRecoveryKeyTest, PinsActualSeedAcrossLockAndUnlock) {
+    wallet->open("owner");
+    const auto original=wallet->GetMasterSeed();ASSERT_TRUE(original.has_value());
+    wallet->encryptWallet("recovery-test-passphrase");
+    { auto lease=wallet->AcquireDatabaseLease();
+      EXPECT_THROW(lease->CopyRecoverySeed(lease->Session()),std::runtime_error); }
+    wallet->unlockWallet("recovery-test-passphrase");
+    auto lease=wallet->AcquireDatabaseLease();const auto session=lease->Session();
+    auto seed=lease->CopyRecoverySeed(session);
+    EXPECT_TRUE(std::equal(seed->Bytes().begin(),seed->Bytes().end(),original->begin(),original->end()));
+    EXPECT_THROW(lease->CopyRecoverySeed(session+1),std::runtime_error);
+    EXPECT_THROW(lease->CopyRecoverySeed(session),std::runtime_error);
+    EXPECT_THROW(wallet->lockWallet(),std::logic_error);
+    EXPECT_THROW(wallet->unlockWallet("recovery-test-passphrase"),std::logic_error);
+    EXPECT_THROW(wallet->storeMasterSeed(*original,"recovery-test-passphrase",false),std::logic_error);
+    std::promise<void> entered;auto ready=entered.get_future();
+    auto lock=std::async(std::launch::async,[&]{entered.set_value();wallet->lockWallet();});
+    ready.wait();const bool excluded=lock.wait_for(100ms)==std::future_status::timeout;
+    seed.reset();lease.reset();lock.get();EXPECT_TRUE(excluded);
+    EXPECT_FALSE(wallet->GetMasterSeed().has_value());
+    lease=wallet->AcquireDatabaseLease();
+    EXPECT_THROW(lease->CopyRecoverySeed(session),std::runtime_error);
+    std::promise<void> unlocking;auto started=unlocking.get_future();
+    auto unlock=std::async(std::launch::async,[&]{unlocking.set_value();wallet->unlockWallet("recovery-test-passphrase");});
+    started.wait();const bool unlock_excluded=unlock.wait_for(100ms)==std::future_status::timeout;
+    lease.reset();unlock.get();EXPECT_TRUE(unlock_excluded);
+    lease=wallet->AcquireDatabaseLease();EXPECT_EQ(lease->CopyRecoverySeed(session)->Bytes().size(),64u);
+}
+TEST_F(WalletRecoveryKeyTest, RefusesExpiredEmptyAndReopenedSelection) {
+    dinero::WalletManager empty(path/"empty");
+    { auto lease=empty.AcquireDatabaseLease();EXPECT_THROW(lease->CopyRecoverySeed(lease->Session()),std::runtime_error); }
+    wallet->open("owner");uint64_t session;
+    { auto lease=wallet->AcquireDatabaseLease();session=lease->Session();
+      EXPECT_EQ(lease->CopyRecoverySeed(session)->Bytes().size(),64u); }
+    wallet->open("owner");
+    { auto lease=wallet->AcquireDatabaseLease();EXPECT_THROW(lease->CopyRecoverySeed(session),std::runtime_error); }
+    wallet->encryptWallet("recovery-test-passphrase");wallet->unlockWallet("recovery-test-passphrase",1);
+    std::this_thread::sleep_for(1100ms);
+    auto lease=wallet->AcquireDatabaseLease();
+    EXPECT_THROW(lease->CopyRecoverySeed(lease->Session()),std::runtime_error);
+    EXPECT_FALSE(wallet->GetMasterSeed().has_value());
+}
+
 class WalletDeliveryBindingTest : public WalletDatabaseLeaseTest {};
 TEST_F(WalletDeliveryBindingTest, StableDatabaseIdentitySurvivesReopenAndMetadataChanges) {
     wallet->open("owner");

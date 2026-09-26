@@ -144,9 +144,10 @@ if(TARGET dinero_chainstate)
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_index_delivery.cpp"
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery.cpp"
-    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery_service.cpp")
+    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery_service.cpp"
+    "${ORCHARD_HOST_ROOT}/src/wallet/orchard_account_delivery.cpp")
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
-  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_orchard_chainstate_write dinero_wallet sqlite3)
+  target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_orchard_chainstate_write dinero_wallet dinero_orchard_wallet_account sqlite3)
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_index_delivery)
   endif()
@@ -327,6 +328,18 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     target_link_libraries(test_orchard_state_commitment PRIVATE dinero_core)
     add_test(NAME OrchardStateCommitment COMMAND test_orchard_state_commitment)
     set_tests_properties(OrchardStateCommitment PROPERTIES TIMEOUT 60 LABELS "orchard;consensus;encoding;integration-staging")
+    add_executable(test_orchard_account_delivery
+      "${ORCHARD_HOST_ROOT}/src/daemon/lightning_stubs.cpp"
+      "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"
+      "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_wallet_account.cpp"
+      "${ORCHARD_HOST_ROOT}/src/wallet/utxo_index.cpp"
+      "${ORCHARD_HOST_ROOT}/src/sqlite_open.cpp"
+      "${ORCHARD_HOST_ROOT}/src/common/logger.cpp")
+    target_compile_definitions(test_orchard_account_delivery PRIVATE DINERO_TEST_BOUND_ACCOUNT=1)
+    target_include_directories(test_orchard_account_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
+    target_link_libraries(test_orchard_account_delivery PRIVATE dinero_orchard_index_delivery)
+    add_test(NAME OrchardAccountDelivery COMMAND test_orchard_account_delivery "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    set_tests_properties(OrchardAccountDelivery PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;wallet;storage;integration-staging")
     add_executable(test_orchard_index_delivery
       "${ORCHARD_HOST_ROOT}/src/daemon/lightning_stubs.cpp"
       "${ORCHARD_HOST_ROOT}/tests/stubs/mempool_test_stubs.cpp"

@@ -44,6 +44,12 @@ public:
     // alongside its ordinary wallet records. Revision0 means absent. Return is
     // a staged revision, not durable success. Publish only after outer commit.
     [[nodiscard]] uint64_t StageReplace(uint64_t expected_revision,const WalletStateBytes&);
+    // Retain the authenticated previous revision and replace the current state
+    // in the same caller-owned transaction. Retained revisions are immutable;
+    // missing history is an error, never permission to invent a parent scan.
+    // Existing non-retaining writers remain readable but may leave gaps.
+    [[nodiscard]] uint64_t StageReplaceRetaining(uint64_t expected_revision,const WalletStateBytes&);
+    [[nodiscard]] LoadedWalletState ReadRetained(uint64_t revision) const;
 private:
     std::vector<uint8_t> AssociatedData(uint64_t revision)const;
     std::vector<uint8_t> Seal(uint64_t revision,std::span<const uint8_t>)const;

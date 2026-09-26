@@ -2,6 +2,11 @@
 #include "wallet/orchard_account_state.h"
 #include "daemon/runtime_block_outbox.h"
 #include "primitives/block.h"
+#ifdef DINERO_TEST_BOUND_ACCOUNT
+#include "wallet/orchard_account_delivery.h"
+#include "wallet/wallet_manager.h"
+#include "consensus/chainparams.h"
+#endif
 #include <spawn.h>
 #include <sys/wait.h>
 extern char **environ;
@@ -572,6 +577,27 @@ int main(int argc, char **argv) {
       Require(after.IssueReceiver(WalletScope::External).second == r2);
     }
     Require(sqlite3_close(db) == SQLITE_OK);
+    // A real authenticated retained account supplies the immediate parent
+    // after reopening. Current addresses and exact Ready bytes survive undo.
+    auto parentPath=(cleanup.p/"parents.sqlite").string();
+    Require(sqlite3_open(parentPath.c_str(),&db)==SQLITE_OK);
+    sql("PRAGMA synchronous=FULL;BEGIN IMMEDIATE;");
+    WalletSnapshotStore::InitializeSchemaUnderTransaction(db);
+    { WalletSnapshotStore store(db,identity,seed);
+      Require(store.StageReplaceRetaining(0,initial.Encode())==1);sql("COMMIT;BEGIN IMMEDIATE;");
+      Require(store.StageReplaceRetaining(1,delivered.Encode())==2);sql("COMMIT;"); }
+    Require(sqlite3_close(db)==SQLITE_OK);Require(sqlite3_open(parentPath.c_str(),&db)==SQLITE_OK);
+    { WalletSnapshotStore store(db,identity,seed);
+      auto parentBytes=store.ReadRetained(1);auto latest=store.Read();Require(latest&&latest->revision==2);
+      auto parent=OrchardAccountState::Restore(parentBytes.state,f.domain,fvk,20001,initial.Scan().Checkpoint(),restoreLookups);
+      auto current=OrchardAccountState::Restore(latest->state,f.domain,fvk,20001,delivered.Scan().Checkpoint(),restoreLookups);
+      auto undone=current.RewindDelivery(removed,block,parent);
+      Require(undone.Delivery()==rolled.Delivery()&&undone.Scan().BalanceUna()==0);
+      Require(undone.Operations().Entries().at(id).transaction==delivered.Operations().Entries().at(id).transaction);
+      Require(undone.IssueReceiver(WalletScope::External).second==r2);
+      sql("BEGIN IMMEDIATE;");Require(store.StageReplaceRetaining(2,undone.Encode())==3);sql("COMMIT;");
+      Require(store.ReadRetained(2).state.Bytes().size()==delivered.Encode().Bytes().size()); }
+    Require(sqlite3_close(db)==SQLITE_OK);
     // A separately encrypted next snapshot is test-process input only.
     // The worker does the production StageReplace in a real SQLite transaction.
     auto nextPath = (cleanup.p / "next.sqlite").string();
@@ -629,6 +655,53 @@ int main(int argc, char **argv) {
       }
       Require(sqlite3_close(db)==SQLITE_OK);
     }
+#ifdef DINERO_TEST_BOUND_ACCOUNT
+    // Exercise the bound consumer against real WalletManager identity/key
+    // ownership. Explicit fixture enrollment is not production baseline proof.
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    dinero::WalletManager manager(cleanup.p/"bound");manager.create("account");manager.open("account");
+    const auto enroll=[&](const OrchardAccountState& baseline) {
+      Require(manager.storeMasterSeed(std::vector<uint8_t>(seed.begin(),seed.end()),"",false));
+      auto lease=manager.AcquireDatabaseLease();auto binding=lease->EnsureDeliveryIdentity();
+      Hash walletId{};for(size_t i=0;i<32;++i)walletId[i]=static_cast<uint8_t>(std::stoul(binding.substr(7+2*i,2),nullptr,16));
+      auto recoverySeed=lease->CopyRecoverySeed(lease->Session());
+      Require(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+      WalletSnapshotStore::InitializeSchemaUnderTransaction(lease->Database());
+      WalletSnapshotStore store(lease->Database(),{WalletNetwork::Regtest,f.domain.genesis_wire,walletId,0},recoverySeed->Bytes());
+      Require(store.StageReplaceRetaining(0,baseline.Encode())==1);
+      Require(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+      return lease->Session();
+    };
+    using Owner=dinero::wallet::OrchardAccountDelivery;
+    const Owner::Profile profile{f.domain,20001,0};
+    Owner::RestorePoint before{ready.Scan().Checkpoint(),restoreLookups};
+    Owner::RestorePoint after{delivered.Scan().Checkpoint(),restoreLookups};
+    auto session=enroll(ready);
+    auto connected=Owner::Connect(manager,session,profile,1,before,received,block,transition,auths);
+    Require(connected.revision==2&&connected.account.Delivery()==delivered.Delivery()&&connected.account.Scan().BalanceUna()==5000);
+    AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,2,after,removed,block,2,before);});
+    {auto lease=manager.AcquireDatabaseLease();Require(sqlite3_exec(lease->Database(),"CREATE TRIGGER reject_account BEFORE UPDATE ON orchard_wallet_snapshots BEGIN SELECT RAISE(ABORT,'account failure');END",nullptr,nullptr,nullptr)==SQLITE_OK);}
+    AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,2,after,removed,block,1,before);});
+    Require(Owner::Read(manager,session,profile,after).revision==2);
+    {auto lease=manager.AcquireDatabaseLease();Require(sqlite3_exec(lease->Database(),"DROP TRIGGER reject_account",nullptr,nullptr,nullptr)==SQLITE_OK);}
+    manager.open("account");AccountReject([&]{(void)Owner::Read(manager,session,profile,after);});
+    session=manager.AcquireDatabaseLease()->Session();
+    auto disconnected=Owner::Disconnect(manager,session,profile,2,after,removed,block,1,before);
+    Require(disconnected.revision==3&&disconnected.account.Delivery()==rolled.Delivery()&&disconnected.account.Scan().BalanceUna()==0);
+    Require(disconnected.account.Operations().Entries().at(id).transaction==ready.Operations().Entries().at(id).transaction);
+    Require(disconnected.account.IssueReceiver(WalletScope::External).second==r2);
+    auto connectedAgain=Owner::Connect(manager,session,profile,3,before,again,block,transition,auths);
+    Require(connectedAgain.revision==4&&connectedAgain.account.Delivery()==redelivered.Delivery());
+    manager.encryptWallet("bound-account-passphrase");
+    AccountReject([&]{(void)Owner::Read(manager,session,profile,after);});
+    manager.unlockWallet("bound-account-passphrase");
+    Require(Owner::Read(manager,session,profile,after).revision==4);
+    manager.create("history");manager.open("history");session=enroll(historyEmpty);
+    Owner::RestorePoint historyPoint{historyEmpty.Scan().Checkpoint(),historicalLookups};
+    const auto historical=Owner::Historical(manager,session,profile,1,historyPoint,historyDown);
+    Require(historical.revision==2&&historical.account.Delivery()==below.Delivery());
+    std::cout<<"Bound account owner: real keys/identity, note delivery, retained parent undo, SQL rollback, reopen, lock and historical effects passed\n";
+#endif
     std::cout << "Orchard delivery: ordered receipt with note/rollback effects, legacy formats, "
                  "encrypted atomic rollback and fresh-process pre/post-commit recovery passed\n";
     std::cout << "Orchard account: atomic typed snapshot, address non-reuse "

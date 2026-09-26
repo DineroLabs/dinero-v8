@@ -26,7 +26,7 @@ static void Crash(const std::string& exe,const std::string& path,bool commit){
 }
 int main(int argc,char** argv){try{
     if(argc==4&&std::string_view(argv[1])=="--crash"){
-        DB db(argv[2]);WalletSnapshotStore store(db.p,Identity(),seed);Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplace(1,State(2))==2);Exec(db.p,"UPDATE companion SET value=2;");
+        DB db(argv[2]);WalletSnapshotStore store(db.p,Identity(),seed);Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplaceRetaining(1,State(2))==2);Exec(db.p,"UPDATE companion SET value=2;");
         if(std::string_view(argv[3])=="post")Exec(db.p,"COMMIT;");std::_Exit(73);
     }
     auto pattern=(std::filesystem::temp_directory_path()/"dinero-wallet-snapshot-XXXXXX").string();std::vector<char> dir(pattern.begin(),pattern.end());dir.push_back(0);Check(mkdtemp(dir.data()));
@@ -57,8 +57,25 @@ int main(int argc,char** argv){try{
     }
     Verify(path.c_str(),1,1);const auto exe=std::filesystem::absolute(argv[0]).string();
     Crash(exe,path,false);Verify(path.c_str(),1,1);
+    {DB db(path.c_str());WalletSnapshotStore store(db.p,Identity(),seed);Reject([&]{(void)store.ReadRetained(1);});}
     Crash(exe,path,true);Verify(path.c_str(),2,2);
-    {DB db(path.c_str());WalletSnapshotStore store(db.p,Identity(),seed);Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplace(2,State(1))==3);Exec(db.p,"UPDATE companion SET value=1;COMMIT;");}
-    Verify(path.c_str(),3,1); // rollback is a NEW revision, never a clock rewind.
+    {DB db(path.c_str());WalletSnapshotStore store(db.p,Identity(),seed);
+     Check(store.ReadRetained(1).state.Bytes()[0]==1);
+     Reject([&]{(void)store.ReadRetained(0);});Reject([&]{(void)store.ReadRetained(2);});
+     Exec(db.p,"BEGIN IMMEDIATE;UPDATE orchard_wallet_retained SET revision=9;");Reject([&]{(void)store.ReadRetained(1);});Exec(db.p,"ROLLBACK;");
+     Exec(db.p,"BEGIN IMMEDIATE;UPDATE orchard_wallet_retained SET sealed=zeroblob(2077);");Reject([&]{(void)store.ReadRetained(1);});Exec(db.p,"ROLLBACK;");
+     Exec(db.p,"CREATE TRIGGER reject_retention BEFORE INSERT ON orchard_wallet_retained BEGIN SELECT RAISE(ABORT,'retention failure');END;BEGIN IMMEDIATE;");
+     Reject([&]{(void)store.StageReplaceRetaining(2,State(3));});Exec(db.p,"ROLLBACK;DROP TRIGGER reject_retention;");Check(store.Read()->revision==2);
+     Exec(db.p,"CREATE TRIGGER reject_latest BEFORE UPDATE ON orchard_wallet_snapshots BEGIN SELECT RAISE(ABORT,'latest failure');END;BEGIN IMMEDIATE;");
+     Reject([&]{(void)store.StageReplaceRetaining(2,State(3));});Exec(db.p,"COMMIT;DROP TRIGGER reject_latest;");Reject([&]{(void)store.ReadRetained(2);});
+     {sqlite3_stmt* stmt=nullptr;Check(sqlite3_prepare_v2(db.p,"SELECT count(*) FROM orchard_wallet_retained WHERE revision=2",-1,&stmt,nullptr)==SQLITE_OK);Check(sqlite3_step(stmt)==SQLITE_ROW);Check(sqlite3_column_int(stmt,0)==0);sqlite3_finalize(stmt);}
+     Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplaceRetaining(2,State(3))==3);Exec(db.p,"COMMIT;");
+     Check(store.ReadRetained(1).state.Bytes()[0]==1);Check(store.ReadRetained(2).state.Bytes()[0]==2);
+     WalletSnapshotStore wrong(db.p,Identity(),std::array<uint8_t,64>{8});Reject([&]{(void)wrong.ReadRetained(1);});
+     Exec(db.p,"BEGIN IMMEDIATE;DELETE FROM orchard_wallet_retained WHERE revision=1;");Reject([&]{(void)store.ReadRetained(1);});Exec(db.p,"ROLLBACK;");
+     Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplaceRetaining(3,State(2))==4);Exec(db.p,"COMMIT;");
+    }
+    {DB db(path.c_str());WalletSnapshotStore store(db.p,Identity(),seed);Exec(db.p,"BEGIN IMMEDIATE;");Check(store.StageReplaceRetaining(4,State(1))==5);Exec(db.p,"UPDATE companion SET value=1;COMMIT;");}
+    Verify(path.c_str(),5,1); // rollback is a NEW revision, never a clock rewind.
     std::cout<<"Encrypted wallet snapshot: binding, tamper/key/revision checks, shared SQLite rollback, fresh-process pre/post-commit recovery passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
