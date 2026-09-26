@@ -5861,317 +5861,175 @@ bool WalletManager::rescanBlockchain(int start_height,
                                      int gap_limit,
                                      dinero::ChainDB* chain_db,
                                      dinero::BlockStorage* block_storage) {
-    if (!chain_db) {
-        WLOG_ERR("rescanBlockchain: ChainDB is null - cannot scan");
-        return false;
-    }
+    if (!chain_db) return false;
+    std::unique_ptr<DatabaseLease> database_lease;
+    try { database_lease = AcquireDatabaseLease(); }
+    catch (...) { return false; }
+    if (!db_ || current_wallet_id_ == -1 || !sqlite3_get_autocommit(db_)) return false;
 
-    const auto database_lease = AcquireDatabaseLease();
-
-    if (!db_) {
-        WLOG_ERR("rescanBlockchain: Wallet database not initialized");
-        return false;
-    }
-
-    // Get chain tip
-    auto tip_result = chain_db->getTip();
-    if (tip_result.status() != dinero::Status::Ok) {
-        WLOG_ERR("rescanBlockchain: Failed to get chain tip");
-        return false;
-    }
-    uint32_t tip_height = tip_result.value().height;
-
-    if (start_height < 0) start_height = 0;
-    if (static_cast<uint32_t>(start_height) > tip_height) {
-        WLOG_INFO("rescanBlockchain: start_height (" + std::to_string(start_height) +
-                  ") > tip (" + std::to_string(tip_height) + "), nothing to scan");
-        return true;
-    }
-
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-    WLOG_INFO("  WALLET RESCAN: height " + std::to_string(start_height) +
-              " to " + std::to_string(tip_height));
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-
-    // Load watch_scripts into memory for fast matching
-    std::set<std::vector<uint8_t>> watch_scripts;
-    {
-        const char* sql = "SELECT script_pubkey FROM watch_scripts";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            while (sqlite3_step(stmt) == SQLITE_ROW) {
-                const void* blob = sqlite3_column_blob(stmt, 0);
-                int blob_size = sqlite3_column_bytes(stmt, 0);
-                if (blob && blob_size > 0) {
-                    std::vector<uint8_t> script(
-                        static_cast<const uint8_t*>(blob),
-                        static_cast<const uint8_t*>(blob) + blob_size
-                    );
-                    watch_scripts.insert(script);
-                }
-            }
-            sqlite3_finalize(stmt);
+    // This legacy entry point still reads mutable archival chain data. Checked
+    // wallet durability is not a selected-history or recovery-baseline certificate.
+    auto checked = [&](int result, int expected) {
+        if (result != expected)
+            throw std::runtime_error(std::string("Block rescan SQL failed: ") + sqlite3_errmsg(db_));
+    };
+    using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
+    auto prepare = [&](const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        const int rc = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+        Statement statement(raw, sqlite3_finalize);
+        checked(rc, SQLITE_OK);
+        return statement;
+    };
+    auto watch_scripts = [&] {
+        std::set<std::vector<uint8_t>> scripts;
+        auto statement = prepare("SELECT script_pubkey FROM watch_scripts");
+        int rc;
+        while ((rc = sqlite3_step(statement.get())) == SQLITE_ROW) {
+            const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(statement.get(), 0));
+            const int size = sqlite3_column_bytes(statement.get(), 0);
+            if (sqlite3_column_type(statement.get(), 0) != SQLITE_BLOB || !bytes || size <= 0)
+                throw std::runtime_error("Block rescan watch script unavailable");
+            scripts.emplace(bytes, bytes + size);
         }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // GAP LIMIT: Derive addresses if watch_scripts is under-populated.
-    // After wallet restore, only index-0 may exist. We must derive up to
-    // gap_limit for both external (receive) and internal (change) chains
-    // so the rescan can discover all historical UTXOs.
-    // ═══════════════════════════════════════════════════════════════════════
-    const int expected_scripts = gap_limit * 2;  // external + change
-    if (static_cast<int>(watch_scripts.size()) < expected_scripts && !master_seed_.empty()) {
-        WLOG_INFO("rescanBlockchain: watch_scripts (" + std::to_string(watch_scripts.size()) +
-                  ") < gap_limit*2 (" + std::to_string(expected_scripts) +
-                  "), deriving addresses for discovery");
-
-        int current_external = getNextAddressIndex(0, 0);  // how many external already exist
-        int current_change = getNextAddressIndex(0, 1);     // how many change already exist
-
-        // Derive external addresses up to gap_limit
-        for (int i = current_external; i < gap_limit; ++i) {
-            std::string addr = getNewAddress("", "taproot");
-            if (addr.empty()) break;
+        checked(rc, SQLITE_DONE);
+        return scripts;
+    };
+    bool owned_transaction = false;
+    std::unique_lock<std::mutex> height_lock(height_mu_, std::defer_lock);
+    uint32_t tip_height = 0;
+    try {
+        const auto tip = chain_db->getTip();
+        if (!tip.ok() || tip->height < 0) return false;
+        tip_height = static_cast<uint32_t>(tip->height);
+        start_height = std::max(start_height, 0);
+        if (static_cast<uint32_t>(start_height) > tip_height) return true;
+        if (gap_limit < 0) return false;
+        auto scripts = watch_scripts();
+        // Preserve existing address discovery. Issued addresses are durable
+        // independently of the scan and must not be rolled back with effects.
+        if (scripts.size() < uint64_t(gap_limit) * 2 && !master_seed_.empty()) {
+            for (int i = getNextAddressIndex(0, 0); i < gap_limit; ++i)
+                if (getNewAddress("", "taproot").empty()) return false;
+            for (int i = getNextAddressIndex(0, 1); i < gap_limit; ++i)
+                if (getNewChangeAddress("", "taproot").empty()) return false;
+            scripts = watch_scripts();
         }
-        // Derive change addresses up to gap_limit
-        for (int i = current_change; i < gap_limit; ++i) {
-            std::string addr = getNewChangeAddress("", "taproot");
-            if (addr.empty()) break;
-        }
-
-        // Reload watch_scripts after derivation
-        watch_scripts.clear();
+        if (scripts.empty()) return true;
+        exec(db_, "PRAGMA synchronous=FULL");
         {
-            const char* sql2 = "SELECT script_pubkey FROM watch_scripts";
-            sqlite3_stmt* stmt2 = nullptr;
-            if (sqlite3_prepare_v2(db_, sql2, -1, &stmt2, nullptr) == SQLITE_OK) {
-                while (sqlite3_step(stmt2) == SQLITE_ROW) {
-                    const void* blob = sqlite3_column_blob(stmt2, 0);
-                    int blob_size = sqlite3_column_bytes(stmt2, 0);
-                    if (blob && blob_size > 0) {
-                        std::vector<uint8_t> script(
-                            static_cast<const uint8_t*>(blob),
-                            static_cast<const uint8_t*>(blob) + blob_size
-                        );
-                        watch_scripts.insert(script);
+            auto policy = prepare("PRAGMA synchronous");
+            checked(sqlite3_step(policy.get()), SQLITE_ROW);
+            if (sqlite3_column_int(policy.get(), 0) != 2)
+                throw std::runtime_error("Block rescan durability unavailable");
+            checked(sqlite3_step(policy.get()), SQLITE_DONE);
+        }
+        exec(db_, "BEGIN IMMEDIATE");
+        owned_transaction = true;
+        // Cleanup and every required SQL effect/progress update share this
+        // transaction. Never adopt, commit or roll back a caller's transaction.
+        {
+            auto remove = prepare("DELETE FROM utxos WHERE wallet_id=? AND height>=?");
+            checked(sqlite3_bind_int(remove.get(), 1, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_bind_int(remove.get(), 2, start_height), SQLITE_OK);
+            checked(sqlite3_step(remove.get()), SQLITE_DONE);
+            auto restore = prepare("UPDATE utxos SET is_spent=0,spent_txid=NULL,spent_height=NULL WHERE wallet_id=? AND spent_height>=?");
+            checked(sqlite3_bind_int(restore.get(), 1, current_wallet_id_), SQLITE_OK);
+            checked(sqlite3_bind_int(restore.get(), 2, start_height), SQLITE_OK);
+            checked(sqlite3_step(restore.get()), SQLITE_DONE);
+        }
+        // The inclusive loop uses a wider counter so a maximal persisted
+        // height cannot wrap to zero and repeatedly replay the source.
+        for (uint64_t cursor = static_cast<uint32_t>(start_height); cursor <= tip_height; ++cursor) {
+            const auto height = static_cast<uint32_t>(cursor);
+            const auto hash = chain_db->getBlockHashByHeight(height);
+            if (!hash.ok()) throw std::runtime_error("Block rescan source height unavailable");
+            const auto source = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, *hash);
+            if (!source.ok()) throw std::runtime_error("Block rescan source body unavailable");
+            const auto& block = *source;
+            for (size_t tx_index = 0; tx_index < block.vtx.size(); ++tx_index) {
+                const auto& tx = block.vtx[tx_index];
+                const std::string txid = tx.GetTxid().AsUint256().GetHex();
+                const bool coinbase = tx_index == 0;
+                for (size_t vout = 0; vout < tx.vout.size(); ++vout) {
+                    const auto& output = tx.vout[vout];
+                    if (!scripts.count(output.scriptPubKey)) continue;
+                    if (output.value.GetUna() > uint64_t(INT64_MAX) || vout > UINT32_MAX)
+                        throw std::runtime_error("Block rescan owned output out of range");
+                    std::string script;
+                    static constexpr char hex[] = "0123456789abcdef";
+                    script.reserve(output.scriptPubKey.size() * 2);
+                    for (const auto byte : output.scriptPubKey) {
+                        script.push_back(hex[byte >> 4]); script.push_back(hex[byte & 15]);
                     }
-                }
-                sqlite3_finalize(stmt2);
-            }
-        }
-        WLOG_INFO("rescanBlockchain: after derivation, loaded " + std::to_string(watch_scripts.size()) + " watch scripts");
-    }
-
-    if (watch_scripts.empty()) {
-        WLOG_WARN("rescanBlockchain: No watch_scripts registered - nothing to find");
-        return true;
-    }
-
-    WLOG_INFO("Loaded " + std::to_string(watch_scripts.size()) + " watch scripts");
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // Begin the transaction BEFORE reorg cleanup. A rescan can still fail
-    // after cleanup (for example, an encrypted wallet cannot inspect shielded
-    // outputs while it is locked). Keeping cleanup and replay in one
-    // transaction guarantees ROLLBACK restores the last known-good UTXO view.
-    exec(db_, "BEGIN TRANSACTION");
-
-    // REORG SAFETY: Wipe UTXOs >= start_height before scanning
-    // ═══════════════════════════════════════════════════════════════════════
-    // The chain before start_height is canonical NOW, but might have been
-    // different during a previous scan. We must invalidate any wallet state
-    // that could be stale from a reorged chain.
-    // ═══════════════════════════════════════════════════════════════════════
-    {
-        WLOG_INFO("Reorg safety: clearing UTXOs >= height " + std::to_string(start_height));
-
-        // Delete UTXOs found at or after start_height
-        const char* delete_utxos_sql = "DELETE FROM utxos WHERE height >= ?";
-        sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, delete_utxos_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, start_height);
-            sqlite3_step(stmt);
-            int deleted = sqlite3_changes(db_);
-            sqlite3_finalize(stmt);
-            if (deleted > 0) {
-                WLOG_INFO("  Cleared " + std::to_string(deleted) + " UTXOs from reorg-unsafe heights");
-            }
-        }
-
-        // Also un-mark UTXOs that were "spent" at heights >= start_height
-        // (the spend might have been on a reorged chain)
-        const char* unspend_sql = "UPDATE utxos SET is_spent = 0, spent_txid = NULL, spent_height = NULL WHERE spent_height >= ?";
-        if (sqlite3_prepare_v2(db_, unspend_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt, 1, start_height);
-            sqlite3_step(stmt);
-            int unspent = sqlite3_changes(db_);
-            sqlite3_finalize(stmt);
-            if (unspent > 0) {
-                WLOG_INFO("  Unmarked " + std::to_string(unspent) + " UTXOs as unspent (reorg recovery)");
-            }
-        }
-    }
-
-    // wallet_id column guaranteed by v24 migration
-
-    // Track progress
-    uint32_t blocks_scanned = 0;
-    uint32_t utxos_found = 0;
-    uint32_t utxos_spent = 0;
-
-    // Scan blocks deterministically (no parallelism - correctness > speed)
-    for (uint32_t height = static_cast<uint32_t>(start_height); height <= tip_height; ++height) {
-        // Get block hash at height
-        auto hash_result = chain_db->getBlockHashByHeight(height);
-        if (hash_result.status() != dinero::Status::Ok) {
-            WLOG_ERR("rescanBlockchain: Failed to get hash at height " + std::to_string(height));
-            exec(db_, "ROLLBACK");
-            return false;
-        }
-
-        // Get full block
-        auto block_result = dinero::storage::ReadArchivalBlock(*chain_db, block_storage, hash_result.value());
-        if (block_result.status() != dinero::Status::Ok) {
-            WLOG_ERR("rescanBlockchain: Failed to get block at height " + std::to_string(height));
-            exec(db_, "ROLLBACK");
-            return false;
-        }
-
-        const dinero::Block& block = block_result.value();
-
-        // Process each transaction in the block
-        for (size_t tx_idx = 0; tx_idx < block.vtx.size(); ++tx_idx) {
-            const dinero::Transaction& tx = block.vtx[tx_idx];
-            std::string txid_hex = tx.GetTxid().AsUint256().GetHex();
-            bool is_coinbase = (tx_idx == 0);
-
-            // Check outputs - do we own any?
-            for (size_t vout_idx = 0; vout_idx < tx.vout.size(); ++vout_idx) {
-                const dinero::TxOutput& output = tx.vout[vout_idx];
-
-                if (watch_scripts.count(output.scriptPubKey) > 0) {
-                    // This output is ours! Add to utxos table
-                    std::string script_pubkey_hex;
-                    script_pubkey_hex.reserve(output.scriptPubKey.size() * 2);
-                    static constexpr char kHex[] = "0123456789abcdef";
-                    for (uint8_t b : output.scriptPubKey) {
-                        script_pubkey_hex.push_back(kHex[(b >> 4) & 0x0F]);
-                        script_pubkey_hex.push_back(kHex[b & 0x0F]);
-                    }
-
                     std::string address = extractAddressFromScript(output.scriptPubKey);
-                    if (address.empty()) {
-                        // Preserve row integrity even for unknown script templates.
-                        address = "script:" + script_pubkey_hex.substr(0, 16);
-                    }
-
-                    const char* insert_sql = R"(
+                    if (address.empty()) address = "script:" + script.substr(0, 16);
+                    auto row = prepare(R"(
                         INSERT OR IGNORE INTO utxos
-                        (wallet_id, txid, vout, address, amount, script_pubkey, height, is_coinbase, is_spent, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                    )";
-
-                    sqlite3_stmt* stmt = nullptr;
-                    if (sqlite3_prepare_v2(db_, insert_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                        int bind_index = 1;
-                        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-                        sqlite3_bind_text(stmt, bind_index++, txid_hex.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(vout_idx));
-                        sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int64(stmt, bind_index++, static_cast<int64_t>(output.value.GetUna()));
-                        sqlite3_bind_text(stmt, bind_index++, script_pubkey_hex.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-                        sqlite3_bind_int(stmt, bind_index++, is_coinbase ? 1 : 0);
-                        sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-                        if (sqlite3_step(stmt) == SQLITE_DONE) {
-                            utxos_found++;
-                        }
-                        sqlite3_finalize(stmt);
+                        (wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at)
+                        VALUES(?,?,?,?,?,?,?,?,0,?)
+                    )");
+                    checked(sqlite3_bind_int(row.get(), 1, current_wallet_id_), SQLITE_OK);
+                    checked(sqlite3_bind_text(row.get(), 2, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 3, vout), SQLITE_OK);
+                    checked(sqlite3_bind_text(row.get(), 4, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 5, output.value.GetUna()), SQLITE_OK);
+                    checked(sqlite3_bind_text(row.get(), 6, script.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 7, height), SQLITE_OK);
+                    checked(sqlite3_bind_int(row.get(), 8, coinbase ? 1 : 0), SQLITE_OK);
+                    checked(sqlite3_bind_int64(row.get(), 9, std::time(nullptr)), SQLITE_OK);
+                    checked(sqlite3_step(row.get()), SQLITE_DONE);
+                }
+                if (!coinbase) {
+                    for (const auto& input : tx.vin) {
+                        const auto previous = input.prevout.txid.AsUint256().GetHex();
+                        auto row = prepare(R"(
+                            UPDATE utxos SET is_spent=1,spent_txid=?,spent_height=?
+                            WHERE wallet_id=? AND txid=? AND vout=? AND is_spent=0
+                        )");
+                        checked(sqlite3_bind_text(row.get(), 1, txid.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_bind_int64(row.get(), 2, height), SQLITE_OK);
+                        checked(sqlite3_bind_int(row.get(), 3, current_wallet_id_), SQLITE_OK);
+                        checked(sqlite3_bind_text(row.get(), 4, previous.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+                        checked(sqlite3_bind_int64(row.get(), 5, input.prevout.vout), SQLITE_OK);
+                        checked(sqlite3_step(row.get()), SQLITE_DONE);
                     }
                 }
             }
-
-            // Check inputs - are any of our UTXOs being spent?
-            if (!is_coinbase) {
-                for (const dinero::TxInput& input : tx.vin) {
-                    std::string prev_txid = input.prevout.txid.AsUint256().GetHex();
-                    uint32_t prev_vout = input.prevout.vout;
-
-                    // Mark as spent if we own this UTXO
-                    const char* spend_sql = R"(
-                        UPDATE utxos SET is_spent = 1, spent_txid = ?, spent_height = ?
-                        WHERE wallet_id = ? AND txid = ? AND vout = ? AND is_spent = 0
-                    )";
-
-                    sqlite3_stmt* stmt = nullptr;
-                    if (sqlite3_prepare_v2(db_, spend_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                        int bind_index = 1;
-                        sqlite3_bind_text(stmt, bind_index++, txid_hex.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-                        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-                        sqlite3_bind_text(stmt, bind_index++, prev_txid.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(stmt, bind_index++, static_cast<int>(prev_vout));
-
-                        if (sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0) {
-                            utxos_spent++;
-                        }
-                        sqlite3_finalize(stmt);
-                    }
-                }
+            std::string error;
+            if (!wallet::shielded_ops::RescanConfirmedBlock(*this, height, block.vtx, &error))
+                throw std::runtime_error("Block rescan shielded consumer failed: " + error);
+            if ((cursor - start_height + 1) % 100 == 0 || height == tip_height) {
+                auto progress = prepare(R"(
+                    INSERT INTO sync_meta(id,last_scanned_height,birth_height,scan_complete) VALUES(1,?,?,?)
+                    ON CONFLICT(id) DO UPDATE SET last_scanned_height=excluded.last_scanned_height,
+                        birth_height=excluded.birth_height,scan_complete=excluded.scan_complete
+                )");
+                checked(sqlite3_bind_int64(progress.get(), 1, height), SQLITE_OK);
+                checked(sqlite3_bind_int(progress.get(), 2, start_height), SQLITE_OK);
+                checked(sqlite3_bind_int(progress.get(), 3, height == tip_height ? 1 : 0), SQLITE_OK);
+                checked(sqlite3_step(progress.get()), SQLITE_DONE);
+                if (sqlite3_changes(db_) != 1) throw std::runtime_error("Block rescan progress not stored");
             }
         }
-
-        std::string shielded_error;
-        if (!wallet::shielded_ops::RescanConfirmedBlock(*this, height,
-                                                        block.vtx,
-                                                        &shielded_error)) {
-            exec(db_, "ROLLBACK");
-            WLOG_ERR("rescanBlockchain: Shielded rescan failed at height " +
-                     std::to_string(height) + ": " + shielded_error);
-            return false;
-        }
-
-        blocks_scanned++;
-
-        // Progress logging every 100 blocks
-        if (blocks_scanned % 100 == 0) {
-            WLOG_INFO("  Scanned " + std::to_string(blocks_scanned) + " blocks, " +
-                      "found " + std::to_string(utxos_found) + " UTXOs, " +
-                      "spent " + std::to_string(utxos_spent));
-        }
-
-        // Update sync_meta progress (resumable)
-        if (blocks_scanned % 100 == 0 || height == tip_height) {
-            const char* meta_sql = R"(
-                INSERT OR REPLACE INTO sync_meta (id, last_scanned_height, birth_height, scan_complete)
-                VALUES (1, ?, ?, ?)
-            )";
-            sqlite3_stmt* stmt = nullptr;
-            if (sqlite3_prepare_v2(db_, meta_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_int(stmt, 1, static_cast<int>(height));
-                sqlite3_bind_int(stmt, 2, start_height);
-                sqlite3_bind_int(stmt, 3, (height == tip_height) ? 1 : 0);
-                sqlite3_step(stmt);
-                sqlite3_finalize(stmt);
-            }
-        }
+        // Reserve memory publication ownership before committing the durable
+        // tip. Nothing fallible remains between COMMIT and height publication.
+        height_lock.lock();
+        auto persisted_tip = prepare("INSERT INTO tip(rowid,height) VALUES(1,?) ON CONFLICT(rowid) DO UPDATE SET height=excluded.height");
+        checked(sqlite3_bind_int64(persisted_tip.get(), 1, tip_height), SQLITE_OK);
+        checked(sqlite3_step(persisted_tip.get()), SQLITE_DONE);
+        if (sqlite3_changes(db_) != 1) throw std::runtime_error("Block rescan tip not stored");
+        exec(db_, "COMMIT");
+        owned_transaction = false;
+    } catch (...) {
+        if (owned_transaction && !sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_)) std::terminate();
+        return false;
     }
-
-    // Commit all changes
-    exec(db_, "COMMIT");
-
-    // Update wallet tip
     current_blockchain_height_ = tip_height;
-
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-    WLOG_INFO("  RESCAN COMPLETE");
-    WLOG_INFO("  Blocks scanned: " + std::to_string(blocks_scanned));
-    WLOG_INFO("  UTXOs found: " + std::to_string(utxos_found));
-    WLOG_INFO("  UTXOs spent: " + std::to_string(utxos_spent));
-    WLOG_INFO("═══════════════════════════════════════════════════════════");
-
+    height_lock.unlock();
+    height_cv_.notify_all();
     return true;
 }
 

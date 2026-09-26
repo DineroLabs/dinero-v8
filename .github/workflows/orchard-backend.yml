@@ -412,7 +412,7 @@ jobs:
           ctest --test-dir build-orchard-root -R '^(WalletRescanUtxoSet|SnapshotWalletImport)$' --verbose --no-tests=error --output-log orchard-wallet-snapshot-execution.log
           python3 - <<'PYCODE'
           text = open('orchard-wallet-snapshot-execution.log').read()
-          for marker in ['snapshot effects and progress committed together', 'PASS snapshot_wallet_import']:
+          for marker in ['snapshot effects and progress committed together', 'block effects progress and tip committed together', 'PASS snapshot_wallet_import']:
               if text.count(marker) != 1:
                   raise SystemExit('Missing or duplicate snapshot import execution marker: ' + marker)
           PYCODE

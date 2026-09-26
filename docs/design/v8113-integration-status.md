@@ -1,5 +1,14 @@
 # v8.1.13 integration status
 
+## Checked ordinary block rescan (2026-09-26)
+
+The existing wallet block-rescan path now commits required ordinary effects,
+progress and persisted tip together, refuses SQL failures and borrowed ownership,
+and publishes height after COMMIT. See `wallet-block-rescan-2026-09-26.md`.
+Its mutable archival source, ordinary history/CT reconstruction and complete
+ownership discovery still prevent using it as the transparent recovery baseline.
+
+
 ## Owned historical replay (2026-09-26)
 
 The production background replay now binds genesis and block identity, owns its

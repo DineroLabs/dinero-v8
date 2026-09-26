@@ -30,6 +30,7 @@
 #include <future>
 #include <thread>
 #include <chrono>
+#include <tuple>
 
 #include "wallet/wallet_manager.h"
 #include "consensus/chainparams.h"
@@ -252,11 +253,115 @@ static void atomicSnapshotImport() {
     fs::remove_all(dir);
 }
 
+// Actual wallet/block-store integration. These bodies exercise wallet SQL;
+// they are not independently consensus-validated history or baseline evidence.
+static void atomicBlockRescan() {
+    namespace fs = std::filesystem;
+    using namespace dinero;
+    const auto dir=fs::temp_directory_path()/("block_rescan_atomic_"+std::to_string(::getpid()));
+    fs::remove_all(dir);fs::create_directories(dir);
+    {
+        WalletManager wallet(dir);wallet.create("block");wallet.open("block");
+        const auto script=p2tr(0x61);wallet.addWatchScript(script,"m/86'/0'/0'/0/0",false);
+        auto sql=[&](const std::string& text) {
+            if(sqlite3_exec(wallet.getCurrentDatabase(),text.c_str(),nullptr,nullptr,nullptr)!=SQLITE_OK)
+                throw std::runtime_error(std::string("block fixture SQL: ")+sqlite3_errmsg(wallet.getCurrentDatabase()));
+        };
+        auto scalar=[&](const char* text) {
+            sqlite3_stmt* raw=nullptr;
+            if(sqlite3_prepare_v2(wallet.getCurrentDatabase(),text,-1,&raw,nullptr)!=SQLITE_OK)
+                throw std::runtime_error("block fixture query prepare");
+            std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> row(raw,sqlite3_finalize);
+            if(sqlite3_step(raw)!=SQLITE_ROW) throw std::runtime_error("block fixture query step");
+            const auto result=sqlite3_column_int64(raw,0);
+            if(sqlite3_step(raw)!=SQLITE_DONE) throw std::runtime_error("block fixture query end");
+            return result;
+        };
+        ChainDB chain;check(chain.init(dir/"chain")==Status::Ok,"block rescan fixture opens chain store");
+        const auto token=ChainWriteToken::CreateForTesting();
+        Transaction receive;receive.version=2;
+        TxInput coinbase;coinbase.prevout.vout=UINT32_MAX;coinbase.scriptSig={1,1};receive.vin.push_back(coinbase);
+        TxOutput owned;owned.value=AmountUna::Una(5000);owned.scriptPubKey=script;receive.vout.push_back(owned);
+        Block first;first.header.timestamp=1;first.vtx.push_back(receive);
+        first.header.merkle_root=receive.GetTxid().AsUint256();
+        Transaction foreign_coinbase=receive;foreign_coinbase.vin[0].scriptSig={2,2};
+        foreign_coinbase.vout[0].scriptPubKey=p2tr(0x71);
+        Transaction spend;spend.version=2;TxInput input;input.prevout.txid=receive.GetTxid();input.prevout.vout=0;
+        spend.vin.push_back(input);spend.vout.push_back(foreign_coinbase.vout[0]);
+        Block second;second.header.timestamp=2;second.header.prev_block_hash=first.GetHash();
+        second.vtx={foreign_coinbase,spend};
+        for(const auto& [height,block]:std::vector<std::pair<int,Block>>{{1,first},{2,second}}) {
+            check(chain.putBlock(token,block.GetHash(),block)==Status::Ok,"block rescan stores actual body");
+            check(chain.putHeightIndex(token,height,block.GetHash())==Status::Ok,"block rescan stores height identity");
+        }
+        check(chain.setTip(token,second.GetHash(),2,arith_uint256(2))==Status::Ok,"block rescan sets isolated source tip");
+        check(wallet.addUTXO(std::string(64,'c'),0,7000,"sentinel","5120",2,false),"block rescan seeds rollback sentinel");
+        const auto scan=scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1");
+        const auto height=wallet.getCurrentBlockchainHeight();
+        const auto tip=scalar("SELECT COALESCE(MAX(height),0) FROM tip");
+        auto unchanged=[&] {
+            check(scalar("SELECT COUNT(*) FROM utxos WHERE amount=7000 AND is_spent=0")==1 &&
+                  scalar("SELECT COUNT(*) FROM utxos")==1,"failed block rescan restores exact sentinel instead of partial source");
+            check(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1")==scan &&
+                  scalar("SELECT COALESCE(MAX(height),0) FROM tip")==tip && wallet.getCurrentBlockchainHeight()==height,
+                  "failed block rescan preserves progress and durable/published height");
+            check(sqlite3_get_autocommit(wallet.getCurrentDatabase()),"failed block rescan releases owned transaction");
+        };
+        for(const auto& [stage,event,condition]:std::vector<std::tuple<std::string,std::string,std::string>>{
+                {"utxos","DELETE",""},{"utxos","UPDATE",""},{"utxos","INSERT",""},
+                {"utxos","UPDATE"," WHEN NEW.is_spent=1"},{"sync_meta","INSERT",""},{"tip","INSERT",""}}) {
+            sql("CREATE TEMP TRIGGER reject_block BEFORE "+event+" ON "+stage+condition+
+                " BEGIN SELECT RAISE(ABORT,'block stage unavailable'); END");
+            // The unconditional UPDATE needs an actual earlier spent row so
+            // the pre-replay cleanup executes the guarded statement on a row.
+            if(stage=="utxos" && event=="UPDATE" && condition.empty()) {
+                sql("DROP TRIGGER reject_block");
+                sql("UPDATE utxos SET is_spent=1,spent_height=2,height=0");
+                sql("CREATE TEMP TRIGGER reject_block BEFORE UPDATE ON utxos BEGIN SELECT RAISE(ABORT,'restore stage'); END");
+                check(!wallet.rescanBlockchain(1,0,&chain),"checked block rescan restore failure refuses completion");
+                check(scalar("SELECT COUNT(*) FROM utxos WHERE amount=7000 AND is_spent=1 AND spent_height=2")==1,
+                      "restore failure preserves preceding spent state");
+                sql("DROP TRIGGER reject_block");sql("UPDATE utxos SET is_spent=0,spent_height=NULL,height=2");unchanged();continue;
+            }
+            check(!wallet.rescanBlockchain(1,0,&chain),"checked block rescan "+stage+" "+event+" refuses completion");
+            unchanged();sql("DROP TRIGGER reject_block");
+        }
+        sql("PRAGMA foreign_keys=ON");sql("CREATE TABLE block_parent(id INTEGER PRIMARY KEY)");
+        sql("CREATE TABLE block_child(id INTEGER REFERENCES block_parent(id) DEFERRABLE INITIALLY DEFERRED)");
+        sql("CREATE TEMP TRIGGER reject_block AFTER INSERT ON utxos BEGIN INSERT INTO block_child VALUES(1); END");
+        check(!wallet.rescanBlockchain(1,0,&chain),"checked block rescan deferred COMMIT failure refuses completion");
+        unchanged();check(scalar("SELECT COUNT(*) FROM block_child")==0,"block COMMIT failure rolls back trigger writes");
+        sql("DROP TRIGGER reject_block");
+        { auto lease=wallet.AcquireDatabaseLease();sql("BEGIN IMMEDIATE");sql("INSERT INTO block_parent VALUES(99)");
+          check(!wallet.rescanBlockchain(1,0,&chain),"block rescan refuses borrowed transaction");
+          check(!sqlite3_get_autocommit(wallet.getCurrentDatabase()) && scalar("SELECT COUNT(*) FROM block_parent")==1,
+                "block rescan leaves caller transaction intact");sql("ROLLBACK"); }
+        sqlite3_set_authorizer(wallet.getCurrentDatabase(),[](void*,int op,const char* table,const char*,const char*,const char*) {
+            return op==SQLITE_READ && table && std::string_view(table)=="watch_scripts"?SQLITE_DENY:SQLITE_OK;
+        },nullptr);
+        check(!wallet.rescanBlockchain(1,0,&chain),"block rescan ownership read failure refuses completion");
+        sqlite3_set_authorizer(wallet.getCurrentDatabase(),nullptr,nullptr);unchanged();
+        check(wallet.rescanBlockchain(1,0,&chain),"block rescan complete source commits outputs and spends");
+        check(scalar("SELECT COUNT(*) FROM utxos WHERE amount=5000 AND height=1 AND is_spent=1 AND spent_height=2")==1 &&
+              scalar("SELECT COUNT(*) FROM utxos")==1,"block rescan stores real confirmed spend and removes stale output");
+        check(scalar("SELECT last_scanned_height FROM sync_meta WHERE id=1")==2 &&
+              scalar("SELECT scan_complete FROM sync_meta WHERE id=1")==1 &&
+              scalar("SELECT height FROM tip WHERE rowid=1")==2 && wallet.getCurrentBlockchainHeight()==2,
+              "block effects progress and tip committed together");
+        wallet.open("block");
+        check(wallet.getCurrentBlockchainHeight()==2 && scalar("SELECT COUNT(*) FROM utxos WHERE is_spent=1")==1,
+              "block rescan reopen restores durable height and spend");
+        check(wallet.rescanBlockchain(1,0,&chain) && scalar("SELECT COUNT(*) FROM utxos")==1,
+              "block rescan retry is idempotent");
+    }
+    fs::remove_all(dir);
+}
+
 int main() {
     std::cout << "=== WalletManager::rescanUtxoSet regression test ===" << std::endl;
 
     dinero::SelectParams(dinero::Chain::MAINNET);
-    try { atomicSnapshotImport(); }
+    try { atomicSnapshotImport(); atomicBlockRescan(); }
     catch (const std::exception& e) { std::cerr << "snapshot atomicity setup: " << e.what() << '\n'; return 2; }
 
     namespace fs = std::filesystem;
