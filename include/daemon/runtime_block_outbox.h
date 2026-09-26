@@ -2,6 +2,7 @@
 #include "consensus/orchard_state_transition.h"
 #include "daemon/runtime_block_notifications.h"
 #include <thread>
+#include <map>
 namespace rocksdb { class WriteBatch; }
 
 namespace dinero {
@@ -18,6 +19,15 @@ struct RuntimeOutboxCursor {
     uint256 digest;
     bool operator==(const RuntimeOutboxCursor&) const = default;
 };
+// Captured from the actual sealed canonical write, never a wallet's derived
+// scan. Local replay material, not independent historical consensus validation.
+// Retention allows old-branch recovery after active Orchard undo is removed.
+struct RuntimeOrchardReplay {
+    std::optional<storage::OrchardStoredState> parent;
+    storage::OrchardStoredState next;
+    std::vector<uint8_t> coin_undo;
+    std::map<uint32_t,uint64_t> branch_mtp;
+};
 struct RuntimeOutboxEvent {
     RuntimeOutboxCursor cursor;
     uint256 previous_digest;
@@ -26,6 +36,9 @@ struct RuntimeOutboxEvent {
     // At/after activation: exact mixed bytes including Utreexo suffix.
     // Before activation: canonical historical Block serialization.
     std::vector<uint8_t> body;
+    // Absent for historical and older DNOE01 records. Absence never authorizes
+    // construction of an empty/fabricated replay view.
+    std::optional<RuntimeOrchardReplay> orchard_replay;
     bool IsOrchardProfile() const { return context.height >= context.activation_height; }
 };
 struct RuntimeOutboxPage {

@@ -663,7 +663,7 @@ static void HistoricalOutboxChecks(ChainDB& source,const OrchardBlockContext& co
     }
     CHECK(RequiredValue(db.getTip()).hash==historical.header.prev_block_hash);
     CHECK(ReadRuntimeOutboxUnderLock(db,context,cursor).events.empty());
-    // Existing DNOE01 entries remain readable alongside DNOE02 historical ones.
+    // Typed records remain readable alongside DNOE02 historical ones.
     CHECK(ReadRuntimeOutboxUnderLock(db,context,{},1).events.front().IsOrchardProfile());
     rocksdb::WriteBatch missing;missing.Delete("runtime_orchard_outbox:v1:head");Commit(db,missing);
     LookupReject(Status::Corruption,[&]{(void)PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,context,historical,height,RuntimeBlockDirection::Disconnect);});
@@ -672,6 +672,24 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
                                const OrchardBlockCandidate& block) {
     const auto all=ReadRuntimeOutboxUnderLock(db,context);
     CHECK(all.events.size()>=2 && all.events.size()==all.head.sequence);
+    const auto& captured=all.events.front().orchard_replay;
+    CHECK(captured.has_value());
+    CHECK(captured->next.height==context.height && captured->next.block_hash==context.block_hash);
+    CHECK(captured->parent.has_value()==(context.height>context.activation_height));
+    CHECK(captured->coin_undo==RequiredValue(db.getUndo(context.block_hash)).Serialize());
+    for(const auto& e:all.events) {
+        CHECK(e.orchard_replay.has_value());
+        CHECK(e.orchard_replay->parent==captured->parent && e.orchard_replay->next==captured->next);
+        CHECK(e.orchard_replay->coin_undo==captured->coin_undo && e.orchard_replay->branch_mtp==captured->branch_mtp);
+    }
+    // Replay material is charged to the page budget, not hidden behind the
+    // body-only allowance. It remains available after active undo removal.
+    bool replay_budget_refused=false;
+    try{(void)ReadRuntimeOutboxUnderLock(db,context,{},1,block.WireBytes().size()+224);}
+    catch(const OrchardStateLookupError& e){CHECK(e.SourceStatus()==Status::Invalid);replay_budget_refused=true;}
+    CHECK(replay_budget_refused);
+    if(all.events.back().direction==RuntimeBlockDirection::Disconnect)
+        CHECK(db.getOrchardUndoParent(captured->next).status()==Status::Corruption);
     RuntimeOutboxCursor cursor;size_t seen=0;
     do {
         const auto page=ReadRuntimeOutboxUnderLock(db,context,cursor,1);
@@ -681,6 +699,41 @@ static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
         cursor=page.next;++seen;
     } while(cursor!=all.head);
     CHECK(seen==all.events.size());
+    // A genuine older typed row has no replay context. Reading it must not
+    // fabricate that context from current state or from an index locator.
+    {
+        char suffix[17];std::snprintf(suffix,sizeof(suffix),"%016llx",static_cast<unsigned long long>(all.head.sequence));
+        const auto key="runtime_orchard_outbox:v1:event:"+std::string(suffix);
+        std::string original,old_head;CHECK(db.getRaw(key,original)==Status::Ok);
+        CHECK(db.getRaw("runtime_orchard_outbox:v1:head",old_head)==Status::Ok);
+        CHECK(original.substr(0,6)=="DNOE03");
+        auto legacy=original.substr(0,160+all.events.back().body.size());legacy[5]='1';
+        uint256 digest;crypto::CSHA256().Write(legacy).Finalize(digest.data);
+        legacy.append(reinterpret_cast<const char*>(digest.data),32);
+        auto head=old_head;std::copy(digest.data,digest.data+32,head.begin()+14);
+        crypto::CSHA256().Write(reinterpret_cast<const uint8_t*>(head.data()),head.size()-32).Finalize(digest.data);
+        std::copy(digest.data,digest.data+32,head.end()-32);
+        rocksdb::WriteBatch replace;replace.Put(key,legacy);replace.Put("runtime_orchard_outbox:v1:head",head);Commit(db,replace);
+        CHECK(!ReadRuntimeOutboxUnderLock(db,context).events.back().orchard_replay);
+        // Re-seal a generated fixture with a replay checkpoint naming another
+        // block. The local checksum alone must not accept that mismatch.
+        auto mismatched=original.substr(0,original.size()-32);
+        const auto& replay=*all.events.back().orchard_replay;
+        const size_t next_offset=160+all.events.back().body.size()+1+
+            (replay.parent?88+replay.parent->frontier.size():0);
+        mismatched[next_offset+4]^=1;
+        crypto::CSHA256().Write(mismatched).Finalize(digest.data);
+        mismatched.append(reinterpret_cast<const char*>(digest.data),32);
+        head=old_head;std::copy(digest.data,digest.data+32,head.begin()+14);
+        crypto::CSHA256().Write(reinterpret_cast<const uint8_t*>(head.data()),head.size()-32).Finalize(digest.data);
+        std::copy(digest.data,digest.data+32,head.end()-32);
+        rocksdb::WriteBatch mismatch;mismatch.Put(key,mismatched);mismatch.Put("runtime_orchard_outbox:v1:head",head);Commit(db,mismatch);
+        bool replay_identity_refused=false;
+        try{(void)ReadRuntimeOutboxUnderLock(db,context);}
+        catch(const OrchardStateLookupError& e){CHECK(e.SourceStatus()==Status::Corruption);replay_identity_refused=true;}
+        CHECK(replay_identity_refused);
+        rocksdb::WriteBatch restore;restore.Put(key,original);restore.Put("runtime_orchard_outbox:v1:head",old_head);Commit(db,restore);
+    }
     const auto empty=ReadRuntimeOutboxUnderLock(db,context,cursor);
     CHECK(empty.events.empty() && empty.next==empty.head);
     const auto canonical_tip=RequiredValue(db.getTip());
@@ -962,6 +1015,7 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
             CHECK(page.head.sequence==1 && page.events.size()==1 && page.next==page.head);
             CHECK(page.events[0].body==block.WireBytes());
             CHECK(page.events[0].direction==RuntimeBlockDirection::Connect);
+            CHECK(page.events[0].orchard_replay.has_value());
         }
         bool duplicate=false;try{write->Commit();}catch(const std::logic_error&){duplicate=true;}
         CHECK(duplicate);write.reset();CHECK(!activation.HeldByCurrentThread());
@@ -1074,6 +1128,12 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
                 live,c,block,parent,reopened,true);
         };
         if(indexed) {
+            const auto locator_key="runtime_orchard_outbox:v1:connect:"+c.block_hash.GetHex();
+            std::string locator;CHECK(db.getRaw(locator_key,locator)==Status::Ok);
+            rocksdb::WriteBatch poison;poison.Put(locator_key,"invalid-locator");Commit(db,poison);
+            LookupReject(Status::Corruption,[&]{(void)prepare_disconnect();});
+            CHECK(RequiredValue(db.getTip()).hash==c.block_hash);CheckMemoryCoins(db,live);
+            rocksdb::WriteBatch restore;restore.Put(locator_key,locator);Commit(db,restore);
             const auto wrong=RequiredValue(files.writeUndo(c.block_hash,Bytes{0,0,0,0}));
             auto m=RequiredValue(db.getHeaderMetadata(c.block_hash));const auto good=m;
             m.undo_file=wrong.file_number;m.undo_pos=wrong.offset;m.undo_size=wrong.size;

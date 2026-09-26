@@ -395,3 +395,14 @@ The prior aea Linux run failed at the new account test's GNU static link order
 before root tests; the wallet archive now precedes its chainstate dependency.
 This remains a bound consumer component, not installed three-store recovery,
 production notification readiness or completion of steps 1–4.
+
+### Retained canonical replay context (2026-09-26)
+
+The existing outbox now retains DNOE03 replay context captured from the actual
+sealed indexed write: parent/next Orchard checkpoints, canonical coin undo and
+validation-time MTP answers. Disconnect reuses a checked connect-event locator;
+old records expose absent context explicitly. Record/page budgets cover the new
+payload. See [outbox replay context](orchard-outbox-replay-context-2026-09-26.md).
+Immutable intermediate branch views, account/coordinator integration, baseline
+reconciliation and production provider installation still remain. This is not
+completion of activation history, startup/replay/reindex or user steps 1–4.
