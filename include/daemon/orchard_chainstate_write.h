@@ -38,14 +38,16 @@ public:
     // fields only after durability. The CBlockIndex must outlive the owner.
     // Abandonment can leave unreferenced append
     // records, never a locator pointing to an uncommitted transition. These do
-    // not mark a header/chain/scripts validity level or publish the active tip.
+    // not publish the active tip. Only the service after its contextual header
+    // check may request validity publication in the same batch.
     [[nodiscard]] static std::unique_ptr<PreparedOrchardChainstateWrite> ConnectIndexed(
         AnnotatedRecursiveMutex&, ChainDB&, const ChainWriteToken&, BlockStorage&,
         CBlockIndex&, consensus::ConsensusUTXOSet&, const consensus::OrchardBlockContext&,
         const OrchardBlockCandidate&, const BlockHeader& parent,
         const consensus::UtreexoForest&, const consensus::OrchardBranchMtpLookup&,
         bool require_witness, bool checkpoint,
-        const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt);
+        const std::optional<storage::LegacyRetirementRecord>& authenticated_boundary = std::nullopt,
+        bool contextual_header_validated = false);
     [[nodiscard]] static std::unique_ptr<PreparedOrchardChainstateWrite> DisconnectIndexed(
         AnnotatedRecursiveMutex&, ChainDB&, const ChainWriteToken&, BlockStorage&,
         CBlockIndex&, consensus::ConsensusUTXOSet&, const consensus::OrchardBlockContext&,

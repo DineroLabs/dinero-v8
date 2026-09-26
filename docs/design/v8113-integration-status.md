@@ -14,7 +14,7 @@ This branch collects release implementation for review and qualification against
   and transparent prevouts; the existing historical callback delegates to the
   same eviction/staleness path. This is a prerequisite for production block
   notification, not Orchard admission: nullifier conflicts, wallet events,
-  relay and actual ConnectTip/DisconnectTip routing remain open.
+  relay and production notification providers remain open.
 - Daemon stored-body queries now have selected-height typed routing under the
   activation lock. The optional build can return exact mixed-body bytes from
   indexed flatfiles after identity checks; historical hex queries retain their
@@ -29,7 +29,8 @@ This branch collects release implementation for review and qualification against
   time, or an atomic chainstate transition.
 - ChainDB staging for Orchard block state, nullifier ownership, anchor references
   and undo, tested with companion coin/tip writes on generated RocksDB stores.
-  Production ConnectTip/DisconnectTip callers are not wired yet.
+  Actual service routes now invoke staging through the indexed owner; activation
+  history and production downstream consumers remain required.
 - A daemon commit owner now holds the activation lock and a private full-state
   batch through synchronous write and prepared memory publication. Abandonment,
   single-use/thread checks and storage-error fail-stop behavior are covered on
@@ -59,8 +60,15 @@ This branch collects release implementation for review and qualification against
   the event after durable and in-memory state agree. Generated-store tests invoke
   the real service for descendant and activation-boundary rollback. No production
   notification provider is installed yet, so live Orchard rollback still refuses;
-  ConnectTip and end-to-end integration remain unfinished. See the service
+  Boundary connection and end-to-end integration remain unfinished. See the service
   disconnect design for this readiness condition and fixture scope.
+- The actual ConnectTip now routes Orchard descendants through selected contextual
+  header/work checks, mandatory parent audit, the indexed atomic owner and typed
+  prepared notifications. Validity flags join the commit, then memory, active tip
+  and events publish in order. First activation still requires a service-owned
+  validated historical accounting source; no production notification provider is
+  installed. Generated-state reconnect tests are not live-node qualification.
+  See the service-connect design and its remaining readiness boundaries.
 - The actual startup undo-coverage walk now routes retained Orchard bodies under
   the activation lock, restoring and reversing a private forest across the
   requested window. Exact indexed/embedded body and undo, commit records,
@@ -188,7 +196,9 @@ full Linux qualification is required for the corrected head.
 ## Still required before release
 
 - Connect the typed shared reader to validated mempool, relay, storage and
-  block assembly; production admission/connection callers still reject Orchard. Selected stored-body queries are now typed, but do not validate or admit blocks.
+  block assembly. Typed service descendant connect/disconnect routes now exist,
+  but production notification providers and the validated activation-history
+  source are missing, so live admission/connection remains disabled.
 - Connect the staged coin/signature/spendability components to authenticated
   runtime state; qualify anchors, nullifiers, pool conservation and activation.
 - Atomic Orchard frontier/pool/nullifier updates with UTXOs, tip and undo;
@@ -215,7 +225,7 @@ the following rows to test-only work:
 | --- | --- |
 | Shared parsing and authorization | Typed daemon stored-body queries now route by selected height; exact candidate-bound authorization remains staged; no live admission |
 | Mempool, relay, block assembly and acceptance | Typed transparent conflict/staleness reconciliation staged; Orchard admission, nullifier conflicts, relay, mining and production block notifications not implemented |
-| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation, ChainDB coin/state/undo staging and private-clone forest transitions implemented; durable forest/tip/height staging implemented; body/active transaction indexes and versioned commit record staged together; tip-local audit and process-exit boundaries tested; production callers not integrated |
+| Anchors, nullifiers, pool and atomic storage/undo | Ordered mixed coin/fee validation, ChainDB coin/state/undo staging and private-clone forest transitions implemented; durable forest/tip/height staging implemented; body/active transaction indexes and versioned commit record staged together; tip-local audit and process-exit boundaries tested; typed service descendant routes implemented; activation history and production consumer readiness still missing |
 | Wallet keys, addresses, proving, shield/send/unshield | Staged ZIP32 keys/receivers, note reception, incremental witnesses and fresh shield/send/unshield proofs; canonical witness persistence and encrypted snapshot storage staged; typed scan/checkpoint restore implemented as a component; origin callbacks, operation job/archival callbacks and live wallet integration not implemented; combined account snapshots, address counters and Reserved/Ready persistence implemented as components |
 | Restart, reindex, reorg, crash, platform and loaded-node qualification | Orchard end-to-end qualification not started |
 

@@ -65,7 +65,7 @@ struct PreparedOrchardChainstateWrite::Impl {
     }
     void PrepareIndex(BlockStorage& files, CBlockIndex& entry,
                       const OrchardBlockContext& context, const OrchardBlockCandidate& block,
-                      bool connecting) {
+                      bool connecting, bool contextual_header_validated=false) {
         auto before=RequiredDisk(db.getHeaderMetadata(context.block_hash));
         if (before.height<0 || uint32_t(before.height)!=context.height ||
             before.parent_hash!=context.parent_hash ||
@@ -100,6 +100,7 @@ struct PreparedOrchardChainstateWrite::Impl {
             after.undo_file=pos.file_number;after.undo_pos=uint32_t(pos.offset);after.undo_size=pos.size;
             after.status_flags|=BLOCK_HAVE_UNDO;
         }
+        if (connecting && contextual_header_validated) after.status_flags|=BLOCK_VALID_MASK;
         if (connecting && db.putHeaderMetadata(token,context.block_hash,after,&batch)!=Status::Ok)
             throw OrchardStateLookupError(Status::Internal);
         indexed_header=block.Header(); index_before=before; index_after=after; index=&entry;
@@ -169,9 +170,9 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     BlockStorage& files, CBlockIndex& index, ConsensusUTXOSet& live,
     const OrchardBlockContext& context, const OrchardBlockCandidate& block,
     const BlockHeader& parent, const UtreexoForest& forest, const OrchardBranchMtpLookup& mtp,
-    bool witness, bool checkpoint, const std::optional<storage::LegacyRetirementRecord>& boundary) {
+    bool witness, bool checkpoint, const std::optional<storage::LegacyRetirementRecord>& boundary, bool contextual_header_validated) {
     auto result=Connect(mutex,db,token,live,context,block,parent,forest,mtp,witness,checkpoint,boundary);
-    result->impl_->PrepareIndex(files,index,context,block,true);
+    result->impl_->PrepareIndex(files,index,context,block,true,contextual_header_validated);
     return result;
 }
 std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::DisconnectIndexed(

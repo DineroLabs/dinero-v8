@@ -1140,6 +1140,7 @@ private:
     };
 
     bool DisconnectOrchardTip(CBlockIndex*);
+    bool ConnectOrchardTip(CBlockIndex*, std::string*, bool*);
 
     bool LoadShieldedState();
     bool LoadSeparatedShieldedState();

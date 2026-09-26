@@ -14770,6 +14770,104 @@ bool IsUnambiguousConsensusViolation(const std::string& err) {
 }
 }  // namespace
 
+bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, bool* invalid) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    if (invalid) *invalid=false;
+    if (error) error->clear();
+    const auto fail=[&](const char* reason) { if(error)*error=reason;return false; };
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!tip || !active_tip_ || tip->pprev!=active_tip_ ||
+        uint64_t(active_tip_->height)+1!=tip->height || tip->prev_hash!=active_tip_->hash ||
+        !chain_db_ || !block_storage_ || !consensus_utxo_set_ || !header_chain_selector_ ||
+        GetConfig().utreexo_stateless || safe_mode_active_ || !runtime_block_notifications_ ||
+        !consensus::OrchardProfileConfigurationValid(Params()))
+        return fail("orchard-connect-service-not-ready");
+    // A persisted boundary receipt does not certify the validation/provenance
+    // of historical accounting. Until that service-owned source is wired,
+    // activation itself cannot enter through this descendant connection path.
+    if (tip->height==Params().orchard_activation_height)
+        return fail("orchard-connect-boundary-history-unavailable");
+    try {
+        auto* parent_index=active_tip_;
+        const auto headers=header_chain_selector_;
+        const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),tip->hash,tip->height);
+        const auto parent=chain_db_->getHeader(parent_index->hash);
+        const auto parent_work=chain_db_->getBlockWork(parent_index->hash);
+        const auto parent_height=chain_db_->getBlockHeight(parent_index->hash);
+        const auto indexed_parent=headers->GetHeaderValue(parent_index->hash);
+        const auto indexed_child=headers->GetHeaderValue(tip->hash);
+        if (!body.ok() || !body->IsOrchardProfile() || !parent.ok() || !parent_work.ok() ||
+            !parent_height.ok() || *parent_height<0 || uint32_t(*parent_height)!=parent_index->height ||
+            !indexed_parent || !indexed_child || indexed_parent->height!=parent_index->height ||
+            indexed_child->height!=tip->height || indexed_parent->chainwork!=*parent_work ||
+            indexed_child->chainwork!=*parent_work+GetBlockProof(body->Orchard().Header().difficulty) ||
+            indexed_child->chainwork!=ChainworkFromHex(tip->chainwork) ||
+            indexed_child->header.SerializeForHash()!=body->Orchard().Header().SerializeForHash() ||
+            parent->GetHash()!=parent_index->hash || parent->prev_block_hash!=parent_index->prev_hash ||
+            parent->version!=parent_index->version || parent->merkle_root!=parent_index->merkle_root ||
+            parent->timestamp!=parent_index->timestamp || parent->difficulty!=parent_index->bits ||
+            parent->nonce!=parent_index->nonce || ChainworkFromHex(parent_index->chainwork)!=*parent_work ||
+            ((parent_index->status|tip->status)&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)))
+            return fail("orchard-connect-index-context-unavailable");
+        const auto now=std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        consensus::CheckOrchardHeaderUnderChainstateLock(body->Orchard().Header(),*parent,
+            *body->Context(),*headers,now>0?uint64_t(now):0);
+        // The active parent's durable state, restored memory and exact retained
+        // body/undo must agree before preparing a new generation.
+        if (!VerifyConsensusJournalAtActiveTip()) return fail("orchard-connect-parent-audit-failed");
+        const auto consumers=runtime_block_notifications_;
+        auto notifications=consumers->Prepare(*body,tip->height,RuntimeBlockDirection::Connect);
+        if (!notifications) return fail("orchard-connect-consumers-not-ready");
+        const auto parent_hash=parent_index->hash;
+        const auto parent_h=parent_index->height;
+        consensus::OrchardBranchMtpLookup mtp=[headers,parent_hash,parent_h](uint32_t height)->std::optional<uint64_t> {
+            uint256 ancestor;uint32_t selected_height=0,found_height=0,time=0;
+            if (height>parent_h || !headers->GetAncestorHashByHash(parent_hash,height,ancestor,selected_height) ||
+                selected_height!=parent_h || !headers->GetMedianTimePastByHash(ancestor,time,found_height) ||
+                found_height!=height) return std::nullopt;
+            return time;
+        };
+        const auto forest=[&] {
+            const auto forest_lock=consensus_utxo_set_->LockForestShared();
+            return consensus_utxo_set_->GetForest();
+        }();
+        const bool witness=Params().enforce_witness_commitment &&
+            tip->height>=Params().witness_commitment_enforcement_height;
+        const uint32_t interval=std::max(uint32_t(1),GetConfig().utreexo_checkpoint_interval);
+        ChainWriteToken token;
+        auto write=PreparedOrchardChainstateWrite::ConnectIndexed(activation_mutex_,*chain_db_,token,
+            *block_storage_,*tip,*consensus_utxo_set_,*body->Context(),body->Orchard(),*parent,forest,mtp,
+            witness,tip->height%interval==0,std::nullopt,true);
+        if (active_tip_!=parent_index || tip->pprev!=parent_index ||
+            runtime_block_notifications_!=consumers || header_chain_selector_!=headers)
+            return fail("orchard-connect-selected-view-changed");
+        write->Commit();
+        const auto invalidate_positions=[&]() noexcept {
+            if(utxo_position_index_)utxo_position_index_->Clear();
+        };
+        invalidate_positions();
+        PublishActiveTipLocked(tip,TipPublishReason::kAdvancement);
+        notifications->PublishAfterCommit();
+        return true;
+    } catch (const consensus::OrchardHeaderError& e) {
+        // Local context disagreement and future time remain retryable. All
+        // other header errors above concern the authenticated candidate itself.
+        if(invalid)*invalid=e.Code()!=consensus::OrchardHeaderErrorCode::Context &&
+            e.Code()!=consensus::OrchardHeaderErrorCode::TimeTooNew;
+        return fail("orchard-connect-header-rejected");
+    } catch (const std::exception&) {
+        // No blanket consensus-invalid classification for unavailable local
+        // coins/history or ordinary confidential compatibility not yet wired.
+        // The sealed owner fail-stops on any error after durable writing starts.
+        return fail("orchard-connect-preparation-failed");
+    }
+#else
+    (void)tip;
+    return fail("orchard-connect-runtime-unavailable");
+#endif
+}
+
 bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out_error,
                                    bool* out_consensus_invalid) {
     auto fail = [&](const std::string& reason) {
@@ -14796,6 +14894,10 @@ bool ChainstateService::ConnectTip(CBlockIndex* tip_to_connect, std::string* out
         std::cout << "❌ [ConnectTip] chain_db_ is NULL" << std::endl;
         return fail("chain-db-null");
     }
+
+    // Select the typed route before any historical decoder or validator path.
+    if (consensus::OrchardActiveForHeight(Params(),tip_to_connect->height))
+        return ConnectOrchardTip(tip_to_connect,out_error,out_consensus_invalid);
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Phase G Safety Assertion: In-Order Commit Check
