@@ -6002,11 +6002,20 @@ if(NOT WIN32)
   endif()
   add_test(
     NAME WalletDatabaseLease
-    COMMAND test_wallet_database_lease)
+    COMMAND test_wallet_database_lease --gtest_filter=WalletDatabaseLeaseTest.*)
   set_tests_properties(WalletDatabaseLease PROPERTIES
     LABELS "wallet;recovery;persistence;concurrency"
     TIMEOUT 30
   )
+  foreach(stage Insert Spend History Confirmation Commit)
+    string(TOLOWER "${stage}" stage_lower)
+    add_test(NAME WalletOrdinaryBlock${stage}
+      COMMAND test_wallet_database_lease
+        --gtest_filter=DeliveryStages/WalletOrdinaryBlockTest.ChecksOrdinaryWalletWritesAndCommitBeforeHeight/${stage_lower})
+    set_tests_properties(WalletOrdinaryBlock${stage} PROPERTIES
+      LABELS "wallet;recovery;persistence" TIMEOUT 30)
+  endforeach()
+
   add_executable(test_wallet_block_disconnect
     tests/wallet/test_wallet_block_disconnect.cpp
     src/wallet/wallet_worker.cpp

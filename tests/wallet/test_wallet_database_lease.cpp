@@ -222,7 +222,10 @@ TEST_F(WalletDatabaseLeaseTest, RealWorkerCommitsIndexBlockTogether) {
     EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0)->spend_height, 20);
 }
 
-TEST_F(WalletDatabaseLeaseTest, RealWorkerChecksOrdinaryWalletWritesAndCommitBeforeHeight) {
+class WalletOrdinaryBlockTest : public WalletDatabaseLeaseTest,
+                                public ::testing::WithParamInterface<std::string> {};
+
+TEST_P(WalletOrdinaryBlockTest, ChecksOrdinaryWalletWritesAndCommitBeforeHeight) {
     dinero::SelectParams(dinero::Chain::REGTEST);
     const std::vector<uint8_t> script{0x00, 0x14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
                                     11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
@@ -235,8 +238,8 @@ TEST_F(WalletDatabaseLeaseTest, RealWorkerChecksOrdinaryWalletWritesAndCommitBef
         sqlite3_finalize(stmt);
         return result;
     };
-    for (const std::string stage : {"insert", "spend", "history", "confirmation", "commit"}) {
-        SCOPED_TRACE(stage);
+    const std::string stage = GetParam();
+    {
         wallet->create("block-" + stage);
         sqlite3* db = wallet->getCurrentDatabase();
         dinero::UTXOIndex index((path / (stage + "-index.sqlite")).string());
@@ -297,4 +300,8 @@ TEST_F(WalletDatabaseLeaseTest, RealWorkerChecksOrdinaryWalletWritesAndCommitBef
         EXPECT_EQ(scalar(wallet->getCurrentDatabase(), "SELECT is_spent FROM utxos WHERE amount=800"), 1);
     }
 }
+INSTANTIATE_TEST_SUITE_P(DeliveryStages, WalletOrdinaryBlockTest,
+    ::testing::Values("insert", "spend", "history", "confirmation", "commit"),
+    [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
+
 } // namespace

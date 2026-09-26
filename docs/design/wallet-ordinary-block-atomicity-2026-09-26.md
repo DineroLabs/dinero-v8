@@ -74,3 +74,20 @@ cross-boundary delivery and finish every consumer before declaring readiness.
 Current SQLite durability settings are unchanged; these tests do not simulate
 power loss. Activation history, ordinary confidential-transaction compatibility,
 whole-node restart/reindex and live Orchard wallet RPCs remain unfinished.
+
+### Independent failure-stage registrations
+
+The first Linux execution of the new test reached the existing ownership lane's
+30-second timeout after all seven earlier cases passed. The added scenario loop
+created several encrypted wallets within that same deadline. It is now a
+parameterized test with five independent required CTest registrations (insert,
+spend, history, confirmation and commit). WalletDatabaseLease retains its seven
+existing cases. Every registration retains the 30-second timeout; assertions,
+wallet encryption work and concurrency deadlines are unchanged.
+
+CI checks all five registrations and verifies their actual internal test names
+in the verbose execution log, rejecting an empty or incomplete filter result.
+Fresh local configuration/build and all six CTests pass. The parameterized test
+translation unit is recompiled under ASan/UBSan with the unchanged current-source
+instrumented dependencies. Linux qualification of this test-registration repair
+remains required; the preceding timed-out run is not a completed qualification.

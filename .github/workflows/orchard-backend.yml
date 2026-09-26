@@ -262,6 +262,27 @@ jobs:
               raise SystemExit('Disabled wallet database ownership test')
           PYCODE
           ctest --test-dir build-orchard-root -R '^WalletDatabaseLease$' --output-on-failure --no-tests=error --output-log orchard-wallet-lease-execution.log
+      - name: Require and execute ordinary wallet commit failure stages
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletOrdinaryBlock(Insert|Spend|History|Confirmation|Commit)$' --show-only=json-v1 > orchard-wallet-block-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-block-inventory.json'))['tests']
+          expected = sorted('WalletOrdinaryBlock' + stage for stage in ['Insert', 'Spend', 'History', 'Confirmation', 'Commit'])
+          if sorted(t['name'] for t in tests) != expected:
+              raise SystemExit('Ordinary wallet commit stage registration missing')
+          if any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Ordinary wallet commit stage disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletOrdinaryBlock(Insert|Spend|History|Confirmation|Commit)$' --verbose --output-on-failure --no-tests=error --output-log orchard-wallet-block-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log = open('orchard-wallet-block-execution.log').read()
+          actual = re.findall(r'\[ RUN\s+\] (DeliveryStages/WalletOrdinaryBlockTest\.\S+)', log)
+          expected = sorted('DeliveryStages/WalletOrdinaryBlockTest.ChecksOrdinaryWalletWritesAndCommitBeforeHeight/' + stage for stage in ['insert', 'spend', 'history', 'confirmation', 'commit'])
+          if sorted(actual) != expected:
+              raise SystemExit('Ordinary wallet failure stages did not all execute exactly once')
+          PYTEST
       - name: Require and execute ordinary wallet block rollback
         run: |
           ctest --test-dir build-orchard-root -R '^WalletBlockDisconnect$' --show-only=json-v1 > orchard-wallet-disconnect-inventory.json
@@ -331,6 +352,8 @@ jobs:
             orchard-wallet-undo-execution.log
             orchard-wallet-lease-inventory.json
             orchard-wallet-lease-execution.log
+            orchard-wallet-block-inventory.json
+            orchard-wallet-block-execution.log
             orchard-wallet-disconnect-inventory.json
             orchard-wallet-disconnect-execution.log
             orchard-flatfile-inventory.json
