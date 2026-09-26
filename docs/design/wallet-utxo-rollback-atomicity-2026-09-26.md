@@ -41,3 +41,27 @@ durability. In particular, the existing UTXO database opener's WAL synchronous
 policy is unchanged. A recovery owner still needs durable source records,
 per-consumer checkpoints, correct SQLite durability settings and readiness after
 all effects have completed. No production database or installed binary changed.
+
+## Creation replay after a spend
+
+The same real index is populated through `AddUTXO` by WalletWorker connect and
+other wallet import/scanning callers. Its upsert formerly assigned the incoming
+spend height even when it was absent. Replaying creation of an output could thus
+clear a spend already recorded by a later block. It could also replace an
+existing spend height with stale supplied metadata, confusing subsequent undo.
+
+Creation now preserves an existing spend height. A new row, or an existing row
+without a spend, may still accept supplied spend metadata. Explicit block
+rollback remains responsible for restoring spent outputs to unspent; creation
+replay alone cannot authorize that transition. Other upsert fields and the
+separate `SpendUTXO` operation are unchanged. Recovery must still validate source
+order and apply disconnects before connecting replacement history.
+
+The mandatory real-SQLite `WalletRevertAtomic` lane additionally checks unspent
+creation replay, spent creation replay, stale supplied spend heights, reopen,
+explicit rollback followed by creation, and imports with spend metadata. The
+new assertions fail against the prior production source. Fixed normal and
+ASan/UBSan executions pass alongside the existing rollback failure cases. All
+five linked project C++ files are instrumented; external SQLite is not, and
+macOS leak detection is off. This follow-up does not claim a full daemon build,
+power-loss qualification, authenticated source receipts or cross-store atomicity.

@@ -19,7 +19,10 @@ This branch collects release implementation for review and qualification against
   deletion, un-spending and commit. Any SQL failure aborts its own transaction;
   nested caller transactions are refused without being committed or rolled back.
   A mandatory real-SQLite regression injects failures at both statements and
-  commit, then checks retry/reopen. This repairs an existing consumer prerequisite;
+  commit, then checks retry/reopen. Creation replay now preserves a recorded
+  spend height, including after reopen; explicit undo still restores unspent
+  outputs. Real index regressions cover stale replay and import compatibility.
+  This repairs existing consumer prerequisites;
   it does not install the complete Orchard recovery provider.
 
 - Orchard account snapshots now bind a delivery sequence/digest to actual scan

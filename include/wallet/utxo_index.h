@@ -141,6 +141,8 @@ public:
     bool Initialize();
 
     // UTXO operations (wallet layer - not consensus interface)
+    // Creation replay preserves an existing spend height. Undo must use
+    // RevertBlock; re-adding an unspent output is not rollback evidence.
     bool AddUTXO(const WalletUTXO& utxo);
     bool SpendUTXO(const TxId& txid, uint32_t vout, uint32_t height);
     bool DeleteUTXO(const TxId& txid, uint32_t vout);

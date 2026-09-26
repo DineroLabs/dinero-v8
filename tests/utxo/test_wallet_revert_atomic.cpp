@@ -29,12 +29,52 @@ static void RejectRevert(UTXOIndex& index, const char* expected = "Wallet UTXO r
     Check(refused, "failed SQLite rollback must report failure");
     CheckOriginal(index);
 }
+// Delivery may restart after this store committed but another wallet store did
+// not. Replaying creation is not evidence that a later recorded spend vanished.
+static void CheckCreationReplay(const std::filesystem::path& directory) {
+    const auto path = (directory / "replay.sqlite").string();
+    WalletUTXO created(Id(10), 0, AmountUna::Una(500), {0x51}, "m/84'/1448'/0'/0/0", 10, false);
+    {
+        UTXOIndex index(path); Check(index.Initialize(), "replay index initialization failed");
+        Check(index.AddUTXO(created), "initial creation failed");
+        Check(index.AddUTXO(created), "unspent creation replay failed");
+        Check(index.GetUTXO(Id(10), 0) && !index.GetUTXO(Id(10), 0)->spend_height,
+              "unspent creation replay changed state");
+        Check(index.SpendUTXO(Id(10), 0, 20), "record spend failed");
+        Check(index.AddUTXO(created), "spent creation replay failed");
+        Check(index.GetUTXO(Id(10), 0)->spend_height == 20,
+              "creation replay must preserve a recorded spend");
+        auto stale = created; stale.spend_height = 15;
+        Check(index.AddUTXO(stale), "stale creation replay failed");
+        Check(index.GetUTXO(Id(10), 0)->spend_height == 20,
+              "creation replay must not replace a recorded spend height");
+    }
+    {
+        UTXOIndex index(path); Check(index.Initialize(), "replay reopen failed");
+        Check(index.AddUTXO(created), "reopened replay failed");
+        Check(index.GetUTXO(Id(10), 0)->spend_height == 20,
+              "reopened creation replay must preserve a recorded spend");
+        index.RevertBlock(20);
+        Check(index.AddUTXO(created), "post-rollback creation failed");
+        Check(!index.GetUTXO(Id(10), 0)->spend_height,
+              "explicit rollback must permit restored unspent output");
+        // Existing import callers can still insert supplied spent state.
+        auto imported = created; imported.txid = Id(11); imported.spend_height = 25;
+        Check(index.AddUTXO(imported), "spent import failed");
+        Check(index.GetUTXO(Id(11), 0)->spend_height == 25, "spent import lost state");
+        // A previously unspent row may receive supplied spend metadata, too.
+        auto upgraded = created; upgraded.spend_height = 30;
+        Check(index.AddUTXO(upgraded), "spend metadata import failed");
+        Check(index.GetUTXO(Id(10), 0)->spend_height == 30, "spend metadata was ignored");
+    }
+}
 int main() {
     try {
         auto pattern = (std::filesystem::temp_directory_path() / "wallet-revert-XXXXXX").string();
         std::vector<char> name(pattern.begin(), pattern.end()); name.push_back(0);
         Check(mkdtemp(name.data()) != nullptr, "temporary directory failed");
         struct Cleanup { std::filesystem::path path; ~Cleanup() { std::filesystem::remove_all(path); } } cleanup{name.data()};
+        CheckCreationReplay(cleanup.path);
         const auto path = (cleanup.path / "index.sqlite").string();
         {
             UTXOIndex index(path); Check(index.Initialize(), "index initialization failed");

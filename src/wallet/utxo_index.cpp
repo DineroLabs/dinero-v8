@@ -294,7 +294,9 @@ bool UTXOIndex::PrepareStatements() {
     //   blinding_factor and value when the incoming blinding_factor is NULL
     //   (CT rangeproof rewind failed — wallet was locked at scan time).
     //   This prevents losing recovered CT data across daemon restarts.
-    //   All other fields are updated normally (on-chain data can't change).
+    // Creation replay cannot erase or replace a recorded spend. Only explicit
+    // rollback may restore an existing spent row to unspent; an import may
+    // still supply spend metadata when the row has none.
     const char* add_sql = R"(
         INSERT INTO wallet_utxos
         (txid, vout, value, spk, path, height, spend_height, is_coinbase,
@@ -308,7 +310,7 @@ bool UTXOIndex::PrepareStatements() {
           spk              = excluded.spk,
           path             = excluded.path,
           height           = excluded.height,
-          spend_height     = excluded.spend_height,
+          spend_height     = COALESCE(wallet_utxos.spend_height, excluded.spend_height),
           is_coinbase      = excluded.is_coinbase,
           utreexo_position = excluded.utreexo_position,
           is_confidential  = excluded.is_confidential,
