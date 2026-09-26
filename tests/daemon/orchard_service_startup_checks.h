@@ -207,7 +207,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
             found_orchard |= typed[i].IsOrchard();
         }
         if(c.height==c.activation_height) CHECK(found_orchard); // Mixed boundary fixture includes a real authorized bundle.
-        reorg.reset();CHECK(notifications->finishes==1 && notifications->progress.disconnected==0 && notifications->progress.connected==0);
+        reorg.reset();CHECK(notifications->finishes==1 && notifications->progress.disconnected==0 && notifications->progress.connected==0 && !notifications->progress.complete);
         auto absent=RequiredValue(db.getHeaderMetadata(index.hash));const auto saved=absent;absent.data_size=0;
         CHECK(db.putHeaderMetadata(token,index.hash,absent)==Status::Ok);
         CHECK(!Access::Reorg(service,{&index},{&index},reorg) && !reorg);
@@ -221,8 +221,21 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
         db.close();CHECK(Inspect(path)==original);CHECK(db.init(path)==Status::Ok);
         CHECK(Access::Reorg(service,{&index},{&index},reorg));
     }
-    CHECK(Access::Disconnect(service,&index));
-    if(reorg) reorg->Disconnected();
+    if(reorg && c.height==c.activation_height) {
+        struct InterruptedAfterCommit {};
+        bool interrupted=false;
+        try {
+            auto unfinished=std::move(reorg);
+            CHECK(Access::Disconnect(service,&index));
+            throw InterruptedAfterCommit{}; // Legacy callback failure before the caller records success.
+        } catch (const InterruptedAfterCommit&) { interrupted=true; }
+        CHECK(interrupted && notifications->finishes==2);
+        CHECK(!notifications->progress.complete && notifications->progress.disconnected==0 && notifications->progress.connected==0);
+        CHECK(RequiredValue(db.getTip()).hash==parent.hash); // Zero returned successes does NOT mean zero durable changes.
+    } else {
+        CHECK(Access::Disconnect(service,&index));
+        if(reorg) reorg->Disconnected();
+    }
     CHECK(notifications->published && notifications->coherent && notifications->prepared==2);
     CHECK(Access::TipIs(service,&parent) && RequiredValue(db.getTip()).hash==c.parent_hash);
     if(c.height==c.activation_height) {
@@ -277,8 +290,8 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
             Access::SeedPositions(service);
             CHECK(Access::Connect(service,&index,error,invalid));
             if(reorg) {
-                reorg->Connected();reorg.reset();
-                CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==1);
+                reorg->Connected();reorg->Complete();reorg.reset();
+                CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==1 && notifications->progress.complete);
             }
             CHECK(!invalid && connected->published && connected->coherent && connected->prepared==2);
             CheckMemoryCoins(db,Access::Coins(service));
@@ -293,7 +306,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
     }
     if(reorg) {
         reorg.reset(); // Refused activation-boundary reconnect reports only the committed rollback.
-        CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==0);
+        CHECK(notifications->finishes==2 && notifications->progress.disconnected==1 && notifications->progress.connected==0 && !notifications->progress.complete);
     }
     if(reorg_check) CHECK(notifications->retained->disconnect[0].body.Serialize()==block.WireBytes());
     if(outer_parent_metadata)CHECK(db.putHeaderMetadata(token,c.parent_hash,*outer_parent_metadata)==Status::Ok);

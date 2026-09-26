@@ -7,7 +7,13 @@
 namespace dinero {
 class RuntimeBlockBody;
 class RuntimeReorgPlan;
-struct RuntimeReorgProgress { size_t disconnected = 0, connected = 0; };
+struct RuntimeReorgProgress {
+    size_t disconnected = 0, connected = 0;
+    // False means canonical recovery is required even in the current process.
+    // A legacy transition may throw after durability but before returning.
+    // Counts then give a confirmed lower bound, NEVER permission to cancel.
+    bool complete = false;
+};
 
 // Preparation must durably retain the complete plan before returning. On restart
 // the consumer resolves committed progress from canonical chainstate, not from
@@ -18,7 +24,7 @@ public:
     virtual void Finish(RuntimeReorgProgress) noexcept = 0;
 };
 
-// Reports exact committed prefixes on success AND every partial/early exit.
+// Reports confirmed prefixes and distinguishes a completed plan from interruption.
 // Disconnect order is tip-first; readmission reverses that committed prefix.
 class RuntimeReorgTransition final {
 public:
@@ -31,12 +37,16 @@ public:
     RuntimeReorgTransition& operator=(const RuntimeReorgTransition&) = delete;
     ~RuntimeReorgTransition() { prepared_->Finish(progress_); }
     void Disconnected() noexcept {
-        if (progress_.connected || progress_.disconnected == disconnects_) std::terminate();
+        if (progress_.complete || progress_.connected || progress_.disconnected == disconnects_) std::terminate();
         ++progress_.disconnected;
     }
     void Connected() noexcept {
-        if (progress_.disconnected != disconnects_ || progress_.connected == connects_) std::terminate();
+        if (progress_.complete || progress_.disconnected != disconnects_ || progress_.connected == connects_) std::terminate();
         ++progress_.connected;
+    }
+    void Complete() noexcept {
+        if (progress_.disconnected != disconnects_ || progress_.connected != connects_) std::terminate();
+        progress_.complete = true;
     }
 private:
     std::unique_ptr<PreparedRuntimeReorgNotifications> prepared_;

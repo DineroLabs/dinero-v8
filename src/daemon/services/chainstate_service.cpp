@@ -10287,6 +10287,8 @@ void ChainstateService::ActivateBestChain() {
         }
     }
 
+    if (runtime_reorg) runtime_reorg->Complete();
+
     // ═══════════════════════════════════════════════════════════════════════════
     // Priority 5 FIX: Daemon Invariant Checks
     // ═══════════════════════════════════════════════════════════════════════════
@@ -13055,6 +13057,7 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                 PublishActiveTipLocked(to_disconnect->pprev, TipPublishReason::kRollback);
             }
 
+            if (runtime_reorg) runtime_reorg->Complete();
             post_disconnect_tip = active_tip_ ? active_tip_ : target->pprev;
 
             // Update ChainDB tip to new active tip

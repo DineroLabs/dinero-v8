@@ -78,8 +78,9 @@ This branch collects release implementation for review and qualification against
   Full reorg orchestration and production consumers remain unfinished.
 - Best-chain activation and explicit invalidation now prepare complete typed
   reorg body plans before rollback. A consumer must durably retain the plan;
-  per-block-only providers refuse. Exact committed prefixes survive early-return
-  reporting, and mixed bodies never enter the legacy transaction collector.
+  per-block-only providers refuse. Completed plans report exact counts; interrupted
+  plans require canonical recovery because legacy callbacks may fail after a
+  durable write. Mixed bodies never enter the legacy transaction collector.
   The production recovery/readmission provider remains unimplemented. See the
   service-reorg-plan design for operational bounds and qualification limits.
 - The actual startup undo-coverage walk now routes retained Orchard bodies under

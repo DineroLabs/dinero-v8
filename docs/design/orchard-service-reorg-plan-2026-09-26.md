@@ -25,8 +25,12 @@ progress from canonical chainstate on startup: a process can stop between a
 block commit and its notification. Merely retaining a pointer is insufficient.
 
 The transition scope records successful disconnects in tip-first order and
-connects in ancestor-first order. Its no-throw completion receives those exact
-prefix counts on normal completion, cancellation and early return. Readmission
+connects in ancestor-first order. Its no-throw completion distinguishes a fully
+completed plan from interruption. On an interrupted walk the counts are only a
+confirmed lower bound: historical code may throw after durability but before
+returning. The consumer must resolve canonical progress even without a process
+restart, and must never cancel or discard an intent merely because those counts
+are zero. Only an explicitly completed walk certifies its final counts. Readmission
 reverses only the committed disconnect prefix, and independently revalidates
 transactions against the selected current chain. The plan is an identity-checked
 input, not an admission certificate. Coinbase entries are retained in the body
