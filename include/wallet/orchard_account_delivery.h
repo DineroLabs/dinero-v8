@@ -21,6 +21,13 @@ public:
     // account restoration against its immutable branch view must then succeed.
     // No metadata-only spendable account or unauthenticated cursor is exposed.
     static Applied ReadForReplay(WalletManager&,uint64_t session,const Profile&,const RuntimeAccountReplay&);
+    struct Enrolled { uint32_t number; Applied state; };
+    // Discover current rows, then authenticate and fully restore every account
+    // in one SQLite snapshot under key ownership. Row locators are not an
+    // authenticated catalog: this does not detect prior deletion or certify
+    // initial/late-account enrollment. Empty/mixed-identity stores refuse.
+    static std::vector<Enrolled> ReadEnrolledForReplay(
+        WalletManager&,uint64_t session,const RuntimeAccountReplay&);
     static Applied Connect(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&,
         const OrchardBlockCandidate&, const consensus::PreparedOrchardState&,

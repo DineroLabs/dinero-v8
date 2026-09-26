@@ -24,4 +24,16 @@ RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeWalletStores(
         return **page;
     },wallet,index,session,account);
 }
+RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeEnrolledWalletStores(
+        ChainstateService& chain,WalletManager& wallet,UTXOIndex& index,uint64_t session) {
+    {const auto lease=wallet.AcquireDatabaseLease();
+     if(wallet.database_leases_!=1)throw std::runtime_error("Wallet recovery requires released caller lease");}
+    const auto view=chain.getRuntimeAccountReplay();
+    if(!view.ok())throw std::runtime_error("Wallet recovery checked account source unavailable");
+    return ResumeAccounts(**view,[&chain](RuntimeOutboxCursor cursor,size_t count){
+        const auto page=chain.getRuntimeDeliveryPage(cursor,count);
+        if(!page.ok())throw std::runtime_error("Wallet recovery checked source unavailable");
+        return **page;
+    },wallet,index,session,std::nullopt);
+}
 } // namespace dinero

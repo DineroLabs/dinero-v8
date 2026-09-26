@@ -85,25 +85,39 @@ RuntimeTransparentRecoveryResult RuntimeWalletRecovery::Resume(
 RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeAccount(
         const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,
         UTXOIndex& index,uint64_t session,uint32_t account_number) {
+    const auto result=ResumeAccounts(view,source,wallet,index,session,account_number);
+    return {result.applied,result.account_revisions.front().second,result.observed_head};
+}
+
+RuntimeEnrolledWalletRecoveryResult RuntimeWalletRecovery::ResumeAccounts(
+        const RuntimeAccountReplay& view,const Source& source,WalletManager& wallet,
+        UTXOIndex& index,uint64_t session,std::optional<uint32_t> selected_account) {
     using Account=wallet::OrchardAccountDelivery;
     {const auto lease=wallet.AcquireDatabaseLease();Require(wallet.database_leases_==1,
         "Wallet recovery requires released caller lease");}
     const auto& first=view.Event(1);const auto target=view.Head();
-    const Account::Profile profile{first.context.domain,first.context.activation_height,account_number};
-    struct Snapshot {RuntimeIndexProgress indexed,ordinary;Account::Applied account;};
+    struct Snapshot {RuntimeIndexProgress indexed,ordinary;std::vector<Account::Enrolled> accounts;};
     const auto read=[&] {
         const auto lease=wallet.AcquireDatabaseLease();const auto stores=ReadStores(wallet,index,session);
-        auto account=Account::ReadForReplay(wallet,session,profile,view);
-        Require(account.account.Delivery().sequence,"Wallet recovery account baseline reconciliation required");
-        return Snapshot{stores.first,stores.second,std::move(account)};
+        std::vector<Account::Enrolled> accounts;
+        if(selected_account){
+            const Account::Profile profile{first.context.domain,first.context.activation_height,*selected_account};
+            auto account=Account::ReadForReplay(wallet,session,profile,view);
+            Require(account.account.Delivery().sequence,"Wallet recovery account baseline reconciliation required");
+            accounts.push_back({*selected_account,std::move(account)});
+        }else accounts=Account::ReadEnrolledForReplay(wallet,session,view);
+        return Snapshot{stores.first,stores.second,std::move(accounts)};
     };
     auto current=read();
-    const auto account_cursor=[](const Snapshot& s) {
-        const auto& d=s.account.account.Delivery();return RuntimeOutboxCursor{d.sequence,d.digest};
+    const auto account_cursor=[](const Account::Enrolled& s) {
+        const auto& d=s.state.account.Delivery();return RuntimeOutboxCursor{d.sequence,d.digest};
     };
     const auto unchanged=[&](const Snapshot& a,const Snapshot& b) {
-        return Same(a.indexed,b.indexed)&&Same(a.ordinary,b.ordinary)&&a.account.revision==b.account.revision&&
-            account_cursor(a)==account_cursor(b);
+        if(!Same(a.indexed,b.indexed)||!Same(a.ordinary,b.ordinary)||a.accounts.size()!=b.accounts.size())return false;
+        for(size_t i=0;i<a.accounts.size();++i)
+            if(a.accounts[i].number!=b.accounts[i].number||a.accounts[i].state.revision!=b.accounts[i].state.revision||
+               account_cursor(a.accounts[i])!=account_cursor(b.accounts[i]))return false;
+        return true;
     };
     const auto origin=view.Point({}).checkpoint;
     for(const auto* p:{&current.indexed,&current.ordinary}) {
@@ -113,40 +127,47 @@ RuntimeWalletRecoveryResult RuntimeWalletRecovery::ResumeAccount(
         Require(p->tip_hash==point.block_hash&&p->tip_height==point.height,"Wallet recovery source position mismatch");
         CheckPosition(*p,source(p->cursor,1));
     }
-    const auto initial_account=account_cursor(current);
-    const auto position=source(initial_account,1);
-    const auto& scan=current.account.account.Scan().Checkpoint();
-    Require(position.after_tip&&position.after_tip->first==scan.block_hash&&position.after_tip->second==scan.height,
-        "Wallet recovery account source position mismatch");
-    auto sequence=std::min({current.indexed.cursor.sequence,current.ordinary.cursor.sequence,initial_account.sequence});
+    auto sequence=std::min(current.indexed.cursor.sequence,current.ordinary.cursor.sequence);
+    // Validate every account, including an ahead account, before any effects.
+    for(const auto& entry:current.accounts){
+        const auto cursor=account_cursor(entry);const auto position=source(cursor,1);
+        const auto& scan=entry.state.account.Scan().Checkpoint();
+        Require(position.after_tip&&position.after_tip->first==scan.block_hash&&position.after_tip->second==scan.height,
+            "Wallet recovery account source position mismatch");
+        sequence=std::min(sequence,cursor.sequence);
+    }
     for(++sequence;sequence<=target.sequence;++sequence) {
         const auto& event=view.Event(sequence);
         const auto lease=wallet.AcquireDatabaseLease();
         Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
-        // Every committed prefix is retained. Failure of a later store never
-        // acknowledges it, erases earlier receipts, or replays an ahead store.
         if(current.indexed.cursor.sequence<sequence)
             current.indexed=RuntimeIndexDelivery::ApplyForWallet(wallet,index,session,event);
         if(current.ordinary.cursor.sequence<sequence)
             current.ordinary=RuntimeOrdinaryDelivery::ApplyForWallet(wallet,session,event);
-        if(account_cursor(current).sequence<sequence) {
-            const auto before=view.Point(account_cursor(current));
+        // Accounts commit in ascending account-number order. A failure retains
+        // all earlier store/account prefixes for the next owned recovery pass.
+        for(auto& entry:current.accounts)if(account_cursor(entry).sequence<sequence) {
+            const Account::Profile profile{first.context.domain,first.context.activation_height,entry.number};
+            auto& account=entry.state;const auto before=view.Point(account_cursor(entry));
             if(!event.IsOrchardProfile())
-                current.account=Account::Historical(wallet,session,profile,current.account.revision,before,event);
+                account=Account::Historical(wallet,session,profile,account.revision,before,event);
             else if(event.direction==RuntimeBlockDirection::Connect)
-                current.account=Account::Connect(wallet,session,profile,current.account.revision,before,event,
+                account=Account::Connect(wallet,session,profile,account.revision,before,event,
                     view.Block(sequence),view.State(sequence),view.Authorizations(sequence));
             else
-                current.account=Account::Disconnect(wallet,session,profile,current.account.revision,before,event,
+                account=Account::Disconnect(wallet,session,profile,account.revision,before,event,
                     view.Block(sequence),view.Point(event.cursor));
-            Require(account_cursor(current)==event.cursor&&current.account.account.Scan().Checkpoint()==view.Point(event.cursor).checkpoint,
+            Require(account_cursor(entry)==event.cursor&&account.account.Scan().Checkpoint()==view.Point(event.cursor).checkpoint,
                 "Wallet recovery account applied position mismatch");
         }
     }
-    Require(current.indexed.cursor==target&&current.ordinary.cursor==target&&account_cursor(current)==target&&
-        Same(current.indexed,current.ordinary),"Wallet recovery captured head mismatch");
+    Require(current.indexed.cursor==target&&current.ordinary.cursor==target&&Same(current.indexed,current.ordinary),
+        "Wallet recovery captured head mismatch");
+    for(const auto& entry:current.accounts)Require(account_cursor(entry)==target,"Wallet recovery captured head mismatch");
     const auto final=source(target,1);CheckPosition(current.indexed,final);
     Require(unchanged(current,read()),"Wallet recovery stores changed during source read");
-    return {current.indexed,current.account.revision,final.head};
+    std::vector<std::pair<uint32_t,uint64_t>> revisions;
+    for(const auto& entry:current.accounts)revisions.emplace_back(entry.number,entry.state.revision);
+    return {current.indexed,std::move(revisions),final.head};
 }
 } // namespace dinero

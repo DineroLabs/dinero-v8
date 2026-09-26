@@ -1,5 +1,22 @@
 # v8.1.13 integration status
 
+## Current recovery integration (2026-09-26)
+
+The service-owned immutable branch replay view and authenticated parent-revision
+locators are implemented. The existing index, ordinary wallet and bound Orchard
+account consumers share an ordered coordinator. The new enrolled-account entry
+point discovers and fully restores all current account snapshot rows, checks
+all applied source positions and retries partial commits across accounts. See
+`wallet-account-coordinated-recovery-2026-09-26.md` and
+`wallet-enrolled-account-recovery-2026-09-26.md`.
+
+These APIs are compiled into the daemon but not installed notification/startup
+callers. Baseline/pre-origin/late-account reconciliation, authenticated inventory
+completeness, general long-history operation, remaining configured consumers,
+production installation and independent activation/lifecycle qualification
+remain open. Earlier component notes below describe their original scopes;
+account integration and automatic parent locators are no longer missing.
+
 - A bound Orchard account consumer now pins the selected wallet keys, applies
   account effects and retains authenticated parent snapshots in one SQLite
   commit. Key changes serialize with recovery; missing parent history refuses.

@@ -18,6 +18,14 @@ struct RuntimeWalletRecoveryResult {
     RuntimeOutboxCursor observed_head;
 };
 
+// Every account row present in the selected wallet was authenticated/restored.
+// This is captured-prefix completion, not baseline or all-consumer readiness.
+struct RuntimeEnrolledWalletRecoveryResult {
+    RuntimeIndexProgress applied;
+    std::vector<std::pair<uint32_t,uint64_t>> account_revisions;
+    RuntimeOutboxCursor observed_head;
+};
+
 class RuntimeWalletRecovery {
 public:
     // Resume already enrolled stores. Missing/invalidated progress requires
@@ -32,11 +40,16 @@ public:
     // separate obligations. Chain capture happens before wallet ownership.
     static RuntimeWalletRecoveryResult ResumeWalletStores(
         ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session,uint32_t account);
+    static RuntimeEnrolledWalletRecoveryResult ResumeEnrolledWalletStores(
+        ChainstateService&,WalletManager&,UTXOIndex&,uint64_t expected_session);
 private:
     friend struct RuntimeWalletRecoveryTestAccess;
     using Source = std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>;
     static RuntimeTransparentRecoveryResult Resume(
         const Source&, WalletManager&, UTXOIndex&, uint64_t expected_session);
+    static RuntimeEnrolledWalletRecoveryResult ResumeAccounts(
+        const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,
+        std::optional<uint32_t> selected_account);
     static RuntimeWalletRecoveryResult ResumeAccount(
         const RuntimeAccountReplay&,const Source&,WalletManager&,UTXOIndex&,uint64_t,uint32_t);
 };

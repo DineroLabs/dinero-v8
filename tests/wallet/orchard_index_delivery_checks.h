@@ -8,6 +8,7 @@
 #include <thread>
 namespace dinero {
 struct RuntimeWalletRecoveryTestAccess {
+ static auto ResumeEnrolled(const RuntimeAccountReplay& view,const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source,WalletManager& w,UTXOIndex& i,uint64_t session){return RuntimeWalletRecovery::ResumeAccounts(view,source,w,i,session,std::nullopt);}
  static auto Resume(const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source,WalletManager& w,UTXOIndex& i,uint64_t session){return RuntimeWalletRecovery::Resume(source,w,i,session);}
  static auto ResumeAccount(const RuntimeAccountReplay& view,const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source,WalletManager& w,UTXOIndex& i,uint64_t session){return RuntimeWalletRecovery::ResumeAccount(view,source,w,i,session,0);}
 };
@@ -38,7 +39,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     const auto& old_output=historical.vtx.front().vout.front();
     CHECK(index.AddUTXO(WalletUTXO(historical.vtx.front().GetTxid(),0,old_output.value,old_output.scriptPubKey,"m/86'/1448'/0'/0/0",c.height-1,true)));++baseline;
     const auto failure=[&](const std::function<void()>& f,const char* text) {
-        bool refused=false;try{f();}catch(const std::exception& e){refused=std::string(e.what()).find(text)!=std::string::npos;if(!refused)std::cerr<<"Expected "<<text<<", got "<<e.what()<<"\n";}CHECK(refused);
+        bool refused=false;try{f();}catch(const std::exception& e){refused=std::string(e.what()).find(text)!=std::string::npos;if(!refused)std::cerr<<"Expected "<<text<<", got "<<e.what()<<"\n";}if(!refused)std::cerr<<"Expected failure containing: "<<text<<"\n";CHECK(refused);
     };
     AnnotatedRecursiveMutex lock;std::lock_guard<AnnotatedRecursiveMutex> guard(lock);
     const auto event=ReadRuntimeOutboxUnderLock(db,c).events.front();CHECK(event.cursor.sequence==1);
@@ -427,6 +428,96 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     const auto up_view=RuntimeAccountReplayTestAccess::Capture(db,c);
     CHECK(all_recover(*up_view).applied.cursor==up_view->Head());
     again=up_view->Event(up_view->Head().sequence);
+    // Discover nonconsecutive account numbers from actual snapshot rows. Every
+    // row must authenticate/restore before advancing any lagging store.
+    const auto enroll=[&](uint32_t number){
+        const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(ordinary_session);
+        const auto keys=orchard::WalletKeys::FromSeed(seed->Bytes(),number);
+        auto initial=dinero::wallet::OrchardAccountState::Begin(c.domain,keys.ExportFullViewingKey(),c.activation_height,c.parent_hash)
+            .IssueReceiver(orchard::WalletScope::External).first;
+        orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
+        CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        orchard::WalletSnapshotStore store(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,number},seed->Bytes());
+        CHECK(store.StageReplaceRetaining(0,initial.Encode())==1);
+        CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+    };
+    const Account::Profile other_profile{c.domain,c.activation_height,7};
+    const auto enrolled_recover=[&](const RuntimeAccountReplay& view){
+        return RuntimeWalletRecoveryTestAccess::ResumeEnrolled(view,source,ordinary,index,ordinary_session);
+    };
+    const auto primary=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*up_view);
+    enroll(7);
+    failure([&]{(void)enrolled_recover(*up_view);},"account baseline reconciliation required");
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*up_view).revision==primary.revision);
+    auto other=Account::Connect(ordinary,ordinary_session,other_profile,1,account_view->Point({}),event,
+        account_view->Block(1),account_view->State(1),account_view->Authorizations(1));
+    CHECK(other.account.Scan().BalanceUna()==0); // Account 0's note is not account 7's.
+    ordinary_sql("CREATE TEMP TABLE saved_account AS SELECT * FROM orchard_wallet_snapshots WHERE account=7");
+    ordinary_sql("UPDATE orchard_wallet_snapshots SET sealed=zeroblob(length(sealed)) WHERE account=7");
+    failure([&]{(void)enrolled_recover(*up_view);},"Orchard wallet storage integrity, transaction or I/O failure");
+    CHECK(RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session)->cursor==up_view->Head());
+    ordinary_sql("UPDATE orchard_wallet_snapshots SET sealed=(SELECT sealed FROM saved_account) WHERE account=7");
+    // A different persistent wallet identity cannot be filtered out silently.
+    ordinary_sql("UPDATE orchard_wallet_snapshots SET wallet_id=zeroblob(32) WHERE account=7");
+    failure([&]{(void)enrolled_recover(*up_view);},"ownership or state mismatch");
+    ordinary_sql("UPDATE orchard_wallet_snapshots SET wallet_id=(SELECT wallet_id FROM saved_account) WHERE account=7");
+    const auto enrolled=enrolled_recover(*up_view);
+    CHECK(enrolled.applied.cursor==up_view->Head()&&enrolled.account_revisions.size()==2);
+    CHECK(enrolled.account_revisions[0].first==0&&enrolled.account_revisions[0].second==primary.revision);
+    CHECK(enrolled.account_revisions[1].first==7);
+    other=Account::ReadForReplay(ordinary,ordinary_session,other_profile,*up_view);
+    CHECK(other.account.Delivery().sequence==up_view->Head().sequence&&other.account.Scan().BalanceUna()==0);
+    const auto other_receiver=other.account.IssueReceiver(orchard::WalletScope::External).second.Raw();
+    // Failure in the second account retains the first account's committed undo.
+    auto multi_down=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,forest,true);
+    multi_down->Commit();multi_down.reset();
+    const auto multi_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    ordinary_sql("CREATE TRIGGER reject_second_account BEFORE UPDATE ON orchard_wallet_snapshots WHEN NEW.account=7 BEGIN SELECT RAISE(ABORT,'second account');END");
+    failure([&]{(void)enrolled_recover(*multi_view);},"Orchard wallet storage integrity, transaction or I/O failure");
+    const auto primary_undone=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*multi_view);
+    CHECK(primary_undone.account.Delivery().sequence==multi_view->Head().sequence);
+    CHECK(primary_undone.account.Scan().BalanceUna()==0);
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,other_profile,*multi_view).revision==other.revision);
+    CHECK(RuntimeIndexDelivery::ReadForWallet(ordinary,index,ordinary_session)->cursor==multi_view->Head());
+    CHECK(RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session)->cursor==multi_view->Head());
+    ordinary_sql("DROP TRIGGER reject_second_account");
+    ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    const auto retried=enrolled_recover(*multi_view);
+    CHECK(retried.account_revisions.size()==2&&retried.account_revisions[0].second==primary_undone.revision);
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,other_profile,*multi_view).account.IssueReceiver(orchard::WalletScope::External).second.Raw()==other_receiver);
+    // A newly enrolled row during source acquisition invalidates the captured
+    // account roster, even when existing stores were already at the head.
+    bool roster_changed=false;
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeEnrolled(*multi_view,[&](RuntimeOutboxCursor cursor,size_t n){
+        const auto page=source(cursor,n);
+        if(!roster_changed){
+            roster_changed=true;enroll(19);
+            const Account::Profile added{c.domain,c.activation_height,19};
+            (void)Account::Connect(ordinary,ordinary_session,added,1,account_view->Point({}),event,
+                account_view->Block(1),account_view->State(1),account_view->Authorizations(1));
+        }
+        return page;
+    },ordinary,index,ordinary_session);},"stores changed during source read");
+    CHECK(roster_changed);
+    const auto complete=enrolled_recover(*multi_view);
+    CHECK(complete.account_revisions.size()==3&&complete.account_revisions[2].first==19);
+    CHECK(complete.applied.cursor==multi_view->Head());
+    ordinary_sql("CREATE TEMP TABLE deleted_account AS SELECT * FROM orchard_wallet_snapshots WHERE account=7");
+    bool roster_deleted=false;
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::ResumeEnrolled(*multi_view,[&](RuntimeOutboxCursor cursor,size_t n){
+        const auto page=source(cursor,n);
+        if(!roster_deleted){roster_deleted=true;ordinary_sql("DELETE FROM orchard_wallet_snapshots WHERE account=7");}
+        return page;
+    },ordinary,index,ordinary_session);},"stores changed during source read");
+    CHECK(roster_deleted);
+    ordinary_sql("INSERT INTO orchard_wallet_snapshots SELECT * FROM deleted_account");
+    CHECK(enrolled_recover(*multi_view).account_revisions.size()==3);
+    auto multi_up=PreparedOrchardChainstateWrite::ConnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,parent_forest,{},true,false,FixtureRetirement(c));
+    multi_up->Commit();multi_up.reset();
+    const auto multi_up_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    CHECK(enrolled_recover(*multi_up_view).account_revisions.size()==3);
+    CHECK(Account::ReadForReplay(ordinary,ordinary_session,account_profile,*multi_up_view).account.Scan().BalanceUna()==5000);
+    again=multi_up_view->Event(multi_up_view->Head().sequence);
     ordinary_sql("DROP TRIGGER runtime_ordinary_utxos_UPDATE");
     failure([&]{(void)RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);},"guard unavailable");
     ordinary_sql("CREATE TRIGGER runtime_ordinary_utxos_UPDATE AFTER UPDATE ON utxos BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END");

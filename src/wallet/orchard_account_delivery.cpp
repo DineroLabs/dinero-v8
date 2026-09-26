@@ -69,6 +69,47 @@ OrchardAccountDelivery::Applied OrchardAccountDelivery::ReadForReplay(WalletMana
     const auto point=view.Point({receipt.sequence,receipt.digest});
     auto result=owner.Restore(p,point);Check(result.revision==saved->revision);tx.Commit();return result;
 }
+std::vector<OrchardAccountDelivery::Enrolled> OrchardAccountDelivery::ReadEnrolledForReplay(
+        WalletManager& w,uint64_t session,const RuntimeAccountReplay& view){
+    const auto& context=view.Event(1).context;
+    const Profile profile{context.domain,context.activation_height,0};
+    Owner owner(w,session,profile);Transaction tx(owner.lease->Database());
+    struct Statement {
+        sqlite3_stmt* p=nullptr;
+        ~Statement(){sqlite3_finalize(p);}
+    } rows;
+    Check(sqlite3_prepare_v2(owner.lease->Database(),
+        "SELECT wallet_id,account,revision FROM orchard_wallet_snapshots ORDER BY account",-1,&rows.p,nullptr)==SQLITE_OK);
+    std::vector<Enrolled> result;
+    int rc;
+    while((rc=sqlite3_step(rows.p))==SQLITE_ROW){
+        // Never silently omit foreign identities or malformed account locators.
+        Check(sqlite3_column_type(rows.p,0)==SQLITE_BLOB&&sqlite3_column_bytes(rows.p,0)==32);
+        Check(CRYPTO_memcmp(sqlite3_column_blob(rows.p,0),owner.identity.wallet_id.data(),32)==0);
+        Check(sqlite3_column_type(rows.p,1)==SQLITE_INTEGER&&sqlite3_column_type(rows.p,2)==SQLITE_INTEGER);
+        const auto number=sqlite3_column_int64(rows.p,1),revision=sqlite3_column_int64(rows.p,2);
+        Check(number>=0&&number<0x80000000LL&&revision>0);
+        Check(result.empty()||result.back().number<uint32_t(number));
+        // Operational refusal, never truncation or a claim that a subset is ready.
+        if(result.size()>=1024)throw std::runtime_error("Orchard account recovery capacity exceeded");
+        auto identity=owner.identity;identity.account=uint32_t(number);
+        const auto keys=orchard::WalletKeys::FromSeed(owner.seed->Bytes(),identity.account);
+        Owner::ViewingKey fvk(keys);
+        orchard::WalletSnapshotStore store(owner.lease->Database(),identity,owner.seed->Bytes());
+        const auto saved=store.Read();Check(saved&&saved->revision==uint64_t(revision));
+        const auto receipt=OrchardAccountState::ReadDeliveryMetadata(saved->state,context.domain,fvk.bytes,
+            context.activation_height,view.Point({}).checkpoint.block_hash);
+        if(!receipt.sequence)throw std::runtime_error("Wallet recovery account baseline reconciliation required");
+        const auto point=view.Point({receipt.sequence,receipt.digest});
+        auto account=OrchardAccountState::Restore(saved->state,context.domain,fvk.bytes,
+            context.activation_height,point.checkpoint,point.lookups);
+        Check(account.ParentSnapshotRevision()<saved->revision);
+        result.push_back({identity.account,{saved->revision,std::move(account)}});
+    }
+    Check(rc==SQLITE_DONE);
+    if(result.empty())throw std::runtime_error("Wallet recovery account baseline reconciliation required");
+    tx.Commit();return result;
+}
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Connect(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,
         const RestorePoint& point,const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,
         const consensus::PreparedOrchardState& state,std::span<const consensus::VerifiedOrchardAuthorizations> auths){
