@@ -84,14 +84,16 @@ struct OrchardAccountDelivery::Owner {
                     Check(!hash->IsNull());
                     if(*hash==record.observation.block_hash)continue;
                 }
-                // Ordered undo restores at an actual ancestor of the recorded
-                // cause, BEFORE new-branch blocks are scanned. An older owner
-                // already beyond that fork needs observation replay; refusing
-                // is required rather than silently missing new-branch conflicts.
-                if(!view.IsAncestorOf({receipt.sequence,receipt.digest},record.observation.block_hash,record.observation.height))
-                    throw std::runtime_error("Orchard archive branch reconciliation required");
+                // A legacy owner may already have scanned the replacement
+                // branch without this operation present. Reacquire reservations
+                // AND replay real bodies from the actual fork before commit.
+                const RuntimeOutboxCursor position{receipt.sequence,receipt.digest};
+                const auto fork=view.ForkHeight(position,record.observation.block_hash,record.observation.height);
                 auto staged=archive.StageReactivate(current.revision,current.account,located,selected);
                 current={staged.revision,std::move(staged.account)};
+                auto observed=current.account.ObserveReactivatedOperation(located.Id(),fork,view.Point(position).lookups,selected);
+                if(observed.Observations()!=current.account.Observations())
+                    current=Replace(current.revision,std::move(observed));
             }
             cursor=page.next;
         }

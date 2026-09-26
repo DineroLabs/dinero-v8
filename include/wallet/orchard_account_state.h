@@ -113,6 +113,11 @@ private:
   [[nodiscard]] OrchardAccountState
   RestoreArchivedOperation(const orchard::Hash &,
                            const OrchardOperationQueue &) const;
+  // Bound recovery only: replay actual selected branch bodies for a restored
+  // archive reservation without changing scan, source cursor or parent links.
+  [[nodiscard]] OrchardAccountState ObserveReactivatedOperation(
+      const orchard::Hash&,uint32_t fork_height,const OrchardWalletRestoreLookups&,
+      const std::function<StatusOr<uint256>(uint32_t)>& selected_hash) const;
   void VerifyOperationObservation(const orchard::Hash &,
                                   const OrchardWalletRestoreLookups &) const;
   struct Data;

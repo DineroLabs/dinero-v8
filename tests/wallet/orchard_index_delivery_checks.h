@@ -636,6 +636,76 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(enrolled_recover(*archive_down_view).account_revisions==repaired.account_revisions);
     again=archive_down_view->Event(archive_down_view->Head().sequence);
 
+    // A real retained sibling branch: an older account owner advanced its
+    // source receipt there with the operation still archived. Reconciliation
+    // must observe the sibling's genuine input conflict, not just reservations.
+    auto branch_a=PreparedOrchardChainstateWrite::ConnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,parent_forest,{},true,false,FixtureRetirement(c));
+    branch_a->Commit();branch_a.reset();
+    const auto branch_a_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    CHECK(enrolled_recover(*branch_a_view).applied.cursor==branch_a_view->Head());
+    auto archived_a=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*branch_a_view);
+    {
+        const auto lease=ordinary.AcquireDatabaseLease();const auto seed=lease->CopyRecoverySeed(ordinary_session);
+        orchard::Hash identity{};for(size_t i=0;i<32;++i)identity[i]=uint8_t(std::stoul(wallet_identity.substr(7+2*i,2),nullptr,16));
+        CHECK(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+        dinero::wallet::OrchardOperationArchive archive(lease->Database(),{orchard::WalletNetwork::Regtest,c.domain.genesis_wire,identity,0},c.domain,seed->Bytes());
+        auto staged=archive.StageCompleted(archived_a.revision,archived_a.account,orchard::Hash{219},branch_a_view->Point(branch_a_view->Head()).lookups);
+        CHECK(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+        archived_a={staged.revision,std::move(staged.account)};
+    }
+    auto fork_down=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,forest,true);
+    fork_down->Commit();fork_down.reset();const auto fork_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    const auto old_parent=Account::Disconnect(ordinary,ordinary_session,account_profile,archived_a.revision,
+        branch_a_view->Point(branch_a_view->Head()),fork_view->Event(fork_view->Head().sequence),block,fork_view->Point(fork_view->Head()));
+    auto sibling_header=block.Header();++sibling_header.nonce;
+    auto sibling_bytes=block.WireBytes();const auto sibling_prefix=sibling_header.SerializeForHash();
+    std::copy(sibling_prefix.begin(),sibling_prefix.end(),sibling_bytes.begin());
+    const auto sibling=OrchardBlockCandidate::DecodeExact(sibling_bytes);auto sibling_context=c;sibling_context.block_hash=sibling_header.GetHash();
+    CHECK(sibling_context.block_hash!=c.block_hash);
+    const auto sibling_work=RequiredValue(db.getBlockWork(c.block_hash));
+    CHECK(db.putHeader(token,sibling_context.block_hash,sibling_header,c.height,sibling_work)==Status::Ok);
+    ChainDB::PersistedHeaderMetadata sibling_metadata;sibling_metadata.height=c.height;sibling_metadata.parent_hash=c.parent_hash;
+    sibling_metadata.chainwork=sibling_work;sibling_metadata.status_flags=BLOCK_VALID_HEADER;
+    CHECK(db.putHeaderMetadata(token,sibling_context.block_hash,sibling_metadata)==Status::Ok);
+    auto sibling_index=DiskIndex(db,sibling_header,c.height);
+    auto sibling_connect=PreparedOrchardChainstateWrite::ConnectIndexed(lock,db,token,files,sibling_index,live,sibling_context,
+        sibling,parent,parent_forest,{},true,false,FixtureRetirement(sibling_context));
+    sibling_connect->Commit();sibling_connect.reset();const auto sibling_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    const auto sibling_sequence=sibling_view->Head().sequence;
+    const auto old_sibling=Account::Connect(ordinary,ordinary_session,account_profile,old_parent.revision,
+        fork_view->Point(fork_view->Head()),sibling_view->Event(sibling_sequence),sibling,sibling_view->State(sibling_sequence),sibling_view->Authorizations(sibling_sequence));
+    CHECK(old_sibling.account.Operations().Entries().empty());
+    CHECK(!sibling_view->IsAncestorOf(sibling_view->Head(),c.block_hash,c.height));
+    CHECK(sibling_view->ForkHeight(sibling_view->Head(),c.block_hash,c.height)==c.height-1);
+    CHECK(sibling_view->SelectedHashes(sibling_view->Head())(c.height).value()==sibling_context.block_hash);
+    // Reactivation writes first; injected observation write failure must undo
+    // it too, while retaining the preexisting (already-applied) source receipt.
+    ordinary_sql("CREATE TRIGGER reject_branch_observation BEFORE UPDATE ON orchard_wallet_snapshots WHEN OLD.wallet_id=X'"+owned_id_hex+
+        "' AND OLD.account=0 AND OLD.revision="+std::to_string(old_sibling.revision+1)+
+        " BEGIN SELECT RAISE(ABORT,'branch observation');END");
+    failure([&]{(void)enrolled_recover(*sibling_view);},"Orchard wallet storage integrity, transaction or I/O failure");
+    const auto rejected_branch=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*sibling_view);
+    CHECK(rejected_branch.revision==old_sibling.revision&&rejected_branch.account.Operations().Entries().empty());
+    CHECK(rejected_branch.account.Delivery()==old_sibling.account.Delivery());
+    ordinary_sql("DROP TRIGGER reject_branch_observation");
+    ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    const auto reconciled_branch=enrolled_recover(*sibling_view);
+    const auto observed_branch=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*sibling_view);
+    CHECK(observed_branch.account.Operations().Entries().contains(orchard::Hash{219}));
+    CHECK(observed_branch.account.Observations().at(orchard::Hash{219}).block_hash==sibling_context.block_hash);
+    CHECK(observed_branch.account.Observations().at(orchard::Hash{219}).outcome==dinero::wallet::OrchardAccountState::OperationOutcome::Conflicted);
+    CHECK(observed_branch.account.Delivery()==old_sibling.account.Delivery());
+    CHECK(observed_branch.account.ParentSnapshotRevision()==old_sibling.account.ParentSnapshotRevision());
+    CHECK(observed_branch.account.Scan().BalanceUna()==5000&&observed_branch.account.Archive().count==1);
+    CHECK(observed_branch.account.IssueReceiver(orchard::WalletScope::External).second.Raw()==next_receiver);
+    CHECK(enrolled_recover(*sibling_view).account_revisions==reconciled_branch.account_revisions);
+    auto sibling_disconnect=PreparedOrchardChainstateWrite::DisconnectIndexed(lock,db,token,files,sibling_index,live,sibling_context,sibling,parent,forest,true);
+    sibling_disconnect->Commit();sibling_disconnect.reset();const auto sibling_down_view=RuntimeAccountReplayTestAccess::Capture(db,c);
+    CHECK(enrolled_recover(*sibling_down_view).applied.cursor==sibling_down_view->Head());
+    const auto after_sibling=Account::ReadForReplay(ordinary,ordinary_session,account_profile,*sibling_down_view);
+    CHECK(after_sibling.account.Operations().Entries().contains(orchard::Hash{219})&&!after_sibling.account.Observations().contains(orchard::Hash{219}));
+    again=sibling_down_view->Event(sibling_down_view->Head().sequence);
+
     ordinary_sql("DROP TRIGGER runtime_ordinary_utxos_UPDATE");
     failure([&]{(void)RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);},"guard unavailable");
     ordinary_sql("CREATE TRIGGER runtime_ordinary_utxos_UPDATE AFTER UPDATE ON utxos BEGIN UPDATE wallet_meta SET runtime_ordinary_invalid=1,runtime_ordinary_receipt=NULL WHERE id=1 AND runtime_ordinary_receipt IS NOT NULL; END");

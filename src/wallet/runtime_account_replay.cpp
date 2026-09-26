@@ -222,6 +222,19 @@ std::function<StatusOr<uint256>(uint32_t)> RuntimeAccountReplay::SelectedHashes(
         }
     };
 }
+uint32_t RuntimeAccountReplay::ForkHeight(RuntimeOutboxCursor cursor,const uint256& block,uint32_t height) const {
+    const auto checkpoint=Point(cursor).checkpoint;
+    auto left=checkpoint.block_hash,right=block;auto lh=checkpoint.height,rh=height;
+    const auto parent=[&](uint256& hash,uint32_t& h){
+        const auto& node=data_->At(hash);Require(h>0&&node.height==h);
+        hash=node.parent;--h;Require(data_->At(hash).height==h);
+    };
+    Require(data_->At(right).height==rh);
+    while(lh>rh)parent(left,lh);
+    while(rh>lh)parent(right,rh);
+    while(left!=right){parent(left,lh);parent(right,rh);}
+    return lh;
+}
 bool RuntimeAccountReplay::IsAncestorOf(RuntimeOutboxCursor cursor,const uint256& block,uint32_t height) const {
     const auto point=Point(cursor).checkpoint;auto hash=block;
     if(height<point.height)return false;

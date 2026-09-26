@@ -1,5 +1,9 @@
 # Archived operation reactivation in coordinated recovery
 
+The replacement-branch extension is described in
+`wallet-archive-branch-replay-2026-09-26.md`. The ancestor-only behavior and
+qualification below describe the preceding implementation.
+
 ## Behavior
 
 The account recovery coordinator now uses `OrchardAccountDelivery::ApplyForReplay`.

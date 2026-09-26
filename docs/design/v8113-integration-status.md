@@ -21,8 +21,10 @@ account-complete baseline. Ordered ancestor reactivation is described below.
 Coordinated account delivery now restores archived pending reservations during
 ordered undo in the same transaction as account effects and source progress.
 Already-applied ancestor checkpoints are reconciled too. Immutable branch
-identity checks refuse missing ancestry and already-diverged checkpoints that
-need observation replay. See `wallet-archive-reactivation-2026-09-26.md`.
+identity checks refuse missing ancestry. Replacement-branch observation replay
+now uses actual bodies from the covered common ancestor; see
+`wallet-archive-reactivation-2026-09-26.md` and
+`wallet-archive-branch-replay-2026-09-26.md`.
 This does not install a provider or complete baseline/history qualification.
 
 ## Current recovery integration (2026-09-26)

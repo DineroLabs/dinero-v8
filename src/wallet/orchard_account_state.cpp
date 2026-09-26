@@ -593,6 +593,41 @@ OrchardAccountState OrchardAccountState::RestoreArchivedOperation(
   next->operations.CheckUniqueReservations();
   return OrchardAccountState(std::move(next));
 }
+OrchardAccountState OrchardAccountState::ObserveReactivatedOperation(
+    const Hash& id,uint32_t fork_height,const OrchardWalletRestoreLookups& lookups,
+    const std::function<StatusOr<uint256>(uint32_t)>& selected_hash) const {
+  const auto& checkpoint=data_->scan.Checkpoint();
+  Check(bool(selected_hash)&&fork_height<=checkpoint.height&&
+        data_->operations.Entries().contains(id)&&!data_->observations.contains(id));
+  const auto selected=[&](uint32_t height){
+    const auto hash=selected_hash(height);
+    if(!hash.ok())throw OrchardStateLookupError(hash.status());
+    Check(!hash->IsNull());return *hash;
+  };
+  auto previous=selected(fork_height);auto next=std::make_shared<Data>(*data_);
+  const auto& entry=next->operations.Entries().at(id);
+  for(uint64_t height=uint64_t(fork_height)+1;height<=checkpoint.height;++height){
+    const auto hash=selected(uint32_t(height));
+    const auto observed=[&]{
+      if(height<data_->activation){
+        Check(bool(lookups.selected_historical_block));
+        const auto block=lookups.selected_historical_block(uint32_t(height),hash);
+        Check(bool(block)&&block->GetHash()==hash&&block->header.prev_block_hash==previous);
+        return BlockObservations(*block);
+      }
+      Check(bool(lookups.selected_block));
+      const auto block=lookups.selected_block(uint32_t(height),hash);std::string error;
+      Check(bool(block)&&block->Header().GetHash()==hash&&block->Header().prev_block_hash==previous&&
+            block->CheckSizeLimits(error)&&block->CheckIdentityCommitments(true,error));
+      return BlockObservations(*block);
+    }();
+    if(!next->observations.contains(id))
+      if(auto observation=observed.Find(entry,uint32_t(height)))next->observations.emplace(id,*observation);
+    previous=hash;
+  }
+  Check(previous==checkpoint.block_hash);
+  return OrchardAccountState(std::move(next));
+}
 OrchardAccountState OrchardAccountState::RestoreForRescan(
     const WalletStateBytes &bytes, SigningDomain domain,
     const FullViewingKeyBytes &fvk, uint32_t activation,
