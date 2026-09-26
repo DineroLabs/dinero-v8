@@ -53,6 +53,14 @@ This branch collects release implementation for review and qualification against
   Historical journal behavior stays optional before activation. This is not yet
   complete startup/replay/reindex or production connection; see the service
   startup audit design and generated-store qualification scope.
+- The actual startup undo-coverage walk now routes retained Orchard bodies under
+  the activation lock, restoring and reversing a private forest across the
+  requested window. Exact indexed/embedded body and undo, commit records,
+  coin/delta correspondence, filters and indexes are checked without database
+  writes. Missing Orchard material enters safe mode instead of ending the old
+  historical walk as success. This is bounded retained-material coverage, not
+  historical consensus replay or stateless support; see the service undo-coverage
+  design. The separate tip-local audit remains mandatory.
 - The actual legacy persistence helpers now preserve frozen retirement state.
   Shutdown/notifications can confirm an unchanged cache without rewriting it;
   legacy marker rebinding and snapshot replacement refuse while retirement exists.

@@ -32,6 +32,23 @@ namespace dinero::consensus {
 void AuditOrchardChainstateTipUnderLock(ChainDB&, const ChainWriteToken&,
     const OrchardBlockContext&, const BlockHeader& parent, const UtreexoForest&,
     bool require_witness_commitment);
+struct OrchardUndoCoverageStep {
+    std::optional<storage::OrchardStoredState> parent_state;
+    UtreexoForest parent_forest;
+};
+// Read-only retained-undo coverage for one selected historical Orchard block.
+// The caller walks backwards from the authoritative tip/state/forest under its
+// selected writer lock. Checks exact indexed/embedded body and conventional
+// undo, net coin identities and delta leaves, forest reversal, stored filters,
+// active tx indexes and both state commit records. No live coin-row comparison
+// is made for older blocks: descendants may legitimately have spent them.
+// This is not consensus replay or an audit of historical nullifier ownership;
+// the separate tip-local state audit remains mandatory. No DB writes occur.
+[[nodiscard]] OrchardUndoCoverageStep AuditOrchardUndoStepUnderLock(
+    const ChainDB&, const BlockStorage&, const OrchardBlockContext&,
+    const OrchardBlockCandidate&, const BlockHeader& parent,
+    const storage::OrchardStoredState&, const UtreexoForest&,
+    bool require_witness_commitment);
 // Caller holds the chainstate writer lock from coin resolution/authorization
 // through commit. All supplied authorizations must come from that held view.
 // This stages ONLY Orchard state in the caller's batch. UTXO/forest/tip/index

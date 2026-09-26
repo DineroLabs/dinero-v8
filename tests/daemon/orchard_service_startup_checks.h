@@ -36,6 +36,9 @@ struct ShieldedStateStartupTestAccess {
         std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
         return s.VerifyConsensusJournalAtActiveTip();
     }
+    static bool UndoCoverage(ChainstateService& s, uint32_t height, uint32_t count) {
+        return s.VerifyActiveChainUndoCoverage(height,count);
+    }
     static void StaleMemory(ChainstateService& s) { s.consensus_utxo_set_->SetBestBlock(uint256{},0); }
     static void EmptyForest(ChainstateService& s) { s.consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest{}); }
     static bool Verified(const ChainstateService& s) { return s.journal_verified_at_startup_; }
@@ -56,6 +59,92 @@ struct ShieldedStateStartupTestAccess {
         CHECK(s.published_tip_height_==(next?uint32_t(next->height):0));
     }
 };
+}
+static void ServiceUndoCoverageChecks(ChainDB& db,const OrchardBlockContext& c,
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
+    using Access=dinero::ShieldedStateStartupTestAccess;
+    const auto old_params=Params();const auto old_config=GetConfig();
+    struct Restore { ChainParams p;NodeConfig c;~Restore(){MutableParams()=p;GetConfig()=c;} } restore{old_params,old_config};
+    MutableParams().orchard_activation_height=c.activation_height;
+    MutableParams().orchard_branch_id=c.domain.branch_id;
+    MutableParams().enforce_witness_commitment=true;
+    MutableParams().witness_commitment_enforcement_height=c.activation_height;
+    GetConfig().utreexo_stateless=false;
+    TempDir flatfiles;auto files=std::make_shared<BlockStorage>();CHECK(files->init(flatfiles.path)==Status::Ok);
+    const auto body=RequiredValue(files->writeBlockBytes(c.block_hash,std::string(block.WireBytes().begin(),block.WireBytes().end())));
+    const auto undo=RequiredValue(db.getUndo(c.block_hash));
+    const auto undo_pos=RequiredValue(files->writeUndo(c.block_hash,undo.Serialize()));
+    ChainDB::PersistedHeaderMetadata metadata;
+    metadata.height=c.height;metadata.parent_hash=c.parent_hash;
+    metadata.chainwork=RequiredValue(db.getBlockWork(c.block_hash));
+    metadata.status_flags=BLOCK_VALID_HEADER|BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO;
+    metadata.file_number=body.file_number;metadata.data_pos=body.offset;metadata.data_size=body.size;
+    metadata.undo_file=undo_pos.file_number;metadata.undo_pos=undo_pos.offset;metadata.undo_size=undo_pos.size;
+    CHECK(db.putHeaderMetadata(token,c.block_hash,metadata)==Status::Ok);
+    const auto check=[&](bool expected,uint32_t height,uint32_t count) {
+        db.close();const auto before=Inspect(path);CHECK(db.init(path)==Status::Ok);
+        {
+            ChainstateService service;service.setChainDB(&db);service.setBlockStorage(files);
+            CHECK(Access::UndoCoverage(service,height,count)==expected);
+            CHECK(service.IsInSafeMode()==!expected);
+        }
+        db.close();CHECK(Inspect(path)==before);CHECK(db.init(path)==Status::Ok);
+    };
+    check(true,c.height,1);
+    auto missing=metadata;missing.undo_size=0;
+    CHECK(db.putHeaderMetadata(token,c.block_hash,missing)==Status::Ok);
+    check(false,c.height,1); // A mixed body must not end the historical walk as success.
+    CHECK(db.putHeaderMetadata(token,c.block_hash,metadata)==Status::Ok);
+    check(true,c.height,1);
+    auto failed_metadata=metadata;failed_metadata.status_flags|=BLOCK_FAILED_VALID;
+    CHECK(db.putHeaderMetadata(token,c.block_hash,failed_metadata)==Status::Ok);check(false,c.height,1);
+    CHECK(db.putHeaderMetadata(token,c.block_hash,metadata)==Status::Ok);
+    check(false,c.height-1,1); // Persisted Orchard state forbids a legacy fallback.
+    GetConfig().utreexo_stateless=true;check(false,c.height,1);GetConfig().utreexo_stateless=false;
+    ++MutableParams().orchard_branch_id;check(false,c.height,1);--MutableParams().orchard_branch_id;
+    MutableParams().orchard_activation_height=UINT32_MAX;MutableParams().orchard_branch_id=0;
+    check(false,c.height,1);
+    MutableParams().orchard_activation_height=c.activation_height;MutableParams().orchard_branch_id=c.domain.branch_id;
+    JournalContinuation(db,c,block,forest,true,[&](const OrchardBlockContext& next,
+        const OrchardBlockCandidate& child,const UtreexoForest&) {
+        auto child_metadata=metadata;child_metadata.height=next.height;child_metadata.parent_hash=next.parent_hash;
+        child_metadata.chainwork=RequiredValue(db.getBlockWork(next.block_hash));
+        const auto child_body=RequiredValue(files->writeBlockBytes(next.block_hash,
+            std::string(child.WireBytes().begin(),child.WireBytes().end())));
+        const auto child_undo=RequiredValue(files->writeUndo(next.block_hash,RequiredValue(db.getUndo(next.block_hash)).Serialize()));
+        child_metadata.file_number=child_body.file_number;child_metadata.data_pos=child_body.offset;child_metadata.data_size=child_body.size;
+        child_metadata.undo_file=child_undo.file_number;child_metadata.undo_pos=child_undo.offset;child_metadata.undo_size=child_undo.size;
+        CHECK(db.putHeaderMetadata(token,next.block_hash,child_metadata)==Status::Ok);
+        check(true,next.height,1);check(true,next.height,2);
+        CHECK(db.putHeaderMetadata(token,c.block_hash,missing)==Status::Ok);
+        check(true,next.height,1);check(false,next.height,2);check(false,next.height,0);
+        CHECK(db.putHeaderMetadata(token,c.block_hash,metadata)==Status::Ok);
+        // Both representations agree on a changed coin, but the committed
+        // forest delta still identifies the actual spent coin.
+        auto changed=undo;CHECK(!changed.spent.empty());++changed.spent.front().value;
+        const auto altered=RequiredValue(files->writeUndo(c.block_hash,changed.Serialize()));
+        auto changed_metadata=metadata;changed_metadata.undo_file=altered.file_number;
+        changed_metadata.undo_pos=altered.offset;changed_metadata.undo_size=altered.size;
+        CHECK(db.putHeaderMetadata(token,c.block_hash,changed_metadata)==Status::Ok);
+        CHECK(db.putUndo(token,c.block_hash,changed)==Status::Ok);
+        check(true,next.height,1);check(false,next.height,2);
+        CHECK(db.putHeaderMetadata(token,c.block_hash,metadata)==Status::Ok);
+        CHECK(db.putUndo(token,c.block_hash,undo)==Status::Ok);
+        // An indexed body with a changed proof suffix must not be substituted
+        // for the exact bytes retained by the atomic commit.
+        auto changed_wire=block.WireBytes();changed_wire.back()^=1;
+        const auto other_body=RequiredValue(files->writeBlockBytes(c.block_hash,
+            std::string(changed_wire.begin(),changed_wire.end())));
+        changed_metadata=metadata;changed_metadata.file_number=other_body.file_number;
+        changed_metadata.data_pos=other_body.offset;changed_metadata.data_size=other_body.size;
+        CHECK(db.putHeaderMetadata(token,c.block_hash,changed_metadata)==Status::Ok);
+        check(true,next.height,1);check(false,next.height,2);
+        CHECK(db.putHeaderMetadata(token,c.block_hash,metadata)==Status::Ok);
+        check(true,next.height,2);
+    });
+    check(true,c.height,1);
+    std::cout<<"Service undo coverage: bounded two-block walk, ancestor undo, coin/delta binding, exact body, safe mode and unchanged logical storage checked\n";
+
 }
 static void ServiceStartupChecks(ChainDB& db,const OrchardBlockContext& c,
     const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {

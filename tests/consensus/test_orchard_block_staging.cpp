@@ -495,7 +495,8 @@ static void CrashChild(int argc,char** argv) {
     std::_Exit(published?75:post?74:73);
 }
 static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
-    const OrchardBlockCandidate& parent,const UtreexoForest& parent_forest,bool checkpoint) {
+    const OrchardBlockCandidate& parent,const UtreexoForest& parent_forest,bool checkpoint,
+    const std::function<void(const OrchardBlockContext&,const OrchardBlockCandidate&,const UtreexoForest&)>& audit={}) {
     auto next=previous;++next.height;next.parent_hash=previous.block_hash;
     View view;view.height=previous.height;
     const auto uncommitted=CandidateWires(next,{},42);next.block_hash=uncommitted.Header().GetHash();
@@ -523,6 +524,7 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     Commit(db,connect);
     CHECK(RequiredValue(db.getOrchardUndoParent(staged.block.orchard.Next()))==parent_state);
     AuditOrchardChainstateTipUnderLock(db,token,next,parent.Header(),staged.forest.After(),true);
+    if(audit)audit(next,child,staged.forest.After());
     // A valid current record cannot authorize restoring a different/missing
     // parent's state. Check the saved parent record as part of reversal too.
     rocksdb::WriteBatch erase_parent;erase_parent.Delete(key);Commit(db,erase_parent);
@@ -918,6 +920,11 @@ int main(int argc,char**argv) {
             AtomicForest(argv[2],false,{},false,false,ServiceStartupChecks);
             AtomicForest(argv[2],true,{},false,false,ServiceStartupChecks);
             std::cout<<"OrchardServiceStartup PASS\n";return 0;
+        }
+        if(argc==3 && std::string(argv[1])=="--service-undo-coverage") {
+            AtomicForest(argv[2],false,{},false,false,ServiceUndoCoverageChecks);
+            AtomicForest(argv[2],true,{},false,false,ServiceUndoCoverageChecks);
+            std::cout<<"OrchardServiceUndoCoverage PASS\n";return 0;
         }
 #endif
         if(argc>1 && (std::string(argv[1])=="--crash-child" || std::string(argv[1])=="--owner-child" || std::string(argv[1])=="--indexed-child")) {CrashChild(argc,argv);return 2;}

@@ -1,6 +1,7 @@
 #include "consensus/orchard_block_staging.h"
 #include "storage/chain_db.h"
 #include "storage/block_storage.h"
+#include "consensus/block_index.h"
 #include "consensus/orchard_block_filter.h"
 #include "consensus/filter_commitment.h"
 #include "consensus/orchard_state_root.h"
@@ -224,6 +225,119 @@ OrchardBlockContext ParentContext(const OrchardBlockContext& current,const Block
     auto result=current;--result.height;result.block_hash=parent.GetHash();result.parent_hash=parent.prev_block_hash;
     return result;
 }
+struct UndoCoinModel {
+    std::map<OutPoint,UTXOEntry> created;
+    std::set<OutPoint> spent,expected_created,expected_spent;
+};
+UndoCoinModel CheckUndoBody(const OrchardBlockCandidate& block,uint32_t height,const UndoRecord& undo) {
+    const auto corrupt=[] { throw OrchardStateLookupError(Status::Corruption); };
+    if (undo.pre_block_shielded_frontier || undo.pre_block_shielded_anchors || undo.pre_reset_shielded_epoch) corrupt();
+    // Reconstruct exact net row identities from the authenticated body, without
+    // re-running signatures against coins that have already been spent.
+    UndoCoinModel model;
+    auto& created=model.created;auto& spent=model.spent;
+    std::set<TxId> ids;
+    for (size_t index=0;index<block.Transactions().size();++index) {
+        const auto& parsed=block.Transactions()[index];const auto id=parsed.GetTxid();
+        if (!ids.insert(id).second) corrupt();
+        if (parsed.IsOrchard()) {
+            for (const auto& input:parsed.Orchard().Inputs()) {
+                uint256 hash;std::copy(input.txid_wire.begin(),input.txid_wire.end(),hash.begin());
+                if (!spent.emplace(TxId(hash),input.output_index).second) corrupt();
+            }
+            for (size_t i=0;i<parsed.Orchard().Outputs().size();++i) {
+                const auto& out=parsed.Orchard().Outputs()[i];
+                created.emplace(OutPoint(id,uint32_t(i)),UTXOEntry(AmountUna::Una(out.amount_una),out.script_pub_key,height,false));
+            }
+        } else {
+            const auto& tx=parsed.Historical();
+            if (tx.IsCoinbase()!=(index==0) || Transaction::IsShieldedVersion(tx.version) || !tx.shielded_bundle_bytes.empty()) corrupt();
+            if (index!=0) for (const auto& input:tx.vin)
+                if (!spent.emplace(input.prevout.txid,input.prevout.vout).second) corrupt();
+            for (size_t i=0;i<tx.vout.size();++i) {
+                const auto& out=tx.vout[i];
+                if (out.is_confidential || !out.commitment.empty() || out.value.GetUna()>orchard::kMaxMoneyUna) corrupt();
+                created.emplace(OutPoint(id,uint32_t(i)),UTXOEntry(out.value,out.scriptPubKey,height,index==0));
+            }
+        }
+    }
+    auto& expected_created=model.expected_created;auto& expected_spent=model.expected_spent;
+    for (const auto& [point,coin]:created) if (!spent.contains(point)) expected_created.insert(point);
+    for (const auto& point:spent) if (!created.contains(point)) expected_spent.insert(point);
+    std::set<OutPoint> undo_created,undo_spent;
+    for (const auto& coin:undo.created) if (!undo_created.emplace(TxId(coin.txid),coin.vout).second) corrupt();
+    for (const auto& coin:undo.spent) {
+        if (!undo_spent.emplace(TxId(coin.prev_txid),coin.prev_vout).second ||
+            coin.height>=height || coin.value>orchard::kMaxMoneyUna ||
+            coin.is_confidential || !coin.commitment.empty()) corrupt();
+    }
+    if (undo_created!=expected_created || undo_spent!=expected_spent) corrupt();
+    return model;
+}
+void CheckUndoDeltaCoins(const std::vector<OrchardCoinChange>& changes,
+    const UtreexoDelta& delta,const UtreexoForest& restored) {
+    // The undo record's shape alone cannot authenticate its restored coins.
+    // Require correspondence under the existing creation-height leaf rules to the delta
+    // whose rollback just reproduced the selected parent's forest commitment.
+    std::set<UtreexoHash> removed,added;
+    for(const auto& leaf:delta.deletedLeaves)
+        if(!removed.insert(leaf.leafHash).second)throw OrchardStateLookupError(Status::Corruption);
+    for(const auto& leaf:delta.addedLeaves)
+        if(!added.insert(leaf.hash).second)throw OrchardStateLookupError(Status::Corruption);
+    for(const auto& change:changes) {
+        const auto hash=[&](const UTXOEntry& coin) {
+            return HashUTXOForCreationHeight(change.outpoint.txid.AsUint256(),change.outpoint.vout,
+                coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
+        };
+        if(change.before) {
+            if(added.erase(hash(*change.before))!=1)throw OrchardStateLookupError(Status::Corruption);
+        }
+        if(change.after) {
+            const auto leaf=hash(*change.after);
+            if(removed.erase(leaf)!=1 || !restored.findLeafPosition(leaf))
+                throw OrchardStateLookupError(Status::Corruption);
+        }
+    }
+    if(!removed.empty() || !added.empty())throw OrchardStateLookupError(Status::Corruption);
+}
+void CheckStoredFilter(const ChainDB& db,const OrchardBlockContext& context,
+    const OrchardBlockCandidate& block,const UndoRecord& undo) {
+    std::map<OutPoint,std::vector<uint8_t>> scripts_by_coin;
+    std::vector<std::vector<uint8_t>> scripts;
+    for(const auto& coin:undo.spent)
+        scripts_by_coin.emplace(OutPoint(TxId(coin.prev_txid),coin.prev_vout),coin.scriptPubKey);
+    for(const auto& tx:block.Transactions()) {
+        const auto add=[&](uint32_t n,const std::vector<uint8_t>& script) {
+            scripts_by_coin.emplace(OutPoint(tx.GetTxid(),n),script);
+            if(!script.empty() && script.front()!=0x6a)scripts.push_back(script);
+        };
+        if(tx.IsOrchard()) {
+            const auto& outputs=tx.Orchard().Outputs();
+            for(size_t i=0;i<outputs.size();++i)add(uint32_t(i),outputs[i].script_pub_key);
+        } else {
+            const auto& outputs=tx.Historical().vout;
+            for(size_t i=0;i<outputs.size();++i)add(uint32_t(i),outputs[i].scriptPubKey);
+        }
+    }
+    const auto spent_script=[&](const OutPoint& point) {
+        const auto it=scripts_by_coin.find(point);
+        if(it==scripts_by_coin.end())throw OrchardStateLookupError(Status::Corruption);
+        if(!it->second.empty())scripts.push_back(it->second);
+    };
+    for(size_t i=1;i<block.Transactions().size();++i) {
+        const auto& tx=block.Transactions()[i];
+        if(tx.IsOrchard())for(const auto& in:tx.Orchard().Inputs()) {
+            uint256 hash;std::copy(in.txid_wire.begin(),in.txid_wire.end(),hash.begin());
+            spent_script(OutPoint(TxId(hash),in.output_index));
+        } else for(const auto& in:tx.Historical().vin)spent_script(OutPoint(in.prevout.txid,in.prevout.vout));
+    }
+    const auto filter=GCSFilter::Build(scripts,context.parent_hash);
+    const auto stored_filter=RequiredLocal(db.getBlockFilter(context.block_hash));
+    std::string filter_error;
+    if(stored_filter.data!=filter.encoded_data || stored_filter.element_count!=filter.element_count ||
+        !ValidateFilterCommitment(block.Transactions()[0].Historical(),filter.GetHash(),context.height,filter_error))
+        throw OrchardStateLookupError(Status::Corruption);
+}
 }
 storage::LegacyRetirementRecord DeriveSelectedLegacyRetirementUnderLock(
     const ChainDB& db,const BlockStorage* blocks,uint32_t maximum_epoch_blocks) {
@@ -420,47 +534,9 @@ std::vector<OrchardCoinChange> StageOrchardBlockCoinsAndStateDisconnectUnderChai
     if (state->height!=context.height || state->block_hash!=context.block_hash) corrupt();
     const auto undo=db.getUndo(context.block_hash);
     if (!undo.ok()) throw OrchardStateLookupError(undo.status()==Status::NotFound?Status::Corruption:undo.status());
-    if (undo->pre_block_shielded_frontier || undo->pre_block_shielded_anchors || undo->pre_reset_shielded_epoch) corrupt();
-    // Reconstruct exact net row identities from the authenticated body, without
-    // re-running signatures against coins that have already been spent.
-    std::map<OutPoint,UTXOEntry> created;
-    std::set<OutPoint> spent;
-    std::set<TxId> ids;
-    for (size_t index=0;index<block.Transactions().size();++index) {
-        const auto& parsed=block.Transactions()[index];const auto id=parsed.GetTxid();
-        if (!ids.insert(id).second) corrupt();
-        if (parsed.IsOrchard()) {
-            for (const auto& input:parsed.Orchard().Inputs()) {
-                uint256 hash;std::copy(input.txid_wire.begin(),input.txid_wire.end(),hash.begin());
-                if (!spent.emplace(TxId(hash),input.output_index).second) corrupt();
-            }
-            for (size_t i=0;i<parsed.Orchard().Outputs().size();++i) {
-                const auto& out=parsed.Orchard().Outputs()[i];
-                created.emplace(OutPoint(id,uint32_t(i)),UTXOEntry(AmountUna::Una(out.amount_una),out.script_pub_key,context.height,false));
-            }
-        } else {
-            const auto& tx=parsed.Historical();
-            if (tx.IsCoinbase()!=(index==0) || Transaction::IsShieldedVersion(tx.version) || !tx.shielded_bundle_bytes.empty()) corrupt();
-            if (index!=0) for (const auto& input:tx.vin)
-                if (!spent.emplace(input.prevout.txid,input.prevout.vout).second) corrupt();
-            for (size_t i=0;i<tx.vout.size();++i) {
-                const auto& out=tx.vout[i];
-                if (out.is_confidential || !out.commitment.empty() || out.value.GetUna()>orchard::kMaxMoneyUna) corrupt();
-                created.emplace(OutPoint(id,uint32_t(i)),UTXOEntry(out.value,out.scriptPubKey,context.height,index==0));
-            }
-        }
-    }
-    std::set<OutPoint> expected_created,expected_spent;
-    for (const auto& [point,coin]:created) if (!spent.contains(point)) expected_created.insert(point);
-    for (const auto& point:spent) if (!created.contains(point)) expected_spent.insert(point);
-    std::set<OutPoint> undo_created,undo_spent;
-    for (const auto& coin:undo->created) if (!undo_created.emplace(TxId(coin.txid),coin.vout).second) corrupt();
-    for (const auto& coin:undo->spent) {
-        if (!undo_spent.emplace(TxId(coin.prev_txid),coin.prev_vout).second ||
-            coin.height>=context.height || coin.value>orchard::kMaxMoneyUna ||
-            coin.is_confidential || !coin.commitment.empty()) corrupt();
-    }
-    if (undo_created!=expected_created || undo_spent!=expected_spent) corrupt();
+    const auto model=CheckUndoBody(block,context.height,*undo);
+    const auto& created=model.created;const auto& spent=model.spent;
+    const auto& expected_created=model.expected_created;const auto& expected_spent=model.expected_spent;
     const DatabaseCoins current(db,context.height);
     for (const auto& [point,expected]:created) {
         const auto coin=current.getCoin(point);
@@ -624,68 +700,12 @@ StagedOrchardDisconnect StageOrchardChainstateDisconnectUnderLock(ChainDB& db,
     if(undo_parent)CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,restored,*undo_parent);
     auto changes=StageOrchardBlockCoinsAndStateDisconnectUnderChainstateLock(db,token,context,block,
         require_witness_commitment,batch);
-    // The undo record's shape alone cannot authenticate its restored coins.
-    // Require correspondence under the existing creation-height leaf rules to the delta
-    // whose rollback just reproduced the selected parent's forest commitment.
-    std::set<UtreexoHash> removed,added;
-    for(const auto& leaf:delta.deletedLeaves)
-        if(!removed.insert(leaf.leafHash).second)throw OrchardStateLookupError(Status::Corruption);
-    for(const auto& leaf:delta.addedLeaves)
-        if(!added.insert(leaf.hash).second)throw OrchardStateLookupError(Status::Corruption);
-    for(const auto& change:changes) {
-        const auto hash=[&](const UTXOEntry& coin) {
-            return HashUTXOForCreationHeight(change.outpoint.txid.AsUint256(),change.outpoint.vout,
-                coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
-        };
-        if(change.before) {
-            if(added.erase(hash(*change.before))!=1)throw OrchardStateLookupError(Status::Corruption);
-        }
-        if(change.after) {
-            const auto leaf=hash(*change.after);
-            if(removed.erase(leaf)!=1 || !restored.findLeafPosition(leaf))
-                throw OrchardStateLookupError(Status::Corruption);
-        }
-    }
-    if(!removed.empty() || !added.empty())throw OrchardStateLookupError(Status::Corruption);
+    CheckUndoDeltaCoins(changes,delta,restored);
     // Coins/undo have now been checked against the exact body. Reconstruct
     // the filter independently, including inputs spent within this same block.
     // The encoded-data hash alone does not authenticate the stored element count.
     const auto undo=RequiredLocal(db.getUndo(context.block_hash));
-    std::map<OutPoint,std::vector<uint8_t>> scripts_by_coin;
-    std::vector<std::vector<uint8_t>> scripts;
-    for(const auto& coin:undo.spent)
-        scripts_by_coin.emplace(OutPoint(TxId(coin.prev_txid),coin.prev_vout),coin.scriptPubKey);
-    for(const auto& tx:block.Transactions()) {
-        const auto add=[&](uint32_t n,const std::vector<uint8_t>& script) {
-            scripts_by_coin.emplace(OutPoint(tx.GetTxid(),n),script);
-            if(!script.empty() && script.front()!=0x6a)scripts.push_back(script);
-        };
-        if(tx.IsOrchard()) {
-            const auto& outputs=tx.Orchard().Outputs();
-            for(size_t i=0;i<outputs.size();++i)add(uint32_t(i),outputs[i].script_pub_key);
-        } else {
-            const auto& outputs=tx.Historical().vout;
-            for(size_t i=0;i<outputs.size();++i)add(uint32_t(i),outputs[i].scriptPubKey);
-        }
-    }
-    const auto spent_script=[&](const OutPoint& point) {
-        const auto it=scripts_by_coin.find(point);
-        if(it==scripts_by_coin.end())throw OrchardStateLookupError(Status::Corruption);
-        if(!it->second.empty())scripts.push_back(it->second);
-    };
-    for(size_t i=1;i<block.Transactions().size();++i) {
-        const auto& tx=block.Transactions()[i];
-        if(tx.IsOrchard())for(const auto& in:tx.Orchard().Inputs()) {
-            uint256 hash;std::copy(in.txid_wire.begin(),in.txid_wire.end(),hash.begin());
-            spent_script(OutPoint(TxId(hash),in.output_index));
-        } else for(const auto& in:tx.Historical().vin)spent_script(OutPoint(in.prevout.txid,in.prevout.vout));
-    }
-    const auto filter=GCSFilter::Build(scripts,context.parent_hash);
-    const auto stored_filter=RequiredLocal(db.getBlockFilter(context.block_hash));
-    std::string filter_error;
-    if(stored_filter.data!=filter.encoded_data || stored_filter.element_count!=filter.element_count ||
-        !ValidateFilterCommitment(block.Transactions()[0].Historical(),filter.GetHash(),context.height,filter_error))
-        throw OrchardStateLookupError(Status::Corruption);
+    CheckStoredFilter(db,context,block,undo);
     for(const auto& tx:block.Transactions())StorageCheck(db.deleteTxIndex(token,tx.GetTxid().AsUint256(),&batch));
     StorageCheck(db.deleteHeightIndex(token,int(context.height),&batch));
     StorageCheck(db.deleteUtreexoCheckpointWithChecksum(token,int(context.height),&batch));
@@ -703,5 +723,58 @@ void AuditOrchardChainstateTipUnderLock(ChainDB& db,const ChainWriteToken& token
     // nullifier owners, anchor references, indexes and persistent undo/delta.
     (void)StageOrchardChainstateDisconnectUnderLock(db,token,context,block,parent,forest,
         require_witness_commitment,abandoned);
+}
+OrchardUndoCoverageStep AuditOrchardUndoStepUnderLock(
+    const ChainDB& db,const BlockStorage& files,const OrchardBlockContext& context,
+    const OrchardBlockCandidate& block,const BlockHeader& parent,
+    const storage::OrchardStoredState& state,const UtreexoForest& forest,bool witness) {
+    const auto corrupt=[] { throw OrchardStateLookupError(Status::Corruption); };
+    std::string error;
+    if(!context.activation_height || context.height<context.activation_height ||
+        context.activation_height==UINT32_MAX || state.height!=context.height ||
+        state.block_hash!=context.block_hash || block.Header().GetHash()!=context.block_hash ||
+        block.Header().prev_block_hash!=context.parent_hash || parent.GetHash()!=context.parent_hash ||
+        !block.Header().IsReservedValid() || !block.CheckSizeLimits(error) ||
+        !block.CheckCoinbaseHeight(context.height,error) || !block.CheckIdentityCommitments(witness,error)) corrupt();
+    const auto metadata=RequiredLocal(db.getHeaderMetadata(context.block_hash));
+    if(metadata.height!=int(context.height) || metadata.parent_hash!=context.parent_hash ||
+        (metadata.status_flags&(BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO))!=(BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO) ||
+        (metadata.status_flags&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)) ||
+        !metadata.data_size || !metadata.undo_size ||
+        RequiredLocal(db.getBlockHashByHeight(int(context.height)))!=context.block_hash) corrupt();
+    const auto raw=RequiredLocal(files.readBlockBytes({metadata.file_number,metadata.data_pos,metadata.data_size}));
+    const auto& wire=block.WireBytes();
+    if(raw!=std::string(wire.begin(),wire.end()) || RequiredLocal(db.getBlockEncoding(context.block_hash))!=wire) corrupt();
+    const auto undo=RequiredLocal(db.getUndo(context.block_hash));
+    if(RequiredLocal(files.readUndo({metadata.undo_file,metadata.undo_pos,metadata.undo_size}))!=undo.Serialize()) corrupt();
+    const auto work=StoredHeaderWork(db,block.Header(),context.height);
+    const auto parent_work=StoredHeaderWork(db,parent,context.height-1);
+    if(work!=metadata.chainwork || work<=parent_work) corrupt();
+    CheckCommitRecord(db,context,block.Header(),work,forest,state);
+    auto parent_state=RequiredLocal(db.getOrchardUndoParent(state));
+    if((context.height==context.activation_height)!=!parent_state) corrupt();
+    if(parent_state && (parent_state->height+uint64_t{1}!=context.height ||
+        parent_state->block_hash!=context.parent_hash)) corrupt();
+    const auto model=CheckUndoBody(block,context.height,undo);
+    std::vector<OrchardCoinChange> changes;
+    changes.reserve(model.expected_created.size()+undo.spent.size());
+    for(const auto& point:model.expected_created)changes.push_back({point,model.created.at(point),std::nullopt});
+    for(const auto& coin:undo.spent)changes.push_back({OutPoint(TxId(coin.prev_txid),coin.prev_vout),std::nullopt,
+        UTXOEntry(AmountUna::Una(coin.value),coin.scriptPubKey,coin.height,coin.is_coinbase)});
+    std::string encoded;UtreexoDelta delta;
+    StorageCheck(db.getRaw(MakeUtreexoDeltaUndoKey(context.block_hash),encoded));
+    if(!DeserializeUtreexoDelta(encoded,delta,error)) corrupt();
+    auto restored=[&] {
+        try{return UndoOrchardForestDelta(forest,delta,parent,block.Header(),context.height);}
+        catch(const OrchardForestError&){throw OrchardStateLookupError(Status::Corruption);}
+    }();
+    CheckUndoDeltaCoins(changes,delta,restored);
+    if(parent_state)CheckCommitRecord(db,ParentContext(context,parent),parent,parent_work,restored,*parent_state);
+    CheckStoredFilter(db,context,block,undo);
+    for(size_t i=0;i<block.Transactions().size();++i) {
+        const auto location=RequiredLocal(db.getTxLocation(block.Transactions()[i].GetTxid().AsUint256()));
+        if(location.first!=context.block_hash || location.second!=i) corrupt();
+    }
+    return {std::move(parent_state),std::move(restored)};
 }
 } // namespace dinero::consensus

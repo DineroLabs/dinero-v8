@@ -6212,12 +6212,64 @@ bool ChainstateService::VerifyActiveChainUndoCoverage(uint32_t tip_height,
         return false;
     }
 
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    const auto fail_orchard = [&](const char* detail) {
+        const std::string reason=std::string("orchard-undo-coverage: ")+detail;
+        EnterSafeMode(reason);
+        if (!datadir_.empty()) {
+            std::string error;
+            (void)daemon::WriteChainstateRecoveryMarker(datadir_,reason,&error);
+        }
+        return false;
+    };
+    if (!consensus::OrchardProfileConfigurationValid(Params()))
+        return fail_orchard("invalid selected profile");
+    const auto stored_orchard=chain_db_->getOrchardState();
+    const auto retirement=chain_db_->getLegacyRetirementState();
+    const auto unreadable=[&](const auto& result) {
+        return !result.ok() && result.status()!=Status::NotFound &&
+            !(result.status()==Status::Invalid && !chain_db_->hasSeparatedShieldedState());
+    };
+    if (unreadable(stored_orchard) || unreadable(retirement))
+        return fail_orchard("stored state unavailable");
+    const auto persisted_tip=chain_db_->getTip();
+    const bool orchard_tip=consensus::OrchardActiveForHeight(Params(),tip_height);
+    const bool persisted_orchard=persisted_tip.ok() && persisted_tip->height>=0 &&
+        consensus::OrchardActiveForHeight(Params(),uint32_t(persisted_tip->height));
+    const bool needs_orchard=orchard_tip || persisted_orchard || stored_orchard.ok() || retirement.ok();
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::optional<storage::OrchardStoredState> audit_state;
+    consensus::UtreexoForest audit_forest;
+    if (needs_orchard) {
+        const auto validated=chain_db_->getValidatedTip();
+        const auto marker=chain_db_->getForestTipMarker();
+        if (!orchard_tip || !stored_orchard.ok() || !retirement.ok() ||
+            !persisted_tip.ok() || !validated.ok() || !marker.ok() || GetConfig().utreexo_stateless ||
+            tip_height>INT32_MAX || persisted_tip->height!=int(tip_height) ||
+            validated->height!=int(tip_height) || validated->hash!=persisted_tip->hash ||
+            stored_orchard->height!=tip_height || stored_orchard->block_hash!=persisted_tip->hash ||
+            retirement->height!=tip_height || retirement->block_hash!=persisted_tip->hash ||
+            marker->height!=int(tip_height) || marker->block_hash!=persisted_tip->hash)
+            return fail_orchard("selected stateful tip is unavailable or inconsistent");
+        std::string error;
+        if (storage::RestoreHistoricalForest(*chain_db_,tip_height,audit_forest,error)!=Status::Ok)
+            return fail_orchard("cannot restore private audit forest");
+        const auto root=audit_forest.getCommitment();
+        if (!std::equal(root.begin(),root.end(),marker->forest_root.begin()))
+            return fail_orchard("forest marker disagrees with restored root");
+        audit_state=*stored_orchard;
+    }
+#else
+    if (needs_orchard) return fail_orchard("binary has no Orchard runtime support");
+#endif
+
     // Walk backwards from the persisted tip via parent pointers in
     // header metadata. We trust persisted metadata's parent_hash as the
     // backbone — the in-memory CBlockIndex graph may not yet be loaded
     // when this audit runs (it's invoked early in Start()).
     auto current_hash_result = chain_db_->getBlockHashByHeight(static_cast<int>(tip_height));
     if (current_hash_result.status() != Status::Ok) {
+        if (needs_orchard) return fail_orchard("selected tip index is unavailable");
         if (logger_) {
             logger_->warning("[ChainstateService] Undo audit: cannot resolve tip hash for height " +
                              std::to_string(tip_height) + " — skipping");
@@ -6233,6 +6285,28 @@ bool ChainstateService::VerifyActiveChainUndoCoverage(uint32_t tip_height,
         : max_blocks_back;
 
     while (walked < scan_limit && current_height > 0) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        if (consensus::OrchardActiveForHeight(Params(),current_height)) {
+            try {
+                const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),current_hash,current_height);
+                if (!body.ok() || !body->IsOrchardProfile() || !audit_state)
+                    return fail_orchard("retained typed body or undo state unavailable");
+                const auto parent=chain_db_->getHeader(body->Orchard().Header().prev_block_hash);
+                if (!parent.ok()) return fail_orchard("selected parent header unavailable");
+                const bool witness=Params().enforce_witness_commitment &&
+                    current_height>=Params().witness_commitment_enforcement_height;
+                auto step=consensus::AuditOrchardUndoStepUnderLock(*chain_db_,*block_storage_,
+                    *body->Context(),body->Orchard(),*parent,*audit_state,audit_forest,witness);
+                current_hash=body->Orchard().Header().prev_block_hash;
+                audit_state=std::move(step.parent_state);
+                audit_forest=std::move(step.parent_forest);
+                --current_height;++walked;
+                continue;
+            } catch (const std::exception&) {
+                return fail_orchard("retained disconnect material failed verification");
+            }
+        }
+#endif
         auto metadata_result = chain_db_->getHeaderMetadata(current_hash);
         if (metadata_result.status() != Status::Ok) {
             if (logger_) {
