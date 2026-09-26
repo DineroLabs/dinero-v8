@@ -11,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <set>
 
 namespace dinero {
 namespace {
@@ -164,7 +165,67 @@ std::vector<Effect> Effects(const RuntimeOutboxEvent& e) {
     for(auto& effect:result)effect.time=timestamp;
     return result;
 }
+auto OriginCoins(const RuntimeWalletOriginProjection& source,const RuntimeOutboxEvent* applied) {
+    auto coins=source.Coins();
+    if(applied)for(const auto& effect:Effects(*applied)) {
+        for(const auto& point:effect.spent) {
+            const auto c=coins.find(point);if(c!=coins.end())c->second.spent=RuntimeWalletOriginProjection::Spend{effect.id,applied->context.height,effect.time};
+        }
+        for(const auto& out:effect.created) {
+            const TxOutPoint point{out.txid,out.n};
+            if(!coins.emplace(point,RuntimeWalletOriginProjection::Coin{
+                TxOutput(AmountUna::Una(out.amount),out.script),applied->context.height,effect.time,out.coinbase,{}}).second)
+                Fail("Origin repeated first-event creation");
+        }
+    }
+    return coins;
+}
+std::set<TxOutPoint> IndexOriginRows(sqlite3* db,const std::map<std::vector<uint8_t>,std::string>& scripts,
+        const RuntimeWalletOriginProjection& source,const RuntimeOutboxEvent* applied) {
+    const auto coins=OriginCoins(source,applied);std::set<TxOutPoint> retained;
+    Statement rows(db,"SELECT txid,vout,value,spk,path,height,spend_height,is_coinbase,is_confidential FROM wallet_utxos");int rc;
+    while((rc=sqlite3_step(rows.value))==SQLITE_ROW) {
+        const auto* id=reinterpret_cast<const char*>(sqlite3_column_text(rows.value,0));
+        const auto* path=reinterpret_cast<const char*>(sqlite3_column_text(rows.value,4));
+        const auto* spk=static_cast<const uint8_t*>(sqlite3_column_blob(rows.value,3));
+        if(!id || std::strlen(id)!=64 || !path || !spk || sqlite3_column_int64(rows.value,1)<0 || sqlite3_column_int64(rows.value,1)>UINT32_MAX)
+            Fail("Origin index row malformed");
+        for(const auto col:{1,2,5,7,8})if(sqlite3_column_type(rows.value,col)!=SQLITE_INTEGER)Fail("Origin index integer malformed");
+        const auto found=coins.find(TxOutPoint{TxId(uint256::FromHexUnsafe(id)),uint32_t(sqlite3_column_int64(rows.value,1))});
+        if(found==coins.end() || found->first.txid.AsUint256().GetHex()!=id)Fail("Origin index row outside selected history");
+        retained.insert(found->first);
+        const auto& c=found->second;const auto owned=scripts.find(c.output.scriptPubKey);
+        if(owned==scripts.end() || owned->second!=path ||
+           c.output.scriptPubKey!=std::vector<uint8_t>(spk,spk+sqlite3_column_bytes(rows.value,3)) ||
+           sqlite3_column_int64(rows.value,2)!=int64_t(c.output.value.GetUna()) ||
+           sqlite3_column_int64(rows.value,5)!=c.height || sqlite3_column_int64(rows.value,7)!=c.coinbase ||
+           sqlite3_column_int64(rows.value,8)!=0 ||
+           (sqlite3_column_type(rows.value,6)!=SQLITE_NULL && (!c.spent || sqlite3_column_type(rows.value,6)!=SQLITE_INTEGER || sqlite3_column_int64(rows.value,6)!=c.spent->height)) ||
+           (applied && c.spent && sqlite3_column_type(rows.value,6)==SQLITE_NULL))
+            Fail("Origin index row reconciliation required");
+    }
+    if(rc!=SQLITE_DONE)Fail("Origin index inventory failed");
+    if(applied)for(const auto& [point,c]:coins)if(scripts.count(c.output.scriptPubKey) && !retained.count(point))
+        Fail("Origin index receipt lacks baseline");
+    return retained;
+}
 } // namespace
+
+void RuntimeIndexDelivery::CaptureOriginDomain(UTXOIndex& index,RuntimeWalletOriginProjection& source) {
+    std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
+    if(!index.db_ || index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))Fail("Origin index ownership unavailable");
+    source.index_scripts_=index.watched_scripts_;source.index_path_=index.db_path_;
+    for(const auto& [script,path]:index.watched_scripts_) {
+        if(script.empty() || script.size()>10000 || path.empty())Fail("Origin index script malformed");
+        source.scripts_.try_emplace(script,"");
+    }
+}
+void RuntimeIndexDelivery::CheckOriginDomain(UTXOIndex& index,const RuntimeWalletOriginProjection& source) {
+    std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
+    if(!index.db_ || index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_) ||
+       !source.index_scripts_ || *source.index_scripts_!=index.watched_scripts_ || source.index_path_!=index.db_path_)
+        Fail("Origin index domain changed");
+}
 
 std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::Read(UTXOIndex& index,const std::string& identity) {
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
@@ -172,15 +233,19 @@ std::optional<RuntimeIndexProgress> RuntimeIndexDelivery::Read(UTXOIndex& index,
     const auto receipt=dinero::Read(index.db_,identity,Scripts(index.watched_scripts_));
     return receipt?std::optional(receipt->progress):std::nullopt;
 }
-RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::string& identity,const RuntimeOutboxEvent& event) {
+RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::string& identity,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin,const std::function<void()>& finish) {
     const auto effects=Effects(event);Identity(identity);
     std::lock_guard<std::recursive_mutex> lock(index.db_mutex_);std::lock_guard<std::mutex> scripts(index.scripts_mutex_);
     if(!index.db_ || index.atomic_write_active_ || !sqlite3_get_autocommit(index.db_))Fail("Index delivery write ownership unavailable");
+    if(origin && (!origin->index_scripts_ || *origin->index_scripts_!=index.watched_scripts_ || origin->index_path_!=index.db_path_))
+        Fail("Origin index domain changed");
     const auto ownership=Scripts(index.watched_scripts_);const auto existing=dinero::Read(index.db_,identity,ownership);
     const auto before=Before(event),after=After(event);const auto profile=Profile(event.context);
     if(existing && existing->progress.cursor==event.cursor) {
         if(existing->profile!=profile || Tip{existing->progress.tip_hash,existing->progress.tip_height}!=after)
             Fail("Index delivery replay mismatch");
+        if(origin)IndexOriginRows(index.db_,index.watched_scripts_,*origin,&event);
+        if(finish)finish();
         return existing->progress;
     }
     if(existing) {
@@ -209,6 +274,17 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
             auto sql=Trigger(action);sql.insert(15,"IF NOT EXISTS ");Exec(index.db_,sql.c_str());
         }
         CheckTriggers(index.db_);
+        if(origin) {
+            // Existing rows must agree with complete selected-origin facts.
+            // Refuse unmatched/CT/ahead rows; never erase unrelated metadata.
+            const auto retained=IndexOriginRows(index.db_,index.watched_scripts_,*origin,nullptr);
+            for(const auto& [point,c]:origin->Coins()) {
+                const auto owned=index.watched_scripts_.find(c.output.scriptPubKey);if(owned==index.watched_scripts_.end())continue;
+                WalletUTXO row(point.txid,point.vout,c.output.value,c.output.scriptPubKey,owned->second,c.height,c.coinbase);
+                if(!retained.count(point) && !index.AddUTXO(row))Fail("Origin index creation failed");
+                if(c.spent && !index.SpendUTXO(point.txid,point.vout,c.spent->height))Fail("Origin index spend failed");
+            }
+        }
         if(event.direction==RuntimeBlockDirection::Disconnect) {
             Statement remove(index.db_,"DELETE FROM wallet_utxos WHERE height=?");remove.Int(1,event.context.height);remove.Done();
             Statement restore(index.db_,"UPDATE wallet_utxos SET spend_height=NULL WHERE spend_height=?");restore.Int(1,event.context.height);restore.Done();
@@ -227,6 +303,7 @@ RuntimeIndexProgress RuntimeIndexDelivery::Apply(UTXOIndex& index,const std::str
         Statement write(index.db_,"INSERT OR REPLACE INTO utxo_metadata(key,value) VALUES(?,?)");write.Text(1,receipt_key);write.Blob(2,bytes);write.Done();
         Exec(index.db_,"DELETE FROM utxo_metadata WHERE key='runtime_delivery:v1:invalidated'");
     });
+    if(finish)finish();
     return next.progress;
 }
 
@@ -310,11 +387,95 @@ std::optional<Receipt> OrdinaryRead(sqlite3* db,const std::string& identity,cons
     }
     if(sqlite3_step(query.value)!=SQLITE_DONE)Fail("Ordinary delivery metadata read failed");return result;
 }
+// Conservative adoption of selected-chain facts. Unknown rows and missing
+// originated history require explicit reconciliation, never guessed categories
+// or blanket deletion. Live lock/abandonment sets are not touched here.
+void OrdinaryOrigin(sqlite3* db,int wallet_id,const OrdinaryOwnership& scripts,
+                    const RuntimeWalletOriginProjection& source,bool write,const RuntimeOutboxEvent* applied=nullptr) {
+    const auto text=[](sqlite3_stmt* row,int n) {
+        const auto* p=reinterpret_cast<const char*>(sqlite3_column_text(row,n));
+        return p?std::string(p,sqlite3_column_bytes(row,n)):std::string();
+    };
+    const auto coins=OriginCoins(source,applied);std::set<TxOutPoint> retained;std::set<std::string> first_ids;
+    if(applied)for(const auto& e:Effects(*applied))first_ids.insert(e.id.AsUint256().GetHex());
+    std::map<std::string,const RuntimeWalletOriginProjection::History*> history;
+    for(const auto& h:source.Transactions()) {
+        bool relevant=false;
+        for(const auto& out:h.transaction.vout)relevant|=scripts.addresses.count(out.scriptPubKey)!=0;
+        for(const auto& in:h.transaction.vin) {
+            const auto c=source.Coins().find(in.prevout);
+            relevant|=c!=source.Coins().end() && scripts.addresses.count(c->second.output.scriptPubKey)!=0;
+        }
+        if(relevant)history.emplace(h.transaction.GetTxid().AsUint256().GetHex(),&h);
+    }
+    Statement rows(db,"SELECT wallet_id,txid,vout,amount,script_pubkey,height,is_coinbase,is_spent,spent_txid,spent_height FROM utxos");int rc;
+    while((rc=sqlite3_step(rows.value))==SQLITE_ROW) {
+        const auto id=text(rows.value,1);const auto n=sqlite3_column_int64(rows.value,2);
+        if(sqlite3_column_int64(rows.value,0)!=wallet_id || id.size()!=64 || n<0 || n>UINT32_MAX)
+            Fail("Origin ordinary row ownership mismatch");
+        const auto c=coins.find(TxOutPoint{TxId(uint256::FromHexUnsafe(id)),uint32_t(n)});
+        if(c==coins.end() || c->first.txid.AsUint256().GetHex()!=id || !scripts.addresses.count(c->second.output.scriptPubKey))
+            Fail("Origin ordinary row outside selected history");
+        retained.insert(c->first);
+        for(const auto col:{0,2,3,5,6,7})if(sqlite3_column_type(rows.value,col)!=SQLITE_INTEGER)Fail("Origin ordinary integer malformed");
+        const auto& coin=c->second;const auto flag=sqlite3_column_int64(rows.value,7);
+        if(sqlite3_column_int64(rows.value,3)!=int64_t(coin.output.value.GetUna()) ||
+           Unhex(text(rows.value,4))!=coin.output.scriptPubKey || sqlite3_column_int64(rows.value,5)!=coin.height ||
+           sqlite3_column_int64(rows.value,6)!=coin.coinbase || (flag!=0 && flag!=1) ||
+           (flag && !coin.spent) || (applied && bool(flag)!=bool(coin.spent)) ||
+           (applied && coin.spent && (sqlite3_column_type(rows.value,8)==SQLITE_NULL || sqlite3_column_type(rows.value,9)==SQLITE_NULL)) ||
+           (sqlite3_column_type(rows.value,8)!=SQLITE_NULL && (!coin.spent || text(rows.value,8)!=coin.spent->txid.AsUint256().GetHex())) ||
+           (sqlite3_column_type(rows.value,9)!=SQLITE_NULL && (!coin.spent || sqlite3_column_type(rows.value,9)!=SQLITE_INTEGER || sqlite3_column_int64(rows.value,9)!=coin.spent->height)))
+            Fail("Origin ordinary row reconciliation required");
+    }
+    if(rc!=SQLITE_DONE)Fail("Origin ordinary inventory failed");
+    if(applied)for(const auto& [point,c]:coins)if(scripts.addresses.count(c.output.scriptPubKey) && !retained.count(point))
+        Fail("Origin ordinary receipt lacks baseline");
+    std::set<std::string> existing;
+    Statement txs(db,"SELECT wallet_id,txid,height FROM transactions");
+    while((rc=sqlite3_step(txs.value))==SQLITE_ROW) {
+        if(sqlite3_column_int64(txs.value,0)!=wallet_id)Fail("Origin history ownership mismatch");
+        const auto id=text(txs.value,1);existing.insert(id);
+        if(sqlite3_column_int64(txs.value,2)>0 && !history.count(id) && !first_ids.count(id))Fail("Origin orphan history reconciliation required");
+    }
+    if(rc!=SQLITE_DONE)Fail("Origin history inventory failed");
+    for(const auto& [id,h]:history) {
+        bool spends=false,receives=false;uint64_t credit=0;std::string address;
+        for(const auto& in:h->transaction.vin) {
+            const auto c=source.Coins().find(in.prevout);
+            spends|=c!=source.Coins().end() && scripts.addresses.count(c->second.output.scriptPubKey)!=0;
+        }
+        for(const auto& out:h->transaction.vout) {
+            const auto owned=scripts.addresses.find(out.scriptPubKey);if(owned==scripts.addresses.end())continue;
+            receives=true;credit+=out.value.GetUna();if(address.empty())address=owned->second;
+        }
+        if((spends || applied) && !existing.count(id))Fail("Origin originated history reconciliation required");
+        if(!write)continue;
+        if(existing.count(id)) {
+            Statement confirm(db,"UPDATE transactions SET height=? WHERE wallet_id=? AND txid=?");
+            confirm.Int(1,h->height);confirm.Int(2,wallet_id);confirm.Text(3,id);confirm.Done();
+        } else if(receives) {
+            Statement add(db,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,?,'',?,?,?)");
+            add.Int(1,wallet_id);add.Text(2,id);add.Text(3,address);
+            if(sqlite3_bind_double(add.value,4,double(credit)/100000000.0)!=SQLITE_OK)Fail("Origin history bind failed");
+            add.Text(5,h->transaction.IsCoinbase()?"generate":"receive");add.Int(6,h->time);add.Int(7,h->transaction.IsCoinbase());add.Int(8,h->height);add.Done();
+        }
+    }
+    if(!write)return;
+    for(const auto& [point,c]:source.Coins()) {
+        const auto owned=scripts.addresses.find(c.output.scriptPubKey);if(owned==scripts.addresses.end())continue;
+        Statement add(db,"INSERT INTO utxos(wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_spent,created_at,spent_txid,spent_height) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO UPDATE SET is_spent=excluded.is_spent,spent_txid=excluded.spent_txid,spent_height=excluded.spent_height WHERE utxos.wallet_id=excluded.wallet_id AND utxos.txid=excluded.txid AND utxos.vout=excluded.vout");
+        add.Int(1,wallet_id);add.Text(2,point.txid.AsUint256().GetHex());add.Int(3,point.vout);add.Text(4,owned->second);add.Int(5,c.output.value.GetUna());
+        add.Text(6,Hex(c.output.scriptPubKey));add.Int(7,c.height);add.Int(8,c.coinbase);add.Int(9,c.spent.has_value());add.Int(10,c.time);
+        if(c.spent){add.Text(11,c.spent->txid.AsUint256().GetHex());add.Int(12,c.spent->height);}
+        add.Done();if(sqlite3_changes(db)!=1)Fail("Origin ordinary creation ownership mismatch");
+    }
+}
 void OrdinaryInt(sqlite3* db,const char* sql,int64_t value){Statement statement(db,sql);statement.Int(1,value);statement.Done();}
 } // namespace
 
 std::unique_ptr<RuntimeWalletOriginProjection> RuntimeOrdinaryDelivery::CaptureOriginDomain(
-        WalletManager& wallet,uint64_t session) {
+        WalletManager& wallet,uint64_t session,UTXOIndex* index) {
     const auto lease=wallet.AcquireDatabaseLease();
     if(wallet.database_leases_!=1 || lease->Session()!=session)
         Fail("Origin projection wallet ownership changed");
@@ -323,15 +484,17 @@ std::unique_ptr<RuntimeWalletOriginProjection> RuntimeOrdinaryDelivery::CaptureO
     OrdinaryTransaction transaction(lease->Database());
     const auto domain=OrdinaryScripts(lease->Database());
     result->scripts_=domain.addresses;result->scripts_digest_=domain.digest;
+    if(index)RuntimeIndexDelivery::CaptureOriginDomain(*index,*result);
     transaction.Commit();return result;
 }
-void RuntimeOrdinaryDelivery::CheckOriginDomain(WalletManager& wallet,const RuntimeWalletOriginProjection& source) {
+void RuntimeOrdinaryDelivery::CheckOriginDomain(WalletManager& wallet,const RuntimeWalletOriginProjection& source,UTXOIndex* index) {
     const auto lease=wallet.AcquireDatabaseLease();
     if(wallet.database_leases_!=1 || lease->Session()!=source.session_ ||
        lease->EnsureDeliveryIdentity()!=source.identity_)Fail("Origin projection wallet ownership changed");
     OrdinaryTransaction transaction(lease->Database());
     if(OrdinaryScripts(lease->Database()).digest!=source.scripts_digest_)
         Fail("Origin projection script domain changed");
+    if(index)RuntimeIndexDelivery::CheckOriginDomain(*index,source);
     transaction.Commit();
 }
 void RuntimeWalletOriginProjection::AppendValidated(const Block& block,uint32_t height) {
@@ -379,7 +542,32 @@ std::optional<RuntimeIndexProgress> RuntimeOrdinaryDelivery::ReadForWallet(Walle
     OrdinaryTransaction transaction(db);const auto scripts=OrdinaryScripts(db);const auto receipt=OrdinaryRead(db,identity,scripts.digest);
     transaction.Commit();return receipt?std::optional(receipt->progress):std::nullopt;
 }
+void RuntimeOrdinaryDelivery::AdoptOrigin(WalletManager& wallet,UTXOIndex& index,const RuntimeWalletOriginProjection& source) {
+    const auto lease=wallet.AcquireDatabaseLease();
+    if(wallet.database_leases_!=1 || lease->Session()!=source.session_ || lease->EnsureDeliveryIdentity()!=source.identity_ ||
+       !source.index_scripts_ || source.first_.cursor.sequence!=1 || source.first_.direction!=RuntimeBlockDirection::Connect)
+        Fail("Origin adoption ownership unavailable");
+    { OrdinaryTransaction transaction(lease->Database());
+      const auto domain=OrdinaryScripts(lease->Database());
+      if(domain.digest!=source.scripts_digest_)Fail("Origin projection script domain changed");
+      const auto receipt=OrdinaryRead(lease->Database(),source.identity_,domain.digest);
+      if(receipt) {
+          if(receipt->progress.cursor!=source.first_.cursor)Fail("Origin adoption already advanced");
+          OrdinaryOrigin(lease->Database(),wallet.current_wallet_id_,domain,source,false,&source.first_);
+      } else OrdinaryOrigin(lease->Database(),wallet.current_wallet_id_,domain,source,false);
+      transaction.Commit(); }
+    // Index holds its script/database locks through ordinary commit, while the
+    // actual wallet lease pins the other domain. A failed second store leaves
+    // a genuine first-event index receipt for idempotent ordered retry.
+    RuntimeIndexDelivery::Apply(index,source.identity_,source.first_,&source,[&] {
+        Apply(wallet,source.session_,source.first_,&source);
+    });
+}
+
 RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event) {
+    return Apply(wallet,session,event,nullptr);
+}
+RuntimeIndexProgress RuntimeOrdinaryDelivery::Apply(WalletManager& wallet,uint64_t session,const RuntimeOutboxEvent& event,const RuntimeWalletOriginProjection* origin) {
     const auto effects=Effects(event); // Exact typed decoding before taking wallet ownership.
     const auto lease=wallet.AcquireDatabaseLease();if(lease->Session()!=session)Fail("Wallet delivery selection changed");
     const auto identity=lease->EnsureDeliveryIdentity();auto* db=lease->Database();
@@ -392,6 +580,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wall
     const auto before=Before(event),after=After(event);const auto profile=Profile(event.context);
     if(old && old->progress.cursor==event.cursor) {
         if(old->profile!=profile || Tip{old->progress.tip_hash,old->progress.tip_height}!=after)Fail("Ordinary delivery replay mismatch");
+        if(origin)OrdinaryOrigin(db,wallet.current_wallet_id_,scripts,*origin,false,&event);
         transaction.Commit();return old->progress;
     }
     if(old) {
@@ -409,6 +598,7 @@ RuntimeIndexProgress RuntimeOrdinaryDelivery::ApplyForWallet(WalletManager& wall
         Exec(db,"ALTER TABLE wallet_meta ADD COLUMN runtime_ordinary_invalid INTEGER NOT NULL DEFAULT 0");
     }
     OrdinaryGuards(db,true);
+    if(origin)OrdinaryOrigin(db,wallet.current_wallet_id_,scripts,*origin,true);
     if(event.direction==RuntimeBlockDirection::Disconnect) {
         OrdinaryInt(db,"DELETE FROM utxos WHERE height=?",event.context.height);
         OrdinaryInt(db,"DELETE FROM transactions WHERE height=?",event.context.height);

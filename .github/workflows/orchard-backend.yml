@@ -232,6 +232,8 @@ jobs:
           marker = 'OrchardOriginCapture validated ancestors/canonical boundary/immutable projection/reopen PASS'
           if log.count(marker) != 1:
               raise SystemExit('Missing actual successful wallet-origin capture execution')
+          if log.count('OrchardOriginAdoption dual domains/ordered receipts/rollback/reopen PASS') != 1:
+              raise SystemExit('Missing actual wallet-origin adoption execution')
           PYCODE
       - name: Require and execute transparent mempool notification consumer
         run: |

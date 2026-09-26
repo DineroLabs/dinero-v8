@@ -5702,10 +5702,10 @@ StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRunt
 }
 
 StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService::getRuntimeWalletOrigin(
-        WalletManager& wallet,uint64_t session) const {
+        WalletManager& wallet,uint64_t session,UTXOIndex* index) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
     try {
-        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session);
+        auto result=RuntimeOrdinaryDelivery::CaptureOriginDomain(wallet,session,index);
         RuntimeOutboxCursor head;
         std::vector<uint256> ancestry;
         {
@@ -5756,10 +5756,29 @@ StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> ChainstateService
             if(safe_mode_active_ || (*page)->head!=head || (*page)->events.size()!=1 ||
                (*page)->events.front().cursor!=result->first_.cursor)return Status::Invalid;
         }
-        RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,*result);
+        RuntimeOrdinaryDelivery::CheckOriginDomain(wallet,*result,index);
         return std::shared_ptr<const RuntimeWalletOriginProjection>(result.release());
     } catch(const consensus::OrchardStateLookupError& e){return e.SourceStatus();}
       catch(...){return Status::Internal;}
+#else
+    return Status::Internal;
+#endif
+}
+
+Status ChainstateService::adoptRuntimeWalletOrigin(WalletManager& wallet,UTXOIndex& index,
+        const RuntimeWalletOriginProjection& source) const {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    try {
+        // Source validation precedes wallet ownership. Later source appends are
+        // recovered from the earned prefix; this call never grants readiness.
+        { std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+          const auto page=getRuntimeDeliveryPage({},1);
+          if(!page.ok())return page.status();
+          if(safe_mode_active_ || (*page)->events.size()!=1 ||
+             (*page)->events.front().cursor!=source.first_.cursor)return Status::Invalid; }
+        RuntimeOrdinaryDelivery::AdoptOrigin(wallet,index,source);
+        return Status::Ok;
+    } catch(...) { return Status::Internal; }
 #else
     return Status::Internal;
 #endif

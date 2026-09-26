@@ -7,7 +7,7 @@
 namespace dinero {
 class ChainstateService;
 class RuntimeOrdinaryDelivery;
-// Immutable facts for the currently known ordinary script domain at the
+// Immutable facts for the captured ordinary and optional index script domains at the
 // checked outbox origin. Not a receipt, complete key discovery or adoption.
 class RuntimeWalletOriginProjection final {
 public:
@@ -33,6 +33,7 @@ public:
 private:
     friend class ChainstateService;
     friend class RuntimeOrdinaryDelivery;
+    friend class RuntimeIndexDelivery;
     friend struct RuntimeOriginProjectionTestAccess;
     RuntimeWalletOriginProjection() = default;
     void AppendValidated(const Block&,uint32_t);
@@ -40,6 +41,8 @@ private:
     uint64_t session_ = 0;
     uint256 scripts_digest_;
     std::map<std::vector<uint8_t>,std::string> scripts_;
+    std::optional<std::map<std::vector<uint8_t>,std::string>> index_scripts_;
+    std::string index_path_;
     RuntimeOutboxEvent first_;
     std::map<TxOutPoint,Coin> coins_;
     std::vector<History> history_;

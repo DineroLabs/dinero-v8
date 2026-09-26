@@ -3,6 +3,7 @@
 #include <optional>
 #include <memory>
 #include <string>
+#include <functional>
 
 namespace dinero {
 class UTXOIndex;
@@ -27,9 +28,12 @@ public:
     static RuntimeIndexProgress ApplyForWallet(WalletManager&, UTXOIndex&, uint64_t expected_session, const RuntimeOutboxEvent&);
 private:
     friend struct RuntimeIndexDeliveryTestAccess;
+    friend class RuntimeOrdinaryDelivery;
+    static void CaptureOriginDomain(UTXOIndex&,RuntimeWalletOriginProjection&);
+    static void CheckOriginDomain(UTXOIndex&,const RuntimeWalletOriginProjection&);
     static std::optional<RuntimeIndexProgress> Read(UTXOIndex&, const std::string& wallet_identity);
     static RuntimeIndexProgress Apply(UTXOIndex&, const std::string& wallet_identity,
-                                      const RuntimeOutboxEvent&);
+                                      const RuntimeOutboxEvent&, const RuntimeWalletOriginProjection* origin = nullptr, const std::function<void()>& finish = {});
 };
 // Ordinary wallet UTXOs/history and their source progress share the selected
 // wallet SQLite transaction. This is independent of the index/account receipts:
@@ -39,8 +43,10 @@ private:
 class RuntimeOrdinaryDelivery {
     friend class ChainstateService;
     friend struct RuntimeOriginProjectionTestAccess;
-    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t);
-    static void CheckOriginDomain(WalletManager&,const RuntimeWalletOriginProjection&);
+    static std::unique_ptr<RuntimeWalletOriginProjection> CaptureOriginDomain(WalletManager&,uint64_t,UTXOIndex* = nullptr);
+    static void CheckOriginDomain(WalletManager&,const RuntimeWalletOriginProjection&,UTXOIndex* = nullptr);
+    static void AdoptOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&);
+    static RuntimeIndexProgress Apply(WalletManager&,uint64_t,const RuntimeOutboxEvent&,const RuntimeWalletOriginProjection*);
 public:
     static std::optional<RuntimeIndexProgress> ReadForWallet(WalletManager&, uint64_t expected_session);
     static RuntimeIndexProgress ApplyForWallet(WalletManager&, uint64_t expected_session, const RuntimeOutboxEvent&);

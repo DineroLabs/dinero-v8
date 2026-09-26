@@ -1,6 +1,7 @@
 #pragma once
 #include "daemon/services/assumeutxo_replay.h"
 #include "wallet/runtime_origin_projection.h"
+#include "wallet/runtime_index_delivery.h"
 #include "consensus/subsidy.h"
 #include "consensus/orchard_profile.h"
 #include "consensus/orchard_legacy_accounting.h"
@@ -162,5 +163,56 @@ static void ServiceOriginCaptureChecks() {
     wallet.open("origin");CHECK(!service.getRuntimeWalletOrigin(wallet,session).ok());
     const auto reopened=wallet.AcquireDatabaseLease()->Session();
     CHECK(service.getRuntimeWalletOrigin(wallet,reopened).ok());
+    dinero::UTXOIndex wallet_index((temp.path/"origin-index.sqlite").string());CHECK(wallet_index.Initialize());
+    const auto index_owned=history[2].vtx[0].vout[0].scriptPubKey;
+    wallet_index.RegisterAddress(index_owned,"m/84'/1'/0'/0/1");
+    // Existing event receipts are insufficient if their pre-origin rows were
+    // never reconstructed. Exercise the real old narrow delivery API.
+    dinero::UTXOIndex incomplete((temp.path/"incomplete-index.sqlite").string());CHECK(incomplete.Initialize());
+    incomplete.RegisterAddress(index_owned,"m/84'/1'/0'/0/1");
+    const auto first=(*service.getRuntimeDeliveryPage({},1))->events.front();
+    RuntimeIndexDelivery::ApplyForWallet(wallet,incomplete,reopened,first);
+    auto incomplete_source=service.getRuntimeWalletOrigin(wallet,reopened,&incomplete);CHECK(incomplete_source.ok());
+    CHECK(service.adoptRuntimeWalletOrigin(wallet,incomplete,**incomplete_source)!=Status::Ok);
+    CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(wallet,reopened));
+    dinero::WalletUTXO retained(history[2].vtx[0].GetTxid(),0,history[2].vtx[0].vout[0].value,index_owned,"m/84'/1'/0'/0/1",2,true);
+    retained.utreexo_position=42;CHECK(wallet_index.AddUTXO(retained));
+    wallet_index.RegisterAddress(history[3].vtx[0].vout[0].scriptPubKey,"m/84'/1'/0'/0/3");
+    auto dual=service.getRuntimeWalletOrigin(wallet,reopened,&wallet_index);CHECK(dual.ok());
+    CHECK((*dual)->Coins().size()==3);
+    // A changed index path binding refuses before either store adopts.
+    wallet_index.RegisterAddress(index_owned,"m/84'/1'/0'/0/2");
+    CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**dual)!=Status::Ok);
+    CHECK(!RuntimeIndexDelivery::ReadForWallet(wallet,wallet_index,reopened));
+    CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(wallet,reopened));
+    wallet_index.RegisterAddress(index_owned,"m/84'/1'/0'/0/1");
+    CHECK(sqlite3_exec(wallet.getCurrentDatabase(),"CREATE TRIGGER reject_origin_history BEFORE INSERT ON transactions BEGIN SELECT RAISE(ABORT,'origin history failure'); END",nullptr,nullptr,nullptr)==SQLITE_OK);
+    CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**dual)!=Status::Ok);
+    CHECK(RuntimeIndexDelivery::ReadForWallet(wallet,wallet_index,reopened)->cursor==(*dual)->FirstCursor());
+    CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(wallet,reopened));
+    // Index commits first; failed ordinary effects/history/receipt roll back.
+    sqlite3_stmt* count=nullptr;CHECK(sqlite3_prepare_v2(wallet.getCurrentDatabase(),"SELECT COUNT(*) FROM utxos",-1,&count,nullptr)==SQLITE_OK);
+    CHECK(sqlite3_step(count)==SQLITE_ROW && sqlite3_column_int(count,0)==0);sqlite3_finalize(count);
+    CHECK(sqlite3_exec(wallet.getCurrentDatabase(),"DROP TRIGGER reject_origin_history",nullptr,nullptr,nullptr)==SQLITE_OK);
+    wallet.open("origin");const auto retry_session=wallet.AcquireDatabaseLease()->Session();
+    CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**dual)!=Status::Ok);
+    dual=service.getRuntimeWalletOrigin(wallet,retry_session,&wallet_index);CHECK(dual.ok());
+    CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**dual)==Status::Ok);
+    CHECK(RuntimeOrdinaryDelivery::ReadForWallet(wallet,retry_session)->cursor==(*dual)->FirstCursor());
+    CHECK(wallet_index.GetUTXO(history[2].vtx[0].GetTxid(),0)->value==history[2].vtx[0].vout[0].value);
+    CHECK(!wallet_index.GetUTXO(history[1].vtx[0].GetTxid(),0));
+    CHECK(wallet_index.GetUTXO(history[3].vtx[0].GetTxid(),0)->value==history[3].vtx[0].vout[0].value);
+    // GetUTXO does not populate the optional position; inspect the durable
+    // column rather than mistake that API limitation for a lost field.
+    sqlite3* index_read=nullptr;
+    CHECK(sqlite3_open_v2((temp.path/"origin-index.sqlite").c_str(),&index_read,SQLITE_OPEN_READONLY,nullptr)==SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(index_read,"SELECT utreexo_position FROM wallet_utxos WHERE utreexo_position IS NOT NULL",-1,&count,nullptr)==SQLITE_OK);
+    CHECK(sqlite3_step(count)==SQLITE_ROW && sqlite3_column_int64(count,0)==42);
+    CHECK(sqlite3_step(count)==SQLITE_DONE);sqlite3_finalize(count);sqlite3_close(index_read);
+    CHECK(sqlite3_prepare_v2(wallet.getCurrentDatabase(),"SELECT amount,height,is_coinbase FROM utxos",-1,&count,nullptr)==SQLITE_OK);
+    CHECK(sqlite3_step(count)==SQLITE_ROW && sqlite3_column_int64(count,0)==history[1].vtx[0].vout[0].value.GetInt64() && sqlite3_column_int(count,1)==1 && sqlite3_column_int(count,2)==1);
+    CHECK(sqlite3_step(count)==SQLITE_DONE);sqlite3_finalize(count);
+    CHECK(service.adoptRuntimeWalletOrigin(wallet,wallet_index,**dual)==Status::Ok);
+    std::cout<<"OrchardOriginAdoption dual domains/ordered receipts/rollback/reopen PASS\n";
     std::cout<<"OrchardOriginCapture validated ancestors/canonical boundary/immutable projection/reopen PASS\n";
 }

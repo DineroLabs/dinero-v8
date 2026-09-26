@@ -829,12 +829,15 @@ public:
     // Acquire before wallet ownership. Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
-    // Checked outbox-origin facts for the captured ordinary script domain.
+    // Checked outbox-origin facts for the ordinary and optional index domains.
     // Captures wallet identity briefly, releases it before all chain reads,
     // independently replays one actual body at a time and rechecks both domains.
     // No baseline adoption, pending/send policy, account discovery or readiness.
     StatusOr<std::shared_ptr<const RuntimeWalletOriginProjection>> getRuntimeWalletOrigin(
-        WalletManager&,uint64_t expected_session) const;
+        WalletManager&,uint64_t expected_session,UTXOIndex* index = nullptr) const;
+    // Installs a compatible known-script baseline and applies actual event1 to
+    // index then ordinary store. Partial commits are retryable; no readiness.
+    Status adoptRuntimeWalletOrigin(WalletManager&,UTXOIndex&,const RuntimeWalletOriginProjection&) const;
 
     uint64_t getLegacyBodyFallbackReadCount() const;
     uint64_t getLegacyUndoFallbackReadCount() const;

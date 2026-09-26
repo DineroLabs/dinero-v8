@@ -1,3 +1,14 @@
+## Known-script origin adoption (2026-09-26)
+
+Actual service capture now includes optional index scripts/paths and database path
+alongside the ordinary domain. A new explicit service adoption operation applies
+the known-script origin baseline and real event 1, index first then ordinary,
+using existing DNUI01/DNOW01 receipts. Partial commits retry through the existing
+prefix; receipt-only baselines are checked against source coin inventory. Missing
+originated history, conflicting/orphan rows and invalidated stores still refuse.
+No startup/RPC/provider installation or first-activation bootstrap is claimed.
+See [scope and qualification](wallet-origin-adoption-2026-09-26.md).
+
 # v8.1.13 integration status
 
 ## Outbox-origin ordinary facts (2026-09-26)
