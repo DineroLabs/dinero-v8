@@ -13,9 +13,9 @@
 // latency.
 //
 // This class is the pure signaling primitive. It carries no state beyond
-// a generation counter (bumped on each committed block) and a
-// condition_variable. ChainstateService::notifyBlockConnected bumps the
-// generation. The getblocktemplate handler waits on it.
+// a generation counter (bumped on each published tip change) and a
+// condition_variable. ChainstateService::PublishActiveTipLocked bumps the
+// generation after publishing the new identity. The getblocktemplate handler waits on it.
 //
 // Design notes:
 //
@@ -57,12 +57,24 @@ public:
         return inst;
     }
 
-    // Called by ChainstateService::notifyBlockConnected on each committed
-    // block. Bumps the generation counter and wakes all waiters.
-    void notifyBlockConnected() {
+    // Called after active-tip identity publication, including rollback. A lock
+    // failure must not escape to a post-durable caller with partial publication.
+    void notifyTipChanged() noexcept {
         std::lock_guard<std::mutex> lk(m_);
         generation_.fetch_add(1, std::memory_order_release);
         cv_.notify_all();
+    }
+
+    // Compatibility alias for existing external callers.
+    void notifyBlockConnected() noexcept { notifyTipChanged(); }
+
+    // Capture generation BEFORE reading the selected tip. A transition during
+    // the predicate must not be mistaken for the generation already observed by
+    // the requester. Predicate failure means no wait; exceptions propagate.
+    template<class MatchesTip>
+    bool waitIfCurrentTip(MatchesTip&& matches, std::chrono::milliseconds timeout) {
+        const auto seen = currentGeneration();
+        return matches() && waitForChange(seen, timeout);
     }
 
     // Opaque token representing current tip generation. Miners pass the

@@ -5393,13 +5393,8 @@ void ChainstateService::unregisterWalletNotifier(WalletNotifier* notifier) {
 }
 
 void ChainstateService::notifyBlockConnected(const Block& block, uint32_t height) {
-    // Wake any miners parked on a longpoll getblocktemplate. This is the
-    // server-side long-polling signal — see include/rpc/longpoll_notifier.h
-    // for the design and the block_validation ordering rationale. Doing it
-    // first means miners get their new template before any secondary
-    // work (oracle notifications, mempool reconciliation, proof caches)
-    // that doesn't block template correctness.
-    dinero::rpc::LongPollNotifier::instance().notifyBlockConnected();
+    // Miner longpoll is signaled by the shared active-tip publication, before
+    // fallible downstream work and for disconnects as well as connects.
 
     if (!PersistShieldedState() && logger_) {
         logger_->warning("[ChainstateService] Failed to persist shielded frontier after block connect at height " +
@@ -5766,8 +5761,12 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
     // mutex BEFORE changing either representation, then copy fixed-size values
     // only. A synchronization failure cannot return to a caller that might
     // continue with durable state and an unpublished service tip.
+    bool changed=false;
     try {
         std::lock_guard<std::mutex> lock(published_tip_mutex_);
+        changed=published_tip_valid_!=bool(tip) ||
+            published_tip_hash_!=(tip?tip->GetBlockHash():uint256{}) ||
+            published_tip_height_!=(tip?uint32_t(tip->height):0);
         active_tip_ = tip;
         if (tip) {
             published_tip_valid_ = true;
@@ -5781,6 +5780,15 @@ void ChainstateService::PublishActiveTipLocked(CBlockIndex* tip, TipPublishReaso
     } catch (...) {
         std::terminate();
     }
+
+    // This built-in consumer observes every published identity change, including
+    // rollback and same-height branch replacement. It does not depend on a
+    // later wallet/provider callback returning successfully. Release the observer
+    // mutex first; the selected writer lock still serializes tip publication.
+    const auto wake_miners=[]() noexcept {
+        rpc::LongPollNotifier::instance().notifyTipChanged();
+    };
+    if(changed)wake_miners();
 
     // Diagnostics allocate and may throw. They are best-effort AFTER both tip
     // representations agree, never a prerequisite for post-commit publication.

@@ -1,3 +1,4 @@
+#include "rpc/longpoll_notifier.h"
 #include "daemon/runtime_reorg_store.h"
 #pragma once
 // Included only by the dedicated service test target, after the shared honest
@@ -77,6 +78,10 @@ struct ShieldedStateStartupTestAccess {
     static bool Verified(const ChainstateService& s) { return s.journal_verified_at_startup_; }
     static void PublishWithoutAllocations(ChainstateService& s, CBlockIndex* next, bool rollback) {
         std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
+        auto& notifier=rpc::LongPollNotifier::instance();const auto generation=notifier.currentGeneration();
+        const bool changed=s.published_tip_valid_!=bool(next) ||
+            s.published_tip_hash_!=(next?next->hash:uint256{}) ||
+            s.published_tip_height_!=(next?uint32_t(next->height):0);
         bool threw=false;refused_tip_allocations=0;refuse_tip_allocation=true;
         try {
             s.PublishActiveTipLocked(next,rollback ? ChainstateService::TipPublishReason::kRollback
@@ -86,6 +91,8 @@ struct ShieldedStateStartupTestAccess {
         CHECK(!threw); // Diagnostics must not interrupt post-durable publication.
         CHECK(!next || refused_tip_allocations>0); // The logging failure was actually exercised.
         CHECK(s.active_tip_==next);
+        CHECK(notifier.currentGeneration()==generation+(changed?1:0));
+        CHECK(notifier.waitForChange(generation,std::chrono::milliseconds(0))==changed);
         std::lock_guard<std::mutex> published(s.published_tip_mutex_);
         CHECK(s.published_tip_valid_==bool(next));
         CHECK(s.published_tip_hash_==(next?next->hash:uint256{}));
@@ -151,6 +158,7 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
         ChainDB& db;ChainstateService& service;const CBlockIndex& before;const CBlockIndex& after;
         const std::vector<uint8_t>& wire;RuntimeBlockDirection direction;bool refuse=false,published=false,coherent=false;unsigned prepared=0;
         bool allow_reorg=false,close_on_prepare=false;unsigned finishes=0;RuntimeReorgProgress progress;
+        uint64_t prepared_generation=0;
         std::shared_ptr<const RuntimeReorgPlan> retained;
         struct ReorgPrepared final:PreparedRuntimeReorgNotifications {
             Notifications& owner;explicit ReorgPrepared(Notifications& n):owner(n){}
@@ -169,12 +177,14 @@ static void ServiceDisconnectChecksImpl(ChainDB& db,const OrchardBlockContext& c
                 const auto tip=n.db.getTip();
                 n.coherent=tip.ok() && tip->hash==n.after.hash && Access::TipIs(n.service,&n.after) &&
                     Access::Coins(n.service).GetBestBlock()==n.after.hash &&
-                    n.service.GetUTXOPositionIndex()->GetPositionCount()==0;
+                    n.service.GetUTXOPositionIndex()->GetPositionCount()==0 &&
+                    rpc::LongPollNotifier::instance().currentGeneration()==n.prepared_generation+1;
             }
         };
         std::unique_ptr<PreparedRuntimeBlockNotifications> Prepare(const RuntimeBlockBody& body,uint32_t height,
             RuntimeBlockDirection direction) override {
             CHECK(direction==this->direction && height==(direction==RuntimeBlockDirection::Connect?after.height:before.height) && body.IsOrchardProfile());
+            prepared_generation=rpc::LongPollNotifier::instance().currentGeneration();
             CHECK(body.Orchard().WireBytes()==wire && Access::TipIs(service,&before));
             CHECK(RequiredValue(db.getTip()).hash==before.hash);++prepared;
             if(refuse)return {};
@@ -512,6 +522,20 @@ static void ServiceStartupChecks(ChainDB& db,const OrchardBlockContext& c,
         Access::PublishWithoutAllocations(service,&index,true);
         Access::PublishWithoutAllocations(service,nullptr,true);
         Access::PublishWithoutAllocations(service,&index,false);
+        CBlockIndex same=index;Access::PublishWithoutAllocations(service,&same,false); // Pointer change alone is not a new tip.
+        Access::PublishWithoutAllocations(service,&same,false); // Re-publishing is silent.
+        auto replacement=same;replacement.hash=H(97);
+        Access::PublishWithoutAllocations(service,&replacement,true); // Same-height different hash must wake.
+        auto& notifier=rpc::LongPollNotifier::instance();
+        // Deterministically place the real service transition inside the tip
+        // predicate, after the waiter's generation snapshot. No sleep or thread
+        // scheduling assumption is needed to expose the missed-wake ordering.
+        CHECK(notifier.waitIfCurrentTip([&] {
+            Access::PublishWithoutAllocations(service,&index,true);
+            return true; // Previously captured client tip matched.
+        },std::chrono::milliseconds(0)));
+        CHECK(!notifier.waitIfCurrentTip([] {return false;},std::chrono::milliseconds(0)));
+        CHECK(!notifier.waitIfCurrentTip([] {return true;},std::chrono::milliseconds(0)));
     }
     db.close();const auto original=Inspect(path);CHECK(db.init(path)==Status::Ok);
     const auto check=[&](bool expected,bool stale_memory=false,bool activation=false,bool empty_forest=false) {

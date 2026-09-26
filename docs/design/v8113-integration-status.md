@@ -5,6 +5,12 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- Miner longpoll now observes actual shared tip publication, including rollback
+  and same-height branch replacement. It precedes fallible downstream callbacks
+  and is silent on an unchanged identity. RPC waiting captures generation before
+  reading the tip, closing a missed-wake window. This is an installed built-in
+  notification consumer; durable wallet and other consumer recovery remain open.
+
 - Stateful historical connect/disconnect retains delivery records after an
   Orchard outbox origin, including transitions below activation. Preparation
   occurs before historical memory changes; the record joins the existing
@@ -100,7 +106,7 @@ This branch collects release implementation for review and qualification against
   sequence head in the same synchronous chainstate batch. Rollback retains the
   history, and bounded readers check cursor/domain/body identity. This supplies
   durable per-block replay material; production consumers, per-consumer cursors,
-  historical reorg intent and startup reconciliation remain unfinished. See
+  reorg-intent reconciliation and coordinated startup remain unfinished. See
   orchard-runtime-outbox-2026-09-26.md.
 - The actual startup undo-coverage walk now routes retained Orchard bodies under
   the activation lock, restoring and reversing a private forest across the
