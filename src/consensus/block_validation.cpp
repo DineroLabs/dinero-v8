@@ -235,8 +235,8 @@ bool SpentOutputMatchesBlockOutput(
 // - Snapshot-first validation (failed block = restore snapshot)
 // ═══════════════════════════════════════════════════════════════════════════
 
-BlockValidator::BlockValidator(IConsensusUTXOSet* utxo_set)
-    : consensus_utxo_set_(utxo_set) {
+BlockValidator::BlockValidator(IConsensusUTXOSet* utxo_set, BranchMtpLookup branch_mtp)
+    : consensus_utxo_set_(utxo_set), branch_mtp_(std::move(branch_mtp)) {
     if (!consensus_utxo_set_) {
         throw std::runtime_error("BlockValidator: Consensus UTXO set cannot be null");
     }
@@ -1523,6 +1523,7 @@ bool BlockValidator::ConnectBlockInternal(const Block& block, uint32_t height, c
             };
 
             const auto lookup_lock_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+                if (branch_mtp_) return branch_mtp_(block.header.prev_block_hash, wanted);
                 const auto* cursor = FindBlockIndex(block.header.prev_block_hash);
                 while (cursor && cursor->height > wanted) cursor = cursor->pprev;
                 if (!cursor || cursor->height != wanted) return std::nullopt;
@@ -3102,6 +3103,7 @@ bool BlockValidator::ValidateTransaction(const Transaction& tx, uint32_t height,
     std::vector<std::optional<uint32_t>> lock_heights;
     for (const auto& coin : input_utxos) lock_heights.push_back(coin.height);
     const auto lookup_mtp = [&](uint32_t wanted) -> std::optional<uint64_t> {
+        if (branch_mtp_) return branch_mtp_(parent_hash, wanted);
         const auto* cursor = FindBlockIndex(parent_hash);
         while (cursor && cursor->height > wanted) cursor = cursor->pprev;
         if (!cursor || cursor->height != wanted) return std::nullopt;

@@ -17,7 +17,7 @@
 // which the block passes FULL ConnectBlock validation (coinbase subsidy
 // rule, 128-byte header rule, witness-commitment rules, utreexo root
 // commitment). ConnectBlock does not check PoW/merkle/prev-hash linkage —
-// those belong to header acceptance, outside the replay engine's contract.
+// the replay owner now runs header acceptance and identity checks itself.
 //
 // Genesis handling (mirrors fuzzer AND production ConnectTip): genesis
 // (height 0) is NOT UTXO-neutral — genesis coinbase outputs ARE persisted in
@@ -48,12 +48,34 @@
 #include "consensus/chainparams.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/subsidy.h"
+#include "consensus/genesis_canonical.h"
+#include "consensus/merkle_root.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 
 namespace dinero {
 
 namespace {
+
+Block SelectedGenesis() {
+    Block block;
+    block.header = BuildCanonicalGenesis(Params()).header;
+    Transaction coinbase;
+    if (!TransactionSerializer::Deserialize(coinbase, Params().genesis.genesisCoinbaseHex))
+        throw std::runtime_error("fixture genesis decode failed");
+    block.vtx.push_back(std::move(coinbase));
+    return block;
+}
+
+void SeedDirect(consensus::ConsensusUTXOSet& set) {
+    const auto genesis = SelectedGenesis();
+    const auto& tx = genesis.vtx.front();
+    for (uint32_t i = 0; i < tx.vout.size(); ++i) {
+        const auto& output = tx.vout[i];
+        ASSERT_TRUE(set.AddCoin(OutPoint(tx.GetTxid(), i), consensus::UTXOEntry(
+            output.value, output.scriptPubKey, 0, true, output.is_confidential, output.commitment)));
+    }
+}
 
 // Real coinbase, fuzzer-style (BIP34 height in scriptSig), paying exactly
 // the consensus subsidy to a deterministic height-keyed script.
@@ -94,12 +116,13 @@ std::vector<Block> BuildDeterministicChain(uint32_t n) {
     consensus::ConsensusUTXOSet set;
     consensus::BlockValidator validator(&set);
 
-    uint256 prev_hash;  // zero: stand-in for the pre-applied genesis hash
+    SeedDirect(set);
+    uint256 prev_hash = SelectedGenesis().GetHash();
     for (uint32_t h = 1; h <= n; ++h) {
         Block b;
         b.header.version = 1;
         b.header.prev_block_hash = prev_hash;
-        b.header.timestamp = 1772841600ULL + h * 120;  // fixed past base
+        b.header.timestamp = SelectedGenesis().header.timestamp + h * 120;  // fixed past base
         b.header.difficulty = 0x1d00ffff;
         b.header.nonce = 0;
         b.header.ZeroReserved();
@@ -137,6 +160,7 @@ TEST(AssumeUtxoReplay, ReplayReproducesDirectDigest) {
 
     // Direct application — the "snapshot creator's" view.
     consensus::ConsensusUTXOSet direct;
+    SeedDirect(direct);
     consensus::BlockValidator direct_validator(&direct);
     for (uint32_t i = 0; i < chain.size(); ++i) {
         const uint32_t h = i + 1;
@@ -153,6 +177,7 @@ TEST(AssumeUtxoReplay, ReplayReproducesDirectDigest) {
     // Replay engine — the verifier's view.
     assumeutxo::AssumeUtxoReplayEngine engine;
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     for (uint32_t i = 0; i < chain.size(); ++i) {
         const uint32_t h = i + 1;
         ASSERT_TRUE(engine.ConnectAndAdvance(chain[i], h, chain[i].GetHash(), err))
@@ -184,8 +209,10 @@ TEST(AssumeUtxoReplay, TamperedBlockFailsValidation) {
     chain[4].vtx[0].vout[0].value =
         AmountUna::Una(chain[4].vtx[0].vout[0].value.GetUna() - 1);
 
+    chain[4].header.merkle_root = consensus::ComputeMerkleRoot(chain[4].vtx);
     assumeutxo::AssumeUtxoReplayEngine engine;
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     for (uint32_t i = 0; i < 4; ++i) {
         const uint32_t h = i + 1;
         ASSERT_TRUE(engine.ConnectAndAdvance(chain[i], h, chain[i].GetHash(), err))
@@ -208,18 +235,7 @@ TEST(AssumeUtxoReplay, TamperedBlockFailsValidation) {
 // causes the test to fail (digests differ because b has genesis records, a
 // does not), confirming the assertion is live.
 TEST(AssumeUtxoReplay, SeedGenesisAddsRecordsNotLeaves) {
-    // Build a minimal synthetic genesis block (height 0): one coinbase tx.
-    // Genesis is never passed through ConnectBlock, so no ComputeUtreexoRootPure
-    // needed — utreexo_root can remain zeroed.
-    Block genesis;
-    genesis.header.version = 1;
-    genesis.header.prev_block_hash = uint256{};
-    genesis.header.timestamp = 1772841600ULL;
-    genesis.header.difficulty = 0x1d00ffff;
-    genesis.header.nonce = 0;
-    genesis.header.ZeroReserved();
-    genesis.vtx.push_back(MakeCoinbase(0));
-    genesis.header.merkle_root = genesis.vtx[0].GetTxid().AsUint256();
+    const Block genesis = SelectedGenesis();
 
     assumeutxo::AssumeUtxoReplayEngine a;  // unseeded
     assumeutxo::AssumeUtxoReplayEngine b;  // seeded
@@ -241,6 +257,7 @@ TEST(AssumeUtxoReplay, CapturesUndoTailWindow) {
     assumeutxo::AssumeUtxoReplayEngine engine;
     engine.SetUndoTailWindow(3);   // capture undo for the last 3 connected heights
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     // genesis pre-applied per engine contract; replay 1..9
     // chain[h-1] is the block built for height h (builder: chain[i] -> height i+1)
     for (uint32_t h = 1; h < chain.size(); ++h) {
@@ -269,6 +286,7 @@ TEST(AssumeUtxoReplay, ExposesProvenSetAndStateRefs) {
     ASSERT_EQ(chain.size(), 5u);
     assumeutxo::AssumeUtxoReplayEngine engine;
     std::string err;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), err)) << err;
     // chain[h-1] is the block built for height h
     for (uint32_t h = 1; h < chain.size(); ++h) {
         ASSERT_TRUE(engine.ConnectAndAdvance(chain[h-1], h, chain[h-1].GetHash(), err)) << err;
@@ -278,6 +296,106 @@ TEST(AssumeUtxoReplay, ExposesProvenSetAndStateRefs) {
     EXPECT_NE(engine.ShieldedTree(), nullptr);
     EXPECT_NE(engine.ShieldedNullifiers(), nullptr);
     EXPECT_NE(engine.ShieldedAnchors(), nullptr);
+}
+
+
+TEST(AssumeUtxoReplay, RequiresSelectedGenesisAndContiguousIdentity) {
+    const auto chain = BuildDeterministicChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    std::string error;
+    const auto empty = engine.RecordsDigestHex();
+    EXPECT_FALSE(engine.ConnectAndAdvance(chain[0], 1, chain[0].GetHash(), error));
+    EXPECT_EQ(error, "replay requires seeded selected genesis");
+    auto wrong = SelectedGenesis();
+    wrong.vtx.front().vout.front().value = AmountUna::Una(1);
+    EXPECT_FALSE(engine.SeedGenesis(wrong, error));
+    EXPECT_EQ(engine.RecordsDigestHex(), empty);
+    wrong = SelectedGenesis();
+    ++wrong.header.nonce;
+    EXPECT_FALSE(engine.SeedGenesis(wrong, error));
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), error)) << error;
+    const auto baseline = engine.RecordsDigestHex();
+    EXPECT_FALSE(engine.SeedGenesis(SelectedGenesis(), error));
+    EXPECT_FALSE(engine.ConnectAndAdvance(chain[1], 2, chain[1].GetHash(), error));
+    EXPECT_FALSE(engine.ConnectAndAdvance(chain[0], 1, uint256{}, error));
+    wrong = chain[0];
+    wrong.header.prev_block_hash = uint256{};
+    EXPECT_FALSE(engine.ConnectAndAdvance(wrong, 1, wrong.GetHash(), error));
+    wrong = chain[0];
+    wrong.vtx.front().vout.front().value = AmountUna::Una(1);
+    EXPECT_FALSE(engine.ConnectAndAdvance(wrong, 1, wrong.GetHash(), error));
+    EXPECT_EQ(error, "replay block identity, parent or Merkle mismatch");
+    EXPECT_EQ(engine.Height(), 0u);
+    EXPECT_EQ(engine.RecordsDigestHex(), baseline);
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[0], 1, chain[0].GetHash(), error)) << error;
+}
+
+TEST(AssumeUtxoReplay, OwnsHeaderValidationBeforeCoinEffects) {
+    const auto chain = BuildDeterministicChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    std::string error;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), error)) << error;
+    const auto baseline = engine.RecordsDigestHex();
+    for (int field = 0; field < 3; ++field) {
+        auto wrong = chain[0];
+        if (field == 0) wrong.header.version = 0;
+        if (field == 1) wrong.header.timestamp = SelectedGenesis().header.timestamp;
+        if (field == 2) wrong.header.difficulty = 0;
+        EXPECT_FALSE(engine.ConnectAndAdvance(wrong, 1, wrong.GetHash(), error));
+        EXPECT_EQ(error, "replay header validation failed");
+        EXPECT_EQ(engine.RecordsDigestHex(), baseline);
+        EXPECT_EQ(engine.Height(), 0u);
+    }
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[0], 1, chain[0].GetHash(), error)) << error;
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[1], 2, chain[1].GetHash(), error)) << error;
+}
+
+TEST(AssumeUtxoReplay, TimeLocksUseOwnedAncestryWithoutGlobalIndex) {
+    const uint32_t saved = MutableParams().contextual_locks_activation_height;
+    struct Restore { uint32_t value; ~Restore() { MutableParams().contextual_locks_activation_height = value; } } restore{saved};
+    MutableParams().contextual_locks_activation_height = 1;
+    const auto chain = BuildDeterministicChain(102);
+    ASSERT_EQ(chain.size(), 102u);
+    assumeutxo::AssumeUtxoReplayEngine engine;
+    std::string error;
+    ASSERT_TRUE(engine.SeedGenesis(SelectedGenesis(), error)) << error;
+    for (uint32_t h = 1; h <= 101; ++h)
+        ASSERT_TRUE(engine.ConnectAndAdvance(chain[h-1], h, chain[h-1].GetHash(), error)) << error;
+    const auto before = engine.RecordsDigestHex();
+    auto block = chain[101];
+    Transaction spend;
+    spend.version = 2;
+    TxInput input;
+    input.prevout.txid = chain.front().vtx.front().GetTxid();
+    input.prevout.vout = 0;
+    input.sequence = (1U << 22) | 65535U;
+    spend.vin.push_back(input);
+    spend.vout.push_back(chain.front().vtx.front().vout.front());
+    block.vtx.push_back(spend);
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    EXPECT_FALSE(engine.ConnectAndAdvance(block, 102, block.GetHash(), error));
+    EXPECT_NE(error.find("non-final-relative-time-lock"), std::string::npos) << error;
+    EXPECT_EQ(engine.RecordsDigestHex(), before);
+    EXPECT_EQ(engine.Height(), 101u);
+    block.vtx.back().vin.front().sequence = UINT32_MAX - 1;
+    block.vtx.back().lockTime = static_cast<uint32_t>(chain[95].header.timestamp);
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    EXPECT_FALSE(engine.ConnectAndAdvance(block, 102, block.GetHash(), error));
+    EXPECT_NE(error.find("non-final-absolute-lock"), std::string::npos) << error;
+    EXPECT_EQ(engine.RecordsDigestHex(), before);
+    block.vtx.back().vin.front().sequence = 1U << 22;
+    block.vtx.back().lockTime = 0;
+    block.header.merkle_root = consensus::ComputeMerkleRoot(block.vtx);
+    EXPECT_FALSE(engine.ConnectAndAdvance(block, 102, block.GetHash(), error));
+    // A mature time lock reaches mandatory script validation; the unsigned
+    // fixture must still refuse and leave the actual replay state unchanged.
+    EXPECT_NE(error.find("Script validation failed"), std::string::npos) << error;
+    EXPECT_EQ(engine.RecordsDigestHex(), before);
+    ASSERT_TRUE(engine.ConnectAndAdvance(chain[101], 102, chain[101].GetHash(), error)) << error;
+
+
 }
 
 }  // namespace dinero

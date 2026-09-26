@@ -17903,7 +17903,8 @@ void ChainstateService::BackgroundValidationWorker() {
                                   std::to_string(height));
                     req_it->second = false;
                 }
-                // Genesis (height 0) is never validated — production
+                // Genesis (height 0) is now identity-checked by the isolated
+                // replay owner. Production
                 // ConnectTip's early-init path likewise installs genesis as
                 // tip without running ConnectBlock. But the canonical UTXO
                 // set is NOT genesis-neutral: genesis_init.cpp persists every
@@ -17919,9 +17920,8 @@ void ChainstateService::BackgroundValidationWorker() {
                 if (height == 0 && blocks_skipped == 0) {
                     std::string seed_err;
                     if (!replay->SeedGenesis(blk, seed_err)) {
-                        // Impossible by construction (fresh engine, single
-                        // seed per pass): indicates engine misuse, and a
-                        // retry would fail identically — not transient.
+                        // The replay owner rejects a foreign genesis/body as
+                        // well as duplicate seeding. No progress can certify it.
                         replay_poisoned = true;
                         replay_poison_reason =
                             "genesis seeding failed during replay: " + seed_err;

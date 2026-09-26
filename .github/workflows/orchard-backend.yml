@@ -207,7 +207,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute all root Orchard lanes
         run: |
@@ -253,6 +253,23 @@ jobs:
           for expected in ['PASS occupied RPC listener rejects actual daemon startup', 'PASS same port and datadir reopen with authenticated RPC', 'PASS RPC listener startup and clean shutdown']:
               if text.count(expected) != 1:
                   raise SystemExit('RPC startup assertion did not execute exactly once: ' + expected)
+          PYTEST
+      - name: Require and execute isolated historical replay
+        run: |
+          ctest --test-dir build-orchard-root -R '^AssumeUtxoReplay$' --show-only=json-v1 > orchard-history-replay-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-history-replay-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['AssumeUtxoReplay'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('AssumeUtxoReplay missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^AssumeUtxoReplay$' --verbose --no-tests=error --output-log orchard-history-replay-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (AssumeUtxoReplay\.\S+)', open('orchard-history-replay-execution.log').read())
+          expected = ['ReplayReproducesDirectDigest', 'TamperedBlockFailsValidation', 'SeedGenesisAddsRecordsNotLeaves', 'CapturesUndoTailWindow', 'ExposesProvenSetAndStateRefs', 'RequiresSelectedGenesisAndContiguousIdentity', 'OwnsHeaderValidationBeforeCoinEffects', 'TimeLocksUseOwnedAncestryWithoutGlobalIndex']
+          if sorted(actual) != sorted('AssumeUtxoReplay.' + name for name in expected):
+              raise SystemExit('Historical replay cases did not execute exactly once')
           PYTEST
       - name: Require and execute wallet recovery key ownership
         run: |
@@ -438,6 +455,8 @@ jobs:
             orchard-root-execution.log
             orchard-mempool-inventory.json
             orchard-mempool-execution.log
+            orchard-history-replay-inventory.json
+            orchard-history-replay-execution.log
             orchard-rpc-startup-inventory.json
             orchard-rpc-startup-execution.log
             orchard-wallet-undo-inventory.json

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "consensus/block_validation.h"
+#include "consensus/header_chain.h"
 #include "consensus/consensus_utxo_set.h"
 #include "consensus/shielded/anchor_history.h"
 #include "consensus/shielded/commitment_tree.h"
@@ -21,7 +22,7 @@ namespace dinero::assumeutxo {
 // Owns a fresh ConsensusUTXOSet + BlockValidator; never touches the live
 // chainstate. Single-threaded use by BackgroundValidationWorker.
 //
-// GENESIS HANDLING: genesis (height 0) is never validated — production
+// GENESIS HANDLING: genesis (height 0) is bound to the selected network — production
 // ConnectTip's early-init path installs genesis as tip without ConnectBlock.
 // But genesis is NOT UTXO-neutral in the canonical set: genesis_init.cpp
 // persists EVERY genesis coinbase output as a ChainDB coin (height 0,
@@ -35,8 +36,10 @@ namespace dinero::assumeutxo {
 // Genesis outputs are NOT inserted into the utreexo forest — production's
 // height-0 checkpoint is an empty forest and the live forest is rebuilt
 // from block replay only, so it excludes genesis as well.
-// The first ConnectAndAdvance accepts any starting height; subsequent calls
-// must be strictly ascending.
+// Seeding is mandatory and single-use. Replay starts at height 1 and checks
+// exact identity, Merkle root, parent continuity and the normal header rules.
+// Header ancestry and contextual-lock MTP belong to this engine, not the
+// process-wide block index. Network PoW policy (including regtest) is unchanged.
 //
 // SHIELDED STATE: the engine owns genesis-fresh shielded pool state
 // (CommitmentTree, NullifierSet, AnchorHistory — same trio production
@@ -56,7 +59,7 @@ public:
     // as genesis_init.cpp persists them to ChainDB (height 0, coinbase=true,
     // OP_RETURN outputs INCLUDED, no utreexo leaves — see class comment).
     // Call once per engine, before any ConnectAndAdvance. Returns false with
-    // `error` set only on a duplicate-coin insert (engine misuse).
+    // `error` set on identity, header, body or lifecycle failure.
     bool SeedGenesis(const Block& genesis_block, std::string& error);
 
     // Validate + apply one block through the normal connection path
@@ -107,6 +110,12 @@ public:
     const consensus::shielded::AnchorHistory* ShieldedAnchors() const;
 
 private:
+    // Declared before the validator: its immutable callback may use this owner.
+    consensus::HeaderChainSelector headers_;
+    const std::string network_;
+    const uint256 genesis_hash_;
+    uint256 tip_hash_;
+    bool seeded_ = false;
     std::unique_ptr<consensus::ConsensusUTXOSet> set_;
     std::unique_ptr<consensus::BlockValidator> validator_;
     // Genesis-fresh shielded pool state (see class comment). ConnectBlock
@@ -116,7 +125,6 @@ private:
     std::unique_ptr<consensus::shielded::NullifierSet> shielded_nullifiers_;
     std::unique_ptr<consensus::shielded::AnchorHistory> shielded_anchor_history_;
     uint32_t last_height_ = 0;
-    bool any_connected_ = false;
     // Undo tail ring (populated when undo_tail_window_ > 0).
     uint32_t undo_tail_window_ = 0;
     std::deque<CapturedUndo> undo_tail_;

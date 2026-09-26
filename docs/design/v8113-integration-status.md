@@ -1,5 +1,13 @@
 # v8.1.13 integration status
 
+## Owned historical replay (2026-09-26)
+
+The production background replay now binds genesis and block identity, owns its
+header ancestry, and resolves contextual time locks from that same ancestry.
+See `owned-historical-replay-2026-09-26.md`. This prepares the historical source
+needed for transparent baseline reconciliation; baseline adoption, provider
+installation and full activation/startup qualification remain incomplete.
+
 ## Snapshot wallet import (2026-09-26)
 
 The existing snapshot import now pins wallet ownership and commits owned outputs,
