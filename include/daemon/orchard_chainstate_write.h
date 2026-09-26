@@ -35,7 +35,9 @@ public:
 
     // Indexed service variants: fsync exact body/undo first, stage their checked
     // locators in the same private batch, and publish the index's availability
-    // fields only after durability. The CBlockIndex must outlive the owner.
+    // fields only after durability. An exact delivery record and sequence head
+    // share that batch; rollback retains history. This is durable handoff data,
+    // not an installed notification consumer. The CBlockIndex must outlive the owner.
     // Abandonment can leave unreferenced append
     // records, never a locator pointing to an uncommitted transition. These do
     // not publish the active tip. Only the service after its contextual header

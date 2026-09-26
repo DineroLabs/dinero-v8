@@ -83,6 +83,12 @@ This branch collects release implementation for review and qualification against
   durable write. Mixed bodies never enter the legacy transaction collector.
   The production recovery/readmission provider remains unimplemented. See the
   service-reorg-plan design for operational bounds and qualification limits.
+- Indexed Orchard transitions now append exact delivery records and a checked
+  sequence head in the same synchronous chainstate batch. Rollback retains the
+  history, and bounded readers check cursor/domain/body identity. This supplies
+  durable per-block replay material; production consumers, per-consumer cursors,
+  historical reorg intent and startup reconciliation remain unfinished. See
+  orchard-runtime-outbox-2026-09-26.md.
 - The actual startup undo-coverage walk now routes retained Orchard bodies under
   the activation lock, restoring and reversing a private forest across the
   requested window. Exact indexed/embedded body and undo, commit records,

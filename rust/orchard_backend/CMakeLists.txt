@@ -320,8 +320,9 @@ if(DINERO_ORCHARD_BUILD_TESTS)
     add_test(NAME OrchardBlockStaging COMMAND test_orchard_block_staging "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME OrchardAtomicCrash COMMAND test_orchard_block_staging --crash-lifecycle "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME OrchardCommitOwner COMMAND test_orchard_block_staging --commit-owner "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    add_test(NAME OrchardRuntimeOutbox COMMAND test_orchard_block_staging --runtime-outbox "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME OrchardIndexedCommit COMMAND test_orchard_block_staging --indexed-commit "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
-    set_tests_properties(OrchardBlockStaging OrchardAtomicCrash OrchardCommitOwner OrchardIndexedCommit PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
+    set_tests_properties(OrchardBlockStaging OrchardAtomicCrash OrchardCommitOwner OrchardIndexedCommit OrchardRuntimeOutbox PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE
       ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;storage;integration-staging")
   endif()
   add_test(NAME OrchardBackendRust COMMAND ${ORCHARD_CARGO} +${ORCHARD_RUST_TOOLCHAIN} test --locked --release --jobs 2

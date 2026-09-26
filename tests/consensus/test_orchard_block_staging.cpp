@@ -2,6 +2,8 @@
 #include "consensus/orchard_block_staging.h"
 #include "consensus/utxo_publication.h"
 #include "daemon/orchard_chainstate_write.h"
+#include "daemon/runtime_block_outbox.h"
+#include "crypto/sha256.h"
 #include "common/annotated_mutex.h"
 #include "storage/block_storage.h"
 #include "consensus/block_index.h"
@@ -338,7 +340,13 @@ static Rows ConsensusRows(const std::filesystem::path& path) {
     CHECK(tip.size()==105);uint32_t timestamp=0;
     for(size_t i=0;i<4;++i)timestamp|=uint32_t(uint8_t(tip[101+i]))<<(8*i);
     const auto now=std::time(nullptr);CHECK(timestamp<=now && now-timestamp<600);
-    std::fill(tip.begin()+101,tip.end(),0);return rows;
+    std::fill(tip.begin()+101,tip.end(),0);
+    // Delivery history is intentionally append-only across canonical rollback.
+    // Indexed crash tests check its exact sequence/direction/body separately.
+    for(auto& [cf,values]:rows)for(auto it=values.begin();it!=values.end();) {
+        if(it->first.starts_with("runtime_orchard_outbox:v1:"))it=values.erase(it);else ++it;
+    }
+    return rows;
 }
 static void CrashLifecycle(const std::string& executable,const std::string& base,
     const std::filesystem::path& path,const OrchardBlockContext& context,
@@ -346,6 +354,12 @@ static void CrashLifecycle(const std::string& executable,const std::string& base
     // Both stores are CLOSED before copying or spawning. The child execs a new
     // process: never call RocksDB/Rayon on inherited post-fork worker state.
     const auto before=ConsensusRows(path);TempDir oracle;
+    uint64_t delivered=0;
+    if(indexed) {
+        ChainDB read;CHECK(read.init(path)==Status::Ok);
+        delivered=ReadRuntimeOutboxUnderLock(read,context).head.sequence;
+        CHECK(delivered==1);read.close();
+    }
     std::filesystem::copy(path,oracle.path,std::filesystem::copy_options::recursive|
         std::filesystem::copy_options::overwrite_existing);
     ChainDB reference;CHECK(reference.init(oracle.path)==Status::Ok);
@@ -374,7 +388,17 @@ static void CrashLifecycle(const std::string& executable,const std::string& base
             WEXITSTATUS(status)==(step.second=="failed"?(indexed?77:76):step.second=="pre"?73:step.second=="post"?74:75));
         const bool connected=(step.first=="disconnect")== (step.second=="pre" || step.second=="failed");
         CHECK(ConsensusRows(path)==(connected?before:disconnected));
-        ChainDB reopened;CHECK(reopened.init(path)==Status::Ok);UtreexoForest recovered;std::string error;
+        ChainDB reopened;CHECK(reopened.init(path)==Status::Ok);
+        if(indexed) {
+            if(step.second=="published")++delivered;
+            const auto page=ReadRuntimeOutboxUnderLock(reopened,context);
+            CHECK(page.head.sequence==delivered && page.events.size()==delivered && page.next==page.head);
+            for(size_t i=0;i<page.events.size();++i) {
+                CHECK(page.events[i].body==block.WireBytes());
+                CHECK(page.events[i].direction==(i%2?RuntimeBlockDirection::Disconnect:RuntimeBlockDirection::Connect));
+            }
+        }
+        UtreexoForest recovered;std::string error;
         CHECK(storage::RestoreHistoricalForest(reopened,connected?context.height:context.height-1,recovered,error)==Status::Ok);
         CHECK(recovered.dumpInternalState()==(connected?forest:restored.forest).dumpInternalState());
         if(connected)AuditOrchardChainstateTipUnderLock(reopened,token,context,parent,recovered,true);
@@ -403,6 +427,10 @@ static void IndexedInitialCrash(const std::string& executable,const std::string&
         if(phase=="pre")CHECK(ConsensusRows(copy.path)==before);
         ChainDB db;CHECK(db.init(copy.path)==Status::Ok);BlockStorage files;CHECK(files.init(copy.path)==Status::Ok);
         const auto index=DiskIndex(db,block.Header(),context.height);
+        const auto page=ReadRuntimeOutboxUnderLock(db,context);
+        CHECK(page.head.sequence==(phase=="pre"?0:1));
+        if(phase!="pre")CHECK(page.events.size()==1 && page.events[0].body==block.WireBytes() &&
+            page.events[0].direction==RuntimeBlockDirection::Connect);
         if(phase=="pre") {
             CHECK(!(index.status & (BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO)) && !index.data_size && !index.undo_size);
             CHECK(RequiredValue(db.getTip()).hash==context.parent_hash);
@@ -567,6 +595,58 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     CHECK(restored.forest.dumpInternalState()==parent_forest.dumpInternalState());
     CHECK(RequiredValue(db.getOrchardState())==parent_state);
 }
+static void OutboxReplayChecks(ChainDB& db,const OrchardBlockContext& context,
+                               const OrchardBlockCandidate& block) {
+    const auto all=ReadRuntimeOutboxUnderLock(db,context);
+    CHECK(all.events.size()>=2 && all.events.size()==all.head.sequence);
+    RuntimeOutboxCursor cursor;size_t seen=0;
+    do {
+        const auto page=ReadRuntimeOutboxUnderLock(db,context,cursor,1);
+        CHECK(page.head==all.head && page.events.size()==1);
+        CHECK(page.events.front().body==block.WireBytes());
+        CHECK(page.events.front().previous_digest==cursor.digest);
+        cursor=page.next;++seen;
+    } while(cursor!=all.head);
+    CHECK(seen==all.events.size());
+    const auto empty=ReadRuntimeOutboxUnderLock(db,context,cursor);
+    CHECK(empty.events.empty() && empty.next==empty.head);
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,{},0);});
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,{},129);});
+    LookupReject(Status::Invalid,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,{},1,1);});
+    auto wrong=cursor;wrong.digest.data[0]^=1;
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,wrong);});
+    wrong={all.head.sequence+1,{}};
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,wrong);});
+    wrong={0,H(1)};
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context,wrong);});
+    auto other=context;++other.domain.branch_id;
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,other);});
+    // Storage consistency only: damage this generated fixture, then restore
+    // the exact original row. No live chain or wallet is opened.
+    for(const auto& key:std::vector<std::string>{"runtime_orchard_outbox:v1:head",
+        "runtime_orchard_outbox:v1:event:0000000000000001",
+        "runtime_orchard_outbox:v1:event:0000000000000002"}) {
+        std::string original;CHECK(db.getRaw(key,original)==Status::Ok);
+        rocksdb::WriteBatch missing;missing.Delete(key);Commit(db,missing);
+        LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context);});
+        auto damaged=original;damaged.back()^=1;
+        rocksdb::WriteBatch replace;replace.Put(key,damaged);Commit(db,replace);
+        LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context);});
+        rocksdb::WriteBatch restore;restore.Put(key,original);Commit(db,restore);
+    }
+    // A correctly checksummed old head must not hide later retained records.
+    const std::string head_key="runtime_orchard_outbox:v1:head";std::string original_head;
+    CHECK(db.getRaw(head_key,original_head)==Status::Ok);
+    const auto first=all.events.front().cursor;std::string old_head="DNOH01";
+    for(size_t i=0;i<8;++i)old_head.push_back(static_cast<char>(first.sequence>>(8*i)));
+    old_head.append(reinterpret_cast<const char*>(first.digest.data),32);
+    uint256 digest;crypto::CSHA256().Write(old_head).Finalize(digest.data);
+    old_head.append(reinterpret_cast<const char*>(digest.data),32);
+    rocksdb::WriteBatch stale;stale.Put(head_key,old_head);Commit(db,stale);
+    LookupReject(Status::Corruption,[&]{(void)ReadRuntimeOutboxUnderLock(db,context);});
+    rocksdb::WriteBatch repair;repair.Put(head_key,original_head);Commit(db,repair);
+    CHECK(ReadRuntimeOutboxUnderLock(db,context).head==all.head);
+}
 static void AtomicForest(const std::string& base,bool checkpoint,const std::string& crash_executable={},bool owned_write=false,bool indexed=false,
     const std::function<void(ChainDB&,const OrchardBlockContext&,const OrchardBlockCandidate&,const UtreexoForest&,const std::filesystem::path&)>& startup_check={},bool contextual_headers=false) {
     AnnotatedRecursiveMutex activation;
@@ -721,6 +801,7 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
         CHECK(!activation.HeldByCurrentThread());CheckMemoryCoins(db,live);
         CHECK(RequiredValue(db.getTip()).hash==parent.GetHash());
         if(indexed) {
+            CHECK(ReadRuntimeOutboxUnderLock(db,c).events.empty());
             CHECK(disk_index.data_size==0 && disk_index.undo_size==0);
             CHECK(RequiredValue(db.getHeaderMetadata(c.block_hash)).data_size==0);
             // Mismatched in-memory locator is rejected without publishing it.
@@ -734,8 +815,16 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
                 CHECK(refused && RequiredValue(db.getTip()).hash==parent.GetHash());
                 disk_index.status=old_status;
             }
+            {
+                auto stale=prepare();rocksdb::WriteBatch poison;
+                poison.Put("runtime_orchard_outbox:v1:head","reentrant-change");Commit(db,poison);
+                bool refused=false;try{stale->Commit();}catch(const OrchardStateLookupError&){refused=true;}
+                CHECK(refused && RequiredValue(db.getTip()).hash==parent.GetHash());
+                rocksdb::WriteBatch repair;repair.Delete("runtime_orchard_outbox:v1:head");Commit(db,repair);
+                CHECK(ReadRuntimeOutboxUnderLock(db,c).events.empty());
+            }
             db.close();files.close();
-            IndexedInitialCrash(crash_executable,base,temp.path,c,block,parent,checkpoint);
+            if(!crash_executable.empty())IndexedInitialCrash(crash_executable,base,temp.path,c,block,parent,checkpoint);
             CHECK(db.init(temp.path)==Status::Ok && files.init(temp.path)==Status::Ok);
             disk_index=DiskIndex(db,header,c.height);
         }
@@ -756,7 +845,13 @@ static void AtomicForest(const std::string& base,bool checkpoint,const std::stri
         });contender.join();CHECK(excluded && wrong_thread);
         CHECK(RequiredValue(db.getTip()).hash==parent.GetHash());
         write->Commit();CHECK(activation.HeldByCurrentThread());
-        if(indexed)CheckDiskIndex(db,files,disk_index,block);
+        if(indexed) {
+            CheckDiskIndex(db,files,disk_index,block);
+            const auto page=ReadRuntimeOutboxUnderLock(db,c);
+            CHECK(page.head.sequence==1 && page.events.size()==1 && page.next==page.head);
+            CHECK(page.events[0].body==block.WireBytes());
+            CHECK(page.events[0].direction==RuntimeBlockDirection::Connect);
+        }
         bool duplicate=false;try{write->Commit();}catch(const std::logic_error&){duplicate=true;}
         CHECK(duplicate);write.reset();CHECK(!activation.HeldByCurrentThread());
         CheckMemoryCoins(db,live);
@@ -891,14 +986,21 @@ db.close();CHECK(db.init(temp.path)==Status::Ok);
         { auto abandoned=prepare_disconnect(); }
         CHECK(!activation.HeldByCurrentThread());CheckMemoryCoins(db,live);
         CHECK(RequiredValue(db.getTip()).hash==c.block_hash);
+        const auto prior_events=indexed?ReadRuntimeOutboxUnderLock(db,c).head.sequence:0;
         auto write=prepare_disconnect();
-        write->Commit();CheckMemoryCoins(db,live);
+        write->Commit();
+        if(indexed) {
+            const auto page=ReadRuntimeOutboxUnderLock(db,c);
+            CHECK(page.head.sequence==prior_events+1 && page.events.back().body==block.WireBytes());
+            CHECK(page.events.back().direction==RuntimeBlockDirection::Disconnect);
+        }CheckMemoryCoins(db,live);
         if(indexed)CheckDiskIndex(db,files,disk_index,block);
         write.reset();CHECK(!activation.HeldByCurrentThread());
     } else {
         Commit(db,disconnect);
         std::move(rollback).PublishAfterCommitUnderLock();
     }
+    if(indexed)OutboxReplayChecks(db,c,block);
     CHECK(live.GetBestBlock()==parent.GetHash() && live.GetHeight()==c.height-1);
     CHECK(live.SnapshotForestCommitment()==parent_forest.getCommitment());
     for(const auto& change:reverse_changes) CHECK(live.HaveCoin(change.outpoint)==bool(change.after));
@@ -986,6 +1088,11 @@ int main(int argc,char**argv) {
         if(argc==3 && std::string(argv[1])=="--crash-lifecycle") {
             const auto executable=std::filesystem::absolute(argv[0]).string();
             AtomicForest(argv[2],false,executable);AtomicForest(argv[2],true,executable);return 0;
+        }
+        if(argc==3 && std::string(argv[1])=="--runtime-outbox") {
+            AtomicForest(argv[2],false,{},true,true);AtomicForest(argv[2],true,{},true,true);
+            std::cout<<"Durable runtime outbox: exact replay, pagination, rollback retention and local corruption refusal passed\n";
+            return 0;
         }
         if(argc==3 && std::string(argv[1])=="--indexed-commit") {
             const auto executable=std::filesystem::absolute(argv[0]).string();

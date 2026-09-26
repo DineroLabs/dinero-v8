@@ -1,4 +1,8 @@
 #include "daemon/orchard_chainstate_write.h"
+#include "daemon/runtime_block_outbox.h"
+#include "crypto/sha256.h"
+#include <algorithm>
+#include <cstring>
 #include "common/annotated_mutex.h"
 #include "consensus/utxo_publication.h"
 #include "storage/chain_db.h"
@@ -31,6 +35,154 @@ bool IndexMatches(const CBlockIndex& i, const BlockHeader& h,
 }
 }
 
+namespace outbox_detail {
+constexpr const char* head_key="runtime_orchard_outbox:v1:head";
+constexpr size_t maximum_record_bytes=16*1024*1024;
+constexpr size_t overhead=224; // Upper bound for framing plus digest.
+std::string Key(uint64_t sequence) {
+    std::string key="runtime_orchard_outbox:v1:event:";
+    for(int shift=60;shift>=0;shift-=4)key.push_back("0123456789abcdef"[(sequence>>shift)&15]);
+    return key;
+}
+[[noreturn]] void Corrupt() { throw OrchardStateLookupError(Status::Corruption); }
+std::optional<std::string> Raw(const ChainDB& db,const std::string& key) {
+    std::string value;const auto status=db.getRaw(key,value);
+    if(status==Status::NotFound)return std::nullopt;
+    if(status!=Status::Ok)throw OrchardStateLookupError(status);
+    return value;
+}
+void Number(std::string& bytes,uint64_t value,size_t width) {
+    for(size_t i=0;i<width;++i)bytes.push_back(static_cast<char>(value>>(8*i)));
+}
+void Hash(std::string& bytes,const uint256& hash) {
+    bytes.append(reinterpret_cast<const char*>(hash.data),32);
+}
+uint256 Digest(std::string_view bytes) {
+    uint256 hash;crypto::CSHA256().Write(reinterpret_cast<const uint8_t*>(bytes.data()),bytes.size()).Finalize(hash.data);
+    return hash;
+}
+struct Reader {
+    std::string_view bytes;
+    std::string_view Take(size_t n) {
+        if(n>bytes.size())Corrupt();auto value=bytes.substr(0,n);bytes.remove_prefix(n);return value;
+    }
+    uint64_t Number(size_t n) {
+        auto value=Take(n);uint64_t result=0;
+        for(size_t i=0;i<n;++i)result|=uint64_t(uint8_t(value[i]))<<(8*i);
+        return result;
+    }
+    uint256 Hash() { auto value=Take(32);uint256 result;std::memcpy(result.data,value.data(),32);return result; }
+};
+Reader Checked(std::string_view bytes,size_t limit) {
+    if(bytes.size()<32 || bytes.size()>limit)Corrupt();
+    const auto payload=bytes.substr(0,bytes.size()-32);
+    Reader tail{bytes.substr(bytes.size()-32)};
+    if(tail.Hash()!=Digest(payload))Corrupt();
+    return {payload};
+}
+void Seal(std::string& bytes) { Hash(bytes,Digest(bytes)); }
+bool Profile(const OrchardBlockContext& c) {
+    return c.domain.network_code<=2 && c.domain.branch_id && c.activation_height &&
+        c.activation_height!=UINT32_MAX &&
+        std::any_of(c.domain.genesis_wire.begin(),c.domain.genesis_wire.end(),[](auto x){return x!=0;});
+}
+bool SameProfile(const OrchardBlockContext& a,const OrchardBlockContext& b) {
+    return a.domain.network_code==b.domain.network_code && a.domain.genesis_wire==b.domain.genesis_wire &&
+        a.domain.branch_id==b.domain.branch_id && a.activation_height==b.activation_height;
+}
+RuntimeOutboxCursor Head(const std::string& bytes) {
+    auto r=Checked(bytes,78);if(r.Take(6)!="DNOH01")Corrupt();
+    RuntimeOutboxCursor c{r.Number(8),r.Hash()};
+    if(!r.bytes.empty() || !c.sequence || c.digest.IsNull())Corrupt();return c;
+}
+std::string EncodeHead(const RuntimeOutboxCursor& c) {
+    std::string bytes="DNOH01";Number(bytes,c.sequence,8);Hash(bytes,c.digest);Seal(bytes);return bytes;
+}
+std::string Encode(const RuntimeOutboxEvent& e) {
+    std::string bytes="DNOE01";Number(bytes,e.cursor.sequence,8);Hash(bytes,e.previous_digest);
+    Number(bytes,e.direction==RuntimeBlockDirection::Connect?1:2,1);
+    Number(bytes,e.context.domain.network_code,1);
+    bytes.append(reinterpret_cast<const char*>(e.context.domain.genesis_wire.data()),32);
+    Number(bytes,e.context.domain.branch_id,4);Number(bytes,e.context.activation_height,4);
+    Number(bytes,e.context.height,4);Hash(bytes,e.context.block_hash);Hash(bytes,e.context.parent_hash);
+    Number(bytes,e.body.size(),4);bytes.append(reinterpret_cast<const char*>(e.body.data()),e.body.size());
+    Seal(bytes);return bytes;
+}
+RuntimeOutboxEvent Decode(const std::string& bytes,uint64_t sequence,const OrchardBlockContext& profile) {
+    auto r=Checked(bytes,maximum_record_bytes);
+    if(r.Take(6)!="DNOE01")Corrupt();
+    RuntimeOutboxEvent e;e.cursor.sequence=r.Number(8);e.previous_digest=r.Hash();
+    const auto direction=r.Number(1);if(direction!=1 && direction!=2)Corrupt();
+    e.direction=direction==1?RuntimeBlockDirection::Connect:RuntimeBlockDirection::Disconnect;
+    e.context.domain.network_code=r.Number(1);
+    const auto genesis=r.Take(32);std::copy(genesis.begin(),genesis.end(),e.context.domain.genesis_wire.begin());
+    e.context.domain.branch_id=r.Number(4);e.context.activation_height=r.Number(4);
+    e.context.height=r.Number(4);e.context.block_hash=r.Hash();e.context.parent_hash=r.Hash();
+    const auto size=r.Number(4);
+    if(!size || size>maximum_record_bytes-overhead || r.bytes.size()!=size || !Profile(e.context) ||
+        !SameProfile(e.context,profile) || e.cursor.sequence!=sequence || !sequence ||
+        (sequence==1)!=e.previous_digest.IsNull() || e.context.height<e.context.activation_height ||
+        e.context.height>INT32_MAX || e.context.block_hash.IsNull() || e.context.parent_hash.IsNull())Corrupt();
+    const auto body=r.Take(size);e.body.assign(body.begin(),body.end());
+    e.cursor.digest=Digest(std::string_view(bytes).substr(0,bytes.size()-32));
+    try {
+        const auto parsed=OrchardBlockCandidate::DecodeExact(e.body);std::string error;
+        if(parsed.Header().GetHash()!=e.context.block_hash || parsed.Header().prev_block_hash!=e.context.parent_hash ||
+            !parsed.CheckIdentityCommitments(false,error))Corrupt();
+    } catch(const std::bad_alloc&) { throw; }
+      catch(const OrchardStateLookupError&) { throw; }
+      catch(...) { Corrupt(); }
+    return e;
+}
+RuntimeOutboxEvent Read(const ChainDB& db,uint64_t sequence,const OrchardBlockContext& profile) {
+    const auto bytes=Raw(db,Key(sequence));if(!bytes)Corrupt();return Decode(*bytes,sequence,profile);
+}
+RuntimeOutboxCursor CheckedHead(const ChainDB& db,const std::optional<std::string>& raw,
+                               const OrchardBlockContext& profile) {
+    if(!raw) { if(Raw(db,Key(1)))Corrupt();return {}; }
+    const auto head=Head(*raw);if(Read(db,head.sequence,profile).cursor!=head)Corrupt();
+    if(head.sequence!=UINT64_MAX && Raw(db,Key(head.sequence+1)))Corrupt();
+    return head;
+}
+// Called only by the sealed indexed owner. No public staging API or deletion.
+std::optional<std::string> Append(const ChainDB& db,rocksdb::WriteBatch& batch,
+    const OrchardBlockContext& context,const OrchardBlockCandidate& block,bool connecting) {
+    if(!Profile(context))throw OrchardStateLookupError(Status::Invalid);
+    auto before=Raw(db,head_key);const auto head=CheckedHead(db,before,context);
+    if(head.sequence==UINT64_MAX)throw OrchardStateLookupError(Status::Invalid);
+    RuntimeOutboxEvent event{{head.sequence+1,{}},head.digest,
+        connecting?RuntimeBlockDirection::Connect:RuntimeBlockDirection::Disconnect,context,block.WireBytes()};
+    const auto key=Key(event.cursor.sequence);
+    if(Raw(db,key))Corrupt();
+    const auto bytes=Encode(event);
+    event.cursor.digest=Digest(std::string_view(bytes).substr(0,bytes.size()-32));
+    batch.Put(key,bytes);batch.Put(head_key,EncodeHead(event.cursor));return before;
+}
+} // namespace outbox_detail
+
+RuntimeOutboxPage ReadRuntimeOutboxUnderLock(const ChainDB& db,const OrchardBlockContext& profile,
+    RuntimeOutboxCursor after,size_t maximum_events,size_t maximum_bytes) {
+    using namespace outbox_detail;
+    if(!Profile(profile) || !maximum_events || maximum_events>128 || !maximum_bytes ||
+        maximum_bytes>16*1024*1024)throw OrchardStateLookupError(Status::Invalid);
+    RuntimeOutboxPage page;page.head=CheckedHead(db,Raw(db,head_key),profile);page.next=after;
+    if(after.sequence>page.head.sequence || (!after.sequence && !after.digest.IsNull()))Corrupt();
+    if(after.sequence && Read(db,after.sequence,profile).cursor!=after)Corrupt();
+    size_t used=0;
+    while(page.next.sequence<page.head.sequence && page.events.size()<maximum_events) {
+        auto event=Read(db,page.next.sequence+1,profile);
+        if(event.previous_digest!=page.next.digest)Corrupt();
+        const auto charge=event.body.size()+overhead;
+        if(charge>maximum_bytes-used) {
+            if(page.events.empty())throw OrchardStateLookupError(Status::Invalid);
+            break;
+        }
+        used+=charge;page.next=event.cursor;page.events.push_back(std::move(event));
+    }
+    if(page.next.sequence==page.head.sequence && page.next!=page.head)Corrupt();
+    return page;
+}
+
 struct PreparedOrchardChainstateWrite::Impl {
     enum class Phase { Preparing, Prepared, Aborted, Writing, Committed };
     std::unique_lock<AnnotatedRecursiveMutex> lock;
@@ -44,6 +196,8 @@ struct PreparedOrchardChainstateWrite::Impl {
     BlockHeader indexed_header;
     std::optional<ChainDB::PersistedHeaderMetadata> index_before, index_after;
     Phase phase = Phase::Preparing;
+    std::optional<std::string> outbox_before;
+    bool outbox_staged = false;
 
     Impl(AnnotatedRecursiveMutex& mutex, ChainDB& database, const ChainWriteToken& capability)
         : lock(mutex), db(database), token(capability) {}
@@ -57,6 +211,8 @@ struct PreparedOrchardChainstateWrite::Impl {
         lock.mutex()->AssertHeld("Orchard chainstate write");
     }
     void CheckIndex() const {
+        if (outbox_staged && outbox_detail::Raw(db,outbox_detail::head_key)!=outbox_before)
+            throw OrchardStateLookupError(Status::Corruption);
         if (!index) return;
         const auto current=RequiredDisk(db.getHeaderMetadata(indexed_header.GetHash()));
         if (MetadataFields(current)!=MetadataFields(*index_before) ||
@@ -173,6 +329,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     bool witness, bool checkpoint, const std::optional<storage::LegacyRetirementRecord>& boundary, bool contextual_header_validated) {
     auto result=Connect(mutex,db,token,live,context,block,parent,forest,mtp,witness,checkpoint,boundary);
     result->impl_->PrepareIndex(files,index,context,block,true,contextual_header_validated);
+    result->impl_->outbox_before=outbox_detail::Append(db,result->impl_->batch,context,block,true);
+    result->impl_->outbox_staged=true;
     return result;
 }
 std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::DisconnectIndexed(
@@ -182,6 +340,8 @@ std::unique_ptr<PreparedOrchardChainstateWrite> PreparedOrchardChainstateWrite::
     const BlockHeader& parent, const UtreexoForest& forest, bool witness) {
     auto result=Disconnect(mutex,db,token,live,context,block,parent,forest,witness);
     result->impl_->PrepareIndex(files,index,context,block,false);
+    result->impl_->outbox_before=outbox_detail::Append(db,result->impl_->batch,context,block,false);
+    result->impl_->outbox_staged=true;
     return result;
 }
 
