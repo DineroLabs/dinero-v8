@@ -5,6 +5,13 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- The existing WalletWorker connect path now commits a block's UTXO-index changes
+  together, checks mutation failures and defers height/vault observations until
+  index commit. Real-worker failure/retry/same-block-spend tests and real SQLite
+  transaction ownership tests cover this path. WalletManager and note databases
+  remain separate; this is not the complete durable recovery provider. See
+  `wallet-block-index-atomicity-2026-09-26.md`.
+
 - Existing wallet worker connect/disconnect/reorg and synchronous rescan now pin
   the selected WalletManager database and serialize its SQLite connection for
   the whole job. Wallet create/open/close cannot replace that database during a

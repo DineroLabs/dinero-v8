@@ -5973,6 +5973,7 @@ if(NOT WIN32)
     tests/wallet/test_wallet_database_lease.cpp
     src/daemon/lightning_stubs.cpp
     tests/stubs/mempool_test_stubs.cpp
+    tests/stubs/vault_test_stubs.cpp
   )
   add_dependencies(test_wallet_database_lease gtest gtest_main)
   target_link_libraries(test_wallet_database_lease PRIVATE

@@ -148,6 +148,11 @@ public:
     bool DeleteUTXO(const TxId& txid, uint32_t vout);
     bool IsUTXOSpent(const TxId& txid, uint32_t vout) const;
 
+    // Runs synchronous index operations under one mutex and owned transaction.
+    // Callback must check every mutation result. Throws on acquisition/commit
+    // failure; unwinding aborts owned writes. Other wallet stores are separate.
+    void ApplyAtomically(const std::function<void()>& writes);
+
     // Transaction control (for atomic bulk operations like snapshot import)
     // Phase 46: Crash Safety - CRITICAL-002 fix
     bool BeginTransaction();
@@ -243,7 +248,8 @@ private:
     std::map<std::vector<uint8_t>, std::string> watched_scripts_;
     
     // ✅ Fine-grained locking for thread safety
-    mutable std::mutex db_mutex_;       // Protects all SQLite operations (not thread-safe)
+    mutable std::recursive_mutex db_mutex_;       // Protects all SQLite operations (not thread-safe)
+    bool atomic_write_active_ = false;
     mutable std::mutex scripts_mutex_;  // Protects watched_scripts_ map
 };
 

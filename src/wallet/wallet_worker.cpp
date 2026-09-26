@@ -295,10 +295,6 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
         }
     }
 
-    if (wallet_manager_) {
-        wallet_manager_->setBlockchainHeight(height);
-    }
-
     // Check if UTXO index is available
     if (!utxo_index_) {
         std::cerr << "[WalletWorker] ⚠️  UTXO index not available, skipping block scan" << std::endl;
@@ -309,6 +305,8 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
         int utxos_added = 0;
         int utxos_spent = 0;
 
+        std::vector<WalletUTXO> observed_outputs;
+        utxo_index_->ApplyAtomically([&] {
         // Scan all transactions in the block
         for (const auto& tx : transactions) {
             // Phase M.4.3-D: GetTxid() returns TxId, use directly
@@ -333,7 +331,8 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                     dinero::WalletUTXO spent_utxo;  // Phase M.3: WalletUTXO
                     if (utxo_index_->GetUTXO(input.prevout.txid, input.prevout.vout, spent_utxo)) {
                         // This input spends our UTXO - mark it as spent in memory
-                        utxo_index_->SpendUTXO(input.prevout.txid, input.prevout.vout, height);
+                        if (!utxo_index_->SpendUTXO(input.prevout.txid, input.prevout.vout, height))
+                            throw std::runtime_error("Wallet UTXO block spend failed");
                         utxos_spent++;
                         tx_spends_wallet_inputs = true;
 
@@ -399,26 +398,11 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                         is_coinbase
                     );
 
-                    utxo_index_->AddUTXO(new_utxo);
+                    if (!utxo_index_->AddUTXO(new_utxo))
+                        throw std::runtime_error("Wallet UTXO block insert failed");
                     utxos_added++;
 
-                    // Track C: Liquidity Vault auto-observer.
-                    // No-op when the vault isn't running or the
-                    // scriptPubKey doesn't match the configured
-                    // operator address. Decoding to address +
-                    // matching live in vault_runtime.cpp; the wallet
-                    // pipeline just hands over the raw outpoint +
-                    // value + height + block hash.
-                    {
-                        std::array<uint8_t, 32> txid_raw{};
-                        std::memcpy(txid_raw.data(),
-                                    txid.AsUint256().begin(), 32);
-                        dinero::vault::ObserveWalletOutput(
-                            txid_raw, static_cast<uint32_t>(vout),
-                            output.scriptPubKey,
-                            static_cast<uint64_t>(effective_value.GetUna()),
-                            static_cast<uint64_t>(height), hash);
-                    }
+                    observed_outputs.push_back(new_utxo);
 
                     // ✅ CRITICAL FIX: Persist UTXO to wallet database
                     if (wallet_manager_) {
@@ -532,6 +516,14 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
                     std::cerr << "[WalletWorker] ⚠️  Exception recording transaction: " << e.what() << std::endl;
                 }
             }
+        }
+
+        }); // Checked index commit precedes height and external observers.
+        for (const auto& output : observed_outputs) {
+            std::array<uint8_t, 32> txid_raw{};
+            std::memcpy(txid_raw.data(), output.txid.AsUint256().begin(), 32);
+            dinero::vault::ObserveWalletOutput(txid_raw, output.vout, output.spk,
+                output.value.GetUna(), height, hash);
         }
 
         // ✅ CRITICAL FIX: Update wallet's blockchain height for correct confirmation calculation

@@ -165,6 +165,7 @@ public:
     bool RescanSynchronously(class ChainDB* chain_db, int start_height, std::string* error = nullptr);
 
 private:
+    friend struct WalletWorkerTestAccess;
     void WorkerThread();
     void ProcessConnect(uint32_t height, const std::string& hash,
                         const std::vector<Transaction>& transactions);

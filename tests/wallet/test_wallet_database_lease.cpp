@@ -1,5 +1,8 @@
 #include "wallet/wallet_manager.h"
 #include "wallet/shielded_wallet_ops.h"
+#include "wallet/wallet_worker.h"
+#include "wallet/utxo_index.h"
+#include "consensus/chainparams.h"
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <chrono>
@@ -7,6 +10,14 @@
 #include <future>
 #include <thread>
 
+namespace dinero {
+struct WalletWorkerTestAccess {
+    static void Connect(WalletWorker& worker, uint32_t height,
+                        const std::vector<Transaction>& transactions) {
+        worker.ProcessConnect(height, std::string(64, '1'), transactions);
+    }
+};
+}
 namespace {
 using namespace std::chrono_literals;
 
@@ -171,5 +182,43 @@ TEST_F(WalletDatabaseLeaseTest, RuntimePinsWalletBeforeTakingSharedRuntimeLock) 
     lease.reset();
     EXPECT_TRUE(first.get());
     EXPECT_TRUE(second.get());
+}
+TEST_F(WalletDatabaseLeaseTest, RealWorkerCommitsIndexBlockTogether) {
+    dinero::SelectParams(dinero::Chain::REGTEST);
+    dinero::UTXOIndex index((path / "worker-index.sqlite").string());
+    ASSERT_TRUE(index.Initialize());
+    const std::vector<uint8_t> script{0x51};
+    index.RegisterAddress(script, "m/84'/1448'/0'/0/0");
+    dinero::uint256 hash; hash.begin()[0] = 1;
+    dinero::TxId seed(hash);
+    ASSERT_TRUE(index.AddUTXO(dinero::WalletUTXO(seed, 0, dinero::AmountUna::Una(1000),
+        script, "m/84'/1448'/0'/0/0", 10, false)));
+    dinero::Transaction first;
+    first.vin.resize(1); first.vin[0].prevout = dinero::TxOutPoint(seed, 0);
+    first.vout.emplace_back(dinero::AmountUna::Una(800), script);
+    dinero::Transaction second;
+    second.vin.resize(1); second.vin[0].prevout = dinero::TxOutPoint(first.GetTxid(), 0);
+    second.vout.emplace_back(dinero::AmountUna::Una(600), script);
+    sqlite3* raw = nullptr;
+    ASSERT_EQ(sqlite3_open((path / "worker-index.sqlite").string().c_str(), &raw), SQLITE_OK);
+    const auto close = std::unique_ptr<sqlite3, decltype(&sqlite3_close)>(raw, sqlite3_close);
+    Exec(raw, "CREATE TRIGGER fail_second BEFORE INSERT ON wallet_utxos WHEN NEW.value=600 BEGIN SELECT RAISE(ABORT, 'test worker insert'); END");
+    dinero::WalletWorker worker(&index, nullptr); // Real worker/index, no other store claim.
+    std::string error;
+    try { dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}); }
+    catch (const std::runtime_error& e) { error = e.what(); }
+    EXPECT_EQ(error, "Wallet UTXO block insert failed");
+    ASSERT_TRUE(index.GetUTXO(seed, 0));
+    EXPECT_FALSE(index.GetUTXO(seed, 0)->spend_height);
+    EXPECT_FALSE(index.GetUTXO(first.GetTxid(), 0));
+    EXPECT_FALSE(index.GetUTXO(second.GetTxid(), 0));
+    Exec(raw, "DROP TRIGGER fail_second");
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}));
+    ASSERT_TRUE(index.GetUTXO(first.GetTxid(), 0));
+    EXPECT_EQ(index.GetUTXO(seed, 0)->spend_height, 20);
+    EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0)->spend_height, 20);
+    EXPECT_FALSE(index.GetUTXO(second.GetTxid(), 0)->spend_height);
+    EXPECT_NO_THROW(dinero::WalletWorkerTestAccess::Connect(worker, 20, {first, second}));
+    EXPECT_EQ(index.GetUTXO(first.GetTxid(), 0)->spend_height, 20);
 }
 } // namespace

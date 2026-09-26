@@ -3,6 +3,8 @@
 #include <iostream>
 #include <stdexcept>
 #include <unistd.h>
+#include <future>
+#include <chrono>
 using namespace dinero;
 static void Check(bool ok, const char* message) {
     if (!ok) throw std::runtime_error(message);
@@ -68,6 +70,57 @@ static void CheckCreationReplay(const std::filesystem::path& directory) {
         Check(index.GetUTXO(Id(10), 0)->spend_height == 30, "spend metadata was ignored");
     }
 }
+static void CheckAtomicWrites(const std::filesystem::path& directory) {
+    const auto path = (directory / "atomic.sqlite").string();
+    UTXOIndex index(path); Check(index.Initialize(), "atomic index initialization failed");
+    const WalletUTXO row(Id(50), 0, AmountUna::Una(700), {0x51}, "m/84'/1448'/0'/0/0", 10, false);
+    bool threw = false;
+    try { index.ApplyAtomically([&] {
+        Check(index.AddUTXO(row), "owned add failed");
+        Check(index.SetMetadata("atomic", "pending"), "owned metadata failed");
+        throw std::runtime_error("abort callback");
+    }); } catch (const std::runtime_error& e) { threw = std::string(e.what()) == "abort callback"; }
+    Check(threw && !index.GetUTXO(row.txid, 0) && !index.GetMetadata("atomic"), "callback failure left partial writes");
+    Check(index.BeginTransaction(), "borrowed begin failed");
+    Check(index.SetMetadata("borrowed", "pending"), "borrowed metadata failed");
+    threw = false;
+    try { index.ApplyAtomically([] {}); } catch (const std::runtime_error&) { threw = true; }
+    Check(threw && index.GetMetadata("borrowed"), "borrowed transaction changed");
+    Check(index.RollbackTransaction() && !index.GetMetadata("borrowed"), "borrowed rollback failed");
+    index.ApplyAtomically([&] {
+        Check(index.AddUTXO(row), "owned add failed");
+        Check(!index.BeginTransaction() && !index.CommitTransaction() && !index.RollbackTransaction(), "legacy control escaped ownership");
+        Check(!index.Initialize() && !index.ClearAll(), "owned store replaced");
+        bool nested = false;
+        try { index.ApplyAtomically([] {}); } catch (const std::runtime_error&) { nested = true; }
+        Check(nested, "nested ownership accepted");
+    });
+    Check(index.GetUTXO(row.txid, 0).has_value(), "owned commit missing");
+    Check(!index.GetUTXO(Id(99), 0), "exhaust row query");
+    sqlite3* raw = nullptr; Check(sqlite3_open(path.c_str(), &raw) == SQLITE_OK, "atomic observer failed");
+    struct Close { sqlite3* db; ~Close() { sqlite3_close(db); } } close{raw};
+    Sql(raw, "CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_atomic_commit AFTER UPDATE ON wallet_utxos BEGIN INSERT INTO child VALUES(99); END");
+    threw = false;
+    try { index.ApplyAtomically([&] { Check(index.SpendUTXO(row.txid, 0, 20), "owned spend failed"); }); }
+    catch (const std::runtime_error& e) { threw = std::string(e.what()) == "Wallet UTXO write commit failed"; }
+    Check(threw && !index.GetUTXO(row.txid, 0)->spend_height, "failed owned commit left spend");
+    Check(!index.GetUTXO(Id(99), 0), "exhaust row query");
+    Sql(raw, "DROP TRIGGER fail_atomic_commit");
+    // Other index callers must wait until the complete callback has aborted.
+    using namespace std::chrono_literals;
+    std::promise<void> entered; std::future<bool> writer;
+    threw = false;
+    try { index.ApplyAtomically([&] {
+        Check(index.SetMetadata("owner", "discard"), "owner metadata failed");
+        writer = std::async(std::launch::async, [&] { entered.set_value(); return index.SetMetadata("other", "keep"); });
+        entered.get_future().wait();
+        const bool blocked = writer.wait_for(100ms) == std::future_status::timeout;
+        if (!blocked) throw std::runtime_error("writer entered owned transaction");
+        throw std::runtime_error("abort owner");
+    }); } catch (const std::runtime_error& e) { threw = std::string(e.what()) == "abort owner"; }
+    Check(writer.get(), "competing writer failed");
+    Check(threw && !index.GetMetadata("owner") && index.GetMetadata("other"), "competing write joined abandoned transaction");
+}
 int main() {
     try {
         auto pattern = (std::filesystem::temp_directory_path() / "wallet-revert-XXXXXX").string();
@@ -75,6 +128,7 @@ int main() {
         Check(mkdtemp(name.data()) != nullptr, "temporary directory failed");
         struct Cleanup { std::filesystem::path path; ~Cleanup() { std::filesystem::remove_all(path); } } cleanup{name.data()};
         CheckCreationReplay(cleanup.path);
+        CheckAtomicWrites(cleanup.path);
         const auto path = (cleanup.path / "index.sqlite").string();
         {
             UTXOIndex index(path); Check(index.Initialize(), "index initialization failed");
