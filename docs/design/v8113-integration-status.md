@@ -1,5 +1,12 @@
 # v8.1.13 integration status
 
+- Transparent store recovery now connects checked service pages to existing
+  index and ordinary receipts, validates both applied source positions, and
+  resumes ordered partial commits through a captured head across bounded pages.
+  Missing baselines refuse; the result covers these stores only. Account/note
+  integration, all-consumer readiness and production installation remain open.
+  See `wallet-store-recovery-2026-09-26.md`.
+
 - Ordinary wallet source delivery now commits real typed UTXO/history effects,
   derived metadata and a per-store cursor together under the persistent wallet
   lease. Ordered retry can distinguish a committed index prefix from pending

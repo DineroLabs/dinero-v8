@@ -142,7 +142,9 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_chainstate_write)
   add_library(dinero_orchard_index_delivery STATIC
     "${ORCHARD_HOST_ROOT}/src/wallet/runtime_index_delivery.cpp"
-    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_index_delivery.cpp")
+    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_index_delivery.cpp"
+    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery.cpp"
+    "${ORCHARD_HOST_ROOT}/src/wallet/runtime_wallet_recovery_service.cpp")
   target_include_directories(dinero_orchard_index_delivery PRIVATE "${ORCHARD_HOST_ROOT}/src")
   target_link_libraries(dinero_orchard_index_delivery PUBLIC dinero_orchard_chainstate_write dinero_wallet sqlite3)
   if(TARGET dinero_core)

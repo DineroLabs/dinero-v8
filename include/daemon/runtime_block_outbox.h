@@ -31,6 +31,9 @@ struct RuntimeOutboxEvent {
 struct RuntimeOutboxPage {
     RuntimeOutboxCursor head, next;
     std::vector<RuntimeOutboxEvent> events;
+    // Exact post-transition tip at the requested nonzero cursor, checked from
+    // its retained record even at EOF. Absent only for the zero cursor.
+    std::optional<std::pair<uint256,uint32_t>> after_tip;
 };
 // Prepared before historical validation mutates memory. Abandonment writes
 // nothing. The actual historical canonical batch must include this record;

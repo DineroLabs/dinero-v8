@@ -1,11 +1,15 @@
 #pragma once
 #include "wallet/runtime_index_delivery.h"
+#include "wallet/runtime_wallet_recovery.h"
 #include "wallet/utxo_index.h"
 #include "wallet/wallet_manager.h"
 #include <future>
 #include <chrono>
 #include <thread>
 namespace dinero {
+struct RuntimeWalletRecoveryTestAccess {
+ static auto Resume(const std::function<RuntimeOutboxPage(RuntimeOutboxCursor,size_t)>& source,WalletManager& w,UTXOIndex& i,uint64_t session){return RuntimeWalletRecovery::Resume(source,w,i,session);}
+};
 struct RuntimeIndexDeliveryTestAccess {
  static auto Read(dinero::UTXOIndex& i,const std::string& id){return RuntimeIndexDelivery::Read(i,id);}
  static auto Apply(dinero::UTXOIndex& i,const std::string& id,const RuntimeOutboxEvent& e){return RuntimeIndexDelivery::Apply(i,id,e);}
@@ -39,6 +43,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     const auto event=ReadRuntimeOutboxUnderLock(db,c).events.front();CHECK(event.cursor.sequence==1);
     WalletManager ordinary(wallet.path/"ordinary");ordinary.create("ordinary");
     auto ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    const auto wallet_identity=ordinary.AcquireDatabaseLease()->EnsureDeliveryIdentity();
     const auto ordinary_sql=[&](const std::string& text) {
         const auto lease=ordinary.AcquireDatabaseLease();
         CHECK(sqlite3_exec(lease->Database(),text.c_str(),nullptr,nullptr,nullptr)==SQLITE_OK);
@@ -61,6 +66,14 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(ordinary.addUTXO(historical.vtx.front().GetTxid().AsUint256().GetHex(),0,old_output.value.GetInt64(),"",script_hex(old_output.scriptPubKey),c.height-1,true));
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(!RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session));
+    size_t recovery_source_reads=0;
+    const auto source=[&](RuntimeOutboxCursor cursor,size_t maximum) {
+        CHECK(maximum>0 && maximum<=128);++recovery_source_reads;
+        return ReadRuntimeOutboxUnderLock(db,c,cursor,maximum);
+    };
+    const auto recover=[&] {return RuntimeWalletRecoveryTestAccess::Resume(source,ordinary,index,ordinary_session);};
+    failure([&]{(void)recover();},"baseline reconciliation required");
+    CHECK(recovery_source_reads==0);
     // Failing effects roll back schema preparation, rows and source progress.
     ordinary_sql("CREATE TRIGGER ordinary_reject_output BEFORE INSERT ON utxos BEGIN SELECT RAISE(ABORT,'ordinary output'); END");
     failure([&]{RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,event);},"statement failed");
@@ -88,7 +101,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
       CHECK(!sqlite3_get_autocommit(lease->Database()));
       CHECK(sqlite3_exec(lease->Database(),"ROLLBACK",nullptr,nullptr,nullptr)==SQLITE_OK); }
 
-    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture"));
+    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity));
     // The production entry points derive identity from a real pinned wallet.
     { WalletManager owner(wallet.path/"manager");owner.create("delivery");owner.open("delivery");
       dinero::UTXOIndex bound((wallet.path/"bound.sqlite").string());CHECK(bound.Initialize());
@@ -143,29 +156,29 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     const auto sql=[&](const char* text){CHECK(sqlite3_exec(raw,text,nullptr,nullptr,nullptr)==SQLITE_OK);};
     // A receipt write failure must roll back every input/output effect.
     sql("CREATE TRIGGER reject_receipt BEFORE INSERT ON utxo_metadata WHEN NEW.key='runtime_delivery:v1:receipt' BEGIN SELECT RAISE(ABORT,'receipt failure'); END");
-    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",event);},"Index delivery statement failed");
-    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture") && index.GetUTXOCount().value()==baseline);
+    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,event);},"Index delivery statement failed");
+    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity) && index.GetUTXOCount().value()==baseline);
     for(const auto& spent:undo.spent)if(spent.height<c.height)CHECK(!index.GetUTXO(TxId(spent.prev_txid),spent.prev_vout)->spend_height);
     CHECK(!index.GetUTXO(TxId(H(250)),UINT32_MAX)); // Finish the reusable SELECT before external schema DDL.
     sql("DROP TRIGGER reject_receipt");
     // Required row errors and deferred COMMIT rejection cannot advance progress.
     sql("CREATE TRIGGER reject_output BEFORE INSERT ON wallet_utxos BEGIN SELECT RAISE(ABORT,'output failure'); END");
-    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",event);},"Index delivery output failed");
-    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture") && index.GetUTXOCount().value()==baseline);
+    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,event);},"Index delivery output failed");
+    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity) && index.GetUTXOCount().value()==baseline);
     sql("DROP TRIGGER reject_output");
     sql("CREATE TABLE delivery_parent(id INTEGER PRIMARY KEY); CREATE TABLE delivery_child(id INTEGER REFERENCES delivery_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_commit AFTER INSERT ON utxo_metadata WHEN NEW.key='runtime_delivery:v1:receipt' BEGIN INSERT INTO delivery_child VALUES(99); END");
-    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",event);},"Wallet UTXO write commit failed");
-    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture") && index.GetUTXOCount().value()==baseline);
+    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,event);},"Wallet UTXO write commit failed");
+    CHECK(!RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity) && index.GetUTXOCount().value()==baseline);
     for(const auto& spent:undo.spent)if(spent.height<c.height)CHECK(!index.GetUTXO(TxId(spent.prev_txid),spent.prev_vout)->spend_height);
     CHECK(!index.GetUTXO(TxId(H(250)),UINT32_MAX));
     sql("DROP TRIGGER reject_commit");
     CHECK(index.BeginTransaction() && index.SetMetadata("borrowed","pending"));
-    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",event);},"write ownership unavailable");
+    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,event);},"write ownership unavailable");
     CHECK(index.GetMetadata("borrowed")==std::optional<std::string>("pending"));
     CHECK(index.RollbackTransaction() && !index.GetMetadata("borrowed"));
-    const auto first=RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",event);
+    const auto first=RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,event);
     CHECK(first.cursor==event.cursor && first.tip_hash==c.block_hash && first.origin_hash==c.parent_hash);
-    CHECK(RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",event).cursor==first.cursor);
+    CHECK(RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,event).cursor==first.cursor);
     const auto count=index.GetUTXOCount().value();CHECK(count>baseline);
     // Index may commit first; ordinary progress remains absent until its own
     // effects commit. Retry from the same checked event closes that prefix.
@@ -180,6 +193,27 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=0")==int64_t(count));
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=1")==int64_t(undo.spent.size()+1));
     CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,event).cursor==first.cursor);
+    { const auto lease=ordinary.AcquireDatabaseLease();
+      const auto reads=recovery_source_reads;
+      failure([&]{(void)recover();},"released caller lease");
+      CHECK(recovery_source_reads==reads); }
+    bool source_unleased=false;
+    CHECK(RuntimeWalletRecoveryTestAccess::Resume([&](RuntimeOutboxCursor cursor,size_t limit) {
+        if(!source_unleased) {
+            auto competing=std::async(std::launch::async,[&]{return ordinary.AcquireDatabaseLease()->Session();});
+            CHECK(competing.wait_for(std::chrono::seconds(2))==std::future_status::ready);
+            CHECK(competing.get()==ordinary_session);source_unleased=true;
+        }
+        return source(cursor,limit);
+    },ordinary,index,ordinary_session).applied.cursor==first.cursor);
+    CHECK(source_unleased);
+    const auto recovered_first=recover();CHECK(recovered_first.applied.cursor==first.cursor);
+    CHECK(recovered_first.observed_head==first.cursor);
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::Resume([&](RuntimeOutboxCursor cursor,size_t limit) {
+        auto page=source(cursor,limit);
+        if(cursor==first.cursor)page.after_tip->first=H(249);
+        return page;
+    },ordinary,index,ordinary_session);},"source position mismatch");
     ordinary.open("ordinary");
     failure([&]{(void)RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session);},"selection changed");
     ordinary_session=ordinary.AcquireDatabaseLease()->Session();
@@ -191,11 +225,11 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     failure([&]{(void)RuntimeIndexDeliveryTestAccess::Read(index,"other-wallet");},"ownership changed");
     CHECK(!index.SetMetadata("runtime_delivery:v1:receipt","forged") && !index.DeleteMetadata("runtime_delivery:v1:receipt"));
     CHECK(index.Initialize());register_scripts(index);
-    CHECK(RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture")->cursor==first.cursor);
+    CHECK(RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity)->cursor==first.cursor);
     auto skipped=event;skipped.cursor.sequence+=2;skipped.previous_digest=first.cursor.digest;
-    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",skipped);},"source discontinuity");
+    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,skipped);},"source discontinuity");
     index.RegisterAddress({0x51,0x51},"m/86'/1448'/0'/0/1");
-    failure([&]{(void)RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture");},"ownership changed");
+    failure([&]{(void)RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity);},"ownership changed");
     index.ClearRegisteredAddresses();register_scripts(index);
     // Actual indexed rollback gives the next checked source event.
     BlockStorage files;CHECK(files.init(path)==Status::Ok);
@@ -206,11 +240,18 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     rollback->Commit();rollback.reset();
     const auto down=ReadRuntimeOutboxUnderLock(db,c,first.cursor).events.front();
     CHECK(down.direction==RuntimeBlockDirection::Disconnect);
-    const auto second=RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",down);
     ordinary_sql("CREATE TRIGGER ordinary_reject_undo BEFORE DELETE ON utxos BEGIN SELECT RAISE(ABORT,'ordinary undo'); END");
-    failure([&]{RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,down);},"statement failed");
+    failure([&]{(void)recover();},"statement failed");
     CHECK(RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session)->cursor==first.cursor);
+    const auto second=*RuntimeIndexDelivery::ReadForWallet(ordinary,index,ordinary_session);
+    CHECK(second.cursor==down.cursor);
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=0")==int64_t(count));
+    // Validate the ahead store against source before allowing lagging effects.
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::Resume([&](RuntimeOutboxCursor cursor,size_t limit) {
+        if(cursor==second.cursor)throw std::runtime_error("ahead source unavailable");
+        return source(cursor,limit);
+    },ordinary,index,ordinary_session);},"ahead source unavailable");
+    CHECK(RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session)->cursor==first.cursor);
     ordinary_sql("DROP TRIGGER ordinary_reject_undo");
     ordinary_sql("CREATE TRIGGER ordinary_reject_restore BEFORE UPDATE OF is_spent ON utxos BEGIN SELECT RAISE(ABORT,'ordinary restore'); END");
     failure([&]{RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,down);},"statement failed");
@@ -218,7 +259,9 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=0")==int64_t(count));
     ordinary_sql("DROP TRIGGER ordinary_reject_restore");
 
-    CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,down).cursor==second.cursor);
+    ordinary.open("ordinary");ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    CHECK(recover().applied.cursor==second.cursor);
+    CHECK(recover().applied.cursor==second.cursor);
     CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=1")==0);
 
@@ -235,18 +278,72 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
             direction==RuntimeBlockDirection::Connect?c.height-1:c.height-2,canonical);
         prepared->StageOrTerminateUnderLock(db,canonical);Commit(db,canonical);
         const auto old_event=ReadRuntimeOutboxUnderLock(db,c,next_cursor,1).events.front();CHECK(!old_event.IsOrchardProfile());
-        next_cursor=RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",old_event).cursor;
+        if(direction==RuntimeBlockDirection::Disconnect) {
+            bool concurrent_prefix=false;
+            failure([&]{(void)RuntimeWalletRecoveryTestAccess::Resume([&](RuntimeOutboxCursor cursor,size_t limit) {
+                auto page=source(cursor,limit);
+                if(!concurrent_prefix) {
+                    concurrent_prefix=true;
+                    CHECK(RuntimeIndexDelivery::ApplyForWallet(ordinary,index,ordinary_session,old_event).cursor==old_event.cursor);
+                }
+                return page;
+            },ordinary,index,ordinary_session);},"stores changed during source read");
+            CHECK(concurrent_prefix);
+            CHECK(RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session)->cursor==next_cursor);
+        }
+        next_cursor=RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,old_event).cursor;
         CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,old_event).cursor==next_cursor);
         CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline-(direction==RuntimeBlockDirection::Disconnect?1:0)));
 
         CHECK(index.GetUTXO(historical.vtx.front().GetTxid(),0).has_value()==(direction==RuntimeBlockDirection::Connect));
         CHECK(index.GetUTXOCount().value()==baseline-(direction==RuntimeBlockDirection::Disconnect?1:0));
     }
+    // More than one maximum page of retained historical transitions must be
+    // replayed in source order, despite every pair returning to the same tip.
+    const auto append_historical=[&](RuntimeBlockDirection direction) {
+        auto prepared=PreparedHistoricalRuntimeOutbox::PrepareUnderLock(db,c,historical,c.height-1,direction);CHECK(prepared);
+        rocksdb::WriteBatch canonical;
+        Tip(db,direction==RuntimeBlockDirection::Connect?historical.GetHash():historical.header.prev_block_hash,
+            direction==RuntimeBlockDirection::Connect?c.height-1:c.height-2,canonical);
+        prepared->StageOrTerminateUnderLock(db,canonical);Commit(db,canonical);
+    };
+    for(size_t i=0;i<65;++i) {
+        append_historical(RuntimeBlockDirection::Disconnect);
+        append_historical(RuntimeBlockDirection::Connect);
+    }
+    const auto captured=ReadRuntimeOutboxUnderLock(db,c,next_cursor,1).head;
+    size_t replay_pages=0;bool extended=false;
+    const auto catchup=RuntimeWalletRecoveryTestAccess::Resume([&](RuntimeOutboxCursor cursor,size_t limit) {
+        auto page=source(cursor,limit);
+        if(limit==128)++replay_pages;
+        if(!extended && cursor==captured) {
+            extended=true;append_historical(RuntimeBlockDirection::Disconnect);
+            append_historical(RuntimeBlockDirection::Connect);
+            page=source(cursor,limit);
+        }
+        return page;
+    },ordinary,index,ordinary_session);
+    CHECK(replay_pages==1 && extended);
+    CHECK(catchup.applied.cursor==captured);
+    CHECK(catchup.observed_head.sequence==captured.sequence+2);
+    next_cursor=recover().applied.cursor;CHECK(next_cursor==catchup.observed_head);
+    CHECK(ordinary_count("SELECT count(*) FROM utxos")==int64_t(baseline));
+    // A selection change while obtaining source must refuse before any effect.
+    const auto before_switch=next_cursor;
+    bool switched=false;
+    failure([&]{(void)RuntimeWalletRecoveryTestAccess::Resume([&](RuntimeOutboxCursor cursor,size_t limit) {
+        auto page=source(cursor,limit);
+        if(!switched){ordinary.open("ordinary");switched=true;}
+        return page;
+    },ordinary,index,ordinary_session);},"selection changed");
+    ordinary_session=ordinary.AcquireDatabaseLease()->Session();
+    CHECK(RuntimeOrdinaryDelivery::ReadForWallet(ordinary,ordinary_session)->cursor==before_switch);
+    CHECK(recover().applied.cursor==before_switch);
     UtreexoForest parent_forest;std::string error;CHECK(storage::RestoreHistoricalForest(db,c.height-1,parent_forest,error)==Status::Ok);
     auto reconnect=PreparedOrchardChainstateWrite::ConnectIndexed(lock,db,token,files,disk_index,live,c,block,parent,parent_forest,{},true,false,FixtureRetirement(c));
     reconnect->Commit();reconnect.reset();
     const auto again=ReadRuntimeOutboxUnderLock(db,c,next_cursor).events.front();
-    CHECK(RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",again).cursor==again.cursor && index.GetUTXOCount().value()==count);
+    CHECK(RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,again).cursor==again.cursor && index.GetUTXOCount().value()==count);
     CHECK(RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,again).cursor==again.cursor);
     CHECK(ordinary_count("SELECT count(*) FROM utxos WHERE is_spent=0")==int64_t(count));
     ordinary_sql("DROP TRIGGER runtime_ordinary_utxos_UPDATE");
@@ -258,16 +355,16 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
     failure([&]{RuntimeOrdinaryDelivery::ApplyForWallet(ordinary,ordinary_session,again);},"invalidated");
 
     CHECK(index.Initialize());register_scripts(index);
-    CHECK(RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture")->cursor==again.cursor);
+    CHECK(RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity)->cursor==again.cursor);
     // Missing invalidation guards refuse even exact replay rather than being repaired silently.
     std::string trigger;
     { sqlite3_stmt* stmt=nullptr;CHECK(sqlite3_prepare_v2(raw,"SELECT sql FROM sqlite_master WHERE name='runtime_delivery_UPDATE'",-1,&stmt,nullptr)==SQLITE_OK);
       CHECK(sqlite3_step(stmt)==SQLITE_ROW);trigger=reinterpret_cast<const char*>(sqlite3_column_text(stmt,0));
       CHECK(sqlite3_step(stmt)==SQLITE_DONE);sqlite3_finalize(stmt); }
     sql("DROP TRIGGER runtime_delivery_UPDATE");
-    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",again);},"guard unavailable");
+    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,again);},"guard unavailable");
     sql(trigger.c_str());
-    CHECK(RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture")->cursor==again.cursor);
+    CHECK(RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity)->cursor==again.cursor);
     // A zero-owned-output index must invalidate its receipt on reset, too.
     { dinero::UTXOIndex empty((wallet.path/"empty.sqlite").string());CHECK(empty.Initialize());
       CHECK(RuntimeIndexDeliveryTestAccess::Apply(empty,"empty-wallet",event).cursor==event.cursor);
@@ -275,7 +372,7 @@ static void IndexDeliveryChecks(ChainDB& db,const OrchardBlockContext& c,
       failure([&]{(void)RuntimeIndexDeliveryTestAccess::Read(empty,"empty-wallet");},"invalidated"); }
     // Existing production writers cannot leave a stale successful receipt.
     const auto& spent=undo.spent.front();CHECK(index.SpendUTXO(TxId(spent.prev_txid),spent.prev_vout,c.height));
-    failure([&]{(void)RuntimeIndexDeliveryTestAccess::Read(index,"wallet-fixture");},"invalidated");
+    failure([&]{(void)RuntimeIndexDeliveryTestAccess::Read(index,wallet_identity);},"invalidated");
     CHECK(index.ClearAll());
-    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,"wallet-fixture",event);},"invalidated");
+    failure([&]{RuntimeIndexDeliveryTestAccess::Apply(index,wallet_identity,event);},"invalidated");
 }

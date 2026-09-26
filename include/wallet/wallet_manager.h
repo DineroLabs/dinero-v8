@@ -931,6 +931,7 @@ private:
 #endif
     std::string current_;
     friend class RuntimeOrdinaryDelivery;
+    friend class RuntimeWalletRecovery;
     int current_wallet_id_ = -1;
 
     // ═══════════════════════════════════════════════════════════════

@@ -201,7 +201,7 @@ RuntimeOutboxPage ReadRuntimeOutboxUnderLock(const ChainDB& db,const OrchardBloc
     if(after.sequence) {
         const auto previous=Read(db,after.sequence,profile);
         if(previous.cursor!=after)Corrupt();
-        previous_tip=After(previous);
+        previous_tip=After(previous);page.after_tip=previous_tip;
     }
     size_t used=0;
     while(page.next.sequence<page.head.sequence && page.events.size()<maximum_events) {
