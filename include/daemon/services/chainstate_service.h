@@ -2,6 +2,7 @@
 #include "consensus/csn_replay_data.h"
 #include "daemon/replay_metadata_recovery.h"
 #include "daemon/iservice.h"
+#include "daemon/runtime_block_notifications.h"
 #include "daemon/active_tip_classification.h"
 #include "storage/chain_db.h"
 #include "consensus/block_status_generation.h"
@@ -317,6 +318,11 @@ public:
     // failures (missing-utxo, I/O) un-poisoned.
     bool ConnectTip(class CBlockIndex* tip_to_connect, std::string* out_error = nullptr,
                     bool* out_consensus_invalid = nullptr);
+
+    // Mixed-body transitions require a complete typed consumer implementation.
+    // Absence/refusal prevents the durable write; this is not an optional event.
+    void setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications>);
+
 
     // CSN reorg: Bookkeeping-only connect (no ConnectBlock, no forest mutation).
     // Writes coin changes, an UndoRecord (spent/created + shielded fields),
@@ -1133,6 +1139,8 @@ private:
         uint64_t nullifier_count{0};
     };
 
+    bool DisconnectOrchardTip(CBlockIndex*);
+
     bool LoadShieldedState();
     bool LoadSeparatedShieldedState();
     bool PersistShieldedState() const;
@@ -1764,6 +1772,7 @@ private:
         std::string& error);
 
     std::mutex csn_replay_records_mutex_;
+    std::shared_ptr<RuntimeBlockNotifications> runtime_block_notifications_;
 
 };
 

@@ -53,6 +53,14 @@ This branch collects release implementation for review and qualification against
   Historical journal behavior stays optional before activation. This is not yet
   complete startup/replay/reindex or production connection; see the service
   startup audit design and generated-store qualification scope.
+- The actual DisconnectTip now has a typed Orchard route using the indexed
+  atomic owner and parent-tip publication. It requires a prepared typed consumer
+  event before committing, invalidates stale position-cache entries, and publishes
+  the event after durable and in-memory state agree. Generated-store tests invoke
+  the real service for descendant and activation-boundary rollback. No production
+  notification provider is installed yet, so live Orchard rollback still refuses;
+  ConnectTip and end-to-end integration remain unfinished. See the service
+  disconnect design for this readiness condition and fixture scope.
 - The actual startup undo-coverage walk now routes retained Orchard bodies under
   the activation lock, restoring and reversing a private forest across the
   requested window. Exact indexed/embedded body and undo, commit records,

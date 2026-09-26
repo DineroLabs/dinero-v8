@@ -3,6 +3,7 @@
 #include "daemon/services/chainstate_service.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/runtime_block_reader.h"
+#include "daemon/orchard_chainstate_write.h"
 #include "consensus/orchard_block_staging.h"
 #endif
 #include "consensus/orchard_profile.h"
@@ -13852,6 +13853,82 @@ Status ChainstateService::ReconstructSpentCoinsFromChainDb(
 // Reorg Fix: Production-Correct DisconnectTip
 // ============================================================================
 
+void ChainstateService::setRuntimeBlockNotifications(std::shared_ptr<RuntimeBlockNotifications> notifications) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    runtime_block_notifications_=std::move(notifications);
+}
+
+bool ChainstateService::DisconnectOrchardTip(CBlockIndex* tip) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    // Until all typed downstream consumers can prepare an event, there is no
+    // permitted commit. In particular an absent wallet/mempool adapter must not
+    // silently turn a successful rollback into lost wallet notifications.
+    if (!tip || tip!=active_tip_ || !tip->pprev || !chain_db_ || !block_storage_ ||
+        !consensus_utxo_set_ || GetConfig().utreexo_stateless || safe_mode_active_ ||
+        !runtime_block_notifications_ || !consensus::OrchardProfileConfigurationValid(Params()))
+        return false;
+    try {
+        auto* parent_index=tip->pprev;
+        if (uint64_t(parent_index->height)+1!=tip->height || parent_index->hash!=tip->prev_hash)
+            return false;
+        const auto body=ReadRuntimeBlockUnderLock(*chain_db_,block_storage_.get(),tip->hash,tip->height);
+        const auto parent=chain_db_->getHeader(parent_index->hash);
+        const auto work=chain_db_->getBlockWork(parent_index->hash);
+        const auto height=chain_db_->getBlockHeight(parent_index->hash);
+        if (!body.ok() || !body->IsOrchardProfile() || !parent.ok() || !work.ok() || !height.ok() ||
+            *height<0 || uint32_t(*height)!=parent_index->height ||
+            parent->GetHash()!=parent_index->hash || parent->prev_block_hash!=parent_index->prev_hash ||
+            parent->version!=parent_index->version || parent->merkle_root!=parent_index->merkle_root ||
+            parent->timestamp!=parent_index->timestamp || parent->difficulty!=parent_index->bits ||
+            parent->nonce!=parent_index->nonce || ChainworkFromHex(parent_index->chainwork)!=*work ||
+            (parent_index->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD)))
+            return false;
+        const bool witness=Params().enforce_witness_commitment &&
+            tip->height>=Params().witness_commitment_enforcement_height;
+        // Indexed and embedded representations must be exactly the same body,
+        // including suffixes outside the transaction identity commitment.
+        if (body->Orchard().WireBytes()!=consensus::ReadStoredOrchardBlock(*chain_db_,tip->hash,witness).WireBytes())
+            return false;
+        ChainWriteToken token;
+        // Release the leaf forest read lock before publication takes its write
+        // lock. The activation lock continues to exclude all canonical writers.
+        const auto forest=[&] {
+            const auto forest_lock=consensus_utxo_set_->LockForestShared();
+            return consensus_utxo_set_->GetForest();
+        }();
+        auto write=PreparedOrchardChainstateWrite::DisconnectIndexed(activation_mutex_,*chain_db_,token,
+            *block_storage_,*tip,*consensus_utxo_set_,*body->Context(),body->Orchard(),*parent,forest,witness);
+        const auto consumers=runtime_block_notifications_;
+        auto notifications=consumers->Prepare(*body,tip->height,RuntimeBlockDirection::Disconnect);
+        if (!notifications) return false;
+        // Prepare is trusted read-only consumer work. Recheck the selected
+        // service pointers as well as the owner's index/memory readiness before
+        // durability. No fallible consumer preparation is allowed afterwards.
+        if (active_tip_!=tip || tip->pprev!=parent_index || runtime_block_notifications_!=consumers) return false;
+        write->Commit();
+        // This diagnostic cache is not authoritative for proof serving. Remove
+        // old-height positions before any consumer can observe the new tip.
+        // A synchronization failure after durability must never return normally.
+        const auto invalidate_positions=[&]() noexcept {
+            if (utxo_position_index_) utxo_position_index_->Clear();
+        };
+        invalidate_positions();
+        PublishActiveTipLocked(parent_index,TipPublishReason::kRollback);
+        notifications->PublishAfterCommit();
+        return true;
+    } catch (const std::exception& e) {
+        // Commit itself fail-stops after storage writing starts, and both
+        // publication methods cannot throw. This handles prewrite failures only.
+        if (logger_) logger_->error(std::string("[OrchardDisconnect] preparation failed: ")+e.what());
+        return false;
+    }
+#else
+    (void)tip;
+    return false;
+#endif
+}
+
 bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
     std::cout << "🔧 [DisconnectTip] ENTRY: height=" << (tip_to_disconnect ? tip_to_disconnect->height : -1) << std::endl;
     std::cout << std::flush;
@@ -13864,6 +13941,9 @@ bool ChainstateService::DisconnectTip(CBlockIndex* tip_to_disconnect) {
         std::cout << "❌ [DisconnectTip] NULL chain_db_" << std::endl;
         return false;
     }
+    // A mixed body must never pass through the historical Block decoder.
+    if (consensus::OrchardActiveForHeight(Params(),tip_to_disconnect->height))
+        return DisconnectOrchardTip(tip_to_disconnect);
     if (!block_validator_) {
         std::cout << "❌ [DisconnectTip] NULL block_validator_" << std::endl;
         logger_->error("[DisconnectTip] BlockValidator not initialized");

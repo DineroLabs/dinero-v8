@@ -496,7 +496,8 @@ static void CrashChild(int argc,char** argv) {
 }
 static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     const OrchardBlockCandidate& parent,const UtreexoForest& parent_forest,bool checkpoint,
-    const std::function<void(const OrchardBlockContext&,const OrchardBlockCandidate&,const UtreexoForest&)>& audit={}) {
+    const std::function<void(const OrchardBlockContext&,const OrchardBlockCandidate&,const UtreexoForest&)>& audit={},
+    bool audit_disconnects=false) {
     auto next=previous;++next.height;next.parent_hash=previous.block_hash;
     View view;view.height=previous.height;
     const auto uncommitted=CandidateWires(next,{},42);next.block_hash=uncommitted.Header().GetHash();
@@ -525,6 +526,11 @@ static void JournalContinuation(ChainDB& db,const OrchardBlockContext& previous,
     CHECK(RequiredValue(db.getOrchardUndoParent(staged.block.orchard.Next()))==parent_state);
     AuditOrchardChainstateTipUnderLock(db,token,next,parent.Header(),staged.forest.After(),true);
     if(audit)audit(next,child,staged.forest.After());
+    if(audit_disconnects) {
+        CHECK(RequiredValue(db.getTip()).hash==previous.block_hash);
+        CHECK(RequiredValue(db.getOrchardState())==parent_state);
+        return;
+    }
     // A valid current record cannot authorize restoring a different/missing
     // parent's state. Check the saved parent record as part of reversal too.
     rocksdb::WriteBatch erase_parent;erase_parent.Delete(key);Commit(db,erase_parent);
@@ -921,7 +927,12 @@ int main(int argc,char**argv) {
             AtomicForest(argv[2],true,{},false,false,ServiceStartupChecks);
             std::cout<<"OrchardServiceStartup PASS\n";return 0;
         }
-        if(argc==3 && std::string(argv[1])=="--service-undo-coverage") {
+        if(argc==3 && std::string(argv[1])=="--service-disconnect") {
+        AtomicForest(argv[2],false,{},false,false,ServiceDisconnectChecks);
+        AtomicForest(argv[2],true,{},false,false,ServiceDisconnectChecks);
+        std::cout<<"OrchardServiceDisconnect PASS\n";return 0;
+    }
+    if(argc==3 && std::string(argv[1])=="--service-undo-coverage") {
             AtomicForest(argv[2],false,{},false,false,ServiceUndoCoverageChecks);
             AtomicForest(argv[2],true,{},false,false,ServiceUndoCoverageChecks);
             std::cout<<"OrchardServiceUndoCoverage PASS\n";return 0;

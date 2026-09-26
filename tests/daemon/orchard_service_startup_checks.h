@@ -39,6 +39,22 @@ struct ShieldedStateStartupTestAccess {
     static bool UndoCoverage(ChainstateService& s, uint32_t height, uint32_t count) {
         return s.VerifyActiveChainUndoCoverage(height,count);
     }
+    static void Notifications(ChainstateService& s,std::shared_ptr<RuntimeBlockNotifications> n) { s.runtime_block_notifications_=std::move(n); }
+    static bool Disconnect(ChainstateService& s,CBlockIndex* tip) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(s.activation_mutex_);
+        return s.DisconnectTip(tip);
+    }
+    static void SeedPositions(ChainstateService& s) {
+        s.utxo_position_index_=std::make_unique<indexing::UTXOPositionIndex>();
+        s.utxo_position_index_->AddPosition(TxId(uint256{}),0,42);
+    }
+    static void LoadCoins(ChainstateService& s,ChainDB& db) {
+        CHECK(db.forEachUTXO([&](const uint256& hash,uint32_t n,const Coin& coin) {
+            CHECK(s.consensus_utxo_set_->AddCoin(OutPoint(TxId(hash),n),MemoryCoin(coin)));return true;
+        })==Status::Ok);
+    }
+    static bool TipIs(const ChainstateService& s,const CBlockIndex* tip) { return s.active_tip_==tip; }
+    static const ConsensusUTXOSet& Coins(const ChainstateService& s) { return *s.consensus_utxo_set_; }
     static void StaleMemory(ChainstateService& s) { s.consensus_utxo_set_->SetBestBlock(uint256{},0); }
     static void EmptyForest(ChainstateService& s) { s.consensus_utxo_set_->ReplaceForestGuarded(consensus::UtreexoForest{}); }
     static bool Verified(const ChainstateService& s) { return s.journal_verified_at_startup_; }
@@ -59,6 +75,85 @@ struct ShieldedStateStartupTestAccess {
         CHECK(s.published_tip_height_==(next?uint32_t(next->height):0));
     }
 };
+}
+static void ServiceDisconnectChecks(ChainDB& db,const OrchardBlockContext& c,
+    const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
+    using Access=dinero::ShieldedStateStartupTestAccess;
+    const auto old_params=Params();const auto old_config=GetConfig();
+    struct Restore { ChainParams p;NodeConfig c;~Restore(){MutableParams()=p;GetConfig()=c;} } restore{old_params,old_config};
+    MutableParams().orchard_activation_height=c.activation_height;MutableParams().orchard_branch_id=c.domain.branch_id;
+    MutableParams().enforce_witness_commitment=true;MutableParams().witness_commitment_enforcement_height=c.activation_height;
+    GetConfig().utreexo_stateless=false;
+    TempDir flatfiles;auto files=std::make_shared<BlockStorage>();CHECK(files->init(flatfiles.path)==Status::Ok);
+    auto install=[&](const OrchardBlockContext& context,const OrchardBlockCandidate& candidate) {
+        const auto body=RequiredValue(files->writeBlockBytes(context.block_hash,
+            std::string(candidate.WireBytes().begin(),candidate.WireBytes().end())));
+        const auto undo=RequiredValue(files->writeUndo(context.block_hash,RequiredValue(db.getUndo(context.block_hash)).Serialize()));
+        ChainDB::PersistedHeaderMetadata m;m.height=context.height;m.parent_hash=context.parent_hash;
+        m.chainwork=RequiredValue(db.getBlockWork(context.block_hash));m.status_flags=BLOCK_VALID_HEADER|BLOCK_HAVE_DATA|BLOCK_HAVE_UNDO;
+        m.file_number=body.file_number;m.data_pos=body.offset;m.data_size=body.size;
+        m.undo_file=undo.file_number;m.undo_pos=undo.offset;m.undo_size=undo.size;
+        CHECK(db.putHeaderMetadata(token,context.block_hash,m)==Status::Ok);
+    };
+    install(c,block);
+    if(c.height==c.activation_height) {
+        JournalContinuation(db,c,block,forest,true,[&](const OrchardBlockContext& next,
+            const OrchardBlockCandidate& child,const UtreexoForest& child_forest) {
+            ServiceDisconnectChecks(db,next,child,child_forest,path);
+        },true);
+    }
+
+    auto index=DiskIndex(db,block.Header(),c.height);
+    const auto parent_header=RequiredValue(db.getHeader(c.parent_hash));
+    CBlockIndex parent(parent_header,c.height-1);parent.chainwork=RequiredValue(db.getBlockWork(c.parent_hash)).GetHex();
+    index.pprev=&parent;
+    struct Notifications final:RuntimeBlockNotifications {
+        ChainDB& db;ChainstateService& service;const CBlockIndex& before;const CBlockIndex& after;
+        const std::vector<uint8_t>& wire;bool refuse=false,published=false,coherent=false;unsigned prepared=0;
+        Notifications(ChainDB& d,ChainstateService& s,const CBlockIndex& b,const CBlockIndex& a,const std::vector<uint8_t>& w)
+          :db(d),service(s),before(b),after(a),wire(w){}
+        struct Prepared final:PreparedRuntimeBlockNotifications {
+            Notifications& n;explicit Prepared(Notifications& value):n(value){}
+            void PublishAfterCommit() noexcept override {
+                n.published=true;
+                const auto tip=n.db.getTip();
+                n.coherent=tip.ok() && tip->hash==n.after.hash && Access::TipIs(n.service,&n.after) &&
+                    Access::Coins(n.service).GetBestBlock()==n.after.hash &&
+                    n.service.GetUTXOPositionIndex()->GetPositionCount()==0;
+            }
+        };
+        std::unique_ptr<PreparedRuntimeBlockNotifications> Prepare(const RuntimeBlockBody& body,uint32_t height,
+            RuntimeBlockDirection direction) override {
+            CHECK(direction==RuntimeBlockDirection::Disconnect && height==before.height && body.IsOrchardProfile());
+            CHECK(body.Orchard().WireBytes()==wire && Access::TipIs(service,&before));
+            CHECK(RequiredValue(db.getTip()).hash==before.hash);++prepared;
+            if(refuse)return {};
+            return std::make_unique<Prepared>(*this);
+        }
+    };
+    ChainstateService service;service.setChainDB(&db);service.setBlockStorage(files);Access::Set(service,index,forest);Access::LoadCoins(service,db);Access::SeedPositions(service);
+    db.close();const auto original=Inspect(path);CHECK(db.init(path)==Status::Ok);
+    CHECK(!Access::Disconnect(service,&index)); // No silent omission of typed consumers.
+    auto notifications=std::make_shared<Notifications>(db,service,index,parent,block.WireBytes());
+    Access::Notifications(service,notifications);notifications->refuse=true;
+    CHECK(!Access::Disconnect(service,&index) && !notifications->published);
+    db.close();CHECK(Inspect(path)==original);CHECK(db.init(path)==Status::Ok);
+    notifications->refuse=false;
+    ++parent.timestamp;CHECK(!Access::Disconnect(service,&index));--parent.timestamp;
+    GetConfig().utreexo_stateless=true;CHECK(!Access::Disconnect(service,&index));GetConfig().utreexo_stateless=false;
+    db.close();CHECK(Inspect(path)==original);CHECK(db.init(path)==Status::Ok);
+    CHECK(Access::Disconnect(service,&index));
+    CHECK(notifications->published && notifications->coherent && notifications->prepared==2);
+    CHECK(Access::TipIs(service,&parent) && RequiredValue(db.getTip()).hash==c.parent_hash);
+    if(c.height==c.activation_height) {
+        CHECK(db.getOrchardState().status()==Status::NotFound && db.getLegacyRetirementState().status()==Status::NotFound);
+    } else {
+        CHECK(RequiredValue(db.getOrchardState()).block_hash==c.parent_hash);
+        CHECK(RequiredValue(db.getLegacyRetirementState()).block_hash==c.parent_hash);
+    }
+    CheckMemoryCoins(db,Access::Coins(service));
+    CHECK(!Access::Disconnect(service,&index)); // Never replay undo against its parent.
+    std::cout<<"Actual service typed disconnect: notification readiness, atomic rollback, memory and observer ordering checked\n";
 }
 static void ServiceUndoCoverageChecks(ChainDB& db,const OrchardBlockContext& c,
     const OrchardBlockCandidate& block,const UtreexoForest& forest,const std::filesystem::path& path) {
