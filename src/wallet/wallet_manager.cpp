@@ -2949,7 +2949,7 @@ WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
         sqlite_mutex_ = sqlite3_db_mutex(db_);
         if (!sqlite_mutex_) throw std::runtime_error("Wallet database requires serialized SQLite");
         sqlite3_mutex_enter(sqlite_mutex_);
-        if (!sqlite3_get_autocommit(db_)) {
+        if (!sqlite3_get_autocommit(db_) && owner_.database_leases_ == 0) {
             sqlite3_mutex_leave(sqlite_mutex_);
             throw std::runtime_error("Wallet database already has an active transaction");
         }
@@ -2960,9 +2960,10 @@ WalletManager::DatabaseLease::DatabaseLease(WalletManager& owner)
 WalletManager::DatabaseLease::~DatabaseLease() noexcept {
     if (thread_ != std::this_thread::get_id()) std::terminate();
     // Entry was in autocommit and no other thread can use this connection.
-    // An unfinished transaction therefore belongs to this lease, never an
-    // unrelated caller. Do not allow it to escape into the next wallet job.
-    if (db_ && !sqlite3_get_autocommit(db_)) {
+    // An unfinished transaction therefore belongs to this lease group, never
+    // an unrelated caller. Nested same-thread operations must not roll back
+    // the outer job; the last lease prevents it escaping into the next job.
+    if (owner_.database_leases_ == 1 && db_ && !sqlite3_get_autocommit(db_)) {
         if (sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
             !sqlite3_get_autocommit(db_)) std::terminate();
     }
@@ -5710,6 +5711,8 @@ bool WalletManager::rescanBlockchain(int start_height,
         WLOG_ERR("rescanBlockchain: ChainDB is null - cannot scan");
         return false;
     }
+
+    const auto database_lease = AcquireDatabaseLease();
 
     if (!db_) {
         WLOG_ERR("rescanBlockchain: Wallet database not initialized");

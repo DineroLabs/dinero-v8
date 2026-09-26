@@ -251,8 +251,9 @@ public:
         sqlite3_mutex* sqlite_mutex_ = nullptr;
         std::string name_;
     };
-    // May return a lease with no selected database. Entry refuses an already
-    // active transaction. Any transaction left open at exit is rolled back;
+    // May return a lease with no selected database. Outermost entry refuses an
+    // already active transaction. Nested same-thread leases share the outer
+    // transaction; the last lease rolls back any transaction left open;
     // commit must be checked by the caller before publishing memory/readiness.
     [[nodiscard]] std::unique_ptr<DatabaseLease> AcquireDatabaseLease();
 

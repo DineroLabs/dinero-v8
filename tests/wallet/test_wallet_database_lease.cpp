@@ -1,4 +1,5 @@
 #include "wallet/wallet_manager.h"
+#include "wallet/shielded_wallet_ops.h"
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <chrono>
@@ -128,5 +129,47 @@ TEST_F(WalletDatabaseLeaseTest, EmptySelectionCanBeLeasedWithoutFabricatedDataba
     EXPECT_THROW(wallet->open("owner"), std::logic_error);
     lease.reset();
     EXPECT_NO_THROW(wallet->open("owner"));
+}
+
+TEST_F(WalletDatabaseLeaseTest, NestedOwnerPreservesOuterTransaction) {
+    auto outer = wallet->AcquireDatabaseLease();
+    sqlite3* db = outer->Database();
+    Exec(db, "CREATE TABLE lease_probe(value INTEGER)");
+    Exec(db, "BEGIN IMMEDIATE; INSERT INTO lease_probe VALUES(1)");
+    {
+        auto inner = wallet->AcquireDatabaseLease();
+        EXPECT_EQ(inner->Database(), db);
+        std::string error;
+        EXPECT_TRUE(dinero::wallet::shielded_ops::EnsureWalletRuntime(*wallet, &error)) << error;
+    }
+    EXPECT_EQ(sqlite3_get_autocommit(db), 0);
+    EXPECT_EQ(Count(db), 1);
+    outer.reset();
+    EXPECT_EQ(sqlite3_get_autocommit(db), 1);
+    EXPECT_EQ(Count(db), 0);
+}
+
+TEST_F(WalletDatabaseLeaseTest, RuntimePinsWalletBeforeTakingSharedRuntimeLock) {
+    dinero::WalletManager other(path / "other-manager");
+    other.create("other");
+    auto lease = wallet->AcquireDatabaseLease();
+    std::promise<void> entered;
+    auto ready = entered.get_future();
+    auto first = std::async(std::launch::async, [&] {
+        entered.set_value();
+        return dinero::wallet::shielded_ops::EnsureWalletRuntime(*wallet, nullptr);
+    });
+    ready.wait();
+    // This wallet's runtime must respect the already-held lifetime lease.
+    EXPECT_EQ(first.wait_for(200ms), std::future_status::timeout);
+    auto second = std::async(std::launch::async, [&] {
+        return dinero::wallet::shielded_ops::EnsureWalletRuntime(other, nullptr);
+    });
+    // Waiting for one wallet must not hold the process-wide runtime mutex and
+    // block a different wallet. Always release before joining, even on failure.
+    EXPECT_EQ(second.wait_for(2s), std::future_status::ready);
+    lease.reset();
+    EXPECT_TRUE(first.get());
+    EXPECT_TRUE(second.get());
 }
 } // namespace

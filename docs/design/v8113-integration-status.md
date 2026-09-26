@@ -9,7 +9,9 @@ This branch collects release implementation for review and qualification against
   the selected WalletManager database and serialize its SQLite connection for
   the whole job. Wallet create/open/close cannot replace that database during a
   lease; reentrant switches refuse. Borrowed transactions are not adopted, and
-  unfinished leased transactions roll back before release. This establishes
+  unfinished leased transactions roll back before the last owner releases. All
+  legacy shielded runtime entry points now pin the wallet before their shared
+  runtime lock; nested scans preserve the owning rescan transaction. This establishes
   connection ownership, not atomic commits across wallet stores or durable
   delivery completion. See `wallet-database-ownership-2026-09-26.md`.
 

@@ -29,11 +29,13 @@ needs this same connection.
 
 ## Transaction ownership
 
-Entry requires autocommit, so a pre-existing transaction is refused without
-commit or rollback. A transaction begun during the lease remains exclusively
-owned by that job. The caller must check COMMIT before publishing in-memory
+Outermost entry requires autocommit, so a pre-existing transaction is refused
+without commit or rollback. Nested leases on the same thread share the outer
+owner and its transaction. Only the last lease performs abandoned-transaction
+cleanup. A transaction begun during the lease remains exclusively owned by that
+job. The caller must check COMMIT before publishing in-memory
 account state or claiming delivery. An unfinished transaction rolls back when
-the lease exits; inability to roll it back while it remains active terminates
+the last lease exits; inability to roll it back while it remains active terminates
 the process. No fallible diagnostics are performed by lease destruction.
 
 The lease does not begin a transaction automatically, change journal/synchronous
@@ -84,3 +86,35 @@ remove the connection mutex, lifetime lock or abandoned-transaction rollback;
 each fails its intended assertion and the restored implementation passes.
 Worker/service sources were normally compiled; the 67-TU sanitizer claim covers
 the ownership executable, not whole-daemon concurrency or power-loss recovery.
+
+## Runtime entry points and nested rescans
+
+All 20 legacy shielded runtime entry points now take a shared `RuntimeWalletLock`
+which acquires the wallet database lease before the process-wide runtime mutex.
+Destruction releases the runtime mutex first. A caller waiting for a leased
+wallet therefore does not hold the shared runtime lock and block an unrelated
+wallet. This pins selected identity for runtime calls, including calls outside
+the worker; it does not universally serialize every legacy key-cache mutation.
+
+The original runtime entry points did not acquire the WalletManager SQLite
+connection lock: a current reverse-order deadlock was not established. The
+confirmed regression is that they could bypass a held wallet lifetime lease.
+The fixed order prevents a new inversion as ownership is extended.
+
+The actual `WalletManager::rescanBlockchain` entry now also takes a lease, so
+callers outside WalletWorker receive the same ownership. Its already-owned outer
+transaction is preserved when it enters runtime scanning. Nested leases cannot
+adopt a transaction from an unrelated caller, since the first lease still
+requires autocommit. New real-wallet regressions distinguish borrowed versus
+nested transactions and test runtime blocking and progress on another wallet;
+both fail against the original ownership implementation.
+
+The runtime follow-up rebuilt the daemon and dependent targets after 63 project
+translation units and passed 18 selected CTests plus the existing covenant wallet
+recovery suite. All six ownership cases pass with 67 project C++ translation
+units instrumented: the three changed test/manager/runtime units were rebuilt,
+and the unchanged instrumented objects and RocksDB initializer were reused
+read-only. Reversing the runtime lock order or allowing an inner lease to roll
+back the outer transaction fails the intended regression; the restored source
+passes. These are bounded local concurrency tests, not a complete deadlock
+proof, running-node qualification or cross-store crash recovery.
