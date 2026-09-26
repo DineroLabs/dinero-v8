@@ -5,6 +5,13 @@ This branch collects release implementation for review and qualification against
 
 ## Included source
 
+- The actual wallet UTXO index rollback now checks transaction acquisition,
+  deletion, un-spending and commit. Any SQL failure aborts its own transaction;
+  nested caller transactions are refused without being committed or rolled back.
+  A mandatory real-SQLite regression injects failures at both statements and
+  commit, then checks retry/reopen. This repairs an existing consumer prerequisite;
+  it does not install the complete Orchard recovery provider.
+
 - Orchard account snapshots now bind a delivery sequence/digest to actual scan
   advancement or immediate-parent rollback. The receipt shares the encrypted
   payload and SQLite commit with notes, pending operations and address counters.

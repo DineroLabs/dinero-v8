@@ -4244,6 +4244,20 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mining/test_block_template_determinism.cpp)
   message(STATUS "✅ Block Template Determinism test enabled")
 endif()
 
+# Real SQLite wallet rollback, independent of the mock correctness suite below.
+add_executable(test_wallet_revert_atomic
+  tests/utxo/test_wallet_revert_atomic.cpp
+  src/wallet/utxo_index.cpp
+  src/sqlite_open.cpp
+  src/primitives/uint256.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_wallet_revert_atomic PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_wallet_revert_atomic PRIVATE sqlite3 Threads::Threads)
+add_test(NAME WalletRevertAtomic COMMAND test_wallet_revert_atomic)
+set_tests_properties(WalletRevertAtomic PROPERTIES LABELS "wallet;utxo;storage" TIMEOUT 60)
+
 # Priority 3: UTXO Index Correctness Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/utxo/test_utxo_index_correctness.cpp)
   add_executable(test_utxo_index_correctness tests/utxo/test_utxo_index_correctness.cpp)

@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <iostream>
 #include <cassert>
+#include <memory>
+#include <stdexcept>
 
 namespace dinero {
 
@@ -908,43 +910,37 @@ void UTXOIndex::ProcessBlock(int height, const std::vector<std::string>& block_t
 }
 
 void UTXOIndex::RevertBlock(int height) {
-    // ✅ LOCK: Protect all SQLite operations (statements not thread-safe)
     std::lock_guard<std::mutex> lock(db_mutex_);
+    if (!db_ || height < 0)
+        throw std::invalid_argument("Invalid wallet UTXO rollback context");
 
-    // Begin transaction for atomic revert
-    sqlite3_exec(db_, "BEGIN TRANSACTION", nullptr, nullptr, nullptr);
-
+    const auto exec = [&](const char* sql) {
+        if (sqlite3_exec(db_, sql, nullptr, nullptr, nullptr) != SQLITE_OK)
+            throw std::runtime_error("Wallet UTXO rollback transaction failed");
+    };
+    // Acquire our own transaction before changing any rows. A failed BEGIN
+    // (including an existing caller transaction) must not reach COMMIT/ROLLBACK.
+    exec("BEGIN IMMEDIATE");
     try {
-        // 1. Delete UTXOs created at this height
-        const char* delete_sql = "DELETE FROM wallet_utxos WHERE height = ?";
-        sqlite3_stmt* stmt_del;
-        if (sqlite3_prepare_v2(db_, delete_sql, -1, &stmt_del, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt_del, 1, height);
-            sqlite3_step(stmt_del);
-            int deleted = sqlite3_changes(db_);
-            sqlite3_finalize(stmt_del);
-            if (deleted > 0) {
-                std::cout << "INFO: Reverted " << deleted << " UTXOs created at height " << height << std::endl;
-            }
-        }
-
-        // 2. Un-spend UTXOs that were spent at this height
-        const char* unspend_sql = "UPDATE wallet_utxos SET spend_height = NULL WHERE spend_height = ?";
-        sqlite3_stmt* stmt_unspend;
-        if (sqlite3_prepare_v2(db_, unspend_sql, -1, &stmt_unspend, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int(stmt_unspend, 1, height);
-            sqlite3_step(stmt_unspend);
-            int unspent = sqlite3_changes(db_);
-            sqlite3_finalize(stmt_unspend);
-            if (unspent > 0) {
-                std::cout << "INFO: Un-spent " << unspent << " UTXOs at height " << height << std::endl;
-            }
-        }
-
-        sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr);
+        const auto apply = [&](const char* sql) {
+            sqlite3_stmt* raw = nullptr;
+            const auto prepared = sqlite3_prepare_v2(db_, sql, -1, &raw, nullptr);
+            std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(raw, sqlite3_finalize);
+            if (prepared != SQLITE_OK ||
+                sqlite3_bind_int(stmt.get(), 1, height) != SQLITE_OK ||
+                sqlite3_step(stmt.get()) != SQLITE_DONE)
+                throw std::runtime_error("Wallet UTXO rollback statement failed");
+        };
+        apply("DELETE FROM wallet_utxos WHERE height = ?");
+        apply("UPDATE wallet_utxos SET spend_height = NULL WHERE spend_height = ?");
+        exec("COMMIT");
     } catch (...) {
-        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
-        std::cerr << "ERROR: Failed to revert block " << height << std::endl;
+        // Some SQLite errors already abort the transaction. Otherwise ensure
+        // partial deletions/un-spends cannot survive into a subsequent write.
+        if (!sqlite3_get_autocommit(db_) &&
+            sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr) != SQLITE_OK &&
+            !sqlite3_get_autocommit(db_))
+            std::terminate();
         throw;
     }
 }

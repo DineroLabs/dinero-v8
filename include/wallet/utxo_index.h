@@ -193,6 +193,8 @@ public:
     
     // Block processing
     void ProcessBlock(int height, const std::vector<std::string>& block_txs);
+    // Owns one SQLite transaction; throws on failure with no partial rollback.
+    // Refuses an existing caller transaction without committing or aborting it.
     void RevertBlock(int height);
 
     // Priority 3 FIX: Validate wallet UTXOs against consensus
