@@ -679,23 +679,67 @@ int main(int argc, char **argv) {
     auto session=enroll(ready);
     auto connected=Owner::Connect(manager,session,profile,1,before,received,block,transition,auths);
     Require(connected.revision==2&&connected.account.Delivery()==delivered.Delivery()&&connected.account.Scan().BalanceUna()==5000);
-    AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,2,after,removed,block,2,before);});
+    if (connected.account.ParentSnapshotRevision()!=1) throw std::runtime_error("bound parent link missing after connect");
+    Require(connected.account.IssueReceiver(WalletScope::External).first.ParentSnapshotRevision()==1);
+    Require(OrchardAccountState::RestoreForRescan(connected.account.Encode(),f.domain,fvk,20001,H(1)).ParentSnapshotRevision()==0);
+    Require(connected.account.RewindDelivery(removed,block,ready).ParentSnapshotRevision()==0);
+    // Non-chain account writes may advance the revision; the authenticated
+    // parent remains revision 1, not the preceding revision 2.
+    { auto lease=manager.AcquireDatabaseLease();auto binding=lease->EnsureDeliveryIdentity();
+      Hash wid{};for(size_t i=0;i<32;++i)wid[i]=static_cast<uint8_t>(std::stoul(binding.substr(7+2*i,2),nullptr,16));
+      auto secret=lease->CopyRecoverySeed(session);
+      Require(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
+      WalletSnapshotStore store(lease->Database(),{WalletNetwork::Regtest,f.domain.genesis_wire,wid,0},secret->Bytes());
+      Require(store.StageReplaceRetaining(2,connected.account.Encode())==3);
+      Require(sqlite3_exec(lease->Database(),"COMMIT",nullptr,nullptr,nullptr)==SQLITE_OK);
+    }
+    AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,3,after,removed,block,after);});
     {auto lease=manager.AcquireDatabaseLease();Require(sqlite3_exec(lease->Database(),"CREATE TRIGGER reject_account BEFORE UPDATE ON orchard_wallet_snapshots BEGIN SELECT RAISE(ABORT,'account failure');END",nullptr,nullptr,nullptr)==SQLITE_OK);}
-    AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,2,after,removed,block,1,before);});
-    Require(Owner::Read(manager,session,profile,after).revision==2);
+    AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,3,after,removed,block,before);});
+    Require(Owner::Read(manager,session,profile,after).revision==3);
     {auto lease=manager.AcquireDatabaseLease();Require(sqlite3_exec(lease->Database(),"DROP TRIGGER reject_account",nullptr,nullptr,nullptr)==SQLITE_OK);}
     manager.open("account");AccountReject([&]{(void)Owner::Read(manager,session,profile,after);});
     session=manager.AcquireDatabaseLease()->Session();
-    auto disconnected=Owner::Disconnect(manager,session,profile,2,after,removed,block,1,before);
-    Require(disconnected.revision==3&&disconnected.account.Delivery()==rolled.Delivery()&&disconnected.account.Scan().BalanceUna()==0);
+    auto disconnected=Owner::Disconnect(manager,session,profile,3,after,removed,block,before);
+    Require(disconnected.revision==4&&disconnected.account.Delivery()==rolled.Delivery()&&disconnected.account.Scan().BalanceUna()==0);
     Require(disconnected.account.Operations().Entries().at(id).transaction==ready.Operations().Entries().at(id).transaction);
     Require(disconnected.account.IssueReceiver(WalletScope::External).second==r2);
-    auto connectedAgain=Owner::Connect(manager,session,profile,3,before,again,block,transition,auths);
-    Require(connectedAgain.revision==4&&connectedAgain.account.Delivery()==redelivered.Delivery());
+    auto connectedAgain=Owner::Connect(manager,session,profile,4,before,again,block,transition,auths);
+    Require(connectedAgain.revision==5&&connectedAgain.account.Delivery()==redelivered.Delivery());
+    Require(disconnected.account.ParentSnapshotRevision()==0);
+    Require(connectedAgain.account.ParentSnapshotRevision()==4);
     manager.encryptWallet("bound-account-passphrase");
     AccountReject([&]{(void)Owner::Read(manager,session,profile,after);});
     manager.unlockWallet("bound-account-passphrase");
-    Require(Owner::Read(manager,session,profile,after).revision==4);
+    Require(Owner::Read(manager,session,profile,after).revision==5);
+    // Follow authenticated parent links through two consecutive typed undo
+    // operations. A non-chain revision and a previous reconnect are present.
+    dinero::RuntimeOutboxEvent spendEvent{{4,H(33)},again.cursor.digest,
+        dinero::RuntimeBlockDirection::Connect,ac,blockA.WireBytes()};
+    auto spentBound=Owner::Connect(manager,session,profile,5,after,spendEvent,blockA,transitionA,spendAuthsA);
+    Require(spentBound.revision==6&&spentBound.account.ParentSnapshotRevision()==5&&spentBound.account.Scan().BalanceUna()==0);
+    Owner::RestorePoint spendPoint{transitionA.Next(),restoreLookups};
+    auto undoSpend=spendEvent;undoSpend.direction=dinero::RuntimeBlockDirection::Disconnect;
+    undoSpend.previous_digest=spendEvent.cursor.digest;undoSpend.cursor={5,H(34)};
+    auto restoredNote=Owner::Disconnect(manager,session,profile,6,spendPoint,undoSpend,blockA,after);
+    if (restoredNote.revision!=7||restoredNote.account.ParentSnapshotRevision()!=4||restoredNote.account.Scan().BalanceUna()!=5000)
+      throw std::runtime_error("bound parent chain not restored after undo");
+    auto undoFirst=removed;undoFirst.previous_digest=undoSpend.cursor.digest;undoFirst.cursor={6,H(35)};
+    auto restoredEmpty=Owner::Disconnect(manager,session,profile,7,after,undoFirst,block,before);
+    Require(restoredEmpty.revision==8&&restoredEmpty.account.ParentSnapshotRevision()==0&&restoredEmpty.account.Scan().BalanceUna()==0);
+    Require(restoredEmpty.account.Operations().Entries().at(id).transaction==ready.Operations().Entries().at(id).transaction);
+    Require(restoredEmpty.account.IssueReceiver(WalletScope::External).second==r2);
+    // Legacy snapshots restore without inventing a parent link. An automatic
+    // disconnect must refuse; a matching height cannot authorize a guess.
+    manager.create("legacy");manager.open("legacy");session=enroll(delivered);
+    Require(Owner::Read(manager,session,profile,after).account.ParentSnapshotRevision()==0);
+    AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,1,after,removed,block,before);});
+    Require(Owner::Read(manager,session,profile,after).revision==1);
+    manager.create("self-link");manager.open("self-link");session=enroll(connected.account);
+    // Authenticated fixture payload with revision 1 pointing at itself.
+    bool self_link_refused=false;
+    try {(void)Owner::Read(manager,session,profile,after);} catch(const std::exception&) {self_link_refused=true;}
+    if(!self_link_refused) throw std::runtime_error("bound self parent link accepted");
     manager.create("history");manager.open("history");session=enroll(historyEmpty);
     Owner::RestorePoint historyPoint{historyEmpty.Scan().Checkpoint(),historicalLookups};
     const auto historical=Owner::Historical(manager,session,profile,1,historyPoint,historyDown);

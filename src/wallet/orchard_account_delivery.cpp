@@ -46,7 +46,9 @@ struct Owner {
     OrchardAccountDelivery::Applied Restore(const OrchardAccountDelivery::Profile& p,
             const OrchardAccountDelivery::RestorePoint& point){
         auto saved=store.Read();Check(saved.has_value());
-        return {saved->revision,OrchardAccountState::Restore(saved->state,p.domain,fvk.bytes,p.activation,point.checkpoint,point.lookups)};
+        auto account=OrchardAccountState::Restore(saved->state,p.domain,fvk.bytes,p.activation,point.checkpoint,point.lookups);
+        Check(account.ParentSnapshotRevision()<saved->revision);
+        return {saved->revision,std::move(account)};
     }
     OrchardAccountDelivery::Applied Replace(uint64_t expected,OrchardAccountState account){
         auto encoded=account.Encode();const auto revision=store.StageReplaceRetaining(expected,encoded);
@@ -61,14 +63,18 @@ OrchardAccountDelivery::Applied OrchardAccountDelivery::Connect(WalletManager& w
         const RestorePoint& point,const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,
         const consensus::PreparedOrchardState& state,std::span<const consensus::VerifiedOrchardAuthorizations> auths){
     Owner owner(w,s,p);Transaction tx(owner.lease->Database());auto current=owner.Restore(p,point);Check(current.revision==expected);
-    auto result=owner.Replace(expected,current.account.AdvanceDelivery(event,block,state,auths));tx.Commit();return result;
+    auto result=owner.Replace(expected,current.account.AdvanceDelivery(event,block,state,auths).WithParentSnapshotRevision(expected));tx.Commit();return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Disconnect(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,
-        const RestorePoint& point,const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,uint64_t parent_revision,const RestorePoint& parent){
+        const RestorePoint& point,const RuntimeOutboxEvent& event,const OrchardBlockCandidate& block,const RestorePoint& parent){
     Owner owner(w,s,p);Transaction tx(owner.lease->Database());auto current=owner.Restore(p,point);Check(current.revision==expected);
+    const auto parent_revision=current.account.ParentSnapshotRevision();
+    Check(parent_revision && parent_revision<expected);
     auto retained=owner.store.ReadRetained(parent_revision);
     auto prior=OrchardAccountState::Restore(retained.state,p.domain,owner.fvk.bytes,p.activation,parent.checkpoint,parent.lookups);
-    auto result=owner.Replace(expected,current.account.RewindDelivery(event,block,prior));tx.Commit();return result;
+    Check(prior.ParentSnapshotRevision()<parent_revision);
+    auto result=owner.Replace(expected,current.account.RewindDelivery(event,block,prior)
+        .WithParentSnapshotRevision(prior.ParentSnapshotRevision()));tx.Commit();return result;
 }
 OrchardAccountDelivery::Applied OrchardAccountDelivery::Historical(WalletManager& w,uint64_t s,const Profile& p,uint64_t expected,
         const RestorePoint& point,const RuntimeOutboxEvent& event){

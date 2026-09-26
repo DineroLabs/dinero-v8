@@ -21,11 +21,12 @@ public:
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&,
         const OrchardBlockCandidate&, const consensus::PreparedOrchardState&,
         std::span<const consensus::VerifiedOrchardAuthorizations>);
-    // Parent revision is a locator only. Its AEAD and immediate-parent scan
-    // identity are checked before any write. Missing history refuses recovery.
+    // The parent revision comes from the current authenticated account payload,
+    // never a caller-selected locator. Authenticate the retained revision and
+    // check the immediate-parent scan before writes. Missing history refuses.
     static Applied Disconnect(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&,
-        const OrchardBlockCandidate&, uint64_t parent_revision, const RestorePoint& parent);
+        const OrchardBlockCandidate&, const RestorePoint& parent);
     static Applied Historical(WalletManager&, uint64_t session, const Profile&,
         uint64_t expected_revision, const RestorePoint&, const RuntimeOutboxEvent&);
 };

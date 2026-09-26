@@ -15,6 +15,9 @@ public:
     bool operator==(const DeliveryCheckpoint &) const = default;
   };
   const DeliveryCheckpoint &Delivery() const noexcept;
+  // Authenticated storage locator, not a source cursor or a validity proof.
+  // Zero means no retained parent binding (including legacy snapshots).
+  uint64_t ParentSnapshotRevision() const noexcept;
   // This receipt covers this Orchard account only, not other consumers.
   // The event must come from ReadRuntimeOutboxUnderLock with the selected
   // profile. Its digest is a source receipt, not independently certified here.
@@ -92,6 +95,8 @@ public:
 
 private:
   friend class OrchardOperationArchive;
+  friend class OrchardAccountDelivery;
+  [[nodiscard]] OrchardAccountState WithParentSnapshotRevision(uint64_t) const;
   void CheckDelivery(const RuntimeOutboxEvent &, const OrchardBlockCandidate &,
                      bool connecting) const;
   [[nodiscard]] OrchardAccountState

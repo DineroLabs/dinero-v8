@@ -383,3 +383,15 @@ the following rows to test-only work:
 The next state integration must use the authoritative ChainDB write batch for
 Orchard state, coins, tip and undo together. An isolated successful proof test
 or a separate Orchard database commit cannot satisfy that requirement.
+
+### Authenticated automatic account parent selection (2026-09-26)
+
+Bound connect now persists its actual parent snapshot revision in the encrypted
+account payload (DNORAC06); bound disconnect uses that authenticated locator and
+restores the preceding parent link. Intervening non-chain revisions do not retarget
+undo. Legacy accounts without a link refuse automatic typed undo. See
+[account parent links](orchard-account-parent-links-2026-09-26.md).
+The prior aea Linux run failed at the new account test's GNU static link order
+before root tests; the wallet archive now precedes its chainstate dependency.
+This remains a bound consumer component, not installed three-store recovery,
+production notification readiness or completion of steps 1–4.
