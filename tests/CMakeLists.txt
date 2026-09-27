@@ -13141,6 +13141,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
 
   # Passing subcases — graduate to active set (run on every PR via tests.yml).
   set(_wmr_passing
+    FreshRestoreInitialSeedAndRecoveryBinding
+    FreshRestoreEncryptedReopen
+    FreshRestoreExplicitChecksumBypass
     AuthoritativeMnemonicBindingAndLegacyFailClosed
     InvalidMnemonicRestoreFailsWithoutPartialWallet
     RejectsNonBip86PolicyWithoutPartialWallet

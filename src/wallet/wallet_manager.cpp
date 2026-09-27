@@ -1653,17 +1653,18 @@ void WalletManager::create(const std::string& name) {
 
 void WalletManager::createFromBip39(const std::string& name,
                                     const std::string& mnemonic,
-                                    const std::string& bip39_passphrase) {
-    if (!bip39::ValidateMnemonic(mnemonic)) {
+                                    const std::string& bip39_passphrase,
+                                    bool skip_checksum) {
+    if (!skip_checksum && !bip39::ValidateMnemonic(mnemonic)) {
         throw std::invalid_argument("Invalid BIP39 mnemonic");
     }
     std::vector<uint8_t> seed;
-    if (!bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed) || seed.size() != 64) {
+    if (!bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed, skip_checksum) || seed.size() != 64) {
         secureClearBytes(seed);
         throw std::runtime_error("Failed to derive BIP39 wallet seed");
     }
     try {
-        createWithInitialSeed(name, seed, &mnemonic, bip39_passphrase);
+        createWithInitialSeed(name, seed, skip_checksum ? nullptr : &mnemonic, bip39_passphrase);
     } catch (...) {
         secureClearBytes(seed);
         throw;

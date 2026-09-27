@@ -106,9 +106,13 @@ public:
     bool exists(const std::string& name) const;
 
     void create(const std::string& name);
+    // Creates a new database with the supplied recovery seed as its first
+    // identity. Explicit checksum bypass never stores authoritative mnemonic
+    // material; existing wallets are always rejected by the creation owner.
     void createFromBip39(const std::string& name,
                          const std::string& mnemonic,
-                         const std::string& bip39_passphrase);
+                         const std::string& bip39_passphrase,
+                         bool skip_checksum = false);
     void open(const std::string& name);
     void unload();
     void rename(const std::string& oldName, const std::string& newName);

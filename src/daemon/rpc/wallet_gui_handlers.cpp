@@ -819,7 +819,12 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
         }
 
         if (!wallet_exists) {
-            wallet_manager->create(wallet_name);
+            // The creation owner rejects existing files and persists this
+            // recovery seed (and, when validated, its mnemonic binding) before
+            // publishing the new wallet in the registry. Do not first create
+            // an unrelated random identity or invoke replacement policy.
+            wallet_manager->createFromBip39(
+                wallet_name, mnemonic, bip39_passphrase, skip_checksum);
             wallet_created = true;
         }
         wallet_manager->open(wallet_name);
@@ -833,47 +838,30 @@ din::Json RpcRestoreWallet(const din::Json& params, dinero::WalletManager* walle
             return result;
         }
 
-        // Restore is authoritative for wallet identity. Clear any previous
-        // encryption state so legacy passphrase metadata cannot survive across
-        // seed replacement. The caller can then set a fresh passphrase.
-        std::string encryption_reset_error;
-        if (!ResetWalletEncryptionState(wallet_manager, wallet_name, &encryption_reset_error)) {
-            if (wallet_created) {
-                TryRollbackWalletCreate(wallet_manager, wallet_name);
-            }
-            result["error"] = "Failed to reset wallet encryption state: " + encryption_reset_error;
-            return result;
-        }
-        
-        // NOTE: We no longer use HDWallet::Restore - instead we convert mnemonic to seed
-        // and use wallet_manager for ALL address derivation to ensure consistency
-
-        // ═══════════════════════════════════════════════════════════════
-        // CANONICAL FIX: Convert mnemonic to seed and store in wallet_manager
-        // Then use getNewAddress() for proper persistence
-        // ═══════════════════════════════════════════════════════════════
-
-        // Step 2: Store seed in wallet_manager (required for getNewAddress to work)
-        // NOTE: This sets master_seed_ member variable in WalletManager
-        if (!wallet_manager->storeMasterSeed(master_seed, "")) {
-            result["error"] = "Failed to store master seed in wallet";
-            return result;
-        }
-
-        bool recovery_material_stored = false;
-        if (!skip_checksum) {
-            std::string recovery_error;
-            if (!wallet_manager->storeAuthoritativeBip39Mnemonic(
-                    mnemonic, bip39_passphrase, &recovery_error)) {
-                if (wallet_created) {
-                    TryRollbackWalletCreate(wallet_manager, wallet_name);
-                }
-                result["error"] =
-                    "Failed to bind authoritative BIP39 recovery material: " +
-                    recovery_error;
+        bool recovery_material_stored = wallet_created && !skip_checksum;
+        if (!wallet_created) {
+            // Existing-wallet replacement remains a separate legacy transition.
+            // Fresh recovery initialization has already persisted its seed and
+            // binding, with consistent unencrypted metadata for encryptWallet.
+            std::string encryption_reset_error;
+            if (!ResetWalletEncryptionState(wallet_manager, wallet_name, &encryption_reset_error)) {
+                result["error"] = "Failed to reset wallet encryption state: " + encryption_reset_error;
                 return result;
             }
-            recovery_material_stored = true;
+            if (!wallet_manager->storeMasterSeed(master_seed, "")) {
+                result["error"] = "Failed to store master seed in wallet";
+                return result;
+            }
+            if (!skip_checksum) {
+                std::string recovery_error;
+                if (!wallet_manager->storeAuthoritativeBip39Mnemonic(
+                        mnemonic, bip39_passphrase, &recovery_error)) {
+                    result["error"] =
+                        "Failed to bind authoritative BIP39 recovery material: " + recovery_error;
+                    return result;
+                }
+                recovery_material_stored = true;
+            }
         }
 
         // Reset birthday to 0 so rescan covers full chain history.

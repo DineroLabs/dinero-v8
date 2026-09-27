@@ -872,6 +872,163 @@ TEST(WalletMainnetReadiness, InvalidMnemonicRestoreFailsWithoutPartialWallet) {
     fs::remove_all(root);
 }
 
+namespace {
+// Observe only statement kinds on connections opened by this synchronous fixture.
+// No SQL values, key material, or database contents leave the fixture.
+class FreshRestoreSeedWrites {
+public:
+    FreshRestoreSeedWrites() {
+        if (active) throw std::logic_error("nested restore observer");
+        active = this;
+        if (sqlite3_auto_extension(reinterpret_cast<void(*)()>(Install)) != SQLITE_OK) {
+            active = nullptr;
+            throw std::runtime_error("restore observer registration failed");
+        }
+    }
+    ~FreshRestoreSeedWrites() {
+        sqlite3_cancel_auto_extension(reinterpret_cast<void(*)()>(Install));
+        active = nullptr;
+    }
+    int writes = 0;
+private:
+    static inline thread_local FreshRestoreSeedWrites* active = nullptr;
+    static int Install(sqlite3* db, char**, const sqlite3_api_routines*) {
+        if (active) sqlite3_trace_v2(db, SQLITE_TRACE_STMT, Trace, active);
+        return SQLITE_OK;
+    }
+    static int Trace(unsigned, void* context, void* statement, void*) {
+        const char* sql = sqlite3_sql(static_cast<sqlite3_stmt*>(statement));
+        if (sql && std::strstr(sql, "INSERT OR REPLACE INTO hd_seeds"))
+            ++static_cast<FreshRestoreSeedWrites*>(context)->writes;
+        return 0;
+    }
+};
+}
+
+TEST(WalletMainnetReadiness, FreshRestoreInitialSeedAndRecoveryBinding) {
+    const auto root = make_temp_dir("din_fresh_restore_identity_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    const std::string mnemonic =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    std::vector<uint8_t> seed;
+    ASSERT_TRUE(dinero::bip39::MnemonicToSeed(mnemonic, "recovery passphrase", seed));
+    const auto expected = derive_bip86_first_address_from_seed(seed);
+    ASSERT_TRUE(expected);
+    {
+        FreshRestoreSeedWrites observer;
+        dinero::WalletManager wallet(data);
+        const auto restored = dinero::rpc::RpcRestoreWallet(make_restore_params(
+            "recovered", mnemonic, "recovery passphrase", "", "bip86"), &wallet);
+        assert_rpc_success(restored);
+        ASSERT_TRUE(restored.isMember("first_address"));
+        EXPECT_EQ(restored["first_address"].asString(), *expected);
+        EXPECT_EQ(observer.writes, 1) << "recovery must be the first and only initial seed write";
+        const auto stored_seed = query_encrypted_seed_blob(data / "wallets/wallet_recovered.db");
+        EXPECT_THROW(wallet.createFromBip39("recovered", mnemonic, "another passphrase"),
+                     std::runtime_error);
+        EXPECT_EQ(query_encrypted_seed_blob(data / "wallets/wallet_recovered.db"), stored_seed);
+        EXPECT_EQ(observer.writes, 1);
+        std::string error;
+        const auto recovery = wallet.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(recovery) << error;
+        EXPECT_EQ(recovery->mnemonic, mnemonic);
+        EXPECT_TRUE(recovery->passphrase_required);
+        EXPECT_EQ(query_max_index(data / "wallets/wallet_recovered.db", 0), 19);
+        EXPECT_EQ(query_max_index(data / "wallets/wallet_recovered.db", 1), 19);
+    }
+    {
+        dinero::WalletManager wallet(data);
+        wallet.open("recovered");
+        EXPECT_FALSE(wallet.isWalletEncrypted());
+        std::string error;
+        const auto recovery = wallet.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(recovery) << error;
+        EXPECT_EQ(recovery->mnemonic, mnemonic);
+        EXPECT_TRUE(recovery->passphrase_required);
+    }
+    fs::remove_all(root);
+}
+
+TEST(WalletMainnetReadiness, FreshRestoreEncryptedReopen) {
+    const auto root = make_temp_dir("din_fresh_restore_encrypted_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    const std::string mnemonic =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    std::vector<uint8_t> seed;
+    ASSERT_TRUE(dinero::bip39::MnemonicToSeed(mnemonic, "", seed));
+    const auto expected = derive_bip86_first_address_from_seed(seed);
+    ASSERT_TRUE(expected);
+    {
+        dinero::WalletManager wallet(data);
+        const auto restored = dinero::rpc::RpcRestoreWallet(make_restore_params(
+            "recovered", mnemonic, "", "restore-password", "bip86"), &wallet);
+        assert_rpc_success(restored);
+        ASSERT_TRUE(restored.isMember("first_address"));
+        EXPECT_EQ(restored["first_address"].asString(), *expected);
+        EXPECT_TRUE(wallet.isWalletEncrypted());
+        EXPECT_TRUE(wallet.isWalletLocked());
+        EXPECT_EQ(query_encryption_flag(data / "wallets/wallet_recovered.db"), 1);
+    }
+    {
+        dinero::WalletManager wallet(data);
+        wallet.open("recovered");
+        EXPECT_TRUE(wallet.isWalletLocked());
+        EXPECT_THROW(wallet.unlockWallet("wrong-password"), std::runtime_error);
+        ASSERT_NO_THROW(wallet.unlockWallet("restore-password"));
+        std::string error;
+        const auto recovery = wallet.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(recovery) << error;
+        EXPECT_EQ(recovery->mnemonic, mnemonic);
+        EXPECT_FALSE(recovery->passphrase_required);
+        EXPECT_FALSE(wallet.getNewAddress("", "taproot").empty());
+        EXPECT_EQ(query_max_index(data / "wallets/wallet_recovered.db", 0), 20);
+    }
+    fs::remove_all(root);
+}
+
+TEST(WalletMainnetReadiness, FreshRestoreExplicitChecksumBypass) {
+    const auto root = make_temp_dir("din_fresh_restore_checksum_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    const std::string mnemonic =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon";
+    ASSERT_FALSE(dinero::bip39::ValidateMnemonic(mnemonic));
+    std::vector<uint8_t> seed;
+    ASSERT_TRUE(dinero::bip39::MnemonicToSeed(mnemonic, "", seed, true));
+    const auto expected = derive_bip86_first_address_from_seed(seed);
+    ASSERT_TRUE(expected);
+    {
+        dinero::WalletManager wallet(data);
+        const auto refused = dinero::rpc::RpcRestoreWallet(make_restore_params(
+            "recovered", mnemonic, "", "restore-password", "bip86"), &wallet);
+        assert_rpc_error(refused);
+        EXPECT_FALSE(wallet.exists("recovered"));
+        const auto restored = dinero::rpc::RpcRestoreWallet(make_restore_params(
+            "recovered", mnemonic, "", "restore-password", "bip86", *expected, true), &wallet);
+        assert_rpc_success(restored);
+        ASSERT_TRUE(restored.isMember("first_address"));
+        EXPECT_EQ(restored["first_address"].asString(), *expected);
+        EXPECT_TRUE(restored.isMember("checksum_warning"));
+        EXPECT_FALSE(restored["mnemonic_exportable"].asBool());
+        EXPECT_TRUE(wallet.isWalletEncrypted());
+    }
+    {
+        dinero::WalletManager wallet(data);
+        wallet.open("recovered");
+        ASSERT_NO_THROW(wallet.unlockWallet("restore-password"));
+        std::string error;
+        EXPECT_FALSE(wallet.loadAuthoritativeBip39Mnemonic(&error));
+        EXPECT_FALSE(wallet.getNewAddress("", "taproot").empty());
+        EXPECT_EQ(query_max_index(data / "wallets/wallet_recovered.db", 0), 20);
+    }
+    fs::remove_all(root);
+}
+
 TEST(WalletMainnetReadiness, RestoreResetsLegacyEncryptionStateBeforeReEncrypt) {
     const fs::path root = make_temp_dir("din_wallet_restore_reencrypt_");
     const fs::path home = root / "home";

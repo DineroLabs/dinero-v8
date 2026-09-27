@@ -746,3 +746,7 @@ count is not an execution count. Both receipts are verified and archived private
 The useful full/QUIC run 36304743644 is still pending at this update; its QUIC job
 has succeeded. These predecessor results exclude the seed-write change. PR813
 remains draft; mainnet activation is unset and release qualification incomplete.
+
+## Fresh recovery initialization (2026-09-27)
+
+The absent-target restore path now persists the supplied recovery seed through the existing creation owner and skips legacy replacement/reset steps. Explicit checksum bypass leaves the mnemonic non-authoritative. See [fresh restoration scope](wallet-fresh-restore-2026-09-27.md). Existing-wallet replacement, genuine initialization-versus-recovery/PQ ownership, staged unlock, complete discovery and release gates remain open. No mainnet activation change.
