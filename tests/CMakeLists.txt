@@ -6018,6 +6018,9 @@ if(NOT WIN32)
   add_test(NAME WalletAddressIssuance
     COMMAND test_wallet_database_lease --gtest_filter=WalletAddressIssuanceTest.*)
   set_tests_properties(WalletAddressIssuance PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletInputProvider
+    COMMAND test_wallet_database_lease --gtest_filter=WalletInputProviderTest.*)
+  set_tests_properties(WalletInputProvider PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
   add_test(NAME WalletImportedTransaction
     COMMAND test_wallet_database_lease --gtest_filter=WalletImportedTransactionTest.*)
   set_tests_properties(WalletImportedTransaction PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")

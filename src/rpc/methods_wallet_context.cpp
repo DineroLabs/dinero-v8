@@ -3086,16 +3086,15 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 for (uint8_t byte : privkey_bytes.value()) {
                     priv_key_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
                 }
-                // Store by derivation_path (not address) - TransactionSigner
-                // looks up keys by utxo.path which is now the BIP32 derivation path
-                private_keys[utxo.derivation_path] = priv_key_hex.str();
+                // Bind resolved signing material to this exact input.
+                private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = priv_key_hex.str();
                 log_info("📤 ✅ Retrieved private key for scriptPubKey: " + script_pubkey.substr(0, 16) + "...");
             } else {
                 // Fallback path: if script-based path lookup is incomplete, derive by known selected path.
-                if (!utxo.derivation_path.empty()) {
+                if (utxo.derivation_path.rfind("m/", 0) == 0) {
                     std::string priv_key_hex = wallet_service->get().getPrivateKeyForPath(utxo.derivation_path);
                     if (!priv_key_hex.empty()) {
-                        private_keys[utxo.derivation_path] = priv_key_hex;
+                        private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = priv_key_hex;
                         log_info("📤 ✅ Retrieved private key via derivation path fallback: " +
                                  utxo.derivation_path);
                         continue;
@@ -3170,17 +3169,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             }
 
             // Step 2: Sign transaction using TransactionSigner + existing key infrastructure
-            // Build key provider from selected UTXOs
-            // NOTE: Keys are indexed by derivation_path because TransactionSigner
-            // looks up keys using utxo.path (which is now the BIP32 derivation path)
-            std::map<std::string, std::string> path_to_key;
-            for (const auto& utxo : selected_utxos) {
-                // Get private key for this derivation path
-                std::string priv_key_hex = private_keys[utxo.derivation_path];
-                if (!priv_key_hex.empty()) {
-                    path_to_key[utxo.derivation_path] = priv_key_hex;
-                }
-            }
+            // Resolved entries already bind exact selected outpoints.
+            const auto& input_keys = private_keys;
 
             // Phase 10: if any selected UTXO is P2MR (witness v3), we must
             // use the hybrid provider that knows how to resolve v7 seeds
@@ -3217,7 +3207,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 }
 
                 dinero::wallet::WalletKeyProvider::Config cfg;
-                cfg.legacy_keys_by_path = path_to_key;
+                cfg.legacy_keys_by_path = input_keys;
                 cfg.p2mr_store          = p2mr_store_holder.get();
                 cfg.wallet_id           = 1;  // single-wallet today, matches v7 RPC handlers
                 std::memcpy(cfg.master_key.data(), master_opt->data(), cfg.master_key.size());
@@ -3226,7 +3216,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
 
                 key_provider_holder = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
             } else {
-                key_provider_holder = std::make_unique<dinero::MapKeyProvider>(path_to_key);
+                key_provider_holder = std::make_unique<dinero::MapKeyProvider>(input_keys);
             }
 
             auto sign_result = dinero::TransactionSigner::Sign(build_result.unsigned_tx, *key_provider_holder);
@@ -7980,7 +7970,7 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
         if (!br.success) { result["ok"] = false; result["error"] = "Failed to build transaction: " + br.error; return result; }
 
         // Keys: ECDSA for P2TR via scriptPubKey/path; P2MR signs via WalletKeyProvider (PQ seed).
-        std::map<std::string, std::string> path_to_key;
+        std::map<std::string, std::string> input_keys;
         for (const auto& u : selected) {
             std::vector<uint8_t> spk; spk.reserve(u.script_pubkey.size() / 2);
             for (size_t i = 0; i + 1 < u.script_pubkey.size(); i += 2)
@@ -7990,10 +7980,10 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
             if (pk.has_value() && !pk->empty()) {
                 std::ostringstream h;
                 for (uint8_t b : *pk) h << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-                path_to_key[u.derivation_path] = h.str();
-            } else if (!u.derivation_path.empty()) {
+                input_keys[u.txid + ":" + std::to_string(u.vout)] = h.str();
+            } else if (u.derivation_path.rfind("m/", 0) == 0) {
                 std::string hk = wallet_service->get().getPrivateKeyForPath(u.derivation_path);
-                if (!hk.empty()) path_to_key[u.derivation_path] = hk;
+                if (!hk.empty()) input_keys[u.txid + ":" + std::to_string(u.vout)] = hk;
             }
         }
 
@@ -8007,15 +7997,15 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
             store_holder = std::make_unique<dinero::wallet::V7P2MRStore>();
             if (store_holder->Open(sp) != dinero::wallet::V7P2MRStore::OpenResult::Ok) { result["ok"] = false; result["error"] = "failed to open v7 P2MR store"; return result; }
             dinero::wallet::WalletKeyProvider::Config cfg;
-            cfg.legacy_keys_by_path = path_to_key;
+            cfg.legacy_keys_by_path = input_keys;
             cfg.p2mr_store = store_holder.get();
             cfg.wallet_id = 1;
             std::memcpy(cfg.master_key.data(), master->data(), cfg.master_key.size());
             OPENSSL_cleanse(const_cast<uint8_t*>(master->data()), master->size());
             provider = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
         } else {
-            if (path_to_key.empty()) { result["ok"] = false; result["error"] = "Could not retrieve private keys for signing"; return result; }
-            provider = std::make_unique<dinero::MapKeyProvider>(path_to_key);
+            if (input_keys.empty()) { result["ok"] = false; result["error"] = "Could not retrieve private keys for signing"; return result; }
+            provider = std::make_unique<dinero::MapKeyProvider>(input_keys);
         }
 
         auto sr = dinero::TransactionSigner::Sign(br.unsigned_tx, *provider);

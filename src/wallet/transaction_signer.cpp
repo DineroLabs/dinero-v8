@@ -9,6 +9,14 @@
 
 namespace dinero {
 
+std::vector<uint8_t> KeyProvider::GetPrivateKeyForInput(
+    const CanonicalWalletUTXO& input) const {
+    const auto outpoint = input.GetOutpointString();
+    if (HasKey(outpoint)) return GetPrivateKey(outpoint);
+    if (input.path.rfind("tr(", 0) == 0) return {};
+    return HasKey(input.path) ? GetPrivateKey(input.path) : std::vector<uint8_t>{};
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase M.3: LegacyToHDWallet DELETED - no conversion needed
 // ═══════════════════════════════════════════════════════════════════════════
@@ -63,6 +71,16 @@ SignResult TransactionSigner::Sign(
         result.error = "Input count mismatch: " + std::to_string(tx.vin.size()) +
                        " inputs but " + std::to_string(unsigned_tx.selected_utxos.size()) + " UTXOs";
         return result;
+    }
+
+    // Validate the complete correspondence before looking up any signing key.
+    for (size_t i = 0; i < tx.vin.size(); ++i) {
+        const auto& coin = unsigned_tx.selected_utxos[i];
+        if (tx.vin[i].prevout.txid != TxId(coin.txid) ||
+            tx.vin[i].prevout.vout != coin.vout) {
+            result.error = "Selected UTXO does not match transaction input " + std::to_string(i);
+            return result;
+        }
     }
 
     // Sign each input
@@ -139,17 +157,9 @@ SignResult TransactionSigner::Sign(
             continue;
         }
 
-        // Check if we have the key (using path as identifier)
-        if (!key_provider.HasKey(utxo.path)) {
-            sig_meta.is_signed = false;
-            sig_meta.error = "Missing private key for path: " + utxo.path;
-            signatures.push_back(sig_meta);
-            result.error = sig_meta.error;
-            return result;
-        }
-
-        // Get private key
-        std::vector<uint8_t> private_key = key_provider.GetPrivateKey(utxo.path);
+        // P2MR already dispatched above. Resolve this ordinary input through
+        // the provider's exact binding, with legacy non-import fallback.
+        std::vector<uint8_t> private_key = key_provider.GetPrivateKeyForInput(utxo);
         if (private_key.empty()) {
             sig_meta.is_signed = false;
             sig_meta.error = "Failed to retrieve private key for: " + utxo.path;

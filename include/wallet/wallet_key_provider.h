@@ -4,12 +4,11 @@
  * inputs (P2WPKH, P2TR) and v7 post-quantum P2MR inputs (ML-DSA-65,
  * witness v3).
  *
- * Legacy path:
- *   - Identical to MapKeyProvider. An in-memory `derivation_path → hex`
- *     map is consulted when TransactionSigner needs a 32-byte secp256k1
- *     private key. Path-keyed, not address-keyed — matches what
- *     deriveKeyForScriptPubKey + getPrivateKeyForPath hand to the
- *     wallet send flow today.
+ * Ordinary inputs:
+ *   - The key map accepts exact txid:vout bindings and legacy HD paths.
+ *     TransactionSigner uses KeyProvider::GetPrivateKeyForInput, requiring
+ *     exact input bindings for imported keys. Full key/script checks remain
+ *     in the ordinary signer. The legacy config field name is retained.
  *
  * PQ path:
  *   - Extracts the 32-byte merkle_root from the P2MR scriptPubKey,
@@ -43,7 +42,7 @@ class V7P2MRStore;  // forward decl
 class WalletKeyProvider : public ::dinero::KeyProvider {
 public:
     struct Config {
-        /** derivation_path → hex-encoded 32-byte secp256k1 private key. */
+        /** txid:vout or legacy HD path → hex-encoded internal private key. */
         std::map<std::string, std::string> legacy_keys_by_path;
 
         /** V7 P2MR SQLite store. Non-owning; must outlive the provider. */

@@ -602,3 +602,7 @@ The actual script-to-key lookup now reads and validates the existing imported ke
 ## Imported transaction signer and builder (2026-09-27)
 
 The existing Taproot transaction signers accept validated imported origins while retaining full key-to-script checks. The builder and sendmany key map use exact outpoint bindings for imports. See [wallet-imported-transaction-signing-2026-09-27.md](wallet-imported-transaction-signing-2026-09-27.md) for synthetic candidate and component-test scope. Actual RPC/broadcast, the distinct sendtoaddress provider, prior-import encryption migration, complete ownership/reconciliation and remaining activation/provider obligations are still open. Steps 1–4 and release qualification remain incomplete.
+
+## Input-bound ordinary and hybrid key providers (2026-09-27)
+
+The separate TransactionSigner now uses exact input bindings with both map and hybrid P2MR providers. Actual sendtoaddress, consolidation and legacy shielding callers supply those bindings. Component tests cover reopened imported keys, retained HD lookup, mixed P2MR signing and required refusals; RPC execution and broadcast remain open. See [wallet-input-key-provider-2026-09-27.md](wallet-input-key-provider-2026-09-27.md). Encryption migration for populated imports, complete ownership/reconciliation, consumer installation and independent activation remain required. Steps 1–4 and release qualification are incomplete.

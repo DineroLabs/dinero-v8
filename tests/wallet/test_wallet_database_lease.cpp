@@ -4,6 +4,12 @@
 #include "wallet/utxo_index.h"
 #include "wallet/taproot_keys.h"
 #include "wallet/transaction_builder.h"
+#include "wallet/transaction_signer.h"
+#include "wallet/wallet_key_provider.h"
+#include "wallet/v7_p2mr_store.h"
+#include "rpc/v7_pq_handlers.h"
+#include "consensus/pq/p2mr_consensus.h"
+#include "consensus/script_interpreter.h"
 #include "util/hex.h"
 #include "consensus/chainparams.h"
 #include <gtest/gtest.h>
@@ -368,6 +374,60 @@ TEST_F(WalletImportedTransactionTest, BuilderRequiresExactOutpointKeys) {
     for(size_t i=0;i<2;++i)Verify(built.transaction,i,built.selected_utxos,false);
     keys.erase(a.GetOutpointString());keys.erase(b.GetOutpointString());EXPECT_FALSE(builder.BuildTransaction(recipients,keys,options).success);
     options.candidate_utxos={a};EXPECT_FALSE(builder.BuildTransaction({{second.address,50000}},{{"unrelated",util::hex(*ak)}},options).success);
+}
+
+
+class WalletInputProviderTest : public WalletImportedTransactionTest {
+protected:
+    dinero::UnsignedTransaction Unsigned(const std::vector<dinero::CanonicalWalletUTXO>& coins) {
+        dinero::UnsignedTransaction out;out.tx=TransactionFor(coins[0]);out.tx.vin.clear();out.selected_utxos=coins;
+        for(const auto& coin:coins){dinero::TxInput in;in.prevout=dinero::TxOutPoint(dinero::TxId(coin.txid),coin.vout);out.tx.vin.push_back(in);}
+        out.fee=10000;out.tx.vout[0].value=dinero::AmountUna::Una(coins.size()*100000-out.fee);return out;
+    }
+};
+TEST_F(WalletInputProviderTest, MapUsesExactInputsAndPreservesHdFallback) {
+    wallet->open("owner");wallet->encryptWallet("input-provider");wallet->unlockWallet("input-provider");Import a(51),b(52);ASSERT_TRUE(Store(a));ASSERT_TRUE(Store(b));
+    wallet->open("owner");wallet->unlockWallet("input-provider");const auto ca=Coin(a,0),cb=Coin(b,1);
+    auto ak=wallet->deriveKeyForScriptPubKey(util::hex(a.script)),bk=wallet->deriveKeyForScriptPubKey(util::hex(b.script));ASSERT_TRUE(ak && bk);
+    const auto input=Unsigned({ca,cb});const dinero::MapKeyProvider provider({{ca.GetOutpointString(),util::hex(*ak)},{cb.GetOutpointString(),util::hex(*bk)},{ca.path,util::hex(*bk)},{cb.path,util::hex(*ak)}});
+    const auto signed_tx=dinero::TransactionSigner::Sign(input,provider);ASSERT_TRUE(signed_tx.success)<<signed_tx.error;
+    EXPECT_EQ(signed_tx.signed_tx.tx.GetTxid(),input.tx.GetTxid());EXPECT_EQ(signed_tx.signed_tx.fee,input.fee);
+    for(size_t i=0;i<2;++i){Verify(signed_tx.signed_tx.tx,i,input.selected_utxos,false);EXPECT_TRUE(input.tx.vin[i].witness.empty());}
+    auto mismatched=input;mismatched.tx.vin[0].prevout.vout=99;
+    EXPECT_FALSE(dinero::TransactionSigner::Sign(mismatched,provider).success);
+    const auto address=wallet->getNewAddress();ASSERT_FALSE(address.empty());const auto spk=wallet->getScriptPubKeyForAddress(address);ASSERT_TRUE(spk);auto secret=wallet->deriveKeyForScriptPubKey(*spk);ASSERT_TRUE(secret);
+    auto hd=ca;ASSERT_TRUE(util::unhex(*spk,hd.spk));const auto path=wallet->getWatchScriptPath(hd.spk);ASSERT_TRUE(path);hd.path=*path;
+    const dinero::MapKeyProvider legacy({{hd.path,util::hex(*secret)}});const auto hs=dinero::TransactionSigner::Sign(Unsigned({hd}),legacy);ASSERT_TRUE(hs.success)<<hs.error;Verify(hs.signed_tx.tx,0,{hd},false);
+}
+TEST_F(WalletInputProviderTest, ImportedLabelsCannotReplaceInputBinding) {
+    wallet->open("owner");Import a(53),b(54);ASSERT_TRUE(Store(a));const auto coin=Coin(a,0);auto secret=wallet->deriveKeyForScriptPubKey(util::hex(a.script));ASSERT_TRUE(secret);const auto input=Unsigned({coin});
+    for(bool hybrid:{false,true})for(int variant:{0,1,2}) {
+        std::map<std::string,std::string> keys{{coin.path,util::hex(*secret)}};
+        if(variant==1)keys[coin.GetOutpointString()]=util::hex(std::vector<uint8_t>(b.secret.begin(),b.secret.end()));
+        if(variant==2)keys[coin.GetTxIdHex()+":99"]=util::hex(*secret);
+        std::unique_ptr<dinero::KeyProvider> provider;
+        if(hybrid){dinero::wallet::WalletKeyProvider::Config cfg;cfg.legacy_keys_by_path=keys;provider=std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));}
+        else provider=std::make_unique<dinero::MapKeyProvider>(keys);
+        EXPECT_FALSE(dinero::TransactionSigner::Sign(input,*provider).success)<<hybrid<<":"<<variant;
+        EXPECT_TRUE(input.tx.vin[0].witness.empty());
+    }
+}
+TEST_F(WalletInputProviderTest, HybridPreservesRealP2mrSigning) {
+    wallet->open("owner");Import a(55);ASSERT_TRUE(Store(a));const auto coin=Coin(a,0);auto secret=wallet->deriveKeyForScriptPubKey(util::hex(a.script));ASSERT_TRUE(secret);
+    dinero::wallet::V7P2MRStore store;ASSERT_EQ(store.Open((path/"provider-pq.sqlite").string()),dinero::wallet::V7P2MRStore::OpenResult::Ok);
+    dinero::rpc::v7::GetNewP2MRAddressParams params;params.wallet_id=1;params.hrp="rdin";params.bip32_priv.fill(7);params.bip32_chain.fill(8);params.master_key.fill(9);
+    const auto created=dinero::rpc::v7::GetNewP2MRAddress(store,params);ASSERT_EQ(created.status,dinero::rpc::v7::HandlerStatus::Ok)<<created.error_message;
+    auto pq=coin;pq.vout=1;pq.path=created.derivation_path;pq.spk={0x53,0x20};pq.spk.insert(pq.spk.end(),created.merkle_root.begin(),created.merkle_root.end());const auto input=Unsigned({coin,pq});
+    dinero::wallet::WalletKeyProvider::Config cfg;cfg.legacy_keys_by_path={{coin.GetOutpointString(),util::hex(*secret)}};cfg.p2mr_store=&store;cfg.wallet_id=1;cfg.master_key=params.master_key;
+    dinero::wallet::WalletKeyProvider provider(cfg);const auto result=dinero::TransactionSigner::Sign(input,provider);ASSERT_TRUE(result.success)<<result.error;Verify(result.signed_tx.tx,0,input.selected_utxos,false);
+    const auto& tx=result.signed_tx.tx;dinero::consensus::ScriptExecutionContext context(&tx,1,pq.value.GetUna(),0);
+    for(const auto& c:input.selected_utxos){context.all_amounts.push_back(c.value.GetUna());context.all_scriptpubkeys.push_back(c.spk);context.all_confidential_flags.push_back(0);context.all_input_commitments.push_back(c.commitment);}
+    const auto hash=dinero::consensus::SignatureHashTaproot(context,0,{});ASSERT_EQ(hash.size(),32u);std::array<uint8_t,32> message{};std::copy(hash.begin(),hash.end(),message.begin());
+    ASSERT_EQ(tx.vin[1].witness.size(),1u);EXPECT_EQ(dinero::consensus::pq::VerifyP2MRSpend(pq.spk,tx.vin[1].witness[0],message,0),dinero::consensus::pq::P2MRVerifyError::Ok);
+    message[0]^=1;EXPECT_NE(dinero::consensus::pq::VerifyP2MRSpend(pq.spk,tx.vin[1].witness[0],message,0),dinero::consensus::pq::P2MRVerifyError::Ok);
+    cfg.master_key.fill(0);dinero::wallet::WalletKeyProvider wrong_master(cfg);EXPECT_FALSE(dinero::TransactionSigner::Sign(input,wrong_master).success);
+    cfg.master_key=params.master_key;cfg.wallet_id=2;dinero::wallet::WalletKeyProvider wrong_wallet(cfg);EXPECT_FALSE(dinero::TransactionSigner::Sign(input,wrong_wallet).success);
+    cfg.wallet_id=1;cfg.p2mr_store=nullptr;dinero::wallet::WalletKeyProvider missing_store(cfg);EXPECT_FALSE(dinero::TransactionSigner::Sign(input,missing_store).success);
 }
 
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};

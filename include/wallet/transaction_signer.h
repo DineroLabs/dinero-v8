@@ -63,6 +63,13 @@ public:
      */
     virtual bool HasKey(const std::string& address) const = 0;
 
+    // Exact input identifiers take precedence. Imported origin labels are
+    // shortened metadata and must never serve as a key lookup fallback.
+    // Legacy providers retain path lookup for ordinary HD/CT callers.
+    virtual std::vector<uint8_t> GetPrivateKeyForInput(
+        const CanonicalWalletUTXO& input) const;
+
+
     /**
      * @brief Sign a P2MR (witness v3) input — post-quantum path.
      *
@@ -93,7 +100,7 @@ public:
 class MapKeyProvider : public KeyProvider {
 public:
     /**
-     * @brief Construct from address → private_key_hex map
+     * @brief Construct from input txid:vout or legacy path → private_key_hex map
      */
     explicit MapKeyProvider(const std::map<std::string, std::string>& keys);
 
