@@ -1,5 +1,7 @@
 # Fresh wallet restoration uses the supplied initial identity
 
+Historical qualification for commit 8600cb4. The [new-name restore contract](wallet-restore-new-name-2026-09-27.md) now supersedes the existing-target replacement behavior and regression described below.
+
 `RpcRestoreWallet` now routes a previously absent target through `createFromBip39`. The existing creation owner rejects registered names and existing database files and persists the supplied seed before registry publication. A validated recovery phrase is bound by that same creation path. Restoration no longer initializes an unrelated random seed and then replaces it, nor clears fresh encryption settings before optional `encryptWallet`.
 
 The creation API accepts an explicit checksum-bypass argument, defaulting to false. Bypass derives the supplied recovery seed without recording an authoritative mnemonic. The RPC keeps its existing checksum warning and preflight expected-address check. Its existing twenty receive and twenty change derivations remain.

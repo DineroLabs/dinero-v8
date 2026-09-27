@@ -465,6 +465,24 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute restore name preservation
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Restore(RequiresNewNamePreservesOriginal|RefusesUnencryptedAndUnregisteredTargets)$' --show-only=json-v1 > orchard-wallet-restore-name-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_RestoreRequiresNewNamePreservesOriginal', 'WalletMainnetReadiness_RestoreRefusesUnencryptedAndUnregisteredTargets']
+          tests = json.load(open('orchard-wallet-restore-name-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Restore name preservation tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Restore(RequiresNewNamePreservesOriginal|RefusesUnencryptedAndUnregisteredTargets)$' --verbose --no-tests=error --output-log orchard-wallet-restore-name-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.RestoreRequiresNewNamePreservesOriginal', 'WalletMainnetReadiness.RestoreRefusesUnencryptedAndUnregisteredTargets']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.Restore\w+)', open('orchard-wallet-restore-name-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Restore name preservation cases missing, duplicated or unexpected')
+          PYTEST
       - name: Require and execute fresh wallet recovery initialization
         run: |
           ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_FreshRestore' --show-only=json-v1 > orchard-wallet-fresh-restore-inventory.json
@@ -796,6 +814,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-restore-name-inventory.json
+            orchard-wallet-restore-name-execution.log
             orchard-wallet-fresh-restore-inventory.json
             orchard-wallet-fresh-restore-execution.log
             orchard-wallet-seed-write-inventory.json

@@ -13152,7 +13152,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     WrongBip39PassphraseFailsCleanlyWithExpectedAddressGuard
     ShieldedViewingAuthorityClearedOnUnload
     EncryptionRoundTripRestoreAndDerivationPersistence
-    RestoreResetsLegacyEncryptionStateBeforeReEncrypt
+    RestoreRequiresNewNamePreservesOriginal
+    RestoreRefusesUnencryptedAndUnregisteredTargets
     ReorgSelfSpendWithChangeRestoresSpentStateAndHeightMetadata
   )
   foreach(_case IN LISTS _wmr_passing)

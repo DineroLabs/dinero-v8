@@ -43,6 +43,8 @@ static inline char* mkdtemp(char* tmpl) {
 #include <unistd.h>
 #endif
 
+#include <fstream>
+#include <map>
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -1029,46 +1031,175 @@ TEST(WalletMainnetReadiness, FreshRestoreExplicitChecksumBypass) {
     fs::remove_all(root);
 }
 
-TEST(WalletMainnetReadiness, RestoreResetsLegacyEncryptionStateBeforeReEncrypt) {
-    const fs::path root = make_temp_dir("din_wallet_restore_reencrypt_");
-    const fs::path home = root / "home";
-    const fs::path data = root / "node";
-    fs::create_directories(data);
-    ScopedHomeEnv scoped_home(home);
+namespace {
+// Compare durable fixture files, including registry and SQLite WAL journals.
+// SQLite -shm contains volatile reader marks changed even by read-only SELECTs.
+// Contents stay in memory and are never printed in test diagnostics.
+std::map<std::string, std::string> wallet_file_snapshot(const fs::path& data) {
+    std::map<std::string, std::string> files;
+    for (const auto& entry : fs::recursive_directory_iterator(data)) {
+        if (!entry.is_regular_file() || entry.path().extension() == ".db-shm") continue;
+        std::ifstream input(entry.path(), std::ios::binary);
+        if (!input) throw std::runtime_error("cannot read wallet fixture file");
+        std::string bytes((std::istreambuf_iterator<char>(input)), {});
+        if (input.bad()) throw std::runtime_error("incomplete wallet fixture read");
+        files.emplace(fs::relative(entry.path(), data).generic_string(), std::move(bytes));
+    }
+    return files;
+}
+std::string changed_wallet_files(const fs::path& data,
+                                const std::map<std::string, std::string>& before) {
+    const auto after = wallet_file_snapshot(data);
+    std::string names;
+    for (const auto& [name, bytes] : before) {
+        const auto it = after.find(name);
+        if (it == after.end() || it->second != bytes) names += name + " ";
+    }
+    for (const auto& [name, bytes] : after)
+        if (before.count(name) == 0) names += name + " ";
+    return names;
+}
+}
 
-    const fs::path db = data / "wallets" / "wallet_default.db";
+TEST(WalletMainnetReadiness, RestoreRequiresNewNamePreservesOriginal) {
+    const auto root = make_temp_dir("din_restore_new_name_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    const auto db = data / "wallets/wallet_default.db";
     const std::string mnemonic =
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    std::string original_mnemonic;
+    std::optional<std::array<uint8_t, 32>> original_pq;
+    std::vector<uint8_t> original_seed_blob;
+    std::string imported_script;
+    std::vector<uint8_t> imported_key(32, 0);
+    imported_key.back() = 7;
+    {
+        dinero::WalletManager wallet(data);
+        const auto created = dinero::rpc::RpcCreateHDWallet(
+            make_create_params("default", 12, "", "", "bip86"), &wallet);
+        assert_rpc_success(created);
+        std::string error;
+        const auto recovery = wallet.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(recovery) << error;
+        original_mnemonic = recovery->mnemonic;
+        ASSERT_NE(original_mnemonic, mnemonic);
+        const auto imported_address = wallet.importPrivateKey(imported_key, "original import");
+        ASSERT_FALSE(imported_address.empty());
+        const auto script = wallet.getScriptPubKeyForAddress(imported_address);
+        ASSERT_TRUE(script);
+        imported_script = *script;
+        wallet.encryptWallet("old-passphrase");
+        wallet.unlockWallet("old-passphrase");
+        original_pq = wallet.GetV7PqMasterKey();
+        ASSERT_TRUE(original_pq);
+        wallet.lockWallet();
+        original_seed_blob = query_encrypted_seed_blob(db);
+        ASSERT_FALSE(original_seed_blob.empty());
+        const auto original_files = wallet_file_snapshot(data);
+        ASSERT_FALSE(original_files.empty());
+        auto* original_db = wallet.getCurrentDatabase();
+        const auto original_session = wallet.AcquireDatabaseLease()->Session();
 
-    dinero::WalletManager wallet(data);
+        // Both RPC parameter forms and the former override must refuse.
+        auto positional = make_restore_params(
+            "default", mnemonic, "", "new-passphrase", "bip86", "", false, true);
+        auto named = din::obj();
+        named["name"] = "default";
+        named["mnemonic"] = mnemonic;
+        named["password"] = "new-passphrase";
+        named["replace_existing"] = true;
+        auto string_override = positional;
+        string_override[7] = "true";
+        for (const auto& params : {positional, named, string_override,
+                make_restore_params("default", mnemonic, "", "", "bip86")}) {
+            const auto refused = dinero::rpc::RpcRestoreWallet(params, &wallet);
+            assert_rpc_error(refused);
+            EXPECT_NE(refused["error"].asString().find("new wallet name"), std::string::npos);
+            EXPECT_FALSE(refused.get("success", false).asBool());
+            EXPECT_EQ(wallet.getCurrentWalletName(), "default");
+            EXPECT_EQ(wallet.getCurrentDatabase(), original_db);
+            EXPECT_EQ(wallet.AcquireDatabaseLease()->Session(), original_session);
+            EXPECT_TRUE(wallet.isWalletEncrypted());
+            EXPECT_TRUE(wallet.isWalletLocked());
+            ASSERT_TRUE(wallet_file_snapshot(data) == original_files) << changed_wallet_files(data, original_files);
+        }
 
-    // Seed an existing encrypted wallet with an old passphrase.
-    din::Json created = dinero::rpc::RpcCreateHDWallet(
-        make_create_params("default", 12, "", "", "bip86"), &wallet);
-    assert_rpc_success(created);
-    wallet.encryptWallet("old-passphrase");
-    EXPECT_TRUE(wallet.isWalletEncrypted());
-    EXPECT_TRUE(wallet.isWalletLocked());
-    EXPECT_EQ(query_encryption_flag(db), 1);
+        // The requested recovery succeeds under its own name and password.
+        const auto restored = dinero::rpc::RpcRestoreWallet(make_restore_params(
+            "recovered", mnemonic, "", "new-passphrase", "bip86"), &wallet);
+        assert_rpc_success(restored);
+        EXPECT_EQ(restored["wallet_name"].asString(), "recovered");
+        EXPECT_TRUE(wallet.isWalletLocked());
+        EXPECT_TRUE(query_encrypted_seed_blob(db) == original_seed_blob);
+        EXPECT_EQ(query_encryption_flag(db), 1);
 
-    // Restore over the same wallet using GUI-like flow (no password in restore RPC).
-    din::Json restored = dinero::rpc::RpcRestoreWallet(
-        make_restore_params("default", mnemonic, "", "", "bip86", "", false, true), &wallet);
-    assert_rpc_success(restored);
-    EXPECT_FALSE(restored.get("encrypted", false).asBool());
-    EXPECT_EQ(query_encryption_flag(db), 0);
+        // Refusing an inactive existing target must not switch the selection.
+        const auto both_files = wallet_file_snapshot(data);
+        const auto recovered_session = wallet.AcquireDatabaseLease()->Session();
+        const auto refused = dinero::rpc::RpcRestoreWallet(named, &wallet);
+        assert_rpc_error(refused);
+        EXPECT_EQ(wallet.getCurrentWalletName(), "recovered");
+        EXPECT_EQ(wallet.AcquireDatabaseLease()->Session(), recovered_session);
+        EXPECT_TRUE(wallet_file_snapshot(data) == both_files) << changed_wallet_files(data, both_files);
+    }
+    {
+        dinero::WalletManager reopened(data);
+        reopened.open("default");
+        EXPECT_TRUE(reopened.isWalletEncrypted());
+        EXPECT_TRUE(reopened.isWalletLocked());
+        EXPECT_THROW(reopened.unlockWallet("new-passphrase"), std::runtime_error);
+        ASSERT_NO_THROW(reopened.unlockWallet("old-passphrase"));
+        EXPECT_TRUE(reopened.GetV7PqMasterKey() == original_pq);
+        const auto imported = reopened.deriveKeyForScriptPubKey(imported_script);
+        ASSERT_TRUE(imported);
+        EXPECT_TRUE(*imported == imported_key);
+        std::string error;
+        const auto original = reopened.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(original) << error;
+        EXPECT_EQ(original->mnemonic, original_mnemonic);
+        EXPECT_TRUE(query_encrypted_seed_blob(db) == original_seed_blob);
+        reopened.open("recovered");
+        EXPECT_THROW(reopened.unlockWallet("old-passphrase"), std::runtime_error);
+        ASSERT_NO_THROW(reopened.unlockWallet("new-passphrase"));
+        const auto recovered = reopened.loadAuthoritativeBip39Mnemonic(&error);
+        ASSERT_TRUE(recovered) << error;
+        EXPECT_EQ(recovered->mnemonic, mnemonic);
+    }
+    fs::remove_all(root);
+}
 
-    // Completion step in GUI calls wallet.encrypt afterwards with a fresh passphrase.
-    ASSERT_NO_THROW(wallet.encryptWallet("new-passphrase"));
-    EXPECT_TRUE(wallet.isWalletEncrypted());
-    EXPECT_TRUE(wallet.isWalletLocked());
-    EXPECT_EQ(query_encryption_flag(db), 1);
+TEST(WalletMainnetReadiness, RestoreRefusesUnencryptedAndUnregisteredTargets) {
+    const auto root = make_temp_dir("din_restore_existing_targets_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    const std::string mnemonic =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    {
+        dinero::WalletManager wallet(data);
+        wallet.create("original");
+        wallet.open("original");
+        const auto before = wallet_file_snapshot(data);
+        auto refused = dinero::rpc::RpcRestoreWallet(make_restore_params(
+            "original", mnemonic, "", "", "bip86", "", false, true), &wallet);
+        assert_rpc_error(refused);
+        EXPECT_FALSE(wallet.isWalletEncrypted());
+        EXPECT_EQ(wallet.getCurrentWalletName(), "original");
+        EXPECT_TRUE(wallet_file_snapshot(data) == before) << changed_wallet_files(data, before);
 
-    // Old passphrase must no longer unlock. New passphrase must work.
-    EXPECT_THROW(wallet.unlockWallet("old-passphrase"), std::runtime_error);
-    EXPECT_NO_THROW(wallet.unlockWallet("new-passphrase"));
-    EXPECT_FALSE(wallet.isWalletLocked());
-
+        // A pre-existing file is not permission to replace an unenrolled owner.
+        const auto orphan = data / "wallets/wallet_unregistered.db";
+        { std::ofstream file(orphan, std::ios::binary); file << "existing wallet file"; }
+        ASSERT_FALSE(wallet.exists("unregistered"));
+        const auto with_orphan = wallet_file_snapshot(data);
+        refused = dinero::rpc::RpcRestoreWallet(make_restore_params(
+            "unregistered", mnemonic, "", "", "bip86", "", false, true), &wallet);
+        assert_rpc_error(refused);
+        EXPECT_EQ(wallet.getCurrentWalletName(), "original");
+        EXPECT_TRUE(wallet_file_snapshot(data) == with_orphan) << changed_wallet_files(data, with_orphan);
+    }
     fs::remove_all(root);
 }
 
