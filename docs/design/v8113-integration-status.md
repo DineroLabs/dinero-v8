@@ -594,3 +594,7 @@ the explicit capture limits refuse; late-account/rescan/general long-history
 reconciliation and remaining consumer readiness remain required. This does not
 complete provider installation, independent activation history, full startup/
 replay/reindex or user steps 1–4.
+
+## Stored imported Taproot key resolution (2026-09-27)
+
+The actual script-to-key lookup now reads and validates the existing imported key, mapping, watched script, imported address and encryption owner in one checked database snapshot before HD fallback. Reopen/decrypt-and-sign primitive coverage and refusal of inconsistent records are described in [wallet-taproot-key-lookup-2026-09-27.md](wallet-taproot-key-lookup-2026-09-27.md). Transaction signing/path gating, migration of previously plaintext imports during wallet encryption, complete discovery/reconciliation and selection/provider readiness remain open. Steps 1–4 and the release are not complete.

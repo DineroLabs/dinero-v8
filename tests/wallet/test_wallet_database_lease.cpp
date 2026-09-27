@@ -249,6 +249,75 @@ TEST_F(WalletTaprootImportTest, EncryptedOwnerAndCommitPublication) {
     wallet->open("owner");ASSERT_FALSE(Store(Import(25)));wallet->unlockWallet("import-test-passphrase");ASSERT_TRUE(Store(Import(25)));
 }
 
+
+class WalletTaprootLookupTest : public WalletTaprootImportTest {
+protected:
+    void CheckSignature(const Import& key) {
+        const auto resolved=wallet->deriveKeyForScriptPubKey(util::hex(key.script));
+        ASSERT_TRUE(resolved.has_value()); ASSERT_EQ(resolved->size(),32u);
+        EXPECT_EQ(*resolved,std::vector<uint8_t>(key.secret.begin(),key.secret.end()));
+        std::array<uint8_t,32> secret{},message{}; message.back()=77;
+        std::copy(resolved->begin(),resolved->end(),secret.begin());
+        std::array<uint8_t,64> signature{};
+        ASSERT_TRUE(dinero::TaprootKeys::SignSchnorrWithInternalKey(signature,message,secret,key.internal));
+        EXPECT_TRUE(dinero::TaprootKeys::VerifySchnorr(signature,message,key.output));
+    }
+};
+TEST_F(WalletTaprootLookupTest, PlaintextAndEncryptedReopenSigning) {
+    wallet->open("owner");
+    const auto hd=wallet->getNewAddress("HD still resolves"); const auto hd_script=wallet->getScriptPubKeyForAddress(hd);
+    ASSERT_TRUE(hd_script); ASSERT_TRUE(wallet->deriveKeyForScriptPubKey(*hd_script));
+    Import plain(31); ASSERT_TRUE(Store(plain));
+    CheckSignature(plain); wallet->open("owner"); CheckSignature(plain);
+    // Encryption of prior imports is a separate migration obligation. This case
+    // exercises keys imported after the existing encrypted owner is established.
+    wallet->create("encrypted"); wallet->open("encrypted");
+    wallet->encryptWallet("lookup-passphrase"); wallet->unlockWallet("lookup-passphrase");
+    Import encrypted(32); ASSERT_TRUE(Store(encrypted)); CheckSignature(encrypted);
+    wallet->lockWallet(); EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(util::hex(encrypted.script)));
+    wallet->open("encrypted"); EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(util::hex(encrypted.script)));
+    wallet->unlockWallet("lookup-passphrase"); CheckSignature(encrypted);
+    auto* db=wallet->getCurrentDatabase(); Exec(db,"CREATE TEMP TABLE saved_cipher AS SELECT internal_privkey FROM taproot_keys; UPDATE taproot_keys SET internal_privkey=zeroblob(60)");
+    EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(util::hex(encrypted.script)));
+    Exec(db,"UPDATE taproot_keys SET internal_privkey=(SELECT internal_privkey FROM saved_cipher)"); CheckSignature(encrypted);
+    EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(util::hex(plain.script)));
+}
+TEST_F(WalletTaprootLookupTest, DurableBindingsAndReadFailuresRefuse) {
+    wallet->open("owner"); Import key(33); ASSERT_TRUE(Store(key)); CheckSignature(key);
+    const std::string script=util::hex(key.script); auto* db=wallet->getCurrentDatabase();
+    Exec(db,"CREATE TEMP TABLE saved_keys AS SELECT * FROM taproot_keys; CREATE TEMP TABLE saved_mapping AS SELECT * FROM taproot_key_mapping; CREATE TEMP TABLE saved_watch AS SELECT * FROM watch_scripts; CREATE TEMP TABLE saved_addresses AS SELECT * FROM addresses");
+    for(const auto* sql:{"UPDATE taproot_keys SET internal_privkey=zeroblob(32)",
+                         "UPDATE taproot_keys SET internal_pubkey=zeroblob(32)",
+                         "UPDATE taproot_keys SET internal_privkey=CAST(internal_privkey AS TEXT)",
+                         "UPDATE taproot_keys SET internal_pubkey=CAST(internal_pubkey AS TEXT)",
+                         "UPDATE taproot_keys SET is_privkey_encrypted=1",
+                         "UPDATE taproot_key_mapping SET internal_pubkey=zeroblob(32)",
+                         "UPDATE watch_scripts SET path='m/86\''/1448\''/0\''/0/0' WHERE path LIKE 'tr(%'",
+                         "UPDATE addresses SET account=0 WHERE account=-1",
+                         "DELETE FROM taproot_keys", "DELETE FROM taproot_key_mapping",
+                         "DELETE FROM watch_scripts WHERE path LIKE 'tr(%'", "DELETE FROM addresses WHERE account=-1"}) {
+        SCOPED_TRACE(sql); Exec(db,sql);
+        EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(script));
+        EXPECT_EQ(sqlite3_get_autocommit(db),1);
+        Exec(db,"BEGIN; DELETE FROM taproot_keys; INSERT INTO taproot_keys SELECT * FROM saved_keys; DELETE FROM taproot_key_mapping; INSERT INTO taproot_key_mapping SELECT * FROM saved_mapping; DELETE FROM watch_scripts; INSERT INTO watch_scripts SELECT * FROM saved_watch; DELETE FROM addresses; INSERT INTO addresses SELECT * FROM saved_addresses; COMMIT");
+        CheckSignature(key);
+    }
+    Exec(db,"BEGIN IMMEDIATE; UPDATE taproot_keys SET label='uncommitted caller label'");
+    EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(script)); EXPECT_EQ(sqlite3_get_autocommit(db),0);
+    EXPECT_EQ(Scalar(db,"SELECT count(*) FROM taproot_keys WHERE label='uncommitted caller label'"),1);
+    Exec(db,"ROLLBACK"); CheckSignature(key);
+    // Commit conflicting public ownership: no cached key may bypass it.
+    Exec(db,"UPDATE taproot_key_mapping SET internal_pubkey=zeroblob(32)");
+    EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(script));
+    const auto restore="UPDATE taproot_key_mapping SET internal_pubkey=x'"+util::hex(std::vector<uint8_t>(key.internal.begin(),key.internal.end()))+"'";
+    Exec(db,restore.c_str()); CheckSignature(key);
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*) {
+        return op==SQLITE_READ && table && std::string(table)=="taproot_keys"?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(script)); sqlite3_set_authorizer(db,nullptr,nullptr);
+    CheckSignature(key);
+}
+
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};
 TEST_F(WalletRecoveryKeyTest, PinsActualSeedAcrossLockAndUnlock) {
     wallet->open("owner");

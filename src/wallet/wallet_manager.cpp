@@ -6547,6 +6547,110 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(cons
         return std::nullopt;
     }
 
+    // Descriptor imports carry an internal key, not a BIP32 path. Resolve
+    // their durable tuple before the HD cache/fallback can invent authority.
+    std::vector<uint8_t> imported_script;
+    if (util::unhex(script_pubkey, imported_script) && imported_script.size()==34 &&
+        imported_script[0]==0x51 && imported_script[1]==0x20) {
+        try {
+            auto lease=AcquireDatabaseLease();
+            if (!db_ || !sqlite3_get_autocommit(db_) || recovery_seeds_) return std::nullopt;
+            checkUnlockTimeout();
+            if (wallet_locked_) return std::nullopt;
+            // The existing transaction owner also gives all tuple/policy reads
+            // one SQLite snapshot. It changes no wallet rows or receipts here.
+            IssuedAddressTransaction read(db_);
+            const auto text_matches=[](sqlite3_stmt* q,int col,const std::string& expected) {
+                if(sqlite3_column_type(q,col)!=SQLITE_TEXT)return false;
+                const auto* value=sqlite3_column_text(q,col);
+                return value &&
+                    sqlite3_column_bytes(q,col)==int(expected.size()) &&
+                    std::memcmp(value,expected.data(),expected.size())==0;
+            };
+            const auto int_matches=[](sqlite3_stmt* q,int col,int expected) {
+                return sqlite3_column_type(q,col)==SQLITE_INTEGER && sqlite3_column_int64(q,col)==expected;
+            };
+            std::array<uint8_t,32> output{};
+            std::copy(imported_script.begin()+2,imported_script.end(),output.begin());
+            const auto& network=Params().name;
+            const auto address=TaprootKeys::CreateTaprootAddress(output,network=="regtest"?"rdin":network=="testnet"?"tdin":"din");
+            const auto canonical_script=util::hex(imported_script);
+            bool imported=false,has_keys=false;
+            { IssuedStatement candidate(db_,"SELECT 1 FROM addresses WHERE (address=? OR script_pubkey=?) AND account=-1 UNION ALL SELECT 1 FROM watch_scripts WHERE script_pubkey=? AND path LIKE 'tr(%'");
+              candidate.Text(1,address);candidate.Text(2,canonical_script);candidate.Blob(3,imported_script.data(),34);
+              int rc;while((rc=sqlite3_step(candidate.value.get()))==SQLITE_ROW)imported=true;
+              IssuanceCheck(db_,rc,SQLITE_DONE); }
+            { IssuedStatement tables(db_,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='taproot_keys'");
+              const int rc=sqlite3_step(tables.value.get());
+              if(rc==SQLITE_ROW){has_keys=true;tables.Done();}else IssuanceCheck(db_,rc,SQLITE_DONE); }
+            if(has_keys) {
+                IssuedStatement candidate(db_,"SELECT 1 FROM taproot_keys WHERE address=? OR output_pubkey=?");
+                candidate.Text(1,address);candidate.Blob(2,output.data(),32);
+                int rc;while((rc=sqlite3_step(candidate.value.get()))==SQLITE_ROW)imported=true;
+                IssuanceCheck(db_,rc,SQLITE_DONE);
+            }
+            if(imported) {
+                // Missing, old incomplete, or conflicting tuples refuse. Lookup
+                // never backfills a mapping or treats an import as HD account0.
+                if(!has_keys)return std::nullopt;
+                const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+                const std::string sql=R"(SELECT k.internal_privkey,k.internal_pubkey,k.output_pubkey,k.is_privkey_encrypted,
+                    m.internal_pubkey,m.derivation_path,w.path,w.is_change,a.account,a.change,a.type,a.script_pubkey,)"+
+                    std::string(wallet_column?"a.wallet_id":"1")+R"( FROM taproot_keys k
+                    JOIN taproot_key_mapping m ON m.output_pubkey=k.output_pubkey
+                    JOIN watch_scripts w ON w.script_pubkey=? JOIN addresses a ON a.address=k.address
+                    WHERE k.address=?)";
+                IssuedStatement tuple(db_,sql.c_str());tuple.Blob(1,imported_script.data(),34);tuple.Text(2,address);
+                IssuanceCheck(db_,sqlite3_step(tuple.value.get()),SQLITE_ROW);auto* q=tuple.value.get();
+                const auto key_blob=[&](int col,std::array<uint8_t,32>& dest) {
+                    if(sqlite3_column_type(q,col)!=SQLITE_BLOB)throw std::runtime_error("Invalid imported public key type");
+                    const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(q,col));
+                    if(!bytes || sqlite3_column_bytes(q,col)!=32)
+                        throw std::runtime_error("Invalid imported public key");
+                    std::copy(bytes,bytes+32,dest.begin());
+                };
+                std::array<uint8_t,32> internal{},stored_output{},mapped{};
+                key_blob(1,internal);key_blob(2,stored_output);key_blob(4,mapped);
+                const auto path="tr("+util::hex(std::vector<uint8_t>(internal.begin(),internal.end())).substr(0,8)+"...)";
+                if(stored_output!=output || mapped!=internal || !text_matches(q,5,path) || !text_matches(q,6,path) ||
+                   !int_matches(q,7,0) || !int_matches(q,8,-1) || !int_matches(q,9,0) ||
+                   !text_matches(q,10,"p2tr") || !text_matches(q,11,canonical_script) || !int_matches(q,12,1) ||
+                   !int_matches(q,3,wallet_encrypted_?1:0))return std::nullopt;
+                struct Secret {std::string value;~Secret(){secureClearString(value);}} stored,plain;
+                if(sqlite3_column_type(q,0)!=SQLITE_BLOB)return std::nullopt;
+                const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q,0));
+                const int size=sqlite3_column_bytes(q,0);
+                if(!bytes || size!=(wallet_encrypted_?60:32))return std::nullopt;
+                stored.value.assign(bytes,size);tuple.Done();
+                // Match the durable encryption policy, not merely the blob flag.
+                { IssuedStatement policy(db_,"SELECT value FROM settings WHERE key='wallet_encrypted'");
+                  const int rc=sqlite3_step(policy.value.get());
+                  if(rc==SQLITE_ROW){if(!text_matches(policy.value.get(),0,wallet_encrypted_?"1":"0"))return std::nullopt;policy.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                { IssuedStatement metadata(db_,"SELECT encrypted FROM encryption_metadata WHERE id=1");
+                  const int rc=sqlite3_step(metadata.value.get());
+                  if(rc==SQLITE_ROW){if(!int_matches(metadata.value.get(),0,wallet_encrypted_?1:0))return std::nullopt;metadata.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                if(wallet_encrypted_ && encryption_key_.size()!=32)return std::nullopt;
+                plain.value=wallet_encrypted_?decryptData(stored.value,encryption_key_):stored.value;
+                if(plain.value.size()!=32)return std::nullopt;
+                struct Key {std::array<uint8_t,32> value{};~Key(){OPENSSL_cleanse(value.data(),value.size());}} secret;
+                std::copy(plain.value.begin(),plain.value.end(),secret.value.begin());
+                std::array<uint8_t,32> derived{},tweaked{};int parity=0;
+                if(!TaprootKeys::DeriveXOnlyPubkey(secret.value,derived,parity) || derived!=internal ||
+                   !TaprootKeys::ComputeTweakedPubkey(derived,tweaked) || tweaked!=output)return std::nullopt;
+                read.Commit();
+                // Do not cache imported plaintext: every lookup must recheck the
+                // persistent key, public bindings and current encryption owner.
+                return std::vector<uint8_t>(secret.value.begin(),secret.value.end());
+            }
+            read.Commit();
+        } catch(const std::exception&) {
+            WLOG_ERR("Imported Taproot signing key lookup refused");
+            return std::nullopt;
+        }
+    }
+
     // Check cache first for performance
     auto cache_it = private_key_cache_.find(script_pubkey);
     if (cache_it != private_key_cache_.end()) {
