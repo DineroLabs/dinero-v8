@@ -23,6 +23,11 @@
 #include <thread>
 
 namespace dinero {
+struct WalletSeedWriteTestAccess {
+    static bool Write(WalletManager& wallet, const std::vector<uint8_t>& seed, bool reset) {
+        return wallet.storeMasterSeed(seed, "", reset);
+    }
+};
 struct WalletSeedReadTestAccess {
     static std::optional<std::vector<uint8_t>> Read(WalletManager& wallet, const std::string& passphrase) {
         return wallet.loadMasterSeed(passphrase);
@@ -151,6 +156,87 @@ TEST_F(WalletSeedReadTest, IncompleteReadAndBorrowedTransactionPreserveOwner) {
     EXPECT_FALSE(Read(""));
     sqlite3_set_authorizer(db,nullptr,nullptr);EXPECT_EQ(sqlite3_get_autocommit(db),0);Exec(db,"ROLLBACK");
     EXPECT_EQ(Blob(),blob);EXPECT_EQ(Read(""),seed);
+}
+
+class WalletSeedWriteTest : public WalletSeedReadTest {
+protected:
+    bool Write(const std::vector<uint8_t>& seed, bool reset = false) {
+        return dinero::WalletSeedWriteTestAccess::Write(*wallet, seed, reset);
+    }
+    std::string Text(const char* sql) {
+        sqlite3_stmt* raw = nullptr;
+        if (sqlite3_prepare_v2(wallet->getCurrentDatabase(), sql, -1, &raw, nullptr) != SQLITE_OK)
+            throw std::runtime_error("seed write fixture query");
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> q(raw, sqlite3_finalize);
+        if (sqlite3_step(raw) != SQLITE_ROW) throw std::runtime_error("seed write fixture row");
+        const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(raw, 0));
+        std::string result(text ? text : "", sqlite3_column_bytes(raw, 0));
+        if (sqlite3_step(raw) != SQLITE_DONE) throw std::runtime_error("seed write fixture EOF");
+        return result;
+    }
+};
+TEST_F(WalletSeedWriteTest, RequiredWritesRollback) {
+    wallet->open("owner");
+    const auto seed = wallet->GetMasterSeed(); ASSERT_TRUE(seed);
+    const auto blob = Blob();
+    const auto metadata = Text("SELECT hex(salt) FROM encryption_metadata WHERE id=1");
+    auto changed = *seed; changed[0] ^= 1;
+    for (const char* table : {"hd_seeds", "encryption_metadata"}) {
+        SCOPED_TRACE(table);
+        Exec(wallet->getCurrentDatabase(), (std::string("CREATE TRIGGER fail_seed_write BEFORE INSERT ON ") +
+            table + " BEGIN SELECT RAISE(ABORT,'required seed write'); END").c_str());
+        EXPECT_FALSE(Write(changed));
+        EXPECT_EQ(Blob(), blob);
+        EXPECT_EQ(Text("SELECT hex(salt) FROM encryption_metadata WHERE id=1"), metadata);
+        EXPECT_EQ(wallet->GetMasterSeed(), seed);
+        EXPECT_EQ(sqlite3_get_autocommit(wallet->getCurrentDatabase()), 1);
+        Exec(wallet->getCurrentDatabase(), "DROP TRIGGER fail_seed_write");
+    }
+    wallet->open("owner"); EXPECT_EQ(Read(""), seed); EXPECT_EQ(wallet->GetMasterSeed(), seed);
+}
+TEST_F(WalletSeedWriteTest, CommitAndBorrowedTransactionPreserveOwner) {
+    wallet->open("owner");
+    const auto seed = wallet->GetMasterSeed(); ASSERT_TRUE(seed);
+    const auto blob = Blob(); auto changed = *seed; changed[1] ^= 1;
+    auto* db = wallet->getCurrentDatabase();
+    sqlite3_commit_hook(db, [](void*) { return 1; }, nullptr);
+    EXPECT_FALSE(Write(changed));
+    sqlite3_commit_hook(db, nullptr, nullptr);
+    EXPECT_EQ(Blob(), blob); EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    EXPECT_EQ(sqlite3_get_autocommit(db), 1);
+    Exec(db, "CREATE TABLE seed_owner_probe(value INTEGER)");
+    Exec(db, "BEGIN IMMEDIATE"); Exec(db, "INSERT INTO seed_owner_probe VALUES(7)");
+    EXPECT_FALSE(Write(changed));
+    EXPECT_EQ(sqlite3_get_autocommit(db), 0);
+    EXPECT_EQ(Text("SELECT value FROM seed_owner_probe"), "7");
+    EXPECT_EQ(Blob(), blob); EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    Exec(db, "ROLLBACK"); EXPECT_EQ(Read(""), seed);
+}
+TEST_F(WalletSeedWriteTest, ReplacementRollbackAndSameSeedReopen) {
+    wallet->open("owner");
+    const auto seed = wallet->GetMasterSeed(); ASSERT_TRUE(seed);
+    const auto address = wallet->getNewAddress("seed owner"); ASSERT_FALSE(address.empty());
+    const auto blob = Blob(); auto changed = *seed; changed[2] ^= 1;
+    const auto addresses = Text("SELECT count(*) FROM addresses");
+    const auto watches = Text("SELECT count(*) FROM watch_scripts");
+    for (const char* trigger : {
+            "CREATE TRIGGER fail_seed_write BEFORE DELETE ON addresses BEGIN SELECT RAISE(ABORT,'required deletion'); END",
+            "CREATE TRIGGER fail_seed_write BEFORE INSERT ON encryption_metadata BEGIN SELECT RAISE(ABORT,'required metadata'); END",
+            "CREATE TRIGGER fail_seed_write BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT,'required recovery invalidation'); END"}) {
+        SCOPED_TRACE(trigger);
+        Exec(wallet->getCurrentDatabase(), trigger);
+        EXPECT_FALSE(Write(changed, true));
+        EXPECT_EQ(Blob(), blob); EXPECT_EQ(wallet->GetMasterSeed(), seed);
+        EXPECT_EQ(Text("SELECT count(*) FROM addresses"), addresses);
+        EXPECT_EQ(Text("SELECT count(*) FROM watch_scripts"), watches);
+        EXPECT_EQ(sqlite3_get_autocommit(wallet->getCurrentDatabase()), 1);
+        Exec(wallet->getCurrentDatabase(), "DROP TRIGGER fail_seed_write");
+    }
+    // Rebinding the established seed must preserve its issued address state.
+    ASSERT_TRUE(Write(*seed, true));
+    EXPECT_EQ(Text("SELECT count(*) FROM addresses"), addresses);
+    EXPECT_EQ(Text("SELECT count(*) FROM watch_scripts"), watches);
+    wallet->open("owner"); EXPECT_EQ(Read(""), seed); EXPECT_TRUE(wallet->isAddressMine(address));
 }
 
 class WalletAddressIssuanceTest : public WalletDatabaseLeaseTest {

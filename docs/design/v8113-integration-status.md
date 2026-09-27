@@ -717,3 +717,32 @@ two unchanged height-one fixtures, and the dedicated lane requires their actual
 execution. Full Ninja builds collect independent failures while retaining a
 nonzero failure exit. See [fixture linkage](height-one-test-link-2026-09-27.md).
 New Linux qualification remains required; the draft PR has not advanced.
+
+## 2026-09-27 — atomic seed persistence prerequisite
+
+`storeMasterSeed` now owns the existing database lease and a checked FULL
+transaction for the seed, required encryption metadata, and existing replacement
+writes. It publishes the live seed only after commit. The v2 envelope and existing
+replacement decision remain; this is not initialization-versus-recovery ownership
+or whole-create/whole-restore atomicity. See
+[the scoped design note](wallet-seed-write-2026-09-27.md).
+
+Fresh ON/OFF daemon and wallet builds passed, with 8/6 selected CTests and all three
+new seed-write cases. All 89 linked project C++ files were freshly instrumented:
+43 cases/12 suites passed with 1,307 input hashes unchanged; three copied controls
+failed intended assertions and the restored three cases passed. External/Rust/C
+code, the separate restore component, daemon and OFF binaries are outside this
+sanitizer result; the full ARM RocksDB gate remains open. Three additional existing
+restore CTests ran in each configuration: two passed, while the restore-over-
+encrypted policy transition failed identically with the predecessor writer.
+That gate remains open; no policy check, assertion, deadline or registration was
+removed. Independent Linux execution of the new seed-write lane is pending.
+
+Predecessor `76c050d` exact Orchard run 36304737181 completed all three jobs with
+88 verified CTest executions, including both height-one fixtures and all prior
+required markers. Core Heavy run 36304745085 passed its full default build,
+registered-executable check and three actual canaries. The 664 registered/built
+count is not an execution count. Both receipts are verified and archived privately.
+The useful full/QUIC run 36304743644 is still pending at this update; its QUIC job
+has succeeded. These predecessor results exclude the seed-write change. PR813
+remains draft; mainnet activation is unset and release qualification incomplete.

@@ -465,6 +465,23 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute atomic master seed writes
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletSeedWrite$' --show-only=json-v1 > orchard-wallet-seed-write-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-seed-write-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletSeedWrite'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletSeedWrite missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletSeedWrite$' --verbose --no-tests=error --output-log orchard-wallet-seed-write-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[       OK \] (WalletSeedWriteTest\.\S+)', open('orchard-wallet-seed-write-execution.log').read())
+          expected = ['WalletSeedWriteTest.' + name for name in ['RequiredWritesRollback', 'CommitAndBorrowedTransactionPreserveOwner', 'ReplacementRollbackAndSameSeedReopen']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Seed writer cases did not execute exactly once')
+          PYTEST
       - name: Require and execute checked master seed envelope reads
         run: |
           ctest --test-dir build-orchard-root -R '^WalletSeedRead$' --show-only=json-v1 > orchard-wallet-seed-read-inventory.json
@@ -761,6 +778,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-seed-write-inventory.json
+            orchard-wallet-seed-write-execution.log
             orchard-wallet-seed-read-inventory.json
             orchard-wallet-seed-read-execution.log
             orchard-wallet-p2mr-key-read-inventory.json

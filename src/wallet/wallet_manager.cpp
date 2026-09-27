@@ -7380,198 +7380,159 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
         return false;
     }
 
-    // Re-importing the active recovery phrase is an idempotent wallet bind,
-    // not a wallet replacement. In particular, embedded/mobile clients bind
-    // on every process start and may explicitly skip address derivation after
-    // the first successful bind. Clearing address state here would therefore
-    // erase watch_scripts and make the otherwise valid retry unusable.
-    if (master_seed_.empty() && !wallet_locked_) {
-        auto existing_seed = loadMasterSeed("");
-        if (existing_seed.has_value()) {
-            master_seed_ = std::move(existing_seed.value());
+    try {
+        auto lease = AcquireDatabaseLease();
+        IssuedAddressTransaction transaction(db_);
+        struct SeedBuffer {
+            std::vector<uint8_t> value;
+            ~SeedBuffer() { secureClearBytes(value); }
+        } previous{master_seed_}, staged{seed};
+
+        // Re-importing the active recovery phrase is an idempotent wallet bind,
+        // not a wallet replacement. In particular, embedded/mobile clients bind
+        // on every process start and may explicitly skip address derivation after
+        // the first successful bind. Clearing address state here would therefore
+        // erase watch_scripts and make the otherwise valid retry unusable.
+        if (previous.value.empty() && !wallet_locked_) {
+            auto existing_seed = loadMasterSeed("");
+            if (existing_seed.has_value()) {
+                previous.value = std::move(existing_seed.value());
+            }
         }
-    }
-    const bool replaces_wallet_identity =
-        reset_address_state && !ConstantTimeEqual(seed, master_seed_);
+        const bool replaces_wallet_identity =
+            reset_address_state && !ConstantTimeEqual(seed, previous.value);
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Optional address-state reset
-    // ═══════════════════════════════════════════════════════════════════════
-    // Required when replacing the wallet seed (restore/import flows), but
-    // must NOT run during wallet encryption, where we only re-encrypt
-    // the same seed.
-    // ═══════════════════════════════════════════════════════════════════════
+        // ═══════════════════════════════════════════════════════════════════════
+        // Optional address-state reset
+        // ═══════════════════════════════════════════════════════════════════════
+        // Required when replacing the wallet seed (restore/import flows), but
+        // is disabled for initial creation. This preserves the existing
+        // replacement decision; it does not certify recovery completeness.
+        // ═══════════════════════════════════════════════════════════════════════
 
-    if (replaces_wallet_identity) {
-        WLOG_INFO("Clearing address tables for new HD seed import...");
+        if (replaces_wallet_identity) {
+            WLOG_INFO("Clearing address tables for new HD seed import...");
 
-        // Clear addresses table (resets derivation index to 0)
-        char* err_msg = nullptr;
-        int rc = sqlite3_exec(db_, "DELETE FROM addresses", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear addresses table: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
-        }
+            // Preserve the existing replacement policy, but every required
+            // deletion now belongs to the same transaction as the new seed.
+            for (const char* table : {"addresses", "address_derivation_paths", "hd_address_book",
+                                      "utxos", "watch_scripts", "taproot_key_mapping", "transactions"}) {
+                const std::string name(table);
+                if (name == "hd_address_book" || name == "taproot_key_mapping") {
+                    IssuedStatement exists(db_, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?");
+                    exists.Text(1, name);
+                    const int rc = sqlite3_step(exists.value.get());
+                    if (rc == SQLITE_DONE) continue; // Optional in older schemas.
+                    IssuanceCheck(db_, rc, SQLITE_ROW);
+                    exists.Done();
+                }
+                const std::string sql = "DELETE FROM " + name;
+                IssuanceCheck(db_, sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+            }
 
-        // Clear address derivation paths
-        rc = sqlite3_exec(db_, "DELETE FROM address_derivation_paths", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear address_derivation_paths: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
-        }
-
-        // Clear HD address book entries
-        rc = sqlite3_exec(db_, "DELETE FROM hd_address_book", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            // Table may not exist in older schemas, ignore error
-            if (err_msg) sqlite3_free(err_msg);
-        }
-
-        // Clear UTXO entries (they belong to old seed's addresses)
-        rc = sqlite3_exec(db_, "DELETE FROM utxos", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear utxos: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
         }
 
-        // Clear watch_scripts (they belong to old seed's scriptPubKeys)
-        rc = sqlite3_exec(db_, "DELETE FROM watch_scripts", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear watch_scripts: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
+        // === STEP 1: Generate random salt and nonce ===
+        constexpr size_t SALT_SIZE = 32;
+        constexpr size_t NONCE_SIZE = 12;
+        constexpr size_t TAG_SIZE = 16;
+        constexpr uint32_t PBKDF2_ITERATIONS = 600000;
+
+        std::vector<uint8_t> salt(SALT_SIZE);
+        std::vector<uint8_t> nonce(NONCE_SIZE);
+
+        if (RAND_bytes(salt.data(), SALT_SIZE) != 1) {
+            WLOG_ERR("Failed to generate random salt");
+            return false;
         }
 
-        // Clear taproot_key_mapping (output/internal pubkey pairs belong to old seed)
-        rc = sqlite3_exec(db_, "DELETE FROM taproot_key_mapping", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            // Table may not exist in older schemas, ignore error
-            if (err_msg) sqlite3_free(err_msg);
+        if (RAND_bytes(nonce.data(), NONCE_SIZE) != 1) {
+            WLOG_ERR("Failed to generate random nonce");
+            return false;
         }
 
-        // Clear transactions (they belong to previous wallet's addresses, not the new seed)
-        rc = sqlite3_exec(db_, "DELETE FROM transactions", nullptr, nullptr, &err_msg);
-        if (rc != SQLITE_OK) {
-            WLOG_WARN("Failed to clear transactions: " + std::string(err_msg ? err_msg : "unknown error"));
-            if (err_msg) sqlite3_free(err_msg);
+        // === STEP 2: Derive encryption key from passphrase using PBKDF2-HMAC-SHA512 ===
+        uint8_t derived_key[64]{};  // PBKDF2-SHA512 gives 64 bytes, we use first 32 for AES-256
+        uint8_t aes_key[32]{};
+        struct KeyCleanup {
+            uint8_t* derived;
+            uint8_t* aes;
+            ~KeyCleanup() { OPENSSL_cleanse(derived, 64); OPENSSL_cleanse(aes, 32); }
+        } key_cleanup{derived_key, aes_key};
+        dinero::crypto::PBKDF2_HMAC_SHA512(
+            reinterpret_cast<const uint8_t*>(passphrase.data()), passphrase.size(),
+            salt.data(), salt.size(),
+            PBKDF2_ITERATIONS,
+            derived_key, sizeof(derived_key)
+        );
+
+        // Use first 32 bytes as AES-256 key
+        std::memcpy(aes_key, derived_key, 32);
+
+        // === STEP 3: Encrypt seed with AES-256-GCM ===
+        EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) {
+            OPENSSL_cleanse(derived_key, sizeof(derived_key));
+            OPENSSL_cleanse(aes_key, sizeof(aes_key));
+            WLOG_ERR("Failed to create cipher context");
+            return false;
         }
 
-        WLOG_INFO("✅ Address, watch_script, and transaction tables cleared - derivation will start from index 0");
-    }
+        std::unique_ptr<EVP_CIPHER_CTX, decltype(&EVP_CIPHER_CTX_free)> cipher(ctx, EVP_CIPHER_CTX_free);
+        bool success = false;
+        std::vector<uint8_t> ciphertext(seed.size());
+        std::vector<uint8_t> tag(TAG_SIZE);
 
-    // === STEP 1: Generate random salt and nonce ===
-    constexpr size_t SALT_SIZE = 32;
-    constexpr size_t NONCE_SIZE = 12;
-    constexpr size_t TAG_SIZE = 16;
-    constexpr uint32_t PBKDF2_ITERATIONS = 600000;
+        do {
+            // Initialize AES-256-GCM encryption
+            if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, aes_key, nonce.data()) != 1) {
+                WLOG_ERR("Failed to initialize AES-256-GCM encryption");
+                break;
+            }
 
-    std::vector<uint8_t> salt(SALT_SIZE);
-    std::vector<uint8_t> nonce(NONCE_SIZE);
+            // Encrypt the seed
+            int len = 0;
+            if (EVP_EncryptUpdate(ctx, ciphertext.data(), &len, seed.data(), seed.size()) != 1) {
+                WLOG_ERR("Failed to encrypt seed");
+                break;
+            }
 
-    if (RAND_bytes(salt.data(), SALT_SIZE) != 1) {
-        WLOG_ERR("Failed to generate random salt");
-        return false;
-    }
+            int ciphertext_len = len;
 
-    if (RAND_bytes(nonce.data(), NONCE_SIZE) != 1) {
-        WLOG_ERR("Failed to generate random nonce");
-        return false;
-    }
+            // Finalize encryption
+            if (EVP_EncryptFinal_ex(ctx, ciphertext.data() + len, &len) != 1) {
+                WLOG_ERR("Failed to finalize encryption");
+                break;
+            }
 
-    // === STEP 2: Derive encryption key from passphrase using PBKDF2-HMAC-SHA512 ===
-    uint8_t derived_key[64];  // PBKDF2-SHA512 gives 64 bytes, we use first 32 for AES-256
-    dinero::crypto::PBKDF2_HMAC_SHA512(
-        reinterpret_cast<const uint8_t*>(passphrase.data()), passphrase.size(),
-        salt.data(), salt.size(),
-        PBKDF2_ITERATIONS,
-        derived_key, sizeof(derived_key)
-    );
+            ciphertext_len += len;
 
-    // Use first 32 bytes as AES-256 key
-    uint8_t aes_key[32];
-    std::memcpy(aes_key, derived_key, 32);
+            // Get authentication tag
+            if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_SIZE, tag.data()) != 1) {
+                WLOG_ERR("Failed to get GCM tag");
+                break;
+            }
 
-    // === STEP 3: Encrypt seed with AES-256-GCM ===
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) {
-        OPENSSL_cleanse(derived_key, sizeof(derived_key));
-        OPENSSL_cleanse(aes_key, sizeof(aes_key));
-        WLOG_ERR("Failed to create cipher context");
-        return false;
-    }
+            // === STEP 4: Store encrypted_seed + salt + nonce + tag in database ===
+            // Format: salt(32) + nonce(12) + ciphertext(64) + tag(16) = 124 bytes total
+            std::vector<uint8_t> encrypted_blob;
+            encrypted_blob.reserve(SALT_SIZE + NONCE_SIZE + ciphertext_len + TAG_SIZE);
+            encrypted_blob.insert(encrypted_blob.end(), salt.begin(), salt.end());
+            encrypted_blob.insert(encrypted_blob.end(), nonce.begin(), nonce.end());
+            encrypted_blob.insert(encrypted_blob.end(), ciphertext.begin(), ciphertext.begin() + ciphertext_len);
+            encrypted_blob.insert(encrypted_blob.end(), tag.begin(), tag.end());
 
-    bool success = false;
-    std::vector<uint8_t> ciphertext(seed.size());
-    std::vector<uint8_t> tag(TAG_SIZE);
+            // Insert or replace into hd_seeds table (per-wallet DB uses id=1)
+            IssuedStatement row(db_, R"(
+                INSERT OR REPLACE INTO hd_seeds (id, encrypted_seed, salt, coin_type, encryption_version, created_at)
+                VALUES (1, ?, ?, ?, 2, strftime('%s','now'))
+            )");
+            row.Blob(1, encrypted_blob.data(), static_cast<int>(encrypted_blob.size()));
+            row.Blob(2, salt.data(), static_cast<int>(salt.size()));
+            row.Int(3, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE));
+            row.Done(true);
 
-    do {
-        // Initialize AES-256-GCM encryption
-        if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, aes_key, nonce.data()) != 1) {
-            WLOG_ERR("Failed to initialize AES-256-GCM encryption");
-            break;
-        }
-
-        // Encrypt the seed
-        int len = 0;
-        if (EVP_EncryptUpdate(ctx, ciphertext.data(), &len, seed.data(), seed.size()) != 1) {
-            WLOG_ERR("Failed to encrypt seed");
-            break;
-        }
-
-        int ciphertext_len = len;
-
-        // Finalize encryption
-        if (EVP_EncryptFinal_ex(ctx, ciphertext.data() + len, &len) != 1) {
-            WLOG_ERR("Failed to finalize encryption");
-            break;
-        }
-
-        ciphertext_len += len;
-
-        // Get authentication tag
-        if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_SIZE, tag.data()) != 1) {
-            WLOG_ERR("Failed to get GCM tag");
-            break;
-        }
-
-        // === STEP 4: Store encrypted_seed + salt + nonce + tag in database ===
-        // Format: salt(32) + nonce(12) + ciphertext(64) + tag(16) = 124 bytes total
-        std::vector<uint8_t> encrypted_blob;
-        encrypted_blob.reserve(SALT_SIZE + NONCE_SIZE + ciphertext_len + TAG_SIZE);
-        encrypted_blob.insert(encrypted_blob.end(), salt.begin(), salt.end());
-        encrypted_blob.insert(encrypted_blob.end(), nonce.begin(), nonce.end());
-        encrypted_blob.insert(encrypted_blob.end(), ciphertext.begin(), ciphertext.begin() + ciphertext_len);
-        encrypted_blob.insert(encrypted_blob.end(), tag.begin(), tag.end());
-
-        // Insert or replace into hd_seeds table (per-wallet DB uses id=1)
-        sqlite3_stmt* stmt = nullptr;
-        const char* sql = R"(
-            INSERT OR REPLACE INTO hd_seeds (id, encrypted_seed, salt, coin_type, encryption_version, created_at)
-            VALUES (1, ?, ?, ?, 2, strftime('%s','now'))
-        )";
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            WLOG_ERR("Failed to prepare statement for storing seed: " + std::string(sqlite3_errmsg(db_)));
-            break;
-        }
-
-        sqlite3_bind_blob(stmt, 1, encrypted_blob.data(), encrypted_blob.size(), SQLITE_TRANSIENT);
-        sqlite3_bind_blob(stmt, 2, salt.data(), salt.size(), SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 3, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE));
-
-        int rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-
-        if (rc != SQLITE_DONE) {
-            WLOG_ERR("Failed to store encrypted seed in database");
-            break;
-        }
-
-        WLOG_INFO("Successfully stored encrypted HD wallet seed (encryption_version=2, PBKDF2@600K)");
-
-        // Update encryption_metadata with actual seed KDF params
-        {
-            sqlite3_stmt* meta_stmt = nullptr;
-            const char* meta_sql = R"(
+            IssuedStatement metadata(db_, R"(
                 INSERT OR REPLACE INTO encryption_metadata (
                     id, encrypted, kdf, kdf_iterations, cipher, salt, created_at, updated_at
                 )
@@ -7579,42 +7540,40 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
                         'pbkdf2-hmac-sha512', 600000, 'AES-256-GCM', ?,
                         COALESCE((SELECT created_at FROM encryption_metadata WHERE id = 1), strftime('%s','now')),
                         strftime('%s','now'))
-            )";
-            if (sqlite3_prepare_v2(db_, meta_sql, -1, &meta_stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_blob(meta_stmt, 1, salt.data(), salt.size(), SQLITE_TRANSIENT);
-                sqlite3_step(meta_stmt);
-                sqlite3_finalize(meta_stmt);
+            )");
+            metadata.Blob(1, salt.data(), static_cast<int>(salt.size()));
+            metadata.Done(true);
+
+            // Any operation that replaces the seed invalidates the old mnemonic
+            // binding. Clear it after the seed write succeeds; encryption passes
+            // reset_address_state=false because they preserve the same identity.
+            if (replaces_wallet_identity) {
+                const auto set = [&](const char* name, const char* value) {
+                    IssuedStatement setting(db_, "INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES(?,?,strftime('%s','now'))");
+                    setting.Text(1, name); setting.Text(2, value); setting.Done(true);
+                };
+                set(kBip39RecoverySetting, "");
+                set(kBip39BackupAcknowledgedSetting, "0");
             }
-        }
 
-        // Any operation that replaces the seed invalidates the old mnemonic
-        // binding. Clear it after the seed write succeeds; encryption passes
-        // reset_address_state=false because they preserve the same identity.
-        if (replaces_wallet_identity) {
-            try {
-                setSetting(kBip39RecoverySetting, "");
-                setSetting(kBip39BackupAcknowledgedSetting, "0");
-            } catch (const std::exception& e) {
-                WLOG_ERR("Failed to invalidate old BIP39 recovery record: " +
-                         std::string(e.what()));
-                break;
-            }
-        }
+            // Allocate the live seed before writing and publish only after the
+            // required rows and commit succeed. The old live seed is cleansed.
+            transaction.Commit();
+            master_seed_.swap(staged.value);
 
-        // ✅ CRITICAL FIX: Set master_seed_ in memory so getNewAddress works immediately
-        // Without this, wallet.restore can't generate addresses after storing seed
-        master_seed_ = seed;
+            success = true;
 
-        success = true;
+        } while (false);
 
-    } while (false);
+        // Cleanup
+        OPENSSL_cleanse(derived_key, sizeof(derived_key));
+        OPENSSL_cleanse(aes_key, sizeof(aes_key));
 
-    // Cleanup
-    EVP_CIPHER_CTX_free(ctx);
-    OPENSSL_cleanse(derived_key, sizeof(derived_key));
-    OPENSSL_cleanse(aes_key, sizeof(aes_key));
-
-    return success;
+        return success;
+    } catch (const std::exception& e) {
+        WLOG_ERR(std::string("Failed to persist HD wallet seed: ") + e.what());
+        return false;
+    }
 }
 
 bool WalletManager::storeAuthoritativeBip39Mnemonic(

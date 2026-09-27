@@ -914,6 +914,9 @@ public:
     /**
      * Store master seed in database with encryption.
      * Required for wallet.restore to persist the seed.
+     * Owns a FULL transaction for the seed, required metadata and existing
+     * replacement writes; refuses caller transactions. Publishes the live
+     * seed only after commit. This does not certify initialization/recovery.
      * Uses PBKDF2 + AES-256-GCM encryption with user passphrase.
      *
      * @param seed The 512-bit master seed to store
@@ -972,6 +975,7 @@ private:
     std::string current_;
     friend class ChainstateService;
     friend struct WalletSeedReadTestAccess;
+    friend struct WalletSeedWriteTestAccess;
     bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
                               const SelectedWalletHistory*, uint64_t expected_session);
     friend class RuntimeOrdinaryDelivery;
