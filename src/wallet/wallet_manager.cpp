@@ -6915,6 +6915,21 @@ bool WalletManager::removeUTXO(const std::string& txid, int vout) {
 // ═══════════════════════════════════════════════════════════════
 
 std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(const std::string& script_pubkey) {
+    return deriveKeyForScriptPubKeyOwned(script_pubkey,nullptr);
+}
+
+std::optional<SigningKey> WalletManager::resolveSigningKeyForScriptPubKey(const std::string& script_pubkey) {
+    std::vector<uint8_t> script;
+    if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+    auto policy=script.size()==34 && script[0]==0x51 && script[1]==0x20
+        ?SigningKeyPolicy::TaprootCanonical:SigningKeyPolicy::Untweaked;
+    auto key=deriveKeyForScriptPubKeyOwned(script_pubkey,&policy);
+    if(!key)return std::nullopt;
+    return SigningKey(std::move(*key),std::move(script),policy);
+}
+
+std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned(
+    const std::string& script_pubkey,SigningKeyPolicy* policy) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address (display string)
     // Check if wallet is active and unlocked
@@ -7018,8 +7033,9 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(cons
                    !secp256k1_xonly_pubkey_serialize(context.get(),derived_output.data(),&result) ||
                    derived_output!=output)return std::nullopt;
                 read.Commit();
-                // Preserve the API's internal-scalar contract. Historical
-                // signing needs an explicit tweak policy; never cache imports.
+                if(policy)*policy=SigningKeyPolicy::TaprootHistoricalImport;
+                // The compatibility API still returns the INTERNAL scalar.
+                // Typed callers receive the separately carried tweak policy.
                 return std::vector<uint8_t>(scalar.value.begin(),scalar.value.end());
             }
             IssuanceCheck(db_,legacy_rc,SQLITE_DONE);

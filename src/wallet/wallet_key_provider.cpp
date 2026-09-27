@@ -51,7 +51,8 @@ std::vector<uint8_t> HexToBytes(const std::string& hex) {
 } // namespace
 
 WalletKeyProvider::WalletKeyProvider(Config cfg)
-    : p2mr_store_(cfg.p2mr_store),
+    : signing_keys_(std::move(cfg.signing_keys_by_input)),
+      p2mr_store_(cfg.p2mr_store),
       wallet_id_(cfg.wallet_id),
       master_key_(cfg.master_key) {
     for (const auto& [path, hex] : cfg.legacy_keys_by_path) {
@@ -65,6 +66,12 @@ WalletKeyProvider::WalletKeyProvider(Config cfg)
 
 WalletKeyProvider::~WalletKeyProvider() {
     OPENSSL_cleanse(master_key_.data(), master_key_.size());
+}
+
+std::optional<SigningKey> WalletKeyProvider::GetSigningKeyForInput(const CanonicalWalletUTXO& input) const {
+    const auto it=signing_keys_.find(input.GetOutpointString());
+    if(it!=signing_keys_.end())return it->second;
+    return KeyProvider::GetSigningKeyForInput(input);
 }
 
 std::vector<uint8_t> WalletKeyProvider::GetPrivateKey(const std::string& path) const {

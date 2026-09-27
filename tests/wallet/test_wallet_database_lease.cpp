@@ -17,6 +17,10 @@
 #include <gtest/gtest.h>
 #include <sqlite3.h>
 #include <openssl/crypto.h>
+#include <openssl/sha.h>
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
+#include "dinero/core/common/AddressCodec.h"
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -1441,4 +1445,85 @@ TEST_F(WalletPqRootProviderTest, IncompleteReadAndBorrowedTransactionRefuse) {
     Exec(observed,"BEGIN");EXPECT_FALSE(store.GetByMerkleRoot(7,a.merkle_root));EXPECT_TRUE(Sign(store,a.merkle_root).empty());EXPECT_EQ(sqlite3_get_autocommit(observed),0);Exec(observed,"ROLLBACK");
     EXPECT_FALSE(Sign(store,a.merkle_root).empty());
 }
+}
+
+
+class WalletHistoricalSigningTest : public WalletInputProviderTest {
+protected:
+    dinero::CanonicalWalletUTXO Legacy(uint8_t last,int* parity=nullptr) {
+        std::array<uint8_t,32> secret{},internal{},output{},tweak{};secret.back()=last;int odd=0;
+        if(!dinero::TaprootKeys::DeriveXOnlyPubkey(secret,internal,odd))throw std::runtime_error("legacy fixture scalar");
+        if(parity)*parity=odd;
+        std::array<uint8_t,33> input{};std::copy(internal.begin(),internal.end(),input.begin());
+        ::SHA256(input.data(),input.size(),tweak.data());
+        std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> ctx(secp256k1_context_create(SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+        secp256k1_xonly_pubkey key{},out{};secp256k1_pubkey point{};
+        if(!secp256k1_xonly_pubkey_parse(ctx.get(),&key,internal.data()) ||
+           !secp256k1_xonly_pubkey_tweak_add(ctx.get(),&point,&key,tweak.data()) ||
+           !secp256k1_xonly_pubkey_from_pubkey(ctx.get(),&out,nullptr,&point) ||
+           !secp256k1_xonly_pubkey_serialize(ctx.get(),output.data(),&out))throw std::runtime_error("legacy fixture public");
+        const auto address=AddressCodec::encodeP2TR(Network::MAIN,std::vector<uint8_t>(output.begin(),output.end()));
+        const auto sql="INSERT INTO imported_keys(address,private_key_enc,label) VALUES('"+address+"','"+util::hex(std::vector<uint8_t>(secret.begin(),secret.end()))+"','historical label')";
+        Exec(wallet->getCurrentDatabase(),sql.c_str());
+        dinero::CanonicalWalletUTXO coin;coin.txid=dinero::uint256::FromHexUnsafe(std::string(63,'0')+"1");coin.vout=last;coin.value=dinero::AmountUna::Una(100000);coin.height=1;
+        coin.spk={0x51,0x20};coin.spk.insert(coin.spk.end(),output.begin(),output.end());
+        // No path exists for the historical import. Do not invent an HD origin.
+        return coin;
+    }
+    void Consensus(const dinero::Transaction& tx,const std::vector<dinero::CanonicalWalletUTXO>& coins,size_t index) {
+        dinero::consensus::ScriptExecutionContext ctx(&tx,index,coins[index].value.GetUna(),dinero::consensus::SCRIPT_VERIFY_WITNESS|dinero::consensus::SCRIPT_VERIFY_TAPROOT);
+        for(const auto& c:coins){ctx.all_amounts.push_back(c.value.GetUna());ctx.all_scriptpubkeys.push_back(c.spk);ctx.all_confidential_flags.push_back(0);ctx.all_input_commitments.push_back({});}
+        dinero::consensus::ScriptError error;
+        EXPECT_TRUE(dinero::consensus::VerifyScript(dinero::consensus::Script(tx.vin[index].scriptSig),dinero::consensus::Script(coins[index].spk),tx.vin[index].witness,ctx,error));
+        ctx.all_amounts[index]-=1;ctx.sighash_cache.clear();
+        EXPECT_FALSE(dinero::consensus::VerifyScript(dinero::consensus::Script(tx.vin[index].scriptSig),dinero::consensus::Script(coins[index].spk),tx.vin[index].witness,ctx,error));
+    }
+};
+TEST_F(WalletHistoricalSigningTest, ExplicitPolicyParityAndEncryptedReopen) {
+    wallet->open("owner");bool parity_seen[2]={false,false};std::vector<dinero::CanonicalWalletUTXO> coins;
+    for(uint8_t n=1;n<=8;++n){int parity=0;coins.push_back(Legacy(n,&parity));parity_seen[parity]=true;}
+    ASSERT_TRUE(parity_seen[0] && parity_seen[1]);
+    wallet->encryptWallet("historical-signing");wallet->open("owner");wallet->unlockWallet("historical-signing");
+    const auto rows=Scalar(wallet->getCurrentDatabase(),"SELECT COUNT(*) FROM imported_keys");
+    for(const auto& coin:coins){
+        auto key=wallet->resolveSigningKeyForScriptPubKey(util::hex(coin.spk));ASSERT_TRUE(key);
+        ASSERT_EQ(key->policy,dinero::SigningKeyPolicy::TaprootHistoricalImport);EXPECT_EQ(key->script,coin.spk);EXPECT_TRUE(coin.path.empty());
+        EXPECT_EQ(wallet->deriveKeyForScriptPubKey(util::hex(coin.spk)),std::optional<std::vector<uint8_t>>(key->secret));
+        for(bool v1:{false,true}){auto tx=TransactionFor(coin);ASSERT_TRUE(v1?dinero::TaprootTxSigner::SignInputV1WithKey(tx,0,{coin},*key,dinero::DEFAULT_EXT_COMMITMENT):dinero::TaprootTxSigner::SignInputWithKey(tx,0,{coin},*key));Verify(tx,0,{coin},v1);if(!v1)Consensus(tx,{coin},0);}
+        auto canonical=TransactionFor(coin);EXPECT_FALSE(dinero::TaprootTxSigner::SignInput(canonical,0,{coin},key->secret));EXPECT_TRUE(canonical.vin[0].witness.empty());
+    }
+    EXPECT_EQ(Scalar(wallet->getCurrentDatabase(),"SELECT COUNT(*) FROM imported_keys"),rows);
+    wallet->lockWallet();EXPECT_FALSE(wallet->resolveSigningKeyForScriptPubKey(util::hex(coins[0].spk)));
+}
+TEST_F(WalletHistoricalSigningTest, BoundProvidersSignMixedOwnersWithoutPaths) {
+    wallet->open("owner");const auto old=Legacy(67);Import modern(91);ASSERT_TRUE(Store(modern));const auto recent=Coin(modern,92);
+    auto a=wallet->resolveSigningKeyForScriptPubKey(util::hex(old.spk)),b=wallet->resolveSigningKeyForScriptPubKey(util::hex(recent.spk));ASSERT_TRUE(a && b);
+    ASSERT_EQ(b->policy,dinero::SigningKeyPolicy::TaprootCanonical);
+    const auto input=Unsigned({old,recent});std::map<std::string,dinero::SigningKey> keys{{old.GetOutpointString(),*a},{recent.GetOutpointString(),*b}};
+    for(bool hybrid:{false,true}){
+        std::unique_ptr<dinero::KeyProvider> provider;
+        if(hybrid){dinero::wallet::WalletKeyProvider::Config cfg;cfg.signing_keys_by_input=keys;provider=std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));}
+        else provider=std::make_unique<dinero::MapKeyProvider>(keys,dinero::MapKeyProvider::BoundKeys{});
+        const auto result=dinero::TransactionSigner::Sign(input,*provider);ASSERT_TRUE(result.success)<<result.error;
+        for(size_t i=0;i<2;++i)Consensus(result.signed_tx.tx,input.selected_utxos,i);
+        EXPECT_TRUE(input.tx.vin[0].witness.empty());EXPECT_TRUE(input.tx.vin[1].witness.empty());
+    }
+}
+TEST_F(WalletHistoricalSigningTest, WrongPolicyScriptKeyAndOutpointRefuse) {
+    wallet->open("owner");const auto coin=Legacy(68);auto key=wallet->resolveSigningKeyForScriptPubKey(util::hex(coin.spk));ASSERT_TRUE(key);
+    for(bool v1:{false,true})for(int variant=0;variant<6;++variant){
+        auto changed=*key;auto selected=coin;auto tx=TransactionFor(coin);tx.vin[0].witness={{1,2,3}};const auto before=tx.vin[0].witness;
+        if(variant==0)changed.policy=dinero::SigningKeyPolicy::TaprootCanonical;
+        if(variant==1)changed.script.back()^=1;
+        if(variant==2)changed.secret.back()=69;
+        if(variant==3)selected.vout+=1;
+        if(variant==4)changed.policy=dinero::SigningKeyPolicy::Untweaked;
+        if(variant==5){selected.is_confidential=true;selected.commitment={1};}
+        const bool ok=v1?dinero::TaprootTxSigner::SignInputV1WithKey(tx,0,{selected},changed,dinero::DEFAULT_EXT_COMMITMENT):dinero::TaprootTxSigner::SignInputWithKey(tx,0,{selected},changed);
+        EXPECT_FALSE(ok)<<variant;EXPECT_EQ(tx.vin[0].witness,before);
+    }
+    for(const auto& binding:{std::string("historical label"),std::string("m/86'/1448'/0'/0/0"),coin.GetTxIdHex()+":999"}){
+        dinero::MapKeyProvider provider(std::map<std::string,dinero::SigningKey>{{binding,*key}},dinero::MapKeyProvider::BoundKeys{});
+        EXPECT_FALSE(dinero::TransactionSigner::Sign(Unsigned({coin}),provider).success);
+    }
 }

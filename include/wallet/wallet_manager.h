@@ -21,6 +21,7 @@
 #include "interfaces/wallet_notifier.h"  // Phase 3D: Event-driven wallet updates
 #include "wallet/keystore.h"  // Week 1 Day 5: WalletKeyStore interface
 #include "wallet/key_identity.h"  // Week 1 Day 5: KeyID type
+#include "wallet/signing_key.h"
 #include "wallet/key_origin.h"  // Week 1 Day 5: KeyOriginInfo
 
 struct sqlite3; // forward decl
@@ -853,6 +854,10 @@ public:
      */
     std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKey(const std::string& script_pubkey);
 
+    // As-of lookup with explicit tweak policy and exact script binding.
+    // The caller owns the returned secret; this does not pin a later job.
+    std::optional<SigningKey> resolveSigningKeyForScriptPubKey(const std::string& script_pubkey);
+
     /**
      * Check whether the wallet has signing material for a scriptPubKey.
      * This is a metadata-only capability check and does not require the wallet
@@ -985,6 +990,8 @@ public:
                                 std::string* error_out = nullptr);
 
 private:
+    std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKeyOwned(
+        const std::string& script_pubkey, SigningKeyPolicy* policy);
     void rewriteEncryptionPolicy(const std::string& old_passphrase,
         const std::string& new_passphrase, bool encrypted);
 

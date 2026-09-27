@@ -45,6 +45,9 @@ public:
         /** txid:vout or legacy HD path → hex-encoded internal private key. */
         std::map<std::string, std::string> legacy_keys_by_path;
 
+        /** Exact outpoint -> explicitly bound internal key and tweak policy. */
+        std::map<std::string, SigningKey> signing_keys_by_input;
+
         /** V7 P2MR SQLite store. Non-owning; must outlive the provider. */
         V7P2MRStore*                       p2mr_store = nullptr;
 
@@ -66,6 +69,7 @@ public:
     // KeyProvider — legacy ECDSA/Schnorr path
     std::vector<uint8_t> GetPrivateKey(const std::string& path) const override;
     bool                 HasKey(const std::string& path) const override;
+    std::optional<SigningKey> GetSigningKeyForInput(const CanonicalWalletUTXO& input) const override;
 
     // KeyProvider — PQ P2MR path
     std::vector<uint8_t> SignP2MR(
@@ -74,6 +78,7 @@ public:
 
 private:
     std::map<std::string, std::vector<uint8_t>> legacy_keys_;
+    std::map<std::string, SigningKey> signing_keys_;
     V7P2MRStore*                                 p2mr_store_;
     int64_t                                      wallet_id_;
     mutable AeadKey                              master_key_;  ///< scrubbed in dtor

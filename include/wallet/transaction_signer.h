@@ -19,6 +19,8 @@
  * - Transaction batching (inputs fixed)
  */
 
+#include "wallet/signing_key.h"
+#include <optional>
 #include "wallet/unsigned_tx_builder.h"
 #include "wallet/transaction.h"
 #include "wallet/hd_wallet.h"  // Phase M.3: For CanonicalWalletUTXO type
@@ -68,6 +70,9 @@ public:
     // Legacy providers retain path lookup for ordinary HD/CT callers.
     virtual std::vector<uint8_t> GetPrivateKeyForInput(
         const CanonicalWalletUTXO& input) const;
+    virtual std::optional<SigningKey> GetSigningKeyForInput(
+        const CanonicalWalletUTXO& input) const;
+
 
 
     /**
@@ -103,12 +108,18 @@ public:
      * @brief Construct from input txid:vout or legacy path → private_key_hex map
      */
     explicit MapKeyProvider(const std::map<std::string, std::string>& keys);
+    // Typed keys are exact-outpoint only. No label/path fallback is allowed.
+    struct BoundKeys {};
+    MapKeyProvider(const std::map<std::string, SigningKey>& keys,BoundKeys);
+    std::optional<SigningKey> GetSigningKeyForInput(const CanonicalWalletUTXO& input) const override;
+
 
     std::vector<uint8_t> GetPrivateKey(const std::string& address) const override;
     bool HasKey(const std::string& address) const override;
 
 private:
     std::map<std::string, std::vector<uint8_t>> keys_;
+    std::map<std::string, SigningKey> signing_keys_;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -243,7 +254,7 @@ private:
         Transaction& tx,
         size_t input_index,
         const std::vector<CanonicalWalletUTXO>& all_utxos,
-        const std::vector<uint8_t>& private_key
+        const SigningKey& private_key
     );
 
     /**

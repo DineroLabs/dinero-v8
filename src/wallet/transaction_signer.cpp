@@ -17,6 +17,20 @@ std::vector<uint8_t> KeyProvider::GetPrivateKeyForInput(
     return HasKey(input.path) ? GetPrivateKey(input.path) : std::vector<uint8_t>{};
 }
 
+std::optional<SigningKey> KeyProvider::GetSigningKeyForInput(const CanonicalWalletUTXO& input) const {
+    auto script=input.spk;
+    auto key=GetPrivateKeyForInput(input);
+    if(key.empty())return std::nullopt;
+    return SigningKey(std::move(key),std::move(script),TaprootTxSigner::IsTaprootUTXO(input)
+        ?SigningKeyPolicy::TaprootCanonical:SigningKeyPolicy::Untweaked);
+}
+MapKeyProvider::MapKeyProvider(const std::map<std::string,SigningKey>& keys,BoundKeys):signing_keys_(keys){}
+std::optional<SigningKey> MapKeyProvider::GetSigningKeyForInput(const CanonicalWalletUTXO& input) const {
+    const auto it=signing_keys_.find(input.GetOutpointString());
+    if(it!=signing_keys_.end())return it->second;
+    return KeyProvider::GetSigningKeyForInput(input);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Phase M.3: LegacyToHDWallet DELETED - no conversion needed
 // ═══════════════════════════════════════════════════════════════════════════
@@ -159,8 +173,8 @@ SignResult TransactionSigner::Sign(
 
         // P2MR already dispatched above. Resolve this ordinary input through
         // the provider's exact binding, with legacy non-import fallback.
-        std::vector<uint8_t> private_key = key_provider.GetPrivateKeyForInput(utxo);
-        if (private_key.empty()) {
+        auto private_key = key_provider.GetSigningKeyForInput(utxo);
+        if (!private_key || private_key->secret.empty()) {
             sig_meta.is_signed = false;
             sig_meta.error = "Failed to retrieve private key for: " + utxo.path;
             signatures.push_back(sig_meta);
@@ -171,7 +185,7 @@ SignResult TransactionSigner::Sign(
         // Phase M.3: No conversion needed - utxo is already CanonicalWalletUTXO
 
         // Sign input - pass FULL UTXO set (BIP341 requires all inputs for sighash)
-        bool sign_success = SignInput(tx, i, unsigned_tx.selected_utxos, private_key);
+        bool sign_success = SignInput(tx, i, unsigned_tx.selected_utxos, *private_key);
         if (!sign_success) {
             sig_meta.is_signed = false;
             sig_meta.error = "Failed to sign input " + std::to_string(i);
@@ -333,9 +347,9 @@ bool TransactionSigner::SignInput(
     Transaction& tx,
     size_t input_index,
     const std::vector<CanonicalWalletUTXO>& all_utxos,
-    const std::vector<uint8_t>& private_key
+    const SigningKey& private_key
 ) {
-    if (input_index >= all_utxos.size()) {
+    if (input_index >= all_utxos.size() || private_key.script!=all_utxos[input_index].spk) {
         return false;
     }
 
@@ -345,11 +359,12 @@ bool TransactionSigner::SignInput(
     if (TaprootTxSigner::IsTaprootUTXO(utxo)) {
         // Use BIP341 Taproot signing for P2TR inputs
         // BIP341 REQUIRES the full UTXO set for sighash computation
-        return TaprootTxSigner::SignInput(tx, input_index, all_utxos, private_key);
+        return TaprootTxSigner::SignInputWithKey(tx, input_index, all_utxos, private_key);
     } else {
         // Use BIP143 SegWit v0 signing for P2WPKH inputs
         // Note: BIP143 only needs the single UTXO being spent
-        return BIP143Signer::SignInput(tx, input_index, utxo, private_key);
+        if(private_key.policy!=SigningKeyPolicy::Untweaked)return false;
+        return BIP143Signer::SignInput(tx, input_index, utxo, private_key.secret);
     }
 }
 

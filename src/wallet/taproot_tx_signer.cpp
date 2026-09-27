@@ -7,6 +7,9 @@
 #include <secp256k1.h>
 #include <secp256k1_schnorrsig.h>
 #include <secp256k1_extrakeys.h>  // For secp256k1_keypair, secp256k1_xonly_pubkey
+#include <openssl/crypto.h>
+#include <openssl/sha.h>
+#include <memory>
 #include <openssl/rand.h>         // For RAND_bytes (cryptographically secure RNG)
 #include <algorithm>
 #include <cstring>
@@ -303,6 +306,60 @@ bool TaprootTxSigner::SignInput(
     tx.vin[input_index].witness.push_back(sig_vec);
 
     return true;
+}
+
+namespace {
+bool SignBoundTaprootInput(Transaction& tx,size_t index,
+    const std::vector<CanonicalWalletUTXO>& coins,const SigningKey& key,
+    bool v1,const std::array<uint8_t,32>& extension) {
+    if(index>=tx.vin.size() || coins.size()!=tx.vin.size() || key.secret.size()!=32 ||
+       key.script!=coins[index].spk || !TaprootTxSigner::IsTaprootUTXO(coins[index]))return false;
+    for(size_t i=0;i<coins.size();++i)
+        if(tx.vin[i].prevout.txid!=TxId(coins[i].txid) || tx.vin[i].prevout.vout!=coins[i].vout)return false;
+    if(key.policy==SigningKeyPolicy::TaprootCanonical)
+        return v1?TaprootTxSigner::SignInputV1(tx,index,coins,key.secret,extension)
+                 :TaprootTxSigner::SignInput(tx,index,coins,key.secret);
+    // Historical imports are ordinary key-path outputs. Metadata labels never
+    // substitute for this explicit policy plus full public output binding.
+    if(key.policy!=SigningKeyPolicy::TaprootHistoricalImport || coins[index].is_confidential ||
+       !tx.vin[index].scriptSig.empty())return false;
+    std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> context(
+        secp256k1_context_create(SECP256K1_CONTEXT_SIGN|SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+    struct Pair {secp256k1_keypair value{};~Pair(){OPENSSL_cleanse(&value,sizeof(value));}} pair;
+    if(!context || !secp256k1_keypair_create(context.get(),&pair.value,key.secret.data()))return false;
+    secp256k1_xonly_pubkey internal{},output{};
+    std::array<uint8_t,33> tweak_input{};std::array<uint8_t,32> tweak{},output_bytes{};
+    if(!secp256k1_keypair_xonly_pub(context.get(),&internal,nullptr,&pair.value) ||
+       !secp256k1_xonly_pubkey_serialize(context.get(),tweak_input.data(),&internal))return false;
+    ::SHA256(tweak_input.data(),tweak_input.size(),tweak.data());
+    // Keypair API performs the historical even-Y internal normalization and
+    // keeps secret/public parity coherent; no tweaked scalar escapes this owner.
+    if(!secp256k1_keypair_xonly_tweak_add(context.get(),&pair.value,tweak.data()) ||
+       !secp256k1_keypair_xonly_pub(context.get(),&output,nullptr,&pair.value) ||
+       !secp256k1_xonly_pubkey_serialize(context.get(),output_bytes.data(),&output) ||
+       !std::equal(output_bytes.begin(),output_bytes.end(),coins[index].spk.begin()+2))return false;
+    const auto hash=v1?TaprootTxSigner::ComputeTaprootSighashV1(tx,index,coins,extension)
+                      :TaprootTxSigner::ComputeTaprootSighash(tx,index,coins);
+    if(hash.size()!=32)return false;
+    struct Aux {std::array<uint8_t,32> value{};~Aux(){OPENSSL_cleanse(value.data(),value.size());}} aux;
+    std::vector<uint8_t> signature(64);
+    if(RAND_bytes(aux.value.data(),int(aux.value.size()))!=1 ||
+       !secp256k1_schnorrsig_sign32(context.get(),signature.data(),hash.data(),&pair.value,aux.value.data()) ||
+       !secp256k1_schnorrsig_verify(context.get(),signature.data(),hash.data(),hash.size(),&output))return false;
+    std::vector<std::vector<uint8_t>> witness;witness.push_back(std::move(signature));
+    tx.vin[index].witness.swap(witness);
+    return true;
+}
+}
+
+bool TaprootTxSigner::SignInputWithKey(Transaction& tx,size_t index,
+    const std::vector<CanonicalWalletUTXO>& coins,const SigningKey& key) {
+    return SignBoundTaprootInput(tx,index,coins,key,false,DEFAULT_EXT_COMMITMENT);
+}
+bool TaprootTxSigner::SignInputV1WithKey(Transaction& tx,size_t index,
+    const std::vector<CanonicalWalletUTXO>& coins,const SigningKey& key,
+    const std::array<uint8_t,32>& extension) {
+    return SignBoundTaprootInput(tx,index,coins,key,true,extension);
 }
 
 std::vector<uint8_t> TaprootTxSigner::ComputeTaprootSighash(

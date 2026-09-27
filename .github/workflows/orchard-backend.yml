@@ -517,6 +517,23 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Historical imported key read cases missing, duplicated or unexpected')
           PYTEST
+      - name: Require and execute explicit historical signing policy
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletHistoricalSigning$' --show-only=json-v1 > orchard-historical-signing-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-historical-signing-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletHistoricalSigning'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Historical signing missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletHistoricalSigning$' --verbose --no-tests=error --output-log orchard-historical-signing-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-historical-signing-execution.log').read()
+          expected=['ExplicitPolicyParityAndEncryptedReopen','BoundProvidersSignMixedOwnersWithoutPaths','WrongPolicyScriptKeyAndOutpointRefuse']
+          if sorted(re.findall(r'\[       OK \] WalletHistoricalSigningTest\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Historical signing cases did not complete exactly once')
+          PYTEST
       - name: Require and execute PQ input-root provider checks
         run: |
           ctest --test-dir build-orchard-root -R '^WalletPqRootProvider$' --show-only=json-v1 > orchard-pq-root-provider-inventory.json
@@ -1011,6 +1028,8 @@ jobs:
             orchard-wallet-encryption-owner-execution.log
             orchard-pq-root-provider-inventory.json
             orchard-pq-root-provider-execution.log
+            orchard-historical-signing-inventory.json
+            orchard-historical-signing-execution.log
             orchard-wallet-timeout-inventory.json
             orchard-wallet-timeout-execution.log
             orchard-rpc-drain-inventory.json

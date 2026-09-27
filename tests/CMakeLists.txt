@@ -6074,6 +6074,9 @@ if(NOT WIN32)
   add_test(NAME WalletEncryptionOwner
     COMMAND test_wallet_database_lease --gtest_filter=WalletEncryptionOwnerTest.*)
   set_tests_properties(WalletEncryptionOwner PROPERTIES TIMEOUT 90 LABELS "wallet;persistence;recovery")
+  add_test(NAME WalletHistoricalSigning
+    COMMAND test_wallet_database_lease --gtest_filter=WalletHistoricalSigningTest.*)
+  set_tests_properties(WalletHistoricalSigning PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
   add_test(NAME WalletPqRootProvider
     COMMAND test_wallet_database_lease --gtest_filter=WalletPqRootProviderTest.*)
   set_tests_properties(WalletPqRootProvider PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;pq")
