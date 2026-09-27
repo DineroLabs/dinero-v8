@@ -3893,6 +3893,59 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
         (!encryption_key_.empty() && key.value != encryption_key_))
         throw std::runtime_error("Live wallet unlock owner mismatch");
 
+    // Authenticate every present predecessor-format import in the same
+    // snapshot before publishing any unlock authority. These records used the
+    // historical SHA256(internal_xonly || 0x00) tweak and MAIN address domain;
+    // substituting modern TapTweak or the current network changes ownership.
+    {
+        IssuedStatement inventory(db_, "SELECT address,private_key_enc FROM imported_keys ORDER BY address");
+        int rc;
+        while ((rc=sqlite3_step(inventory.value.get()))==SQLITE_ROW) {
+            const auto text=[&](int col) {
+                if (sqlite3_column_type(inventory.value.get(),col)!=SQLITE_TEXT)
+                    throw std::runtime_error("Legacy import field type invalid");
+                const auto* bytes=static_cast<const char*>(sqlite3_column_blob(inventory.value.get(),col));
+                const int size=sqlite3_column_bytes(inventory.value.get(),col);
+                if (!bytes || size<=0) throw std::runtime_error("Legacy import field missing");
+                return std::string(bytes,size);
+            };
+            const auto address=text(0);
+            Secret stored,plain;
+            stored.value=text(1);
+            if (stored.value.size()!=60 && stored.value.size()!=92)
+                throw std::runtime_error("Legacy import ciphertext length invalid");
+            plain.value=decryptData(stored.value,key.value);
+            Seed decoded;
+            if (plain.value.size()==32) decoded.value.assign(plain.value.begin(),plain.value.end());
+            else if (plain.value.size()!=64 || !util::unhex(plain.value,decoded.value) || decoded.value.size()!=32)
+                throw std::runtime_error("Legacy import plaintext invalid");
+            struct Scalar {
+                std::array<uint8_t,32> value{};
+                ~Scalar(){OPENSSL_cleanse(value.data(),value.size());}
+            } scalar;
+            std::copy(decoded.value.begin(),decoded.value.end(),scalar.value.begin());
+            std::array<uint8_t,32> internal{},output{},tweak{};
+            int parity=0;
+            if (!TaprootKeys::DeriveXOnlyPubkey(scalar.value,internal,parity))
+                throw std::runtime_error("Legacy import scalar invalid");
+            std::array<uint8_t,33> input{};
+            std::copy(internal.begin(),internal.end(),input.begin());
+            ::SHA256(input.data(),input.size(),tweak.data());
+            std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> context(
+                secp256k1_context_create(SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+            secp256k1_xonly_pubkey point{},result{};secp256k1_pubkey tweaked{};
+            if (!context || !secp256k1_xonly_pubkey_parse(context.get(),&point,internal.data()) ||
+                !secp256k1_xonly_pubkey_tweak_add(context.get(),&tweaked,&point,tweak.data()) ||
+                !secp256k1_xonly_pubkey_from_pubkey(context.get(),&result,nullptr,&tweaked) ||
+                !secp256k1_xonly_pubkey_serialize(context.get(),output.data(),&result))
+                throw std::runtime_error("Legacy import public binding invalid");
+            const auto expected=AddressCodec::encodeP2TR(Network::MAIN,std::vector<uint8_t>(output.begin(),output.end()));
+            if (expected.empty() || address!=expected)
+                throw std::runtime_error("Legacy import historical address mismatch");
+        }
+        IssuanceCheck(db_,rc,SQLITE_DONE);
+    }
+
     // Read every known master owner in the same transaction. A malformed
     // present owner is an error even when another wrapper can be decrypted.
     auto initial = loadInitialPqMaster(seed.value);

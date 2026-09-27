@@ -983,6 +983,16 @@ TEST_F(WalletDeliveryBindingTest, StableDatabaseIdentitySurvivesReopenAndMetadat
 }
 TEST_F(WalletDeliveryBindingTest, FailedWritesAndCommitDoNotPublishIdentity) {
     wallet->open("owner");auto lease=wallet->AcquireDatabaseLease();auto* db=lease->Database();
+    // New creation already binds the delivery identity into its initial owner.
+    // Reading that identity must not attempt an update, even when writes fail.
+    const auto created_identity=lease->EnsureDeliveryIdentity();
+    Exec(db,"CREATE TRIGGER reject_existing BEFORE UPDATE ON wallet_meta BEGIN SELECT RAISE(ABORT,'existing identity must not be rewritten'); END");
+    EXPECT_EQ(lease->EnsureDeliveryIdentity(),created_identity);
+    Exec(db,"DROP TRIGGER reject_existing");
+    // Explicit predecessor-schema fixture for lazy identity enrollment. There
+    // was no sealed initial owner or delivery-id column in this old format.
+    // No unlock/key recovery is performed on this synthetic legacy database.
+    Exec(db,"DELETE FROM settings WHERE key='wallet_initial_owner_v1'; ALTER TABLE wallet_meta DROP COLUMN runtime_delivery_id");
     const auto fails=[&](const char* expected) {
         try { (void)lease->EnsureDeliveryIdentity();ADD_FAILURE()<<"Expected identity refusal"; }
         catch(const std::runtime_error& error){EXPECT_EQ(std::string(error.what()),expected);}
