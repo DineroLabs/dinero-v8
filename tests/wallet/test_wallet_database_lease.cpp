@@ -1377,3 +1377,68 @@ INSTANTIATE_TEST_SUITE_P(DeliveryStages, WalletOrdinaryBlockTest,
     [](const ::testing::TestParamInfo<std::string>& info) { return info.param; });
 
 } // namespace
+
+namespace {
+class WalletPqRootProviderTest : public WalletDatabaseLeaseTest {
+protected:
+    inline static sqlite3* observed=nullptr;
+    inline static bool interrupt_row=false;
+    static int Trace(unsigned event,void* db,void* stmt,void*) {
+        const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));
+        if(event==SQLITE_TRACE_ROW && interrupt_row && sql && std::string(sql).find("AND merkle_root = ?")!=std::string::npos)
+            sqlite3_interrupt(static_cast<sqlite3*>(db));
+        return 0;
+    }
+    static int Extension(sqlite3* db,char**,const sqlite3_api_routines*) {
+        observed=db;return sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Trace,db);
+    }
+    void Open(dinero::wallet::V7P2MRStore& store) {
+        ASSERT_EQ(sqlite3_auto_extension(reinterpret_cast<void(*)()>(Extension)),SQLITE_OK);
+        auto result=store.Open((path/"root-provider.sqlite").string());
+        sqlite3_cancel_auto_extension(reinterpret_cast<void(*)()>(Extension));
+        ASSERT_EQ(result,dinero::wallet::V7P2MRStore::OpenResult::Ok);
+        ASSERT_NE(observed,nullptr);
+    }
+    dinero::rpc::v7::ImportP2MRSeedResult Add(dinero::wallet::V7P2MRStore& store,const char* hrp,const char* record) {
+        dinero::rpc::v7::ImportP2MRSeedParams p{};p.wallet_id=7;p.pq_seed.fill(23);p.master_key.fill(37);
+        p.hrp=hrp;p.derivation_path=record;p.label="preserved alias";p.now_unix=91;
+        auto result=dinero::rpc::v7::ImportP2MRSeed(store,p);
+        if(result.status!=dinero::rpc::v7::HandlerStatus::Ok)throw std::runtime_error("fixture actual PQ import");
+        return result;
+    }
+    std::vector<uint8_t> Sign(dinero::wallet::V7P2MRStore& store,const std::array<uint8_t,32>& root) {
+        dinero::wallet::WalletKeyProvider::Config cfg;cfg.p2mr_store=&store;cfg.wallet_id=7;cfg.master_key.fill(37);
+        dinero::wallet::WalletKeyProvider provider(cfg);std::vector<uint8_t> script{0x53,0x20};script.insert(script.end(),root.begin(),root.end());
+        std::array<uint8_t,32> message{};message.fill(19);auto witness=provider.SignP2MR(script,message);
+        if(!witness.empty()) EXPECT_EQ(dinero::consensus::pq::VerifyP2MRSpend(script,witness,message,0),dinero::consensus::pq::P2MRVerifyError::Ok);
+        OPENSSL_cleanse(cfg.master_key.data(),cfg.master_key.size());return witness;
+    }
+};
+TEST_F(WalletPqRootProviderTest, CoherentAliasesSignAndReopen) {
+    dinero::wallet::V7P2MRStore store;Open(store);const auto a=Add(store,"rdin","record-one");const auto b=Add(store,"din","record-two");
+    ASSERT_EQ(a.merkle_root,b.merkle_root);ASSERT_NE(a.address,b.address);
+    auto row=store.GetByMerkleRoot(7,a.merkle_root);ASSERT_TRUE(row);EXPECT_EQ(row->address,a.address);EXPECT_EQ(row->label,"preserved alias");
+    EXPECT_FALSE(Sign(store,a.merkle_root).empty());EXPECT_EQ(store.ListByWallet(7).size(),2u);
+    store.Close();Open(store);EXPECT_FALSE(Sign(store,a.merkle_root).empty());EXPECT_EQ(store.ListByWallet(7).size(),2u);
+    EXPECT_FALSE(store.GetByMerkleRoot(8,a.merkle_root));
+}
+TEST_F(WalletPqRootProviderTest, MalformedLaterAliasRefusesWithoutPartialResult) {
+    dinero::wallet::V7P2MRStore store;Open(store);const auto a=Add(store,"rdin","record-one");Add(store,"din","record-two");
+    Exec(observed,"CREATE TEMP TABLE original_alias AS SELECT * FROM v7_p2mr_addresses WHERE id=2");
+    for(const char* update:{"UPDATE v7_p2mr_addresses SET leaf_index=-1 WHERE id=2", "UPDATE v7_p2mr_addresses SET seed_ciphertext=CAST(seed_ciphertext AS TEXT) WHERE id=2", "UPDATE v7_p2mr_addresses SET pubkey=zeroblob(length(pubkey)) WHERE id=2"}) {
+        Exec(observed,update);EXPECT_FALSE(store.GetByMerkleRoot(7,a.merkle_root));EXPECT_TRUE(Sign(store,a.merkle_root).empty());
+        Exec(observed,"UPDATE v7_p2mr_addresses SET leaf_index=(SELECT leaf_index FROM original_alias),seed_ciphertext=(SELECT seed_ciphertext FROM original_alias),pubkey=(SELECT pubkey FROM original_alias) WHERE id=2");
+        EXPECT_FALSE(Sign(store,a.merkle_root).empty());
+    }
+}
+TEST_F(WalletPqRootProviderTest, IncompleteReadAndBorrowedTransactionRefuse) {
+    dinero::wallet::V7P2MRStore store;Open(store);const auto a=Add(store,"rdin","record-one");
+    sqlite3_set_authorizer(observed,[](void*,int op,const char* table,const char*,const char*,const char*){
+        return op==SQLITE_READ && table && std::string(table)=="v7_p2mr_addresses"?SQLITE_DENY:SQLITE_OK;},nullptr);
+    EXPECT_FALSE(store.GetByMerkleRoot(7,a.merkle_root));EXPECT_TRUE(Sign(store,a.merkle_root).empty());sqlite3_set_authorizer(observed,nullptr,nullptr);
+    interrupt_row=true;EXPECT_FALSE(store.GetByMerkleRoot(7,a.merkle_root));EXPECT_TRUE(Sign(store,a.merkle_root).empty());interrupt_row=false;
+    EXPECT_FALSE(Sign(store,a.merkle_root).empty());
+    Exec(observed,"BEGIN");EXPECT_FALSE(store.GetByMerkleRoot(7,a.merkle_root));EXPECT_TRUE(Sign(store,a.merkle_root).empty());EXPECT_EQ(sqlite3_get_autocommit(observed),0);Exec(observed,"ROLLBACK");
+    EXPECT_FALSE(Sign(store,a.merkle_root).empty());
+}
+}

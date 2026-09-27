@@ -95,13 +95,17 @@ std::vector<uint8_t> WalletKeyProvider::SignP2MR(
     // KeygenFromSeed, signing, and scrubbing disciplines. We just feed it
     // the address (looked up above), sighash, and a copy of the master key.
     dinero::rpc::v7::SignP2MRParams params{};
+    struct ClearCallerMaster {
+        dinero::wallet::AeadKey& key;
+        ~ClearCallerMaster() { OPENSSL_cleanse(key.data(),key.size()); }
+    } clear_caller_master{params.master_key};
     params.wallet_id  = wallet_id_;
     params.address    = row->address;
     params.sighash    = sighash;
     std::memcpy(params.master_key.data(), master_key_.data(), master_key_.size());
 
     auto r = dinero::rpc::v7::SignP2MR(*p2mr_store_, params);
-    // SignP2MR scrubs params.master_key on every path; nothing more to do.
+    // The handler scrubs its by-value copy; our guard owns this caller copy.
 
     if (r.status != dinero::rpc::v7::HandlerStatus::Ok) return {};
 
@@ -117,6 +121,10 @@ std::vector<uint8_t> WalletKeyProvider::SignP2MR(
     if (sp.state != pq::SchemeState::Accept) return {};
     if (r.pubkey.size()    != sp.pubkey_bytes_max)    return {};
     if (r.signature.size() != sp.signature_bytes_max) return {};
+    // Bind the produced key to the original consumed output, independently of
+    // the separate root lookup and address-based key capture.
+    if (pq::ComputeP2MRLeafHash(r.scheme_id,r.pubkey.data(),r.pubkey.size())!=merkle_root)
+        return {};
 
     // Depth-0 Merkle tree (v7 genesis default — what getnewp2mraddress
     // currently produces). Future multi-leaf support will populate

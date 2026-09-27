@@ -115,7 +115,10 @@ public:
      * require threading chain-params HRP into the signer, coupling the
      * signing layer to chain awareness it otherwise does not need.
      *
-     * Returns nullopt if absent. Never returns secret material.
+     * Checks all matching rows and terminal completion. Coherent aliases may
+     * share the same public key/root; the earliest recorded row is returned.
+     * Returns nullopt for absence, malformed/incomplete reads or a borrowed
+     * transaction. No caller transaction changes; never returns secret material.
      */
     std::optional<P2MRStoredAddress>
     GetByMerkleRoot(int64_t wallet_id,

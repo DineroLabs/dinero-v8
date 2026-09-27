@@ -239,30 +239,28 @@ V7P2MRStore::GetByAddress(int64_t wallet_id, const std::string& address) const {
 std::optional<P2MRStoredAddress>
 V7P2MRStore::GetByMerkleRoot(int64_t wallet_id,
                              const std::array<uint8_t, 32>& merkle_root) const {
-    if (!db_) return std::nullopt;
-
+    if (!db_ || wallet_id <= 0 || !sqlite3_get_autocommit(db_)) return std::nullopt;
     Stmt s(db_,
         "SELECT id, wallet_id, address, merkle_root, pubkey, "
-        "       derivation_path, leaf_index, label, created_at "
-        "FROM v7_p2mr_addresses "
-        "WHERE wallet_id = ? AND merkle_root = ?;");
-    if (!s.ok()) return std::nullopt;
-    sqlite3_bind_int64(s.raw(), 1, wallet_id);
-    BindBlob(s.raw(), 2, merkle_root.data(), merkle_root.size());
-
-    if (sqlite3_step(s.raw()) != SQLITE_ROW) return std::nullopt;
-
-    P2MRStoredAddress out{};
-    out.id        = sqlite3_column_int64(s.raw(), 0);
-    out.wallet_id = sqlite3_column_int64(s.raw(), 1);
-    out.address   = ReadText(s.raw(), 2);
-    if (!ReadBlobExact(s.raw(), 3, out.merkle_root)) return std::nullopt;
-    if (!ReadBlobExact(s.raw(), 4, out.pubkey))      return std::nullopt;
-    out.derivation_path = ReadText(s.raw(), 5);
-    out.leaf_index      = static_cast<uint32_t>(sqlite3_column_int(s.raw(), 6));
-    out.label           = ReadText(s.raw(), 7);
-    out.created_at_unix = sqlite3_column_int64(s.raw(), 8);
-    return out;
+        "derivation_path, leaf_index, label, created_at, "
+        "seed_ciphertext, seed_nonce, seed_tag FROM v7_p2mr_addresses "
+        "WHERE wallet_id = ? AND merkle_root = ? ORDER BY id ASC;");
+    if (!s.ok() || sqlite3_bind_int64(s.raw(),1,wallet_id)!=SQLITE_OK ||
+        !BindBlob(s.raw(),2,merkle_root.data(),merkle_root.size())) return std::nullopt;
+    std::optional<P2MRStoredAddress> chosen;
+    int rc;
+    try {
+        while ((rc=sqlite3_step(s.raw()))==SQLITE_ROW) {
+            auto row=ReadKeyRecord(s.raw(),wallet_id).metadata;
+            if (row.merkle_root!=merkle_root || (chosen && chosen->pubkey!=row.pubkey))
+                return std::nullopt;
+            // The same key may have separately recorded network-prefix aliases.
+            // Preserve those rows, but validate the entire selected result.
+            if (!chosen) chosen=std::move(row);
+        }
+    } catch (const std::runtime_error&) { return std::nullopt; }
+    if (rc!=SQLITE_DONE) return std::nullopt;
+    return chosen;
 }
 
 std::vector<P2MRStoredAddress>

@@ -499,6 +499,23 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Imported owner inventory cases missing, duplicated or unexpected')
           PYTEST
+      - name: Require and execute PQ input-root provider checks
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPqRootProvider$' --show-only=json-v1 > orchard-pq-root-provider-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pq-root-provider-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletPqRootProvider'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('PQ root provider missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletPqRootProvider$' --verbose --no-tests=error --output-log orchard-pq-root-provider-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-pq-root-provider-execution.log').read()
+          expected=['CoherentAliasesSignAndReopen','MalformedLaterAliasRefusesWithoutPartialResult','IncompleteReadAndBorrowedTransactionRefuse']
+          if sorted(re.findall(r'\[       OK \] WalletPqRootProviderTest\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('PQ root provider cases did not complete exactly once')
+          PYTEST
       - name: Require and execute wallet timeout key cleanup
         run: |
           ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Timeout' --show-only=json-v1 > orchard-wallet-timeout-inventory.json
@@ -974,6 +991,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-pq-root-provider-inventory.json
+            orchard-pq-root-provider-execution.log
             orchard-wallet-timeout-inventory.json
             orchard-wallet-timeout-execution.log
             orchard-rpc-drain-inventory.json
