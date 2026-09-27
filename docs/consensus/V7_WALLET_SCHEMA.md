@@ -365,3 +365,8 @@ All Phase 4b' wallet-identity open items are resolved (see sections 1–6 above)
 - **Hardware wallet integration path.** Trezor / Ledger ML-DSA support is upstream-dependent. Out of scope until upstream firmware support lands.
 
 All other consensus-portability-critical decisions are now locked. Phase 4c (RPC implementation) can proceed against a stable schema.
+
+
+## Initialization ownership update (2026-09-27)
+
+The WalletManager initialization owner now distinguishes generated identities from mnemonic recovery. PQ randomness is generated only during genuine creation and sealed with the first seed, before registry publication. Unlock may wrap that existing master with the passphrase; missing storage alone never authorizes generation. See [initial identity and PQ ownership](../design/wallet-initial-owner-2026-09-27.md) for the format boundary, remaining staged-unlock limitations, and qualification contract. Earlier first-unlock generation text describes historical behavior.

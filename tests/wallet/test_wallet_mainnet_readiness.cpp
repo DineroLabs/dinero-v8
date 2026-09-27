@@ -74,6 +74,11 @@ static inline char* mkdtemp(char* tmpl) {
 namespace fs = std::filesystem;
 
 namespace dinero {
+struct WalletInitialOwnerTestAccess {
+    static bool Store(WalletManager& wallet, const std::vector<uint8_t>& seed, const std::string& owner) {
+        return wallet.storeMasterSeedOwned(seed,"",false,&owner);
+    }
+};
 ChainDB* g_chain_db_direct = nullptr;
 UTXOIndex* g_utxo_set_direct = nullptr;
 }
@@ -1626,5 +1631,140 @@ TEST(WalletMainnetReadiness, ShieldedViewingAuthorityClearedOnUnload) {
     EXPECT_TRUE(wallet.GetShieldedRecipientViewingAuthorities().empty())
         << "recipient/nullifier viewing authority leaked across wallet unload";
 
+    fs::remove_all(root);
+}
+
+TEST(WalletMainnetReadiness, InitialOwnerPreservesGeneratedPqAcrossWrapperLoss) {
+    const auto root = make_temp_dir("din_initial_owner_generated_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    std::optional<std::array<uint8_t,32>> original;
+    {
+        dinero::WalletManager wallet(data);
+        assert_rpc_success(dinero::rpc::RpcCreateHDWallet(
+            make_create_params("original",12,"","password","bip86"), &wallet));
+        wallet.unlockWallet("password");
+        original = wallet.GetV7PqMasterKey();
+        ASSERT_TRUE(original);
+        wallet.lockWallet();
+        ASSERT_EQ(sqlite3_exec(wallet.getCurrentDatabase(),
+            "DELETE FROM settings WHERE key='v7_pq_master_key_encrypted'",nullptr,nullptr,nullptr), SQLITE_OK);
+    }
+    {
+        dinero::WalletManager wallet(data);
+        wallet.open("original");
+        wallet.unlockWallet("password");
+        EXPECT_TRUE(wallet.GetV7PqMasterKey() == original);
+        wallet.lockWallet();
+        ASSERT_EQ(sqlite3_exec(wallet.getCurrentDatabase(),
+            "DELETE FROM settings WHERE key IN ('v7_pq_master_key_encrypted','wallet_initial_owner_v1')",nullptr,nullptr,nullptr), SQLITE_OK);
+        wallet.unlockWallet("password");
+        EXPECT_FALSE(wallet.GetV7PqMasterKey());
+        EXPECT_TRUE(wallet.getSetting("v7_pq_master_key_encrypted").empty());
+    }
+    fs::remove_all(root);
+}
+
+TEST(WalletMainnetReadiness, InitialOwnerRecoveryNeverGeneratesHistoricalPq) {
+    const auto root = make_temp_dir("din_initial_owner_recovery_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    const std::string mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+    {
+        dinero::WalletManager wallet(data);
+        assert_rpc_success(dinero::rpc::RpcRestoreWallet(
+            make_restore_params("recovered",mnemonic,"","password","bip86"), &wallet));
+        const auto owner = wallet.getSetting("wallet_initial_owner_v1");
+        ASSERT_FALSE(owner.empty());
+        wallet.unlockWallet("password");
+        EXPECT_FALSE(wallet.GetV7PqMasterKey());
+        EXPECT_TRUE(wallet.getSetting("v7_pq_master_key_encrypted").empty());
+        wallet.open("recovered");
+        wallet.unlockWallet("password");
+        EXPECT_FALSE(wallet.GetV7PqMasterKey());
+        EXPECT_EQ(wallet.getSetting("wallet_initial_owner_v1"), owner);
+        EXPECT_TRUE(wallet.getSetting("v7_pq_master_key_encrypted").empty());
+    }
+    fs::remove_all(root);
+}
+
+TEST(WalletMainnetReadiness, InitialOwnerBindingAndConsumedGeneration) {
+    const auto root = make_temp_dir("din_initial_owner_binding_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    {
+        dinero::WalletManager wallet(data);
+        auto generated = dinero::WalletManager::GenerateBip39Identity(12, "bip39");
+        const auto mnemonic = generated.Mnemonic();
+        wallet.createFromGeneratedBip39("generated", std::move(generated), "bip39");
+        EXPECT_THROW(wallet.createFromGeneratedBip39("reused", std::move(generated), "bip39"), std::runtime_error);
+        EXPECT_FALSE(wallet.exists("reused"));
+        EXPECT_FALSE(fs::exists(data / "wallets/wallet_reused.db"));
+        const auto owner = wallet.getSetting("wallet_initial_owner_v1");
+        ASSERT_FALSE(owner.empty());
+        wallet.encryptWallet("password");
+        wallet.setSetting("wallet_initial_owner_v1", "00");
+        wallet.unlockWallet("password");
+        EXPECT_FALSE(wallet.GetV7PqMasterKey());
+        EXPECT_TRUE(wallet.getSetting("v7_pq_master_key_encrypted").empty());
+        wallet.lockWallet();
+        wallet.setSetting("wallet_initial_owner_v1", owner);
+        wallet.unlockWallet("password");
+        ASSERT_TRUE(wallet.GetV7PqMasterKey());
+        // Same seed, different actual database identity: decryption alone is
+        // insufficient authority to adopt another wallet's creation master.
+        wallet.createFromBip39("other", mnemonic, "bip39");
+        wallet.setSetting("wallet_initial_owner_v1", owner);
+        wallet.encryptWallet("password");
+        wallet.unlockWallet("password");
+        EXPECT_FALSE(wallet.GetV7PqMasterKey());
+        EXPECT_TRUE(wallet.getSetting("v7_pq_master_key_encrypted").empty());
+    }
+    fs::remove_all(root);
+}
+
+TEST(WalletMainnetReadiness, InitialOwnerSeedAndRecordRollbackTogether) {
+    const auto root = make_temp_dir("din_initial_owner_atomic_");
+    ScopedHomeEnv home(root / "home");
+    const auto data = root / "node";
+    fs::create_directories(data);
+    {
+        dinero::WalletManager wallet(data);
+        wallet.create("generated");
+        const auto seed = wallet.GetMasterSeed();
+        ASSERT_TRUE(seed);
+        const auto owner = wallet.getSetting("wallet_initial_owner_v1");
+        ASSERT_FALSE(owner.empty());
+        const auto original = wallet_file_snapshot(data);
+        // An initial-owner write must never adopt an existing seed or caller transaction.
+        EXPECT_FALSE(dinero::WalletInitialOwnerTestAccess::Store(wallet,*seed,owner));
+        EXPECT_TRUE(wallet_file_snapshot(data) == original);
+        auto* db = wallet.getCurrentDatabase();
+        ASSERT_EQ(sqlite3_exec(db,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr),SQLITE_OK);
+        EXPECT_FALSE(dinero::WalletInitialOwnerTestAccess::Store(wallet,*seed,owner));
+        EXPECT_EQ(sqlite3_get_autocommit(db),0);
+        ASSERT_EQ(sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr),SQLITE_OK);
+        // Exercise the actual initial seed transaction with a required-write fault.
+        ASSERT_EQ(sqlite3_exec(db,"DELETE FROM hd_seeds; DELETE FROM settings WHERE key='wallet_initial_owner_v1'; CREATE TRIGGER refuse_initial_seed BEFORE INSERT ON hd_seeds BEGIN SELECT RAISE(ABORT,'seed fault'); END",nullptr,nullptr,nullptr),SQLITE_OK);
+        EXPECT_FALSE(dinero::WalletInitialOwnerTestAccess::Store(wallet,*seed,owner));
+        EXPECT_TRUE(wallet.getSetting("wallet_initial_owner_v1").empty());
+        EXPECT_TRUE(wallet.GetMasterSeed() == seed);
+        ASSERT_EQ(sqlite3_exec(db,"DROP TRIGGER refuse_initial_seed",nullptr,nullptr,nullptr),SQLITE_OK);
+        sqlite3_commit_hook(db, [](void*) {return 1;},nullptr);
+        EXPECT_FALSE(dinero::WalletInitialOwnerTestAccess::Store(wallet,*seed,owner));
+        sqlite3_commit_hook(db,nullptr,nullptr);
+        EXPECT_TRUE(wallet.getSetting("wallet_initial_owner_v1").empty());
+        EXPECT_TRUE(wallet.GetMasterSeed() == seed);
+        ASSERT_TRUE(dinero::WalletInitialOwnerTestAccess::Store(wallet,*seed,owner));
+        EXPECT_EQ(wallet.getSetting("wallet_initial_owner_v1"),owner);
+        wallet.open("generated");
+        EXPECT_TRUE(wallet.GetMasterSeed() == seed);
+        wallet.encryptWallet("password");
+        wallet.unlockWallet("password");
+        EXPECT_TRUE(wallet.GetV7PqMasterKey());
+    }
     fs::remove_all(root);
 }

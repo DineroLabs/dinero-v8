@@ -105,6 +105,25 @@ public:
     std::string getMostRecentlyOpenedWallet() const;
     bool exists(const std::string& name) const;
 
+    // A move-only identity generated here, never reconstructed from recovery input.
+    class GeneratedBip39Identity {
+    public:
+        GeneratedBip39Identity(GeneratedBip39Identity&&) noexcept = default;
+        GeneratedBip39Identity(const GeneratedBip39Identity&) = delete;
+        GeneratedBip39Identity& operator=(const GeneratedBip39Identity&) = delete;
+        ~GeneratedBip39Identity();
+        const std::string& Mnemonic() const { return mnemonic_; }
+        const std::vector<uint8_t>& Seed() const { return seed_; }
+    private:
+        friend class WalletManager;
+        GeneratedBip39Identity() = default;
+        std::string mnemonic_;
+        std::vector<uint8_t> seed_;
+    };
+    static GeneratedBip39Identity GenerateBip39Identity(int word_count,
+                                                       const std::string& passphrase);
+    void createFromGeneratedBip39(const std::string& name, GeneratedBip39Identity&& identity,
+                                 const std::string& passphrase);
     void create(const std::string& name);
     // Creates a new database with the supplied recovery seed as its first
     // identity. Explicit checksum bypass never stores authoritative mnemonic
@@ -966,10 +985,14 @@ private:
     void rewriteEncryptionPolicy(const std::string& old_passphrase,
         const std::string& new_passphrase, bool encrypted);
 
+    enum class InitialSeedKind { Generated, Recovered };
+    bool storeMasterSeedOwned(const std::vector<uint8_t>& seed, const std::string& passphrase,
+                              bool reset_address_state, const std::string* initial_owner);
+    std::optional<std::array<uint8_t, 32>> loadInitialPqMaster(const std::vector<uint8_t>& seed);
     void createWithInitialSeed(const std::string& name,
                                const std::vector<uint8_t>& initial_master_seed,
                                const std::string* authoritative_mnemonic,
-                               const std::string& bip39_passphrase);
+                               const std::string& bip39_passphrase, InitialSeedKind kind);
 
 #ifdef FFI_WALLET_ONLY
     std::string dataDir_;
@@ -980,6 +1003,7 @@ private:
     friend class ChainstateService;
     friend struct WalletSeedReadTestAccess;
     friend struct WalletSeedWriteTestAccess;
+    friend struct WalletInitialOwnerTestAccess;
     bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
                               const SelectedWalletHistory*, uint64_t expected_session);
     friend class RuntimeOrdinaryDelivery;

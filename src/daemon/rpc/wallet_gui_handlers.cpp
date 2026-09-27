@@ -342,25 +342,9 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         // Complete every fallible cryptographic preflight before creating the
         // wallet database. A generation/derivation failure must not leave a
         // usable raw-seed wallet with no authoritative recovery material.
-        dinero::bip39::WordCount wc = dinero::bip39::WordCount::Words12;
-        switch (word_count) {
-            case 15: wc = dinero::bip39::WordCount::Words15; break;
-            case 18: wc = dinero::bip39::WordCount::Words18; break;
-            case 21: wc = dinero::bip39::WordCount::Words21; break;
-            case 24: wc = dinero::bip39::WordCount::Words24; break;
-        }
-
-        std::string mnemonic = dinero::bip39::Generate(wc);
-        if (mnemonic.empty()) {
-            result["error"] = "Failed to generate BIP39 mnemonic";
-            return result;
-        }
-
-        std::vector<uint8_t> seed;
-        if (!dinero::bip39::MnemonicToSeed(mnemonic, bip39_passphrase, seed)) {
-            result["error"] = "Failed to convert mnemonic to seed";
-            return result;
-        }
+        auto generated_identity = dinero::WalletManager::GenerateBip39Identity(word_count, bip39_passphrase);
+        const std::string mnemonic = generated_identity.Mnemonic();
+        std::vector<uint8_t> seed = generated_identity.Seed();
 
         auto preflight_first_address = DeriveBip86FirstAddressFromSeed(seed);
         if (!preflight_first_address.has_value()) {
@@ -390,8 +374,8 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
             // The first seed and recovery record are persisted before registry
             // publication. A crash can therefore never leave a registered
             // user-facing wallet whose identity began as an unrelated raw seed.
-            wallet_manager->createFromBip39(
-                wallet_name, mnemonic, bip39_passphrase);
+            wallet_manager->createFromGeneratedBip39(
+                wallet_name, std::move(generated_identity), bip39_passphrase);
             wallet_created = true;
         } else {
             wallet_manager->open(wallet_name);
@@ -423,7 +407,23 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         }
 
         // Encrypt wallet if password provided
-        if (!encryption_password.empty()) {
+        if (wallet_created && !encryption_password.empty()) {
+            // The generated identity is already the durable seed. Encrypt that
+            // same owner through the checked wallet transition, including live
+            // policy, instead of writing a separate metadata-only envelope.
+            if (!wallet_manager->storeUnencryptedWallet(wallet_name, seed, master_fingerprint, true)) {
+                TryRollbackWalletCreate(wallet_manager, wallet_name);
+                result["error"] = "Failed to store initial wallet metadata";
+                return result;
+            }
+            try {
+                wallet_manager->encryptWallet(encryption_password);
+            } catch (...) {
+                TryRollbackWalletCreate(wallet_manager, wallet_name);
+                throw;
+            }
+            result["encrypted"] = true;
+        } else if (!encryption_password.empty()) {
             try {
                 // === STEP 1: Generate random salt and nonce ===
                 std::vector<uint8_t> salt(16);

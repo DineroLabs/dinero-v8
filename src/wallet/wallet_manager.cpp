@@ -255,6 +255,20 @@ std::array<uint8_t, 32> DeriveBip39RecoveryKey(const std::vector<uint8_t>& seed)
     return key;
 }
 
+constexpr char kInitialOwnerSetting[] = "wallet_initial_owner_v1";
+std::string InitialOwnerKey(const std::vector<uint8_t>& seed) {
+    if (seed.size() != 64) throw std::runtime_error("Initialization seed unavailable");
+    const std::string domain = "Dinero WalletManager initial PQ owner v1";
+    std::vector<uint8_t> material(domain.begin(), domain.end());
+    material.insert(material.end(), seed.begin(), seed.end());
+    std::array<uint8_t, 32> key{};
+    ::sha256(material.data(), material.size(), key.data());
+    secureClearBytes(material);
+    std::string result(reinterpret_cast<const char*>(key.data()), key.size());
+    OPENSSL_cleanse(key.data(), key.size());
+    return result;
+}
+
 bool ConstantTimeEqual(const std::vector<uint8_t>& lhs,
                        const std::vector<uint8_t>& rhs) {
     return lhs.size() == rhs.size() &&
@@ -1637,13 +1651,53 @@ bool WalletManager::exists(const std::string& name) const {
     return found;
 }
 
+WalletManager::GeneratedBip39Identity::~GeneratedBip39Identity() {
+    secureClearString(mnemonic_);
+    secureClearBytes(seed_);
+}
+
+WalletManager::GeneratedBip39Identity WalletManager::GenerateBip39Identity(
+    int word_count, const std::string& passphrase) {
+    bip39::WordCount words;
+    switch (word_count) {
+    case 12: words = bip39::WordCount::Words12; break;
+    case 15: words = bip39::WordCount::Words15; break;
+    case 18: words = bip39::WordCount::Words18; break;
+    case 21: words = bip39::WordCount::Words21; break;
+    case 24: words = bip39::WordCount::Words24; break;
+    default: throw std::invalid_argument("Invalid BIP39 word count");
+    }
+    GeneratedBip39Identity identity;
+    identity.mnemonic_ = bip39::Generate(words);
+    if (identity.mnemonic_.empty() ||
+        !bip39::MnemonicToSeed(identity.mnemonic_, passphrase, identity.seed_) ||
+        identity.seed_.size() != 64)
+        throw std::runtime_error("Failed to generate BIP39 identity");
+    return identity;
+}
+
+void WalletManager::createFromGeneratedBip39(const std::string& name,
+    GeneratedBip39Identity&& identity, const std::string& passphrase) {
+    // Consume the generated identity. A moved-from or reused ticket cannot
+    // authorize a second initialization, and recovery has no ticket constructor.
+    GeneratedBip39Identity owned(std::move(identity));
+    secureClearString(identity.mnemonic_);
+    secureClearBytes(identity.seed_);
+    std::vector<uint8_t> check;
+    const bool matches = bip39::MnemonicToSeed(owned.mnemonic_, passphrase, check) &&
+                         ConstantTimeEqual(check, owned.seed_) && check.size() == 64;
+    secureClearBytes(check);
+    if (!matches) throw std::runtime_error("Generated BIP39 identity unavailable or mismatched");
+    createWithInitialSeed(name, owned.seed_, &owned.mnemonic_, passphrase, InitialSeedKind::Generated);
+}
+
 void WalletManager::create(const std::string& name) {
     std::vector<uint8_t> seed(64);
     if (!CF_GenerateRandomBytes(seed.data(), seed.size())) {
         throw std::runtime_error("Failed to generate initial HD wallet seed");
     }
     try {
-        createWithInitialSeed(name, seed, nullptr, "");
+        createWithInitialSeed(name, seed, nullptr, "", InitialSeedKind::Generated);
     } catch (...) {
         secureClearBytes(seed);
         throw;
@@ -1664,7 +1718,7 @@ void WalletManager::createFromBip39(const std::string& name,
         throw std::runtime_error("Failed to derive BIP39 wallet seed");
     }
     try {
-        createWithInitialSeed(name, seed, skip_checksum ? nullptr : &mnemonic, bip39_passphrase);
+        createWithInitialSeed(name, seed, skip_checksum ? nullptr : &mnemonic, bip39_passphrase, InitialSeedKind::Recovered);
     } catch (...) {
         secureClearBytes(seed);
         throw;
@@ -1676,7 +1730,7 @@ void WalletManager::createWithInitialSeed(
     const std::string& name,
     const std::vector<uint8_t>& initial_master_seed,
     const std::string* authoritative_mnemonic,
-    const std::string& bip39_passphrase) {
+    const std::string& bip39_passphrase, InitialSeedKind kind) {
     std::lock_guard<std::recursive_mutex> database_lock(database_lifecycle_mutex_);
     if (database_leases_ != 0) throw std::logic_error("Cannot create a wallet during database delivery");
     if (initial_master_seed.size() != 64) {
@@ -1841,7 +1895,29 @@ void WalletManager::createWithInitialSeed(
             wallet_locked_ = false;
             ensureWalletIdentityRow();
 
-            if (!storeMasterSeed(initial_master_seed, "", false)) {
+            struct Secret {
+                std::string value;
+                ~Secret() { secureClearString(value); }
+            } owner_key{InitialOwnerKey(initial_master_seed)}, owner_plain;
+            std::string identity;
+            { auto lease = AcquireDatabaseLease(); identity = lease->EnsureDeliveryIdentity(); }
+            owner_plain.value = "DNI01";
+            owner_plain.value.push_back(kind == InitialSeedKind::Generated ? 1 : 0);
+            if (identity.size() != 71 || identity.substr(0,7) != "DNWI01:")
+                throw std::runtime_error("Initial wallet identity invalid");
+            owner_plain.value += identity.substr(7);
+            if (kind == InitialSeedKind::Generated) {
+                std::array<uint8_t, 32> pq{};
+                struct ClearPq { std::array<uint8_t,32>& value;
+                    ~ClearPq() { OPENSSL_cleanse(value.data(),value.size()); } } clear_pq{pq};
+                if (RAND_bytes(pq.data(), pq.size()) != 1)
+                    throw std::runtime_error("Initial PQ master generation failed");
+                owner_plain.value.append(reinterpret_cast<const char*>(pq.data()), pq.size());
+                OPENSSL_cleanse(pq.data(), pq.size());
+            }
+            const auto sealed = encryptData(owner_plain.value, owner_key.value);
+            const auto owner = util::hex(std::vector<uint8_t>(sealed.begin(), sealed.end()));
+            if (!storeMasterSeedOwned(initial_master_seed, "", false, &owner)) {
                 throw std::runtime_error("Failed to persist initial HD wallet seed");
             }
             if (authoritative_mnemonic) {
@@ -3705,6 +3781,51 @@ void WalletManager::lockWallet() {
     WLOG_INFO("Wallet locked");
 }
 
+std::optional<std::array<uint8_t, 32>> WalletManager::loadInitialPqMaster(
+    const std::vector<uint8_t>& seed) {
+    auto lease = AcquireDatabaseLease();
+    IssuedAddressTransaction read(db_);
+    IssuedStatement owner(db_, "SELECT value FROM settings WHERE key=?");
+    owner.Text(1, kInitialOwnerSetting);
+    const int rc = sqlite3_step(owner.value.get());
+    if (rc == SQLITE_DONE) { read.Commit(); return std::nullopt; }
+    IssuanceCheck(db_, rc, SQLITE_ROW);
+    if (sqlite3_column_type(owner.value.get(), 0) != SQLITE_TEXT)
+        throw std::runtime_error("Initial owner type invalid");
+    const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(owner.value.get(), 0));
+    const int size = sqlite3_column_bytes(owner.value.get(), 0);
+    if (!text || (size != 196 && size != 260))
+        throw std::runtime_error("Initial owner envelope invalid");
+    std::vector<uint8_t> bytes;
+    if (!util::unhex(std::string(text, size), bytes))
+        throw std::runtime_error("Initial owner encoding invalid");
+    owner.Done();
+    struct Secret { std::string value; ~Secret() { secureClearString(value); } } key{InitialOwnerKey(seed)}, plain;
+    plain.value = decryptData(std::string(bytes.begin(), bytes.end()), key.value);
+    if ((plain.value.size() != 70 && plain.value.size() != 102) || plain.value.substr(0,5) != "DNI01" ||
+        (plain.value[5] != 0 && plain.value[5] != 1) ||
+        plain.value.size() != (plain.value[5] == 1 ? 102u : 70u))
+        throw std::runtime_error("Initial owner payload invalid");
+    IssuedStatement id(db_, "SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+    IssuanceCheck(db_, sqlite3_step(id.value.get()), SQLITE_ROW);
+    if (sqlite3_column_type(id.value.get(),0) != SQLITE_BLOB || sqlite3_column_bytes(id.value.get(),0) != 32)
+        throw std::runtime_error("Initial owner identity missing");
+    const auto* identity = static_cast<const uint8_t*>(sqlite3_column_blob(id.value.get(),0));
+    if (!identity || plain.value.substr(6,64) != util::hex(std::vector<uint8_t>(identity,identity+32)))
+        throw std::runtime_error("Initial owner identity mismatch");
+    id.Done();
+    std::optional<std::array<uint8_t,32>> result;
+    if (plain.value[5] == 1) {
+        result.emplace(); std::memcpy(result->data(), plain.value.data()+70,32);
+    }
+    try { read.Commit(); }
+    catch (...) {
+        if (result) OPENSSL_cleanse(result->data(),result->size());
+        throw;
+    }
+    return result;
+}
+
 void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSeconds) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
@@ -3832,7 +3953,7 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // V7 PQ master key — load (or generate-on-first-unlock) and cache.
+    // V7 PQ master key — load an established or creation-owned master and cache.
     // See docs/consensus/V7_WALLET_SCHEMA.md §5b. Failure here is
     // logged and swallowed: v5 wallet functionality continues unaffected
     // if the v7 layer hits a snag.
@@ -3840,23 +3961,26 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
     try {
         std::string v7_hex = getSetting("v7_pq_master_key_encrypted");
         if (v7_hex.empty()) {
-            // First unlock since v7 integration landed — generate + persist.
-            std::array<uint8_t, 32> fresh{};
-            if (RAND_bytes(fresh.data(), static_cast<int>(fresh.size())) != 1) {
-                throw std::runtime_error("RAND_bytes failed for v7 PQ master key");
+            // Absence is never permission to generate a new master. Genuine
+            // creation already sealed its random master with its initial seed.
+            auto initial = loadInitialPqMaster(master_seed_);
+            if (!initial) {
+                throw std::runtime_error("Historical PQ master unavailable; recovery material required");
             }
-            std::string plaintext(reinterpret_cast<const char*>(fresh.data()), fresh.size());
-            std::string encrypted = encryptData(plaintext, encryption_key_);
-            std::vector<uint8_t> encrypted_vec(encrypted.begin(), encrypted.end());
-            std::string encrypted_hex = util::hex(encrypted_vec);
-            setSetting("v7_pq_master_key_encrypted", encrypted_hex);
-
-            std::memcpy(pq_master_key_.data(), fresh.data(), pq_master_key_.size());
+            struct InitialClear {
+                std::array<uint8_t,32>& value;
+                ~InitialClear() { OPENSSL_cleanse(value.data(), value.size()); }
+            } clear{*initial};
+            struct Secret { std::string value; ~Secret() { secureClearString(value); } } plaintext;
+            plaintext.value.assign(reinterpret_cast<const char*>(initial->data()), initial->size());
+            const auto encrypted = encryptData(plaintext.value, encryption_key_);
+            const auto encrypted_hex = util::hex(std::vector<uint8_t>(encrypted.begin(), encrypted.end()));
+            IssuedAddressTransaction write(db_);
+            IssuedStatement wrapper(db_, "INSERT INTO settings(key,value,updated_at) VALUES('v7_pq_master_key_encrypted',?,strftime('%s','now'))");
+            wrapper.Text(1, encrypted_hex); wrapper.Done(true); write.Commit();
+            std::memcpy(pq_master_key_.data(), initial->data(), initial->size());
             pq_master_key_loaded_ = true;
-            OPENSSL_cleanse(fresh.data(),          fresh.size());
-            OPENSSL_cleanse(&plaintext[0],         plaintext.size());
-            OPENSSL_cleanse(&encrypted[0],         encrypted.size());
-            WLOG_INFO("✅ V7 PQ master key generated + persisted (first unlock)");
+            WLOG_INFO("V7 PQ master loaded from durable initial owner");
         } else {
             std::vector<uint8_t> encrypted_bytes;
             if (!util::unhex(v7_hex, encrypted_bytes) || encrypted_bytes.size() < 28) {
@@ -7369,6 +7493,11 @@ void WalletManager::clearPrivateKeyCache() {
 bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
                                     const std::string& passphrase,
                                     bool reset_address_state) {
+    return storeMasterSeedOwned(seed, passphrase, reset_address_state, nullptr);
+}
+
+bool WalletManager::storeMasterSeedOwned(const std::vector<uint8_t>& seed,
+    const std::string& passphrase, bool reset_address_state, const std::string* initial_owner) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
     if (!db_ || current_wallet_id_ < 0) {
@@ -7384,6 +7513,14 @@ bool WalletManager::storeMasterSeed(const std::vector<uint8_t>& seed,
     try {
         auto lease = AcquireDatabaseLease();
         IssuedAddressTransaction transaction(db_);
+        if (initial_owner) {
+            // Only creation supplies this sealed owner. Never replace an
+            // established seed, even if its ciphertext cannot be read.
+            IssuedStatement empty(db_, "SELECT 1 FROM hd_seeds");
+            empty.Done();
+            IssuedStatement owner(db_, "INSERT INTO settings(key,value,updated_at) VALUES(?,?,strftime('%s','now'))");
+            owner.Text(1, kInitialOwnerSetting); owner.Text(2, *initial_owner); owner.Done(true);
+        }
         struct SeedBuffer {
             std::vector<uint8_t> value;
             ~SeedBuffer() { secureClearBytes(value); }

@@ -1,0 +1,25 @@
+# Initial identity and PQ master ownership
+
+Genuine creation and mnemonic recovery now enter distinct wallet initialization paths. `GenerateBip39Identity` generates the mnemonic and seed inside a move-only ticket with no recovery-input constructor. The create RPC performs its cryptographic preflight from this ticket and consumes it when creating the database. Raw-seed `create` generates its identity internally. `createFromBip39` always means recovery, including explicit checksum bypass.
+
+Creation generates its random PQ master once. A domain-separated key derived from the initial 64-byte seed seals a `DNI01` envelope containing the generated/recovered distinction and the existing persistent wallet delivery identity. Only generated identities carry the random PQ master. Recovery carries no historical master and never infers its absence from an empty database or separate P2MR store. The envelope and first seed row commit in the same checked FULL transaction before registry publication. Initial insertion refuses an existing seed, existing owner setting, or caller transaction. The persistent delivery identity is established separately before that transaction; a failed create is not a published wallet.
+
+The first unlock may create the existing passphrase wrapper from the already sealed, identity-bound PQ master. It performs no PQ random generation. Missing passphrase wrappers can therefore recover the same initial master, not a replacement. Recovery, legacy wallets with no master material, or missing/damaged/mismatched initial envelopes cannot authorize generation. Existing passphrase-wrapped masters remain supported. Recovery from a mnemonic alone still cannot reconstruct a historical random PQ master; that requires the original key material or wallet backup.
+
+New encrypted creation uses the existing checked `encryptWallet` transition for the already stored initial seed. The earlier metadata-only RPC path did not update the active encryption policy and failed at its subsequent unlock. Existing-target create replacement remains outside this change.
+
+## Limits and next work
+
+This implements the initialization owner consumed by the actual unlock path. It does not complete staged unlock: the existing unlock function still publishes its general unlocked state before all seed/view/PQ validation and catches PQ failures. A recovered HD wallet may unlock with PQ unavailable. This is not PQ or whole-wallet readiness. Existing password-change/decryption guards remain. Complete authenticated inventory, checks of existing wrappers against every durable owner, whole-create/restore atomicity, backup rollback, multiple processes, whole-node, crash/power-loss and release qualification remain open. Mainnet activation remains unset.
+
+The creation ticket is an internal C++ ownership boundary, not a network credential. The sealed initial record is not an authenticated complete account/script catalog. It must not be used as permission to recreate accounts or reset delivery cursors. Seed replacement through other legacy APIs remains outside this change; a record bound to a different seed cannot be opened.
+
+## Qualification contract
+
+Four new enabled component tests exercise generated-master preservation across passphrase-wrapper loss; recovery without historical-master generation; consumed generation and malformed/cross-wallet binding; and initial seed/record rollback on required SQL and commit failures. Existing restore preservation and encryption suites remain required. Linux runs verify exact test inventories and completion markers. Qualification results are recorded separately; no pass claim is made from registration or compilation alone.
+
+## Local qualification, 2026-09-27
+
+Fresh Orchard-enabled and disabled configurations built the full daemon and declared wallet targets. Each executed 19 selected CTests successfully, including all four new ownership cases and the existing restore/encryption regressions. All 69 project C++ translation units selected by the actual component link map were freshly compiled with ASan/UBSan after the final C++ edit; 1,287 source/header hashes remained stable and 13 cases passed. Copied-source controls restoring unlock-time random generation, omitting the delivery-identity binding, and classifying recovery as generation each failed the intended named assertion without a fixture exception or sanitizer diagnosis. The restored implementation passed all four new cases. No initial original-source RED claim is made.
+
+The discovery map uses normal project archives to select the graph; instrumented/control maps contain no project C++ archive members. External libraries, Rust, C and PQClean remain uninstrumented, macOS LSan is disabled, and the full ARM RocksDB gate remains open. The daemon, disabled binary and separate lease suite are outside this 69-file sanitizer graph. These are actual RPC-component/SQLite tests, not JSON transport or whole-node release qualification. Current-source Linux qualification is pending. Private evidence retains the initial compile error and encrypted-create failure as well as the completed results.
