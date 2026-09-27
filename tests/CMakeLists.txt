@@ -980,6 +980,9 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_header_metadata_recovery.cpp)
   add_executable(test_header_metadata_recovery
     tests/daemon/test_header_metadata_recovery.cpp
+    # This archival metadata fixture does not exercise a live mempool. The
+    # transitive wallet object references its API; use the existing test seam.
+    tests/stubs/mempool_test_stubs.cpp
   )
   target_link_libraries(test_header_metadata_recovery PRIVATE
     dinero_core

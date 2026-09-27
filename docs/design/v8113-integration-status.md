@@ -1,3 +1,13 @@
+## Header recovery target linkage (2026-09-27)
+
+Full, QUIC and core-heavy Linux builds exposed a missing test-only mempool
+link dependency in the archival header recovery target. The target now uses
+the existing isolation source, and the independent Orchard workflow builds
+and executes this regression with retained inventory and logs. See
+[scope and qualification](header-recovery-link-2026-09-27.md). Production
+behavior and release gates are unchanged; repaired-source Linux results remain
+required.
+
 ## Checked P2MR inventory (2026-09-27)
 
 P2MR listing now refuses incomplete or malformed reads, and its JSON listing
