@@ -6015,6 +6015,9 @@ if(NOT WIN32)
     LABELS "wallet;recovery;persistence;concurrency"
     TIMEOUT 30
   )
+  add_test(NAME WalletAddressIssuance
+    COMMAND test_wallet_database_lease --gtest_filter=WalletAddressIssuanceTest.*)
+  set_tests_properties(WalletAddressIssuance PROPERTIES TIMEOUT 60 LABELS "wallet;persistence;recovery")
   add_test(NAME WalletRecoveryKeys
     COMMAND test_wallet_database_lease --gtest_filter=WalletRecoveryKeyTest.*)
   set_tests_properties(WalletRecoveryKeys PROPERTIES TIMEOUT 30 LABELS "wallet;persistence;recovery;concurrency")

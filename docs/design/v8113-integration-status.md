@@ -1,3 +1,14 @@
+## Checked ordinary address issuance (2026-09-27)
+
+Receive and change issuance now commit address/path/watch records in one checked
+FULL transaction under the existing wallet owner. Required writes, commit and
+next-index range are checked; caller transactions and conflicting watch ownership
+refuse. Live index registration follows commit. Actual backend-ON/OFF daemon
+builds and affected tests, fresh 71-linked-C++ sanitizers and fault controls pass.
+A new required CI lane executes five issuance cases. Existing incomplete rows,
+authenticated inventory, full discovery and provider work remain open; see
+[scope and qualification](wallet-address-issuance-2026-09-27.md).
+
 ## Same-block originated history (2026-09-26)
 
 The actual service fixture now qualifies signed parent/child spends within the

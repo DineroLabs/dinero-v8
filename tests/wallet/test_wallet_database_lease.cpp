@@ -59,6 +59,109 @@ protected:
     std::unique_ptr<dinero::WalletManager> wallet;
 };
 
+class WalletAddressIssuanceTest : public WalletDatabaseLeaseTest {
+protected:
+    static int64_t Scalar(sqlite3* db,const std::string& sql) {
+        sqlite3_stmt* raw=nullptr;
+        if(sqlite3_prepare_v2(db,sql.c_str(),-1,&raw,nullptr)!=SQLITE_OK)throw std::runtime_error("issuance query");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> q(raw,sqlite3_finalize);
+        if(sqlite3_step(q.get())!=SQLITE_ROW)throw std::runtime_error("issuance row");
+        const auto value=sqlite3_column_int64(q.get(),0);
+        if(sqlite3_step(q.get())!=SQLITE_DONE)throw std::runtime_error("issuance EOF");
+        return value;
+    }
+    std::vector<int64_t> Inventory() {
+        auto* db=wallet->getCurrentDatabase();
+        return {Scalar(db,"SELECT COUNT(*) FROM addresses"),Scalar(db,"SELECT COUNT(*) FROM address_derivation_paths"),
+                Scalar(db,"SELECT COUNT(*) FROM watch_scripts")};
+    }
+    std::string Issue(int change) { return change?wallet->getNewChangeAddress("issued change"):wallet->getNewAddress("issued receive"); }
+};
+TEST_F(WalletAddressIssuanceTest, RequiredRowsRollbackAndReopen) {
+    wallet->open("owner");
+    for(int change:{0,1})for(const auto* table:{"address_derivation_paths","watch_scripts","addresses"}) {
+        SCOPED_TRACE(std::string(table)+" chain="+std::to_string(change));
+        const auto before=Inventory();const auto next=wallet->getNextAddressIndex(0,change);
+        const std::string fail="CREATE TRIGGER fail_issuance BEFORE INSERT ON "+std::string(table)+" BEGIN SELECT RAISE(ABORT,'issuance failure'); END";
+        Exec(wallet->getCurrentDatabase(),fail.c_str());
+        ASSERT_TRUE(Issue(change).empty());
+        EXPECT_EQ(Inventory(),before);EXPECT_EQ(wallet->getNextAddressIndex(0,change),next);
+        EXPECT_EQ(sqlite3_get_autocommit(wallet->getCurrentDatabase()),1);
+        Exec(wallet->getCurrentDatabase(),"DROP TRIGGER fail_issuance");
+        wallet->open("owner");
+        EXPECT_EQ(Inventory(),before);EXPECT_EQ(wallet->getNextAddressIndex(0,change),next);
+        ASSERT_FALSE(Issue(change).empty());
+        EXPECT_EQ(wallet->getNextAddressIndex(0,change),next+1);
+    }
+}
+TEST_F(WalletAddressIssuanceTest, CommitFailureAndBorrowedTransactionRefuse) {
+    wallet->open("owner");
+    auto* db=wallet->getCurrentDatabase();
+    Exec(db,"PRAGMA foreign_keys=ON; CREATE TABLE issuance_parent(id INTEGER PRIMARY KEY); CREATE TABLE issuance_child(id INTEGER REFERENCES issuance_parent(id) DEFERRABLE INITIALLY DEFERRED)");
+    for(int change:{0,1}) {
+        const auto before=Inventory();const auto next=wallet->getNextAddressIndex(0,change);
+        Exec(db,"CREATE TRIGGER deferred_issuance AFTER INSERT ON watch_scripts BEGIN INSERT INTO issuance_child VALUES(99); END");
+        EXPECT_TRUE(Issue(change).empty());EXPECT_EQ(Inventory(),before);EXPECT_EQ(wallet->getNextAddressIndex(0,change),next);
+        EXPECT_EQ(Scalar(db,"SELECT COUNT(*) FROM issuance_child"),0);EXPECT_EQ(sqlite3_get_autocommit(db),1);
+        Exec(db,"DROP TRIGGER deferred_issuance; BEGIN IMMEDIATE; INSERT INTO issuance_parent VALUES(7)");
+        EXPECT_TRUE(Issue(change).empty());EXPECT_EQ(Inventory(),before);EXPECT_EQ(sqlite3_get_autocommit(db),0);
+        EXPECT_EQ(Scalar(db,"SELECT COUNT(*) FROM issuance_parent"),1);
+        Exec(db,"ROLLBACK");
+        ASSERT_FALSE(Issue(change).empty());
+    }
+}
+TEST_F(WalletAddressIssuanceTest, CompleteTupleAndIndexSurviveReopen) {
+    wallet->open("owner");
+    dinero::UTXOIndex index((path/"issuance-index.sqlite").string());ASSERT_TRUE(index.Initialize());
+    wallet->setUTXOIndex(&index);
+    struct ResetIndex { dinero::WalletManager& wallet; ~ResetIndex(){wallet.setUTXOIndex(nullptr);} } reset{*wallet};
+    for(int change:{0,1}) {
+        const auto next=wallet->getNextAddressIndex(0,change);
+        const auto address=Issue(change);ASSERT_FALSE(address.empty());
+        const auto hex=wallet->getScriptPubKeyForAddress(address);ASSERT_TRUE(hex.has_value());
+        std::vector<uint8_t> script;for(size_t n=0;n<hex->size();n+=2)script.push_back(std::stoul(hex->substr(n,2),nullptr,16));
+        ASSERT_TRUE(index.IsOurScript(script).has_value());
+        const auto sql="SELECT COUNT(*) FROM addresses a JOIN address_derivation_paths p ON p.address=a.address JOIN watch_scripts w ON lower(hex(w.script_pubkey))=a.script_pubkey WHERE a.address='"+address+"' AND p.script_pubkey=a.script_pubkey AND p.derivation_path=w.path AND p.address_index=a.idx AND p.change=a.change AND w.is_change=a.change AND a.change="+std::to_string(change)+" AND a.idx="+std::to_string(next);
+        EXPECT_EQ(Scalar(wallet->getCurrentDatabase(),sql),1);
+        wallet->open("owner");EXPECT_EQ(Scalar(wallet->getCurrentDatabase(),sql),1);
+        index.ClearRegisteredAddresses();wallet->LoadAddressesIntoUTXOIndex();ASSERT_TRUE(index.IsOurScript(script).has_value());
+    }
+    wallet->setUTXOIndex(nullptr);
+}
+TEST_F(WalletAddressIssuanceTest, WatchConflictRefusesAndPublicationFollowsCommit) {
+    wallet->open("owner");auto* db=wallet->getCurrentDatabase();
+    const auto original=Issue(0);ASSERT_FALSE(original.empty());
+    const auto hex=wallet->getScriptPubKeyForAddress(original);ASSERT_TRUE(hex.has_value());
+    std::vector<uint8_t> script;for(size_t n=0;n<hex->size();n+=2)script.push_back(std::stoul(hex->substr(n,2),nullptr,16));
+    dinero::UTXOIndex index((path/"watch-index.sqlite").string());ASSERT_TRUE(index.Initialize());
+    wallet->setUTXOIndex(&index);
+    struct ResetIndex { dinero::WalletManager& wallet; ~ResetIndex(){wallet.setUTXOIndex(nullptr);} } reset{*wallet};
+    // Explicit partial-record fixture. This is not automatic recovery policy.
+    Exec(db,"CREATE TEMP TABLE original_watch AS SELECT path FROM watch_scripts; DELETE FROM addresses; DELETE FROM address_derivation_paths; UPDATE watch_scripts SET path='conflicting imported path',last_seen_height=91");
+    EXPECT_TRUE(Issue(0).empty());EXPECT_FALSE(index.IsOurScript(script));
+    EXPECT_EQ(Scalar(db,"SELECT COUNT(*) FROM addresses"),0);EXPECT_EQ(Scalar(db,"SELECT COUNT(*) FROM address_derivation_paths"),0);
+    EXPECT_EQ(Scalar(db,"SELECT COUNT(*) FROM watch_scripts WHERE path='conflicting imported path' AND last_seen_height=91"),1);
+    Exec(db,"UPDATE watch_scripts SET path=(SELECT path FROM original_watch)");
+    struct Commit { dinero::UTXOIndex& index; const std::vector<uint8_t>& script; bool called=false,unpublished=true; } commit{index,script};
+    sqlite3_commit_hook(db,[](void* p){auto& c=*static_cast<Commit*>(p);c.called=true;c.unpublished&=!c.index.IsOurScript(c.script).has_value();return 0;},&commit);
+    const auto address=Issue(0);sqlite3_commit_hook(db,nullptr,nullptr);
+    EXPECT_EQ(address,original);EXPECT_TRUE(commit.called && commit.unpublished);EXPECT_TRUE(index.IsOurScript(script));
+    EXPECT_EQ(Scalar(db,"SELECT last_seen_height FROM watch_scripts"),91);
+    EXPECT_EQ(Scalar(db,"PRAGMA synchronous"),2);
+}
+TEST_F(WalletAddressIssuanceTest, IndexReadFailureAndExhaustionRefuse) {
+    wallet->open("owner");auto* db=wallet->getCurrentDatabase();const auto before=Inventory();
+    sqlite3_set_authorizer(db,[](void*,int action,const char* table,const char* col,const char*,const char*) {
+        return action==SQLITE_READ && table && col && std::string_view(table)=="addresses" && std::string_view(col)=="idx"?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    EXPECT_TRUE(Issue(0).empty());EXPECT_TRUE(Issue(1).empty());
+    sqlite3_set_authorizer(db,nullptr,nullptr);EXPECT_EQ(Inventory(),before);
+    ASSERT_FALSE(Issue(0).empty());
+    Exec(db,"UPDATE addresses SET idx=2147483647 WHERE account=0 AND change=0 AND idx=(SELECT MAX(idx) FROM addresses WHERE account=0 AND change=0)");
+    EXPECT_THROW(wallet->getNextAddressIndex(0,0),std::runtime_error);
+    EXPECT_TRUE(Issue(0).empty());
+}
+
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};
 TEST_F(WalletRecoveryKeyTest, PinsActualSeedAcrossLockAndUnlock) {
     wallet->open("owner");

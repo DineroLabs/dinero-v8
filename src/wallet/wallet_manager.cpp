@@ -1,4 +1,5 @@
 #include "wallet/selected_history.h"
+#include <climits>
 #include "wallet/wallet_manager.h"
 #include "consensus/coin_type.h"
 #include "consensus/subsidy.h"   // For ConsensusSubsidy::UNA_PER_DIN
@@ -2270,36 +2271,109 @@ void WalletManager::addHDAddress(const std::string& addr, int account, int chang
     }
 }
 
+namespace {
+// The existing issuance paths own the wallet lifecycle mutex. These SQL
+// owners keep the issued address, key path and watched script indivisible.
+void IssuanceCheck(sqlite3* db,int actual,int expected) {
+    if(actual!=expected)throw std::runtime_error("Address issuance SQL failure: "+std::string(sqlite3_errmsg(db)));
+}
+struct IssuedStatement {
+    sqlite3* db;
+    std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> value{nullptr,sqlite3_finalize};
+    IssuedStatement(sqlite3* database,const char* sql):db(database) {
+        sqlite3_stmt* raw=nullptr;const int rc=sqlite3_prepare_v2(db,sql,-1,&raw,nullptr);value.reset(raw);
+        IssuanceCheck(db,rc,SQLITE_OK);
+    }
+    void Int(int i,int64_t n){IssuanceCheck(db,sqlite3_bind_int64(value.get(),i,n),SQLITE_OK);}
+    void Text(int i,const std::string& text){
+        if(text.size()>INT_MAX)throw std::runtime_error("Address issuance text too large");
+        IssuanceCheck(db,sqlite3_bind_text(value.get(),i,text.data(),int(text.size()),SQLITE_TRANSIENT),SQLITE_OK);
+    }
+    void Blob(int i,const void* bytes,int n){IssuanceCheck(db,sqlite3_bind_blob(value.get(),i,bytes,n,SQLITE_TRANSIENT),SQLITE_OK);}
+    void Key(int i,const std::optional<wallet::KeyID>& key) {
+        if(key)Blob(i,key->data(),int(key->size()));
+        else IssuanceCheck(db,sqlite3_bind_null(value.get(),i),SQLITE_OK);
+    }
+    void Done(bool inserted=false){
+        IssuanceCheck(db,sqlite3_step(value.get()),SQLITE_DONE);
+        if(inserted && sqlite3_changes(db)!=1)throw std::runtime_error("Address issuance row not inserted");
+    }
+};
+class IssuedAddressTransaction {
+    sqlite3* db_;bool owned_=false;
+    void Exec(const char* sql){IssuanceCheck(db_,sqlite3_exec(db_,sql,nullptr,nullptr,nullptr),SQLITE_OK);}
+public:
+    explicit IssuedAddressTransaction(sqlite3* db):db_(db) {
+        if(!db_ || !sqlite3_get_autocommit(db_))throw std::runtime_error("Address issuance requires its own transaction");
+        Exec("PRAGMA synchronous=FULL");
+        { IssuedStatement policy(db_,"PRAGMA synchronous");
+          IssuanceCheck(db_,sqlite3_step(policy.value.get()),SQLITE_ROW);
+          if(sqlite3_column_int(policy.value.get(),0)!=2)throw std::runtime_error("Address issuance durability unavailable");
+          policy.Done(); }
+        Exec("BEGIN IMMEDIATE");owned_=true;
+    }
+    ~IssuedAddressTransaction(){
+        if(owned_ && !sqlite3_get_autocommit(db_) &&
+           sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db_))std::terminate();
+    }
+    void Commit(){Exec("COMMIT");owned_=false;}
+    IssuedAddressTransaction(const IssuedAddressTransaction&)=delete;
+    IssuedAddressTransaction& operator=(const IssuedAddressTransaction&)=delete;
+};
+bool IssuanceWalletColumn(sqlite3* db,const char* table) {
+    const std::string sql="PRAGMA table_info("+std::string(table)+")";
+    IssuedStatement query(db,sql.c_str());bool found=false;int rc;size_t rows=0;
+    while((rc=sqlite3_step(query.value.get()))==SQLITE_ROW) {
+        const auto* name=sqlite3_column_text(query.value.get(),1);
+        if(!name)throw std::runtime_error("Address issuance schema unavailable");
+        found|=std::string_view(reinterpret_cast<const char*>(name))=="wallet_id";++rows;
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+    if(!rows)throw std::runtime_error("Address issuance table unavailable");
+    return found;
+}
+void PersistIssuedAddress(sqlite3* db,int change,int index,const std::string& address,
+        const std::string& label,const std::string& type,const std::string& script_hex,
+        const std::vector<uint8_t>& script,const std::string& path,
+        const std::optional<wallet::KeyID>& key,const std::optional<wallet::KeyID>& internal,
+        const std::optional<wallet::KeyID>& output) {
+    const auto now=std::time(nullptr);
+    const bool wallet_column=IssuanceWalletColumn(db,"addresses");
+    IssuedStatement row(db,wallet_column?
+        "INSERT INTO addresses(wallet_id,account,change,idx,address,label,type,script_pubkey,key_id,internal_key_id,output_key_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)":
+        "INSERT INTO addresses(account,change,idx,address,label,type,script_pubkey,key_id,internal_key_id,output_key_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+    int n=1;if(wallet_column)row.Int(n++,1);
+    row.Int(n++,0);row.Int(n++,change);row.Int(n++,index);row.Text(n++,address);row.Text(n++,label);
+    row.Text(n++,type);row.Text(n++,script_hex);row.Key(n++,key);row.Key(n++,internal);row.Key(n++,output);row.Int(n++,now);row.Done(true);
+    const bool path_wallet=IssuanceWalletColumn(db,"address_derivation_paths");
+    IssuedStatement derived(db,path_wallet?
+        "INSERT INTO address_derivation_paths(address,wallet_id,derivation_path,script_pubkey,account,change,address_index,created_at) VALUES(?,?,?,?,?,?,?,?)":
+        "INSERT INTO address_derivation_paths(address,derivation_path,script_pubkey,account,change,address_index,created_at) VALUES(?,?,?,?,?,?,?)");
+    n=1;derived.Text(n++,address);if(path_wallet)derived.Int(n++,1);
+    derived.Text(n++,path);derived.Text(n++,script_hex);derived.Int(n++,0);derived.Int(n++,change);derived.Int(n++,index);derived.Int(n++,now);derived.Done(true);
+    IssuedStatement watched(db,"INSERT OR IGNORE INTO watch_scripts(script_pubkey,path,is_change,last_seen_height,created_at) VALUES(?,?,?,0,?)");
+    watched.Blob(1,script.data(),int(script.size()));watched.Text(2,path);watched.Int(3,change);watched.Int(4,now);watched.Done();
+    // An existing watch row may be reused only with the exact issuance path.
+    IssuedStatement check(db,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");check.Blob(1,script.data(),int(script.size()));
+    IssuanceCheck(db,sqlite3_step(check.value.get()),SQLITE_ROW);
+    const auto* stored=sqlite3_column_text(check.value.get(),0);
+    if(sqlite3_column_type(check.value.get(),0)!=SQLITE_TEXT || !stored ||
+       std::string(reinterpret_cast<const char*>(stored),sqlite3_column_bytes(check.value.get(),0))!=path ||
+       sqlite3_column_type(check.value.get(),1)!=SQLITE_INTEGER || sqlite3_column_int64(check.value.get(),1)!=change)
+        throw std::runtime_error("Address issuance watch ownership mismatch");
+    check.Done();
+}
+} // namespace
+
 int WalletManager::getNextAddressIndex(int account, int change) const {
-    if (current_wallet_id_ == -1) {
-        throw std::runtime_error("No wallet is currently open");
-    }
-
-    sqlite3_stmt* stmt;
-    // Per-wallet database: addresses table has no wallet_id column
-    const char* sql = "SELECT COALESCE(MAX(idx), -1) + 1 FROM addresses WHERE account = ? AND change = ?";
-
-    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
-    if (rc != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare next index query: " + std::string(sqlite3_errmsg(db_)));
-    }
-
-    sqlite3_bind_int(stmt, 1, account);
-    sqlite3_bind_int(stmt, 2, change);
-    
-    int next_index = 0;
-    rc = sqlite3_step(stmt);
-    if (rc == SQLITE_ROW) {
-        next_index = sqlite3_column_int(stmt, 0);
-    }
-    
-    sqlite3_finalize(stmt);
-    
-    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
-        throw std::runtime_error("Failed to get next address index: " + std::string(sqlite3_errmsg(db_)));
-    }
-    
-    return next_index;
+    std::lock_guard<std::recursive_mutex> ownership(database_lifecycle_mutex_);
+    if(!db_ || current_wallet_id_==-1)throw std::runtime_error("No wallet is currently open");
+    IssuedStatement query(db_,"SELECT COALESCE(MAX(idx),-1)+1 FROM addresses WHERE account=? AND change=?");
+    query.Int(1,account);query.Int(2,change);IssuanceCheck(db_,sqlite3_step(query.value.get()),SQLITE_ROW);
+    const auto next=sqlite3_column_int64(query.value.get(),0);
+    if(sqlite3_column_type(query.value.get(),0)!=SQLITE_INTEGER || next<0 || next>INT_MAX)
+        throw std::runtime_error("Address derivation index exhausted or invalid");
+    query.Done();return int(next);
 }
 
 bool WalletManager::isAddressMine(const std::string& addr) const {
@@ -5142,6 +5216,7 @@ double WalletManager::calculateMiningReward(uint32_t height) const {
 // Address generation methods
 std::string WalletManager::getNewAddress(const std::string& label, const std::string& address_type) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_))return "";
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for address generation");
         return "";
@@ -5227,6 +5302,7 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
     }
 
     try {
+        IssuedAddressTransaction issuance(db_);
         std::string address;
         std::string script_pubkey;
         std::vector<uint8_t> script_bytes;
@@ -5344,110 +5420,15 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
             }
         }
 
-        // Store address in database
-        sqlite3_stmt* stmt = nullptr;
-        const bool addresses_has_wallet_id = columnExists(db_, "addresses", "wallet_id");
-        // Week 1 Day 2: Added KeyID columns for descriptor wallet foundation
-        // Week 1 Day 3: Added script_pubkey column for Bitcoin-grade ownership (not address strings)
-        const char* sql = addresses_has_wallet_id
-            ? "INSERT INTO addresses (wallet_id, account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO addresses (account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-        // Determine address type string for database
-        std::string addr_type_db = (effective_address_type == "taproot") ? "p2tr" : "p2wpkh";
-
-        WLOG_INFO("💾 Attempting to INSERT address: type=" + addr_type_db + ", addr=" + address + ", idx=" + std::to_string(next_index));
-        WLOG_INFO("💾 Database pointer: " + std::string(db_ ? "VALID" : "NULL") + ", wallet_id=" + std::to_string(current_wallet_id_));
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            if (addresses_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_int(stmt, bind_index++, 0); // account 0
-            sqlite3_bind_int(stmt, bind_index++, 0); // external chain
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_null(stmt, bind_index++); // pubkey (not used yet, reserved for future)
-            sqlite3_bind_text(stmt, bind_index++, label.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, addr_type_db.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);  // Bitcoin-grade: scriptPubKey for ownership
-
-            // Week 1 Day 2: Bind KeyID columns (20 bytes each, or NULL)
-            if (key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, key_id->data(), key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (internal_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, internal_key_id->data(), internal_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (output_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, output_key_id->data(), output_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            int step_result = sqlite3_step(stmt);
-            if (step_result != SQLITE_DONE) {
-                std::string error_msg = "Failed to store address in database: ";
-                error_msg += sqlite3_errmsg(db_);
-                error_msg += " (sqlite3_step returned " + std::to_string(step_result) + ")";
-                sqlite3_finalize(stmt);
-                WLOG_ERR("💾 ❌ " + error_msg);
-                return "";
-            }
-            WLOG_INFO("💾 ✅ Successfully stored address in database");
-            sqlite3_finalize(stmt);
-        } else {
-            WLOG_ERR("💾 ❌ Failed to prepare SQL for address storage: " + std::string(sqlite3_errmsg(db_)));
-            return "";
-        }
-
-        // Store derivation path in address_derivation_paths table
-        uint32_t purpose = (effective_address_type == "taproot") ? 86 : 84;
-        std::string derivation_path = "m/" + std::to_string(purpose) + "'/" +
-                                      std::to_string(dinero::consensus::DINERO_COIN_TYPE) +
-                                      "'/0'/0/" + std::to_string(next_index);
-        const bool derivation_has_wallet_id = columnExists(db_, "address_derivation_paths", "wallet_id");
-        const char* path_sql = derivation_has_wallet_id
-            ? "INSERT INTO address_derivation_paths (address, wallet_id, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO address_derivation_paths (address, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-        if (sqlite3_prepare_v2(db_, path_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            if (derivation_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_text(stmt, bind_index++, derivation_path.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, bind_index++, 0); // account
-            sqlite3_bind_int(stmt, bind_index++, 0); // external chain
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
-
-        // Add to watch_scripts table
-        const char* watch_sql = "INSERT OR IGNORE INTO watch_scripts (script_pubkey, path, is_change, last_seen_height, created_at) VALUES (?, ?, ?, ?, ?)";
-        if (sqlite3_prepare_v2(db_, watch_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, script_bytes.data(), script_bytes.size(), SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 2, derivation_path.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 3, 0); // not change
-            sqlite3_bind_int(stmt, 4, 0);
-            sqlite3_bind_int64(stmt, 5, std::time(nullptr));
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
+        const uint32_t purpose=(effective_address_type=="taproot")?86:84;
+        const std::string derivation_path="m/"+std::to_string(purpose)+"'/"+
+            std::to_string(dinero::consensus::DINERO_COIN_TYPE)+"'/0'/0/"+std::to_string(next_index);
+        PersistIssuedAddress(db_,0,next_index,address,label,
+            effective_address_type=="taproot"?"p2tr":"p2wpkh",script_pubkey,script_bytes,derivation_path,
+            key_id,internal_key_id,output_key_id);
+        issuance.Commit();
+        // Live recognition follows the durable tuple. If publication throws,
+        // the issued address remains retained for ordinary reopen/recovery.
 
         // Register with UTXOIndex if available (daemon mode).
         // In standalone/test contexts, WalletManager can operate without UTXOIndex.
@@ -5469,6 +5450,7 @@ std::string WalletManager::getNewAddress(const std::string& label, const std::st
 
 std::string WalletManager::getNewChangeAddress(const std::string& label, const std::string& address_type) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
+    if(!db_ || !sqlite3_get_autocommit(db_))return "";
     if (!hasActiveWallet()) {
         WLOG_ERR("No active wallet for change address generation");
         return "";
@@ -5503,6 +5485,7 @@ std::string WalletManager::getNewChangeAddress(const std::string& label, const s
     }
 
     try {
+        IssuedAddressTransaction issuance(db_);
         // Get next change address index
         int next_index = getNextAddressIndex(0, 1);
 
@@ -5593,104 +5576,15 @@ std::string WalletManager::getNewChangeAddress(const std::string& label, const s
             }
         }
 
-        // Store address in database
-        sqlite3_stmt* stmt = nullptr;
-        const bool addresses_has_wallet_id = columnExists(db_, "addresses", "wallet_id");
-        // Week 1 Day 3: Added script_pubkey and KeyID columns
-        const char* sql = addresses_has_wallet_id
-            ? "INSERT INTO addresses (wallet_id, account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO addresses (account, change, idx, address, pubkey, label, type, script_pubkey, key_id, internal_key_id, output_key_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-
-        std::string addr_type_db = (effective_address_type == "taproot") ? "p2tr" : "p2wpkh";
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            if (addresses_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_int(stmt, bind_index++, 0); // account 0
-            sqlite3_bind_int(stmt, bind_index++, 1); // internal chain (change)
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_null(stmt, bind_index++); // pubkey (reserved for future)
-            sqlite3_bind_text(stmt, bind_index++, label.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, addr_type_db.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);
-
-            // Bind KeyID columns
-            if (key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, key_id->data(), key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (internal_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, internal_key_id->data(), internal_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            if (output_key_id.has_value()) {
-                sqlite3_bind_blob(stmt, bind_index++, output_key_id->data(), output_key_id->size(), SQLITE_TRANSIENT);
-            } else {
-                sqlite3_bind_null(stmt, bind_index++);
-            }
-
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            if (sqlite3_step(stmt) != SQLITE_DONE) {
-                sqlite3_finalize(stmt);
-                WLOG_ERR("Failed to store change address in database");
-                return "";
-            }
-            sqlite3_finalize(stmt);
-        } else {
-            WLOG_ERR("Failed to prepare SQL for change address storage");
-            return "";
-        }
-
-        // Store derivation path in address_derivation_paths table
-        uint32_t purpose = (effective_address_type == "taproot") ? 86 : 84;
-        std::string derivation_path = "m/" + std::to_string(purpose) + "'/" +
-                                      std::to_string(dinero::consensus::DINERO_COIN_TYPE) +
-                                      "'/0'/1/" + std::to_string(next_index);
-        const bool derivation_has_wallet_id = columnExists(db_, "address_derivation_paths", "wallet_id");
-        const char* path_sql = derivation_has_wallet_id
-            ? "INSERT INTO address_derivation_paths (address, wallet_id, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            : "INSERT INTO address_derivation_paths (address, derivation_path, script_pubkey, account, change, address_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-        if (sqlite3_prepare_v2(db_, path_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            int bind_index = 1;
-            sqlite3_bind_text(stmt, bind_index++, address.c_str(), -1, SQLITE_TRANSIENT);
-            if (derivation_has_wallet_id) {
-                sqlite3_bind_int(stmt, bind_index++, 1); // per-wallet DB always uses wallet_id=1
-            }
-            sqlite3_bind_text(stmt, bind_index++, derivation_path.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, bind_index++, script_pubkey.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, bind_index++, 0); // account
-            sqlite3_bind_int(stmt, bind_index++, 1); // internal chain (change)
-            sqlite3_bind_int(stmt, bind_index++, next_index);
-            sqlite3_bind_int64(stmt, bind_index++, std::time(nullptr));
-
-            if (sqlite3_step(stmt) != SQLITE_DONE) {
-                WLOG_WARN("Failed to store change derivation path: " + std::string(sqlite3_errmsg(db_)));
-            }
-            sqlite3_finalize(stmt);
-        } else {
-            WLOG_WARN("Failed to prepare SQL for change derivation path storage");
-        }
-
-        // Add to watch_scripts table
-        const char* watch_sql = "INSERT OR IGNORE INTO watch_scripts (script_pubkey, path, is_change, last_seen_height, created_at) VALUES (?, ?, ?, ?, ?)";
-        if (sqlite3_prepare_v2(db_, watch_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_blob(stmt, 1, script_bytes.data(), script_bytes.size(), SQLITE_STATIC);
-            sqlite3_bind_text(stmt, 2, derivation_path.c_str(), -1, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 3, 1); // is change
-            sqlite3_bind_int(stmt, 4, 0);
-            sqlite3_bind_int64(stmt, 5, std::time(nullptr));
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-        }
+        const uint32_t purpose=(effective_address_type=="taproot")?86:84;
+        const std::string derivation_path="m/"+std::to_string(purpose)+"'/"+
+            std::to_string(dinero::consensus::DINERO_COIN_TYPE)+"'/0'/1/"+std::to_string(next_index);
+        PersistIssuedAddress(db_,1,next_index,address,label,
+            effective_address_type=="taproot"?"p2tr":"p2wpkh",script_pubkey,script_bytes,derivation_path,
+            key_id,internal_key_id,output_key_id);
+        issuance.Commit();
+        // Live recognition follows the durable tuple. If publication throws,
+        // the issued address remains retained for ordinary reopen/recovery.
 
         // Register with UTXOIndex if available (daemon mode).
         if (utxo_index_) {
