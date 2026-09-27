@@ -9,6 +9,8 @@
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <condition_variable>
+#include <unordered_set>
 
 // Forward declarations
 class RpcAuth;
@@ -38,6 +40,8 @@ public:
 
     // Server lifecycle: start returns only after bind/listen and thread creation.
     // Startup failure throws; RPCService must not announce readiness.
+    // Lifecycle changes must be requested outside a connection handler.
+    // stop interrupts socket I/O and waits for every handler to finish.
     void start();
     void stop();
     bool is_running() const { return running_; }
@@ -52,6 +56,7 @@ public:
     void register_builtin_methods();
     
 private:
+    friend struct HttpRpcDrainTestAccess;
     static constexpr uint32_t kMaxConcurrentConnections = 128;
     static constexpr uint32_t kMaxConcurrentRpcHandlers = 64;
     static constexpr std::chrono::milliseconds kClientSocketTimeout{10000};
@@ -80,6 +85,10 @@ private:
     // Server thread
     std::unique_ptr<std::thread> server_thread_;
     std::mutex lifecycle_mutex_;
+    std::mutex connections_mutex_;
+    std::condition_variable connections_drained_;
+    std::unordered_set<int> client_sockets_;
+    void finish_connection(int client_socket) noexcept;
     
     // Server implementation
     void server_loop(int server_socket);
