@@ -1004,6 +1004,7 @@ private:
     friend struct WalletSeedReadTestAccess;
     friend struct WalletSeedWriteTestAccess;
     friend struct WalletInitialOwnerTestAccess;
+    friend struct WalletUnlockOwnerTestAccess;
     bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
                               const SelectedWalletHistory*, uint64_t expected_session);
     friend class RuntimeOrdinaryDelivery;

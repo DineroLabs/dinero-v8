@@ -13153,6 +13153,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     ShieldedViewingAuthorityClearedOnUnload
     EncryptionRoundTripRestoreAndDerivationPersistence
     RestoreRequiresNewNamePreservesOriginal
+    StagedUnlockSeedAndPolicyFailuresPreserveState
+    StagedUnlockReadAndCommitFailuresPreserveState
+    StagedUnlockPqOwnersMustAgree
+    StagedUnlockLegacyCredentialsPreserved
     InitialOwnerPreservesGeneratedPqAcrossWrapperLoss
     InitialOwnerRecoveryNeverGeneratesHistoricalPq
     InitialOwnerBindingAndConsumedGeneration

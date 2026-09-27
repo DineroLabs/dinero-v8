@@ -465,6 +465,24 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute staged wallet unlock
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_StagedUnlock' --show-only=json-v1 > orchard-wallet-staged-unlock-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_StagedUnlockSeedAndPolicyFailuresPreserveState', 'WalletMainnetReadiness_StagedUnlockReadAndCommitFailuresPreserveState', 'WalletMainnetReadiness_StagedUnlockPqOwnersMustAgree', 'WalletMainnetReadiness_StagedUnlockLegacyCredentialsPreserved']
+          tests = json.load(open('orchard-wallet-staged-unlock-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Staged unlock tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_StagedUnlock' --verbose --no-tests=error --output-log orchard-wallet-staged-unlock-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.StagedUnlockSeedAndPolicyFailuresPreserveState', 'WalletMainnetReadiness.StagedUnlockReadAndCommitFailuresPreserveState', 'WalletMainnetReadiness.StagedUnlockPqOwnersMustAgree', 'WalletMainnetReadiness.StagedUnlockLegacyCredentialsPreserved']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.StagedUnlock\w+)', open('orchard-wallet-staged-unlock-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Staged unlock cases missing, duplicated or unexpected')
+          PYTEST
       - name: Require and execute initial wallet key ownership
         run: |
           ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_InitialOwner' --show-only=json-v1 > orchard-wallet-initial-owner-inventory.json
@@ -832,6 +850,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-staged-unlock-inventory.json
+            orchard-wallet-staged-unlock-execution.log
             orchard-wallet-initial-owner-inventory.json
             orchard-wallet-initial-owner-execution.log
             orchard-wallet-restore-name-inventory.json
