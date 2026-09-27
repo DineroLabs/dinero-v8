@@ -4901,6 +4901,8 @@ void WalletManager::checkUnlockTimeout() {
             secureClearString(encryption_key_);
             clearPrivateKeyCache();
             secureClearBytes(master_seed_);
+            OPENSSL_cleanse(pq_master_key_.data(), pq_master_key_.size());
+            pq_master_key_loaded_ = false;
             unlock_timeout_ = 0;
             unlock_time_ = 0;
             WLOG_INFO("Wallet automatically locked due to timeout");

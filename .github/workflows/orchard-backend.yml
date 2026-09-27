@@ -499,6 +499,24 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Imported owner inventory cases missing, duplicated or unexpected')
           PYTEST
+      - name: Require and execute wallet timeout key cleanup
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Timeout' --show-only=json-v1 > orchard-wallet-timeout-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected=['WalletMainnetReadiness_TimeoutClearsPqAndPreservesDurableOwner','WalletMainnetReadiness_TimeoutHonorsExistingRecoveryPin']
+          tests=json.load(open('orchard-wallet-timeout-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests)!=sorted(expected) or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Wallet timeout tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_Timeout' --verbose --no-tests=error --output-log orchard-wallet-timeout-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-wallet-timeout-execution.log').read()
+          expected=['TimeoutClearsPqAndPreservesDurableOwner','TimeoutHonorsExistingRecoveryPin']
+          if sorted(re.findall(r'\[       OK \] WalletMainnetReadiness\.(Timeout\w+)',log))!=sorted(expected):
+              raise SystemExit('Wallet timeout cases did not complete exactly once')
+          PYTEST
       - name: Require and execute RPC handler drain and daemon shutdown
         run: |
           ctest --test-dir build-orchard-root -R '^(RpcHandlerDrain|RpcStopCleanShutdown)$' --show-only=json-v1 > orchard-rpc-drain-inventory.json
@@ -956,6 +974,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-timeout-inventory.json
+            orchard-wallet-timeout-execution.log
             orchard-rpc-drain-inventory.json
             orchard-rpc-drain-execution.log
             orchard-pq-rpc-owner-inventory.json
