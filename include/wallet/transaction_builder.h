@@ -85,7 +85,7 @@ public:
     /**
      * Build and sign a complete transaction
      * @param recipients List of recipients
-     * @param private_keys Map of address -> private key (hex)
+     * @param private_keys Map of outpoint (txid:vout) -> private key (hex); legacy HD paths also accepted
      * @param options Build options
      * @return Build result with signed transaction
      */
@@ -98,7 +98,7 @@ public:
     /**
      * Build and sign a complete transaction (with default options)
      * @param recipients List of recipients
-     * @param private_keys Map of address -> private key (hex)
+     * @param private_keys Map of outpoint (txid:vout) -> private key (hex); legacy HD paths also accepted
      * @return Build result with signed transaction
      */
     BuildResult BuildTransaction(

@@ -3,6 +3,7 @@
 #include "wallet/wallet_worker.h"
 #include "wallet/utxo_index.h"
 #include "wallet/taproot_keys.h"
+#include "wallet/transaction_builder.h"
 #include "util/hex.h"
 #include "consensus/chainparams.h"
 #include <gtest/gtest.h>
@@ -316,6 +317,57 @@ TEST_F(WalletTaprootLookupTest, DurableBindingsAndReadFailuresRefuse) {
     },nullptr);
     EXPECT_FALSE(wallet->deriveKeyForScriptPubKey(script)); sqlite3_set_authorizer(db,nullptr,nullptr);
     CheckSignature(key);
+}
+
+
+class WalletImportedTransactionTest : public WalletTaprootImportTest {
+protected:
+    dinero::CanonicalWalletUTXO Coin(const Import& key,uint32_t n) {
+        dinero::CanonicalWalletUTXO coin;coin.txid=dinero::uint256::FromHexUnsafe(std::string(63,'0')+"1");
+        coin.vout=n;coin.value=dinero::AmountUna::Una(100000);coin.spk=key.script;coin.height=1;
+        const auto label=wallet->getWatchScriptPath(key.script);if(!label)throw std::runtime_error("watch owner absent");coin.path=*label;return coin;
+    }
+    dinero::Transaction TransactionFor(const dinero::CanonicalWalletUTXO& coin) {
+        dinero::Transaction tx;tx.version=2;dinero::TxInput in;in.prevout=dinero::TxOutPoint(dinero::TxId(coin.txid),coin.vout);tx.vin.push_back(in);
+        dinero::TxOutput out;out.value=dinero::AmountUna::Una(90000);out.scriptPubKey=coin.spk;tx.vout.push_back(out);return tx;
+    }
+    void Verify(const dinero::Transaction& tx,size_t i,const std::vector<dinero::CanonicalWalletUTXO>& coins,bool v1) {
+        ASSERT_EQ(tx.vin[i].witness.size(),1u);ASSERT_EQ(tx.vin[i].witness[0].size(),64u);
+        const auto hash=v1?dinero::TaprootTxSigner::ComputeTaprootSighashV1(tx,i,coins,dinero::DEFAULT_EXT_COMMITMENT):dinero::TaprootTxSigner::ComputeTaprootSighash(tx,i,coins);
+        ASSERT_EQ(hash.size(),32u);std::array<uint8_t,32> message{},output{};std::array<uint8_t,64> sig{};
+        std::copy(hash.begin(),hash.end(),message.begin());std::copy(coins[i].spk.begin()+2,coins[i].spk.end(),output.begin());std::copy(tx.vin[i].witness[0].begin(),tx.vin[i].witness[0].end(),sig.begin());
+        EXPECT_TRUE(dinero::TaprootKeys::VerifySchnorr(sig,message,output));
+        auto changed=coins;changed[i].value=dinero::AmountUna::Una(99999);
+        const auto altered=v1?dinero::TaprootTxSigner::ComputeTaprootSighashV1(tx,i,changed,dinero::DEFAULT_EXT_COMMITMENT):dinero::TaprootTxSigner::ComputeTaprootSighash(tx,i,changed);
+        std::copy(altered.begin(),altered.end(),message.begin());EXPECT_FALSE(dinero::TaprootKeys::VerifySchnorr(sig,message,output));
+    }
+};
+TEST_F(WalletImportedTransactionTest, ReopenedEncryptedImportSignsBothEpochs) {
+    wallet->open("owner");wallet->encryptWallet("transaction-test");wallet->unlockWallet("transaction-test");Import key(41);ASSERT_TRUE(Store(key));
+    wallet->open("owner");wallet->unlockWallet("transaction-test");const auto coin=Coin(key,0);
+    const auto secret=wallet->deriveKeyForScriptPubKey(util::hex(key.script));ASSERT_TRUE(secret);
+    for(bool v1:{false,true}){auto tx=TransactionFor(coin);const bool ok=v1?dinero::TaprootTxSigner::SignInputV1(tx,0,{coin},*secret,dinero::DEFAULT_EXT_COMMITMENT):dinero::TaprootTxSigner::SignInput(tx,0,{coin},*secret);ASSERT_TRUE(ok);Verify(tx,0,{coin},v1);}
+}
+TEST_F(WalletImportedTransactionTest, WrongKeyAndOriginRefuseBeforeWitness) {
+    wallet->open("owner");Import key(42),other(43);ASSERT_TRUE(Store(key));const auto coin=Coin(key,0);
+    const auto secret=wallet->deriveKeyForScriptPubKey(util::hex(key.script));ASSERT_TRUE(secret);
+    for(bool v1:{false,true})for(int variant:{0,1,2,3}) {
+        auto changed=coin;auto bytes=*secret;if(variant==0)changed.path="";if(variant==1)changed.path="tr(00000000...)";if(variant>=2)bytes.assign(other.secret.begin(),other.secret.end());if(variant==3)changed.path="tr("+util::hex(std::vector<uint8_t>(other.internal.begin(),other.internal.end())).substr(0,8)+"...)";
+        auto tx=TransactionFor(coin);const bool ok=v1?dinero::TaprootTxSigner::SignInputV1(tx,0,{changed},bytes,dinero::DEFAULT_EXT_COMMITMENT):dinero::TaprootTxSigner::SignInput(tx,0,{changed},bytes);
+        EXPECT_FALSE(ok);EXPECT_TRUE(tx.vin[0].witness.empty());
+    }
+}
+TEST_F(WalletImportedTransactionTest, BuilderRequiresExactOutpointKeys) {
+    wallet->open("owner");Import first(44),second(45);ASSERT_TRUE(Store(first));ASSERT_TRUE(Store(second));wallet->open("owner");
+    const auto a=Coin(first,0),b=Coin(second,1);auto ak=wallet->deriveKeyForScriptPubKey(util::hex(first.script)),bk=wallet->deriveKeyForScriptPubKey(util::hex(second.script));ASSERT_TRUE(ak && bk);
+    dinero::UTXOIndex index((path/"builder.sqlite").string());ASSERT_TRUE(index.Initialize());dinero::TransactionBuilder builder(&index);
+    dinero::TransactionBuilder::BuildOptions options;options.candidate_utxos={a,b};options.change_address=first.address;
+    const std::vector<dinero::TransactionBuilder::Recipient> recipients{{second.address,150000}};
+    std::map<std::string,std::string> keys{{a.GetOutpointString(),util::hex(*ak)},{b.GetOutpointString(),util::hex(*bk)}, {a.path,util::hex(*bk)},{b.path,util::hex(*ak)}};
+    auto built=builder.BuildTransaction(recipients,keys,options);ASSERT_TRUE(built.success)<<built.error;ASSERT_EQ(built.selected_utxos.size(),2u);
+    for(size_t i=0;i<2;++i)Verify(built.transaction,i,built.selected_utxos,false);
+    keys.erase(a.GetOutpointString());keys.erase(b.GetOutpointString());EXPECT_FALSE(builder.BuildTransaction(recipients,keys,options).success);
+    options.candidate_utxos={a};EXPECT_FALSE(builder.BuildTransaction({{second.address,50000}},{{"unrelated",util::hex(*ak)}},options).success);
 }
 
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};

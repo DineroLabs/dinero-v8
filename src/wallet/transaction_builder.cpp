@@ -424,18 +424,14 @@ std::string TransactionBuilder::GetPrivateKeyForUTXO(
     const CanonicalWalletUTXO& utxo,  // Phase M.3: Canonical UTXO type
     const std::map<std::string, std::string>& private_keys
 ) {
-    // Try to find private key by derivation path
-    auto it = private_keys.find(utxo.path);  // Phase M.3: Use .path field
-    if (it != private_keys.end()) {
-        return it->second;
-    }
+    // Exact outpoint bindings take precedence over display/derivation labels.
+    // Imported labels are intentionally shortened and cannot identify keys.
+    auto it = private_keys.find(utxo.GetOutpointString());
+    if (it != private_keys.end()) return it->second;
+    if (utxo.path.rfind("tr(",0)==0) return "";
 
-    // Try to find by UTXO identifier
-    std::string utxo_key = utxo.GetOutpointString();  // Phase M.3: Use helper method
-    it = private_keys.find(utxo_key);
-    if (it != private_keys.end()) {
-        return it->second;
-    }
+    it = private_keys.find(utxo.path);
+    if (it != private_keys.end()) return it->second;
 
     // If we have only one private key, use it (for testing)
     if (private_keys.size() == 1) {

@@ -31,7 +31,7 @@ public:
      *
      * @param tx Transaction to sign (modified in-place)
      * @param utxos UTXOs being spent (must match tx inputs)
-     * @param private_keys Tweaked Taproot private keys for signing
+     * @param private_keys Untweaked internal Taproot private keys for signing
      * @return true if all Taproot inputs were signed successfully
      */
     static bool SignTransaction(
@@ -46,7 +46,7 @@ public:
      * @param tx Transaction being signed
      * @param input_index Index of input to sign
      * @param all_utxos ALL UTXOs being spent (BIP341 requires full set for sighash)
-     * @param private_key Tweaked Taproot private key (32 bytes)
+     * @param private_key Untweaked internal Taproot private key (32 bytes)
      * @return true if signing succeeded
      */
     static bool SignInput(
@@ -183,7 +183,7 @@ public:
      * @param tx Transaction being signed
      * @param input_index Index of input to sign
      * @param all_utxos ALL UTXOs being spent
-     * @param private_key Tweaked Taproot private key (32 bytes)
+     * @param private_key Untweaked internal Taproot private key (32 bytes)
      * @param ext_commitment 32-byte extension commitment
      * @return true if signing succeeded
      */

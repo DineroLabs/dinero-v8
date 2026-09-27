@@ -598,3 +598,7 @@ replay/reindex or user steps 1–4.
 ## Stored imported Taproot key resolution (2026-09-27)
 
 The actual script-to-key lookup now reads and validates the existing imported key, mapping, watched script, imported address and encryption owner in one checked database snapshot before HD fallback. Reopen/decrypt-and-sign primitive coverage and refusal of inconsistent records are described in [wallet-taproot-key-lookup-2026-09-27.md](wallet-taproot-key-lookup-2026-09-27.md). Transaction signing/path gating, migration of previously plaintext imports during wallet encryption, complete discovery/reconciliation and selection/provider readiness remain open. Steps 1–4 and the release are not complete.
+
+## Imported transaction signer and builder (2026-09-27)
+
+The existing Taproot transaction signers accept validated imported origins while retaining full key-to-script checks. The builder and sendmany key map use exact outpoint bindings for imports. See [wallet-imported-transaction-signing-2026-09-27.md](wallet-imported-transaction-signing-2026-09-27.md) for synthetic candidate and component-test scope. Actual RPC/broadcast, the distinct sendtoaddress provider, prior-import encryption migration, complete ownership/reconciliation and remaining activation/provider obligations are still open. Steps 1–4 and release qualification remain incomplete.

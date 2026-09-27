@@ -3519,9 +3519,10 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
             if (!privkey_bytes.has_value() || privkey_bytes->empty()) {
                 // Fall back to the explicit derivation path for older wallet state
                 // where direct scriptPubKey lookup is incomplete but ownership is known.
-                std::string fallback_privkey = wallet_service->get().getPrivateKeyForPath(utxo.derivation_path);
+                std::string fallback_privkey = utxo.derivation_path.rfind("m/",0)==0
+                    ? wallet_service->get().getPrivateKeyForPath(utxo.derivation_path) : std::string{};
                 if (!fallback_privkey.empty()) {
-                    private_keys[utxo.derivation_path] = fallback_privkey;
+                    private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = fallback_privkey;
                 } else {
                     // This UTXO belongs to a watch-only or foreign script — skip it.
                     if (ctx.logger) {
@@ -3536,7 +3537,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
                 for (uint8_t byte : privkey_bytes.value()) {
                     priv_key_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
                 }
-                private_keys[utxo.derivation_path] = priv_key_hex.str();
+                private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = priv_key_hex.str();
             }
 
             // Build CanonicalWalletUTXO for coin selection (mirrors sendtoaddress).
