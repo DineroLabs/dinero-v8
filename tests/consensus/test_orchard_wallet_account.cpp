@@ -14,6 +14,16 @@ extern char **environ;
 #include <sqlite3.h>
 #include <unistd.h>
 using dinero::wallet::OrchardAccountState;
+// Public BIP39 test vector, no passphrase. Use the same initial identity in
+// standalone snapshots, child processes and real recovery-created wallets.
+static constexpr const char* kAccountFixtureMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+static constexpr std::array<uint8_t,64> kAccountFixtureSeed{
+    0x5e,0xb0,0x0b,0xbd,0xdc,0xf0,0x69,0x08,0x48,0x89,0xa8,0xab,0x91,0x55,0x56,0x81,
+    0x65,0xf5,0xc4,0x53,0xcc,0xb8,0x5e,0x70,0x81,0x1a,0xae,0xd6,0xf6,0xda,0x5f,0xc1,
+    0x9a,0x5a,0xc4,0x0b,0x38,0x9c,0xd3,0x70,0xd0,0x86,0x20,0x6d,0xec,0x8a,0xa6,0xc4,
+    0x3d,0xae,0xa6,0x69,0x0f,0x20,0xad,0x3d,0x8d,0x48,0xb2,0xd2,0xce,0x9e,0x38,0xe4,
+};
+
 template <class F> static void AccountReject(F fn) {
   bool failed = false;
   try {
@@ -33,7 +43,7 @@ int main(int argc, char **argv) {
       Require(sqlite3_open(argv[2], &source) == SQLITE_OK);
       WalletStorageIdentity identity{WalletNetwork::Regtest,
                                      f.domain.genesis_wire, Hash{44}, 0};
-      const std::array<uint8_t, 64> seed{7};
+      const auto seed = kAccountFixtureSeed;
       WalletStateBytes next = [&] {
         WalletSnapshotStore store(source, identity, seed);
         return std::move(store.Read()->state);
@@ -51,7 +61,7 @@ int main(int argc, char **argv) {
       else Require(std::string(argv[4]) == "before");
       _exit(0);
     }
-    auto keys = WalletKeys::FromSeed(std::array<uint8_t, 64>{7}, 0);
+    auto keys = WalletKeys::FromSeed(kAccountFixtureSeed, 0);
     const auto fvk = keys.ExportFullViewingKey();
     auto initial = OrchardAccountState::Begin(f.domain, fvk, 20001, H(1));
     auto [first, r0] = initial.IssueReceiver(WalletScope::External);
@@ -521,7 +531,7 @@ int main(int argc, char **argv) {
     auto sql = [&](const char *q) {
       Require(sqlite3_exec(db, q, nullptr, nullptr, nullptr) == SQLITE_OK);
     };
-    const std::array<uint8_t, 64> seed{7};
+    const auto seed = kAccountFixtureSeed;
     WalletStorageIdentity identity{WalletNetwork::Regtest,
                                    f.domain.genesis_wire, Hash{44}, 0};
     sql("PRAGMA synchronous=FULL;BEGIN IMMEDIATE;");
@@ -659,12 +669,13 @@ int main(int argc, char **argv) {
     // Exercise the bound consumer against real WalletManager identity/key
     // ownership. Explicit fixture enrollment is not production baseline proof.
     dinero::SelectParams(dinero::Chain::REGTEST);
-    dinero::WalletManager manager(cleanup.p/"bound");manager.create("account");manager.open("account");
+    dinero::WalletManager manager(cleanup.p/"bound");manager.createFromBip39("account",kAccountFixtureMnemonic,"");manager.open("account");
     const auto enroll=[&](const OrchardAccountState& baseline) {
-      Require(manager.storeMasterSeed(std::vector<uint8_t>(seed.begin(),seed.end()),"",false));
       auto lease=manager.AcquireDatabaseLease();auto binding=lease->EnsureDeliveryIdentity();
       Hash walletId{};for(size_t i=0;i<32;++i)walletId[i]=static_cast<uint8_t>(std::stoul(binding.substr(7+2*i,2),nullptr,16));
       auto recoverySeed=lease->CopyRecoverySeed(lease->Session());
+      Require(recoverySeed->Bytes().size()==kAccountFixtureSeed.size() &&
+              std::equal(recoverySeed->Bytes().begin(),recoverySeed->Bytes().end(),kAccountFixtureSeed.begin()));
       Require(sqlite3_exec(lease->Database(),"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)==SQLITE_OK);
       WalletSnapshotStore::InitializeSchemaUnderTransaction(lease->Database());
       WalletSnapshotStore store(lease->Database(),{WalletNetwork::Regtest,f.domain.genesis_wire,walletId,0},recoverySeed->Bytes());
@@ -731,16 +742,16 @@ int main(int argc, char **argv) {
     Require(restoredEmpty.account.IssueReceiver(WalletScope::External).second==r2);
     // Legacy snapshots restore without inventing a parent link. An automatic
     // disconnect must refuse; a matching height cannot authorize a guess.
-    manager.create("legacy");manager.open("legacy");session=enroll(delivered);
+    manager.createFromBip39("legacy",kAccountFixtureMnemonic,"");manager.open("legacy");session=enroll(delivered);
     Require(Owner::Read(manager,session,profile,after).account.ParentSnapshotRevision()==0);
     AccountReject([&]{(void)Owner::Disconnect(manager,session,profile,1,after,removed,block,before);});
     Require(Owner::Read(manager,session,profile,after).revision==1);
-    manager.create("self-link");manager.open("self-link");session=enroll(connected.account);
+    manager.createFromBip39("self-link",kAccountFixtureMnemonic,"");manager.open("self-link");session=enroll(connected.account);
     // Authenticated fixture payload with revision 1 pointing at itself.
     bool self_link_refused=false;
     try {(void)Owner::Read(manager,session,profile,after);} catch(const std::exception&) {self_link_refused=true;}
     if(!self_link_refused) throw std::runtime_error("bound self parent link accepted");
-    manager.create("history");manager.open("history");session=enroll(historyEmpty);
+    manager.createFromBip39("history",kAccountFixtureMnemonic,"");manager.open("history");session=enroll(historyEmpty);
     Owner::RestorePoint historyPoint{historyEmpty.Scan().Checkpoint(),historicalLookups};
     const auto historical=Owner::Historical(manager,session,profile,1,historyPoint,historyDown);
     Require(historical.revision==2&&historical.account.Delivery()==below.Delivery());
