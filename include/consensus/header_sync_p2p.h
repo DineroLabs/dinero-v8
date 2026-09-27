@@ -72,6 +72,16 @@ public:
         uint64_t peer_id, const std::vector<BlockHeader>& headers);
 
     /**
+     * Validate the header carried by a block message through the same selector.
+     * Returns only its own height; does not insert a header/change best work,
+     * consume a headers request, drive
+     * continuation, or certify the block body/active chain. Missing/evicted
+     * headers return no observation. Callers may record synced_headers before
+     * handing the body to a component that can activate it.
+     */
+    std::optional<uint32_t> ObserveBlockHeader(const BlockHeader& header);
+
+    /**
      * Handle incoming getheaders message from peer.
      * We respond with headers we have.
      *

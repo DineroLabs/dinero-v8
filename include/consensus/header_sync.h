@@ -118,6 +118,9 @@ public:
         size_t inserted{0};
         size_t duplicates{0};
         bool request_more{false};
+        // Highest exact header accepted from this complete batch, including duplicates.
+        // Empty/rejected batches do not authorize a peer-height update.
+        std::optional<uint32_t> accepted_height;
     };
 
     explicit HeaderSyncManager(

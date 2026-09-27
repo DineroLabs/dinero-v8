@@ -302,6 +302,8 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
 
     // Validate and add headers one by one
     size_t accepted = 0;
+    std::optional<uint32_t> accepted_height;
+    bool have_all_heights = true;
     for (const BlockHeader& header : headers) {
         // Validate via HeaderChainSelector
         const auto add_result = chain_selector_->AddHeaderWithResult(header);
@@ -333,6 +335,13 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
             return result;
         }
 
+        HeaderIndexEntry exact{};
+        if (chain_selector_->GetHeaderCopy(header.GetHash(), exact)) {
+            accepted_height = std::max(accepted_height.value_or(0), exact.height);
+        } else {
+            // A concurrently evicted side header cannot authorize an estimate.
+            have_all_heights = false;
+        }
         accepted++;
         if (add_result == HeaderChainSelector::AddResult::INSERTED) {
             result.inserted++;
@@ -393,6 +402,7 @@ HeaderSyncManager::ProcessResult HeaderSyncManager::ProcessHeadersWithResult(
         // received frontier; best-work selection remains the selector's job.
         peer_it->second.continuation_hash = headers.back().GetHash();
     }
+    if (have_all_heights) result.accepted_height = accepted_height;
     result.accepted = true;
     return result;
 }

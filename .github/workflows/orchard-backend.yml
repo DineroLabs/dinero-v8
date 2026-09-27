@@ -209,7 +209,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_rocksdb_checksum test_wallet_historical_rpc test_rpc_handler_drain test_wallet_pq_rpc_owner test_wallet_mainnet_readiness test_mining_height2 test_wallet_height2_coinbase test_pruning test_header_status_bits test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod test_header_sync_p2p_integration test_rocksdb_checksum test_wallet_historical_rpc test_rpc_handler_drain test_wallet_pq_rpc_owner test_wallet_mainnet_readiness test_mining_height2 test_wallet_height2_coinbase test_pruning test_header_status_bits test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute initial mining and coinbase indexing fixtures
         run: |
@@ -551,6 +551,22 @@ jobs:
           if sorted(re.findall(r'\[       OK \] HistoricalRpc\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Historical signing cases did not complete exactly once')
           PYTEST
+      - name: Require and execute exact peer header progress
+        run: |
+          ctest --test-dir build-orchard-root -R '^PeerHeaderProgress$' --show-only=json-v1 > orchard-peer-header-progress-inventory.json
+          python3 - <<'PYVERIFY'
+          import json
+          tests=json.load(open('orchard-peer-header-progress-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['PeerHeaderProgress'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Peer header progress test missing or disabled')
+          PYVERIFY
+          ctest --test-dir build-orchard-root -R '^PeerHeaderProgress$' --verbose --no-tests=error --output-log orchard-peer-header-progress-execution.log
+          python3 - <<'PYVERIFY'
+          log=open('orchard-peer-header-progress-execution.log').read()
+          for case in ['ExactBatchAndDuplicates','BlockHeaderWithoutRequestOrTipMutation','RefusalWithoutPublication']:
+              if log.count('PASS PeerHeaderProgress.'+case)!=1:
+                  raise SystemExit('Peer header progress case missing: '+case)
+          PYVERIFY
       - name: Require and execute vendored RocksDB checksum correctness
         run: |
           ctest --test-dir build-orchard-root -R '^RocksDBChecksum$' --show-only=json-v1 > orchard-rocksdb-checksum-inventory.json
@@ -1081,6 +1097,8 @@ jobs:
             orchard-historical-rpc-execution.log
             orchard-owned-signing-inventory.json
             orchard-owned-signing-execution.log
+            orchard-peer-header-progress-inventory.json
+            orchard-peer-header-progress-execution.log
             orchard-rocksdb-checksum-inventory.json
             orchard-rocksdb-checksum-execution.log
             orchard-historical-signing-inventory.json

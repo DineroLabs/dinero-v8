@@ -5622,6 +5622,18 @@ bool DaemonApp::Init(int argc, char** argv) {
             auto header_chain_ptr = ctx_.header_chain;
             auto chainstate_ptr = ctx_.chainstate;
             auto p2p_weak = std::weak_ptr<P2PService>(p2p_service);  // Capture weak to avoid cycle
+            // A valid header proves this peer knows that exact height even when
+            // another path receives/activates its body. Publish before body
+            // processing; never substitute the selector's global best height.
+            auto record_block_header = [header_sync = ctx_.header_sync, p2p_weak](
+                    const std::string& peer_addr, const BlockHeader& header) {
+                const auto height = header_sync->ObserveBlockHeader(header);
+                if (height) {
+                    if (auto p2p = p2p_weak.lock()) {
+                        p2p->get().update_peer_synced_headers(peer_addr, *height);
+                    }
+                }
+            };
             constexpr size_t MAX_HEADERS_PER_MSG = 2000;  // Bitcoin standard
             auto stateless_cmpct_refresh_times =
                 std::make_shared<std::unordered_map<std::string, std::chrono::steady_clock::time_point>>();
@@ -5703,14 +5715,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         }
 
-                        if (added > 0 && header_chain_ptr) {
-                            // #441: copy under the selector's lock.
-                            consensus::HeaderIndexEntry best_copy{};
-                            const bool have_best = header_chain_ptr->GetBestHeaderCopy(best_copy);
-                            auto p2p_locked = p2p_weak.lock();
-                            if (have_best && p2p_locked) {
-                                p2p_locked->get().update_peer_height(peer_addr, best_copy.height);
-                                p2p_locked->get().update_peer_synced_headers(peer_addr, best_copy.height);
+                        if (process_result.accepted_height) {
+                            if (auto p2p_locked = p2p_weak.lock()) {
+                                p2p_locked->get().update_peer_synced_headers(
+                                    peer_addr, *process_result.accepted_height);
                             }
                         }
 
@@ -5874,7 +5882,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto header_chain = ctx_.header_chain;
                 auto prune_service = ctx_.prune;  // Phase 34.8: Capture prune service
 
-                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, header_chain, prune_service, p2p_service](
+                p2p_service->OnNewBlock = [block_relay, chainstate, block_download, header_chain, prune_service, p2p_service, record_block_header](
                     const std::string& peer_addr,
                     const ::P2PMessage& msg
                 ) {
@@ -5951,6 +5959,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                       << "... (scheduler still syncing)" << std::endl;
                             return;
                         }
+
+                        record_block_header(peer_addr, block.header);
 
                         // Relay-requested blocks during sync should be routed through
                         // BlockRelayManager so relay scheduler bookkeeping stays coherent.
@@ -6062,7 +6072,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 std::cout << "[DaemonApp] ✅ Phase G.2 OnNewBlock wired to ChainstateService + BlockRelayManager" << std::endl;
 
                 const bool csn_mode_for_compact = GetConfig().utreexo_stateless;
-                p2p_service->OnCompactBlock = [block_relay, csn_mode_for_compact, chainstate, p2p_service,
+                p2p_service->OnCompactBlock = [block_relay, csn_mode_for_compact, chainstate, p2p_service, record_block_header,
                                                stateless_cmpct_refresh_times,
                                                stateless_cmpct_refresh_retry_armed,
                                                stateless_cmpct_refresh_mutex](
@@ -6101,6 +6111,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                         if (compact.GetTxCount() == 0) {
                             throw std::runtime_error("empty compact block payload");
                         }
+                        record_block_header(peer_addr, compact.header);
                         block_relay->HandleCompactBlock(peer_addr, compact);
                     } catch (const std::exception& e) {
                         g_logger.error("[BlockRelay] Error processing cmpctblock from " + peer_addr +
@@ -6276,7 +6287,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
                 auto* block_ingress = ctx_.block_ingress;
                 if (chainstate) {
-                    block_relay->SetValidateBlockCallback([block_ingress, chainstate, p2p_service, block_download](
+                    block_relay->SetValidateBlockCallback([block_ingress, chainstate, p2p_service, block_download, record_block_header](
                         const Block& block,
                         const std::string& peer_address
                     ) -> dinero::BlockRelayManager::BlockValidationOutcome {
@@ -6289,6 +6300,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 return Outcome::Rejected;
                             }
 
+                            // Reconstructed/orphan bodies may now have a known parent.
+                            record_block_header(peer_address, block.header);
                             const auto accept_result = block_ingress->Submit(block, BlockOrigin::P2P);
                             if (!accept_result.accepted()) {
                                 // Losing the single-flight race is not a

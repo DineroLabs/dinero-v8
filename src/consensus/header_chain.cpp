@@ -14,6 +14,7 @@
 #include "crypto/sha256.h"
 #include <algorithm>
 #include <iostream>
+#include <limits>
 
 namespace dinero {
 namespace consensus {
@@ -132,6 +133,20 @@ HeaderChainSelector::~HeaderChainSelector() {
 
 bool HeaderChainSelector::AddHeader(const BlockHeader& header) {
     return AddHeaderWithResult(header) != AddResult::REJECTED;
+}
+
+std::optional<uint32_t> HeaderChainSelector::ValidateObservedHeaderHeight(
+    const BlockHeader& header) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto known = header_index_.find(header.GetHash());
+    if (known != header_index_.end()) return known->second->height;
+    auto parent = header_index_.find(header.prev_block_hash);
+    if (parent == header_index_.end() ||
+        parent->second->height == std::numeric_limits<uint32_t>::max() ||
+        !ValidateHeader(header, parent->second.get())) {
+        return std::nullopt;
+    }
+    return parent->second->height + 1;
 }
 
 HeaderChainSelector::AddResult HeaderChainSelector::AddHeaderWithResult(const BlockHeader& header) {

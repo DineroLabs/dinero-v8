@@ -9845,6 +9845,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_header_sync_p2p_integration.c
     )
   endif()
   add_test(NAME HeaderSyncP2PIntegration COMMAND test_header_sync_p2p_integration)
+  add_test(NAME PeerHeaderProgress COMMAND test_header_sync_p2p_integration --peer-progress)
+  set_tests_properties(PeerHeaderProgress PROPERTIES TIMEOUT 60 LABELS "consensus;p2p;peer-progress")
 endif()
 
 # ============================================================================
