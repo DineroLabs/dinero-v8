@@ -971,6 +971,7 @@ private:
 #endif
     std::string current_;
     friend class ChainstateService;
+    friend struct WalletSeedReadTestAccess;
     bool RescanBlockchainImpl(int start_height, int gap_limit, ChainDB*, BlockStorage*,
                               const SelectedWalletHistory*, uint64_t expected_session);
     friend class RuntimeOrdinaryDelivery;

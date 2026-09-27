@@ -7822,31 +7822,33 @@ std::optional<std::vector<uint8_t>> WalletManager::loadMasterSeed(const std::str
         return std::nullopt;
     }
 
-    // === STEP 1: Load encrypted seed + encryption_version from database ===
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT encrypted_seed, encryption_version FROM hd_seeds WHERE id = 1";
-
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return std::nullopt;
+    // Capture the established envelope in one checked statement before deriving
+    // any secret. This read may borrow the caller's transaction, never commit it.
+    std::vector<uint8_t> encrypted_blob;
+    int64_t encryption_version = 0;
+    {
+        sqlite3_stmt* raw = nullptr;
+        const int prepared = sqlite3_prepare_v2(
+            db_, "SELECT encrypted_seed, encryption_version FROM hd_seeds WHERE id = 1",
+            -1, &raw, nullptr);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(raw, sqlite3_finalize);
+        if (prepared != SQLITE_OK || sqlite3_step(stmt.get()) != SQLITE_ROW)
+            return std::nullopt;
+        const int version_type = sqlite3_column_type(stmt.get(), 1);
+        if (sqlite3_column_type(stmt.get(), 0) != SQLITE_BLOB ||
+            sqlite3_column_bytes(stmt.get(), 0) != 124 ||
+            (version_type != SQLITE_INTEGER && version_type != SQLITE_NULL))
+            return std::nullopt;
+        encryption_version = version_type == SQLITE_NULL ? 0 : sqlite3_column_int64(stmt.get(), 1);
+        // Only the documented absent/zero legacy marker may probe both KDFs.
+        if (encryption_version < 0 || encryption_version > 2)
+            return std::nullopt;
+        const auto* bytes = static_cast<const uint8_t*>(sqlite3_column_blob(stmt.get(), 0));
+        if (!bytes) return std::nullopt;
+        encrypted_blob.assign(bytes, bytes + 124);
+        if (sqlite3_step(stmt.get()) != SQLITE_DONE)
+            return std::nullopt;
     }
-
-    if (sqlite3_step(stmt) != SQLITE_ROW) {
-        sqlite3_finalize(stmt);
-        return std::nullopt;
-    }
-
-    const void* blob_data = sqlite3_column_blob(stmt, 0);
-    int blob_size = sqlite3_column_bytes(stmt, 0);
-    int encryption_version = sqlite3_column_int(stmt, 1); // 0 if NULL
-
-    if (!blob_data || blob_size < 92) {
-        sqlite3_finalize(stmt);
-        return std::nullopt;
-    }
-
-    std::vector<uint8_t> encrypted_blob(static_cast<const uint8_t*>(blob_data),
-                                        static_cast<const uint8_t*>(blob_data) + blob_size);
-    sqlite3_finalize(stmt);
 
     // === STEP 2: Extract components from encrypted blob ===
     // Format: salt(32) + nonce(12) + ciphertext(64) + tag(16) = 124 bytes
@@ -7857,17 +7859,16 @@ std::optional<std::vector<uint8_t>> WalletManager::loadMasterSeed(const std::str
     // Version-dispatched iteration count:
     //   Version 2 (current) = 600,000 PBKDF2-HMAC-SHA512 iterations
     //   Version 1 (legacy)  = 100,000 PBKDF2-HMAC-SHA512 iterations
-    //   Fallback: try both if version is unknown (0 or missing)
+    //   Legacy unmarked envelope (0 or NULL): authenticate with both known KDFs
     std::vector<uint32_t> iteration_candidates;
     if (encryption_version == 2) {
         iteration_candidates = {600000};
     } else if (encryption_version == 1) {
         iteration_candidates = {100000};
     } else {
-        // Unknown version or NULL — try all known candidates (backward compat)
+        // Explicit legacy-unmarked version only; unsupported versions refused above.
         iteration_candidates = {600000, 100000};
-        WLOG_WARN("Unknown seed encryption_version=" + std::to_string(encryption_version) +
-                  ", trying all known iteration counts");
+        WLOG_INFO("Legacy unmarked seed envelope: trying known iteration counts");
     }
 
     std::vector<uint8_t> salt(encrypted_blob.begin(), encrypted_blob.begin() + SALT_SIZE);

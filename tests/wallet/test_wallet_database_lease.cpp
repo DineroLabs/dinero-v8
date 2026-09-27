@@ -11,15 +11,23 @@
 #include "consensus/pq/p2mr_consensus.h"
 #include "consensus/script_interpreter.h"
 #include "util/hex.h"
+#include "crypto/pbkdf2.h"
+#include "crypto/wallet_crypto.h"
 #include "consensus/chainparams.h"
 #include <gtest/gtest.h>
 #include <sqlite3.h>
+#include <openssl/crypto.h>
 #include <chrono>
 #include <filesystem>
 #include <future>
 #include <thread>
 
 namespace dinero {
+struct WalletSeedReadTestAccess {
+    static std::optional<std::vector<uint8_t>> Read(WalletManager& wallet, const std::string& passphrase) {
+        return wallet.loadMasterSeed(passphrase);
+    }
+};
 struct WalletWorkerTestAccess {
     // Exercise the real enqueue and dispatch code with a deterministic pause
     // between them, without racing a background thread against wallet setup.
@@ -67,6 +75,83 @@ protected:
     std::filesystem::path path;
     std::unique_ptr<dinero::WalletManager> wallet;
 };
+
+class WalletSeedReadTest : public WalletDatabaseLeaseTest {
+protected:
+    std::optional<std::vector<uint8_t>> Read(const std::string& passphrase) {
+        return dinero::WalletSeedReadTestAccess::Read(*wallet,passphrase);
+    }
+    std::string Blob() {
+        sqlite3_stmt* q=nullptr;
+        if(sqlite3_prepare_v2(wallet->getCurrentDatabase(),"SELECT lower(hex(encrypted_seed)) FROM hd_seeds WHERE id=1",-1,&q,nullptr)!=SQLITE_OK)throw std::runtime_error("seed fixture prepare");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> statement(q,sqlite3_finalize);
+        if(sqlite3_step(q)!=SQLITE_ROW)throw std::runtime_error("seed fixture read");
+        return reinterpret_cast<const char*>(sqlite3_column_text(q,0));
+    }
+    static int Interrupt(unsigned event,void* db,void* statement,void*) {
+        const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(statement));
+        if(event==SQLITE_TRACE_ROW && sql && std::string_view(sql).find("SELECT encrypted_seed, encryption_version FROM hd_seeds")!=std::string_view::npos)
+            sqlite3_interrupt(static_cast<sqlite3*>(db));
+        return 0;
+    }
+};
+TEST_F(WalletSeedReadTest, CurrentAndLegacyAuthenticationWithoutPublication) {
+    wallet->open("owner");const auto seed=wallet->GetMasterSeed();ASSERT_TRUE(seed);
+    wallet->encryptWallet("seed-owner");ASSERT_TRUE(wallet->isWalletLocked());
+    EXPECT_EQ(Read("seed-owner"),seed);
+    EXPECT_FALSE(Read("wrong-owner"));
+    EXPECT_FALSE(wallet->GetMasterSeed());EXPECT_FALSE(wallet->GetV7PqMasterKey());
+    auto* db=wallet->getCurrentDatabase();const auto current=Blob();
+    Exec(db,"UPDATE hd_seeds SET encryption_version=0 WHERE id=1");
+    EXPECT_EQ(Read("seed-owner"),seed);
+    const std::string pass="seed-owner";std::vector<uint8_t> salt(32,17),nonce(12,23);
+    std::array<uint8_t,64> derived{};std::array<uint8_t,32> key{};
+    dinero::crypto::PBKDF2_HMAC_SHA512(reinterpret_cast<const uint8_t*>(pass.data()),pass.size(),salt.data(),salt.size(),100000,derived.data(),derived.size());
+    std::copy_n(derived.begin(),32,key.begin());
+    auto encrypted=dinero::crypto::encryptAesGcm(*seed,key,nonce);
+    OPENSSL_cleanse(derived.data(),derived.size());OPENSSL_cleanse(key.data(),key.size());
+    std::vector<uint8_t> blob=salt;blob.insert(blob.end(),nonce.begin(),nonce.end());blob.insert(blob.end(),encrypted.begin(),encrypted.end());
+    const std::string legacy=util::hex(blob);
+    Exec(db,("UPDATE hd_seeds SET encrypted_seed=X'"+legacy+"',encryption_version=1 WHERE id=1").c_str());
+    EXPECT_EQ(Read(pass),seed);
+    Exec(db,"UPDATE hd_seeds SET encryption_version=0 WHERE id=1");EXPECT_EQ(Read(pass),seed);
+    EXPECT_EQ(Blob(),legacy);EXPECT_TRUE(wallet->isWalletLocked());EXPECT_FALSE(wallet->GetMasterSeed());
+    Exec(db,("UPDATE hd_seeds SET encrypted_seed=X'"+current+"',encryption_version=2 WHERE id=1").c_str());
+    wallet->open("owner");EXPECT_EQ(Read(pass),seed);EXPECT_TRUE(wallet->isWalletLocked());
+}
+TEST_F(WalletSeedReadTest, MalformedFieldsAndUnknownVersionsRefuse) {
+    wallet->open("owner");const auto seed=wallet->GetMasterSeed();ASSERT_TRUE(seed);
+    auto* db=wallet->getCurrentDatabase();const auto blob=Blob();
+    Exec(db,"UPDATE hd_seeds SET encrypted_seed=CAST(encrypted_seed AS TEXT) WHERE id=1");
+    EXPECT_FALSE(Read(""));
+    Exec(db,("UPDATE hd_seeds SET encrypted_seed=X'"+blob+"' WHERE id=1").c_str());
+    for(const auto* value:{"X'32'","2.5","3","-1","2147483650"}) {
+        SCOPED_TRACE(value);Exec(db,(std::string("UPDATE hd_seeds SET encryption_version=")+value+" WHERE id=1").c_str());
+        EXPECT_FALSE(Read(""));EXPECT_EQ(wallet->GetMasterSeed(),seed);
+    }
+    Exec(db,"UPDATE hd_seeds SET encryption_version=2,encrypted_seed=substr(encrypted_seed,1,123) WHERE id=1");EXPECT_FALSE(Read(""));
+    Exec(db,("UPDATE hd_seeds SET encrypted_seed=X'"+blob+"' WHERE id=1").c_str());
+    EXPECT_EQ(Read(""),seed);
+    Exec(db,"UPDATE hd_seeds SET encryption_version=3 WHERE id=1");
+    EXPECT_THROW(wallet->encryptWallet("typed-seed-owner"),std::runtime_error);
+    EXPECT_FALSE(wallet->isWalletEncrypted());EXPECT_EQ(Blob(),blob);
+    EXPECT_EQ(wallet->GetMasterSeed(),seed);
+}
+TEST_F(WalletSeedReadTest, IncompleteReadAndBorrowedTransactionPreserveOwner) {
+    wallet->open("owner");const auto seed=wallet->GetMasterSeed();ASSERT_TRUE(seed);auto* db=wallet->getCurrentDatabase();
+    const auto blob=Blob();
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt,db);
+    EXPECT_FALSE(Read(""));
+    sqlite3_trace_v2(db,0,nullptr,nullptr);
+    EXPECT_EQ(Read(""),seed);EXPECT_EQ(Blob(),blob);EXPECT_EQ(wallet->GetMasterSeed(),seed);
+    Exec(db,"BEGIN IMMEDIATE");EXPECT_EQ(Read(""),seed);EXPECT_EQ(sqlite3_get_autocommit(db),0);
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*){
+        return op==SQLITE_READ && table && std::string_view(table)=="hd_seeds"?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    EXPECT_FALSE(Read(""));
+    sqlite3_set_authorizer(db,nullptr,nullptr);EXPECT_EQ(sqlite3_get_autocommit(db),0);Exec(db,"ROLLBACK");
+    EXPECT_EQ(Blob(),blob);EXPECT_EQ(Read(""),seed);
+}
 
 class WalletAddressIssuanceTest : public WalletDatabaseLeaseTest {
 protected:

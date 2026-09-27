@@ -691,3 +691,11 @@ compiler compatibility. Existing test bodies and all three required CI markers
 remain unchanged; the failed original Linux build does not qualify the new
 component until the corrected source completes. See the
 [P2MR key-read scope](wallet-p2mr-key-read-2026-09-27.md).
+
+### Existing master seed envelope reads (2026-09-27)
+
+The actual loader now validates SQL field types, exact envelope size, supported
+versions and completed reads before returning an authenticated seed. Current and
+legacy KDFs are preserved; malformed or interrupted reads refuse without live
+publication. This is a prerequisite for staged unlock, not its completion. See
+[scope and qualification](wallet-seed-read-2026-09-27.md).

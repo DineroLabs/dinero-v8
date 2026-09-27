@@ -429,6 +429,23 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute checked master seed envelope reads
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletSeedRead$' --show-only=json-v1 > orchard-wallet-seed-read-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-seed-read-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletSeedRead'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletSeedRead missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletSeedRead$' --verbose --no-tests=error --output-log orchard-wallet-seed-read-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[       OK \] (WalletSeedReadTest\.\S+)', open('orchard-wallet-seed-read-execution.log').read())
+          expected = ['WalletSeedReadTest.' + name for name in ['CurrentAndLegacyAuthenticationWithoutPublication', 'MalformedFieldsAndUnknownVersionsRefuse', 'IncompleteReadAndBorrowedTransactionPreserveOwner']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Seed reader cases did not execute exactly once')
+          PYTEST
       - name: Require and execute populated wallet encryption lifecycle
         run: |
           ctest --test-dir build-orchard-root -R '^WalletEncryptionOwner$' --show-only=json-v1 > orchard-wallet-encryption-owner-inventory.json
@@ -704,6 +721,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-seed-read-inventory.json
+            orchard-wallet-seed-read-execution.log
             orchard-wallet-p2mr-key-read-inventory.json
             orchard-wallet-p2mr-key-read-execution.log
             orchard-wallet-p2mr-inventory.json
