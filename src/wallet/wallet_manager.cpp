@@ -6970,6 +6970,59 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(cons
                 int rc;while((rc=sqlite3_step(candidate.value.get()))==SQLITE_ROW)imported=true;
                 IssuanceCheck(db_,rc,SQLITE_DONE);
             }
+            // The predecessor import format is an internal scalar under a
+            // different public tweak. Resolve it in this snapshot, before any
+            // cached scalar or HD label can bypass its durable owner.
+            const auto historical_address=AddressCodec::encodeP2TR(
+                Network::MAIN,std::vector<uint8_t>(output.begin(),output.end()));
+            IssuedStatement legacy(db_,"SELECT private_key_enc FROM imported_keys WHERE address=?");
+            legacy.Text(1,historical_address);
+            const int legacy_rc=sqlite3_step(legacy.value.get());
+            if(legacy_rc==SQLITE_ROW) {
+                if(imported) return std::nullopt; // conflicting modern owner
+                struct Secret {std::string value;~Secret(){secureClearString(value);}} stored,plain;
+                if(sqlite3_column_type(legacy.value.get(),0)!=SQLITE_TEXT)return std::nullopt;
+                const auto* bytes=static_cast<const char*>(sqlite3_column_blob(legacy.value.get(),0));
+                const int size=sqlite3_column_bytes(legacy.value.get(),0);
+                if(!bytes || (wallet_encrypted_?(size!=60 && size!=92):size!=64))return std::nullopt;
+                stored.value.assign(bytes,size);
+                legacy.Done();
+                { IssuedStatement policy(db_,"SELECT value FROM settings WHERE key='wallet_encrypted'");
+                  const int rc=sqlite3_step(policy.value.get());
+                  if(rc==SQLITE_ROW){if(!text_matches(policy.value.get(),0,wallet_encrypted_?"1":"0"))return std::nullopt;policy.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                { IssuedStatement metadata(db_,"SELECT encrypted FROM encryption_metadata WHERE id=1");
+                  const int rc=sqlite3_step(metadata.value.get());
+                  if(rc==SQLITE_ROW){if(!int_matches(metadata.value.get(),0,wallet_encrypted_?1:0))return std::nullopt;metadata.Done();}
+                  else {IssuanceCheck(db_,rc,SQLITE_DONE);if(wallet_encrypted_)return std::nullopt;} }
+                if(wallet_encrypted_ && encryption_key_.size()!=32)return std::nullopt;
+                plain.value=wallet_encrypted_?decryptData(stored.value,encryption_key_):stored.value;
+                struct Bytes {std::vector<uint8_t> value;~Bytes(){secureClearBytes(value);}} decoded;
+                if(wallet_encrypted_ && plain.value.size()==32)
+                    decoded.value.assign(plain.value.begin(),plain.value.end());
+                else if(plain.value.size()!=64 || !util::unhex(plain.value,decoded.value) || decoded.value.size()!=32)
+                    return std::nullopt;
+                struct Scalar {std::array<uint8_t,32> value{};~Scalar(){OPENSSL_cleanse(value.data(),value.size());}} scalar;
+                std::copy(decoded.value.begin(),decoded.value.end(),scalar.value.begin());
+                std::array<uint8_t,32> internal{},derived_output{},tweak{};int parity=0;
+                if(!TaprootKeys::DeriveXOnlyPubkey(scalar.value,internal,parity))return std::nullopt;
+                std::array<uint8_t,33> tweak_input{};
+                std::copy(internal.begin(),internal.end(),tweak_input.begin());
+                ::SHA256(tweak_input.data(),tweak_input.size(),tweak.data());
+                std::unique_ptr<secp256k1_context,decltype(&secp256k1_context_destroy)> context(
+                    secp256k1_context_create(SECP256K1_CONTEXT_VERIFY),secp256k1_context_destroy);
+                secp256k1_xonly_pubkey point{},result{};secp256k1_pubkey tweaked{};
+                if(!context || !secp256k1_xonly_pubkey_parse(context.get(),&point,internal.data()) ||
+                   !secp256k1_xonly_pubkey_tweak_add(context.get(),&tweaked,&point,tweak.data()) ||
+                   !secp256k1_xonly_pubkey_from_pubkey(context.get(),&result,nullptr,&tweaked) ||
+                   !secp256k1_xonly_pubkey_serialize(context.get(),derived_output.data(),&result) ||
+                   derived_output!=output)return std::nullopt;
+                read.Commit();
+                // Preserve the API's internal-scalar contract. Historical
+                // signing needs an explicit tweak policy; never cache imports.
+                return std::vector<uint8_t>(scalar.value.begin(),scalar.value.end());
+            }
+            IssuanceCheck(db_,legacy_rc,SQLITE_DONE);
             if(imported) {
                 // Missing, old incomplete, or conflicting tuples refuse. Lookup
                 // never backfills a mapping or treats an import as HD account0.
@@ -7070,68 +7123,6 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKey(cons
     }
 
     if (!path_opt) {
-        // No HD derivation path found - check if this is an imported key
-        // First, we need to find the address for this scriptPubKey to look it up in imported_keys
-        WLOG_INFO("🔍 No HD derivation path for scriptPubKey: " + script_pubkey + " - checking imported keys");
-
-        // Query imported_keys table by deriving address from scriptPubKey
-        // For Taproot (witness v1), scriptPubKey format: 5120 + <32-byte pubkey>
-        if (script_pubkey.length() == 68 && script_pubkey.substr(0, 4) == "5120") {
-            // Extract the 32-byte output pubkey
-            std::string output_pubkey_hex = script_pubkey.substr(4);
-
-            // Encode as bech32m address
-            std::vector<uint8_t> pubkey_bytes;
-            for (size_t i = 0; i < output_pubkey_hex.length(); i += 2) {
-                pubkey_bytes.push_back(std::stoi(output_pubkey_hex.substr(i, 2), nullptr, 16));
-            }
-
-            std::string address = AddressCodec::encodeP2TR(Network::MAIN, pubkey_bytes);
-            WLOG_INFO("🔍 Derived address from scriptPubKey: " + address);
-
-            // Now check imported_keys table
-            sqlite3_stmt* stmt = nullptr;
-            const char* sql = "SELECT private_key_enc FROM imported_keys WHERE address = ?";
-
-            if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_text(stmt, 1, address.c_str(), -1, SQLITE_STATIC);
-                WLOG_INFO("🔍 Querying imported_keys for address: " + address);
-
-                if (sqlite3_step(stmt) == SQLITE_ROW) {
-                    WLOG_INFO("🔍 Found row in imported_keys table");
-                    const unsigned char* enc_key = sqlite3_column_text(stmt, 0);
-                    if (enc_key) {
-                        std::string key_storage(reinterpret_cast<const char*>(enc_key));
-                        sqlite3_finalize(stmt);
-
-                        // Decrypt or decode the private key
-                        std::string privkey_hex;
-                        if (!encryption_key_.empty()) {
-                            // Key is encrypted, decrypt it
-                            privkey_hex = decryptData(key_storage, encryption_key_);
-                        } else {
-                            // Key is stored as plaintext hex
-                            privkey_hex = key_storage;
-                        }
-
-                        if (!privkey_hex.empty() && privkey_hex.length() == 64) {
-                            // Convert hex to bytes
-                            std::vector<uint8_t> privkey_bytes;
-                            for (size_t i = 0; i < privkey_hex.length(); i += 2) {
-                                privkey_bytes.push_back(std::stoi(privkey_hex.substr(i, 2), nullptr, 16));
-                            }
-
-                            // Cache and return
-                            cachePrivateKey(script_pubkey, privkey_bytes);
-                            WLOG_INFO("✅ Found imported private key for scriptPubKey: " + script_pubkey);
-                            return privkey_bytes;
-                        }
-                    }
-                }
-                sqlite3_finalize(stmt);
-            }
-        }
-
         // Fallback: look up the address registry (addresses table) by scriptPubKey.
         // Old wallets may have addresses registered here but not in address_derivation_paths.
         {

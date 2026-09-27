@@ -85,6 +85,10 @@ struct WalletInitialOwnerTestAccess {
     }
 };
 struct WalletUnlockOwnerTestAccess {
+    static void CacheLegacy(WalletManager& w,const std::string& script) {
+        std::vector<uint8_t> scalar(32,0);scalar.back()=67;
+        w.cachePrivateKey(script,scalar);
+    }
     static void Expire(WalletManager& w) {
         std::lock_guard<std::recursive_mutex> lock(w.database_lifecycle_mutex_);
         w.unlock_time_=1;w.unlock_timeout_=1;
@@ -2227,5 +2231,73 @@ TEST(WalletMainnetReadiness, TimeoutHonorsExistingRecoveryPin) {
      }
      EXPECT_TRUE(w.isWalletLocked());EXPECT_TRUE(dinero::WalletUnlockOwnerTestAccess::Cleared(w));EXPECT_TRUE(unlock_rows(w)==rows);
      ASSERT_NO_THROW(w.unlockWallet("password"));EXPECT_TRUE(w.GetV7PqMasterKey()==pq);
+    }fs::remove_all(root);
+}
+
+namespace {
+std::string legacy_script() {
+    // Fixed historical scalar 67/output vector, independent of the reader.
+    const auto decoded=dinero::DecodeWitnessAddress(legacy67,"din");
+    if(!decoded.is_valid)throw std::runtime_error("historical fixture address");
+    return util::hex(decoded.script_pubkey);
+}
+void expect_legacy_scalar(dinero::WalletManager& w) {
+    const auto state=dinero::WalletUnlockOwnerTestAccess::State(w);
+    const auto rows=legacy_rows(w);
+    const auto key=w.deriveKeyForScriptPubKey(legacy_script());
+    ASSERT_TRUE(key);std::vector<uint8_t> expected(32,0);expected.back()=67;
+    EXPECT_EQ(*key,expected);
+    EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);
+    EXPECT_EQ(legacy_rows(w),rows);
+}
+}
+TEST(WalletMainnetReadiness, LegacyKeyReadHistoricalBytesAndReopen) {
+    const auto root=make_temp_dir("din_legacy_lookup_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");
+     std::vector<uint8_t> scalar(32,0);scalar.back()=67;
+     legacy_row(w,legacy67,util::hex(scalar));expect_legacy_scalar(w);
+     w.open("owner");expect_legacy_scalar(w);
+     w.encryptWallet("password");w.unlockWallet("password");
+     const auto seed=w.GetMasterSeed();const auto pq=w.GetV7PqMasterKey();
+     for(bool raw:{false,true}) {
+        legacy_row(w,legacy67,dinero::WalletUnlockOwnerTestAccess::LegacyPayload(w,67,raw));
+        expect_legacy_scalar(w);w.lockWallet();EXPECT_FALSE(w.deriveKeyForScriptPubKey(legacy_script()));
+        w.open("owner");w.unlockWallet("password");expect_legacy_scalar(w);
+        EXPECT_EQ(w.GetMasterSeed(),seed);EXPECT_EQ(w.GetV7PqMasterKey(),pq);
+     }
+    }fs::remove_all(root);
+}
+TEST(WalletMainnetReadiness, LegacyKeyReadMalformedOwnerOverridesCache) {
+    const auto root=make_temp_dir("din_legacy_lookup_owner_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");w.encryptWallet("password");w.unlockWallet("password");
+     const auto good=dinero::WalletUnlockOwnerTestAccess::LegacyPayload(w,67,true);
+     legacy_row(w,legacy67,good);expect_legacy_scalar(w);
+     dinero::WalletUnlockOwnerTestAccess::CacheLegacy(w,legacy_script());
+     for(const auto& payload:{dinero::WalletUnlockOwnerTestAccess::LegacyPayload(w,68,true),std::string("truncated"),std::string(60,'x')}) {
+        legacy_row(w,legacy67,payload);const auto state=dinero::WalletUnlockOwnerTestAccess::State(w),rows=legacy_rows(w);
+        EXPECT_FALSE(w.deriveKeyForScriptPubKey(legacy_script()));
+        EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);EXPECT_EQ(legacy_rows(w),rows);
+     }
+     legacy_row(w,legacy67,good);
+     ASSERT_EQ(sqlite3_exec(w.getCurrentDatabase(),"UPDATE imported_keys SET private_key_enc=CAST(private_key_enc AS BLOB)",nullptr,nullptr,nullptr),SQLITE_OK);
+     EXPECT_FALSE(w.deriveKeyForScriptPubKey(legacy_script()));legacy_row(w,legacy67,good);
+     w.setSetting("wallet_encrypted","0");EXPECT_FALSE(w.deriveKeyForScriptPubKey(legacy_script()));
+     w.setSetting("wallet_encrypted","1");expect_legacy_scalar(w);
+    }fs::remove_all(root);
+}
+TEST(WalletMainnetReadiness, LegacyKeyReadIncompleteAndBorrowedRefuse) {
+    const auto root=make_temp_dir("din_legacy_lookup_read_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");w.encryptWallet("password");w.unlockWallet("password");
+     legacy_row(w,legacy67,dinero::WalletUnlockOwnerTestAccess::LegacyPayload(w,67,true));auto* db=w.getCurrentDatabase();
+     const auto state=dinero::WalletUnlockOwnerTestAccess::State(w),rows=legacy_rows(w);
+     sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*){return op==SQLITE_READ && table && std::string(table)=="imported_keys"?SQLITE_DENY:SQLITE_OK;},nullptr);
+     EXPECT_FALSE(w.deriveKeyForScriptPubKey(legacy_script()));sqlite3_set_authorizer(db,nullptr,nullptr);
+     sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned,void* db,void* statement,void*){const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(statement));if(sql && std::string_view(sql)=="SELECT private_key_enc FROM imported_keys WHERE address=?")sqlite3_interrupt(static_cast<sqlite3*>(db));return 0;},db);
+     EXPECT_FALSE(w.deriveKeyForScriptPubKey(legacy_script()));sqlite3_trace_v2(db,0,nullptr,nullptr);
+     ASSERT_EQ(sqlite3_exec(db,"BEGIN",nullptr,nullptr,nullptr),SQLITE_OK);
+     EXPECT_FALSE(w.deriveKeyForScriptPubKey(legacy_script()));EXPECT_FALSE(sqlite3_get_autocommit(db));
+     ASSERT_EQ(sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr),SQLITE_OK);
+     EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);EXPECT_EQ(legacy_rows(w),rows);
+     expect_legacy_scalar(w);
     }fs::remove_all(root);
 }

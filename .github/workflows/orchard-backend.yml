@@ -499,6 +499,24 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Imported owner inventory cases missing, duplicated or unexpected')
           PYTEST
+      - name: Require and execute historical imported key reads
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_LegacyKeyRead' --show-only=json-v1 > orchard-wallet-legacy-key-read-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_LegacyKeyReadHistoricalBytesAndReopen', 'WalletMainnetReadiness_LegacyKeyReadMalformedOwnerOverridesCache', 'WalletMainnetReadiness_LegacyKeyReadIncompleteAndBorrowedRefuse']
+          tests = json.load(open('orchard-wallet-legacy-key-read-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Historical imported key read tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_LegacyKeyRead' --verbose --no-tests=error --output-log orchard-wallet-legacy-key-read-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.LegacyKeyReadHistoricalBytesAndReopen', 'WalletMainnetReadiness.LegacyKeyReadMalformedOwnerOverridesCache', 'WalletMainnetReadiness.LegacyKeyReadIncompleteAndBorrowedRefuse']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.LegacyKeyRead\w+)', open('orchard-wallet-legacy-key-read-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Historical imported key read cases missing, duplicated or unexpected')
+          PYTEST
       - name: Require and execute PQ input-root provider checks
         run: |
           ctest --test-dir build-orchard-root -R '^WalletPqRootProvider$' --show-only=json-v1 > orchard-pq-root-provider-inventory.json
@@ -1003,6 +1021,8 @@ jobs:
             orchard-wallet-pq-unlock-execution.log
             orchard-wallet-modern-inventory-inventory.json
             orchard-wallet-modern-inventory-execution.log
+            orchard-wallet-legacy-key-read-inventory.json
+            orchard-wallet-legacy-key-read-execution.log
             orchard-wallet-legacy-inventory-inventory.json
             orchard-wallet-legacy-inventory-execution.log
             orchard-wallet-staged-unlock-inventory.json

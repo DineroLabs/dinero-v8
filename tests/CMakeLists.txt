@@ -13164,6 +13164,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     ModernInventoryBindingAndReopen
     ModernInventoryCorruptionAndBindingsRefuse
     ModernInventoryIncompleteReadPreservesOwner
+    LegacyKeyReadHistoricalBytesAndReopen
+    LegacyKeyReadMalformedOwnerOverridesCache
+    LegacyKeyReadIncompleteAndBorrowedRefuse
     LegacyInventoryHistoricalBindingAndReopen
     LegacyInventoryMismatchAndMalformedRowsRefuse
     LegacyInventoryIncompleteReadPreservesOwner

@@ -846,6 +846,9 @@ public:
      * ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address string.
      *
      * @param script_pubkey The hex-encoded scriptPubKey to get the private key for
+     * Imported results are internal scalars. Predecessor imports used the
+     * historical SHA256(x-only public key || 0x00) tweak; callers must not
+     * reinterpret them as modern TapTweak signing authority.
      * @return Private key bytes (32 bytes) or std::nullopt if not found
      */
     std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKey(const std::string& script_pubkey);
