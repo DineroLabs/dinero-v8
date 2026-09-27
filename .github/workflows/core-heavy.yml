@@ -111,7 +111,8 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Full default build
-        run: cmake --build build-core-heavy -j
+        # Collect all independent link failures; Ninja still exits nonzero on failure.
+        run: cmake --build build-core-heavy -j -- -k 0
 
       # Same integrity gate as tests.yml: registered => built, in this
       # build configuration (see scripts/ci/check_ctest_integrity.py).

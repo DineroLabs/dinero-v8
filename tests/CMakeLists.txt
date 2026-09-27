@@ -12901,6 +12901,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_mining_height2.cpp)
   add_executable(test_mining_height2
     tests/consensus/test_mining_height2.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
 
   target_include_directories(test_mining_height2 PRIVATE
@@ -12932,6 +12933,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/consensus/test_wallet_height2_coinbase.cpp)
   add_executable(test_wallet_height2_coinbase
     tests/consensus/test_wallet_height2_coinbase.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
 
   target_include_directories(test_wallet_height2_coinbase PRIVATE

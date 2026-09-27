@@ -708,3 +708,12 @@ Linux archive groups, with an independent mandatory execution lane. Fixtures,
 production code, assertions and deadlines are unchanged. See
 [storage test linkage](storage-test-archive-link-2026-09-27.md); new Linux
 qualification remains required before advancing the draft PR.
+
+## Initial mining/coinbase fixture linkage (2026-09-27)
+
+Full Linux builds exposed two further missing daemon-only mempool symbols after
+the storage target links passed. Existing non-mempool isolation now covers the
+two unchanged height-one fixtures, and the dedicated lane requires their actual
+execution. Full Ninja builds collect independent failures while retaining a
+nonzero failure exit. See [fixture linkage](height-one-test-link-2026-09-27.md).
+New Linux qualification remains required; the draft PR has not advanced.

@@ -130,7 +130,8 @@ jobs:
 
       - name: Full default build
         id: build
-        run: cmake --build build-tests -j
+        # Collect all independent link failures; Ninja still exits nonzero on failure.
+        run: cmake --build build-tests -j -- -k 0
 
       - name: Verify default-backend replay and origin refusal
         run: |
@@ -883,7 +884,8 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Full default build (includes registered QUIC test targets)
-        run: cmake --build build-tests-quic -j
+        # Collect all independent link failures; Ninja still exits nonzero on failure.
+        run: cmake --build build-tests-quic -j -- -k 0
 
       # Same gate as the default lane, now over a registry that INCLUDES
       # the QUIC family: registered => built, in this configuration too.
