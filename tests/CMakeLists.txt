@@ -13936,3 +13936,17 @@ if(UNIX)
   add_test(NAME RpcHandlerDrain COMMAND test_rpc_handler_drain)
   set_tests_properties(RpcHandlerDrain PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;lifecycle;shutdown")
 endif()
+
+# Exercise the actual vendored checksum implementation against an independent
+# byte-wise reference. ARM hosts execute both hardware paths explicitly.
+if(DINERO_USE_VENDORED_DEPS)
+  add_executable(test_rocksdb_checksum tests/storage/test_rocksdb_checksum.cpp)
+  target_include_directories(test_rocksdb_checksum PRIVATE "${ROCKSDB_SOURCE_DIR}")
+  target_link_libraries(test_rocksdb_checksum PRIVATE RocksDB::rocksdb)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$" AND
+     CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    target_compile_options(test_rocksdb_checksum PRIVATE -march=armv8-a+crc+crypto)
+  endif()
+  add_test(NAME RocksDBChecksum COMMAND test_rocksdb_checksum)
+  set_tests_properties(RocksDBChecksum PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "storage;checksum;platform")
+endif()

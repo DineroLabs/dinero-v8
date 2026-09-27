@@ -30,7 +30,10 @@ if(DINERO_USE_VENDORED_DEPS)
     message(FATAL_ERROR "RocksDB submodule not initialized. Run: git submodule update --init --recursive")
   endif()
 
-  set(ROCKSDB_SOURCE_DIR  "${CMAKE_SOURCE_DIR}/third_party/rocksdb")
+  include(${CMAKE_CURRENT_LIST_DIR}/PrepareRocksDB.cmake)
+  set(ROCKSDB_SOURCE_DIR "${CMAKE_BINARY_DIR}/_deps/rocksdb-source")
+  dinero_prepare_rocksdb_source("${CMAKE_SOURCE_DIR}/third_party/rocksdb"
+                               "${ROCKSDB_SOURCE_DIR}")
   set(ROCKSDB_BINARY_DIR  "${CMAKE_BINARY_DIR}/_deps/rocksdb-build")
   set(ROCKSDB_INSTALL_DIR "${CMAKE_BINARY_DIR}/_deps/rocksdb-install")
 

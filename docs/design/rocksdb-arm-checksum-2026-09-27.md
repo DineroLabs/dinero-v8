@@ -1,0 +1,19 @@
+# RocksDB ARM checksum byte loads
+
+The ARM hardware CRC32C implementation accepts byte slices. Its word operations now read bytes with `memcpy` into local integer values, including the parallel 1024-byte loop and the 8/4/2-byte tail. The hardware algorithm and polynomial are unchanged. Length bookkeeping retains `size_t`, and the carried ARM implementation has no alignment-sanitizer suppression attribute.
+
+The pinned RocksDB submodule stays unchanged. `PrepareRocksDB.cmake` verifies the exact upstream checksum source, copies sources into this build's `_deps/rocksdb-source`, and replaces only `util/crc32c_arm64.cc` with the reviewed source under `cmake/rocksdb`. An upstream checksum change fails configuration and requires review. Upstream licenses remain in the carried source. The build copy has no Git checkout; its generated RocksDB version metadata is not a claim that the patched library equals an unmodified upstream revision. Source and binary provenance must include the pin and this carried fix.
+
+`RocksDBChecksum` compares the actual library against an independent bitwise CRC32C reference and verifies incremental extension. Inputs cover offsets 0–15, all small tails, and boundaries around 1024-byte and multiple-block operation. ARM qualification explicitly executes serial and PMULL paths and requires their runtime support. Other architectures report that ARM execution is unavailable and qualify only their actual public checksum path. The test does not allocate or qualify multi-gigabyte inputs.
+
+Full dependency instrumentation must be built separately with ASan/UBSan enabled for every RocksDB compile command, without enabling the upstream macro that suppresses alignment checks. The actual Orchard outbox, commit-owner and indexed-commit component executions use that complete instrumented library and freshly instrumented linked project C++ sources. Rust and other external dependencies remain outside this instrumentation scope. No old unsafe checksum implementation or operational exploit is executed as a control. Actual qualification results are recorded after execution; this change alone does not establish platform or release readiness.
+
+## Local qualification result
+
+Fresh ON and OFF builds passed the full daemon and declared component targets. ON passed five CTests (checksum, block staging, commit owner, indexed commit and runtime outbox); OFF passed checksum and owned wallet signing. Both executed all three checksum markers.
+
+The complete RocksDB library was freshly built with ASan/UBSan: 343 actual C++ compile commands and 343 archive members were checked against the build log. Its compile database also lists four tool commands that were not built; they are excluded from the compilation count. All 922 recorded dependency source/header inputs remained unchanged. Every library compile command enabled both sanitizers without the upstream suppression macro.
+
+All 70 project C++ files linked into the storage fixture were freshly instrumented, plus the separate checksum fixture. The three actual instrumented storage runs (outbox, commit owner and indexed commit) and checksum cases passed; 1,292 project/source inputs remained unchanged. Link maps verify use of the complete instrumented RocksDB archive and no project C++ archive members. Two copied, memory-safe arithmetic errors each failed the independent checksum reference assertion; restoring the implementation passed all three checksum markers. No unsafe predecessor was executed.
+
+This completes the previously blocked ARM checksum/dependency qualification for these storage fixtures. It does not qualify all RocksDB APIs, other external dependencies, whole-node behavior, load, Windows or release readiness. macOS leak detection remained disabled. The earlier private failure evidence stays unchanged.
