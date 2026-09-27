@@ -8699,104 +8699,125 @@ void WalletManager::registerP2MRAddress(const std::vector<uint8_t>& script_pubke
     }
 }
 
-void WalletManager::storeTaprootKey(const std::string& address,
+bool WalletManager::storeTaprootKey(const std::string& address,
                                     const std::array<uint8_t, 32>& internal_privkey,
                                     const std::array<uint8_t, 32>& internal_pubkey,
                                     const std::array<uint8_t, 32>& output_pubkey,
-                                    const std::string& label) {
-    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
-    if (!db_) {
-        WLOG_ERR("[storeTaprootKey] No wallet database open");
-        return;
-    }
+                                    const std::string& label, uint64_t expected_session) {
+    try {
+        auto lease = AcquireDatabaseLease();
+        if (!db_ || !sqlite3_get_autocommit(db_) || recovery_seeds_ ||
+            (expected_session && lease->Session()!=expected_session)) return false;
+        checkUnlockTimeout();
+        IssuedAddressTransaction transaction(db_);
+        const auto text_matches=[](sqlite3_stmt* q,int column,std::string_view expected) {
+            const auto* value=sqlite3_column_text(q,column);
+            return sqlite3_column_type(q,column)==SQLITE_TEXT && value &&
+                sqlite3_column_bytes(q,column)==int(expected.size()) &&
+                std::memcmp(value,expected.data(),expected.size())==0;
+        };
+        // Read the durable policy while the real wallet session is pinned.
+        IssuedStatement policy(db_, "SELECT value FROM settings WHERE key='wallet_encrypted'");
+        int rc = sqlite3_step(policy.value.get());
+        bool encrypted = false;
+        const bool policy_present=rc==SQLITE_ROW;
+        if (rc == SQLITE_ROW) {
+            if (!text_matches(policy.value.get(),0,"0") && !text_matches(policy.value.get(),0,"1")) return false;
+            encrypted = text_matches(policy.value.get(),0,"1");
+            policy.Done();
+        } else IssuanceCheck(db_,rc,SQLITE_DONE);
+        { IssuedStatement metadata(db_,"SELECT encrypted FROM encryption_metadata WHERE id=1");
+          rc=sqlite3_step(metadata.value.get());
+          if(rc==SQLITE_ROW) {
+              const int flag=sqlite3_column_int(metadata.value.get(),0);
+              if(sqlite3_column_type(metadata.value.get(),0)!=SQLITE_INTEGER || (flag!=0 && flag!=1) ||
+                 (policy_present && encrypted!=(flag==1)))return false;
+              encrypted=flag==1;metadata.Done();
+          } else IssuanceCheck(db_,rc,SQLITE_DONE); }
+        if (encrypted != wallet_encrypted_ || (encrypted && (wallet_locked_ || encryption_key_.size()!=32))) return false;
 
-    // Create taproot_keys table if it doesn't exist.
-    // is_privkey_encrypted: 1 = AES-256-GCM encrypted under wallet key, 0 = raw (unencrypted wallet)
-    const char* create_sql = R"(
-        CREATE TABLE IF NOT EXISTS taproot_keys (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            address TEXT UNIQUE NOT NULL,
-            internal_privkey BLOB NOT NULL,
-            internal_pubkey BLOB NOT NULL,
-            output_pubkey BLOB NOT NULL,
-            label TEXT,
-            created_at INTEGER NOT NULL,
-            is_privkey_encrypted INTEGER NOT NULL DEFAULT 0
-        )
-    )";
-    sqlite3_exec(db_, create_sql, nullptr, nullptr, nullptr);
-    // Migration: add column for wallets created before this change
-    sqlite3_exec(db_, "ALTER TABLE taproot_keys ADD COLUMN is_privkey_encrypted INTEGER NOT NULL DEFAULT 0",
-                 nullptr, nullptr, nullptr);
-
-    // Create taproot_key_mapping table if needed
-    const char* mapping_create_sql = R"(
-        CREATE TABLE IF NOT EXISTS taproot_key_mapping (
-            output_pubkey BLOB PRIMARY KEY,
-            internal_pubkey BLOB NOT NULL,
-            derivation_path TEXT,
-            created_at INTEGER NOT NULL
-        )
-    )";
-    sqlite3_exec(db_, mapping_create_sql, nullptr, nullptr, nullptr);
-
-    // Encrypt the imported private key under the wallet encryption key if available.
-    // Unencrypted wallets store it raw (matching the unencrypted seed semantics).
-    std::vector<uint8_t> privkey_blob(internal_privkey.begin(), internal_privkey.end());
-    int is_privkey_encrypted = 0;
-    if (!encryption_key_.empty()) {
-        try {
-            std::string raw(internal_privkey.begin(), internal_privkey.end());
-            std::string enc = encryptData(raw, encryption_key_);
-            privkey_blob.assign(enc.begin(), enc.end());
-            is_privkey_encrypted = 1;
-        } catch (const std::exception& e) {
-            WLOG_ERR("[storeTaprootKey] Encryption failed, storing plaintext: " + std::string(e.what()));
-        }
-    }
-
-    const char* sql = "INSERT OR REPLACE INTO taproot_keys "
-                      "(address, internal_privkey, internal_pubkey, output_pubkey, label, created_at, is_privkey_encrypted) "
-                      "VALUES (?, ?, ?, ?, ?, ?, ?)";
-    sqlite3_stmt* stmt = nullptr;
-
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_text(stmt, 1, address.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_blob(stmt, 2, privkey_blob.data(), static_cast<int>(privkey_blob.size()), SQLITE_TRANSIENT);
-        sqlite3_bind_blob(stmt, 3, internal_pubkey.data(), 32, SQLITE_STATIC);
-        sqlite3_bind_blob(stmt, 4, output_pubkey.data(), 32, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 5, label.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int64(stmt, 6, std::time(nullptr));
-        sqlite3_bind_int(stmt, 7, is_privkey_encrypted);
-
-        int rc = sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-
-        if (rc == SQLITE_DONE) {
-            WLOG_INFO("[storeTaprootKey] ✅ Stored Taproot key for address: " + address +
-                      (is_privkey_encrypted ? " (encrypted)" : " (plaintext — wallet not encrypted)"));
+        std::array<uint8_t,32> derived_internal{}, derived_output{}; int parity=0;
+        if (!TaprootKeys::DeriveXOnlyPubkey(internal_privkey,derived_internal,parity) ||
+            derived_internal!=internal_pubkey ||
+            !TaprootKeys::ComputeTweakedPubkey(internal_pubkey,derived_output) || derived_output!=output_pubkey) return false;
+        const auto& network=Params().name;
+        const std::string hrp=network=="regtest"?"rdin":network=="testnet"?"tdin":"din";
+        if (TaprootKeys::CreateTaprootAddress(output_pubkey,hrp)!=address) return false;
+        std::vector<uint8_t> script{0x51,0x20};script.insert(script.end(),output_pubkey.begin(),output_pubkey.end());
+        const std::string path="tr("+util::hex(std::vector<uint8_t>(internal_pubkey.begin(),internal_pubkey.end())).substr(0,8)+"...)";
+        const std::string script_hex=util::hex(script);
+        const auto now=std::time(nullptr);
+        exec(db_, R"(CREATE TABLE IF NOT EXISTS taproot_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, address TEXT UNIQUE NOT NULL,
+            internal_privkey BLOB NOT NULL, internal_pubkey BLOB NOT NULL, output_pubkey BLOB NOT NULL,
+            label TEXT, created_at INTEGER NOT NULL, is_privkey_encrypted INTEGER NOT NULL DEFAULT 0))");
+        bool has_encryption_flag=false;
+        { IssuedStatement columns(db_,"PRAGMA table_info(taproot_keys)");
+          while ((rc=sqlite3_step(columns.value.get()))==SQLITE_ROW) {
+              const auto* name=sqlite3_column_text(columns.value.get(),1);
+              if(!name) throw std::runtime_error("Imported key schema unavailable");
+              has_encryption_flag |= std::string_view(reinterpret_cast<const char*>(name))=="is_privkey_encrypted";
+          }
+          IssuanceCheck(db_,rc,SQLITE_DONE); }
+        if(!has_encryption_flag)exec(db_,"ALTER TABLE taproot_keys ADD COLUMN is_privkey_encrypted INTEGER NOT NULL DEFAULT 0");
+        exec(db_, R"(CREATE TABLE IF NOT EXISTS taproot_key_mapping (
+            output_pubkey BLOB PRIMARY KEY, internal_pubkey BLOB NOT NULL,
+            derivation_path TEXT, created_at INTEGER NOT NULL))");
+        { IssuedStatement watch(db_,"INSERT OR IGNORE INTO watch_scripts(script_pubkey,path,is_change,last_seen_height,created_at) VALUES(?,?,0,0,?)");
+          watch.Blob(1,script.data(),int(script.size()));watch.Text(2,path);watch.Int(3,now);watch.Done();
+          IssuedStatement verify(db_,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+          verify.Blob(1,script.data(),int(script.size()));IssuanceCheck(db_,sqlite3_step(verify.value.get()),SQLITE_ROW);
+          if(!text_matches(verify.value.get(),0,path) || sqlite3_column_type(verify.value.get(),1)!=SQLITE_INTEGER || sqlite3_column_int(verify.value.get(),1)!=0)
+              throw std::runtime_error("Imported key watch path conflict");
+          verify.Done(); }
+        { IssuedStatement mapping(db_,"INSERT OR IGNORE INTO taproot_key_mapping(output_pubkey,internal_pubkey,derivation_path,created_at) VALUES(?,?,?,?)");
+          mapping.Blob(1,output_pubkey.data(),32);mapping.Blob(2,internal_pubkey.data(),32);mapping.Text(3,path);mapping.Int(4,now);mapping.Done();
+          IssuedStatement verify(db_,"SELECT internal_pubkey,derivation_path FROM taproot_key_mapping WHERE output_pubkey=?");
+          verify.Blob(1,output_pubkey.data(),32);IssuanceCheck(db_,sqlite3_step(verify.value.get()),SQLITE_ROW);
+          const auto* key=static_cast<const uint8_t*>(sqlite3_column_blob(verify.value.get(),0));
+          if(!key || sqlite3_column_type(verify.value.get(),0)!=SQLITE_BLOB || sqlite3_column_bytes(verify.value.get(),0)!=32 ||
+              !std::equal(internal_pubkey.begin(),internal_pubkey.end(),key) || !text_matches(verify.value.get(),1,path))throw std::runtime_error("Imported key mapping conflict");
+          verify.Done(); }
+        // Cleansed on every exit, including encryption and SQLite failures.
+        struct Secret { std::string value; ~Secret(){secureClearString(value);} } raw, stored;
+        raw.value.assign(internal_privkey.begin(),internal_privkey.end());
+        stored.value=encrypted?encryptData(raw.value,encryption_key_):raw.value;
+        { IssuedStatement key(db_, R"(INSERT INTO taproot_keys(address,internal_privkey,internal_pubkey,output_pubkey,label,created_at,is_privkey_encrypted)
+            VALUES(?,?,?,?,?,?,?) ON CONFLICT(address) DO UPDATE SET internal_privkey=excluded.internal_privkey,
+            label=excluded.label,is_privkey_encrypted=excluded.is_privkey_encrypted
+            WHERE internal_pubkey=excluded.internal_pubkey AND output_pubkey=excluded.output_pubkey)");
+          key.Text(1,address);key.Blob(2,stored.value.data(),int(stored.value.size()));key.Blob(3,internal_pubkey.data(),32);
+          key.Blob(4,output_pubkey.data(),32);key.Text(5,label);key.Int(6,now);key.Int(7,encrypted?1:0);key.Done(true); }
+        bool exists=false;const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+        { IssuedStatement existing(db_,wallet_column?
+              "SELECT account,type,script_pubkey,wallet_id FROM addresses WHERE address=?":
+              "SELECT account,type,script_pubkey,1 FROM addresses WHERE address=?");
+          existing.Text(1,address);rc=sqlite3_step(existing.value.get());
+          if(rc==SQLITE_ROW) {
+              if(sqlite3_column_type(existing.value.get(),0)!=SQLITE_INTEGER || sqlite3_column_int(existing.value.get(),0)!=-1 ||
+                 sqlite3_column_type(existing.value.get(),3)!=SQLITE_INTEGER || sqlite3_column_int(existing.value.get(),3)!=1 ||
+                 (!text_matches(existing.value.get(),1,"p2tr") && !text_matches(existing.value.get(),1,"taproot_imported")) ||
+                 (sqlite3_column_type(existing.value.get(),2)!=SQLITE_NULL && !text_matches(existing.value.get(),2,"") &&
+                  !text_matches(existing.value.get(),2,script_hex)))throw std::runtime_error("Imported address ownership conflict");
+              exists=true;existing.Done();
+          } else IssuanceCheck(db_,rc,SQLITE_DONE); }
+        if(!exists) {
+            const int next=getNextAddressIndex(-1,0);
+            IssuedStatement row(db_,wallet_column?
+                "INSERT INTO addresses(wallet_id,account,change,idx,address,type,script_pubkey,label,created_at) VALUES(1,-1,0,?,?,'p2tr',?,?,?)":
+                "INSERT INTO addresses(account,change,idx,address,type,script_pubkey,label,created_at) VALUES(-1,0,?,?,'p2tr',?,?,?)");
+            row.Int(1,next);row.Text(2,address);row.Text(3,script_hex);row.Text(4,label);row.Int(5,now);row.Done(true);
         } else {
-            WLOG_ERR("[storeTaprootKey] Failed to store key: " + std::string(sqlite3_errmsg(db_)));
+            IssuedStatement row(db_,"UPDATE addresses SET type='p2tr',script_pubkey=?,label=?,is_system_label=0 WHERE address=?");
+            row.Text(1,script_hex);row.Text(2,label);row.Text(3,address);row.Done(true);
         }
-    } else {
-        WLOG_ERR("[storeTaprootKey] Failed to prepare SQL: " + std::string(sqlite3_errmsg(db_)));
+        transaction.Commit();
+        if(utxo_index_)utxo_index_->RegisterAddress(script,path);
+        return true;
+    } catch(const std::exception& error) {
+        WLOG_ERR("[storeTaprootKey] Import refused: "+std::string(error.what()));
+        return false;
     }
-
-    // Also add to main addresses table for address book
-    const char* addr_sql = "INSERT OR IGNORE INTO addresses (account, change, idx, address, type, created_at) VALUES (?, ?, ?, ?, ?, ?)";
-    if (sqlite3_prepare_v2(db_, addr_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-        sqlite3_bind_int(stmt, 1, -1);  // -1 indicates imported (not HD derived)
-        sqlite3_bind_int(stmt, 2, 0);
-        sqlite3_bind_int(stmt, 3, 0);
-        sqlite3_bind_text(stmt, 4, address.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_text(stmt, 5, "taproot_imported", -1, SQLITE_STATIC);
-        sqlite3_bind_int64(stmt, 6, std::time(nullptr));
-        sqlite3_step(stmt);
-        sqlite3_finalize(stmt);
-    }
-
-    // Set label
-    setAddressLabel(address, label);
 }
 
 // ═══════════════════════════════════════════════════════════════

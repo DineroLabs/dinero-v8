@@ -2,6 +2,8 @@
 #include "wallet/shielded_wallet_ops.h"
 #include "wallet/wallet_worker.h"
 #include "wallet/utxo_index.h"
+#include "wallet/taproot_keys.h"
+#include "util/hex.h"
 #include "consensus/chainparams.h"
 #include <gtest/gtest.h>
 #include <sqlite3.h>
@@ -160,6 +162,91 @@ TEST_F(WalletAddressIssuanceTest, IndexReadFailureAndExhaustionRefuse) {
     Exec(db,"UPDATE addresses SET idx=2147483647 WHERE account=0 AND change=0 AND idx=(SELECT MAX(idx) FROM addresses WHERE account=0 AND change=0)");
     EXPECT_THROW(wallet->getNextAddressIndex(0,0),std::runtime_error);
     EXPECT_TRUE(Issue(0).empty());
+}
+
+class WalletTaprootImportTest : public WalletAddressIssuanceTest {
+protected:
+    struct Import {
+        std::array<uint8_t,32> secret{},internal{},output{};
+        std::vector<uint8_t> script;std::string address;
+        explicit Import(uint8_t n) {
+            secret.back()=n;int parity=0;
+            if(!dinero::TaprootKeys::DeriveXOnlyPubkey(secret,internal,parity) ||
+               !dinero::TaprootKeys::ComputeTweakedPubkey(internal,output))throw std::runtime_error("test key");
+            const auto& network=dinero::Params().name;
+            address=dinero::TaprootKeys::CreateTaprootAddress(output,network=="regtest"?"rdin":network=="testnet"?"tdin":"din");
+            script={0x51,0x20};script.insert(script.end(),output.begin(),output.end());
+        }
+    };
+    bool Store(const Import& key) {return wallet->storeTaprootKey(key.address,key.secret,key.internal,key.output,"import label");}
+    std::vector<int64_t> Rows() {
+        auto r=Inventory();auto* db=wallet->getCurrentDatabase();
+        r.push_back(Scalar(db,"SELECT count(*) FROM taproot_keys"));
+        r.push_back(Scalar(db,"SELECT count(*) FROM taproot_key_mapping"));return r;
+    }
+};
+TEST_F(WalletTaprootImportTest, CompleteImportReopensAndReimports) {
+    wallet->open("owner");dinero::UTXOIndex index((path/"import-index.sqlite").string());ASSERT_TRUE(index.Initialize());wallet->setUTXOIndex(&index);
+    struct ResetIndex { dinero::WalletManager& wallet; ~ResetIndex(){wallet.setUTXOIndex(nullptr);} } reset{*wallet};
+    Import first(11),second(12);ASSERT_TRUE(Store(first));ASSERT_TRUE(Store(second));
+    auto* db=wallet->getCurrentDatabase();
+    EXPECT_EQ(Scalar(db,"SELECT count(*) FROM addresses WHERE account=-1 AND type='p2tr' AND length(script_pubkey)=68 AND label='import label'"),2);
+    EXPECT_EQ(Scalar(db,"SELECT count(*) FROM taproot_keys WHERE length(internal_privkey)=32 AND is_privkey_encrypted=0"),2);
+    ASSERT_TRUE(index.IsOurScript(first.script));ASSERT_TRUE(index.IsOurScript(second.script));
+    const auto before=Rows();ASSERT_TRUE(Store(first));EXPECT_EQ(Rows(),before);
+    wallet->open("owner");index.ClearRegisteredAddresses();wallet->LoadAddressesIntoUTXOIndex();
+    EXPECT_TRUE(index.IsOurScript(first.script));EXPECT_TRUE(index.IsOurScript(second.script));
+    EXPECT_EQ(Rows(),before);ASSERT_TRUE(Store(second));EXPECT_EQ(Rows(),before);
+}
+TEST_F(WalletTaprootImportTest, RequiredWritesAndCommitRollback) {
+    wallet->open("owner");dinero::UTXOIndex index((path/"import-index.sqlite").string());ASSERT_TRUE(index.Initialize());wallet->setUTXOIndex(&index);
+    struct ResetIndex { dinero::WalletManager& wallet; ~ResetIndex(){wallet.setUTXOIndex(nullptr);} } reset{*wallet};
+    auto* db=wallet->getCurrentDatabase();const auto initial=Inventory();Import schema_key(13);
+    sqlite3_set_authorizer(db,[](void*,int action,const char* table,const char*,const char*,const char*) {
+        return action==SQLITE_INSERT && table && std::string_view(table)=="taproot_keys"?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    const bool refused=!Store(schema_key);sqlite3_set_authorizer(db,nullptr,nullptr);
+    ASSERT_TRUE(refused);EXPECT_EQ(Inventory(),initial);EXPECT_FALSE(index.IsOurScript(schema_key.script));
+    EXPECT_EQ(Scalar(db,"SELECT count(*) FROM sqlite_master WHERE name IN ('taproot_keys','taproot_key_mapping')"),0);
+    ASSERT_TRUE(Store(schema_key));int n=14;
+    for(const auto* table:{"watch_scripts","taproot_key_mapping","taproot_keys","addresses"}) {
+        SCOPED_TRACE(table);Import key(n++);const auto before=Rows();
+        Exec(db,("CREATE TRIGGER fail_import BEFORE INSERT ON "+std::string(table)+" BEGIN SELECT RAISE(ABORT,'import write failure'); END").c_str());
+        ASSERT_FALSE(Store(key));EXPECT_EQ(Rows(),before);EXPECT_FALSE(index.IsOurScript(key.script));EXPECT_EQ(sqlite3_get_autocommit(db),1);
+        Exec(db,"DROP TRIGGER fail_import");wallet->open("owner");db=wallet->getCurrentDatabase();
+        EXPECT_EQ(Rows(),before);ASSERT_TRUE(Store(key));
+    }
+    Exec(db,"PRAGMA foreign_keys=ON; CREATE TABLE import_parent(id INTEGER PRIMARY KEY); CREATE TABLE import_child(id INTEGER REFERENCES import_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_commit AFTER INSERT ON taproot_keys BEGIN INSERT INTO import_child VALUES(999); END");
+    Import key(20);const auto before=Rows();ASSERT_FALSE(Store(key));EXPECT_EQ(Rows(),before);EXPECT_FALSE(index.IsOurScript(key.script));EXPECT_EQ(sqlite3_get_autocommit(db),1);
+    Exec(db,"DROP TRIGGER fail_commit");ASSERT_TRUE(Store(key));
+}
+TEST_F(WalletTaprootImportTest, CallerTransactionAndConflictingOwnersRefuse) {
+    wallet->open("owner");dinero::UTXOIndex index((path/"import-index.sqlite").string());ASSERT_TRUE(index.Initialize());wallet->setUTXOIndex(&index);
+    struct ResetIndex { dinero::WalletManager& wallet; ~ResetIndex(){wallet.setUTXOIndex(nullptr);} } reset{*wallet};Import key(21);ASSERT_TRUE(Store(key));
+    auto* db=wallet->getCurrentDatabase();const auto before=Rows();
+    Exec(db,"CREATE TABLE import_probe(n INTEGER); BEGIN; INSERT INTO import_probe VALUES(1)");
+    ASSERT_FALSE(Store(Import(22)));EXPECT_EQ(sqlite3_get_autocommit(db),0);EXPECT_EQ(Scalar(db,"SELECT count(*) FROM import_probe"),1);EXPECT_EQ(Rows(),before);Exec(db,"ROLLBACK");
+    index.ClearRegisteredAddresses();Exec(db,"UPDATE watch_scripts SET path='watch-only' WHERE path LIKE 'tr(%'");
+    ASSERT_FALSE(Store(key));EXPECT_EQ(Rows(),before);EXPECT_FALSE(index.IsOurScript(key.script));
+    Import other(23);other.internal[0]^=1;ASSERT_FALSE(Store(other));EXPECT_EQ(Rows(),before);
+    uint64_t old=0;{auto lease=wallet->AcquireDatabaseLease();old=lease->Session();}
+    wallet->open("owner");Import next(26);
+    ASSERT_FALSE(wallet->storeTaprootKey(next.address,next.secret,next.internal,next.output,"stale",old));EXPECT_EQ(Rows(),before);
+
+}
+TEST_F(WalletTaprootImportTest, EncryptedOwnerAndCommitPublication) {
+    wallet->open("owner");wallet->encryptWallet("import-test-passphrase");
+    Import key(24);ASSERT_FALSE(Store(key));wallet->unlockWallet("import-test-passphrase");
+    dinero::UTXOIndex index((path/"import-index.sqlite").string());ASSERT_TRUE(index.Initialize());wallet->setUTXOIndex(&index);
+    struct ResetIndex { dinero::WalletManager& wallet; ~ResetIndex(){wallet.setUTXOIndex(nullptr);} } reset{*wallet};
+    struct Hook {dinero::UTXOIndex* index;const Import* key;bool called=false;bool published=false;} hook{&index,&key};
+    auto* db=wallet->getCurrentDatabase();
+    sqlite3_commit_hook(db,[](void* opaque){auto& h=*static_cast<Hook*>(opaque);h.called=true;h.published=bool(h.index->IsOurScript(h.key->script));return 0;},&hook);
+    ASSERT_TRUE(Store(key));sqlite3_commit_hook(db,nullptr,nullptr);
+    EXPECT_TRUE(hook.called);EXPECT_FALSE(hook.published);EXPECT_TRUE(index.IsOurScript(key.script));
+    EXPECT_EQ(Scalar(db,"SELECT count(*) FROM taproot_keys WHERE is_privkey_encrypted=1 AND length(internal_privkey)>32"),1);
+    wallet->lockWallet();const auto before=Rows();ASSERT_FALSE(Store(Import(25)));EXPECT_EQ(Rows(),before);
+    wallet->open("owner");ASSERT_FALSE(Store(Import(25)));wallet->unlockWallet("import-test-passphrase");ASSERT_TRUE(Store(Import(25)));
 }
 
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};

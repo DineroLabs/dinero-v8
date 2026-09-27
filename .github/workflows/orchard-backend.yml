@@ -327,6 +327,23 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Address issuance cases did not execute exactly once')
           PYTEST
+      - name: Require and execute atomic Taproot imports
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletTaprootImport$' --show-only=json-v1 > orchard-wallet-taproot-import-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-taproot-import-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletTaprootImport'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletTaprootImport missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletTaprootImport$' --verbose --no-tests=error --output-log orchard-wallet-taproot-import-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletTaprootImportTest\.\S+)', open('orchard-wallet-taproot-import-execution.log').read())
+          expected = ['WalletTaprootImportTest.' + name for name in ['CompleteImportReopensAndReimports', 'RequiredWritesAndCommitRollback', 'CallerTransactionAndConflictingOwnersRefuse', 'EncryptedOwnerAndCommitPublication']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Taproot import cases did not execute exactly once')
+          PYTEST
       - name: Require and execute wallet rollback atomicity
         run: |
           ctest --test-dir build-orchard-root -R '^WalletRevertAtomic$' --show-only=json-v1 > orchard-wallet-undo-inventory.json
@@ -505,6 +522,8 @@ jobs:
             orchard-wallet-keys-execution.log
             orchard-wallet-issuance-inventory.json
             orchard-wallet-issuance-execution.log
+            orchard-wallet-taproot-import-inventory.json
+            orchard-wallet-taproot-import-execution.log
             orchard-wallet-lease-inventory.json
             orchard-wallet-lease-execution.log
             orchard-wallet-binding-inventory.json

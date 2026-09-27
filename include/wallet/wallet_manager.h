@@ -215,6 +215,10 @@ public:
                              const std::string& derivation_path);
 
     /**
+     * Atomically persist an imported Taproot key, address, mapping and watched script.
+     * Refuses incompatible ownership and caller-owned transactions. Publishes to
+     * the live index after durable commit. This does not certify chain recovery.
+     *
      * Store Taproot internal private key for signing
      *
      * Stores the internal private key (NOT tweaked) which is used for signing.
@@ -227,11 +231,11 @@ public:
      * @param output_pubkey 32-byte x-only output pubkey (tweaked)
      * @param label Human-readable label
      */
-    void storeTaprootKey(const std::string& address,
+    [[nodiscard]] bool storeTaprootKey(const std::string& address,
                          const std::array<uint8_t, 32>& internal_privkey,
                          const std::array<uint8_t, 32>& internal_pubkey,
                          const std::array<uint8_t, 32>& output_pubkey,
-                         const std::string& label);
+                         const std::string& label, uint64_t expected_session = 0);
 
     // Pins the selected database against open/close/create and holds SQLite's
     // recursive connection mutex across a complete wallet job. Existing raw

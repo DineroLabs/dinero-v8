@@ -1,5 +1,15 @@
 ## Checked ordinary address issuance (2026-09-27)
 
+## 2026-09-27: coherent explicit Taproot import persistence
+
+The actual descriptor RPC now uses a session-bound wallet/SQLite owner to commit
+its key, imported address, public mapping and watch registration together. See
+[the import owner scope](wallet-taproot-import-owner-2026-09-27.md). This advances
+forward imported-key persistence only. Complete discovery/reconciliation,
+imported-key signing/readmission, provider installation, first activation and
+steps 1–4 remain open. Mainnet activation remains unset.
+
+
 Receive and change issuance now commit address/path/watch records in one checked
 FULL transaction under the existing wallet owner. Required writes, commit and
 next-index range are checked; caller transactions and conflicting watch ownership
