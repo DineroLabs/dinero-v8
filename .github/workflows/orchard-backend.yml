@@ -9,6 +9,7 @@ on:
       - 'include/**'
       - 'src/**'
       - 'tests/**'
+      - 'tools/pq_bench/**'
       - 'cmake/**'
       - 'depends/**'
       - '.gitmodules'
@@ -22,6 +23,7 @@ on:
       - 'include/**'
       - 'src/**'
       - 'tests/**'
+      - 'tools/pq_bench/**'
       - 'cmake/**'
       - 'depends/**'
       - '.gitmodules'
@@ -207,7 +209,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute all root Orchard lanes
         run: |
@@ -411,6 +413,22 @@ jobs:
           expected = ['WalletEncryptionOwnerTest.' + name for name in ['PopulatedImportsEncryptAndRotateWithoutIdentityChange', 'RequiredWritesAndBorrowedTransactionRollback', 'ExplicitDecryptionPreservesImportsAndRefusesPqDowngrade', 'CommitAndPolicyFailuresKeepLiveAndDurableOwner', 'LegacyImportedPayloadRoundtripAndFailureRollback']]
           if sorted(actual) != sorted(expected):
               raise SystemExit('Encryption owner cases did not execute exactly once')
+          PYTEST
+      - name: Require and execute checked P2MR inventory
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletP2MRInventory$' --show-only=json-v1 > orchard-wallet-p2mr-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-p2mr-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletP2MRInventory'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletP2MRInventory missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletP2MRInventory$' --verbose --no-tests=error --output-log orchard-wallet-p2mr-inventory-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[PASS\] P2MRInventory\.(\w+)', open('orchard-wallet-p2mr-inventory-execution.log').read())
+          if sorted(actual) != ['ExistingReadOnly', 'IncompleteRead', 'MalformedLateRows']:
+              raise SystemExit('P2MR inventory cases did not pass exactly once')
           PYTEST
       - name: Require and execute complete known script inventory reload
         run: |
@@ -634,6 +652,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-p2mr-inventory.json
+            orchard-wallet-p2mr-inventory-execution.log
             orchard-wallet-script-reload-inventory.json
             orchard-wallet-script-reload-execution.log
             orchard-wallet-private-key-import-inventory.json

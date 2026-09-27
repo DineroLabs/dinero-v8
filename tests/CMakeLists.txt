@@ -22,6 +22,12 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+if(TARGET v7_p2mr_inventory_test)
+  add_test(NAME WalletP2MRInventory COMMAND v7_p2mr_inventory_test)
+  set_tests_properties(WalletP2MRInventory PROPERTIES
+    LABELS "unit;wallet;p2mr;mandatory" TIMEOUT 30)
+endif()
+
 add_executable(test_p2p_header_parser tests/daemon/test_p2p_header_parser.cpp)
 target_link_libraries(test_p2p_header_parser PRIVATE dinero_core)
 add_test(NAME P2PHeaderParserAlignment COMMAND test_p2p_header_parser)

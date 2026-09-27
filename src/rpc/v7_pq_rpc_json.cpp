@@ -83,11 +83,12 @@ const char* StatusString(v7rpc::HandlerStatus s) {
 }
 
 /** Open a V7P2MRStore at the wallet's v7 store path. Returns nullptr on I/O fail. */
-std::unique_ptr<wlt::V7P2MRStore> OpenWalletStore(dinero::WalletManager& wm) {
+std::unique_ptr<wlt::V7P2MRStore> OpenWalletStore(dinero::WalletManager& wm, bool read_only = false) {
     const std::string path = wm.GetV7P2MRStorePath();
     if (path.empty()) return nullptr;
     auto store = std::make_unique<wlt::V7P2MRStore>();
-    if (store->Open(path) != wlt::V7P2MRStore::OpenResult::Ok) {
+    if ((read_only ? store->OpenExistingReadOnly(path) : store->Open(path)) !=
+        wlt::V7P2MRStore::OpenResult::Ok) {
         return nullptr;
     }
     return store;
@@ -247,7 +248,7 @@ din::Json rpc_wallet_listp2mraddresses(const ExecutionContext& ctx,
     auto* wm = AcquireUnlockedWallet(ctx, result);
     if (!wm) return result;
 
-    auto store_ptr = OpenWalletStore(*wm);
+    auto store_ptr = OpenWalletStore(*wm, true);
     if (!store_ptr) {
         result["error"] = "v7_store_open_failed";
         return result;

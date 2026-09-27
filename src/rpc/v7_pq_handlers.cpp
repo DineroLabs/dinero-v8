@@ -15,6 +15,8 @@
 
 #include "rpc/v7_pq_handlers.h"
 
+#include <exception>
+
 #include "consensus/pq/ml_dsa_65.h"
 #include "consensus/pq/scheme_registry.h"
 #include "crypto/sha256.h"
@@ -154,7 +156,13 @@ GetNewP2MRAddressResult GetNewP2MRAddress(wlt::V7P2MRStore&       store,
 ListP2MRAddressesResult ListP2MRAddresses(const wlt::V7P2MRStore&  store,
                                           ListP2MRAddressesParams  params) {
     ListP2MRAddressesResult out;
-    out.entries = store.ListByWallet(params.wallet_id);
+    try {
+        out.entries = store.ListByWallet(params.wallet_id);
+    } catch (const std::exception&) {
+        out.status = HandlerStatus::StoreError;
+        out.error_message = "P2MR inventory unavailable or invalid";
+        return out;
+    }
     out.status  = HandlerStatus::Ok;
     return out;
 }

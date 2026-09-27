@@ -6,6 +6,9 @@
 #include "wallet/v7_p2mr_store.h"
 
 #include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <utility>
 #include <sqlite3.h>
 
 namespace dinero::wallet {
@@ -85,6 +88,25 @@ V7P2MRStore::OpenResult V7P2MRStore::Open(const std::string& path) {
     char* err = nullptr;
     if (sqlite3_exec(db_, kCreateSql, nullptr, nullptr, &err) != SQLITE_OK) {
         if (err) sqlite3_free(err);
+        Close();
+        return OpenResult::SchemaError;
+    }
+    return OpenResult::Ok;
+}
+
+V7P2MRStore::OpenResult V7P2MRStore::OpenExistingReadOnly(const std::string& path) {
+    Close();
+    if (path.empty() || sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        Close();
+        return OpenResult::IoError;
+    }
+    bool present = false;
+    {
+        Stmt schema(db_, "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='v7_p2mr_addresses'");
+        present = schema.ok() && sqlite3_step(schema.raw()) == SQLITE_ROW &&
+                  sqlite3_step(schema.raw()) == SQLITE_DONE;
+    }
+    if (!present) {
         Close();
         return OpenResult::SchemaError;
     }
@@ -199,30 +221,58 @@ V7P2MRStore::GetByMerkleRoot(int64_t wallet_id,
 std::vector<P2MRStoredAddress>
 V7P2MRStore::ListByWallet(int64_t wallet_id) const {
     std::vector<P2MRStoredAddress> out;
-    if (!db_) return out;
+    if (!db_ || wallet_id <= 0)
+        throw std::runtime_error("P2MR inventory owner unavailable");
 
     Stmt s(db_,
         "SELECT id, wallet_id, address, merkle_root, pubkey, "
-        "       derivation_path, leaf_index, label, created_at "
+        "       derivation_path, leaf_index, label, created_at, "
+        "       seed_ciphertext, seed_nonce, seed_tag "
         "FROM v7_p2mr_addresses "
         "WHERE wallet_id = ? "
         "ORDER BY created_at ASC, id ASC;");
-    if (!s.ok()) return out;
-    sqlite3_bind_int64(s.raw(), 1, wallet_id);
+    if (!s.ok() || sqlite3_bind_int64(s.raw(), 1, wallet_id) != SQLITE_OK)
+        throw std::runtime_error("P2MR inventory query unavailable");
 
-    while (sqlite3_step(s.raw()) == SQLITE_ROW) {
+    const auto text = [&](int col, bool optional = false) {
+        const auto type = sqlite3_column_type(s.raw(), col);
+        if (optional && type == SQLITE_NULL) return std::string{};
+        if (type != SQLITE_TEXT) throw std::runtime_error("Invalid P2MR inventory text");
+        auto value = ReadText(s.raw(), col);
+        if (!optional && (value.empty() || value.find('\0') != std::string::npos))
+            throw std::runtime_error("Invalid P2MR inventory text");
+        return value;
+    };
+    int rc;
+    while ((rc = sqlite3_step(s.raw())) == SQLITE_ROW) {
+        for (int col : {0, 1, 6, 8}) {
+            if (sqlite3_column_type(s.raw(), col) != SQLITE_INTEGER)
+                throw std::runtime_error("Invalid P2MR inventory integer");
+        }
+        const auto leaf = sqlite3_column_int64(s.raw(), 6);
+        if (sqlite3_column_int64(s.raw(), 0) <= 0 ||
+            sqlite3_column_int64(s.raw(), 1) != wallet_id || leaf < 0 ||
+            leaf > std::numeric_limits<uint32_t>::max())
+            throw std::runtime_error("Invalid P2MR inventory identity");
+        for (const auto [col, size] : {std::pair{3, 32}, {4, int(dinero::consensus::pq::ml_dsa_65::PUBKEY_BYTES)},
+                                      {9, 32}, {10, 12}, {11, 16}}) {
+            if (sqlite3_column_type(s.raw(), col) != SQLITE_BLOB ||
+                sqlite3_column_bytes(s.raw(), col) != size)
+                throw std::runtime_error("Invalid P2MR inventory blob");
+        }
         P2MRStoredAddress row{};
         row.id        = sqlite3_column_int64(s.raw(), 0);
         row.wallet_id = sqlite3_column_int64(s.raw(), 1);
-        row.address   = ReadText(s.raw(), 2);
-        if (!ReadBlobExact(s.raw(), 3, row.merkle_root)) continue;
-        if (!ReadBlobExact(s.raw(), 4, row.pubkey))      continue;
-        row.derivation_path = ReadText(s.raw(), 5);
-        row.leaf_index      = static_cast<uint32_t>(sqlite3_column_int(s.raw(), 6));
-        row.label           = ReadText(s.raw(), 7);
+        row.address   = text(2);
+        if (!ReadBlobExact(s.raw(), 3, row.merkle_root) || !ReadBlobExact(s.raw(), 4, row.pubkey))
+            throw std::runtime_error("Unreadable P2MR inventory blob");
+        row.derivation_path = text(5);
+        row.leaf_index      = static_cast<uint32_t>(leaf);
+        row.label           = text(7, true);
         row.created_at_unix = sqlite3_column_int64(s.raw(), 8);
         out.push_back(std::move(row));
     }
+    if (rc != SQLITE_DONE) throw std::runtime_error("Incomplete P2MR inventory read");
     return out;
 }
 

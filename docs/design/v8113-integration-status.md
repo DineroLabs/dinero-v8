@@ -1,3 +1,11 @@
+## Checked P2MR inventory (2026-09-27)
+
+P2MR listing now refuses incomplete or malformed reads, and its JSON listing
+adapter opens existing storage read-only. This is scoped present-row validation,
+not cryptographic ownership or a complete key/account catalog; it cannot justify
+creating a missing master. See [scope and validation](wallet-p2mr-inventory-2026-09-27.md).
+Unlock, reconciliation, pending ownership, consumers and release gates remain open.
+
 ## Checked ordinary address issuance (2026-09-27)
 
 ## 2026-09-27: coherent explicit Taproot import persistence

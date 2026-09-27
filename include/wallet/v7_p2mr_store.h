@@ -62,6 +62,11 @@ public:
      */
     OpenResult Open(const std::string& path);
 
+    /** Open existing storage without creating the database, table or index.
+     * Missing/unreadable storage is an error, not an empty inventory.
+     */
+    OpenResult OpenExistingReadOnly(const std::string& path);
+
     /** Close the DB. Destructor does this automatically. */
     void Close() noexcept;
     ~V7P2MRStore() { Close(); }
@@ -119,6 +124,9 @@ public:
     /**
      * List all P2MR addresses for a given wallet_id, ordered by created_at
      * ascending. Intended for wallet UI / RPC listing.
+     * Throws on unavailable storage, invalid rows or incomplete reads; never
+     * returns a partial inventory. Validates stored types and field lengths,
+     * not key ownership, ciphertext authentication or account completeness.
      */
     std::vector<P2MRStoredAddress> ListByWallet(int64_t wallet_id) const;
 
