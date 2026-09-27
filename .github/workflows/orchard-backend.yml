@@ -279,6 +279,22 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Wallet input/maturity cases missing, duplicated or unexpected')
           PYTEST
+      - name: Require and execute authoritative mnemonic daemon recovery
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletAuthoritativeMnemonic$' --show-only=json-v1 > orchard-mnemonic-recovery-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-mnemonic-recovery-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletAuthoritativeMnemonic'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Authoritative mnemonic daemon test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletAuthoritativeMnemonic$' --verbose --no-tests=error --output-log orchard-mnemonic-recovery-execution.log
+          python3 - <<'PYTEST'
+          log = open('orchard-mnemonic-recovery-execution.log').read()
+          for marker in ['ALL WALLET AUTHORITATIVE-MNEMONIC ASSERTIONS PASSED', '[PASS] existing default is preserved and restored identity reopens under a new name']:
+              if log.count(marker) != 1:
+                  raise SystemExit('Mnemonic recovery must complete all preservation assertions exactly once')
+          PYTEST
       - name: Require and execute all root Orchard lanes
         run: |
           ctest --test-dir build-orchard-root -R '^(OrchardAccountDelivery|OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardMemoryPublication|OrchardStateCommitment|OrchardStateRoot|OrchardLegacyAccounting|OrchardRuntimeReader|OrchardRuntimeOutbox|OrchardCommitOwner|OrchardIndexDelivery|OrchardIndexedCommit|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardServiceReorgPlan|OrchardServiceForkPoint|OrchardServiceConnect|OrchardServiceDeliverySource|OrchardServiceDisconnect|OrchardServicePersistence|OrchardServiceStartup|OrchardServiceUndoCoverage|OrchardBlockFilter|OrchardWalletScan|OrchardLegacyBoundary|OrchardLegacyRetirement)$' --show-only=json-v1 > orchard-root-inventory.json
@@ -835,6 +851,8 @@ jobs:
           name: orchard-root-${{ github.sha }}
           path: |
             orchard-root-source.txt
+            orchard-mnemonic-recovery-inventory.json
+            orchard-mnemonic-recovery-execution.log
             orchard-height-one-inventory.json
             orchard-height-one-execution.log
             orchard-storage-test-link-inventory.json
