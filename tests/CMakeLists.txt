@@ -22,6 +22,12 @@ endif()
 # Tests (only if we have working test files)
 enable_testing()
 
+if(TARGET v7_p2mr_key_read_test)
+  add_test(NAME WalletP2MRKeyRead COMMAND v7_p2mr_key_read_test)
+  set_tests_properties(WalletP2MRKeyRead PROPERTIES
+    LABELS "unit;wallet;p2mr;mandatory" TIMEOUT 30)
+endif()
+
 if(TARGET v7_p2mr_inventory_test)
   add_test(NAME WalletP2MRInventory COMMAND v7_p2mr_inventory_test)
   set_tests_properties(WalletP2MRInventory PROPERTIES

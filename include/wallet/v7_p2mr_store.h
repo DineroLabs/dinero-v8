@@ -146,6 +146,20 @@ public:
     std::optional<EncryptedSeed>
     LoadEncryptedSeed(int64_t wallet_id, const std::string& address) const;
 
+    struct KeyRecord {
+        P2MRStoredAddress metadata;
+        EncryptedSeed encrypted_seed;
+    };
+    /** Capture public metadata and ciphertext in one checked SQL statement.
+     * Requires an autocommit connection; refuses caller-owned transactions.
+     * nullopt means checked absence; malformed/unavailable/incomplete reads throw.
+     * Returned bytes describe that statement's snapshot, not lasting readiness.
+     * No decryption or key/path authentication is performed by this reader.
+     */
+    std::optional<KeyRecord>
+    CaptureKeyByAddress(int64_t wallet_id, const std::string& address) const;
+
+
 private:
     sqlite3* db_ = nullptr;
 };

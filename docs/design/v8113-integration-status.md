@@ -1,3 +1,12 @@
+## Consistent authenticated P2MR key reads (2026-09-27)
+
+Actual P2MR signing and export now capture metadata/ciphertext together and
+require seed/public-key/stored-root/requested-address agreement before returning
+signatures or plaintext. SQL and borrowed-transaction errors refuse explicitly;
+existing addresses and metadata are preserved. See [scope and validation](wallet-p2mr-key-read-2026-09-27.md).
+This remains a single-record component: complete discovery, explicit key
+initialization versus recovery, staged unlock and all release gates stay open.
+
 ## Header recovery target linkage (2026-09-27)
 
 Full, QUIC and core-heavy Linux builds exposed a missing test-only mempool
