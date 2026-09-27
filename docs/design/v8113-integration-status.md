@@ -632,3 +632,18 @@ and declared targets passed; ten/eight CTests and fresh all-89-project-C++
 ASan/UBSan (34 cases) passed. Three omission controls fail intended assertions;
 restored three import cases pass. RPC entrypoints compile but are not executed by
 this lane. Historical imports, complete discovery and release gates stay open.
+
+### Known script reload — 2026-09-27
+
+The actual wallet-to-index reload now captures the union of watched and nonempty
+address scripts with checked recorded-path consistency under the wallet lease.
+It performs no SQL backfill or inferred HD derivation. The index merges the
+prepared map atomically and refuses conflicting live paths; the wallet binding
+service returns failure on reload refusal. This does not certify key ownership,
+authenticated complete discovery, stale-registration reconciliation, delivery
+readiness or completion of steps 1–4.
+
+Final script-reload qualification: real ON/OFF full daemon and declared targets,
+11/9 CTests, all-89-project-C++ ASan/UBSan with 37 cases and three omission/original
+controls passed their required outcomes. Restored three reload cases passed.
+The daemon binding caller compiled but was not executed in this component lane.

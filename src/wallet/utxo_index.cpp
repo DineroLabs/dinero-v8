@@ -885,6 +885,19 @@ void UTXOIndex::RegisterAddress(const std::vector<uint8_t>& scriptPubKey, const 
     watched_scripts_[scriptPubKey] = derivation_path;
 }
 
+void UTXOIndex::MergeRegisteredAddresses(const std::map<std::vector<uint8_t>, std::string>& scripts) {
+    std::lock_guard<std::mutex> lock(scripts_mutex_);
+    auto merged = watched_scripts_;
+    for (const auto& [script, path] : scripts) {
+        if (script.empty() || path.empty())
+            throw std::runtime_error("Invalid wallet script inventory");
+        const auto [it, inserted] = merged.emplace(script, path);
+        if (!inserted && it->second != path)
+            throw std::runtime_error("Conflicting live wallet script path");
+    }
+    watched_scripts_.swap(merged);
+}
+
 void UTXOIndex::ClearRegisteredAddresses() {
     std::lock_guard<std::mutex> lock(scripts_mutex_);
     watched_scripts_.clear();

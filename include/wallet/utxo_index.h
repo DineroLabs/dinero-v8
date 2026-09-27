@@ -225,6 +225,9 @@ public:
 
     // CRITICAL: Register wallet addresses/scripts for tracking
     void RegisterAddress(const std::vector<uint8_t>& scriptPubKey, const std::string& derivation_path);
+    // Merge a complete captured inventory without partial publication or path replacement.
+    // This binds recognition metadata only; it does not certify spendability.
+    void MergeRegisteredAddresses(const std::map<std::vector<uint8_t>, std::string>& scripts);
     void ClearRegisteredAddresses();
     
 private:

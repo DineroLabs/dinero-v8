@@ -704,6 +704,51 @@ TEST_F(WalletPrivateKeyImportTest, LegacyInventoryAndReadFailureRefuseWithoutEff
     ASSERT_EQ(Forward(key),key.address);wallet->open("owner");CheckSignature(existing);CheckSignature(key);
 }
 
+
+class WalletScriptReloadTest : public WalletTaprootLookupTest {
+protected:
+    static void Exec(sqlite3* db,const std::string& sql) {WalletDatabaseLeaseTest::Exec(db,sql.c_str());}
+    std::vector<uint8_t> Script(const std::string& address) {
+        const auto hex=wallet->getScriptPubKeyForAddress(address);if(!hex)throw std::runtime_error("fixture script missing");
+        std::vector<uint8_t> out;if(!util::unhex(*hex,out))throw std::runtime_error("fixture script invalid");return out;
+    }
+    struct Attach {
+        dinero::WalletManager& wallet;
+        Attach(dinero::WalletManager& w,dinero::UTXOIndex& index):wallet(w){wallet.setUTXOIndex(&index);}
+        ~Attach(){wallet.setUTXOIndex(nullptr);}
+    };
+};
+TEST_F(WalletScriptReloadTest, LoadsUnionWithoutInventingOrBackfillingPaths) {
+    wallet->open("owner");const auto receive=Issue(0),change=Issue(1);ASSERT_FALSE(receive.empty());ASSERT_FALSE(change.empty());
+    const auto receive_script=Script(receive),change_script=Script(change);const auto change_path=wallet->getDerivationPath(util::hex(change_script));ASSERT_TRUE(change_path);
+    Import imported(81);ASSERT_TRUE(Store(imported));const std::vector<uint8_t> watched{0x6a,0x01,0x41};wallet->addWatchScript(watched,"watch-only",false);
+    Exec(wallet->getCurrentDatabase(),"DELETE FROM watch_scripts WHERE script_pubkey=X'"+util::hex(change_script)+"'");const auto before=Rows();
+    dinero::UTXOIndex index((path/"reload.sqlite").string());ASSERT_TRUE(index.Initialize());Attach attach(*wallet,index);
+    wallet->LoadAddressesIntoUTXOIndex();EXPECT_TRUE(index.IsOurScript(receive_script));EXPECT_EQ(index.IsOurScript(change_script),change_path);
+    EXPECT_TRUE(index.IsOurScript(imported.script));EXPECT_EQ(index.IsOurScript(watched),std::optional<std::string>("watch-only"));EXPECT_EQ(Rows(),before);
+    wallet->open("owner");index.ClearRegisteredAddresses();wallet->LoadAddressesIntoUTXOIndex();EXPECT_EQ(index.IsOurScript(change_script),change_path);EXPECT_TRUE(index.IsOurScript(imported.script));EXPECT_EQ(Rows(),before);
+}
+TEST_F(WalletScriptReloadTest, IncompleteAndConflictingRecordsDoNotPublish) {
+    wallet->open("owner");const auto first=Issue(0),second=Issue(0);ASSERT_FALSE(first.empty());ASSERT_FALSE(second.empty());const auto a=Script(first),b=Script(second);const auto original=wallet->getDerivationPath(util::hex(b));ASSERT_TRUE(original);
+    dinero::UTXOIndex index((path/"reload.sqlite").string());ASSERT_TRUE(index.Initialize());Attach attach(*wallet,index);const std::vector<uint8_t> sentinel{0x6a,0x01,0x42};index.RegisterAddress(sentinel,"existing-watch");
+    auto* db=wallet->getCurrentDatabase();
+    Exec(db,"UPDATE address_derivation_paths SET derivation_path='conflicting-path' WHERE address='"+second+"'");
+    EXPECT_THROW(wallet->LoadAddressesIntoUTXOIndex(),std::runtime_error);EXPECT_FALSE(index.IsOurScript(a));EXPECT_FALSE(index.IsOurScript(b));EXPECT_TRUE(index.IsOurScript(sentinel));
+    Exec(db,"UPDATE address_derivation_paths SET derivation_path=CAST(X'"+util::hex(std::vector<uint8_t>(original->begin(),original->end()))+"' AS TEXT) WHERE address='"+second+"'");
+    Exec(db,"DELETE FROM watch_scripts WHERE script_pubkey=X'"+util::hex(b)+"'; DELETE FROM address_derivation_paths WHERE address='"+second+"'");
+    const auto before=Inventory();EXPECT_THROW(wallet->LoadAddressesIntoUTXOIndex(),std::runtime_error);EXPECT_EQ(Inventory(),before);EXPECT_FALSE(index.IsOurScript(a));EXPECT_FALSE(index.IsOurScript(b));EXPECT_TRUE(index.IsOurScript(sentinel));
+}
+TEST_F(WalletScriptReloadTest, ReadBorrowedTransactionAndIndexConflictRefuseAtomically) {
+    wallet->open("owner");const auto first=Issue(0),second=Issue(1);ASSERT_FALSE(first.empty());ASSERT_FALSE(second.empty());const auto a=Script(first),b=Script(second);
+    dinero::UTXOIndex index((path/"reload.sqlite").string());ASSERT_TRUE(index.Initialize());Attach attach(*wallet,index);auto* db=wallet->getCurrentDatabase();const auto before=Inventory();
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*) {return op==SQLITE_READ && table && std::string_view(table)=="addresses"?SQLITE_DENY:SQLITE_OK;},nullptr);
+    EXPECT_THROW(wallet->LoadAddressesIntoUTXOIndex(),std::runtime_error);sqlite3_set_authorizer(db,nullptr,nullptr);EXPECT_FALSE(index.IsOurScript(a));EXPECT_FALSE(index.IsOurScript(b));
+    Exec(db,"BEGIN IMMEDIATE");EXPECT_THROW(wallet->LoadAddressesIntoUTXOIndex(),std::runtime_error);EXPECT_EQ(sqlite3_get_autocommit(db),0);Exec(db,"ROLLBACK");EXPECT_FALSE(index.IsOurScript(a));
+    const auto& earlier=std::min(a,b);const auto& later=std::max(a,b);
+    index.RegisterAddress(later,"incompatible-live-path");EXPECT_THROW(wallet->LoadAddressesIntoUTXOIndex(),std::runtime_error);EXPECT_FALSE(index.IsOurScript(earlier));EXPECT_EQ(index.IsOurScript(later),std::optional<std::string>("incompatible-live-path"));EXPECT_EQ(Inventory(),before);
+    index.ClearRegisteredAddresses();wallet->LoadAddressesIntoUTXOIndex();EXPECT_TRUE(index.IsOurScript(a));EXPECT_TRUE(index.IsOurScript(b));
+}
+
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};
 TEST_F(WalletRecoveryKeyTest, PinsActualSeedAcrossLockAndUnlock) {
     wallet->open("owner");

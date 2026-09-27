@@ -8224,118 +8224,89 @@ void WalletManager::onMempoolTransaction(const Transaction& tx) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 void WalletManager::LoadAddressesIntoUTXOIndex() {
+    auto lease = AcquireDatabaseLease();
     if (!utxo_index_) {
         dinero::g_logger.warning("[WalletManager] UTXOIndex not set - cannot load addresses");
-        return;
+        return; // An absent optional index is not an acknowledgment of recovery.
     }
-
-    if (!db_) {
-        dinero::g_logger.error("[WalletManager] No database available for loading addresses");
-        return;
-    }
-
-    auto load_from_watch_scripts = [&]() -> int {
-        const char* sql = "SELECT script_pubkey, path FROM watch_scripts";
-        sqlite3_stmt* stmt = nullptr;
-
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            dinero::g_logger.error("[WalletManager] Failed to prepare query for watch_scripts: " +
-                                   std::string(sqlite3_errmsg(db_)));
-            return 0;
-        }
-
-        int count = 0;
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            // Get script_pubkey (BLOB)
-            const void* script_data = sqlite3_column_blob(stmt, 0);
-            const int script_size = sqlite3_column_bytes(stmt, 0);
-
-            // Get path (TEXT)
-            const char* path_cstr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            if (!script_data || script_size <= 0 || !path_cstr) {
-                continue;
-            }
-
-            std::vector<uint8_t> script_pubkey;
-            const auto* bytes = static_cast<const uint8_t*>(script_data);
-            script_pubkey.assign(bytes, bytes + script_size);
-
-            utxo_index_->RegisterAddress(script_pubkey, path_cstr);
-            count++;
-        }
-
-        sqlite3_finalize(stmt);
-        return count;
+    if (!db_) throw std::runtime_error("Wallet script inventory database unavailable");
+    IssuedAddressTransaction read(db_);
+    const auto text = [](sqlite3_stmt* q, int col) {
+        if (sqlite3_column_type(q,col)!=SQLITE_TEXT)
+            throw std::runtime_error("Invalid wallet script inventory text");
+        const auto* value=static_cast<const char*>(sqlite3_column_blob(q,col));
+        const int size=sqlite3_column_bytes(q,col);
+        if (!value || size<=0 || std::memchr(value,0,size))
+            throw std::runtime_error("Empty or malformed wallet script inventory text");
+        return std::string(value,size);
     };
-
-    int count = load_from_watch_scripts();
-    if (count > 0) {
-        dinero::g_logger.info("[WalletManager] ✅ Loaded " + std::to_string(count) +
-                              " addresses into UTXOIndex from watch_scripts");
-        return;
-    }
-
-    // Recovery path: older/mobile states may have addresses persisted without
-    // corresponding watch_scripts rows, which leaves UTXOIndex empty and wallet
-    // scans unable to match outputs. Backfill watch_scripts from addresses.
-    dinero::g_logger.warning("[WalletManager] watch_scripts empty - attempting backfill from addresses");
-
-    const char* backfill_sql = R"(
-        SELECT a.script_pubkey,
-               COALESCE(adp.derivation_path,
-                        'm/' || CASE WHEN a.type = 'p2tr' THEN '86' ELSE '84' END ||
-                        '''/' || ?1 || '''/' || COALESCE(a.account, 0) || '''/' ||
-                        COALESCE(a.change, 0) || '/' || COALESCE(a.idx, 0)) AS derivation_path,
-               COALESCE(a.change, 0) AS is_change
-        FROM addresses a
-        LEFT JOIN address_derivation_paths adp ON adp.address = a.address
-        WHERE a.script_pubkey IS NOT NULL AND a.script_pubkey <> ''
-    )";
-
-    sqlite3_stmt* stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, backfill_sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        dinero::g_logger.error("[WalletManager] Failed to prepare watch backfill query: " +
-                               std::string(sqlite3_errmsg(db_)));
-        return;
-    }
-    sqlite3_bind_int(stmt, 1, static_cast<int>(dinero::consensus::DINERO_COIN_TYPE));
-
-    int backfilled = 0;
-    int skipped_invalid = 0;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const char* script_hex_cstr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        const char* path_cstr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        const int is_change = sqlite3_column_int(stmt, 2);
-
-        if (!script_hex_cstr || !path_cstr) {
-            skipped_invalid++;
-            continue;
+    const auto integer = [](sqlite3_stmt* q,int col) {
+        if (sqlite3_column_type(q,col)!=SQLITE_INTEGER)
+            throw std::runtime_error("Invalid wallet script inventory integer");
+        return sqlite3_column_int64(q,col);
+    };
+    const auto parsed_script = [&](sqlite3_stmt* q,int col) {
+        std::vector<uint8_t> script;
+        if (!util::unhex(text(q,col),script) || script.empty())
+            throw std::runtime_error("Invalid wallet address script");
+        return script;
+    };
+    std::map<std::vector<uint8_t>,std::pair<std::string,sqlite3_int64>> captured;
+    const auto add = [&](const std::vector<uint8_t>& script,const std::string& path,sqlite3_int64 change) {
+        if (change!=0 && change!=1) throw std::runtime_error("Invalid wallet script change flag");
+        const auto [it,inserted]=captured.emplace(script,std::make_pair(path,change));
+        if (!inserted && it->second!=std::make_pair(path,change))
+            throw std::runtime_error("Conflicting persistent wallet script path");
+    };
+    {
+        IssuedStatement q(db_,"SELECT script_pubkey,path,is_change FROM watch_scripts");
+        int rc;
+        while ((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+            auto* row=q.value.get();
+            if (sqlite3_column_type(row,0)!=SQLITE_BLOB || sqlite3_column_bytes(row,0)<=0 || !sqlite3_column_blob(row,0))
+                throw std::runtime_error("Invalid watched script");
+            const auto* raw=static_cast<const uint8_t*>(sqlite3_column_blob(row,0));
+            const std::vector<uint8_t> script(raw,raw+sqlite3_column_bytes(row,0));
+            add(script,text(row,1),integer(row,2));
         }
-
-        std::string script_hex(script_hex_cstr);
-        if (script_hex.rfind("0x", 0) == 0 || script_hex.rfind("0X", 0) == 0) {
-            script_hex = script_hex.substr(2);
-        }
-
-        std::vector<unsigned char> parsed;
-        if (!util::unhex(script_hex, parsed) || parsed.empty()) {
-            skipped_invalid++;
-            continue;
-        }
-
-        std::vector<uint8_t> script_bytes(parsed.begin(), parsed.end());
-        addWatchScript(script_bytes, path_cstr, is_change != 0);
-        backfilled++;
+        IssuanceCheck(db_,rc,SQLITE_DONE);
     }
-    sqlite3_finalize(stmt);
-
-    if (backfilled > 0) {
-        dinero::g_logger.info("[WalletManager] ✅ Backfilled " + std::to_string(backfilled) +
-                              " watch scripts from addresses (" + std::to_string(skipped_invalid) +
-                              " skipped)");
-    } else {
-        dinero::g_logger.warning("[WalletManager] watch_scripts backfill found no usable addresses");
+    // The same known-script domain used by ordinary delivery. Empty/missing
+    // address scripts and orphan descriptors still need independent discovery.
+    // An existing watch row never hides another address's explicit path record.
+    const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+    const std::string sql=R"(SELECT a.script_pubkey,a.account,a.change,a.idx,
+        p.derivation_path,p.script_pubkey,p.account,p.change,p.address_index,)"+
+        std::string(wallet_column?"a.wallet_id":"1")+R"( FROM addresses a
+        LEFT JOIN address_derivation_paths p ON p.address=a.address
+        WHERE a.script_pubkey IS NOT NULL AND a.script_pubkey<>'')";
+    {
+        IssuedStatement q(db_,sql.c_str());int rc;
+        while ((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+            auto* row=q.value.get();const auto script=parsed_script(row,0);
+            const auto account=integer(row,1),change=integer(row,2),index=integer(row,3);
+            if (integer(row,9)!=1 || account < -1 || index<0 || index>INT_MAX || (change!=0 && change!=1))
+                throw std::runtime_error("Invalid wallet address ownership metadata");
+            if (sqlite3_column_type(row,4)!=SQLITE_NULL) {
+                const auto path=text(row,4);
+                if (parsed_script(row,5)!=script || integer(row,6)!=account ||
+                    integer(row,7)!=change || integer(row,8)!=index)
+                    throw std::runtime_error("Conflicting wallet address path metadata");
+                add(script,path,change);
+            } else {
+                const auto watched=captured.find(script);
+                if (watched==captured.end() || watched->second.second!=change)
+                    throw std::runtime_error("Wallet address has no consistent recorded script path");
+            }
+        }
+        IssuanceCheck(db_,rc,SQLITE_DONE);
     }
+    std::map<std::vector<uint8_t>,std::string> scripts;
+    for (const auto& [script,record] : captured) scripts.emplace(script,record.first);
+    read.Commit(); // No SQL backfill, invented HD path, or receipt mutation.
+    // The wallet/session remains pinned. The index stages a copy under its own
+    // script mutex and swaps only after every existing binding agrees.
+    utxo_index_->MergeRegisteredAddresses(scripts);
 }
 
 void WalletManager::addWatchScript(const std::vector<uint8_t>& script_pubkey, const std::string& path, bool is_change) {
