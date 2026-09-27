@@ -30,6 +30,7 @@
 #include "daemon/interfaces/tx_ingress.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/hd_wallet.h"
+#include "wallet/wallet_transaction_signer.h"
 #include "wallet/transaction_builder.h"  // Phase 33: Transaction building
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include <iostream>  // For std::cerr debug logging
@@ -2590,6 +2591,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
     }
 
     try {
+        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
         // Support both array and object parameter formats
         // Array: [address, amount, fee_rate, comment, broadcast]
         // Object: {"address": "...", "amount": 1.0, "preview": true} for dry-run
@@ -3038,88 +3040,22 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             }
         }
 
-        // Get private keys for selected UTXOs (needed for signing in both normal and test mode)
-        std::map<std::string, std::string> private_keys;
-        for (const auto& utxo : selected_utxos) {
-            std::string script_pubkey = utxo.script_pubkey;
-
-            // Legacy safety net: backfill scriptPubKey from address metadata.
-            if (script_pubkey.empty() && !utxo.address.empty()) {
-                auto spk_opt = wallet_service->get().getScriptPubKeyForAddress(utxo.address);
-                if (spk_opt.has_value() && !spk_opt->empty()) {
-                    script_pubkey = *spk_opt;
-                    log_debug("[wallet.sendtoaddress] Recovered scriptPubKey from address metadata for " +
-                              utxo.txid.substr(0, 16) + ":" + std::to_string(utxo.vout));
+        // Preview reports actual resolvable ordinary keys without retaining
+        // secret hex. Signing independently rechecks this captured session.
+        size_t available_keys=0;
+        if(!broadcast) {
+            auto lease=wallet_service->get().AcquireDatabaseLease();
+            if(lease->Session()!=signing_identity.session || lease->WalletName()!=signing_identity.name)
+                throw std::runtime_error("Selected wallet signing session changed");
+            auto pin=lease->CopyRecoverySeed(signing_identity.session);
+            for(const auto& coin:selected_utxos) {
+                auto script=coin.script_pubkey;
+                if(script.empty() && !coin.address.empty()) {
+                    auto recorded=wallet_service->get().getScriptPubKeyForAddress(coin.address);
+                    if(recorded)script=*recorded;
                 }
-            }
-
-            // Phase 34.3: Direct scriptPubKey → private key lookup
-            // ⚠️ CRITICAL FIX: Use deriveKeyForScriptPubKey() (same as PSBT/raw tx signing)
-            // Replaces legacy listAddresses() approach which fails for mempool-created UTXOs
-            if (script_pubkey.empty()) {
-                log_error("📤 ❌ UTXO has empty scriptPubKey: " + utxo.txid + ":" + std::to_string(utxo.vout));
-                continue;
-            }
-
-            // Phase 10: P2MR (witness v3) inputs have no ECDSA private key.
-            // The signing secret is a PQ seed resolved by WalletKeyProvider at
-            // sign-time via the V7P2MRStore. Skip legacy key derivation here —
-            // deriveKeyForScriptPubKey can't decode a 0x53 0x20 || merkle_root
-            // script and would log a spurious error for every P2MR coin.
-            {
-                std::vector<uint8_t> spk_bytes;
-                spk_bytes.reserve(script_pubkey.size() / 2);
-                for (std::size_t i = 0; i + 1 < script_pubkey.size(); i += 2) {
-                    spk_bytes.push_back(static_cast<uint8_t>(
-                        std::stoi(script_pubkey.substr(i, 2), nullptr, 16)));
-                }
-                if (dinero::consensus::pq::IsP2MRScript(spk_bytes)) {
-                    continue;
-                }
-            }
-
-            // Direct scriptPubKey → private key resolution (Bitcoin Core semantics)
-            auto privkey_bytes = wallet_service->get().deriveKeyForScriptPubKey(script_pubkey);
-            if (privkey_bytes.has_value() && !privkey_bytes->empty()) {
-                // Convert bytes to hex string for compatibility with existing signing code
-                std::ostringstream priv_key_hex;
-                for (uint8_t byte : privkey_bytes.value()) {
-                    priv_key_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
-                }
-                // Bind resolved signing material to this exact input.
-                private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = priv_key_hex.str();
-                log_info("📤 ✅ Retrieved private key for scriptPubKey: " + script_pubkey.substr(0, 16) + "...");
-            } else {
-                // Fallback path: if script-based path lookup is incomplete, derive by known selected path.
-                if (utxo.derivation_path.rfind("m/", 0) == 0) {
-                    std::string priv_key_hex = wallet_service->get().getPrivateKeyForPath(utxo.derivation_path);
-                    if (!priv_key_hex.empty()) {
-                        private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = priv_key_hex;
-                        log_info("📤 ✅ Retrieved private key via derivation path fallback: " +
-                                 utxo.derivation_path);
-                        continue;
-                    }
-                }
-                log_error("📤 ❌ Could not derive key for scriptPubKey/path: " + script_pubkey +
-                          " / " + utxo.derivation_path);
-            }
-        }
-
-        // Phase 10: empty private_keys is OK if every selected UTXO is P2MR —
-        // those are signed via WalletKeyProvider::SignP2MR (PQ seed, not
-        // secp256k1 private key). Only fail if we have selected UTXOs that
-        // need ECDSA keys AND we couldn't derive any.
-        if (private_keys.empty() && broadcast) {
-            bool has_non_p2mr = false;
-            for (const auto& utxo : selected_utxos) {
-                const std::string& spkhex = utxo.script_pubkey;
-                const bool is_p2mr = (spkhex.length() == 68 && spkhex.rfind("5320", 0) == 0);
-                if (!is_p2mr) { has_non_p2mr = true; break; }
-            }
-            if (has_non_p2mr) {
-                log_error("[wallet.sendtoaddress] No private keys available after script and path derivation attempts");
-                result["error"] = "Could not retrieve private keys for signing";
-                return result;
+                auto key=lease->ResolveSigningKey(script,*pin);
+                if(key && !key->secret.empty())++available_keys;
             }
         }
 
@@ -3168,58 +3104,8 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 return result;
             }
 
-            // Step 2: Sign transaction using TransactionSigner + existing key infrastructure
-            // Resolved entries already bind exact selected outpoints.
-            const auto& input_keys = private_keys;
-
-            // Phase 10: if any selected UTXO is P2MR (witness v3), we must
-            // use the hybrid provider that knows how to resolve v7 seeds
-            // and produce ML-DSA-65 signatures. Otherwise the legacy
-            // MapKeyProvider is sufficient (and cheaper — no store open).
-            bool any_p2mr = false;
-            for (const auto& cu : utxos_for_builder) {
-                if (dinero::consensus::pq::IsP2MRScript(cu.spk)) {
-                    any_p2mr = true;
-                    break;
-                }
-            }
-
-            std::unique_ptr<dinero::KeyProvider> key_provider_holder;
-            std::unique_ptr<dinero::wallet::V7P2MRStore> p2mr_store_holder;
-
-            if (any_p2mr) {
-                // Wallet must be unlocked: v7 signing needs the AEAD master
-                // key to decrypt the stored seed.
-                auto master_opt = wallet_service->get().GetV7PqMasterKey();
-                if (!master_opt) {
-                    result["error"] = "Cannot spend P2MR coin: wallet locked or v7 master key unavailable";
-                    return result;
-                }
-                const std::string store_path = wallet_service->get().GetV7P2MRStorePath();
-                if (store_path.empty()) {
-                    result["error"] = "Cannot spend P2MR coin: v7 P2MR store path not configured";
-                    return result;
-                }
-                p2mr_store_holder = std::make_unique<dinero::wallet::V7P2MRStore>();
-                if (p2mr_store_holder->Open(store_path) != dinero::wallet::V7P2MRStore::OpenResult::Ok) {
-                    result["error"] = "Cannot spend P2MR coin: failed to open v7 P2MR store";
-                    return result;
-                }
-
-                dinero::wallet::WalletKeyProvider::Config cfg;
-                cfg.legacy_keys_by_path = input_keys;
-                cfg.p2mr_store          = p2mr_store_holder.get();
-                cfg.wallet_id           = 1;  // single-wallet today, matches v7 RPC handlers
-                std::memcpy(cfg.master_key.data(), master_opt->data(), cfg.master_key.size());
-                // Scrub the caller-side copy after stamping into cfg.
-                OPENSSL_cleanse(const_cast<uint8_t*>(master_opt->data()), master_opt->size());
-
-                key_provider_holder = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
-            } else {
-                key_provider_holder = std::make_unique<dinero::MapKeyProvider>(input_keys);
-            }
-
-            auto sign_result = dinero::TransactionSigner::Sign(build_result.unsigned_tx, *key_provider_holder);
+            auto sign_result=dinero::SignWalletTransaction(
+                wallet_service->get(),signing_identity,build_result.unsigned_tx);
 
             if (!sign_result.success) {
                 result["error"] = "Failed to sign transaction: " + sign_result.error;
@@ -3320,7 +3206,7 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
             result["change_address"] = change_address;
         }
 
-        result["available_keys"] = static_cast<int>(private_keys.size());
+        result["available_keys"] = static_cast<int>(available_keys);
 
         if (ctx.logger) {
             ctx.logger->info("[wallet.sendtoaddress] Preview: " + std::to_string(amount_din) +
@@ -3381,6 +3267,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
     }
 
     try {
+        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
         din::Json recipients_obj = params[0];
         double fee_rate = 1.0;
 
@@ -3466,8 +3353,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         // UTXOs are never passed to the transaction builder.
         // Bug Fix 4: Build candidate_utxos in parallel so the builder uses EXACTLY
         // the same pre-filtered set (avoids "Missing private key" when builder selects
-        // a stale/CT UTXO from UTXOIndex that wasn't included in private_keys).
-        std::map<std::string, std::string> private_keys;
+        // a stale/CT UTXO outside the signable candidate set).
         std::vector<dinero::CanonicalWalletUTXO> candidate_utxos;
         int signable_count = 0;
         for (const auto& utxo : utxos) {
@@ -3487,15 +3373,6 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
                 continue;
             }
 
-            // Skip UTXOs with no derivation path — we cannot sign for them.
-            if (utxo.derivation_path.empty()) {
-                if (ctx.logger) {
-                    ctx.logger->debug("[wallet.sendmany] Skipping UTXO without derivation path: " +
-                                      utxo.txid.substr(0, 16) + ":" + std::to_string(utxo.vout));
-                }
-                continue;
-            }
-
             if (utxo.script_pubkey.empty()) {
                 if (ctx.logger) {
                     ctx.logger->debug("[wallet.sendmany] Skipping UTXO with empty scriptPubKey: " +
@@ -3504,31 +3381,10 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
                 continue;
             }
 
-            // Direct scriptPubKey → private key resolution (Bitcoin Core semantics).
-            auto privkey_bytes = wallet_service->get().deriveKeyForScriptPubKey(utxo.script_pubkey);
-            if (!privkey_bytes.has_value() || privkey_bytes->empty()) {
-                // Fall back to the explicit derivation path for older wallet state
-                // where direct scriptPubKey lookup is incomplete but ownership is known.
-                std::string fallback_privkey = utxo.derivation_path.rfind("m/",0)==0
-                    ? wallet_service->get().getPrivateKeyForPath(utxo.derivation_path) : std::string{};
-                if (!fallback_privkey.empty()) {
-                    private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = fallback_privkey;
-                } else {
-                    // This UTXO belongs to a watch-only or foreign script — skip it.
-                    if (ctx.logger) {
-                        ctx.logger->debug("[wallet.sendmany] Skipping UTXO with no signing key: " +
-                                          utxo.txid.substr(0, 16) + ":" + std::to_string(utxo.vout));
-                    }
-                    continue;
-                }
-            } else {
-                // Convert raw bytes to hex string for the signing infrastructure.
-                std::ostringstream priv_key_hex;
-                for (uint8_t byte : privkey_bytes.value()) {
-                    priv_key_hex << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(byte);
-                }
-                private_keys[utxo.txid + ":" + std::to_string(utxo.vout)] = priv_key_hex.str();
-            }
+            // Presence preflight only. The actual signing owner revalidates
+            // every selected key and the captured session after coin selection.
+            auto key=wallet_service->get().resolveSigningKeyForScriptPubKey(utxo.script_pubkey);
+            if(!key || key->secret.empty())continue;
 
             // Build CanonicalWalletUTXO for coin selection (mirrors sendtoaddress).
             // listUnspentUTXOs() is already filtered by the wallet's canonical view
@@ -3596,11 +3452,20 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
             options.change_address = change_address;
             options.candidate_utxos = candidate_utxos;  // Bug Fix 4
 
-            build_result = builder.BuildTransaction(recipients, private_keys, options);
+            build_result = builder.PreviewTransaction(recipients, options);
             if (!build_result.success) {
                 result["error"] = "Transaction build failed: " + build_result.error;
                 return result;
             }
+
+            dinero::UnsignedTransaction unsigned_tx;
+            unsigned_tx.tx=build_result.transaction;
+            unsigned_tx.selected_utxos=build_result.selected_utxos;
+            unsigned_tx.fee=build_result.fee;unsigned_tx.change_amount=build_result.change_amount;
+            unsigned_tx.change_address=build_result.change_address;unsigned_tx.signals_rbf=build_result.is_rbf_enabled;
+            auto signed_result=dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
+            if(!signed_result.success){result["error"]="Transaction signing failed: "+signed_result.error;return result;}
+            build_result.transaction=std::move(signed_result.signed_tx.tx);
 
             auto submit_result = ctx.daemon->tx_ingress->Submit(
                 build_result.transaction, dinero::TxOrigin::WALLET);
@@ -7761,6 +7626,7 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
     if (!chainstate_service || !chainstate_service->utxoIndex()) { result["ok"] = false; result["error"] = "UTXO index not available"; return result; }
 
     try {
+        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
         // RPC may pass the options object directly OR wrapped in a single-element
         // array (params == [ {...} ]). Normalize to the effective options object.
         const din::Json& args = (params.isArray() && !params.empty() && params[0].isObject())
@@ -7973,46 +7839,7 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
         auto br = dinero::UnsignedTxBuilder::Build(cins, outs, bo);
         if (!br.success) { result["ok"] = false; result["error"] = "Failed to build transaction: " + br.error; return result; }
 
-        // Keys: ECDSA for P2TR via scriptPubKey/path; P2MR signs via WalletKeyProvider (PQ seed).
-        std::map<std::string, std::string> input_keys;
-        for (const auto& u : selected) {
-            std::vector<uint8_t> spk; spk.reserve(u.script_pubkey.size() / 2);
-            for (size_t i = 0; i + 1 < u.script_pubkey.size(); i += 2)
-                spk.push_back(static_cast<uint8_t>(std::stoi(u.script_pubkey.substr(i, 2), nullptr, 16)));
-            if (dinero::consensus::pq::IsP2MRScript(spk)) continue;
-            auto pk = wallet_service->get().deriveKeyForScriptPubKey(u.script_pubkey);
-            if (pk.has_value() && !pk->empty()) {
-                std::ostringstream h;
-                for (uint8_t b : *pk) h << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-                input_keys[u.txid + ":" + std::to_string(u.vout)] = h.str();
-            } else if (u.derivation_path.rfind("m/", 0) == 0) {
-                std::string hk = wallet_service->get().getPrivateKeyForPath(u.derivation_path);
-                if (!hk.empty()) input_keys[u.txid + ":" + std::to_string(u.vout)] = hk;
-            }
-        }
-
-        std::unique_ptr<dinero::KeyProvider> provider;
-        std::unique_ptr<dinero::wallet::V7P2MRStore> store_holder;
-        if (family == "p2mr") {
-            auto master = wallet_service->get().GetV7PqMasterKey();
-            if (!master) { result["ok"] = false; result["error"] = "Cannot spend P2MR coin: wallet locked or v7 master key unavailable"; return result; }
-            const std::string sp = wallet_service->get().GetV7P2MRStorePath();
-            if (sp.empty()) { result["ok"] = false; result["error"] = "v7 P2MR store path not configured"; return result; }
-            store_holder = std::make_unique<dinero::wallet::V7P2MRStore>();
-            if (store_holder->Open(sp) != dinero::wallet::V7P2MRStore::OpenResult::Ok) { result["ok"] = false; result["error"] = "failed to open v7 P2MR store"; return result; }
-            dinero::wallet::WalletKeyProvider::Config cfg;
-            cfg.legacy_keys_by_path = input_keys;
-            cfg.p2mr_store = store_holder.get();
-            cfg.wallet_id = 1;
-            std::memcpy(cfg.master_key.data(), master->data(), cfg.master_key.size());
-            OPENSSL_cleanse(const_cast<uint8_t*>(master->data()), master->size());
-            provider = std::make_unique<dinero::wallet::WalletKeyProvider>(std::move(cfg));
-        } else {
-            if (input_keys.empty()) { result["ok"] = false; result["error"] = "Could not retrieve private keys for signing"; return result; }
-            provider = std::make_unique<dinero::MapKeyProvider>(input_keys);
-        }
-
-        auto sr = dinero::TransactionSigner::Sign(br.unsigned_tx, *provider);
+        auto sr=dinero::SignWalletTransaction(wallet_service->get(),signing_identity,br.unsigned_tx);
         if (!sr.success) { result["ok"] = false; result["error"] = "Failed to sign transaction: " + sr.error; return result; }
 
         const dinero::Transaction& stx = sr.signed_tx.tx;

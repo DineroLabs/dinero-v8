@@ -6,6 +6,8 @@
 #include "daemon/services/wallet_service.h"
 #include "rpc/rpc_registry.h"
 #include "wallet/transaction_builder.h"
+#include "wallet/wallet_transaction_signer.h"
+#include "consensus/pq/p2mr_consensus.h"
 #include "primitives/transaction.h"
 #include "wallet/taproot_keys.h"
 #include "consensus/script_interpreter.h"
@@ -19,6 +21,7 @@
 #include <unistd.h>
 #include <cstring>
 
+void registerV7PqWalletMethods();
 din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext&,const din::Json&);
 namespace {
 class HistoricalRpc : public ::testing::Test {
@@ -139,6 +142,63 @@ TEST_F(HistoricalRpc, ExistingWitnessAndMissingMetadataStayExplicit) {
     EXPECT_TRUE(tx.vin[0].witness.empty());EXPECT_FALSE(denied["complete"].asBool());
     auto retry=rpc_context_wallet_signrawtransaction(ctx,params({old}));ASSERT_TRUE(retry.isMember("hex"));
     ASSERT_TRUE(dinero::TransactionSerializer::Deserialize(tx,retry["hex"].asString()));verify(tx,{old});
+}
+
+class WalletOwnedSigning : public HistoricalRpc {
+protected:
+    static dinero::UnsignedTransaction unsigned_tx(const std::vector<dinero::CanonicalWalletUTXO>& coins) {
+        dinero::UnsignedTransaction out;out.tx=transaction(coins);out.selected_utxos=coins;out.fee=1000;out.change_amount=0;out.signals_rbf=false;return out;
+    }
+    dinero::CanonicalWalletUTXO pq_coin() {
+        registerV7PqWalletMethods();auto* handler=g_rpcRegistry.lookup("wallet.importp2mrseed");
+        if(!handler)throw std::runtime_error("PQ adapter absent");
+        din::Json p;p["seed_hex"]=std::string(64,'7');p["derivation_path"]="external:owned-signing";p["hrp"]="rdin";
+        const auto result=(*handler)(ctx,p);
+        if(result.isMember("error") && !result["error"].asString().empty())throw std::runtime_error(result.toStyledString());
+        const auto script=dinero::TransactionBuilder::AddressToScriptPubKey(result["address"].asString());
+        if(script.size()!=34 || script[0]!=0x53)throw std::runtime_error("PQ script absent");
+        return coin(script,3);
+    }
+};
+TEST_F(WalletOwnedSigning, ActualMixedOwnerSigningAndPqStore) {
+    auto pq=pq_coin();auto& w=service->get();const auto identity=dinero::CaptureWalletSigningIdentity(w,"owner");
+    const std::vector<dinero::CanonicalWalletUTXO> coins{old,modern,hd,pq};const auto input=unsigned_tx(coins);
+    const auto before=input.tx.SerializeHex(true);const auto result=dinero::SignWalletTransaction(w,identity,input);
+    ASSERT_TRUE(result.success)<<result.error;EXPECT_EQ(input.tx.SerializeHex(true),before);EXPECT_EQ(result.signed_tx.fee,input.fee);EXPECT_EQ(result.signed_tx.change_amount,input.change_amount);
+    const auto& tx=result.signed_tx.tx;
+    for(size_t i=0;i<coins.size();++i){
+        dinero::consensus::ScriptExecutionContext c(&tx,i,coins[i].value.GetUna(),dinero::consensus::SCRIPT_VERIFY_WITNESS|dinero::consensus::SCRIPT_VERIFY_TAPROOT);
+        for(const auto& u:coins){c.all_amounts.push_back(u.value.GetUna());c.all_scriptpubkeys.push_back(u.spk);c.all_confidential_flags.push_back(0);c.all_input_commitments.push_back({});}
+        if(i<3){dinero::consensus::ScriptError error;EXPECT_TRUE(dinero::consensus::VerifyScript(dinero::consensus::Script(tx.vin[i].scriptSig),dinero::consensus::Script(coins[i].spk),tx.vin[i].witness,c,error));}
+        else {const auto hash=dinero::consensus::SignatureHashTaproot(c,0,{});ASSERT_EQ(hash.size(),32u);std::array<uint8_t,32> message{};std::copy(hash.begin(),hash.end(),message.begin());ASSERT_EQ(tx.vin[i].witness.size(),1u);EXPECT_EQ(dinero::consensus::pq::VerifyP2MRSpend(pq.spk,tx.vin[i].witness[0],message,0),dinero::consensus::pq::P2MRVerifyError::Ok);message[0]^=1;EXPECT_NE(dinero::consensus::pq::VerifyP2MRSpend(pq.spk,tx.vin[i].witness[0],message,0),dinero::consensus::pq::P2MRVerifyError::Ok);}
+    }
+    const auto store=std::filesystem::path(w.GetV7P2MRStorePath());auto held=store;held+=".held";std::filesystem::rename(store,held);
+    auto missing=dinero::SignWalletTransaction(w,identity,input);EXPECT_FALSE(missing.success);EXPECT_TRUE(missing.signed_tx.tx.vin.empty());EXPECT_FALSE(std::filesystem::exists(store));
+    if(std::filesystem::exists(store))std::filesystem::remove(store);std::filesystem::rename(held,store);
+    EXPECT_TRUE(dinero::SignWalletTransaction(w,identity,input).success);
+}
+TEST_F(WalletOwnedSigning, CapturedSessionPinAndCallerTransaction) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();const auto identity=dinero::CaptureWalletSigningIdentity(w,"owner");const auto input=unsigned_tx({old,modern});
+    SigningHook hook{w};sqlite3_trace_v2(db,SQLITE_TRACE_STMT,SigningHook::trace,&hook);auto result=dinero::SignWalletTransaction(w,identity,input);sqlite3_trace_v2(db,0,nullptr,nullptr);
+    ASSERT_TRUE(result.success)<<result.error;EXPECT_TRUE(hook.fired);EXPECT_TRUE(hook.lock_refused);EXPECT_TRUE(hook.selection_refused);verify(result.signed_tx.tx,input.selected_utxos);
+    EXPECT_THROW(dinero::CaptureWalletSigningIdentity(w,"other"),std::runtime_error);
+    sql(db,"BEGIN");EXPECT_FALSE(dinero::SignWalletTransaction(w,identity,input).success);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
+    w.lockWallet();EXPECT_FALSE(dinero::SignWalletTransaction(w,identity,input).success);w.unlockWallet("historical-rpc",0);
+    w.open("owner");w.unlockWallet("historical-rpc",0);EXPECT_FALSE(dinero::SignWalletTransaction(w,identity,input).success);
+    auto current=dinero::CaptureWalletSigningIdentity(w,"owner");EXPECT_TRUE(dinero::SignWalletTransaction(w,current,input).success);
+    w.open("other");EXPECT_FALSE(dinero::SignWalletTransaction(w,current,input).success);
+}
+TEST_F(WalletOwnedSigning, CompleteOutpointsBeforeKeyReadsAndNoFallback) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();const auto identity=dinero::CaptureWalletSigningIdentity(w,"owner");
+    for(int mode=0;mode<3;++mode){auto input=unsigned_tx({old,modern});if(mode==0)input.selected_utxos.pop_back();if(mode==1)input.selected_utxos[1].vout+=1;if(mode==2){input.selected_utxos[1]=old;input.tx.vin[1].prevout=input.tx.vin[0].prevout;}
+        SigningHook hook{w};sqlite3_trace_v2(db,SQLITE_TRACE_STMT,SigningHook::trace,&hook);const auto result=dinero::SignWalletTransaction(w,identity,input);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_FALSE(result.success);EXPECT_TRUE(result.signed_tx.tx.vin.empty());EXPECT_FALSE(hook.fired);
+    }
+    auto invalid_fee=unsigned_tx({old,modern});invalid_fee.fee=0;
+    auto invalid_result=dinero::SignWalletTransaction(w,identity,invalid_fee);EXPECT_FALSE(invalid_result.success);EXPECT_TRUE(invalid_result.signed_tx.tx.vin.empty());
+    // A damaged durable owner must not fall back to another input's scalar or
+    // a remembered HD label. Only synthetic fixture records are changed.
+    sql(db,"UPDATE imported_keys SET private_key_enc='broken'");auto input=unsigned_tx({old,modern});input.selected_utxos[0].path=hd.path;
+    const auto result=dinero::SignWalletTransaction(w,identity,input);EXPECT_FALSE(result.success);EXPECT_TRUE(result.signed_tx.tx.vin.empty());for(const auto& in:input.tx.vin)EXPECT_TRUE(in.witness.empty());
 }
 
 }
