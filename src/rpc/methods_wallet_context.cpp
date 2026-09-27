@@ -5568,21 +5568,8 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
         auto& wallet = wallet_service->get();
         auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
 
-        std::unordered_map<std::string, std::string> script_to_path;
-        for (const auto& row : wallet.listAddresses(false)) {
-            if (row.script_pubkey.empty()) continue;
-
-            const uint32_t purpose =
-                (row.type == "p2tr" || row.type == "taproot") ? 86 : 84;
-            script_to_path[row.script_pubkey] = BuildStandardDerivationPath(
-                purpose,
-                row.account,
-                row.change,
-                row.index);
-        }
-
         std::vector<dinero::CanonicalWalletUTXO> input_utxos(tx.vin.size());
-        std::vector<std::optional<std::vector<uint8_t>>> input_private_keys(tx.vin.size());
+        std::vector<std::optional<dinero::SigningKey>> input_private_keys(tx.vin.size());
         std::vector<bool> have_prevout(tx.vin.size(), false);
         std::vector<bool> had_witness(tx.vin.size(), false);
         size_t signed_count = 0;
@@ -5620,28 +5607,38 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
             wallet_utxo.is_coinbase = false;
             wallet_utxo.height = 0;
 
-            const std::string script_pubkey_hex = dinero::TransactionSerializer::ToHex(script);
-            if (auto path_it = script_to_path.find(script_pubkey_hex); path_it != script_to_path.end()) {
-                wallet_utxo.path = path_it->second;
-            }
-
-            // Preserve any already-populated witness (notably a covenant
-            // script path) and do not ask the HD wallet for a key it cannot
-            // own. Completion is decided below by canonical consensus
-            // validation, so malformed pre-populated witnesses do not get a
-            // free "complete" result.
-            had_witness[i] = !tx.vin[i].witness.empty();
-            if (had_witness[i]) {
-                signed_count++;
-            } else {
-                auto privkey =
-                    wallet.deriveKeyForScriptPubKey(script_pubkey_hex);
-                if (privkey.has_value() && privkey->size() == 32) {
-                    input_private_keys[i] = *privkey;
-                }
-            }
-
             have_prevout[i] = true;
+        }
+
+        // Chain/index reads above finish before acquiring the wallet owner.
+        // Keep one selected session and its unlock authorization through all
+        // key resolution and signing, then release before consensus/chain reads.
+        auto signing_lease=wallet.AcquireDatabaseLease();
+        if(!signing_lease->Database() ||
+           (!ctx.walletName.empty() && signing_lease->WalletName()!=ctx.walletName))
+            throw std::runtime_error("Selected wallet does not match signing request");
+        std::unique_ptr<dinero::WalletManager::RecoverySeed> signing_owner;
+        for(size_t i=0;i<tx.vin.size();++i) {
+            if(have_prevout[i] && tx.vin[i].witness.empty()) {
+                signing_owner=signing_lease->CopyRecoverySeed(signing_lease->Session());break;
+            }
+        }
+        for(size_t i=0;i<tx.vin.size();++i) {
+            if(!have_prevout[i])continue;
+            auto& coin=input_utxos[i];
+            had_witness[i]=!tx.vin[i].witness.empty();
+            if(had_witness[i]){++signed_count;continue;}
+            const auto script_hex=dinero::TransactionSerializer::ToHex(coin.spk);
+            auto key=signing_lease->ResolveSigningKey(script_hex,*signing_owner);
+            if(!key || key->secret.size()!=32)continue;
+            // Use recorded origin metadata for canonical keys only. Historical
+            // imports have no HD origin and must never be assigned one here.
+            if(key->policy==dinero::SigningKeyPolicy::TaprootCanonical) {
+                auto path=wallet.getDerivationPath(script_hex);
+                if(!path)path=wallet.getWatchScriptPath(coin.spk);
+                if(path)coin.path=*path;
+            }
+            input_private_keys[i]=std::move(*key);
         }
 
         const bool have_all_prevouts = std::all_of(
@@ -5736,26 +5733,27 @@ din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext& ctx, con
 
             bool signed_input = false;
             if (dinero::TaprootTxSigner::IsTaprootUTXO(utxo)) {
-                if (!have_all_prevouts || utxo.path.empty()) {
+                if (!have_all_prevouts) {
                     continue;
                 }
-                signed_input = dinero::TaprootTxSigner::SignInput(
+                signed_input = dinero::TaprootTxSigner::SignInputWithKey(
                     tx,
                     i,
                     input_utxos,
                     *input_private_keys[i]);
             } else {
-                signed_input = dinero::BIP143Signer::SignInput(
-                    tx,
-                    i,
-                    utxo,
-                    *input_private_keys[i]);
+                signed_input = input_private_keys[i]->policy==dinero::SigningKeyPolicy::Untweaked &&
+                    input_private_keys[i]->script==utxo.spk && dinero::BIP143Signer::SignInput(
+                    tx,i,utxo,input_private_keys[i]->secret);
             }
 
             if (signed_input) {
                 signed_count++;
             }
         }
+
+        p2mr_provider.reset();p2mr_store.reset();
+        input_private_keys.clear();signing_owner.reset();signing_lease.reset();
 
         tx.DetectWitnessVersion();
         result["hex"] = tx.SerializeHex(true);

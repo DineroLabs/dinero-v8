@@ -3237,6 +3237,21 @@ WalletManager::DatabaseLease::CopyRecoverySeed(uint64_t expected_session) {
     return std::unique_ptr<RecoverySeed>(new RecoverySeed(owner_,owner_.master_seed_));
 }
 
+std::optional<SigningKey> WalletManager::DatabaseLease::ResolveSigningKey(
+    const std::string& script_pubkey,const RecoverySeed& pin) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ ||
+       &pin.owner_!=&owner_ || !db_ || db_!=owner_.db_ ||
+       session_!=owner_.database_session_ || owner_.recovery_seeds_!=1)
+        throw std::runtime_error("Signing key owner does not match wallet lease");
+    std::vector<uint8_t> script;
+    if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+    auto policy=script.size()==34 && script[0]==0x51 && script[1]==0x20
+        ?SigningKeyPolicy::TaprootCanonical:SigningKeyPolicy::Untweaked;
+    auto key=owner_.deriveKeyForScriptPubKeyOwned(script_pubkey,&policy,true);
+    if(!key)return std::nullopt;
+    return SigningKey(std::move(*key),std::move(script),policy);
+}
+
 WalletManager::DatabaseLease::~DatabaseLease() noexcept {
     if (thread_ != std::this_thread::get_id()) std::terminate();
     if (owner_.database_leases_ == 1 && owner_.recovery_seeds_) std::terminate();
@@ -6929,7 +6944,7 @@ std::optional<SigningKey> WalletManager::resolveSigningKeyForScriptPubKey(const 
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned(
-    const std::string& script_pubkey,SigningKeyPolicy* policy) {
+    const std::string& script_pubkey,SigningKeyPolicy* policy,bool pinned_signing) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address (display string)
     // Check if wallet is active and unlocked
@@ -6950,8 +6965,8 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned
         imported_script[0]==0x51 && imported_script[1]==0x20) {
         try {
             auto lease=AcquireDatabaseLease();
-            if (!db_ || !sqlite3_get_autocommit(db_) || recovery_seeds_) return std::nullopt;
-            checkUnlockTimeout();
+            if (!db_ || !sqlite3_get_autocommit(db_) || (recovery_seeds_ && !pinned_signing)) return std::nullopt;
+            if(!pinned_signing)checkUnlockTimeout();
             if (wallet_locked_) return std::nullopt;
             // The existing transaction owner also gives all tuple/policy reads
             // one SQLite snapshot. It changes no wallet rows or receipts here.

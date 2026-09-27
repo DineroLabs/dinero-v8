@@ -106,6 +106,13 @@ public:
         const std::map<std::string, std::string>& private_keys
     );
 
+    // Exact-outpoint typed material. The result contains public key identifiers,
+    // never private-key payloads; failed signing publishes no partial witness.
+    BuildResult BuildTransactionWithKeys(
+        const std::vector<Recipient>& recipients,
+        const std::map<std::string, SigningKey>& keys,
+        const BuildOptions& options);
+
     /**
      * Estimate transaction fee
      * @param num_inputs Number of inputs

@@ -13882,6 +13882,32 @@ if(UNIX)
   set_tests_properties(WalletPqRpcOwner PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;pq;ownership")
 endif()
 
+# Actual historical raw-signing adapter and typed transaction builder.
+if(UNIX)
+  add_executable(test_wallet_historical_rpc
+    tests/wallet/test_wallet_historical_rpc.cpp
+    src/daemon/config.cpp
+    src/daemon/mempool.cpp)
+  target_include_directories(test_wallet_historical_rpc PRIVATE include src)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_wallet_historical_rpc PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_wallet_historical_rpc PRIVATE
+      dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate dinero_consensus
+      dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_wallet_historical_rpc)
+  if(APPLE)
+    target_link_libraries(test_wallet_historical_rpc PRIVATE "-framework Security")
+  endif()
+  add_test(NAME WalletHistoricalRpc COMMAND test_wallet_historical_rpc)
+  set_tests_properties(WalletHistoricalRpc PROPERTIES TIMEOUT 120 LABELS "wallet;rpc;signing;ownership")
+endif()
+
 if(UNIX)
   add_executable(test_rpc_handler_drain
     tests/daemon/test_rpc_handler_drain.cpp

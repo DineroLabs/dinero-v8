@@ -265,6 +265,33 @@ TransactionBuilder::BuildResult TransactionBuilder::BuildTransaction(
     return BuildTransaction(recipients, private_keys, default_options);
 }
 
+TransactionBuilder::BuildResult TransactionBuilder::BuildTransactionWithKeys(
+    const std::vector<Recipient>& recipients,
+    const std::map<std::string,SigningKey>& keys,const BuildOptions& options) {
+    auto result=PreviewTransaction(recipients,options);
+    if(!result.success)return result;
+    // Stage the entire witness set. On refusal the result retains the unsigned
+    // transaction, even when an earlier selected input signed successfully.
+    auto staged=result.transaction;
+    std::vector<std::string> identifiers;
+    for(size_t i=0;i<result.selected_utxos.size();++i) {
+        const auto& coin=result.selected_utxos[i];
+        const auto id=coin.GetOutpointString();const auto it=keys.find(id);
+        if(it==keys.end() || it->second.script!=coin.spk) {
+            result.success=false;result.error="Missing or mismatched signing key for UTXO "+id;return result;
+        }
+        const auto& key=it->second;
+        const bool signed_input=TaprootTxSigner::IsTaprootUTXO(coin)
+            ?TaprootTxSigner::SignInputWithKey(staged,i,result.selected_utxos,key)
+            :(key.policy==SigningKeyPolicy::Untweaked && BIP143Signer::SignInput(staged,i,coin,key.secret));
+        if(!signed_input){result.success=false;result.error="Failed to sign transaction inputs";return result;}
+        identifiers.push_back(id);
+    }
+    result.transaction=std::move(staged);
+    result.required_private_keys=std::move(identifiers);
+    return result;
+}
+
 int64_t TransactionBuilder::EstimateFee(int num_inputs, int num_outputs, double fee_rate) {
     int vsize = EstimateVSize(num_inputs, num_outputs);
     return FeeFor(vsize, fee_rate);

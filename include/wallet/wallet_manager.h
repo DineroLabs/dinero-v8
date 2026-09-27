@@ -299,6 +299,9 @@ public:
         // Refuses locked/missing keys; never reloads or unlocks the wallet.
         // Keep this lease until effects encrypted with the returned key commit.
         [[nodiscard]] std::unique_ptr<RecoverySeed> CopyRecoverySeed(uint64_t expected_session);
+        // Resolve only under this exact lease and its already-authorized seed pin.
+        [[nodiscard]] std::optional<SigningKey> ResolveSigningKey(
+            const std::string& script_pubkey, const RecoverySeed& owner);
     private:
         friend class WalletManager;
         explicit DatabaseLease(WalletManager&);
@@ -991,7 +994,7 @@ public:
 
 private:
     std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKeyOwned(
-        const std::string& script_pubkey, SigningKeyPolicy* policy);
+        const std::string& script_pubkey, SigningKeyPolicy* policy, bool pinned_signing = false);
     void rewriteEncryptionPolicy(const std::string& old_passphrase,
         const std::string& new_passphrase, bool encrypted);
 
