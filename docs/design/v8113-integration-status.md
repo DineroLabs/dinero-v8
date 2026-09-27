@@ -683,3 +683,11 @@ now retains real implementations and the independent Orchard lane requires both
 CTests and all twelve existing cases. See
 [scope and qualification](wallet-test-archive-link-2026-09-27.md). Actual Linux
 completion remains required before calling the build repair qualified.
+
+### P2MR test-runner portability (2026-09-27)
+
+The new key-read case runner uses explicit function-pointer pair types for GNU
+compiler compatibility. Existing test bodies and all three required CI markers
+remain unchanged; the failed original Linux build does not qualify the new
+component until the corrected source completes. See the
+[P2MR key-read scope](wallet-p2mr-key-read-2026-09-27.md).

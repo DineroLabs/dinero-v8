@@ -115,7 +115,13 @@ void OneSnapshotDuringReplacement() {
 }
 int main() {
     int failures=0;
-    for(auto c : {std::pair{"BindingAndReopen",BindingAndReopen},std::pair{"ReadErrorsAndCallerTransaction",ReadErrorsAndCallerTransaction},std::pair{"OneSnapshotDuringReplacement",OneSnapshotDuringReplacement}}) {
+    using TestCase = std::pair<const char*, void (*)()>;
+    const std::array<TestCase, 3> cases{{
+        {"BindingAndReopen", &BindingAndReopen},
+        {"ReadErrorsAndCallerTransaction", &ReadErrorsAndCallerTransaction},
+        {"OneSnapshotDuringReplacement", &OneSnapshotDuringReplacement},
+    }};
+    for (const auto& c : cases) {
         try {c.second();std::printf("[PASS] P2MRKeyRead.%s\n",c.first);}
         catch(const std::exception& e) {std::fprintf(stderr,"[FAIL] P2MRKeyRead.%s: %s\n",c.first,e.what());++failures;}
         deny_read=false;interrupt_read=false;replace_row=false;reader=nullptr;writer=nullptr;

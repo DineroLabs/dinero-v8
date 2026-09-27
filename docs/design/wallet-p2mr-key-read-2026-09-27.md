@@ -78,3 +78,13 @@ explicit initialization versus recovery, staged unlock, authenticated complete
 inventory, pending reservations, consumer installation and activation remain
 unfinished. JSON transport, RPC selection/admission/broadcast, whole-node crash,
 reorg, supply and load qualification remain separate. Mainnet activation is unset.
+
+## Test-runner compiler portability
+
+The first exact-source Linux build rejected class-template deduction of a
+`std::pair` containing a function name in the case runner. The runner now declares
+`std::pair<const char*, void (*)()>` explicitly in a three-element array. Test
+bodies, assertions, error handling, completion markers and production code are
+unchanged. Fresh backend-on/off component builds execute the same three cases.
+The corrected Linux source still requires actual CI completion; prior macOS
+passes do not establish GNU compiler compatibility.
