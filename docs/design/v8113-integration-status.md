@@ -674,3 +674,12 @@ Final script-reload qualification: real ON/OFF full daemon and declared targets,
 11/9 CTests, all-89-project-C++ ASan/UBSan with 37 cases and three omission/original
 controls passed their required outcomes. Restored three reload cases passed.
 The daemon binding caller compiled but was not executed in this component lane.
+
+### Wallet-dependent regression archive links (2026-09-27)
+
+Linux default/QUIC/core-heavy at `660f362b` exposed backward wallet-to-chainstate
+and core references in two existing mempool test targets. Linux archive grouping
+now retains real implementations and the independent Orchard lane requires both
+CTests and all twelve existing cases. See
+[scope and qualification](wallet-test-archive-link-2026-09-27.md). Actual Linux
+completion remains required before calling the build repair qualified.

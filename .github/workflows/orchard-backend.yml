@@ -209,7 +209,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute archival header metadata recovery
         run: |
@@ -225,6 +225,23 @@ jobs:
           log = open('orchard-header-recovery-execution.log').read()
           if log.count('[PASS] header metadata recovery reconstructs missing rows safely') != 1:
               raise SystemExit('Header metadata recovery fixture did not complete exactly once')
+          PYTEST
+      - name: Require and execute wallet input and maturity regressions
+        run: |
+          ctest --test-dir build-orchard-root -R '^(MempoolTemplateMaturity|WalletInputCoins)$' --show-only=json-v1 > orchard-wallet-input-maturity-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-input-maturity-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['MempoolTemplateMaturity', 'WalletInputCoins'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Wallet input/maturity tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolTemplateMaturity|WalletInputCoins)$' --verbose --no-tests=error --output-log orchard-wallet-input-maturity-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['TemplateMaturityTest.RewindExcludesCoinbaseSpendAndDescendantsThenReleasesThem', 'TemplateMaturityTest.FutureCoinbaseHeightDoesNotUnderflow', 'TemplateMaturityTest.OrdinaryOutputsDoNotRequireCoinbaseMaturity', 'TemplateMaturityTest.FrozenCoinUsesLiveForestAuthorizationAndOriginalHeight', 'TemplateMaturityTest.ChainstateGuardPrecedesMempoolLockAndCoversCoinLookup', 'WalletInputCoins.SnapshotMapCoinNeedsNoAuxiliaryRowAndSpentCoinCannotFallBack', 'WalletInputCoins.StatelessPostBaseCoinUsesConfiguredDatabaseFallback', 'WalletInputCoins.FrozenCoinRequiresLiveForestEvenWhenAuxiliaryRowSurvives', 'WalletInputCoins.MempoolSpendAndUnconfirmedChangeAreNotCandidates', 'WalletInputCoins.MaturityUsesCurrentNextBlockAndRejectsFutureCoins', 'WalletInputCoins.GuardPrecedesMempoolLockCoversBatchAndIsReleasedBeforeReturn', 'WalletInputCoins.UnavailableChainstateGuardFailsClosed']
+          actual = re.findall(r'\[       OK \] ((?:WalletInputCoins|TemplateMaturityTest)\.\w+)', open('orchard-wallet-input-maturity-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Wallet input/maturity cases missing, duplicated or unexpected')
           PYTEST
       - name: Require and execute all root Orchard lanes
         run: |
@@ -660,6 +677,8 @@ jobs:
             orchard-root-source.txt
             orchard-header-recovery-inventory.json
             orchard-header-recovery-execution.log
+            orchard-wallet-input-maturity-inventory.json
+            orchard-wallet-input-maturity-execution.log
             orchard-root-inventory.json
             orchard-root-execution.log
             orchard-root-detailed-execution.log

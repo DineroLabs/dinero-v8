@@ -5736,11 +5736,24 @@ add_executable(test_template_maturity
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
-target_link_libraries(test_template_maturity PRIVATE
-  dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
-  dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
-  GTest::gtest GTest::gtest_main
-)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_template_maturity PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_template_maturity PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
 if(TARGET bulletproofs_ffi)
   target_link_libraries(test_template_maturity PRIVATE bulletproofs_ffi)
   if(TARGET build_bulletproofs_ffi)
@@ -5766,11 +5779,24 @@ add_executable(test_wallet_input_coins
   src/daemon/config.cpp
   tests/stubs/vault_test_stubs.cpp
 )
-target_link_libraries(test_wallet_input_coins PRIVATE
-  dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
-  dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
-  GTest::gtest GTest::gtest_main
-)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_wallet_input_coins PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_wallet_input_coins PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 ${ROCKSDB_LIBRARY} ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
 if(TARGET bulletproofs_ffi)
   target_link_libraries(test_wallet_input_coins PRIVATE bulletproofs_ffi)
   if(TARGET build_bulletproofs_ffi)
