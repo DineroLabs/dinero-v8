@@ -481,6 +481,24 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute modern imported key and script inventory
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_ModernInventory' --show-only=json-v1 > orchard-wallet-modern-inventory-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_ModernInventoryBindingAndReopen', 'WalletMainnetReadiness_ModernInventoryCorruptionAndBindingsRefuse', 'WalletMainnetReadiness_ModernInventoryIncompleteReadPreservesOwner']
+          tests = json.load(open('orchard-wallet-modern-inventory-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Legacy inventory tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_ModernInventory' --verbose --no-tests=error --output-log orchard-wallet-modern-inventory-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.ModernInventoryBindingAndReopen', 'WalletMainnetReadiness.ModernInventoryCorruptionAndBindingsRefuse', 'WalletMainnetReadiness.ModernInventoryIncompleteReadPreservesOwner']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.ModernInventory\w+)', open('orchard-wallet-modern-inventory-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Legacy inventory cases missing, duplicated or unexpected')
+          PYTEST
       - name: Require and execute historical legacy import inventory
         run: |
           ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_LegacyInventory' --show-only=json-v1 > orchard-wallet-legacy-inventory-inventory.json
@@ -886,6 +904,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-modern-inventory-inventory.json
+            orchard-wallet-modern-inventory-execution.log
             orchard-wallet-legacy-inventory-inventory.json
             orchard-wallet-legacy-inventory-execution.log
             orchard-wallet-staged-unlock-inventory.json

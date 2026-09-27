@@ -1,0 +1,9 @@
+# Modern imported owners during staged unlock
+
+Encrypted staged unlock now examines every present row of the optional modern Taproot key table inside its existing checked FULL transaction. It requires the established encrypted BLOB representation and policy flag, authenticates the private scalar, derives its internal and canonical tweaked public keys, and compares both stored public keys and the current-network address.
+
+For each present key, the same snapshot must contain the exact output-to-internal-key mapping, import recognition path, watched script and address record with imported account semantics. Required SQL types, reads and terminal completion are checked. Missing or inconsistent bindings refuse the unlock before live state publication. Temporary private material is cleansed; no key cache, row, script, path, label, account or recovery cursor is rewritten.
+
+This validates present modern imported owners and their recognition bindings. It does not prove that deleted keys, orphan metadata, unseen accounts or whole-wallet backup revisions are complete. Watch-only and HD inventory, historical import signing, separate PQ storage and authenticated account archives still require their own ownership checks. A missing table is not permission to generate a key or certify completeness. Unencrypted discovery and seedless wallets are outside this change.
+
+Three component cases cover actual import/encrypt/reopen preservation; late-row authentication failure, authenticated wrong key, malformed policy/public fields and missing or inconsistent mappings/scripts/address records; denied reads and interrupted inventory completion with retry. Existing staged-unlock state preservation also covers failed re-unlock. Exact execution and instrumentation evidence is retained privately; no release readiness follows from these component checks.

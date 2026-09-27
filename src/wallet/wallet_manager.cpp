@@ -3946,6 +3946,81 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
         IssuanceCheck(db_,rc,SQLITE_DONE);
     }
 
+    // Authenticate present modern imported owners and their recorded script
+    // bindings under this unlock snapshot. Absence is not a completeness proof.
+    {
+        IssuedStatement table(db_, "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='taproot_keys'");
+        const int found=sqlite3_step(table.value.get());
+        if (found==SQLITE_ROW) {
+            table.Done();
+            IssuedStatement inventory(db_, "SELECT address,internal_privkey,internal_pubkey,output_pubkey,is_privkey_encrypted FROM taproot_keys ORDER BY address");
+            const auto text=[](sqlite3_stmt* q,int col) {
+                if(sqlite3_column_type(q,col)!=SQLITE_TEXT)
+                    throw std::runtime_error("Imported text field invalid");
+                const auto* p=static_cast<const char*>(sqlite3_column_blob(q,col));
+                const int n=sqlite3_column_bytes(q,col);
+                if(!p || n<=0)throw std::runtime_error("Imported text field missing");
+                return std::string(p,n);
+            };
+            const auto integer=[](sqlite3_stmt* q,int col,int expected) {
+                return sqlite3_column_type(q,col)==SQLITE_INTEGER &&
+                       sqlite3_column_int64(q,col)==expected;
+            };
+            const auto blob=[](sqlite3_stmt* q,int col,const uint8_t* expected,int n) {
+                return sqlite3_column_type(q,col)==SQLITE_BLOB &&
+                       sqlite3_column_bytes(q,col)==n && sqlite3_column_blob(q,col) &&
+                       CRYPTO_memcmp(sqlite3_column_blob(q,col),expected,n)==0;
+            };
+            const bool wallet_column=IssuanceWalletColumn(db_,"addresses");
+            int rc;
+            while((rc=sqlite3_step(inventory.value.get()))==SQLITE_ROW) {
+                auto* q=inventory.value.get();
+                const auto address=text(q,0);
+                if(!integer(q,4,1) || sqlite3_column_type(q,1)!=SQLITE_BLOB ||
+                   sqlite3_column_bytes(q,1)!=60 || !sqlite3_column_blob(q,1))
+                    throw std::runtime_error("Imported unlock policy invalid");
+                Secret stored,plain;
+                stored.value.assign(static_cast<const char*>(sqlite3_column_blob(q,1)),60);
+                plain.value=decryptData(stored.value,key.value);
+                if(plain.value.size()!=32)throw std::runtime_error("Imported scalar length invalid");
+                struct Scalar {
+                    std::array<uint8_t,32> value{};
+                    ~Scalar(){OPENSSL_cleanse(value.data(),value.size());}
+                } scalar;
+                std::copy(plain.value.begin(),plain.value.end(),scalar.value.begin());
+                std::array<uint8_t,32> internal{},output{};int parity=0;
+                if(!TaprootKeys::DeriveXOnlyPubkey(scalar.value,internal,parity) ||
+                   !TaprootKeys::ComputeTweakedPubkey(internal,output) ||
+                   !blob(q,2,internal.data(),32) || !blob(q,3,output.data(),32))
+                    throw std::runtime_error("Imported unlock public binding mismatch");
+                const auto& network=Params().name;
+                if(address!=TaprootKeys::CreateTaprootAddress(output,
+                   network=="regtest"?"rdin":network=="testnet"?"tdin":"din"))
+                    throw std::runtime_error("Imported unlock address mismatch");
+                std::vector<uint8_t> script{0x51,0x20};
+                script.insert(script.end(),output.begin(),output.end());
+                const auto path="tr("+util::hex(std::vector<uint8_t>(internal.begin(),internal.end())).substr(0,8)+"...)";
+                const std::string sql=R"(SELECT m.internal_pubkey,m.derivation_path,w.path,w.is_change,
+                    a.account,a.change,a.type,a.script_pubkey,)"+
+                    std::string(wallet_column?"a.wallet_id":"1")+R"( FROM taproot_key_mapping m
+                    JOIN watch_scripts w ON w.script_pubkey=?
+                    JOIN addresses a ON a.address=?
+                    WHERE m.output_pubkey=?)";
+                IssuedStatement binding(db_,sql.c_str());
+                binding.Blob(1,script.data(),int(script.size()));
+                binding.Text(2,address);binding.Blob(3,output.data(),32);
+                IssuanceCheck(db_,sqlite3_step(binding.value.get()),SQLITE_ROW);
+                auto* row=binding.value.get();
+                if(!blob(row,0,internal.data(),32) || text(row,1)!=path || text(row,2)!=path ||
+                   !integer(row,3,0) || !integer(row,4,-1) || !integer(row,5,0) ||
+                   text(row,6)!="p2tr" || text(row,7)!=util::hex(script) || !integer(row,8,1))
+                    throw std::runtime_error("Imported unlock script binding mismatch");
+                binding.Done();
+            }
+            IssuanceCheck(db_,rc,SQLITE_DONE);
+        } else IssuanceCheck(db_,found,SQLITE_DONE);
+    }
+
     // Read every known master owner in the same transaction. A malformed
     // present owner is an error even when another wrapper can be decrypted.
     auto initial = loadInitialPqMaster(seed.value);
