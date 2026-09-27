@@ -7074,15 +7074,27 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_pruning.cpp)
   add_executable(test_pruning
     tests/storage/test_pruning.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
 
-  target_link_libraries(test_pruning PRIVATE
-    dinero_core
-    dinero_chainstate
-    dinero_consensus
-    dinero_crypto
-    RocksDB::rocksdb
-  )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Storage fixtures do not exercise mempool behavior. The existing stub above
+    # isolates that daemon-only dependency; rescan real mutually dependent archives.
+    target_link_libraries(test_pruning PRIVATE
+      "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool
+      dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+      dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+      RocksDB::rocksdb)
+  else()
+    target_link_libraries(test_pruning PRIVATE
+      dinero_core
+      dinero_chainstate
+      dinero_consensus
+      dinero_crypto
+      RocksDB::rocksdb
+    )
+  endif()
   link_zstd_if_needed(test_pruning)
 
   target_link_directories(test_pruning PRIVATE /opt/homebrew/lib)
@@ -7113,14 +7125,26 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/storage/test_header_status_bits.cpp)
   add_executable(test_header_status_bits
     tests/storage/test_header_status_bits.cpp
+    tests/stubs/mempool_test_stubs.cpp
   )
-  target_link_libraries(test_header_status_bits PRIVATE
-    dinero_core
-    dinero_chainstate
-    dinero_consensus
-    dinero_crypto
-    RocksDB::rocksdb
-  )
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Storage fixtures do not exercise mempool behavior. The existing stub above
+    # isolates that daemon-only dependency; rescan real mutually dependent archives.
+    target_link_libraries(test_header_status_bits PRIVATE
+      "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool
+      dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+      dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+      RocksDB::rocksdb)
+  else()
+    target_link_libraries(test_header_status_bits PRIVATE
+      dinero_core
+      dinero_chainstate
+      dinero_consensus
+      dinero_crypto
+      RocksDB::rocksdb
+    )
+  endif()
   link_zstd_if_needed(test_header_status_bits)
   target_link_directories(test_header_status_bits PRIVATE /opt/homebrew/lib)
   if(APPLE)

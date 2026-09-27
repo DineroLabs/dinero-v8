@@ -699,3 +699,12 @@ versions and completed reads before returning an authenticated seed. Current and
 legacy KDFs are preserved; malformed or interrupted reads refuse without live
 publication. This is a prerequisite for staged unlock, not its completion. See
 [scope and qualification](wallet-seed-read-2026-09-27.md).
+
+## Storage test archive linkage (2026-09-27)
+
+The latest full Linux/QUIC/Core Heavy builds exposed pruning/header-status link
+failures. Both real storage fixtures now use existing non-mempool isolation and
+Linux archive groups, with an independent mandatory execution lane. Fixtures,
+production code, assertions and deadlines are unchanged. See
+[storage test linkage](storage-test-archive-link-2026-09-27.md); new Linux
+qualification remains required before advancing the draft PR.

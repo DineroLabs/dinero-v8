@@ -209,8 +209,26 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod test_pruning test_header_status_bits test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
+      - name: Require and execute pruning and header-status storage regressions
+        run: |
+          ctest --test-dir build-orchard-root -R '^(PruningTestSuite|HeaderStatusBits)$' --show-only=json-v1 > orchard-storage-test-link-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-storage-test-link-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != ['HeaderStatusBits', 'PruningTestSuite'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('Pruning/header-status tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(PruningTestSuite|HeaderStatusBits)$' --verbose --no-tests=error --output-log orchard-storage-test-link-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log = open('orchard-storage-test-link-execution.log').read()
+          if log.count('Header status bits: 12/12 properties hold') != 1 or log.count('ALL TESTS PASSED ✓') != 1:
+              raise SystemExit('Storage fixtures did not complete exactly once')
+          if sorted(re.findall(r'\[Test ([1-5])\] ✓ PASS:', log)) != ['1', '2', '3', '4', '5']:
+              raise SystemExit('Pruning cases missing or duplicated')
+          PYTEST
       - name: Require and execute archival header metadata recovery
         run: |
           ctest --test-dir build-orchard-root -R '^HeaderMetadataRecovery$' --show-only=json-v1 > orchard-header-recovery-inventory.json
@@ -692,6 +710,8 @@ jobs:
           name: orchard-root-${{ github.sha }}
           path: |
             orchard-root-source.txt
+            orchard-storage-test-link-inventory.json
+            orchard-storage-test-link-execution.log
             orchard-header-recovery-inventory.json
             orchard-header-recovery-execution.log
             orchard-wallet-input-maturity-inventory.json
