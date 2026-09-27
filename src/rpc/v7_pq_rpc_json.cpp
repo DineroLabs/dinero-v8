@@ -1,35 +1,7 @@
-/*
- * V7 PQ wallet JSON-RPC adapters (Phase 4c.3 Commit 2/3).
- *
- * Registers three safe, read-write RPCs that wire the v7 PQ wallet
- * handler library (src/rpc/v7_pq_handlers.cpp) into Dinero's
- * JSON-RPC server via the existing ExecutionContext pattern:
- *
- *   wallet.getnewp2mraddress
- *   wallet.listp2mraddresses
- *   wallet.signp2mr
- *
- * Deliberately NOT registered here:
- *
- *   wallet.exportp2mrseed
- *   wallet.importp2mrseed
- *
- * Those return raw 32-byte seed material. They stay dark until after a
- * dedicated review pass — see V7_WALLET_SCHEMA.md §4 and the plan
- * agreed for Phase 4c.3.1.
- *
- * Secret-handling discipline
- * --------------------------
- *
- *   - Master key is sourced from WalletManager::GetV7PqMasterKey()
- *     every call. Never travels over the JSON-RPC wire.
- *   - BIP-32 material from WalletManager::DeriveV7Bip32Material().
- *     Never travels over the wire either.
- *   - Handler results are mapped from typed structs to JSON with
- *     only the public-side fields (address, pubkey, merkle_root,
- *     signature). Seed bytes stay in-process.
- *   - All error paths return a JSON object with `error` set —
- *     clients treat any non-empty error as failure.
+/* PQ wallet JSON adapters. All five wallet methods hold the selected wallet
+ * lease and an authorized seed pin through key access, store work and result
+ * construction. The enclosing RPC/service lifetime must outlive the call.
+ * Cross-database issuance and global shutdown drainage are separate owners.
  */
 
 #include "rpc/v7_pq_handlers.h"
@@ -94,28 +66,58 @@ std::unique_ptr<wlt::V7P2MRStore> OpenWalletStore(dinero::WalletManager& wm, boo
     return store;
 }
 
-/**
- * Common preamble every v7 RPC runs: validate wallet service is ready,
- * wallet is open, wallet is unlocked. Returns a ptr to WalletManager on
- * success, populates `err_out` on failure.
- */
-dinero::WalletManager* AcquireUnlockedWallet(const ExecutionContext& ctx,
-                                          din::Json&              err_out) {
+// Handler parameter structs are passed by value. Scrub the JSON caller's
+// independent copies too, including exception exits and serialization buffers.
+template<class Buffer>
+struct ClearBuffer {
+    Buffer& value;
+    explicit ClearBuffer(Buffer& v) : value(v) {}
+    ~ClearBuffer() { if (!value.empty()) OPENSSL_cleanse(value.data(), value.size() * sizeof(typename Buffer::value_type)); }
+    ClearBuffer(const ClearBuffer&) = delete;
+    ClearBuffer& operator=(const ClearBuffer&) = delete;
+};
+
+struct WalletCallOwner {
+    std::shared_ptr<dinero::WalletService> service;
+    dinero::WalletManager* wallet = nullptr;
+    std::unique_ptr<dinero::WalletManager::DatabaseLease> lease;
+    // Destruction order matters: release the seed pin before the lease.
+    std::unique_ptr<dinero::WalletManager::RecoverySeed> seed;
+};
+
+std::unique_ptr<WalletCallOwner> AcquireUnlockedWallet(const ExecutionContext& ctx,
+                                                     din::Json& err_out) {
     if (!ctx.daemon || !ctx.daemon->wallet) {
         err_out["error"] = "Wallet service not available";
         return nullptr;
     }
-    auto wallet_service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
-    if (!wallet_service || !wallet_service->hasActiveWallet()) {
-        err_out["error"] = "No active wallet";
+    auto owner = std::make_unique<WalletCallOwner>();
+    owner->service = std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+    if (!owner->service) {
+        err_out["error"] = "Wallet service not available";
         return nullptr;
     }
-    auto& wm = wallet_service->get();
-    if (wm.isWalletLocked()) {
-        err_out["error"] = "wallet_locked";
+    try {
+        owner->wallet = &owner->service->get();
+        owner->lease = owner->wallet->AcquireDatabaseLease();
+        if (!owner->lease->Database() || owner->lease->WalletName().empty()) {
+            err_out["error"] = "No active wallet";
+            return nullptr;
+        }
+        if (!ctx.walletName.empty() && ctx.walletName != owner->lease->WalletName()) {
+            err_out["error"] = "wallet_selection_changed";
+            return nullptr;
+        }
+        if (owner->wallet->isWalletLocked()) {
+            err_out["error"] = "wallet_locked";
+            return nullptr;
+        }
+        owner->seed = owner->lease->CopyRecoverySeed(owner->lease->Session());
+        return owner;
+    } catch (const std::exception&) {
+        err_out["error"] = "wallet_ownership_unavailable";
         return nullptr;
     }
-    return &wm;
 }
 
 /**
@@ -125,8 +127,8 @@ dinero::WalletManager* AcquireUnlockedWallet(const ExecutionContext& ctx,
 bool LoadMasterKey(dinero::WalletManager& wm, wlt::AeadKey& out) {
     auto master = wm.GetV7PqMasterKey();
     if (!master) return false;
+    ClearBuffer clear_master(*master);
     std::memcpy(out.data(), master->data(), out.size());
-    OPENSSL_cleanse(const_cast<uint8_t*>(master->data()), master->size());
     return true;
 }
 
@@ -134,6 +136,7 @@ bool LoadMasterKey(dinero::WalletManager& wm, wlt::AeadKey& out) {
 template <std::size_t N>
 std::string HexOfArray(const std::array<uint8_t, N>& a) {
     std::vector<uint8_t> v(a.begin(), a.end());
+    ClearBuffer clear(v);
     return util::hex(v);
 }
 
@@ -149,8 +152,9 @@ std::string HexOfArray(const std::array<uint8_t, N>& a) {
 din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
                                        const din::Json&        params) {
     din::Json result;
-    auto* wm = AcquireUnlockedWallet(ctx, result);
-    if (!wm) return result;
+    auto owner = AcquireUnlockedWallet(ctx, result);
+    if (!owner) return result;
+    auto* wm = owner->wallet;
 
     // Parse params. All are optional with documented defaults.
     auto get_int = [&](const char* key, int def) -> int {
@@ -167,6 +171,9 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
     };
 
     v7rpc::GetNewP2MRAddressParams p{};
+    ClearBuffer clear_master_key(p.master_key);
+    ClearBuffer clear_bip32_priv(p.bip32_priv);
+    ClearBuffer clear_bip32_chain(p.bip32_chain);
     p.wallet_id     = /*single-wallet today*/ 1;
     p.hrp           = get_str("hrp", "din");
     p.account       = get_int("account", 0);
@@ -183,6 +190,8 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
         result["error"] = "bip32_derivation_failed";
         return result;
     }
+    ClearBuffer clear_derived_private(bip32->private_key);
+    ClearBuffer clear_derived_chain(bip32->chain_code);
     p.bip32_priv  = bip32->private_key;
     p.bip32_chain = bip32->chain_code;
 
@@ -203,7 +212,7 @@ din::Json rpc_wallet_getnewp2mraddress(const ExecutionContext& ctx,
     }
 
     auto r = v7rpc::GetNewP2MRAddress(*store_ptr, p);
-    // Handler scrubs p.master_key / bip32 internally on every path.
+    // Both the by-value handler copy and our caller buffers have scoped cleanup.
 
     if (r.status != v7rpc::HandlerStatus::Ok) {
         result["error"]         = StatusString(r.status);
@@ -245,8 +254,9 @@ din::Json rpc_wallet_listp2mraddresses(const ExecutionContext& ctx,
                                        const din::Json&        params) {
     (void)params;
     din::Json result;
-    auto* wm = AcquireUnlockedWallet(ctx, result);
-    if (!wm) return result;
+    auto owner = AcquireUnlockedWallet(ctx, result);
+    if (!owner) return result;
+    auto* wm = owner->wallet;
 
     auto store_ptr = OpenWalletStore(*wm, true);
     if (!store_ptr) {
@@ -289,8 +299,9 @@ din::Json rpc_wallet_listp2mraddresses(const ExecutionContext& ctx,
 din::Json rpc_wallet_signp2mr(const ExecutionContext& ctx,
                               const din::Json&        params) {
     din::Json result;
-    auto* wm = AcquireUnlockedWallet(ctx, result);
-    if (!wm) return result;
+    auto owner = AcquireUnlockedWallet(ctx, result);
+    if (!owner) return result;
+    auto* wm = owner->wallet;
 
     if (!params.isMember("address") || !params["address"].is<std::string>()) {
         result["error"] = "missing_address";
@@ -302,6 +313,7 @@ din::Json rpc_wallet_signp2mr(const ExecutionContext& ctx,
     }
 
     v7rpc::SignP2MRParams p{};
+    ClearBuffer clear_master_key(p.master_key);
     p.wallet_id = 1;
     p.address   = params["address"].as<std::string>();
 
@@ -319,7 +331,7 @@ din::Json rpc_wallet_signp2mr(const ExecutionContext& ctx,
         return result;
     }
 
-    auto store_ptr = OpenWalletStore(*wm);
+    auto store_ptr = OpenWalletStore(*wm, true);
     if (!store_ptr) {
         result["error"] = "v7_store_open_failed";
         OPENSSL_cleanse(p.master_key.data(), p.master_key.size());
@@ -327,7 +339,7 @@ din::Json rpc_wallet_signp2mr(const ExecutionContext& ctx,
     }
 
     auto r = v7rpc::SignP2MR(*store_ptr, p);
-    // Handler zeroizes p.master_key + internal SecureSeed on every path.
+    // Caller master copy is cleansed by clear_master_key on every exit.
 
     if (r.status != v7rpc::HandlerStatus::Ok) {
         result["error"]         = StatusString(r.status);
@@ -372,8 +384,9 @@ din::Json rpc_wallet_signp2mr(const ExecutionContext& ctx,
 din::Json rpc_wallet_exportp2mrseed(const ExecutionContext& ctx,
                                     const din::Json&        params) {
     din::Json result;
-    auto* wm = AcquireUnlockedWallet(ctx, result);
-    if (!wm) return result;
+    auto owner = AcquireUnlockedWallet(ctx, result);
+    if (!owner) return result;
+    auto* wm = owner->wallet;
 
     if (!params.isMember("address") || !params["address"].is<std::string>()) {
         result["error"] = "missing_address";
@@ -381,6 +394,7 @@ din::Json rpc_wallet_exportp2mrseed(const ExecutionContext& ctx,
     }
 
     v7rpc::ExportP2MRSeedParams p{};
+    ClearBuffer clear_master_key(p.master_key);
     p.wallet_id = 1;
     p.address   = params["address"].as<std::string>();
 
@@ -389,7 +403,7 @@ din::Json rpc_wallet_exportp2mrseed(const ExecutionContext& ctx,
         return result;
     }
 
-    auto store_ptr = OpenWalletStore(*wm);
+    auto store_ptr = OpenWalletStore(*wm, true);
     if (!store_ptr) {
         result["error"] = "v7_store_open_failed";
         OPENSSL_cleanse(p.master_key.data(), p.master_key.size());
@@ -397,9 +411,7 @@ din::Json rpc_wallet_exportp2mrseed(const ExecutionContext& ctx,
     }
 
     auto r = v7rpc::ExportP2MRSeed(*store_ptr, p);
-    // Handler scrubs p.master_key on every path; we have nothing further
-    // to scrub on this side. The seed lives on r.pq_seed and must be
-    // zeroized after we serialize it to hex.
+    ClearBuffer clear_exported_seed(r.pq_seed);
 
     if (r.status != v7rpc::HandlerStatus::Ok) {
         result["error"]         = StatusString(r.status);
@@ -439,16 +451,17 @@ din::Json rpc_wallet_exportp2mrseed(const ExecutionContext& ctx,
 // Discipline:
 //   - seed_hex is parsed into a local buffer, immediately copied into
 //     p.pq_seed, then the intermediate buffer is scrubbed. The only
-//     place the raw 32 bytes exist post-parse is p.pq_seed, which the
-//     underlying handler scrubs internally on every path.
+//     place the raw 32 bytes exist post-parse is p.pq_seed, which a
+//     caller-side scoped guard scrubs on every path.
 //   - On any error path after seed parsing, p.pq_seed is scrubbed
 //     defensively in case the handler short-circuits before it would.
 // ---------------------------------------------------------------------------
 din::Json rpc_wallet_importp2mrseed(const ExecutionContext& ctx,
                                     const din::Json&        params) {
     din::Json result;
-    auto* wm = AcquireUnlockedWallet(ctx, result);
-    if (!wm) return result;
+    auto owner = AcquireUnlockedWallet(ctx, result);
+    if (!owner) return result;
+    auto* wm = owner->wallet;
 
     auto require_str = [&](const char* key) -> const din::Json* {
         if (!params.isMember(key) || !params[key].is<std::string>()) {
@@ -464,6 +477,8 @@ din::Json rpc_wallet_importp2mrseed(const ExecutionContext& ctx,
     if (!derivation_path_field) return result;
 
     v7rpc::ImportP2MRSeedParams p{};
+    ClearBuffer clear_master_key(p.master_key);
+    ClearBuffer clear_pq_seed(p.pq_seed);
     p.wallet_id       = 1;
     p.hrp             = params.isMember("hrp") && params["hrp"].is<std::string>()
                             ? params["hrp"].as<std::string>() : std::string("din");
@@ -485,8 +500,10 @@ din::Json rpc_wallet_importp2mrseed(const ExecutionContext& ctx,
 
     // Parse seed_hex → 32-byte buffer. Scrub the intermediate vector
     // before returning on any failure path.
-    const std::string seed_hex = (*seed_field).as<std::string>();
+    std::string seed_hex = (*seed_field).as<std::string>();
+    ClearBuffer clear_seed_hex(seed_hex);
     std::vector<uint8_t> seed_bytes;
+    ClearBuffer clear_seed_bytes(seed_bytes);
     if (!util::unhex(seed_hex, seed_bytes) || seed_bytes.size() != p.pq_seed.size()) {
         OPENSSL_cleanse(seed_bytes.data(), seed_bytes.size());
         result["error"]         = "invalid_params";
@@ -511,7 +528,7 @@ din::Json rpc_wallet_importp2mrseed(const ExecutionContext& ctx,
     }
 
     auto r = v7rpc::ImportP2MRSeed(*store_ptr, p);
-    // Handler zeroizes p.pq_seed + p.master_key on every path.
+    // Caller seed/master copies remain covered by their scoped guards.
 
     if (r.status != v7rpc::HandlerStatus::Ok) {
         result["error"]         = StatusString(r.status);

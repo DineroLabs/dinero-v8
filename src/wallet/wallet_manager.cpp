@@ -4265,13 +4265,18 @@ WalletManager::DeriveV7Bip32Material(uint32_t account,
         deriver.deriveNormal(change);
         deriver.deriveNormal(address_index);
 
+        struct Bytes {
+            std::array<uint8_t,32> value{};
+            ~Bytes() { OPENSSL_cleanse(value.data(),value.size()); }
+        } priv{deriver.getPrivateKey()}, chain{deriver.getChainCode()};
+        if (priv.value.size()!=32 || chain.value.size()!=32) return std::nullopt;
         V7Bip32Material out{};
-        auto priv  = deriver.getPrivateKey();   // 32 bytes
-        auto chain = deriver.getChainCode();    // 32 bytes
-        std::memcpy(out.private_key.data(), priv.data(),  out.private_key.size());
-        std::memcpy(out.chain_code.data(),  chain.data(), out.chain_code.size());
-        // deriver dtor scrubs; our locals (priv, chain) are caller-scrubbed
-        // in the RPC handler per DerivePQKeypair's contract.
+        struct ClearMaterial { V7Bip32Material& value; ~ClearMaterial() {
+            OPENSSL_cleanse(value.private_key.data(),value.private_key.size());
+            OPENSSL_cleanse(value.chain_code.data(),value.chain_code.size());
+        }} clear_out{out};
+        std::memcpy(out.private_key.data(), priv.value.data(), out.private_key.size());
+        std::memcpy(out.chain_code.data(), chain.value.data(), out.chain_code.size());
         return out;
     } catch (const std::exception& e) {
         WLOG_WARN(std::string("DeriveV7Bip32Material failed: ") + e.what());
