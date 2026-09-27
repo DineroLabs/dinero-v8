@@ -606,3 +606,14 @@ The existing Taproot transaction signers accept validated imported origins while
 ## Input-bound ordinary and hybrid key providers (2026-09-27)
 
 The separate TransactionSigner now uses exact input bindings with both map and hybrid P2MR providers. Actual sendtoaddress, consolidation and legacy shielding callers supply those bindings. Component tests cover reopened imported keys, retained HD lookup, mixed P2MR signing and required refusals; RPC execution and broadcast remain open. See [wallet-input-key-provider-2026-09-27.md](wallet-input-key-provider-2026-09-27.md). Encryption migration for populated imports, complete ownership/reconciliation, consumer installation and independent activation remain required. Steps 1–4 and release qualification are incomplete.
+
+### Populated wallet encryption transaction (2026-09-27)
+
+The actual encryption and passphrase APIs now transactionally preserve the same
+seed, imported private keys and existing P2MR master wrapper across policy
+changes. Live state publishes after commit. Ordinary explicit decryption is
+supported when no P2MR wrapper exists; that wrapper requires encrypted policy and
+otherwise causes refusal. This does not complete encrypted-record discovery,
+legacy import registration/lookup, unencrypted P2MR ownership or recovery
+readiness. See [wallet-encryption-owner-2026-09-27.md](wallet-encryption-owner-2026-09-27.md).
+All five stages remain active; steps 1–4 and release qualification are incomplete.

@@ -395,6 +395,23 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute populated wallet encryption lifecycle
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletEncryptionOwner$' --show-only=json-v1 > orchard-wallet-encryption-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-encryption-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletEncryptionOwner'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletEncryptionOwner missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletEncryptionOwner$' --verbose --no-tests=error --output-log orchard-wallet-encryption-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletEncryptionOwnerTest\.\S+)', open('orchard-wallet-encryption-owner-execution.log').read())
+          expected = ['WalletEncryptionOwnerTest.' + name for name in ['PopulatedImportsEncryptAndRotateWithoutIdentityChange', 'RequiredWritesAndBorrowedTransactionRollback', 'ExplicitDecryptionPreservesImportsAndRefusesPqDowngrade', 'CommitAndPolicyFailuresKeepLiveAndDurableOwner', 'LegacyImportedPayloadRoundtripAndFailureRollback']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Encryption owner cases did not execute exactly once')
+          PYTEST
       - name: Require and execute wallet rollback atomicity
         run: |
           ctest --test-dir build-orchard-root -R '^WalletRevertAtomic$' --show-only=json-v1 > orchard-wallet-undo-inventory.json
@@ -581,6 +598,8 @@ jobs:
             orchard-wallet-imported-transaction-execution.log
             orchard-wallet-input-provider-inventory.json
             orchard-wallet-input-provider-execution.log
+            orchard-wallet-encryption-owner-inventory.json
+            orchard-wallet-encryption-owner-execution.log
             orchard-wallet-lease-inventory.json
             orchard-wallet-lease-execution.log
             orchard-wallet-binding-inventory.json

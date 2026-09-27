@@ -951,6 +951,9 @@ public:
                                 std::string* error_out = nullptr);
 
 private:
+    void rewriteEncryptionPolicy(const std::string& old_passphrase,
+        const std::string& new_passphrase, bool encrypted);
+
     void createWithInitialSeed(const std::string& name,
                                const std::vector<uint8_t>& initial_master_seed,
                                const std::string* authoritative_mnemonic,

@@ -430,6 +430,240 @@ TEST_F(WalletInputProviderTest, HybridPreservesRealP2mrSigning) {
     cfg.wallet_id=1;cfg.p2mr_store=nullptr;dinero::wallet::WalletKeyProvider missing_store(cfg);EXPECT_FALSE(dinero::TransactionSigner::Sign(input,missing_store).success);
 }
 
+
+class WalletEncryptionOwnerTest : public WalletTaprootLookupTest {
+  protected:
+    std::vector<std::string> EncryptionRows() {
+        std::vector<std::string> rows;
+        for (const char *sql :
+             {"SELECT quote(key)||':'||quote(value) FROM settings ORDER BY key",
+              "SELECT quote(encrypted_seed)||':'||quote(salt)||':'||quote(encryption_version) FROM "
+              "hd_seeds ORDER BY id",
+              "SELECT quote(encrypted)||':'||quote(salt)||':'||quote(updated_at) FROM "
+              "encryption_metadata ORDER BY id",
+              "SELECT "
+              "quote(address)||':'||quote(internal_privkey)||':'||quote(is_privkey_encrypted) FROM "
+              "taproot_keys ORDER BY address",
+              "SELECT quote(address)||':'||hex(CAST(private_key_enc AS BLOB))||':'||quote(label) "
+              "FROM imported_keys ORDER BY address"}) {
+            sqlite3_stmt *q = nullptr;
+            ASSERT_SQLITE(sqlite3_prepare_v2(wallet->getCurrentDatabase(), sql, -1, &q, nullptr),
+                          SQLITE_OK);
+            int rc;
+            while ((rc = sqlite3_step(q)) == SQLITE_ROW)
+                rows.emplace_back(reinterpret_cast<const char *>(sqlite3_column_text(q, 0)));
+            sqlite3_finalize(q);
+            ASSERT_SQLITE(rc, SQLITE_DONE);
+        }
+        return rows;
+    }
+    static void ASSERT_SQLITE(int value, int want) {
+        if (value != want)
+            throw std::runtime_error("encryption test SQL failed");
+    }
+};
+TEST_F(WalletEncryptionOwnerTest, PopulatedImportsEncryptAndRotateWithoutIdentityChange) {
+    wallet->open("owner");
+    Import a(61), b(62);
+    ASSERT_TRUE(Store(a));
+    ASSERT_TRUE(Store(b));
+    const auto seed = wallet->GetMasterSeed();
+    ASSERT_TRUE(seed);
+    const auto address = wallet->getNewAddress("preserved");
+    ASSERT_FALSE(address.empty());
+    wallet->encryptWallet("first-owner");
+    EXPECT_TRUE(wallet->isWalletLocked());
+    wallet->open("owner");
+    wallet->unlockWallet("first-owner");
+    CheckSignature(a);
+    CheckSignature(b);
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    const auto pq = wallet->GetV7PqMasterKey();
+    ASSERT_TRUE(pq);
+    wallet->changePassphrase("first-owner", "second-owner");
+    CheckSignature(a);
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    EXPECT_EQ(wallet->GetV7PqMasterKey(), pq);
+    wallet->open("owner");
+    EXPECT_THROW(wallet->unlockWallet("first-owner"), std::runtime_error);
+    wallet->unlockWallet("second-owner");
+    CheckSignature(a);
+    CheckSignature(b);
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    EXPECT_EQ(wallet->GetV7PqMasterKey(), pq);
+    EXPECT_TRUE(wallet->getScriptPubKeyForAddress(address));
+}
+TEST_F(WalletEncryptionOwnerTest, RequiredWritesAndBorrowedTransactionRollback) {
+    wallet->open("owner");
+    Import key(63);
+    ASSERT_TRUE(Store(key));
+    const auto seed = wallet->GetMasterSeed();
+    auto *db = wallet->getCurrentDatabase();
+    const auto before = EncryptionRows();
+    Exec(db, "CREATE TRIGGER refuse_seed BEFORE INSERT ON hd_seeds BEGIN SELECT "
+             "RAISE(ABORT,'required seed write'); END; CREATE TRIGGER refuse_seed_update BEFORE "
+             "UPDATE ON hd_seeds BEGIN SELECT RAISE(ABORT,'required seed update'); END;");
+    EXPECT_THROW(wallet->encryptWallet("atomic-owner"), std::runtime_error);
+    EXPECT_EQ(EncryptionRows(), before);
+    EXPECT_FALSE(wallet->isWalletEncrypted());
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    Exec(db, "DROP TRIGGER refuse_seed; DROP TRIGGER refuse_seed_update");
+    Exec(db, "BEGIN IMMEDIATE");
+    EXPECT_THROW(wallet->encryptWallet("atomic-owner"), std::runtime_error);
+    EXPECT_EQ(sqlite3_get_autocommit(db), 0);
+    EXPECT_EQ(EncryptionRows(), before);
+    Exec(db, "ROLLBACK");
+    CheckSignature(key);
+    wallet->encryptWallet("atomic-owner");
+    wallet->unlockWallet("atomic-owner");
+    const auto encrypted = EncryptionRows();
+    const auto pq = wallet->GetV7PqMasterKey();
+    Exec(db, "CREATE TRIGGER refuse_import BEFORE UPDATE ON taproot_keys BEGIN SELECT "
+             "RAISE(ABORT,'required import write'); END;");
+    EXPECT_THROW(wallet->changePassphrase("atomic-owner", "later-owner"), std::runtime_error);
+    EXPECT_EQ(EncryptionRows(), encrypted);
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    EXPECT_EQ(wallet->GetV7PqMasterKey(), pq);
+    CheckSignature(key);
+    Exec(db, "DROP TRIGGER refuse_import");
+    wallet->open("owner");
+    wallet->unlockWallet("atomic-owner");
+    CheckSignature(key);
+}
+TEST_F(WalletEncryptionOwnerTest, ExplicitDecryptionPreservesImportsAndRefusesPqDowngrade) {
+    wallet->open("owner");
+    Import key(64);
+    ASSERT_TRUE(Store(key));
+    const auto seed = wallet->GetMasterSeed();
+    wallet->encryptWallet("decrypt-owner");
+    // No first unlock/PQ master exists: explicit ordinary decryption is representable.
+    wallet->decryptWallet("decrypt-owner");
+    EXPECT_FALSE(wallet->isWalletEncrypted());
+    wallet->open("owner");
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    CheckSignature(key);
+    wallet->encryptWallet("pq-owner");
+    wallet->unlockWallet("pq-owner");
+    ASSERT_TRUE(wallet->GetV7PqMasterKey());
+    const auto before = EncryptionRows();
+    EXPECT_THROW(wallet->decryptWallet("pq-owner"), std::runtime_error);
+    EXPECT_EQ(EncryptionRows(), before);
+    EXPECT_TRUE(wallet->isWalletEncrypted());
+    CheckSignature(key);
+}
+
+TEST_F(WalletEncryptionOwnerTest, CommitAndPolicyFailuresKeepLiveAndDurableOwner) {
+    wallet->open("owner");
+    Import key(65);
+    ASSERT_TRUE(Store(key));
+    auto *db = wallet->getCurrentDatabase();
+    const auto seed = wallet->GetMasterSeed();
+    const auto before = EncryptionRows();
+    struct Commit { dinero::WalletManager& wallet; bool called=false, seed_present=false; } commit{*wallet};
+    // SQLite prohibits SQL reentry from this hook. Inspect the wallet only
+    // after COMMIT has returned its error and the owner has unwound.
+    sqlite3_commit_hook(db, [](void* p) { auto& c=*static_cast<Commit*>(p); c.called=true; c.seed_present=c.wallet.HaveMasterSeed(); return 1; }, &commit);
+    EXPECT_THROW(wallet->encryptWallet("commit-owner"), std::runtime_error);
+    sqlite3_commit_hook(db, nullptr, nullptr);
+    EXPECT_TRUE(commit.called && commit.seed_present);
+    EXPECT_FALSE(wallet->isWalletEncrypted());
+    EXPECT_EQ(sqlite3_get_autocommit(db), 1);
+    EXPECT_EQ(EncryptionRows(), before);
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    CheckSignature(key);
+    for (const char *table : {"settings", "encryption_metadata"}) {
+        const auto sql = std::string("CREATE TRIGGER refuse_policy BEFORE INSERT ON ") + table +
+                         " BEGIN SELECT RAISE(ABORT,'required policy write'); END";
+        Exec(db, sql.c_str());
+        EXPECT_THROW(wallet->encryptWallet("commit-owner"), std::runtime_error);
+        EXPECT_EQ(EncryptionRows(), before);
+        EXPECT_FALSE(wallet->isWalletEncrypted());
+        CheckSignature(key);
+        Exec(db, "DROP TRIGGER refuse_policy");
+    }
+    wallet->encryptWallet("commit-owner");
+    wallet->unlockWallet("commit-owner");
+    const auto encrypted = EncryptionRows();
+    const auto pq = wallet->GetV7PqMasterKey();
+    Exec(db,
+         "CREATE TRIGGER refuse_pq BEFORE UPDATE ON settings WHEN "
+         "NEW.key='v7_pq_master_key_encrypted' BEGIN SELECT RAISE(ABORT,'required PQ wrap'); END");
+    EXPECT_THROW(wallet->changePassphrase("commit-owner", "new-owner"), std::runtime_error);
+    EXPECT_EQ(EncryptionRows(), encrypted);
+    EXPECT_EQ(wallet->GetV7PqMasterKey(), pq);
+    CheckSignature(key);
+    Exec(db, "DROP TRIGGER refuse_pq");
+    EXPECT_THROW(wallet->changePassphrase("wrong-owner", "new-owner"), std::runtime_error);
+    EXPECT_EQ(EncryptionRows(), encrypted);
+    Exec(db, "BEGIN IMMEDIATE");
+    EXPECT_THROW(wallet->changePassphrase("commit-owner", "new-owner"), std::runtime_error);
+    EXPECT_EQ(sqlite3_get_autocommit(db), 0);
+    Exec(db, "ROLLBACK");
+    EXPECT_EQ(EncryptionRows(), encrypted);
+    {
+        auto lease = wallet->AcquireDatabaseLease();
+        auto pinned = lease->CopyRecoverySeed(lease->Session());
+        EXPECT_THROW(wallet->changePassphrase("commit-owner", "new-owner"), std::runtime_error);
+    }
+    EXPECT_EQ(EncryptionRows(), encrypted);
+    wallet->lockWallet();
+    wallet->changePassphrase("commit-owner", "new-owner");
+    EXPECT_TRUE(wallet->isWalletLocked());
+    wallet->open("owner");
+    wallet->unlockWallet("new-owner");
+    CheckSignature(key);
+    EXPECT_EQ(wallet->GetMasterSeed(), seed);
+    EXPECT_EQ(wallet->GetV7PqMasterKey(), pq);
+}
+TEST_F(WalletEncryptionOwnerTest, LegacyImportedPayloadRoundtripAndFailureRollback) {
+    wallet->open("owner");
+    Import key(66);
+    std::vector<uint8_t> legacy(32, 0);
+    legacy.back() = 67;
+    const auto address = wallet->importPrivateKey(legacy, "preserve legacy label");
+    ASSERT_FALSE(address.empty());
+    ASSERT_TRUE(Store(key));
+    auto *db = wallet->getCurrentDatabase();
+    const auto legacy_rows = [&]() {
+        sqlite3_stmt *q = nullptr;
+        ASSERT_SQLITE(sqlite3_prepare_v2(db,
+                                         "SELECT hex(CAST(private_key_enc AS BLOB))||':'||label "
+                                         "FROM imported_keys WHERE address=?",
+                                         -1, &q, nullptr),
+                      SQLITE_OK);
+        ASSERT_SQLITE(sqlite3_bind_text(q, 1, address.c_str(), -1, SQLITE_TRANSIENT), SQLITE_OK);
+        ASSERT_SQLITE(sqlite3_step(q), SQLITE_ROW);
+        std::string value(reinterpret_cast<const char *>(sqlite3_column_text(q, 0)));
+        ASSERT_SQLITE(sqlite3_step(q), SQLITE_DONE);
+        sqlite3_finalize(q);
+        return value;
+    };
+    const auto original = legacy_rows();
+    const auto before = EncryptionRows();
+    Exec(db, "CREATE TRIGGER refuse_legacy BEFORE UPDATE ON imported_keys BEGIN SELECT "
+             "RAISE(ABORT,'required legacy key write'); END");
+    EXPECT_THROW(wallet->encryptWallet("legacy-first"), std::runtime_error);
+    EXPECT_EQ(EncryptionRows(), before);
+    EXPECT_FALSE(wallet->isWalletEncrypted());
+    Exec(db, "DROP TRIGGER refuse_legacy");
+    wallet->encryptWallet("legacy-first");
+    EXPECT_NE(legacy_rows(), original);
+    // Rotate while locked, before first unlock creates a P2MR master. Both legacy
+    // raw/hex ciphertext representations are preserved, not used as HD paths.
+    wallet->changePassphrase("legacy-first", "legacy-second");
+    EXPECT_TRUE(wallet->isWalletLocked());
+    wallet->decryptWallet("legacy-second");
+    EXPECT_EQ(legacy_rows(), original);
+    CheckSignature(key);
+    wallet->encryptWallet("legacy-third");
+    Exec(
+        db,
+        "UPDATE imported_keys SET private_key_enc='truncated' WHERE label='preserve legacy label'");
+    const auto corrupt = EncryptionRows();
+    EXPECT_THROW(wallet->changePassphrase("legacy-third", "legacy-fourth"), std::runtime_error);
+    EXPECT_EQ(EncryptionRows(), corrupt);
+    EXPECT_TRUE(wallet->isWalletLocked());
+}
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};
 TEST_F(WalletRecoveryKeyTest, PinsActualSeedAcrossLockAndUnlock) {
     wallet->open("owner");

@@ -3261,267 +3261,380 @@ std::string WalletManager::getMiningAddress(const std::string& wallet, const std
 }
 
 // Wallet encryption/decryption methods
-void WalletManager::encryptWallet(const std::string& passphrase) {
-    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
-    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
-    if (wallet_encrypted_) {
-        throw std::runtime_error("Wallet is already encrypted");
-    }
-
-    if (passphrase.empty()) {
+void WalletManager::rewriteEncryptionPolicy(const std::string &old_passphrase,
+                                            const std::string &new_passphrase, bool encrypted) {
+    auto lease = AcquireDatabaseLease();
+    if (!lease || !db_ || current_wallet_id_ < 0 || recovery_seeds_)
+        throw std::runtime_error("Wallet encryption owner unavailable");
+    if (encrypted && new_passphrase.empty())
         throw std::runtime_error("Passphrase cannot be empty");
-    }
-
-    // Generate salt and derive encryption key
-    unsigned char salt[32];
-    if (!CF_GenerateRandomBytes(salt, sizeof(salt))) {
-        throw std::runtime_error("Failed to generate random salt");
-    }
-
-    // Keep binary salt for key derivation
-    std::string saltStr(reinterpret_cast<char*>(salt), sizeof(salt));
-    encryption_key_ = deriveKey(passphrase, saltStr);
-
-    // Create a verification hash to validate password on unlock
-    // Hash the derived key to create a verification value
-    uint8_t verification_hash[32];
-    ::sha256(
-        reinterpret_cast<const uint8_t*>(encryption_key_.data()),
-        encryption_key_.size(),
-        verification_hash
-    );
-
-    // Convert binary data to hex strings for storage (prevents null-byte truncation)
-    std::vector<unsigned char> saltVec(salt, salt + sizeof(salt));
-    std::vector<unsigned char> verifyVec(verification_hash, verification_hash + sizeof(verification_hash));
-    std::string saltHex = util::hex(saltVec);
-    std::string verifyHex = util::hex(verifyVec);
-
-    // Store encryption metadata (hex-encoded to prevent null-byte corruption)
-    setSetting("wallet_encrypted", "1");
-    setSetting("wallet_salt", saltHex);
-    setSetting("wallet_verify_hash", verifyHex);
-
-    wallet_encrypted_ = true;
-    wallet_locked_ = false;  // Keep unlocked during initial encryption to generate/re-encrypt HD seed
-
-    // ═══════════════════════════════════════════════════════════════
-    // Phase 5: Generate and store HD wallet master seed
-    // ═══════════════════════════════════════════════════════════════
-
-    // Per-wallet DB stores a single seed row at id=1.
-    sqlite3_stmt* stmt = nullptr;
-    const char* check_sql = "SELECT COUNT(*) FROM hd_seeds WHERE id = 1";
-    int seed_exists = 0;
-
-    if (sqlite3_prepare_v2(db_, check_sql, -1, &stmt, nullptr) == SQLITE_OK) {
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            seed_exists = sqlite3_column_int(stmt, 0);
-        }
-        sqlite3_finalize(stmt);
-    }
-
-    std::vector<uint8_t> seed_to_store;
-
-    if (!master_seed_.empty()) {
-        seed_to_store = master_seed_;
-        WLOG_INFO("Using in-memory HD seed for wallet encryption");
-    } else if (seed_exists > 0) {
-        auto existing_seed = loadMasterSeed("");
-        if (existing_seed.has_value()) {
-            seed_to_store = std::move(existing_seed.value());
-            WLOG_INFO("Loaded existing HD seed for wallet encryption");
+    IssuedAddressTransaction transaction(db_);
+    struct Secret {
+        std::string value;
+        ~Secret() { secureClearString(value); }
+    } old_key, new_key, pq_plain;
+    struct Seed {
+        std::vector<uint8_t> value;
+        ~Seed() { secureClearBytes(value); }
+    } seed;
+    const bool was_encrypted = wallet_encrypted_;
+    const auto read_text = [](sqlite3_stmt *q, int col) {
+        if (sqlite3_column_type(q, col) != SQLITE_TEXT)
+            throw std::runtime_error("Invalid encryption text field");
+        const auto *p = reinterpret_cast<const char *>(sqlite3_column_text(q, col));
+        const int n = sqlite3_column_bytes(q, col);
+        if (!p || n < 0)
+            throw std::runtime_error("Missing encryption text field");
+        return std::string(p, n);
+    };
+    const auto setting = [&](const char *name) -> std::optional<std::string> {
+        IssuedStatement q(db_, "SELECT value FROM settings WHERE key=?");
+        q.Text(1, name);
+        const int rc = sqlite3_step(q.value.get());
+        if (rc == SQLITE_DONE)
+            return std::nullopt;
+        IssuanceCheck(db_, rc, SQLITE_ROW);
+        auto value = read_text(q.value.get(), 0);
+        q.Done();
+        return value;
+    };
+    const auto policy = setting("wallet_encrypted");
+    if ((policy && *policy != (was_encrypted ? "1" : "0")) || (!policy && was_encrypted))
+        throw std::runtime_error("Wallet encryption policy mismatch");
+    {
+        IssuedStatement q(db_, "SELECT encrypted FROM encryption_metadata WHERE id=1");
+        const int rc = sqlite3_step(q.value.get());
+        if (rc == SQLITE_ROW) {
+            if (sqlite3_column_type(q.value.get(), 0) != SQLITE_INTEGER ||
+                sqlite3_column_int64(q.value.get(), 0) != (was_encrypted ? 1 : 0))
+                throw std::runtime_error("Wallet encryption metadata mismatch");
+            q.Done();
         } else {
-            WLOG_WARN("HD seed exists but could not be decrypted with empty passphrase");
+            IssuanceCheck(db_, rc, SQLITE_DONE);
+            if (was_encrypted)
+                throw std::runtime_error("Wallet encryption metadata missing");
         }
     }
-
-    if (seed_to_store.empty()) {
-        throw std::runtime_error(
-            "Cannot encrypt wallet: no HD seed found. "
-            "Create or restore a wallet first before encrypting.");
-    }
-
-    // Re-encrypt the current seed with the user passphrase.
-    // Do not reset address/UTXO tables during wallet encryption.
-    if (!storeMasterSeed(seed_to_store, passphrase, kResetAddressStateDuringEncryption)) {
-        throw std::runtime_error("Failed to store encrypted HD master seed");
-    }
-
-    // Keep the seed in memory until we lock at the end of this method.
-    master_seed_ = seed_to_store;
-    WLOG_INFO("✅ HD wallet master seed encrypted with wallet passphrase");
-
-    // Populate receive/nullifier/outgoing viewing authority before the first
-    // lock erases master_seed_. Previously these caches were populated only by
-    // unlockWallet(), so a freshly encrypted wallet could not recognize the
-    // very next shielded block while locked. Viewing authority intentionally
-    // survives lock (but is cleansed by close/unload); spend authority does not.
-    shielded_incoming_viewing_keys_.clear();
-    shielded_recipient_viewing_authorities_.clear();
-    shielded_outgoing_viewing_keys_.clear();
-    try {
-        constexpr uint32_t kShieldedScanAccounts = 4;
-        for (uint32_t acct = 0; acct < kShieldedScanAccounts; ++acct) {
-            auto keys = wallet::shielded::DeriveShieldedAccount(
-                master_seed_.data(), master_seed_.size(), acct);
-            ScopedShieldedAccountKeys keys_guard(keys);
-            shielded_incoming_viewing_keys_.push_back(keys.ivk);
-            shielded_recipient_viewing_authorities_.push_back(
-                {keys.ivk, keys.ak, keys.nvk});
-            shielded_outgoing_viewing_keys_.push_back(keys.ovk);
+    if (was_encrypted) {
+        const auto salt = setting("wallet_salt"), verify = setting("wallet_verify_hash");
+        std::vector<uint8_t> salt_bytes, expected;
+        if (!salt || !verify || !util::unhex(*salt, salt_bytes) || salt_bytes.size() != 32 ||
+            !util::unhex(*verify, expected) || expected.size() != 32)
+            throw std::runtime_error("Wallet encryption credentials missing");
+        const std::string binary_salt(reinterpret_cast<const char *>(salt_bytes.data()),
+                                      salt_bytes.size());
+        old_key.value = deriveKey(old_passphrase, binary_salt);
+        const auto verified = [&] {
+            std::array<uint8_t, 32> hash{};
+            ::sha256(reinterpret_cast<const uint8_t *>(old_key.value.data()), old_key.value.size(),
+                     hash.data());
+            return CRYPTO_memcmp(hash.data(), expected.data(), 32) == 0;
+        };
+        if (!verified()) {
+            secureClearString(old_key.value);
+            old_key.value = deriveKeyLegacy(old_passphrase, binary_salt);
+            if (!verified())
+                throw std::runtime_error("Invalid passphrase");
         }
-    } catch (...) {
-        for (auto& ivk : shielded_incoming_viewing_keys_) {
-            OPENSSL_cleanse(ivk.data(), ivk.size());
+        if (!wallet_locked_ && !encryption_key_.empty() && old_key.value != encryption_key_)
+            throw std::runtime_error("Live encryption owner mismatch");
+    }
+    auto loaded = loadMasterSeed(was_encrypted ? old_passphrase : "");
+    if (!loaded || loaded->size() != 64)
+        throw std::runtime_error("Existing wallet seed unavailable");
+    seed.value = std::move(*loaded);
+    if (!master_seed_.empty() && !ConstantTimeEqual(seed.value, master_seed_))
+        throw std::runtime_error("Existing wallet seed mismatch");
+    const auto pq = setting("v7_pq_master_key_encrypted");
+    if (pq && !pq->empty()) {
+        // There is no existing unencrypted P2MR master-key representation.
+        // Refuse that policy change before effects instead of losing its owner.
+        if (!was_encrypted || !encrypted)
+            throw std::runtime_error("P2MR master key requires encrypted wallet policy");
+        std::vector<uint8_t> bytes;
+        if (!util::unhex(*pq, bytes) || bytes.size() != 60)
+            throw std::runtime_error("P2MR master key wrapper invalid");
+        pq_plain.value = decryptData(
+            std::string(reinterpret_cast<const char *>(bytes.data()), bytes.size()), old_key.value);
+        if (pq_plain.value.size() != 32)
+            throw std::runtime_error("P2MR master key invalid");
+        if (pq_master_key_loaded_ &&
+            CRYPTO_memcmp(pq_plain.value.data(), pq_master_key_.data(), 32) != 0)
+            throw std::runtime_error("Live P2MR master key mismatch");
+    }
+    std::string salt_hex, verify_hex;
+    if (encrypted) {
+        std::array<uint8_t, 32> salt{}, verify{};
+        if (RAND_bytes(salt.data(), salt.size()) != 1)
+            throw std::runtime_error("Encryption salt generation failed");
+        new_key.value = deriveKey(
+            new_passphrase, std::string(reinterpret_cast<const char *>(salt.data()), salt.size()));
+        ::sha256(reinterpret_cast<const uint8_t *>(new_key.value.data()), new_key.value.size(),
+                 verify.data());
+        salt_hex = util::hex(std::vector<uint8_t>(salt.begin(), salt.end()));
+        verify_hex = util::hex(std::vector<uint8_t>(verify.begin(), verify.end()));
+    }
+    // Prepare all view authority while failure can still roll back, keeping the
+    // same seed and authenticated account identity across the policy change.
+    std::vector<ShieldedIncomingViewingKey> incoming, outgoing;
+    std::vector<ShieldedRecipientViewingAuthority> recipients;
+    struct ClearViews {
+        std::vector<ShieldedIncomingViewingKey> &incoming;
+        std::vector<ShieldedIncomingViewingKey> &outgoing;
+        std::vector<ShieldedRecipientViewingAuthority> &recipients;
+        ~ClearViews() {
+            if (!incoming.empty())
+                OPENSSL_cleanse(incoming.data(), incoming.size() * sizeof(incoming[0]));
+            if (!outgoing.empty())
+                OPENSSL_cleanse(outgoing.data(), outgoing.size() * sizeof(outgoing[0]));
+            if (!recipients.empty())
+                OPENSSL_cleanse(recipients.data(), recipients.size() * sizeof(recipients[0]));
         }
-        for (auto& authority : shielded_recipient_viewing_authorities_) {
-            OPENSSL_cleanse(&authority, sizeof(authority));
+    } clear_views{incoming, outgoing, recipients};
+    for (uint32_t account = 0; account < 4; ++account) {
+        auto keys =
+            wallet::shielded::DeriveShieldedAccount(seed.value.data(), seed.value.size(), account);
+        ScopedShieldedAccountKeys guard(keys);
+        incoming.push_back(keys.ivk);
+        outgoing.push_back(keys.ovk);
+        recipients.push_back({keys.ivk, keys.ak, keys.nvk});
+    }
+    const auto validate_scalar = [](const std::string &bytes) {
+        if (bytes.size() != 32)
+            throw std::runtime_error("Invalid imported key length");
+        struct Key {
+            std::array<uint8_t, 32> value{};
+            ~Key() { OPENSSL_cleanse(value.data(), value.size()); }
+        } key;
+        std::copy(bytes.begin(), bytes.end(), key.value.begin());
+        std::array<uint8_t, 32> pub{};
+        int parity = 0;
+        if (!TaprootKeys::DeriveXOnlyPubkey(key.value, pub, parity))
+            throw std::runtime_error("Invalid imported private key");
+        return pub;
+    };
+    bool taproot = false;
+    {
+        IssuedStatement q(db_,
+                          "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='taproot_keys'");
+        const int rc = sqlite3_step(q.value.get());
+        if (rc == SQLITE_ROW) {
+            taproot = true;
+            q.Done();
+        } else
+            IssuanceCheck(db_, rc, SQLITE_DONE);
+    }
+    if (taproot) {
+        IssuedStatement q(
+            db_,
+            "SELECT address,internal_privkey,internal_pubkey,output_pubkey,is_privkey_encrypted "
+            "FROM taproot_keys ORDER BY address");
+        int rc;
+        while ((rc = sqlite3_step(q.value.get())) == SQLITE_ROW) {
+            const auto address = read_text(q.value.get(), 0);
+            auto *row = q.value.get();
+            if (sqlite3_column_type(row, 1) != SQLITE_BLOB ||
+                sqlite3_column_bytes(row, 1) != (was_encrypted ? 60 : 32) ||
+                sqlite3_column_type(row, 4) != SQLITE_INTEGER ||
+                sqlite3_column_int64(row, 4) != (was_encrypted ? 1 : 0))
+                throw std::runtime_error("Imported encryption policy mismatch");
+            Secret plain, stored;
+            const auto *raw = static_cast<const char *>(sqlite3_column_blob(row, 1));
+            if (!raw)
+                throw std::runtime_error("Imported key missing");
+            stored.value.assign(raw, sqlite3_column_bytes(row, 1));
+            plain.value = was_encrypted ? decryptData(stored.value, old_key.value) : stored.value;
+            const auto internal = validate_scalar(plain.value);
+            std::array<uint8_t, 32> output{};
+            if (!TaprootKeys::ComputeTweakedPubkey(internal, output))
+                throw std::runtime_error("Imported output invalid");
+            for (int col : {2, 3}) {
+                if (sqlite3_column_type(row, col) != SQLITE_BLOB ||
+                    sqlite3_column_bytes(row, col) != 32 || !sqlite3_column_blob(row, col) ||
+                    CRYPTO_memcmp(sqlite3_column_blob(row, col),
+                                  col == 2 ? internal.data() : output.data(), 32) != 0)
+                    throw std::runtime_error("Imported public binding mismatch");
+            }
+            const auto &network = Params().name;
+            if (address != TaprootKeys::CreateTaprootAddress(output, network == "regtest" ? "rdin"
+                                                                     : network == "testnet"
+                                                                         ? "tdin"
+                                                                         : "din"))
+                throw std::runtime_error("Imported address binding mismatch");
+            Secret replacement;
+            replacement.value = encrypted ? encryptData(plain.value, new_key.value) : plain.value;
+            secureClearString(stored.value);
+            stored.value.swap(replacement.value);
+            IssuedStatement write(db_, "UPDATE taproot_keys SET "
+                                       "internal_privkey=?,is_privkey_encrypted=? WHERE address=?");
+            write.Blob(1, stored.value.data(), int(stored.value.size()));
+            write.Int(2, encrypted ? 1 : 0);
+            write.Text(3, address);
+            write.Done(true);
         }
-        for (auto& ovk : shielded_outgoing_viewing_keys_) {
-            OPENSSL_cleanse(ovk.data(), ovk.size());
+        IssuanceCheck(db_, rc, SQLITE_DONE);
+    }
+    {
+        IssuedStatement q(db_,
+                          "SELECT address,private_key_enc FROM imported_keys ORDER BY address");
+        int rc;
+        while ((rc = sqlite3_step(q.value.get())) == SQLITE_ROW) {
+            const auto address = read_text(q.value.get(), 0);
+            Secret stored, plain;
+            stored.value = read_text(q.value.get(), 1);
+            if (was_encrypted) {
+                plain.value = decryptData(stored.value, old_key.value);
+                if (plain.value.size() == 32)
+                    validate_scalar(plain.value);
+                else {
+                    std::vector<uint8_t> bytes;
+                    if (plain.value.size() != 64 || !util::unhex(plain.value, bytes))
+                        throw std::runtime_error("Legacy imported key invalid");
+                    Secret decoded;
+                    decoded.value.assign(reinterpret_cast<const char *>(bytes.data()),
+                                         bytes.size());
+                    secureClearBytes(bytes);
+                    validate_scalar(decoded.value);
+                }
+            } else {
+                std::vector<uint8_t> bytes;
+                if (stored.value.size() != 64 || !util::unhex(stored.value, bytes))
+                    throw std::runtime_error("Legacy imported key invalid");
+                Secret decoded;
+                decoded.value.assign(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+                secureClearBytes(bytes);
+                validate_scalar(decoded.value);
+                plain.value = stored.value;
+            }
+            if (encrypted) {
+                Secret replacement;
+                replacement.value = encryptData(plain.value, new_key.value);
+                secureClearString(stored.value);
+                stored.value.swap(replacement.value);
+            } else if (plain.value.size() == 32) {
+                Seed decoded;
+                decoded.value.assign(plain.value.begin(), plain.value.end());
+                stored.value = util::hex(decoded.value);
+            } else
+                stored.value = plain.value;
+            IssuedStatement write(db_,
+                                  "UPDATE imported_keys SET private_key_enc=? WHERE address=?");
+            write.Text(1, stored.value);
+            write.Text(2, address);
+            write.Done(true);
         }
-        shielded_incoming_viewing_keys_.clear();
-        shielded_recipient_viewing_authorities_.clear();
-        shielded_outgoing_viewing_keys_.clear();
-        WLOG_WARN("Shielded viewing authority cache unavailable during wallet encryption");
+        IssuanceCheck(db_, rc, SQLITE_DONE);
     }
-
-    // ═══════════════════════════════════════════════════════════════
-    // CRITICAL FIX: Update encryption_metadata table
-    // ═══════════════════════════════════════════════════════════════
-    // This table is read by open() method to determine wallet lock state.
-    // Must be updated even if HD seed already existed (and storeMasterSeed wasn't called).
-
-    const char* meta_sql = R"(
-        INSERT OR REPLACE INTO encryption_metadata (
-            id, encrypted, kdf, kdf_iterations, cipher, salt, created_at, updated_at
-        )
-        VALUES (1, 1, 'pbkdf2-hmac-sha512', 600000, 'AES-256-GCM', NULL,
-                strftime('%s','now'), strftime('%s','now'))
-    )";
-
-    sqlite3_stmt* meta_stmt = nullptr;
-    if (sqlite3_prepare_v2(db_, meta_sql, -1, &meta_stmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("Failed to prepare encryption_metadata update");
+    // Preserve the existing hd_seeds v2 format, without invoking seed replacement
+    // or publishing its in-memory cache before the transaction commits.
+    std::array<uint8_t, 32> seed_salt{};
+    if (RAND_bytes(seed_salt.data(), seed_salt.size()) != 1)
+        throw std::runtime_error("Seed salt generation failed");
+    struct Derived {
+        std::array<uint8_t, 64> value{};
+        ~Derived() { OPENSSL_cleanse(value.data(), value.size()); }
+    } derived;
+    const std::string_view pass = encrypted ? std::string_view(new_passphrase) : std::string_view{};
+    dinero::crypto::PBKDF2_HMAC_SHA512(reinterpret_cast<const uint8_t *>(pass.data()), pass.size(),
+                                       seed_salt.data(), seed_salt.size(), 600000,
+                                       derived.value.data(), derived.value.size());
+    Secret seed_key, seed_plain;
+    seed_key.value.assign(reinterpret_cast<const char *>(derived.value.data()), 32);
+    seed_plain.value.assign(reinterpret_cast<const char *>(seed.value.data()), seed.value.size());
+    const auto sealed = encryptData(seed_plain.value, seed_key.value);
+    std::string blob(reinterpret_cast<const char *>(seed_salt.data()), seed_salt.size());
+    blob += sealed;
+    {
+        IssuedStatement write(
+            db_, "UPDATE hd_seeds SET encrypted_seed=?,salt=?,encryption_version=2 WHERE id=1");
+        write.Blob(1, blob.data(), int(blob.size()));
+        write.Blob(2, seed_salt.data(), 32);
+        write.Done(true);
     }
-
-    int rc = sqlite3_step(meta_stmt);
-    sqlite3_finalize(meta_stmt);
-
-    if (rc != SQLITE_DONE) {
-        throw std::runtime_error("Failed to update encryption_metadata table");
+    const auto set = [&](const char *name, const std::string &value) {
+        IssuedStatement q(db_, "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO "
+                               "UPDATE SET value=excluded.value");
+        q.Text(1, name);
+        q.Text(2, value);
+        q.Done(true);
+    };
+    set("wallet_encrypted", encrypted ? "1" : "0");
+    set("wallet_salt", salt_hex);
+    set("wallet_verify_hash", verify_hex);
+    if (!pq_plain.value.empty()) {
+        const auto value = encryptData(pq_plain.value, new_key.value);
+        set("v7_pq_master_key_encrypted",
+            util::hex(std::vector<uint8_t>(value.begin(), value.end())));
     }
-
-    // Lock wallet after encryption (Phase E.1.2 Security Policy)
-    // Newly encrypted wallets should be locked by default
-    lockWallet();
-
-    WLOG_INFO("Wallet encrypted and locked successfully");
-}
-
-void WalletManager::decryptWallet(const std::string& passphrase) {
-    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
-    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
-    if (!wallet_encrypted_) {
-        throw std::runtime_error("Wallet is not encrypted");
+    {
+        IssuedStatement meta(
+            db_,
+            "INSERT INTO "
+            "encryption_metadata(id,encrypted,kdf,kdf_iterations,cipher,salt,created_at,updated_at)"
+            " VALUES(1,?,'pbkdf2-hmac-sha512',600000,'AES-256-GCM',?,strftime('%s','now'),strftime("
+            "'%s','now')) ON CONFLICT(id) DO UPDATE SET "
+            "encrypted=excluded.encrypted,kdf=excluded.kdf,kdf_iterations=excluded.kdf_iterations,"
+            "cipher=excluded.cipher,salt=excluded.salt,updated_at=excluded.updated_at");
+        meta.Int(1, encrypted ? 1 : 0);
+        meta.Blob(2, seed_salt.data(), 32);
+        meta.Done(true);
     }
-    
-    // Verify passphrase by attempting to derive key
-    std::string salt = getSetting("wallet_salt");
-    std::string derivedKey = deriveKey(passphrase, salt);
-    
-    if (derivedKey != encryption_key_) {
-        throw std::runtime_error("Invalid passphrase");
-    }
-    
-    // Remove encryption metadata
-    setSetting("wallet_encrypted", "");
-    setSetting("wallet_salt", "");
-    
-    wallet_encrypted_ = false;
-    wallet_locked_ = false;
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    const bool unlocked =
+        !encrypted ||
+        (was_encrypted && !wallet_locked_ &&
+         (unlock_timeout_ <= 0 || unlock_time_ <= 0 || now - unlock_time_ < unlock_timeout_));
+    transaction.Commit();
+    // Nothing fallible remains: publish only the committed policy, preserving
+    // seed-derived account identities and clearing old plaintext caches.
+    for (auto &item : private_key_cache_)
+        secureClearBytes(item.second);
+    private_key_cache_.clear();
     secureClearString(encryption_key_);
-    
-    WLOG_INFO("Wallet decrypted successfully");
+    secureClearBytes(master_seed_);
+    OPENSSL_cleanse(pq_master_key_.data(), pq_master_key_.size());
+    pq_master_key_loaded_ = false;
+    wallet_encrypted_ = encrypted;
+    wallet_locked_ = !unlocked;
+    if (unlocked) {
+        master_seed_.swap(seed.value);
+        if (encrypted)
+            encryption_key_.swap(new_key.value);
+        if (!pq_plain.value.empty()) {
+            std::memcpy(pq_master_key_.data(), pq_plain.value.data(), 32);
+            pq_master_key_loaded_ = true;
+        }
+    }
+    if (!encrypted || !unlocked) {
+        unlock_time_ = 0;
+        unlock_timeout_ = 0;
+    }
+    shielded_incoming_viewing_keys_.swap(incoming);
+    shielded_outgoing_viewing_keys_.swap(outgoing);
+    shielded_recipient_viewing_authorities_.swap(recipients);
 }
 
-void WalletManager::changePassphrase(const std::string& oldPassphrase, const std::string& newPassphrase) {
-    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
-    if (recovery_seeds_) throw std::logic_error("Wallet recovery key is pinned");
-    if (!wallet_encrypted_) {
+void WalletManager::encryptWallet(const std::string &passphrase) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (wallet_encrypted_)
+        throw std::runtime_error("Wallet is already encrypted");
+    rewriteEncryptionPolicy("", passphrase, true);
+}
+void WalletManager::decryptWallet(const std::string &passphrase) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (!wallet_encrypted_)
         throw std::runtime_error("Wallet is not encrypted");
-    }
-
-    if (newPassphrase.empty()) {
-        throw std::runtime_error("New passphrase cannot be empty");
-    }
-
-    // Get hex-encoded salt and decode to binary
-    std::string saltHex = getSetting("wallet_salt");
-    std::vector<unsigned char> saltBytes;
-    if (!util::unhex(saltHex, saltBytes) || saltBytes.size() != 32) {
-        throw std::runtime_error("Invalid wallet salt (corrupted or missing)");
-    }
-    std::string salt(reinterpret_cast<char*>(saltBytes.data()), saltBytes.size());
-
-    // Derive key from old passphrase
-    std::string oldKey = deriveKey(oldPassphrase, salt);
-
-    // Validate old passphrase against stored verification hash
-    std::string storedVerifyHex = getSetting("wallet_verify_hash");
-    if (!storedVerifyHex.empty()) {
-        // Decode stored verification hash from hex
-        std::vector<unsigned char> storedVerifyBytes;
-        if (!util::unhex(storedVerifyHex, storedVerifyBytes) || storedVerifyBytes.size() != 32) {
-            throw std::runtime_error("Invalid wallet verification hash (corrupted)");
-        }
-
-        // Compute hash of derived key
-        uint8_t computed_hash[32];
-        ::sha256(
-            reinterpret_cast<const uint8_t*>(oldKey.data()),
-            oldKey.size(),
-            computed_hash
-        );
-
-        // Compare hashes
-        if (std::memcmp(computed_hash, storedVerifyBytes.data(), 32) != 0) {
-            throw std::runtime_error("Invalid old passphrase");
-        }
-    }
-
-    // Generate new salt and key
-    unsigned char newSalt[32];
-    if (!CF_GenerateRandomBytes(newSalt, sizeof(newSalt))) {
-        throw std::runtime_error("Failed to generate random salt");
-    }
-
-    // Keep binary salt for key derivation
-    std::string newSaltStr(reinterpret_cast<char*>(newSalt), sizeof(newSalt));
-    encryption_key_ = deriveKey(newPassphrase, newSaltStr);
-
-    // Create new verification hash
-    uint8_t new_verification_hash[32];
-    ::sha256(
-        reinterpret_cast<const uint8_t*>(encryption_key_.data()),
-        encryption_key_.size(),
-        new_verification_hash
-    );
-
-    // Convert new binary data to hex for storage
-    std::vector<unsigned char> newSaltVec(newSalt, newSalt + sizeof(newSalt));
-    std::vector<unsigned char> newVerifyVec(new_verification_hash, new_verification_hash + sizeof(new_verification_hash));
-    std::string newSaltHex = util::hex(newSaltVec);
-    std::string newVerifyHex = util::hex(newVerifyVec);
-
-    // Update stored salt and verification hash (hex-encoded)
-    setSetting("wallet_salt", newSaltHex);
-    setSetting("wallet_verify_hash", newVerifyHex);
-
-    WLOG_INFO("Wallet passphrase changed successfully");
+    rewriteEncryptionPolicy(passphrase, "", false);
 }
-
+void WalletManager::changePassphrase(const std::string &oldPassphrase,
+                                     const std::string &newPassphrase) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (!wallet_encrypted_)
+        throw std::runtime_error("Wallet is not encrypted");
+    rewriteEncryptionPolicy(oldPassphrase, newPassphrase, true);
+}
 std::string WalletManager::getPrimaryAddress() {
     if (primary_address_.empty()) {
         try { derivePrimaryAddresses(); }
