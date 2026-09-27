@@ -159,6 +159,13 @@ public:
     std::optional<KeyRecord>
     CaptureKeyByAddress(int64_t wallet_id, const std::string& address) const;
 
+    /** Capture every present owner's metadata and ciphertext in ONE checked
+     * statement snapshot. Autocommit required; errors never return a prefix.
+     * This is not a deletion/backup-completeness or derivation-path certificate.
+     */
+    std::vector<KeyRecord> CaptureKeysByWallet(int64_t wallet_id) const;
+
+
 
 private:
     sqlite3* db_ = nullptr;

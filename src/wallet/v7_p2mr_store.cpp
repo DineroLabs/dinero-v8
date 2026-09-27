@@ -289,6 +289,25 @@ V7P2MRStore::ListByWallet(int64_t wallet_id) const {
     return out;
 }
 
+std::vector<V7P2MRStore::KeyRecord>
+V7P2MRStore::CaptureKeysByWallet(int64_t wallet_id) const {
+    if (!db_ || wallet_id <= 0 || !sqlite3_get_autocommit(db_))
+        throw std::runtime_error("P2MR key inventory owner unavailable");
+    Stmt s(db_,
+        "SELECT id, wallet_id, address, merkle_root, pubkey, "
+        "derivation_path, leaf_index, label, created_at, "
+        "seed_ciphertext, seed_nonce, seed_tag FROM v7_p2mr_addresses "
+        "WHERE wallet_id = ? ORDER BY created_at ASC, id ASC;");
+    if (!s.ok() || sqlite3_bind_int64(s.raw(), 1, wallet_id) != SQLITE_OK)
+        throw std::runtime_error("P2MR key inventory query unavailable");
+    std::vector<KeyRecord> captured;
+    int rc;
+    while ((rc = sqlite3_step(s.raw())) == SQLITE_ROW)
+        captured.push_back(ReadKeyRecord(s.raw(), wallet_id));
+    if (rc != SQLITE_DONE) throw std::runtime_error("Incomplete P2MR key inventory");
+    return captured;
+}
+
 std::optional<V7P2MRStore::KeyRecord>
 V7P2MRStore::CaptureKeyByAddress(int64_t wallet_id, const std::string& address) const {
     if (!db_ || wallet_id <= 0 || address.empty() ||

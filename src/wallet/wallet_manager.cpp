@@ -26,6 +26,10 @@
 #include "wallet/bip32_deriver.h"  // For BIP32 derivation (canonical engine)
 #include "wallet/bip39.h"
 #include "wallet/v7_p2mr_store.h"
+#include "wallet/p2mr_address.h"
+#include "wallet/secure_keypair.h"
+#include "consensus/pq/scheme_registry.h"
+#include "crypto/sha256.h"
 #include "crypto/pbkdf2.h"       // For key derivation from passphrase
 #include "crypto/wallet_crypto.h"// For AES-256-GCM encryption/decryption
 #include <openssl/evp.h>         // For AES-256-GCM encryption
@@ -4043,6 +4047,61 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
     if (pq_master_key_loaded_ && (pq.value.size() != 32 ||
         CRYPTO_memcmp(pq.value.data(),pq_master_key_.data(),32) != 0))
         throw std::runtime_error("Live PQ master mismatch");
+
+    // The separate PQ store contributes one immutable statement snapshot.
+    // Keep the actual main-wallet lifecycle owner and staged master throughout
+    // authentication. This does not make the two databases one atomic owner.
+    {
+        const auto path=GetV7P2MRStorePath();
+        if(path.empty())throw std::runtime_error("PQ inventory path unavailable");
+        std::error_code error;
+        const auto status=std::filesystem::symlink_status(path,error);
+        if(error && error!=std::errc::no_such_file_or_directory)
+            throw std::runtime_error("PQ inventory storage unavailable");
+        if(std::filesystem::exists(status)) {
+            wallet::V7P2MRStore store;
+            if(store.OpenExistingReadOnly(path)!=wallet::V7P2MRStore::OpenResult::Ok)
+                throw std::runtime_error("PQ inventory storage invalid");
+            const auto captured=store.CaptureKeysByWallet(current_wallet_id_);
+            if(!captured.empty() && pq.value.size()!=32)
+                throw std::runtime_error("PQ inventory master unavailable");
+            struct Master {
+                wallet::AeadKey value{};
+                ~Master(){OPENSSL_cleanse(value.data(),value.size());}
+            } master;
+            if(pq.value.size()==32)std::memcpy(master.value.data(),pq.value.data(),32);
+            for(const auto& record:captured) {
+                wallet::SecureSeed plaintext;
+                const auto& encrypted=record.encrypted_seed;
+                if(wallet::OpenSeedSecure(encrypted.ciphertext,encrypted.nonce,encrypted.tag,
+                       master.value,&plaintext)!=wallet::AeadOpenResult::Ok)
+                    throw std::runtime_error("PQ inventory authentication failed");
+                wallet::SecureKeypair pair(consensus::pq::ml_dsa_65::KeygenFromSeed(plaintext.bytes()));
+                std::array<uint8_t,32> root{};
+                const uint8_t scheme=consensus::pq::SCHEME_ID_ML_DSA_65;
+                crypto::CSHA256().Write(&scheme,1).Write(pair.pubkey().data(),pair.pubkey().size()).Finalize(root.data());
+                const auto& row=record.metadata;
+                const auto decoded=wallet::DecodeP2MRAddress(row.address);
+                if(pair.pubkey()!=row.pubkey || root!=row.merkle_root ||
+                   !decoded || decoded->merkle_root!=root)
+                    throw std::runtime_error("PQ inventory key binding mismatch");
+                const auto script=wallet::BuildP2MRScriptPubKey(root);
+                IssuedStatement watched(db_,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+                watched.Blob(1,script.data(),int(script.size()));
+                IssuanceCheck(db_,sqlite3_step(watched.value.get()),SQLITE_ROW);
+                auto* q=watched.value.get();
+                if(sqlite3_column_type(q,0)!=SQLITE_TEXT ||
+                   sqlite3_column_bytes(q,0)!=int(row.derivation_path.size()) ||
+                   !sqlite3_column_blob(q,0) ||
+                   std::memcmp(sqlite3_column_blob(q,0),row.derivation_path.data(),row.derivation_path.size())!=0 ||
+                   sqlite3_column_type(q,1)!=SQLITE_INTEGER || sqlite3_column_int64(q,1)!=0)
+                    throw std::runtime_error("PQ inventory recognition binding mismatch");
+                watched.Done();
+            }
+        }
+        // Missing storage is not a complete inventory or permission to create
+        // any historical master. Watch-only and deleted owners remain unknown.
+    }
 
     std::vector<ShieldedIncomingViewingKey> incoming, outgoing;
     std::vector<ShieldedRecipientViewingAuthority> recipients;

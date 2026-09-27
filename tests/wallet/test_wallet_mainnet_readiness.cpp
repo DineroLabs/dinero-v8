@@ -71,6 +71,10 @@ static inline char* mkdtemp(char* tmpl) {
 #include "util/hex.h"
 #include "wallet/bip39.h"
 #include "wallet/wallet_manager.h"
+#include "wallet/v7_p2mr_store.h"
+#include "wallet/p2mr_address.h"
+#include "wallet/secure_keypair.h"
+#include "consensus/pq/scheme_registry.h"
 
 namespace fs = std::filesystem;
 
@@ -2038,5 +2042,148 @@ TEST(WalletMainnetReadiness, ModernInventoryIncompleteReadPreservesOwner) {
      EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);
      EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);EXPECT_EQ(modern_rows(w),rows);EXPECT_EQ(unlock_rows(w),owners);
      ASSERT_NO_THROW(w.unlockWallet("password"));EXPECT_EQ(modern_rows(w),rows);
+    }fs::remove_all(root);
+}
+
+namespace {
+std::string pq_watch_rows(dinero::WalletManager& w) {
+    std::string result;
+    for(const char* table:{"watch_scripts"}) {
+        const auto sql=std::string("SELECT * FROM ")+table+" ORDER BY rowid";
+        sqlite3_stmt* q=nullptr;
+        if(sqlite3_prepare_v2(w.getCurrentDatabase(),sql.c_str(),-1,&q,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("PQ fixture snapshot");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> stmt(q,sqlite3_finalize);int rc;
+        while((rc=sqlite3_step(q))==SQLITE_ROW)for(int col=0;col<sqlite3_column_count(q);++col) {
+            result+=std::to_string(sqlite3_column_type(q,col))+":";
+            const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(q,col));
+            const int n=sqlite3_column_bytes(q,col);
+            if(bytes)result+=util::hex(std::vector<uint8_t>(bytes,bytes+n));
+            result+=";";
+        }
+        if(rc!=SQLITE_DONE)throw std::runtime_error("PQ fixture snapshot EOF");
+        result+="|";
+    }return result;
+}
+namespace pw = dinero::wallet;
+namespace pm = dinero::consensus::pq::ml_dsa_65;
+std::string pq_file_bytes(const std::string& path) {
+    std::ifstream in(path,std::ios::binary);if(!in)throw std::runtime_error("PQ fixture bytes");
+    return {std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>()};
+}
+void pq_sql(sqlite3* db,const std::string& sql) {
+    if(sqlite3_exec(db,sql.c_str(),nullptr,nullptr,nullptr)!=SQLITE_OK)
+        throw std::runtime_error("PQ inventory fixture SQL");
+}
+std::unique_ptr<sqlite3,decltype(&sqlite3_close)> pq_db(const std::string& path) {
+    sqlite3* db=nullptr;
+    if(sqlite3_open(path.c_str(),&db)!=SQLITE_OK){if(db)sqlite3_close(db);throw std::runtime_error("PQ fixture open");}
+    return {db,sqlite3_close};
+}
+void pq_imports(dinero::WalletManager& w) {
+    const auto master=w.GetV7PqMasterKey();if(!master)throw std::runtime_error("PQ fixture master");
+    pw::V7P2MRStore store;
+    if(store.Open(w.GetV7P2MRStorePath())!=pw::V7P2MRStore::OpenResult::Ok)throw std::runtime_error("PQ fixture store");
+    for(uint8_t last:{77,78}) {
+        pw::SecureSeed seed;seed.mutable_bytes().fill(last);
+        pw::SecureKeypair pair(pm::KeygenFromSeed(seed.bytes()));
+        std::array<uint8_t,32> root{};const uint8_t scheme=dinero::consensus::pq::SCHEME_ID_ML_DSA_65;
+        dinero::crypto::CSHA256().Write(&scheme,1).Write(pair.pubkey().data(),pair.pubkey().size()).Finalize(root.data());
+        const auto sealed=pw::SealSeed(seed.bytes(),*master);
+        // Imported seed is intentionally unrelated to its recorded path.
+        const auto path=last==77?"m/88'/1448'/9'/1/900":"imported:external";
+        const auto address=pw::EncodeP2MRAddress(last==77?"din":"rdin",root);
+        if(store.AddAddress(1,address,root,pair.pubkey(),sealed.ciphertext,sealed.nonce,sealed.tag,path,37,"preserve",last)!=pw::V7P2MRStore::AddResult::Ok)
+            throw std::runtime_error("PQ fixture insert");
+        w.registerP2MRAddress(pw::BuildP2MRScriptPubKey(root),path);
+    }
+}
+bool pq_interrupt=false,pq_deny=false,pq_replace=false;
+sqlite3* pq_writer=nullptr;
+sqlite3* pq_reader=nullptr;
+int pq_mutation=SQLITE_OK;
+int pq_extension(sqlite3* db,char**,const sqlite3_api_routines*) {
+    pq_reader=db;
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*) {
+        return pq_deny && op==SQLITE_READ && table && std::string_view(table)=="v7_p2mr_addresses"?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    return sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned,void* db,void* stmt,void*) {
+        const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));
+        if(sql && std::string_view(sql).find("seed_ciphertext, seed_nonce, seed_tag FROM v7_p2mr_addresses")!=std::string_view::npos) {
+            if(pq_interrupt)sqlite3_interrupt(static_cast<sqlite3*>(db));
+            if(pq_replace){pq_replace=false;pq_mutation=sqlite3_exec(pq_writer,"UPDATE v7_p2mr_addresses SET seed_tag=zeroblob(16) WHERE created_at=78",nullptr,nullptr,nullptr);}
+        }return 0;
+    },db);
+}
+struct PqTrace {
+    PqTrace(){if(sqlite3_auto_extension(reinterpret_cast<void(*)()>(pq_extension))!=SQLITE_OK)throw std::runtime_error("PQ trace install");}
+    ~PqTrace(){sqlite3_cancel_auto_extension(reinterpret_cast<void(*)()>(pq_extension));pq_interrupt=pq_deny=pq_replace=false;pq_writer=nullptr;pq_reader=nullptr;}
+};
+}
+TEST(WalletMainnetReadiness, PqInventoryBindingAndReopen) {
+    const auto root=make_temp_dir("din_pq_binding_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");w.encryptWallet("password");w.unlockWallet("password");pq_imports(w);
+     const auto seed=w.GetMasterSeed();const auto master=w.GetV7PqMasterKey();const auto owners=unlock_rows(w);const auto rows=pq_watch_rows(w);
+     const auto path=w.GetV7P2MRStorePath();const auto bytes=pq_file_bytes(path);
+     w.open("owner");ASSERT_NO_THROW(w.unlockWallet("password"));
+     EXPECT_EQ(w.GetMasterSeed(),seed);EXPECT_EQ(w.GetV7PqMasterKey(),master);EXPECT_EQ(unlock_rows(w),owners);EXPECT_EQ(pq_watch_rows(w),rows);EXPECT_EQ(pq_file_bytes(path),bytes);
+    }fs::remove_all(root);
+}
+TEST(WalletMainnetReadiness, PqInventoryCorruptionPreservesOwner) {
+    const auto root=make_temp_dir("din_pq_corrupt_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");w.encryptWallet("password");w.unlockWallet("password");pq_imports(w);w.lockWallet();
+     const auto path=w.GetV7P2MRStorePath();auto db=pq_db(path);pq_sql(db.get(),"CREATE TEMP TABLE saved AS SELECT * FROM v7_p2mr_addresses");
+     const auto state=dinero::WalletUnlockOwnerTestAccess::State(w);const auto owners=unlock_rows(w);const auto rows=pq_watch_rows(w);
+     for(const auto& sql:std::vector<std::string>{
+        "UPDATE v7_p2mr_addresses SET seed_tag=zeroblob(16) WHERE created_at=78",
+        "UPDATE v7_p2mr_addresses SET seed_ciphertext=(SELECT seed_ciphertext FROM v7_p2mr_addresses WHERE created_at=77),seed_nonce=(SELECT seed_nonce FROM v7_p2mr_addresses WHERE created_at=77),seed_tag=(SELECT seed_tag FROM v7_p2mr_addresses WHERE created_at=77) WHERE created_at=78",
+        "UPDATE v7_p2mr_addresses SET pubkey=zeroblob(1952) WHERE created_at=78",
+        "UPDATE v7_p2mr_addresses SET merkle_root=zeroblob(32) WHERE created_at=78",
+        "UPDATE v7_p2mr_addresses SET address=address||'x' WHERE created_at=78",
+        "UPDATE v7_p2mr_addresses SET derivation_path='unbound' WHERE created_at=78",
+        "UPDATE v7_p2mr_addresses SET seed_nonce=CAST(seed_nonce AS TEXT) WHERE created_at=78"}) {
+        SCOPED_TRACE(sql);pq_sql(db.get(),sql);const auto bytes=pq_file_bytes(path);
+        EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);
+        EXPECT_EQ(unlock_rows(w),owners);EXPECT_EQ(pq_watch_rows(w),rows);EXPECT_EQ(pq_file_bytes(path),bytes);
+        pq_sql(db.get(),"DELETE FROM v7_p2mr_addresses;INSERT INTO v7_p2mr_addresses SELECT * FROM saved");
+     }
+     pq_sql(db.get(),"ALTER TABLE v7_p2mr_addresses RENAME TO unavailable");
+     EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);
+     pq_sql(db.get(),"ALTER TABLE unavailable RENAME TO v7_p2mr_addresses");
+     modern_sql(w,"UPDATE watch_scripts SET path='unbound' WHERE substr(script_pubkey,1,2)=x'5320'");
+     EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);
+     // Restore exact recognition paths from the stored imported metadata.
+     pw::V7P2MRStore store;ASSERT_EQ(store.OpenExistingReadOnly(path),pw::V7P2MRStore::OpenResult::Ok);
+     for(const auto& row:store.CaptureKeysByWallet(1)) {
+        sqlite3_stmt* q=nullptr;ASSERT_EQ(sqlite3_prepare_v2(w.getCurrentDatabase(),"UPDATE watch_scripts SET path=? WHERE script_pubkey=?",-1,&q,nullptr),SQLITE_OK);
+        auto script=pw::BuildP2MRScriptPubKey(row.metadata.merkle_root);sqlite3_bind_text(q,1,row.metadata.derivation_path.c_str(),-1,SQLITE_TRANSIENT);sqlite3_bind_blob(q,2,script.data(),script.size(),SQLITE_TRANSIENT);ASSERT_EQ(sqlite3_step(q),SQLITE_DONE);sqlite3_finalize(q);
+     }
+     ASSERT_NO_THROW(w.unlockWallet("password",100));const auto live=dinero::WalletUnlockOwnerTestAccess::State(w);
+     pq_sql(db.get(),"UPDATE v7_p2mr_addresses SET seed_tag=zeroblob(16) WHERE created_at=78");
+     EXPECT_THROW(w.unlockWallet("password",500),std::runtime_error);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),live);
+     pq_sql(db.get(),"DELETE FROM v7_p2mr_addresses;INSERT INTO v7_p2mr_addresses SELECT * FROM saved");
+     w.open("owner");
+     modern_sql(w,"DELETE FROM settings WHERE key IN ('wallet_initial_owner_v1','v7_pq_master_key_encrypted')");
+     const auto missing=dinero::WalletUnlockOwnerTestAccess::State(w);
+     EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),missing);
+     EXPECT_FALSE(w.GetV7PqMasterKey());
+    }fs::remove_all(root);
+}
+TEST(WalletMainnetReadiness, PqInventoryReadAndSnapshot) {
+    const auto root=make_temp_dir("din_pq_read_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");w.encryptWallet("password");w.unlockWallet("password");pq_imports(w);w.lockWallet();
+     auto writer=pq_db(w.GetV7P2MRStorePath());pq_sql(writer.get(),"PRAGMA journal_mode=WAL");
+     const auto state=dinero::WalletUnlockOwnerTestAccess::State(w);const auto owners=unlock_rows(w);
+     PqTrace trace;
+     {pw::V7P2MRStore reader;ASSERT_EQ(reader.OpenExistingReadOnly(w.GetV7P2MRStorePath()),pw::V7P2MRStore::OpenResult::Ok);
+      ASSERT_TRUE(pq_reader);pq_sql(pq_reader,"BEGIN");EXPECT_THROW(reader.CaptureKeysByWallet(1),std::runtime_error);
+      EXPECT_EQ(sqlite3_get_autocommit(pq_reader),0);pq_sql(pq_reader,"ROLLBACK");EXPECT_EQ(reader.CaptureKeysByWallet(1).size(),2u);}
+     pq_deny=true;EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);pq_deny=false;
+     EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);EXPECT_EQ(unlock_rows(w),owners);
+     pq_interrupt=true;EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);pq_interrupt=false;
+     EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);EXPECT_EQ(unlock_rows(w),owners);
+     pq_writer=writer.get();pq_replace=true;pq_mutation=SQLITE_ERROR;
+     ASSERT_NO_THROW(w.unlockWallet("password"));EXPECT_EQ(pq_mutation,SQLITE_OK);EXPECT_FALSE(pq_replace);
+     w.lockWallet();EXPECT_THROW(w.unlockWallet("password"),std::runtime_error);EXPECT_TRUE(w.isLocked());
     }fs::remove_all(root);
 }
