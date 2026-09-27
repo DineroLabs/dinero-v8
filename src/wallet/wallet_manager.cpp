@@ -7326,161 +7326,26 @@ bool WalletManager::validateWIF(const std::string& wif, bool& is_compressed, boo
     return (prefix == 0x9E || prefix == 0x80 || prefix == 0xEF);
 }
 
-std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label) {
-    std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
-    if (privkey.size() != 32) {
-        WLOG_ERR("Invalid private key length");
-        return "";
-    }
-
-    if (!hasActiveWallet()) {
-        WLOG_ERR("No active wallet for import");
-        return "";
-    }
-
-    try {
-        // Derive public key from private key using secp256k1
-        secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-        if (!ctx) {
-            WLOG_ERR("Failed to create secp256k1 context");
-            return "";
-        }
-
-        // Verify private key is valid
-        if (!secp256k1_ec_seckey_verify(ctx, privkey.data())) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Invalid private key");
-            return "";
-        }
-
-        // Create public key
-        secp256k1_pubkey pubkey;
-        if (!secp256k1_ec_pubkey_create(ctx, &pubkey, privkey.data())) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to create public key");
-            return "";
-        }
-
-        // Dinero uses Taproot from genesis - create P2TR address
-        // For BIP341 Taproot, we need to apply TapTweak to get the output pubkey
-
-        // Step 1: Get internal x-only pubkey
-        secp256k1_xonly_pubkey internal_pubkey;
-        int pk_parity;
-        if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &internal_pubkey, &pk_parity, &pubkey)) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to extract x-only pubkey");
-            return "";
-        }
-
-        // Serialize internal pubkey for TapTweak computation
-        std::vector<uint8_t> internal_xonly(32);
-        secp256k1_xonly_pubkey_serialize(ctx, internal_xonly.data(), &internal_pubkey);
-
-        // Step 2: Compute TapTweak
-        // NOTE: Using SHA256(internal_key || 0x00) for BIP86 key-path-only tweak
-        // (empty merkle root). This matches BIP341 key-spend-only convention.
-        unsigned char tweak_data[33];
-        std::memcpy(tweak_data, internal_xonly.data(), 32);
-        tweak_data[32] = 0x00;  // Empty merkle root
-
-        unsigned char tweak[32];
-        SHA256(tweak_data, 33, tweak);
-
-        // Step 3: Apply tweak: output_key = internal_key + tweak*G
-        secp256k1_pubkey tweaked_pubkey;
-        if (!secp256k1_xonly_pubkey_tweak_add(ctx, &tweaked_pubkey, &internal_pubkey, tweak)) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to apply TapTweak");
-            return "";
-        }
-
-        // Step 4: Extract output x-only pubkey
-        secp256k1_xonly_pubkey output_pubkey;
-        if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &output_pubkey, nullptr, &tweaked_pubkey)) {
-            secp256k1_context_destroy(ctx);
-            WLOG_ERR("Failed to extract output x-only pubkey");
-            return "";
-        }
-
-        // Serialize output pubkey (32 bytes)
-        std::vector<uint8_t> x_only_pubkey(32);
-        secp256k1_xonly_pubkey_serialize(ctx, x_only_pubkey.data(), &output_pubkey);
-        secp256k1_context_destroy(ctx);
-
-        // Debug: Log the computed pubkeys
-        std::ostringstream debug_stream;
-        debug_stream << "TapTweak Debug:\n";
-        debug_stream << "  Internal pubkey: ";
-        for (auto b : internal_xonly) {
-            debug_stream << std::hex << std::setfill('0') << std::setw(2) << (int)b;
-        }
-        debug_stream << "\n  Output pubkey:   ";
-        for (auto b : x_only_pubkey) {
-            debug_stream << std::hex << std::setfill('0') << std::setw(2) << (int)b;
-        }
-        debug_stream << "\n  Expected:        ca062bff883f6d1511a72a78a09f3a17cb6734f9ce8543faa66f7e380d58d1b7";
-        WLOG_INFO(debug_stream.str());
-
-        // Create bech32m address (P2TR - witness version 1) using AddressCodec
-        std::string address = AddressCodec::encodeP2TR(Network::MAIN, x_only_pubkey);
-
-        if (address.empty()) {
-            WLOG_ERR("Failed to encode address");
-            return "";
-        }
-
-        // Store in imported_keys table
-        const char* sql = R"(
-            INSERT OR REPLACE INTO imported_keys (address, private_key_enc, label, created_at)
-            VALUES (?, ?, ?, datetime('now'))
-        )";
-
-        sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            WLOG_ERR("Failed to prepare import statement");
-            return "";
-        }
-
-        // For now, store the key encrypted with wallet's encryption key if available
-        // Otherwise store as hex (not recommended for production)
-        std::string key_storage;
-        if (!encryption_key_.empty()) {
-            key_storage = encryptData(std::string(privkey.begin(), privkey.end()), encryption_key_);
-        } else {
-            // Hex encode for unencrypted wallets
-            static const char* hex_chars = "0123456789abcdef";
-            key_storage.reserve(64);
-            for (uint8_t byte : privkey) {
-                key_storage += hex_chars[(byte >> 4) & 0xF];
-                key_storage += hex_chars[byte & 0xF];
-            }
-        }
-
-        sqlite3_bind_text(stmt, 1, address.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 2, key_storage.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(stmt, 3, label.c_str(), -1, SQLITE_TRANSIENT);
-
-        if (sqlite3_step(stmt) != SQLITE_DONE) {
-            WLOG_ERR("Failed to store imported key: " + std::string(sqlite3_errmsg(db_)));
-            sqlite3_finalize(stmt);
-            return "";
-        }
-        sqlite3_finalize(stmt);
-
-        // Add to address book via HD address method (account -1 = imported)
-        addHDAddress(address, -1, 0, 0, label.empty() ? "imported" : label);
-
-        // Cache the key for immediate use
-        cachePrivateKey(address, privkey);
-
-        WLOG_INFO("Successfully imported private key for address: " + address);
-        return address;
-
-    } catch (const std::exception& e) {
-        WLOG_ERR("Import failed: " + std::string(e.what()));
-        return "";
-    }
+std::string WalletManager::importPrivateKey(const std::vector<uint8_t>& privkey,
+    const std::string& label, uint64_t expected_session, const std::string& expected_address) {
+    std::lock_guard<std::recursive_mutex> owner(database_lifecycle_mutex_);
+    if (privkey.size()!=32 || !hasActiveWallet()) return {};
+    struct Secret {
+        std::array<uint8_t,32> value{};
+        ~Secret(){OPENSSL_cleanse(value.data(),value.size());}
+    } key;
+    std::copy(privkey.begin(),privkey.end(),key.value.begin());
+    std::array<uint8_t,32> internal{},output{};int parity=0;
+    if (!TaprootKeys::DeriveXOnlyPubkey(key.value,internal,parity) ||
+        !TaprootKeys::ComputeTweakedPubkey(internal,output)) return {};
+    const auto& network=Params().name;
+    const auto address=TaprootKeys::CreateTaprootAddress(output,
+        network=="regtest"?"rdin":network=="testnet"?"tdin":"din");
+    if (address.empty() || (!expected_address.empty() && expected_address!=address)) return {};
+    // The existing owner checks legacy inventory in the SAME transaction as
+    // persistence. A backup's recorded address cannot silently be substituted.
+    if (!storeTaprootKey(address,key.value,internal,output,label,expected_session,true)) return {};
+    return address;
 }
 
 void WalletManager::cachePrivateKey(const std::string& address, const std::vector<uint8_t>& key) {
@@ -8920,13 +8785,19 @@ bool WalletManager::storeTaprootKey(const std::string& address,
                                     const std::array<uint8_t, 32>& internal_privkey,
                                     const std::array<uint8_t, 32>& internal_pubkey,
                                     const std::array<uint8_t, 32>& output_pubkey,
-                                    const std::string& label, uint64_t expected_session) {
+                                    const std::string& label, uint64_t expected_session, bool require_empty_legacy_imports) {
     try {
         auto lease = AcquireDatabaseLease();
         if (!db_ || !sqlite3_get_autocommit(db_) || recovery_seeds_ ||
             (expected_session && lease->Session()!=expected_session)) return false;
         checkUnlockTimeout();
         IssuedAddressTransaction transaction(db_);
+        if (require_empty_legacy_imports) {
+            IssuedStatement legacy(db_, "SELECT 1 FROM imported_keys LIMIT 1");
+            const int result=sqlite3_step(legacy.value.get());
+            if (result==SQLITE_ROW) return false;
+            IssuanceCheck(db_,result,SQLITE_DONE);
+        }
         const auto text_matches=[](sqlite3_stmt* q,int column,std::string_view expected) {
             const auto* value=sqlite3_column_text(q,column);
             return sqlite3_column_type(q,column)==SQLITE_TEXT && value &&

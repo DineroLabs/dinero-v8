@@ -235,7 +235,8 @@ public:
                          const std::array<uint8_t, 32>& internal_privkey,
                          const std::array<uint8_t, 32>& internal_pubkey,
                          const std::array<uint8_t, 32>& output_pubkey,
-                         const std::string& label, uint64_t expected_session = 0);
+                         const std::string& label, uint64_t expected_session = 0,
+                         bool require_empty_legacy_imports = false);
 
     // Pins the selected database against open/close/create and holds SQLite's
     // recursive connection mutex across a complete wallet job. Existing raw
@@ -894,7 +895,11 @@ public:
      * @param label Optional label for the address
      * @return The generated address, or empty string on failure
      */
-    std::string importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label = "");
+    // Forward imports use the current Taproot derivation. Existing legacy
+    // import inventories require separate reconciliation and refuse this route.
+    std::string importPrivateKey(const std::vector<uint8_t>& privkey, const std::string& label = "",
+                                uint64_t expected_session = 0,
+                                const std::string& expected_address = "");
 
     /**
      * Check if a WIF string is valid and decode info without importing.

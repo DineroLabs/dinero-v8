@@ -6126,6 +6126,8 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
         bool rescan = params.size() < 3 || params[2].asBool();
 
         auto& wallet = wallet_service->get();
+        uint64_t expected_session=0;
+        { auto lease=wallet.AcquireDatabaseLease(); expected_session=lease->Session(); }
 
         // Decode private key (WIF or hex)
         std::vector<uint8_t> privkey_bytes;
@@ -6147,7 +6149,7 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
         }
 
         // Import the key
-        std::string address = wallet.importPrivateKey(privkey_bytes, label);
+        std::string address = wallet.importPrivateKey(privkey_bytes, label, expected_session);
         if (address.empty()) {
             result["error"] = "Failed to import private key";
             return result;
@@ -6160,9 +6162,11 @@ din::Json rpc_context_wallet_importprivkey(const ExecutionContext& ctx, const di
             ctx.logger->info("[wallet.importprivkey] Imported key for address: " + address);
         }
 
+        result["note"] = "Imported using current Taproot address rules; older import formats require separate recovery.";
+
         // Optionally rescan
         if (rescan) {
-            result["note"] = "Rescan recommended - use wallet.rescanblockchain";
+            result["note"] = "Imported using current Taproot address rules; older import formats require separate recovery. Rescan recommended - use wallet.rescanblockchain";
         }
 
     } catch (const std::exception& e) {
@@ -6412,6 +6416,8 @@ din::Json rpc_context_wallet_importwallet(const ExecutionContext& ctx, const din
     try {
         std::string filename = params[0].as<std::string>();
         auto& wallet = wallet_service->get();
+        uint64_t expected_session=0;
+        { auto lease=wallet.AcquireDatabaseLease(); expected_session=lease->Session(); }
 
         std::ifstream file(filename);
         if (!file.is_open()) {
@@ -6447,8 +6453,8 @@ din::Json rpc_context_wallet_importwallet(const ExecutionContext& ctx, const din
 
             // Decode and import
             auto privkey_bytes = wallet.decodeWIF(wif);
-            if (privkey_bytes.size() == 32) {
-                std::string new_addr = wallet.importPrivateKey(privkey_bytes, label);
+            if (privkey_bytes.size() == 32 && !address.empty()) {
+                std::string new_addr = wallet.importPrivateKey(privkey_bytes, label, expected_session, address);
                 if (!new_addr.empty()) {
                     imported++;
                 } else {

@@ -412,6 +412,23 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Encryption owner cases did not execute exactly once')
           PYTEST
+      - name: Require and execute forward private-key import ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPrivateKeyImport$' --show-only=json-v1 > orchard-wallet-private-key-import-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests = json.load(open('orchard-wallet-private-key-import-inventory.json'))['tests']
+          if [t['name'] for t in tests] != ['WalletPrivateKeyImport'] or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('WalletPrivateKeyImport missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletPrivateKeyImport$' --verbose --no-tests=error --output-log orchard-wallet-private-key-import-execution.log
+          python3 - <<'PYTEST'
+          import re
+          actual = re.findall(r'\[ RUN\s+\] (WalletPrivateKeyImportTest\.\S+)', open('orchard-wallet-private-key-import-execution.log').read())
+          expected = ['WalletPrivateKeyImportTest.' + name for name in ['CanonicalImportsReopenAndPreserveOtherImports', 'ExpectedAddressSessionAndTransactionRefuse', 'LegacyInventoryAndReadFailureRefuseWithoutEffects']]
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('Private-key import cases did not execute exactly once')
+          PYTEST
       - name: Require and execute wallet rollback atomicity
         run: |
           ctest --test-dir build-orchard-root -R '^WalletRevertAtomic$' --show-only=json-v1 > orchard-wallet-undo-inventory.json
@@ -600,6 +617,8 @@ jobs:
             orchard-wallet-input-provider-execution.log
             orchard-wallet-encryption-owner-inventory.json
             orchard-wallet-encryption-owner-execution.log
+            orchard-wallet-private-key-import-inventory.json
+            orchard-wallet-private-key-import-execution.log
             orchard-wallet-lease-inventory.json
             orchard-wallet-lease-execution.log
             orchard-wallet-binding-inventory.json

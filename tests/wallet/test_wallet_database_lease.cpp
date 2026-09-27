@@ -620,7 +620,10 @@ TEST_F(WalletEncryptionOwnerTest, LegacyImportedPayloadRoundtripAndFailureRollba
     Import key(66);
     std::vector<uint8_t> legacy(32, 0);
     legacy.back() = 67;
-    const auto address = wallet->importPrivateKey(legacy, "preserve legacy label");
+    // Persisted predecessor-format fixture. Forward imports now use the
+    // canonical owner and cannot recreate this historical storage domain.
+    const std::string address="din1p4rltumyufleww78u3ste2aj55slz9skpesr8rhqdkcpfgrqqpeeskv96c7";
+    Exec(wallet->getCurrentDatabase(),("INSERT INTO imported_keys(address,private_key_enc,label) VALUES('"+address+"','"+util::hex(legacy)+"','preserve legacy label')").c_str());
     ASSERT_FALSE(address.empty());
     ASSERT_TRUE(Store(key));
     auto *db = wallet->getCurrentDatabase();
@@ -664,6 +667,43 @@ TEST_F(WalletEncryptionOwnerTest, LegacyImportedPayloadRoundtripAndFailureRollba
     EXPECT_EQ(EncryptionRows(), corrupt);
     EXPECT_TRUE(wallet->isWalletLocked());
 }
+class WalletPrivateKeyImportTest : public WalletTaprootLookupTest {
+protected:
+    std::string Forward(const Import& key,uint64_t session=0,const std::string& expected="") {
+        return wallet->importPrivateKey(std::vector<uint8_t>(key.secret.begin(),key.secret.end()),"forward label",session,expected);
+    }
+};
+TEST_F(WalletPrivateKeyImportTest, CanonicalImportsReopenAndPreserveOtherImports) {
+    wallet->open("owner");Import existing(71),one(72),two(73);ASSERT_TRUE(Store(existing));
+    ASSERT_EQ(Forward(one),one.address);ASSERT_EQ(Forward(two),two.address);
+    EXPECT_EQ(Scalar(wallet->getCurrentDatabase(),"SELECT COUNT(*) FROM imported_keys"),0);
+    EXPECT_EQ(Scalar(wallet->getCurrentDatabase(),"SELECT COUNT(*) FROM addresses WHERE account=-1"),3);
+    CheckSignature(existing);CheckSignature(one);CheckSignature(two);
+    ASSERT_EQ(Forward(one),one.address);wallet->open("owner");CheckSignature(existing);CheckSignature(one);CheckSignature(two);
+    wallet->encryptWallet("forward-pass");wallet->unlockWallet("forward-pass");Import encrypted(74);ASSERT_EQ(Forward(encrypted),encrypted.address);
+    wallet->open("owner");wallet->unlockWallet("forward-pass");CheckSignature(existing);CheckSignature(one);CheckSignature(encrypted);
+}
+TEST_F(WalletPrivateKeyImportTest, ExpectedAddressSessionAndTransactionRefuse) {
+    wallet->open("owner");Import existing(75),key(76);ASSERT_TRUE(Store(existing));const auto before=Rows();auto* db=wallet->getCurrentDatabase();
+    EXPECT_TRUE(Forward(key,0,existing.address).empty());EXPECT_EQ(Rows(),before);
+    uint64_t session=0;{auto lease=wallet->AcquireDatabaseLease();session=lease->Session();}wallet->open("owner");db=wallet->getCurrentDatabase();
+    EXPECT_TRUE(Forward(key,session).empty());EXPECT_EQ(Rows(),before);
+    Exec(db,"BEGIN IMMEDIATE");EXPECT_TRUE(Forward(key).empty());EXPECT_EQ(sqlite3_get_autocommit(db),0);EXPECT_EQ(Rows(),before);Exec(db,"ROLLBACK");
+    Exec(db,"CREATE TRIGGER refuse_forward BEFORE INSERT ON taproot_keys BEGIN SELECT RAISE(ABORT,'required forward key'); END");
+    EXPECT_TRUE(Forward(key).empty());EXPECT_EQ(Rows(),before);Exec(db,"DROP TRIGGER refuse_forward");
+    ASSERT_EQ(Forward(key,0,key.address),key.address);CheckSignature(key);
+    wallet->encryptWallet("locked-forward");Import locked(77);EXPECT_TRUE(Forward(locked).empty());
+}
+TEST_F(WalletPrivateKeyImportTest, LegacyInventoryAndReadFailureRefuseWithoutEffects) {
+    wallet->open("owner");Import existing(78),key(79);ASSERT_TRUE(Store(existing));auto* db=wallet->getCurrentDatabase();const auto before=Rows();
+    Exec(db,"INSERT INTO imported_keys(address,private_key_enc,label) VALUES('historical-inventory','unchanged historical bytes','preserved')");
+    EXPECT_TRUE(Forward(key).empty());EXPECT_EQ(Rows(),before);EXPECT_EQ(Scalar(db,"SELECT COUNT(*) FROM imported_keys WHERE private_key_enc='unchanged historical bytes' AND label='preserved'"),1);CheckSignature(existing);
+    Exec(db,"DELETE FROM imported_keys");
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*) {return op==SQLITE_READ && table && std::string_view(table)=="imported_keys"?SQLITE_DENY:SQLITE_OK;},nullptr);
+    const bool refused=Forward(key).empty();sqlite3_set_authorizer(db,nullptr,nullptr);EXPECT_TRUE(refused);EXPECT_EQ(Rows(),before);
+    ASSERT_EQ(Forward(key),key.address);wallet->open("owner");CheckSignature(existing);CheckSignature(key);
+}
+
 class WalletRecoveryKeyTest : public WalletDatabaseLeaseTest {};
 TEST_F(WalletRecoveryKeyTest, PinsActualSeedAcrossLockAndUnlock) {
     wallet->open("owner");

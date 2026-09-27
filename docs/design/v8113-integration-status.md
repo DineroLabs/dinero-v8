@@ -617,3 +617,18 @@ otherwise causes refusal. This does not complete encrypted-record discovery,
 legacy import registration/lookup, unencrypted P2MR ownership or recovery
 readiness. See [wallet-encryption-owner-2026-09-27.md](wallet-encryption-owner-2026-09-27.md).
 All five stages remain active; steps 1–4 and release qualification are incomplete.
+
+### Forward private-key import owner (2026-09-27)
+
+The actual private-key API now uses the current Taproot derivation and checked
+import owner, preserving other imported addresses. Existing legacy import
+inventories refuse this route pending reconciliation. RPC callers bind the wallet
+session; backup imports also bind the recorded address. This is forward import,
+not complete legacy recovery. See [wallet-private-key-import-2026-09-27.md](wallet-private-key-import-2026-09-27.md).
+Steps 1–4 and release qualification remain incomplete.
+
+Local qualification for the forward import batch: fresh actual ON/OFF full daemon
+and declared targets passed; ten/eight CTests and fresh all-89-project-C++
+ASan/UBSan (34 cases) passed. Three omission controls fail intended assertions;
+restored three import cases pass. RPC entrypoints compile but are not executed by
+this lane. Historical imports, complete discovery and release gates stay open.
