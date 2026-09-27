@@ -2444,6 +2444,115 @@ void PersistIssuedAddress(sqlite3* db,int change,int index,const std::string& ad
         throw std::runtime_error("Address issuance watch ownership mismatch");
     check.Done();
 }
+// Validate explicit BIP84/BIP86 ownership claims without repairing records or
+// publishing derived secrets. The caller owns the wallet transaction and seed.
+void AuthenticateHdInventory(sqlite3* db,const std::vector<uint8_t>& seed) {
+    const auto text=[](sqlite3_stmt* q,int col) {
+        if(sqlite3_column_type(q,col)!=SQLITE_TEXT)throw std::runtime_error("HD inventory text type invalid");
+        const auto* p=static_cast<const char*>(sqlite3_column_blob(q,col));
+        const int n=sqlite3_column_bytes(q,col);
+        if(!p || n<=0 || std::memchr(p,0,n))throw std::runtime_error("HD inventory text invalid");
+        return std::string(p,n);
+    };
+    const auto integer=[](sqlite3_stmt* q,int col) {
+        if(sqlite3_column_type(q,col)!=SQLITE_INTEGER)throw std::runtime_error("HD inventory integer type invalid");
+        return sqlite3_column_int64(q,col);
+    };
+    const auto parse=[](const std::string& path) {
+        std::array<uint32_t,5> parts{};size_t pos=2;
+        if(path.compare(0,2,"m/")!=0)throw std::runtime_error("HD inventory path invalid");
+        for(size_t i=0;i<parts.size();++i) {
+            const auto start=pos;uint64_t value=0;
+            while(pos<path.size() && path[pos]>='0' && path[pos]<='9') {
+                value=value*10+uint32_t(path[pos++]-'0');
+                if(value>0x7fffffff)throw std::runtime_error("HD inventory path range invalid");
+            }
+            if(pos==start)throw std::runtime_error("HD inventory path component missing");
+            parts[i]=uint32_t(value);
+            if(i<3 && (pos==path.size() || path[pos++]!='\''))throw std::runtime_error("HD inventory hardened path invalid");
+            if(i<4 && (pos==path.size() || path[pos++]!='/'))throw std::runtime_error("HD inventory path separator invalid");
+        }
+        if(pos!=path.size() || (parts[0]!=84 && parts[0]!=86) || parts[3]>1)
+            throw std::runtime_error("HD inventory path policy unsupported");
+        return parts;
+    };
+    const auto script_text=[&](sqlite3_stmt* q,int col) {
+        std::vector<uint8_t> bytes;
+        if(!util::unhex(text(q,col),bytes) || bytes.empty())throw std::runtime_error("HD inventory script invalid");
+        return bytes;
+    };
+    const bool address_wallet=IssuanceWalletColumn(db,"addresses");
+    const bool path_wallet=IssuanceWalletColumn(db,"address_derivation_paths");
+    const std::string sql=R"(SELECT p.address,p.derivation_path,p.script_pubkey,p.account,p.change,p.address_index,
+        a.address,a.script_pubkey,a.account,a.change,a.idx,a.type,a.key_id,a.internal_key_id,a.output_key_id,)"+
+        std::string(address_wallet?"a.wallet_id":"1")+","+std::string(path_wallet?"p.wallet_id":"1")+R"( FROM address_derivation_paths p
+        LEFT JOIN addresses a ON a.address=p.address ORDER BY p.address)";
+    std::map<std::vector<uint8_t>,std::string> authenticated;
+    IssuedStatement inventory(db,sql.c_str());int rc;
+    while((rc=sqlite3_step(inventory.value.get()))==SQLITE_ROW) {
+        auto* q=inventory.value.get();const auto address=text(q,0),path=text(q,1);const auto parts=parse(path);
+        const auto recorded=script_text(q,2);
+        if(text(q,6)!=address || script_text(q,7)!=recorded || integer(q,15)!=1 || integer(q,16)!=1 ||
+           integer(q,3)!=parts[2] || integer(q,4)!=parts[3] || integer(q,5)!=parts[4] ||
+           integer(q,8)!=parts[2] || integer(q,9)!=parts[3] || integer(q,10)!=parts[4])
+            throw std::runtime_error("HD inventory address/path metadata mismatch");
+        BIP32Deriver derive(seed.data(),seed.size());
+        for(size_t i=0;i<3;++i)derive.deriveHardened(parts[i]);
+        derive.deriveNormal(parts[3]);derive.deriveNormal(parts[4]);
+        std::vector<uint8_t> program,script;
+        wallet::KeyID primary{};std::optional<wallet::KeyID> internal_id,output_id;
+        if(parts[0]==86) {
+            const auto internal=derive.getXOnlyPubkey();std::array<uint8_t,32> output{};
+            if(!TaprootKeys::ComputeTweakedPubkey(internal,output))throw std::runtime_error("HD inventory public derivation failed");
+            program.assign(output.begin(),output.end());script={0x51,0x20};
+            primary=wallet::ComputeKeyIDFromXOnly(internal);internal_id=primary;output_id=wallet::ComputeKeyIDFromXOnly(output);
+        } else {
+            const auto pub=derive.getCompressedPubkey();primary=wallet::ComputeKeyID(std::vector<uint8_t>(pub.begin(),pub.end()));
+            program.assign(primary.begin(),primary.end());script={0x00,0x14};
+        }
+        script.insert(script.end(),program.begin(),program.end());
+        bool address_matches=false;
+        // Preserve recorded historical network encodings; this is ownership
+        // authentication, not authorization to spend on a different network.
+        for(const char* hrp:{"din","tdin","rdin"})
+            address_matches|=address==bech32::Encode(hrp,parts[0]==86?1:0,program,
+                parts[0]==86?bech32::Encoding::BECH32M:bech32::Encoding::BECH32);
+        if(!address_matches || script!=recorded || text(q,11)!=(parts[0]==86?"p2tr":"p2wpkh"))
+            throw std::runtime_error("HD inventory seed/address/script mismatch");
+        const auto key_matches=[&](int col,const std::optional<wallet::KeyID>& expected) {
+            // Older issuance predates KeyID columns. Authenticate every present
+            // value, but do not invent or backfill an absent identifier.
+            if(sqlite3_column_type(q,col)==SQLITE_NULL)return true;
+            return expected && sqlite3_column_type(q,col)==SQLITE_BLOB && sqlite3_column_bytes(q,col)==20 &&
+                sqlite3_column_blob(q,col) && CRYPTO_memcmp(sqlite3_column_blob(q,col),expected->data(),20)==0;
+        };
+        if(!key_matches(12,primary) || !key_matches(13,internal_id) || !key_matches(14,output_id))
+            throw std::runtime_error("HD inventory key identifier mismatch");
+        IssuedStatement watch(db,"SELECT path,is_change FROM watch_scripts WHERE script_pubkey=?");
+        watch.Blob(1,script.data(),int(script.size()));IssuanceCheck(db,sqlite3_step(watch.value.get()),SQLITE_ROW);
+        if(text(watch.value.get(),0)!=path || integer(watch.value.get(),1)!=parts[3])
+            throw std::runtime_error("HD inventory watch binding mismatch");
+        watch.Done();
+        const auto [owner,inserted]=authenticated.emplace(script,path);
+        if(!inserted && owner->second!=path)throw std::runtime_error("HD inventory conflicting script owner");
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+    // Reverse-check explicit HD watch claims so deleting their path/address
+    // companion cannot silently downgrade them to watch-only recognition.
+    IssuedStatement watched(db,"SELECT script_pubkey,path FROM watch_scripts ORDER BY script_pubkey");
+    while((rc=sqlite3_step(watched.value.get()))==SQLITE_ROW) {
+        auto* q=watched.value.get();const auto path=text(q,1);
+        if(path.compare(0,4,"m/84")!=0 && path.compare(0,4,"m/86")!=0)continue;
+        parse(path);
+        if(sqlite3_column_type(q,0)!=SQLITE_BLOB || sqlite3_column_bytes(q,0)<=0 || !sqlite3_column_blob(q,0))
+            throw std::runtime_error("HD inventory watch script invalid");
+        const auto* p=static_cast<const uint8_t*>(sqlite3_column_blob(q,0));
+        const std::vector<uint8_t> script(p,p+sqlite3_column_bytes(q,0));
+        const auto found=authenticated.find(script);
+        if(found==authenticated.end() || found->second!=path)throw std::runtime_error("HD inventory orphan watch claim");
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+}
 } // namespace
 
 int WalletManager::getNextAddressIndex(int account, int change) const {
@@ -3911,6 +4020,8 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
     if ((!master_seed_.empty() && !ConstantTimeEqual(seed.value, master_seed_)) ||
         (!encryption_key_.empty() && key.value != encryption_key_))
         throw std::runtime_error("Live wallet unlock owner mismatch");
+
+    AuthenticateHdInventory(db_,seed.value);
 
     // Authenticate every present predecessor-format import in the same
     // snapshot before publishing any unlock authority. These records used the

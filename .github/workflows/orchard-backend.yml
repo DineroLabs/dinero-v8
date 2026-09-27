@@ -481,6 +481,24 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute HD seed, path and script inventory
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdInventory' --show-only=json-v1 > orchard-wallet-hd-inventory-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_HdInventoryHistoricalAccountsAndReopen', 'WalletMainnetReadiness_HdInventoryBindingsAndOrphansRefuse', 'WalletMainnetReadiness_HdInventoryIncompleteReadPreservesOwner']
+          tests = json.load(open('orchard-wallet-hd-inventory-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('HD owner inventory tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdInventory' --verbose --no-tests=error --output-log orchard-wallet-hd-inventory-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.HdInventoryHistoricalAccountsAndReopen', 'WalletMainnetReadiness.HdInventoryBindingsAndOrphansRefuse', 'WalletMainnetReadiness.HdInventoryIncompleteReadPreservesOwner']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.HdInventory\w+)', open('orchard-wallet-hd-inventory-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('HD owner inventory cases missing, duplicated or unexpected')
+          PYTEST
       - name: Require and execute modern imported key and script inventory
         run: |
           ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_ModernInventory' --show-only=json-v1 > orchard-wallet-modern-inventory-inventory.json
@@ -1111,6 +1129,8 @@ jobs:
             orchard-pq-rpc-owner-execution.log
             orchard-wallet-pq-unlock-inventory.json
             orchard-wallet-pq-unlock-execution.log
+            orchard-wallet-hd-inventory-inventory.json
+            orchard-wallet-hd-inventory-execution.log
             orchard-wallet-modern-inventory-inventory.json
             orchard-wallet-modern-inventory-execution.log
             orchard-wallet-legacy-key-read-inventory.json
