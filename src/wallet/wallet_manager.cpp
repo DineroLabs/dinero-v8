@@ -2446,7 +2446,8 @@ void PersistIssuedAddress(sqlite3* db,int change,int index,const std::string& ad
 }
 // Validate explicit BIP84/BIP86 ownership claims without repairing records or
 // publishing derived secrets. The caller owns the wallet transaction and seed.
-void AuthenticateHdInventory(sqlite3* db,const std::vector<uint8_t>& seed) {
+std::optional<std::array<uint32_t,5>> AuthenticateHdInventory(
+    sqlite3* db,const std::vector<uint8_t>& seed,const std::vector<uint8_t>* requested_script=nullptr) {
     const auto text=[](sqlite3_stmt* q,int col) {
         if(sqlite3_column_type(q,col)!=SQLITE_TEXT)throw std::runtime_error("HD inventory text type invalid");
         const auto* p=static_cast<const char*>(sqlite3_column_blob(q,col));
@@ -2486,9 +2487,14 @@ void AuthenticateHdInventory(sqlite3* db,const std::vector<uint8_t>& seed) {
     const std::string sql=R"(SELECT p.address,p.derivation_path,p.script_pubkey,p.account,p.change,p.address_index,
         a.address,a.script_pubkey,a.account,a.change,a.idx,a.type,a.key_id,a.internal_key_id,a.output_key_id,)"+
         std::string(address_wallet?"a.wallet_id":"1")+","+std::string(path_wallet?"p.wallet_id":"1")+R"( FROM address_derivation_paths p
-        LEFT JOIN addresses a ON a.address=p.address ORDER BY p.address)";
+        LEFT JOIN addresses a ON a.address=p.address)"+
+        std::string(requested_script?" WHERE lower(p.script_pubkey)=? OR lower(a.script_pubkey)=?":"")+" ORDER BY p.address";
     std::map<std::vector<uint8_t>,std::string> authenticated;
     IssuedStatement inventory(db,sql.c_str());int rc;
+    std::optional<std::array<uint32_t,5>> requested_path;
+    if(requested_script) {
+        inventory.Text(1,util::hex(*requested_script));inventory.Text(2,util::hex(*requested_script));
+    }
     while((rc=sqlite3_step(inventory.value.get()))==SQLITE_ROW) {
         auto* q=inventory.value.get();const auto address=text(q,0),path=text(q,1);const auto parts=parse(path);
         const auto recorded=script_text(q,2);
@@ -2535,11 +2541,19 @@ void AuthenticateHdInventory(sqlite3* db,const std::vector<uint8_t>& seed) {
         watch.Done();
         const auto [owner,inserted]=authenticated.emplace(script,path);
         if(!inserted && owner->second!=path)throw std::runtime_error("HD inventory conflicting script owner");
+        if(requested_script) {
+            if(script!=*requested_script || (requested_path && *requested_path!=parts))
+                throw std::runtime_error("HD signing script owner mismatch");
+            requested_path=parts;
+        }
     }
     IssuanceCheck(db,rc,SQLITE_DONE);
     // Reverse-check explicit HD watch claims so deleting their path/address
     // companion cannot silently downgrade them to watch-only recognition.
-    IssuedStatement watched(db,"SELECT script_pubkey,path FROM watch_scripts ORDER BY script_pubkey");
+    const std::string watch_sql=std::string("SELECT script_pubkey,path FROM watch_scripts")+
+        (requested_script?" WHERE script_pubkey=?":"")+" ORDER BY script_pubkey";
+    IssuedStatement watched(db,watch_sql.c_str());
+    if(requested_script)watched.Blob(1,requested_script->data(),int(requested_script->size()));
     while((rc=sqlite3_step(watched.value.get()))==SQLITE_ROW) {
         auto* q=watched.value.get();const auto path=text(q,1);
         if(path.compare(0,4,"m/84")!=0 && path.compare(0,4,"m/86")!=0)continue;
@@ -2552,6 +2566,7 @@ void AuthenticateHdInventory(sqlite3* db,const std::vector<uint8_t>& seed) {
         if(found==authenticated.end() || found->second!=path)throw std::runtime_error("HD inventory orphan watch claim");
     }
     IssuanceCheck(db,rc,SQLITE_DONE);
+    return requested_path;
 }
 } // namespace
 
@@ -7227,188 +7242,29 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned
         }
     }
 
-    // Check cache first for performance
-    auto cache_it = private_key_cache_.find(script_pubkey);
-    if (cache_it != private_key_cache_.end()) {
-        WLOG_DEBUG("Private key found in cache for scriptPubKey: " + script_pubkey);
-        return cache_it->second;
-    }
-
-    // Get derivation path from database (by scriptPubKey, NOT address)
-    auto path_opt = getDerivationPath(script_pubkey);
-    if (!path_opt) {
-        // Fallback: watch_scripts stores authoritative script->path bindings used
-        // by UTXO discovery, even when addresses/address_derivation_paths were
-        // lost or compacted in older wallets.
-        std::vector<unsigned char> script_bytes;
-        if (util::unhex(script_pubkey, script_bytes) && !script_bytes.empty()) {
-            sqlite3_stmt* watch_stmt = nullptr;
-            const char* watch_sql = "SELECT path FROM watch_scripts WHERE script_pubkey = ? LIMIT 1";
-            if (sqlite3_prepare_v2(db_, watch_sql, -1, &watch_stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_blob(
-                    watch_stmt,
-                    1,
-                    script_bytes.data(),
-                    static_cast<int>(script_bytes.size()),
-                    SQLITE_TRANSIENT);
-                if (sqlite3_step(watch_stmt) == SQLITE_ROW) {
-                    const char* watch_path = reinterpret_cast<const char*>(sqlite3_column_text(watch_stmt, 0));
-                    if (watch_path && watch_path[0] != '\0') {
-                        path_opt = std::string(watch_path);
-                        WLOG_INFO("Recovered derivation path from watch_scripts: " + *path_opt +
-                                  " for scriptPubKey: " + script_pubkey);
-                    }
-                }
-                sqlite3_finalize(watch_stmt);
-            }
-        }
-    }
-
-    if (!path_opt) {
-        // Fallback: look up the address registry (addresses table) by scriptPubKey.
-        // Old wallets may have addresses registered here but not in address_derivation_paths.
-        {
-            sqlite3_stmt* addr_stmt = nullptr;
-            const char* addr_sql = "SELECT type, account, change, idx FROM addresses WHERE script_pubkey = ? LIMIT 1";
-            if (sqlite3_prepare_v2(db_, addr_sql, -1, &addr_stmt, nullptr) == SQLITE_OK) {
-                sqlite3_bind_text(addr_stmt, 1, script_pubkey.c_str(), -1, SQLITE_STATIC);
-                if (sqlite3_step(addr_stmt) == SQLITE_ROW) {
-                    const char* type_str = reinterpret_cast<const char*>(sqlite3_column_text(addr_stmt, 0));
-                    int account = sqlite3_column_int(addr_stmt, 1);
-                    int change  = sqlite3_column_int(addr_stmt, 2);
-                    int idx     = sqlite3_column_int(addr_stmt, 3);
-                    int purpose = (type_str && std::string(type_str) == "p2tr") ? 86 : 84;
-
-                    std::string recovered_path = "m/" + std::to_string(purpose) + "'/"
-                        + std::to_string(dinero::consensus::DINERO_COIN_TYPE) + "'/"
-                        + std::to_string(account) + "'/" + std::to_string(change) + "/" + std::to_string(idx);
-                    sqlite3_finalize(addr_stmt);
-
-                    WLOG_INFO("Recovered derivation path from address registry: " + recovered_path +
-                              " for scriptPubKey: " + script_pubkey);
-
-                    // Backfill address_derivation_paths for future lookups
-                    sqlite3_stmt* ins_stmt = nullptr;
-                    const char* ins_sql = "INSERT OR IGNORE INTO address_derivation_paths "
-                        "(address, derivation_path, script_pubkey, account, change, address_index, created_at) "
-                        "VALUES ((SELECT address FROM addresses WHERE script_pubkey = ? LIMIT 1), ?, ?, ?, ?, ?, datetime('now'))";
-                    if (sqlite3_prepare_v2(db_, ins_sql, -1, &ins_stmt, nullptr) == SQLITE_OK) {
-                        sqlite3_bind_text(ins_stmt, 1, script_pubkey.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_text(ins_stmt, 2, recovered_path.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_text(ins_stmt, 3, script_pubkey.c_str(), -1, SQLITE_STATIC);
-                        sqlite3_bind_int(ins_stmt, 4, account);
-                        sqlite3_bind_int(ins_stmt, 5, change);
-                        sqlite3_bind_int(ins_stmt, 6, idx);
-                        sqlite3_step(ins_stmt);
-                        sqlite3_finalize(ins_stmt);
-                    }
-
-                    path_opt = recovered_path;
-                }
-                if (!path_opt) sqlite3_finalize(addr_stmt);
-            }
-        }
-
-        if (!path_opt) {
-            WLOG_ERR("No derivation path or imported key found for scriptPubKey: " + script_pubkey);
-            return std::nullopt;
-        }
-    }
-
-    std::string derivation_path = *path_opt;
-    WLOG_DEBUG("Deriving private key for scriptPubKey " + script_pubkey + " with path: " + derivation_path);
-
-    // Watch-only namespaces are deliberately not BIP32 paths. Covenant
-    // descriptors use a NUMS internal key and register
-    // m/covenant/<profile>/<descriptor-id> solely for UTXO discovery. Trying
-    // to parse that label with stoul both invents ownership and aborts
-    // multi-input signing before an unrelated wallet-owned fee input can be
-    // signed.
-    if (derivation_path.rfind("m/covenant/", 0) == 0) {
-        WLOG_DEBUG(
-            "Covenant watch script has no wallet private key: " +
-            script_pubkey);
-        return std::nullopt;
-    }
-
-    // Parse derivation path (e.g., "m/84'/1448'/0'/0/0")
-    // Expected format: m/purpose'/coin_type'/account'/change/address_index
-    std::vector<uint32_t> path_components;
-    size_t pos = 2; // Skip "m/"
-
+    // HD lookup authenticates the current durable tuple in one snapshot. A
+    // plaintext cache, recognition label or inferred current-network path is
+    // never a substitute for a recorded owner. No lookup repairs wallet rows.
     try {
-        while (pos < derivation_path.length()) {
-            size_t slash_pos = derivation_path.find('/', pos);
-            std::string component = (slash_pos == std::string::npos)
-                ? derivation_path.substr(pos)
-                : derivation_path.substr(pos, slash_pos - pos);
-            if (component.empty()) {
-                return std::nullopt;
-            }
-
-            bool hardened = (component.back() == '\'');
-            if (hardened) component.pop_back();
-            if (component.empty() ||
-                !std::all_of(
-                    component.begin(),
-                    component.end(),
-                    [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
-                WLOG_ERR(
-                    "Refusing non-BIP32 watch path for private-key "
-                    "derivation: " + derivation_path);
-                return std::nullopt;
-            }
-
-            uint32_t index = std::stoul(component);
-            if (hardened) index |= 0x80000000; // Set hardened bit
-
-            path_components.push_back(index);
-
-            if (slash_pos == std::string::npos) break;
-            pos = slash_pos + 1;
-        }
-    } catch (const std::exception& e) {
-        WLOG_ERR(
-            "Invalid BIP32 derivation path " + derivation_path +
-            ": " + e.what());
-        return std::nullopt;
-    }
-
-    // Derive key using BIP32Deriver (canonical engine with secure zeroization)
-
-    // Unencrypted wallets should keep seed in memory, but recover defensively if it was cleared.
-    if (master_seed_.empty() && !wallet_locked_) {
-        auto seed_opt = loadMasterSeed("");
-        if (seed_opt.has_value()) {
-            master_seed_ = seed_opt.value();
-        }
-    }
-
-    if (master_seed_.empty()) {
-        return std::nullopt;
-    }
-
-    try {
-        dinero::BIP32Deriver deriver(master_seed_.data(), master_seed_.size());
-        for (uint32_t component : path_components) {
-            if (component & 0x80000000) {
-                deriver.deriveHardened(component & ~0x80000000);
-            } else {
-                deriver.deriveNormal(component);
-            }
-        }
-        auto privkey = deriver.getPrivateKey();
-        std::vector<uint8_t> private_key(privkey.begin(), privkey.end());
-
-        // Cache for future use
-        cachePrivateKey(script_pubkey, private_key);
-
-        WLOG_INFO("Successfully derived private key for scriptPubKey: " + script_pubkey);
-        return private_key;
-
-    } catch (const std::exception& e) {
-        WLOG_ERR("BIP32 derivation failed: " + std::string(e.what()));
-        return std::nullopt;
+        auto lease=AcquireDatabaseLease();
+        if(!db_ || !sqlite3_get_autocommit(db_) || (recovery_seeds_ && !pinned_signing))return std::nullopt;
+        if(!pinned_signing)checkUnlockTimeout();
+        if(wallet_locked_ || master_seed_.size()!=64)return std::nullopt;
+        std::vector<uint8_t> script;
+        if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+        IssuedAddressTransaction read(db_);
+        const auto path=AuthenticateHdInventory(db_,master_seed_,&script);
+        if(!path)return std::nullopt;
+        BIP32Deriver deriver(master_seed_.data(),master_seed_.size());
+        for(size_t i=0;i<3;++i)deriver.deriveHardened((*path)[i]);
+        deriver.deriveNormal((*path)[3]);deriver.deriveNormal((*path)[4]);
+        struct Scalar {std::array<uint8_t,32> value;~Scalar(){OPENSSL_cleanse(value.data(),value.size());}} scalar{deriver.getPrivateKey()};
+        struct Secret {std::vector<uint8_t> value;~Secret(){secureClearBytes(value);}} secret;
+        secret.value.assign(scalar.value.begin(),scalar.value.end());
+        read.Commit();
+        return std::move(secret.value);
+    } catch(const std::exception&) {
+        WLOG_ERR("HD signing key lookup refused");return std::nullopt;
     }
 }
 

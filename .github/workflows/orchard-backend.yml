@@ -481,6 +481,24 @@ jobs:
           if sorted(actual) != sorted(expected):
               raise SystemExit('Input provider cases did not execute exactly once')
           PYTEST
+      - name: Require and execute HD signing key ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdKeyRead' --show-only=json-v1 > orchard-wallet-hd-key-read-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          expected = ['WalletMainnetReadiness_HdKeyReadExactHistoricalAndPinnedOwner', 'WalletMainnetReadiness_HdKeyReadMissingAndChangedOwnerNoRepair', 'WalletMainnetReadiness_HdKeyReadSnapshotErrorsAndTimeout']
+          tests = json.load(open('orchard-wallet-hd-key-read-inventory.json'))['tests']
+          if sorted(t['name'] for t in tests) != sorted(expected) or any(p['name'] == 'DISABLED' and p['value'] for t in tests for p in t.get('properties', [])):
+              raise SystemExit('HD signing key tests missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdKeyRead' --verbose --no-tests=error --output-log orchard-wallet-hd-key-read-execution.log
+          python3 - <<'PYTEST'
+          import re
+          expected = ['WalletMainnetReadiness.HdKeyReadExactHistoricalAndPinnedOwner', 'WalletMainnetReadiness.HdKeyReadMissingAndChangedOwnerNoRepair', 'WalletMainnetReadiness.HdKeyReadSnapshotErrorsAndTimeout']
+          actual = re.findall(r'\[       OK \] (WalletMainnetReadiness\.HdKeyRead\w+)', open('orchard-wallet-hd-key-read-execution.log').read())
+          if sorted(actual) != sorted(expected):
+              raise SystemExit('HD signing key cases missing, duplicated or unexpected')
+          PYTEST
       - name: Require and execute HD seed, path and script inventory
         run: |
           ctest --test-dir build-orchard-root -R '^WalletMainnetReadiness_HdInventory' --show-only=json-v1 > orchard-wallet-hd-inventory-inventory.json
@@ -1129,6 +1147,8 @@ jobs:
             orchard-pq-rpc-owner-execution.log
             orchard-wallet-pq-unlock-inventory.json
             orchard-wallet-pq-unlock-execution.log
+            orchard-wallet-hd-key-read-inventory.json
+            orchard-wallet-hd-key-read-execution.log
             orchard-wallet-hd-inventory-inventory.json
             orchard-wallet-hd-inventory-execution.log
             orchard-wallet-modern-inventory-inventory.json

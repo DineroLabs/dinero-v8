@@ -2417,3 +2417,79 @@ TEST(WalletMainnetReadiness, HdInventoryIncompleteReadPreservesOwner) {
      ASSERT_NO_THROW(w.unlockWallet("password"));EXPECT_EQ(hd_rows(w),rows);
     }fs::remove_all(root);
 }
+
+namespace {
+std::string hd_read_script(dinero::WalletManager& w,int account,int change) {
+    sqlite3_stmt* raw=nullptr;
+    if(sqlite3_prepare_v2(w.getCurrentDatabase(),"SELECT script_pubkey FROM addresses WHERE account=? AND change=? ORDER BY idx LIMIT 1",-1,&raw,nullptr)!=SQLITE_OK)throw std::runtime_error("HD read fixture");
+    std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> q(raw,sqlite3_finalize);
+    sqlite3_bind_int(raw,1,account);sqlite3_bind_int(raw,2,change);
+    if(sqlite3_step(raw)!=SQLITE_ROW)throw std::runtime_error("HD read fixture row");
+    const auto* p=reinterpret_cast<const char*>(sqlite3_column_text(raw,0));
+    return std::string(p,sqlite3_column_bytes(raw,0));
+}
+void hd_expect_key(dinero::WalletManager& w,const std::string& script,uint32_t purpose,uint32_t account,uint32_t change,uint32_t index) {
+    auto seed=w.GetMasterSeed();ASSERT_TRUE(seed);
+    struct Clear {std::vector<uint8_t>& v;~Clear(){OPENSSL_cleanse(v.data(),v.size());}} clear{*seed};
+    auto expected=dinero::crypto::HDKeychain::fromSeed(*seed).derive(purpose|0x80000000).derive(1448|0x80000000)
+        .derive(account|0x80000000).derive(change).derive(index);
+    auto key=w.resolveSigningKeyForScriptPubKey(script);ASSERT_TRUE(key);
+    EXPECT_TRUE(key->secret==std::vector<uint8_t>(expected.private_key.begin(),expected.private_key.end()));
+    EXPECT_EQ(util::hex(key->script),script);
+    EXPECT_EQ(key->policy,purpose==86?dinero::SigningKeyPolicy::TaprootCanonical:dinero::SigningKeyPolicy::Untweaked);
+}
+}
+TEST(WalletMainnetReadiness, HdKeyReadExactHistoricalAndPinnedOwner) {
+    const auto root=make_temp_dir("din_hd_key_owner_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");hd_current(w);
+     hd_predecessor(w,84,1448,9,1,37,"tdin");hd_predecessor(w,86,1448,71,0,901,"rdin");
+     const auto current=hd_read_script(w,0,0),old84=hd_read_script(w,9,1),old86=hd_read_script(w,71,0);
+     const auto rows=hd_rows(w);hd_expect_key(w,current,86,0,0,0);hd_expect_key(w,old84,84,9,1,37);hd_expect_key(w,old86,86,71,0,901);
+     w.encryptWallet("password");w.unlockWallet("password");
+     dinero::WalletUnlockOwnerTestAccess::CacheLegacy(w,current); // wrong cached scalar must not become authority
+     const auto state=dinero::WalletUnlockOwnerTestAccess::State(w);
+     hd_expect_key(w,current,86,0,0,0);hd_expect_key(w,old84,84,9,1,37);hd_expect_key(w,old86,86,71,0,901);
+     {auto lease=w.AcquireDatabaseLease();auto pin=lease->CopyRecoverySeed(lease->Session());
+      auto key=lease->ResolveSigningKey(current,*pin);ASSERT_TRUE(key);EXPECT_EQ(util::hex(key->script),current);}
+     EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);EXPECT_EQ(hd_rows(w),rows);
+     w.open("owner");w.unlockWallet("password");hd_expect_key(w,old84,84,9,1,37);hd_expect_key(w,old86,86,71,0,901);EXPECT_EQ(hd_rows(w),rows);
+    }fs::remove_all(root);
+}
+TEST(WalletMainnetReadiness, HdKeyReadMissingAndChangedOwnerNoRepair) {
+    const auto root=make_temp_dir("din_hd_key_bindings_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");hd_current(w);w.encryptWallet("password");w.unlockWallet("password");
+     const auto script=hd_read_script(w,0,1);dinero::WalletUnlockOwnerTestAccess::CacheLegacy(w,script);
+     for(const char* t:{"addresses","address_derivation_paths","watch_scripts"})modern_sql(w,std::string("CREATE TEMP TABLE hd_read_saved_")+t+" AS SELECT * FROM "+t);
+     const auto state=dinero::WalletUnlockOwnerTestAccess::State(w);
+     for(const std::string& sql:std::vector<std::string>{
+        "DELETE FROM address_derivation_paths WHERE change=1",
+        "DELETE FROM addresses WHERE change=1",
+        "DELETE FROM watch_scripts WHERE is_change=1",
+        "UPDATE addresses SET output_key_id=zeroblob(20) WHERE change=1",
+        "UPDATE address_derivation_paths SET derivation_path="+hd_literal("m/86'/1448'/0'/1/7")+",address_index=7 WHERE change=1; UPDATE addresses SET idx=7 WHERE change=1; UPDATE watch_scripts SET path="+hd_literal("m/86'/1448'/0'/1/7")+" WHERE is_change=1"}) {
+        SCOPED_TRACE(sql);modern_sql(w,sql);const auto rows=hd_rows(w);
+        EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));EXPECT_EQ(hd_rows(w),rows);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);
+        for(const char* t:{"addresses","address_derivation_paths","watch_scripts"})modern_sql(w,std::string("DELETE FROM ")+t+"; INSERT INTO "+t+" SELECT * FROM hd_read_saved_"+t);
+     }
+     modern_sql(w,"DELETE FROM address_derivation_paths WHERE change=1; DELETE FROM addresses WHERE change=1; UPDATE watch_scripts SET path='watch:external' WHERE is_change=1");
+     const auto rows=hd_rows(w);EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));EXPECT_EQ(hd_rows(w),rows);
+     w.lockWallet();EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));
+    }fs::remove_all(root);
+}
+TEST(WalletMainnetReadiness, HdKeyReadSnapshotErrorsAndTimeout) {
+    const auto root=make_temp_dir("din_hd_key_read_");ScopedHomeEnv home(root/"home");
+    {dinero::WalletManager w(root/"node");w.create("owner");hd_current(w);w.encryptWallet("password");w.unlockWallet("password");
+     const auto script=hd_read_script(w,0,0);auto* db=w.getCurrentDatabase();const auto rows=hd_rows(w),state=dinero::WalletUnlockOwnerTestAccess::State(w);
+     sqlite3_set_authorizer(db,[](void*,int op,const char* name,const char*,const char*,const char*){return op==SQLITE_READ && name && std::string_view(name)=="address_derivation_paths"?SQLITE_DENY:SQLITE_OK;},nullptr);
+     EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));sqlite3_set_authorizer(db,nullptr,nullptr);
+     for(const char* match:{"FROM address_derivation_paths p","SELECT script_pubkey,path FROM watch_scripts WHERE"}) {
+        sqlite3_trace_v2(db,SQLITE_TRACE_ROW,[](unsigned,void* context,void* statement,void*){const char* sql=sqlite3_sql(static_cast<sqlite3_stmt*>(statement));if(sql && std::string_view(sql).find(static_cast<const char*>(context))!=std::string_view::npos)sqlite3_interrupt(sqlite3_db_handle(static_cast<sqlite3_stmt*>(statement)));return 0;},const_cast<char*>(match));
+        EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));sqlite3_trace_v2(db,0,nullptr,nullptr);
+     }
+     modern_sql(w,"BEGIN");EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));EXPECT_FALSE(sqlite3_get_autocommit(db));modern_sql(w,"ROLLBACK");
+     sqlite3_set_authorizer(db,[](void*,int op,const char* name,const char*,const char*,const char*){return op==SQLITE_TRANSACTION && name && std::string_view(name)=="COMMIT"?SQLITE_DENY:SQLITE_OK;},nullptr);
+     EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));sqlite3_set_authorizer(db,nullptr,nullptr);
+     EXPECT_TRUE(sqlite3_get_autocommit(db));EXPECT_EQ(hd_rows(w),rows);EXPECT_EQ(dinero::WalletUnlockOwnerTestAccess::State(w),state);hd_expect_key(w,script,86,0,0,0);
+     dinero::WalletUnlockOwnerTestAccess::Expire(w);EXPECT_FALSE(w.resolveSigningKeyForScriptPubKey(script));EXPECT_TRUE(dinero::WalletUnlockOwnerTestAccess::Cleared(w));
+    }fs::remove_all(root);
+}

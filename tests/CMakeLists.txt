@@ -13166,6 +13166,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/wallet/test_wallet_mainnet_readiness.cpp)
     PqInventoryBindingAndReopen
     PqInventoryCorruptionPreservesOwner
     PqInventoryReadAndSnapshot
+    HdKeyReadExactHistoricalAndPinnedOwner
+    HdKeyReadMissingAndChangedOwnerNoRepair
+    HdKeyReadSnapshotErrorsAndTimeout
     HdInventoryHistoricalAccountsAndReopen
     HdInventoryBindingsAndOrphansRefuse
     HdInventoryIncompleteReadPreservesOwner
