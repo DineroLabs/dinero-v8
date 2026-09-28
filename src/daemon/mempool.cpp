@@ -795,10 +795,10 @@ TxAcceptResult Mempool::submitTransactionInternal(
     }
 
     // Calculate descendants (transactions that spend from unconfirmed txs)
-    // Note: We check if adding this transaction would cause any existing transaction
-    // to exceed descendant limits
-    for (const auto& input : tx.vin) {
-        TxId parent_txid = input.prevout.txid;
+    // Every surviving ancestor gains this descendant, including ancestors
+    // beyond direct inputs. Reuse the complete traversal already checked above.
+    for (const auto& ancestor_txid : visited_ancestors) {
+        const TxId parent_txid(ancestor_txid);
 
         auto parent_it = m_transactions.find(parent_txid.AsUint256());
         if (parent_it == m_transactions.end() || replaced_txids.count(parent_txid.AsUint256())) continue;
