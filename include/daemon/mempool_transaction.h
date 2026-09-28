@@ -1,5 +1,6 @@
 #pragma once
 #include "consensus/outpoint.h"
+#include "consensus/utxo_entry.h"
 #include "primitives/transaction.h"
 #include <memory>
 #include <optional>
@@ -24,6 +25,8 @@ private:
         virtual size_t GetBaseSize() const = 0;
         virtual size_t GetWeight() const = 0;
         virtual const std::vector<OutPoint>& Inputs() const noexcept = 0;
+        virtual size_t OutputCount() const noexcept = 0;
+        virtual consensus::UTXOEntry OutputCoin(size_t, uint32_t) const = 0;
         virtual std::optional<uint64_t> ExplicitFee() const = 0;
     };
     struct HistoricalBody final : Body {
@@ -39,6 +42,12 @@ private:
         size_t GetBaseSize() const override { return transaction.GetBaseSize(); }
         size_t GetWeight() const override { return transaction.GetWeight(); }
         const std::vector<OutPoint>& Inputs() const noexcept override { return inputs; }
+        size_t OutputCount() const noexcept override { return transaction.vout.size(); }
+        consensus::UTXOEntry OutputCoin(size_t index, uint32_t height) const override {
+            const auto& output = transaction.vout.at(index);
+            return {output.value, output.scriptPubKey, height, false,
+                    output.is_confidential, output.commitment};
+        }
         std::optional<uint64_t> ExplicitFee() const override {
             return transaction.HasExplicitFee() ? std::optional<uint64_t>(transaction.GetExplicitFee()) : std::nullopt;
         }
@@ -80,6 +89,12 @@ public:
     size_t GetWeight() const { return Checked().GetWeight(); }
     size_t GetVirtualSize() const { return (GetWeight() + 3) / 4; }
     const std::vector<OutPoint>& Inputs() const { return Checked().Inputs(); }
+    size_t OutputCount() const { return Checked().OutputCount(); }
+    // Structural output metadata for the existing pool overlay. The caller
+    // supplies the entry height; this is not proof of admission or provenance.
+    consensus::UTXOEntry OutputCoin(size_t index, uint32_t height) const {
+        return Checked().OutputCoin(index, height);
+    }
     std::optional<uint64_t> ExplicitFee() const { return Checked().ExplicitFee(); }
 };
 } // namespace dinero

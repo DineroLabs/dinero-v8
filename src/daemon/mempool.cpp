@@ -288,17 +288,11 @@ public:
         }
 
         auto it = mempool_entries_->find(txid);
-        if (it == mempool_entries_->end() || vout >= it->second.tx.Historical().vout.size()) {
+        if (it == mempool_entries_->end() || vout >= it->second.tx.OutputCount()) {
             return false;
         }
 
-        const auto& txout = it->second.tx.Historical().vout[vout];
-        out.value = txout.value;
-        out.scriptPubKey = txout.scriptPubKey;
-        out.height = it->second.height;
-        out.isCoinbase = false;
-        out.is_confidential = txout.is_confidential;
-        out.commitment = txout.commitment;
+        out = it->second.tx.OutputCoin(vout, it->second.height);
         return true;
     }
 
@@ -2436,7 +2430,7 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         const OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         const auto parent = m_transactions.find(input.prevout.txid.AsUint256());
         if (parent != m_transactions.end() &&
-            input.prevout.vout < parent->second.tx.Historical().vout.size()) {
+            input.prevout.vout < parent->second.tx.OutputCount()) {
             continue;  // Unconfirmed transaction outputs are not coinbase.
         }
 
@@ -2657,8 +2651,8 @@ std::vector<uint256> GatherRemovalBranch(
     const std::vector<uint256>& roots) {
     std::unordered_map<uint256, std::vector<uint256>> children;
     for (const auto& [txid, entry] : entries) {
-        for (const auto& input : entry.tx.Historical().vin) {
-            const auto& parent = input.prevout.txid.AsUint256();
+        for (const auto& input : entry.tx.Inputs()) {
+            const auto& parent = input.txid.AsUint256();
             if (entries.count(parent)) children[parent].push_back(txid);
         }
     }
@@ -2868,23 +2862,15 @@ void Mempool::rebuildCoinsViewLocked() {
     coins_view_.clear();
 
     for (const auto& [txid, entry] : m_transactions) {
-        for (size_t vout = 0; vout < entry.tx.Historical().vout.size(); ++vout) {
+        for (size_t vout = 0; vout < entry.tx.OutputCount(); ++vout) {
             OutPoint out{TxId(txid), static_cast<uint32_t>(vout)};
-            consensus::UTXOEntry utxo_entry;
-            utxo_entry.value = entry.tx.Historical().vout[vout].value;
-            utxo_entry.scriptPubKey = entry.tx.Historical().vout[vout].scriptPubKey;
-            utxo_entry.height = entry.height;
-            utxo_entry.isCoinbase = false;
-            utxo_entry.is_confidential = entry.tx.Historical().vout[vout].is_confidential;
-            utxo_entry.commitment = entry.tx.Historical().vout[vout].commitment;
-            coins_view_.addCoin(out, utxo_entry);
+            coins_view_.addCoin(out, entry.tx.OutputCoin(vout, entry.height));
         }
     }
 
     for (const auto& [txid, entry] : m_transactions) {
-        for (const auto& input : entry.tx.Historical().vin) {
-            OutPoint out{input.prevout.txid, input.prevout.vout};
-            coins_view_.spendCoin(out);
+        for (const auto& input : entry.tx.Inputs()) {
+            coins_view_.spendCoin(input);
         }
     }
 }
@@ -3731,16 +3717,8 @@ std::optional<consensus::UTXOEntry> Mempool::recoverConflictedInputUTXO(const Ou
     }
 
     auto parent_it = m_transactions.find(outpoint.txid.AsUint256());
-    if (parent_it != m_transactions.end() && outpoint.vout < parent_it->second.tx.Historical().vout.size()) {
-        const auto& output = parent_it->second.tx.Historical().vout[outpoint.vout];
-        consensus::UTXOEntry recovered;
-        recovered.value = output.value;
-        recovered.scriptPubKey = output.scriptPubKey;
-        recovered.height = parent_it->second.height;
-        recovered.isCoinbase = false;
-        recovered.is_confidential = output.is_confidential;
-        recovered.commitment = output.commitment;
-        return recovered;
+    if (parent_it != m_transactions.end() && outpoint.vout < parent_it->second.tx.OutputCount()) {
+        return parent_it->second.tx.OutputCoin(outpoint.vout, parent_it->second.height);
     }
 
     if (!chain_state_view_) {

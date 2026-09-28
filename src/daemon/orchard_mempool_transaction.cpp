@@ -25,6 +25,11 @@ struct MempoolTransaction::OrchardBody final : MempoolTransaction::Body {
     size_t GetBaseSize() const override { return transaction.TxidPreimage().size(); }
     size_t GetWeight() const override { return 3 * GetBaseSize() + GetSize(); }
     const std::vector<OutPoint>& Inputs() const noexcept override { return inputs; }
+    size_t OutputCount() const noexcept override { return transaction.Outputs().size(); }
+    consensus::UTXOEntry OutputCoin(size_t index, uint32_t height) const override {
+        const auto& output = transaction.Outputs().at(index);
+        return {AmountUna::Una(output.amount_una), output.script_pub_key, height, false};
+    }
     std::optional<uint64_t> ExplicitFee() const override { return transaction.ExplicitFee(); }
     const orchard::TransactionEnvelope transaction;
     std::vector<OutPoint> inputs;
