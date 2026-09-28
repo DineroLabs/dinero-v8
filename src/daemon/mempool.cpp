@@ -2543,6 +2543,35 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
     return true;
 }
 
+namespace {
+// Caller owns the pool lock. Capture the complete branch before any removal
+// changes dependency metadata; recorded inputs also cover restored entries.
+std::vector<uint256> GatherRemovalBranch(
+    const std::unordered_map<uint256, MempoolEntry>& entries,
+    const std::vector<uint256>& roots) {
+    std::unordered_map<uint256, std::vector<uint256>> children;
+    for (const auto& [txid, entry] : entries) {
+        for (const auto& input : entry.tx.vin) {
+            const auto& parent = input.prevout.txid.AsUint256();
+            if (entries.count(parent)) children[parent].push_back(txid);
+        }
+    }
+    std::unordered_set<uint256> visited;
+    std::vector<uint256> branch;
+    for (const auto& root : roots) {
+        if (entries.count(root) && visited.insert(root).second) branch.push_back(root);
+    }
+    for (size_t i = 0; i < branch.size(); ++i) {
+        const auto found = children.find(branch[i]);
+        if (found == children.end()) continue;
+        for (const auto& child : found->second) {
+            if (visited.insert(child).second) branch.push_back(child);
+        }
+    }
+    return branch;
+}
+} // namespace
+
 void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_txids) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
 
@@ -2563,7 +2592,7 @@ void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_
             fee_estimator_->recordTxConfirmation(txid, confirmation_height);
         }
 
-        if (removeTransaction(txid)) {
+        if (removeTransactionLocked(txid)) {
             removed_count++;
         }
     }
@@ -2572,52 +2601,9 @@ void Mempool::removeConfirmedTransactions(const std::vector<uint256>& confirmed_
         MPLOG_INFO("Removed " + std::to_string(removed_count) +
                      " confirmed transactions from mempool");
 
-        // v0.11.0: Clear and rebuild UTXO overlay after block acceptance
-        // ChainDB has been updated with the new block, so mempool view must be rebuilt
-        coins_view_.clear();
-
-        // Rebuild overlay from remaining mempool transactions
-        uint32_t current_height = 0;
-        if (chain_db_) {
-            auto tip_result = chain_db_->getTip();
-            if (tip_result.status() == Status::Ok) {
-                current_height = static_cast<uint32_t>(tip_result.value().height);
-            }
-        }
-
-        for (const auto& [txid, entry] : m_transactions) {
-            // Spend inputs
-            for (const auto& input : entry.tx.vin) {
-                // Phase M.0: Wallet boundary - convert string txid to uint256
-                OutPoint out{input.prevout.txid, input.prevout.vout};
-                coins_view_.spendCoin(out);
-            }
-
-            // Add outputs
-            for (size_t vout = 0; vout < entry.tx.vout.size(); ++vout) {
-                OutPoint out{TxId(txid), static_cast<uint32_t>(vout)};
-                Coin coin;
-                coin.amount = entry.tx.vout[vout].value.GetUna();
-                coin.script_pubkey = std::string(entry.tx.vout[vout].scriptPubKey.begin(),
-                                                 entry.tx.vout[vout].scriptPubKey.end());
-                coin.height = static_cast<int>(current_height);
-                coin.coinbase = false;
-
-                // Convert Coin to UTXOEntry for CoinsViewMemPool
-                consensus::UTXOEntry utxo_entry;
-                utxo_entry.value = AmountUna::Una(coin.amount);
-                utxo_entry.scriptPubKey.assign(coin.script_pubkey.begin(), coin.script_pubkey.end());
-                utxo_entry.height = static_cast<uint32_t>(coin.height);
-                utxo_entry.isCoinbase = coin.coinbase;
-                utxo_entry.is_confidential = entry.tx.vout[vout].is_confidential;
-                utxo_entry.commitment = entry.tx.vout[vout].commitment;
-                coins_view_.addCoin(out, utxo_entry);
-            }
-        }
-
-        MPLOG_DEBUG("Rebuilt mempool UTXO overlay with " +
-                     std::to_string(coins_view_.spentCount()) + " spent + " +
-                     std::to_string(coins_view_.createdCount()) + " created outputs");
+        // Publish the surviving overlay once under the existing owner lock.
+        // Outputs are installed before spends by the shared rebuild helper.
+        rebuildCoinsViewLocked();
     }
 }
 
@@ -2636,25 +2622,27 @@ void Mempool::removeExpiredTransactions() {
         expired_txids.push_back(it->second);
     }
     
-    // Remove expired transactions
-    for (const auto& txid : expired_txids) {
-        removeTransaction(txid);
+    // An expired unconfirmed parent cannot leave spenders without an input.
+    const auto branch = GatherRemovalBranch(m_transactions, expired_txids);
+    for (auto it = branch.rbegin(); it != branch.rend(); ++it) {
+        removeTransactionLocked(*it);
     }
 
-    if (!expired_txids.empty()) {
-        MPLOG_INFO("Removed " + std::to_string(expired_txids.size()) +
-                     " expired transactions from mempool");
+    if (!branch.empty()) {
+        rebuildCoinsViewLocked();
+        MPLOG_INFO("Removed " + std::to_string(branch.size()) +
+                     " expired transactions and descendants from mempool");
     }
 }
 
 void Mempool::limitMempoolSize() {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     
-    if (getTotalSize() <= m_max_size) {
+    if (getTotalSizeLocked() <= m_max_size) {
         return;
     }
     
-    evictTransactions();
+    evictTransactionsLocked();
 }
 
 void Mempool::clear() {
@@ -2665,6 +2653,7 @@ void Mempool::clear() {
     m_spent_outputs.clear();
     m_fee_index.clear();
     m_time_index.clear();
+    m_children_index.clear();
     m_template_exclusions.clear();
     coins_view_.clear();  // v0.11.0: Clear mempool UTXO overlay
 
@@ -2780,6 +2769,8 @@ void Mempool::rebuildCoinsViewLocked() {
             utxo_entry.scriptPubKey = entry.tx.vout[vout].scriptPubKey;
             utxo_entry.height = entry.height;
             utxo_entry.isCoinbase = false;
+            utxo_entry.is_confidential = entry.tx.vout[vout].is_confidential;
+            utxo_entry.commitment = entry.tx.vout[vout].commitment;
             coins_view_.addCoin(out, utxo_entry);
         }
     }
@@ -3699,7 +3690,10 @@ void Mempool::evictTransactionsLocked() {
         uint256 txid_to_remove = lowest_fee_it->second;
 
         MPLOG_DEBUG("Evicting low-fee transaction: " + txid_to_remove.GetHex());
-        removed_any = removeTransactionLocked(txid_to_remove) || removed_any;
+        const auto branch = GatherRemovalBranch(m_transactions, {txid_to_remove});
+        for (auto it = branch.rbegin(); it != branch.rend(); ++it) {
+            removed_any = removeTransactionLocked(*it) || removed_any;
+        }
     }
     if (removed_any) {
         rebuildCoinsViewLocked();
