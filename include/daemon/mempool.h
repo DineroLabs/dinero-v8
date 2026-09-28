@@ -301,6 +301,29 @@ public:
     size_t onBlockConnected(const Block& block, uint32_t height,
                             const std::vector<uint8_t>& new_root = {});
 
+    // Caller holds selected chain ownership before preparing. This thread-affine
+    // object retains the pool lock until publish or destruction. Do not call
+    // other pool APIs while holding it; the Mempool must outlive the object.
+    // Preparation may allocate/refuse. Abandon leaves the live pool unchanged;
+    // publication after canonical commit performs only nonthrowing state swaps.
+    class PreparedBlockUpdate final {
+    public:
+        ~PreparedBlockUpdate();
+        PreparedBlockUpdate(const PreparedBlockUpdate&) = delete;
+        PreparedBlockUpdate& operator=(const PreparedBlockUpdate&) = delete;
+        size_t EvictedCount() const noexcept;
+        void PublishAfterCommit() noexcept;
+    private:
+        friend class Mempool;
+        struct Impl;
+        explicit PreparedBlockUpdate(std::unique_ptr<Impl>);
+        std::unique_ptr<Impl> impl_;
+    };
+    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockConnected(
+        const ConnectedBlockEffects&, uint32_t height,
+        const std::vector<uint8_t>& new_root = {});
+    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockDisconnected(uint32_t height);
+
     // Caller must derive these effects from the exact validated block body.
     // This reconciles the legacy transparent pool only; Orchard nullifier
     // conflicts need the separate Orchard admission pool before activation.
@@ -517,6 +540,10 @@ public:
     }
 
 private:
+    // Construct only while holding m_mutex; restores local pool state on failure.
+    struct StateRollback;
+    size_t applyBlockConnectedLocked(const ConnectedBlockEffects&, uint32_t, const std::vector<uint8_t>&);
+    void applyBlockDisconnectedLocked(uint32_t);
     // ========================================================================
     // LEGACY ADAPTER (Step 3 - Phase G.3)
     // ========================================================================

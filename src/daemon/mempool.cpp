@@ -35,6 +35,7 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -561,6 +562,52 @@ void Mempool::addUnchecked(const Transaction& tx) {
     rebuildCoinsViewLocked();
 }
 
+struct Mempool::StateRollback {
+    Mempool& pool;
+    decltype(m_transactions) transactions;
+    decltype(m_spent_outputs) spent;
+    decltype(m_fee_index) fees;
+    decltype(m_time_index) times;
+    decltype(m_children_index) children;
+    decltype(m_template_exclusions) exclusions;
+    CoinsViewMemPool overlay;
+    std::vector<uint8_t> accumulator_root;
+    uint32_t block_height;
+    size_t added_count, removed_count;
+    bool committed = false;
+    explicit StateRollback(Mempool& owner)
+        : pool(owner), transactions(owner.m_transactions), spent(owner.m_spent_outputs),
+          fees(owner.m_fee_index), times(owner.m_time_index), children(owner.m_children_index),
+          exclusions(owner.m_template_exclusions), overlay(owner.coins_view_),
+          accumulator_root(owner.current_accumulator_root_), block_height(owner.current_block_height_),
+          added_count(owner.m_total_tx_added.load()), removed_count(owner.m_total_tx_removed.load()) {}
+    StateRollback(const StateRollback&) = delete;
+    StateRollback& operator=(const StateRollback&) = delete;
+    void Swap() noexcept {
+        static_assert(std::is_nothrow_swappable_v<decltype(transactions)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(spent)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(fees)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(times)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(children)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(exclusions)>);
+        static_assert(std::is_nothrow_swappable_v<CoinsViewMemPool>);
+        static_assert(std::is_nothrow_swappable_v<decltype(accumulator_root)>);
+        transactions.swap(pool.m_transactions);
+        spent.swap(pool.m_spent_outputs);
+        fees.swap(pool.m_fee_index);
+        times.swap(pool.m_time_index);
+        children.swap(pool.m_children_index);
+        exclusions.swap(pool.m_template_exclusions);
+        accumulator_root.swap(pool.current_accumulator_root_);
+        std::swap(pool.current_block_height_, block_height);
+        using std::swap;
+        swap(overlay, pool.coins_view_);
+        added_count = pool.m_total_tx_added.exchange(added_count);
+        removed_count = pool.m_total_tx_removed.exchange(removed_count);
+    }
+    ~StateRollback() noexcept { if (!committed) Swap(); }
+};
+
 TxAcceptResult Mempool::submitTransactionInternal(
     const Transaction& tx,
     const std::string& source,
@@ -901,43 +948,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     // All copies finish before the first mutation. Readers remain excluded by
     // m_mutex until either publication completes or noexcept swaps restore the
     // complete prior pool. This temporary full-state copy is not a load bound.
-    struct AdmissionRollback {
-        Mempool& pool;
-        decltype(m_transactions) transactions;
-        decltype(m_spent_outputs) spent;
-        decltype(m_fee_index) fees;
-        decltype(m_time_index) times;
-        decltype(m_children_index) children;
-        decltype(m_template_exclusions) exclusions;
-        CoinsViewMemPool overlay;
-        size_t added_count, removed_count;
-        bool committed = false;
-        explicit AdmissionRollback(Mempool& owner)
-            : pool(owner), transactions(owner.m_transactions), spent(owner.m_spent_outputs),
-              fees(owner.m_fee_index), times(owner.m_time_index), children(owner.m_children_index),
-              exclusions(owner.m_template_exclusions), overlay(owner.coins_view_),
-              added_count(owner.m_total_tx_added.load()), removed_count(owner.m_total_tx_removed.load()) {}
-        ~AdmissionRollback() noexcept {
-            static_assert(std::is_nothrow_swappable_v<decltype(transactions)>);
-            static_assert(std::is_nothrow_swappable_v<decltype(spent)>);
-            static_assert(std::is_nothrow_swappable_v<decltype(fees)>);
-            static_assert(std::is_nothrow_swappable_v<decltype(times)>);
-            static_assert(std::is_nothrow_swappable_v<decltype(children)>);
-            static_assert(std::is_nothrow_swappable_v<decltype(exclusions)>);
-            static_assert(std::is_nothrow_swappable_v<CoinsViewMemPool>);
-            if (committed) return;
-            transactions.swap(pool.m_transactions);
-            spent.swap(pool.m_spent_outputs);
-            fees.swap(pool.m_fee_index);
-            times.swap(pool.m_time_index);
-            children.swap(pool.m_children_index);
-            exclusions.swap(pool.m_template_exclusions);
-            using std::swap;
-            swap(overlay, pool.coins_view_);
-            pool.m_total_tx_added.store(added_count);
-            pool.m_total_tx_removed.store(removed_count);
-        }
-    } admission_rollback(*this);
+    StateRollback admission_rollback(*this);
     for (const auto& conflict_txid : replaced_txids) removeTransactionLocked(conflict_txid);
     if (!replaced_txids.empty()) rebuildCoinsViewLocked();
 
@@ -2825,6 +2836,62 @@ void Mempool::rebuildCoinsViewLocked() {
     }
 }
 
+
+struct Mempool::PreparedBlockUpdate::Impl {
+    const std::thread::id thread = std::this_thread::get_id();
+    std::unique_lock<std::shared_mutex> lock;
+    std::unique_ptr<StateRollback> staged;
+    const size_t evicted;
+    bool published = false;
+    Impl(std::unique_lock<std::shared_mutex> held, std::unique_ptr<StateRollback> state,
+         size_t count) : lock(std::move(held)), staged(std::move(state)), evicted(count) {}
+    ~Impl() noexcept {
+        if (thread != std::this_thread::get_id()) std::terminate();
+    }
+};
+Mempool::PreparedBlockUpdate::PreparedBlockUpdate(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+Mempool::PreparedBlockUpdate::~PreparedBlockUpdate() = default;
+size_t Mempool::PreparedBlockUpdate::EvictedCount() const noexcept { return impl_->evicted; }
+void Mempool::PreparedBlockUpdate::PublishAfterCommit() noexcept {
+    if (impl_->thread != std::this_thread::get_id() || impl_->published) std::terminate();
+    impl_->staged->Swap();
+    impl_->published = true;
+    impl_->lock.unlock();
+}
+std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockConnected(
+    const ConnectedBlockEffects& effects, uint32_t height, const std::vector<uint8_t>& new_root) {
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    auto staged = std::make_unique<StateRollback>(*this);
+    const auto evicted = applyBlockConnectedLocked(effects, height, new_root);
+    // Restore live state and retain the complete prepared state. Its destructor
+    // now discards that state if the caller abandons the canonical transition.
+    staged->Swap();
+    staged->committed = true;
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), evicted);
+    return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
+}
+std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockDisconnected(uint32_t height) {
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    auto staged = std::make_unique<StateRollback>(*this);
+    applyBlockDisconnectedLocked(height);
+    staged->Swap();
+    staged->committed = true;
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), 0);
+    return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
+}
+size_t Mempool::onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
+                               const std::vector<uint8_t>& new_root) {
+    auto prepared = prepareBlockConnected(effects, height, new_root);
+    const auto evicted = prepared->EvictedCount();
+    prepared->PublishAfterCommit();
+    return evicted;
+}
+void Mempool::onBlockDisconnected(uint32_t height) {
+    auto prepared = prepareBlockDisconnected(height);
+    prepared->PublishAfterCommit();
+}
+
 size_t Mempool::onBlockConnected(const Block& block, uint32_t height,
                                   const std::vector<uint8_t>& new_root) {
     ConnectedBlockEffects effects;
@@ -2837,9 +2904,8 @@ size_t Mempool::onBlockConnected(const Block& block, uint32_t height,
     return onBlockConnected(effects, height, new_root);
 }
 
-size_t Mempool::onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
-                                  const std::vector<uint8_t>& new_root) {
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
+size_t Mempool::applyBlockConnectedLocked(const ConnectedBlockEffects& effects, uint32_t height,
+                                         const std::vector<uint8_t>& new_root) {
 
     std::unordered_set<OutPoint> block_spends(
         effects.spent_transparent_inputs.begin(), effects.spent_transparent_inputs.end());
@@ -2928,8 +2994,7 @@ void Mempool::onBlockDisconnected(const Block&, uint32_t height) {
     onBlockDisconnected(height);
 }
 
-void Mempool::onBlockDisconnected(uint32_t height) {
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
+void Mempool::applyBlockDisconnectedLocked(uint32_t height) {
 
     // All mempool TXs become stale — the accumulator root changed backward
     for (auto& [txid, entry] : m_transactions) {
