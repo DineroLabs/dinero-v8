@@ -7140,6 +7140,10 @@ endif()
 add_test(NAME MiningPackageSelection COMMAND test_mining_package_selection)
 set_tests_properties(MiningPackageSelection PROPERTIES
   LABELS "mempool;mining;package" TIMEOUT 60)
+add_test(NAME MiningTopologicalSelection COMMAND test_mining_package_selection
+  --gtest_filter=MiningTopologicalSelection.*)
+set_tests_properties(MiningTopologicalSelection PROPERTIES
+  LABELS "mempool;mining;package;mandatory" TIMEOUT 60)
 
 add_executable(test_mining_job_policy
   tests/mempool/test_mining_job_policy.cpp

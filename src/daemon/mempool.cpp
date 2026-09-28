@@ -31,6 +31,8 @@
 #include <algorithm>
 #include <chrono>
 #include <numeric>
+#include <map>
+#include <set>
 #include <iostream>
 #include <fstream>
 #include <limits>
@@ -2282,6 +2284,56 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
             ++excluded_descendants;
             continue;
         }
+
+        // Discovery order is not dependency order for chains or diamonds.
+        // Build one deterministic parent-before-child order for the whole
+        // package before it can contribute transactions or resource counts.
+        std::map<uint256, size_t> pending_parents;
+        std::map<uint256, std::vector<uint256>> children;
+        pending_parents.emplace(score.txid, 0);
+        for (const auto& ancestor : score.ancestors)
+            pending_parents.emplace(ancestor, 0);
+        bool complete_package = true;
+        for (auto& [id, count] : pending_parents) {
+            const auto found = m_transactions.find(id);
+            if (found == m_transactions.end() || found->second.tx.GetTxid().AsUint256() != id) {
+                complete_package = false;
+                break;
+            }
+            std::set<uint256> parents;
+            for (const auto& input : found->second.tx.Inputs()) {
+                const auto& parent = input.txid.AsUint256();
+                if (m_transactions.count(parent)) {
+                    if (!pending_parents.count(parent)) {
+                        complete_package = false;
+                        break;
+                    }
+                    parents.insert(parent); // Multiple inputs may share one parent.
+                }
+            }
+            if (!complete_package) break;
+            count = parents.size();
+            for (const auto& parent : parents) children[parent].push_back(id);
+        }
+        if (!complete_package) continue;
+        std::set<uint256> ready;
+        for (const auto& [id, count] : pending_parents)
+            if (count == 0) ready.insert(id);
+        std::vector<uint256> ordered;
+        ordered.reserve(pending_parents.size());
+        while (!ready.empty()) {
+            const auto id = *ready.begin();
+            ready.erase(ready.begin());
+            ordered.push_back(id);
+            const auto next = children.find(id);
+            if (next == children.end()) continue;
+            for (const auto& child : next->second)
+                if (--pending_parents.at(child) == 0) ready.insert(child);
+        }
+        if (ordered.size() != pending_parents.size() || ordered.back() != score.txid)
+            continue; // Incomplete/cyclic packages never publish a prefix.
+        ordered.pop_back();
+        score.ancestors = std::move(ordered);
 
         // Phase 8 Commit 2: switch selection feerate denominator from BIP141
         // effective_vsize to VWU. VWU is the economic truth — it weights

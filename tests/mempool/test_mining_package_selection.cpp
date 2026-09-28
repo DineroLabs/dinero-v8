@@ -109,4 +109,5 @@ TEST_F(MiningPackageSelection, RejectedParentCannotLeaveSelectedChild) {
         EXPECT_EQ(assembler.getBlockTemplateStats().total_fees,60000U);
     }
 }
+#include "mining_topological_selection_checks.h"
 }
