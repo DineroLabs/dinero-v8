@@ -628,8 +628,9 @@ void WalletWorker::ProcessReorg(const ReorgDiff& diff, std::optional<uint64_t> s
 
             // Phase 36: Remove transaction history for this block
             if (wallet_manager_) {
-                wallet_manager_->removeTransactionsAtHeight(block.height);
-                std::cerr << "[WalletWorker] Phase 36: Removed transactions at height " << block.height << std::endl;
+                if (!wallet_manager_->removeTransactionsAtHeight(block.height))
+                    throw std::runtime_error("Wallet history rewind has no active owner");
+                std::cerr << "[WalletWorker] Rewound confirmation history at height " << block.height << std::endl;
             }
         }
 

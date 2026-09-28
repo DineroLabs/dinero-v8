@@ -1916,7 +1916,8 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
         for (const auto& utxo : utxos) {
             din::Json utxo_obj;
             const bool solvable = mgr.hasSigningMaterialForScriptPubKey(utxo.script_pubkey);
-            const bool spendable = utxo.spendable && solvable;
+            const bool locked = mgr.isUTXOLocked(utxo.txid, utxo.vout);
+            const bool spendable = utxo.spendable && solvable && !locked;
 
             // Phase 35: Enhanced UTXO metadata
             utxo_obj["txid"] = utxo.txid;
@@ -1931,7 +1932,7 @@ din::Json rpc_context_wallet_listunspent(const ExecutionContext& ctx, const din:
             utxo_obj["safe"] = (utxo.confirmations > 0) && solvable;  // Confirmed + signable = safe
             utxo_obj["is_coinbase"] = utxo.is_coinbase;
             utxo_obj["is_mature"] = utxo.is_mature;
-            utxo_obj["locked"] = mgr.isUTXOLocked(utxo.txid, utxo.vout);  // Phase 35.3: Check lock status
+            utxo_obj["locked"] = locked;
 
             // Parse witness version from scriptPubKey
             uint8_t witness_version = 0xFF;  // Default: legacy (non-witness)

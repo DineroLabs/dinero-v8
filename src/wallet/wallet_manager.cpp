@@ -6037,45 +6037,34 @@ bool WalletManager::confirmTransaction(const std::string& txid, uint32_t height,
     return false;
 }
 
-// Phase 36: Remove transactions from orphaned blocks during reorg
+namespace {
+// Caller owns the surrounding checked transaction. Chain rollback changes
+// confirmation metadata; an existing outgoing intent remains local history.
+void UnconfirmOutgoingHistoryAtHeight(sqlite3* db, int wallet_id, uint32_t height, bool scoped) {
+    if (sqlite3_get_autocommit(db)) throw std::logic_error("History rewind requires its transaction owner");
+    IssuedStatement statement(db, scoped
+        ? "UPDATE transactions SET height=0,confirmations=0 WHERE wallet_id=? AND height=? AND category='send' AND amount<0"
+        : "UPDATE transactions SET height=0,confirmations=0 WHERE height=? AND category='send' AND amount<0");
+    int parameter=1;
+    if(scoped) statement.Int(parameter++,wallet_id);
+    statement.Int(parameter,height);statement.Done();
+}
+}
+
 bool WalletManager::removeTransactionsAtHeight(uint32_t height) {
-    if (!db_ || current_wallet_id_ == -1) {
-        return false;
-    }
-
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql_with_wallet_id = "DELETE FROM transactions WHERE wallet_id = ? AND height = ?";
-    const char* sql_without_wallet_id = "DELETE FROM transactions WHERE height = ?";
-
-    const bool has_wallet_id = columnExists(db_, "transactions", "wallet_id");
-    const bool prepared = has_wallet_id
-        ? SqlLog::prepare(&stmt, db_, sql_with_wallet_id, "remove-transactions-at-height(with-wallet-id)")
-        : SqlLog::prepare(&stmt, db_, sql_without_wallet_id, "remove-transactions-at-height(no-wallet-id)");
-    if (!prepared) {
-        return false;
-    }
-    if (!has_wallet_id) {
-        WLOG_WARN("removeTransactionsAtHeight: using legacy transactions schema without wallet_id");
-    }
-
-    int bind_index = 1;
-    if (has_wallet_id) {
-        sqlite3_bind_int(stmt, bind_index++, current_wallet_id_);
-    }
-    sqlite3_bind_int(stmt, bind_index++, static_cast<int>(height));
-
-    int result = sqlite3_step(stmt);
-    int changes = sqlite3_changes(db_);
-    sqlite3_finalize(stmt);
-
-    if (result == SQLITE_DONE) {
-        WLOG_INFO("Removed " + std::to_string(changes) + " transactions at height " + std::to_string(height));
-        return true;
-    } else {
-        WLOG_ERR("Failed to remove transactions at height " + std::to_string(height) + ": " +
-                std::string(sqlite3_errmsg(db_)));
-        return false;
-    }
+    const auto lease=AcquireDatabaseLease();
+    if(!db_ || current_wallet_id_==-1) return false;
+    if(height==0 || height>static_cast<uint32_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("Wallet history rewind height is out of range");
+    IssuedAddressTransaction transaction(db_);
+    const bool scoped=IssuanceWalletColumn(db_,"transactions");
+    UnconfirmOutgoingHistoryAtHeight(db_,current_wallet_id_,height,scoped);
+    IssuedStatement statement(db_,scoped
+        ? "DELETE FROM transactions WHERE wallet_id=? AND height=?"
+        : "DELETE FROM transactions WHERE height=?");
+    int parameter=1;if(scoped)statement.Int(parameter++,current_wallet_id_);
+    statement.Int(parameter,height);statement.Done();transaction.Commit();
+    return true;
 }
 
 // Analyze a raw transaction to determine its impact on wallet addresses
@@ -8753,7 +8742,8 @@ void WalletManager::onBlockDisconnected(const Block& block, uint32_t height) {
         {
             // Keep the historical per-wallet schema compatibility of the old
             // history-removal path, but check every statement and binding.
-            const bool scoped = columnExists(db_, "transactions", "wallet_id");
+            const bool scoped = IssuanceWalletColumn(db_, "transactions");
+            UnconfirmOutgoingHistoryAtHeight(db_,current_wallet_id_,height,scoped);
             auto stmt = prepare(scoped
                 ? "DELETE FROM transactions WHERE wallet_id = ? AND height = ?"
                 : "DELETE FROM transactions WHERE height = ?", "history prepare");

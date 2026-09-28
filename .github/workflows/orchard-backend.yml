@@ -652,6 +652,23 @@ jobs:
           if log.count('PASS RocksDBChecksum.ReferenceAndIncremental')!=1:
               raise SystemExit('RocksDB checksum reference case did not complete exactly once')
           PYTEST
+      - name: Require and execute retained payment reorg history
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletReorgOrigin$' --show-only=json-v1 > orchard-reorg-origin-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-reorg-origin-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletReorgOrigin'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Wallet reorg origin test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletReorgOrigin$' --verbose --no-tests=error --output-log orchard-reorg-origin-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-reorg-origin-execution.log').read()
+          expected=['ActualDisconnectRetainsOriginAndReservationsAcrossReopen','DisconnectSqlAndCommitFailuresPreserveWholeGroup','StandaloneRewindPreservesLocalHistoryAndChecksTransaction']
+          if sorted(re.findall(r'\[       OK \] WalletReorgOrigin\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Wallet reorg origin cases did not complete exactly once')
+          PYTEST
       - name: Require and execute durable batch payment ownership
         run: |
           ctest --test-dir build-orchard-root -R '^WalletBatchPayment$' --show-only=json-v1 > orchard-batch-payment-inventory.json
@@ -1220,6 +1237,8 @@ jobs:
             orchard-pq-root-provider-execution.log
             orchard-historical-rpc-inventory.json
             orchard-historical-rpc-execution.log
+            orchard-reorg-origin-inventory.json
+            orchard-reorg-origin-execution.log
             orchard-batch-payment-inventory.json
             orchard-batch-payment-execution.log
             orchard-reservation-balance-inventory.json

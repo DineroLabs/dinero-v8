@@ -34,6 +34,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_getbalance(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_snapshot(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_listunspent(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext&,const din::Json&);
 namespace {
@@ -294,6 +295,93 @@ TEST_F(WalletPendingPayment, CorruptOwnerReadFailureAndIntentRefuse) {
     EXPECT_EQ(envelope(db),stored);EXPECT_EQ(w.getPendingPayments().size(),1u);
     struct Interrupt {sqlite3* db;bool fired=false;static int trace(unsigned type,void* p,void* stmt,void*){auto& h=*static_cast<Interrupt*>(p);const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));if(type==SQLITE_TRACE_ROW && !h.fired && s && std::strstr(s,"SELECT pending_payment_owner")){h.fired=true;sqlite3_interrupt(h.db);}return 0;}} interrupted{db};
     sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);EXPECT_THROW(w.getPendingPayments(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);EXPECT_EQ(w.getPendingPayments().size(),1u);
+}
+
+
+class WalletReorgOrigin : public WalletPendingPayment {
+protected:
+    dinero::Block confirmed_payment() {
+        fund(old);fund(modern);
+        const auto signed_payment=stage(payment());
+        if(!signed_payment.success)throw std::runtime_error(signed_payment.error);
+        dinero::Block block;block.header.timestamp=1700000042;
+        block.vtx.push_back(signed_payment.signed_tx.tx);
+        service->get().onBlockConnected(block,2);
+        return block;
+    }
+    static int scalar(sqlite3* db,const char* text) {
+        sqlite3_stmt* raw=nullptr;
+        if(sqlite3_prepare_v2(db,text,-1,&raw,nullptr)!=SQLITE_OK)throw std::runtime_error("reorg scalar prepare");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> stmt(raw,sqlite3_finalize);
+        if(sqlite3_step(raw)!=SQLITE_ROW)throw std::runtime_error("reorg scalar row");
+        int result=sqlite3_column_int(raw,0);
+        if(sqlite3_step(raw)!=SQLITE_DONE)throw std::runtime_error("reorg scalar EOF");
+        return result;
+    }
+    void assert_origin(const dinero::Block& block,const std::string& stored,bool confirmed) {
+        auto& w=service->get();auto* db=w.getCurrentDatabase();
+        EXPECT_EQ(envelope(db),stored);
+        const auto payments=w.getPendingPayments();ASSERT_EQ(payments.size(),1u);
+        EXPECT_EQ(payments[0].signed_body,block.vtx[0].Serialize(dinero::TxSerializationMode::WithWitness));
+        const auto history=w.getTransactionHistory();ASSERT_EQ(history.size(),1u);
+        EXPECT_EQ(history[0].txid,block.vtx[0].GetTxid().AsUint256().GetHex());
+        EXPECT_EQ(history[0].category,"send");EXPECT_DOUBLE_EQ(history[0].amount,-0.002);
+        EXPECT_EQ(history[0].address,modern_address);EXPECT_EQ(history[0].label,"");
+        EXPECT_EQ(scalar(db,"SELECT height FROM transactions"),confirmed?2:0);
+        EXPECT_EQ(history[0].confirmations,confirmed?1:0);
+        EXPECT_TRUE(w.isUTXOLocked(old.GetTxIdHex(),old.vout));
+        EXPECT_TRUE(w.isUTXOLocked(modern.GetTxIdHex(),modern.vout));
+    }
+};
+TEST_F(WalletReorgOrigin, ActualDisconnectRetainsOriginAndReservationsAcrossReopen) {
+    auto& w=service->get();const auto block=confirmed_payment();const auto stored=envelope(w.getCurrentDatabase());
+    const auto before=w.getTransactionHistory();ASSERT_EQ(before.size(),1u);assert_origin(block,stored,true);
+    ASSERT_EQ(scalar(w.getCurrentDatabase(),"SELECT count(*) FROM utxos WHERE is_spent=1"),2);
+    w.onBlockDisconnected(block,2);assert_origin(block,stored,false);
+    EXPECT_EQ(w.getTransactionHistory()[0].time,before[0].time);
+    EXPECT_EQ(scalar(w.getCurrentDatabase(),"SELECT count(*) FROM utxos WHERE is_spent=1"),0);
+    EXPECT_EQ(scalar(w.getCurrentDatabase(),"SELECT count(*) FROM utxos WHERE height=2"),0);
+    EXPECT_EQ(w.getBlockchainHeight(),1u);
+    w.open("owner");w.unlockWallet("historical-rpc",0);assert_origin(block,stored,false);
+    // Actual listunspent keeps the restored outputs visible, explicitly reserved.
+    w.setUTXOIndex(nullptr);w.setBlockchainHeight(3);
+    const auto listed=rpc_context_wallet_listunspent(ctx,din::Json());
+    ASSERT_TRUE(listed.isArray())<<listed.toStyledString();ASSERT_EQ(listed.size(),2u);
+    for(const auto& item:listed){EXPECT_TRUE(item["locked"].asBool());EXPECT_FALSE(item["spendable"].asBool());}
+    w.setUTXOIndex(index.get());w.onBlockConnected(block,2);assert_origin(block,stored,true);
+    w.onBlockDisconnected(block,2);assert_origin(block,stored,false);
+}
+TEST_F(WalletReorgOrigin, DisconnectSqlAndCommitFailuresPreserveWholeGroup) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();const auto block=confirmed_payment();const auto stored=envelope(db);
+    const int rows=count(db,"utxos");
+    const auto unchanged=[&]{assert_origin(block,stored,true);EXPECT_EQ(count(db,"utxos"),rows);EXPECT_EQ(scalar(db,"SELECT count(*) FROM utxos WHERE is_spent=1"),2);EXPECT_EQ(w.getBlockchainHeight(),2u);};
+    for(const auto* table:{"transactions","utxos"}) {
+        sql(db,"CREATE TRIGGER refuse_history BEFORE UPDATE ON "+std::string(table)+" BEGIN SELECT RAISE(ABORT,'history rollback fixture'); END");
+        EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);sql(db,"DROP TRIGGER refuse_history");unchanged();
+    }
+    sqlite3_set_authorizer(db,[](void*,int op,const char* a,const char*,const char*,const char*) {return op==SQLITE_PRAGMA && a && std::strcmp(a,"table_info")==0?SQLITE_DENY:SQLITE_OK;},nullptr);
+    EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);sqlite3_set_authorizer(db,nullptr,nullptr);unchanged();
+    int commits=0;sqlite3_commit_hook(db,[](void* p){++*static_cast<int*>(p);return 1;},&commits);
+    EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);sqlite3_commit_hook(db,nullptr,nullptr);EXPECT_EQ(commits,1);unchanged();
+    sql(db,"BEGIN");EXPECT_THROW(w.onBlockDisconnected(block,2),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");unchanged();
+    w.onBlockDisconnected(block,2);assert_origin(block,stored,false);
+}
+TEST_F(WalletReorgOrigin, StandaloneRewindPreservesLocalHistoryAndChecksTransaction) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();const auto block=confirmed_payment();const auto stored=envelope(db);
+    ASSERT_TRUE(w.addTransaction(std::string(64,'a'),modern_address,0.001,"receive",false,"observed",1700000099,2));
+    ASSERT_EQ(count(db,"transactions"),2);
+    sql(db,"CREATE TRIGGER refuse_history BEFORE DELETE ON transactions BEGIN SELECT RAISE(ABORT,'history rollback fixture'); END");
+    EXPECT_THROW(w.removeTransactionsAtHeight(2),std::runtime_error);sql(db,"DROP TRIGGER refuse_history");
+    EXPECT_EQ(scalar(db,"SELECT count(*) FROM transactions WHERE height=2"),2);EXPECT_EQ(envelope(db),stored);
+    sql(db,"BEGIN");EXPECT_THROW(w.removeTransactionsAtHeight(2),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
+    int commits=0;sqlite3_commit_hook(db,[](void* p){++*static_cast<int*>(p);return 1;},&commits);
+    EXPECT_THROW(w.removeTransactionsAtHeight(2),std::runtime_error);sqlite3_commit_hook(db,nullptr,nullptr);EXPECT_EQ(commits,1);
+    EXPECT_EQ(scalar(db,"SELECT count(*) FROM transactions WHERE height=2"),2);
+    ASSERT_TRUE(w.removeTransactionsAtHeight(2));assert_origin(block,stored,false);
+    // This narrow history operation does not claim to undo UTXOs or publish height.
+    EXPECT_EQ(scalar(db,"SELECT count(*) FROM utxos WHERE is_spent=1"),2);EXPECT_EQ(w.getBlockchainHeight(),2u);
+    ASSERT_TRUE(w.removeTransactionsAtHeight(2));assert_origin(block,stored,false);
+    w.open("owner");w.unlockWallet("historical-rpc",0);assert_origin(block,stored,false);
 }
 
 class WalletReservationBalance : public WalletPendingPayment {};
