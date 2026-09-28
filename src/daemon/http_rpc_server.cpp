@@ -791,12 +791,15 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                 ctx.mempool = nullptr;
                 ctx.utxo_view = nullptr;
 
-                // STEP 3.1: Inject NEW policy-aware mempool for stats/policy queries
+                // Keep the service and pool alive through synchronous handler
+                // execution and response construction, including exception paths.
+                // This owner does not hold a pool or selected-chain lock.
+                std::unique_ptr<dinero::MempoolService::PoolUse> mempool_use;
                 if (daemon_context_ && daemon_context_->mempool) {
-                    // Cast MempoolService to get underlying Mempool*
                     auto mempool_service = std::dynamic_pointer_cast<dinero::MempoolService>(daemon_context_->mempool);
                     if (mempool_service) {
-                        ctx.mempool_v2 = const_cast<dinero::Mempool*>(&mempool_service->mempool());
+                        mempool_use = dinero::MempoolService::AcquirePoolUse(std::move(mempool_service));
+                        ctx.mempool_v2 = &mempool_use->Pool();
                     } else {
                         ctx.mempool_v2 = nullptr;
                     }

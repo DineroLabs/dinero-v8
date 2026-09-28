@@ -14801,6 +14801,33 @@ if(UNIX)
   set_tests_properties(RpcHandlerDrain PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;lifecycle;shutdown")
 endif()
 
+if(UNIX)
+  add_executable(test_rpc_pool_owner
+    tests/daemon/test_rpc_pool_owner.cpp
+    src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp
+    src/daemon/legacy_globals_stub.cpp
+    tests/stubs/mempool_test_stubs.cpp tests/stubs/daemon_test_stubs.cpp)
+  target_compile_definitions(test_rpc_pool_owner PRIVATE DINERO_TEST_REAL_VAULT_RUNTIME=1
+    DINERO_CLI_VERSION="${DINERO_RELEASE_TAG}")
+  target_include_directories(test_rpc_pool_owner PRIVATE include src src/daemon ${CMAKE_BINARY_DIR})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_rpc_pool_owner PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_rpc_pool_owner PRIVATE dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_rpc_pool_owner)
+  if(APPLE)
+    target_link_libraries(test_rpc_pool_owner PRIVATE "-framework Security")
+  endif()
+  add_test(NAME RpcPoolOwner COMMAND test_rpc_pool_owner)
+  set_tests_properties(RpcPoolOwner PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;lifecycle;shutdown")
+endif()
+
 # Exercise the actual vendored checksum implementation against an independent
 # byte-wise reference. ARM hosts execute both hardware paths explicitly.
 if(DINERO_USE_VENDORED_DEPS)
@@ -14843,6 +14870,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_realign_shielded_after_heal
     test_reconstruct_spent_coins
     test_rpc_handler_drain
+    test_rpc_pool_owner
     test_shielded_state_startup
     test_utreexo_ephemeral
     test_wallet_descriptor_active_context

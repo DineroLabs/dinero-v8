@@ -393,6 +393,25 @@ jobs:
           cases=['ChainPrecedesPoolAndOutlivesPoolRelease','CapturedFactorySurvivesReplacementAndUnavailableRefusesEarly','ExplicitParentMustEqualCurrentDurableTip']
           assert sorted(re.findall(r'\[       OK \] MiningChainGuard\.(\w+)',log))==sorted(cases)
           PYSNAPSHOT
+      - name: HTTP RPC pool operation ownership
+        run: |
+          cmake --build build-orchard-root --target test_rpc_pool_owner test_rpc_handler_drain -j2
+          ctest --test-dir build-orchard-root -R '^(RpcPoolOwner|RpcHandlerDrain)$' --show-only=json-v1 > orchard-rpc-pool-owner-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('orchard-rpc-pool-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['RpcHandlerDrain','RpcPoolOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(RpcPoolOwner|RpcHandlerDrain)$' --verbose --no-tests=error | tee orchard-rpc-pool-owner-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('orchard-rpc-pool-owner-execution.log').read_text()
+          for case in ['HoldsPoolThroughUnifiedHandlerAndAlias','ExceptionAndReturnedErrorReleaseOwner','ClosedServiceRefusesBeforeHandler']:
+              assert log.count('[       OK ] RpcPoolOwner.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 2' in log
+          PYCODE
+
       - name: Actual mining RPC result and accepted template
         run: |
           ctest --test-dir build-orchard-root -R '^MiningRpcResult$' --show-only=json-v1 > orchard-mining-rpc-result-inventory.json
@@ -1620,6 +1639,8 @@ jobs:
             orchard-mining-chain-guard-execution.log
             orchard-mining-template-result-inventory.json
             orchard-mining-template-result-execution.log
+            orchard-rpc-pool-owner-inventory.json
+            orchard-rpc-pool-owner-execution.log
             orchard-mining-chain-provider-inventory.json
             orchard-mining-chain-provider-execution.log
             orchard-mining-rpc-result-inventory.json
