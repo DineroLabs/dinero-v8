@@ -181,10 +181,6 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
         return result;
     }
 
-    // Get mempool (returns a reference, not a pointer)
-    ::dinero::Mempool& mempool_ref = mempool_service->mempool();
-    ::dinero::Mempool* mempool = &mempool_ref;
-
     // Get mining address (REQUIRED)
     // Handle both object params {"address":"..."} and array params [{"address":"..."}]
     std::string mining_address;
@@ -300,8 +296,14 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
     // This is the ONLY place transaction selection happens (no duplication)
     // ========================================================================
 
+    // Acquire after longpoll; retain the pool through response serialization.
+    auto pool_use = ::dinero::MempoolService::AcquirePoolUse(mempool_service);
+    if (!pool_use) {
+        result["error"] = "Mempool service unavailable for template construction";
+        return result;
+    }
     ::dinero::BlockAssembler assembler(chain_db);
-    assembler.setMempool(mempool);
+    assembler.setMempool(&pool_use->Pool());
 
     // ========================================================================
     // v0.14.0.4: Configure Utreexo forest and UTXO provider for proof generation
@@ -349,7 +351,8 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
     assembler.SetBlockValidator(block_validator);
 
     // Create block template (CPFP-aware, deterministic, with Utreexo proof)
-    auto block = assembler.CreateNewBlock(mining_address, excluded_txids);
+    std::unordered_map<uint256, uint64_t> transaction_fees;
+    auto block = assembler.CreateNewBlock(mining_address, excluded_txids, &transaction_fees);
 
     if (!block) {
         const std::string& detail = assembler.getLastTemplateError();
@@ -508,14 +511,8 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
         }
         tx_obj["data"] = hex_stream.str();
 
-        // Fee (from mempool, already calculated)
-        // Phase M.0: RPC boundary - convert hex to uint256 for mempool lookup
-        auto fee_opt = mempool->getTransactionFee(uint256::FromHexUnsafe(txid_hex));
-        if (fee_opt.has_value()) {
-            tx_obj["fee"] = static_cast<int64_t>(fee_opt.value());
-        } else {
-            tx_obj["fee"] = 0;
-        }
+        // This fee belongs to the same immutable selection as the returned body.
+        tx_obj["fee"] = static_cast<int64_t>(transaction_fees.at(tx.GetTxid().AsUint256()));
 
         transactions.append(tx_obj);
     }
@@ -868,9 +865,13 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     }
 
     // --- Build block via CreateNewBlock (single authoritative source) ---
-    ::dinero::Mempool& mempool_ref = mempool_service->mempool();
+    auto pool_use = ::dinero::MempoolService::AcquirePoolUse(mempool_service);
+    if (!pool_use) {
+        result["error"] = "Mempool service unavailable for job construction";
+        return result;
+    }
     ::dinero::BlockAssembler assembler(chain_db);
-    assembler.setMempool(&mempool_ref);
+    assembler.setMempool(&pool_use->Pool());
 
     auto* utreexo_forest = chainstate->utreexoForest();
     auto* utxo_index = chainstate->utxoIndex();

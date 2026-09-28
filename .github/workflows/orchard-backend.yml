@@ -357,6 +357,41 @@ jobs:
           cases=['JobAppliesParentPolicyAndRetry','JobIncludesSharedParentExactlyOnce','JobHonorsExactWeightBoundary']
           assert sorted(re.findall(r'\[       OK \] MiningJobPolicy\.(\w+)',log))==sorted(cases)
           PYSNAPSHOT
+      - name: Owned mining template and RPC results
+        run: |
+          cmake --build build-orchard-root --target test_mining_template_result --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningTemplateResult$' --show-only=json-v1 > orchard-mining-template-result-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-template-result-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningTemplateResult']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningTemplateResult$' --verbose --no-tests=error --output-log orchard-mining-template-result-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-template-result-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningTemplateResult']
+          cases=['CapturedFeesSurvivePoolRemoval','ExcludedAncestorsHaveNoResultFees','FailurePreservesOutputAndEmptyRetryReplacesIt']
+          assert sorted(re.findall(r'\[       OK \] MiningTemplateResult\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
+      - name: Actual mining RPC result and accepted template
+        run: |
+          ctest --test-dir build-orchard-root -R '^MiningRpcResult$' --show-only=json-v1 > orchard-mining-rpc-result-inventory.json
+          python3 - <<'PYINNER'
+          import json
+          tests=json.load(open('orchard-mining-rpc-result-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningRpcResult']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYINNER
+          ctest --test-dir build-orchard-root -R '^MiningRpcResult$' --verbose --no-tests=error --output-log orchard-mining-rpc-result-execution.log
+          python3 - <<'PYINNER'
+          import re
+          log=open('orchard-mining-rpc-result-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningRpcResult']
+          for marker in ['PASS actual RPC returns accepted body and exact transaction fees','PASS exclusion and actual mining.getjob preserve the admitted pool','PASS returned RPC template accepted and later response has no stale fees']:
+              assert marker in log
+          PYINNER
       - name: Retained mining-template mempool owner
         run: |
           cmake --build build-orchard-root --target test_mining_pool_owner test_utreexo_safety_gate test_block_template_determinism --parallel 4 -- -k 0
@@ -1546,6 +1581,10 @@ jobs:
             orchard-refresh-owner-execution.log
             orchard-relay-refresh-owner-inventory.json
             orchard-relay-refresh-owner-execution.log
+            orchard-mining-template-result-inventory.json
+            orchard-mining-template-result-execution.log
+            orchard-mining-rpc-result-inventory.json
+            orchard-mining-rpc-result-execution.log
             orchard-mining-job-policy-inventory.json
             orchard-mining-job-policy-execution.log
             orchard-mining-package-selection-inventory.json

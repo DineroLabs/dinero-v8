@@ -1327,7 +1327,8 @@ void BlockAssembler::UpdateAlgoState() {
 
 std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
     const std::string& coinbase_address,
-    const std::unordered_set<uint256>& excluded_txids
+    const std::unordered_set<uint256>& excluded_txids,
+    std::unordered_map<uint256, uint64_t>* transaction_fees_out
 ) {
     auto pool_use = AcquireMempoolAccess();
     auto* pool = pool_use.pool;
@@ -1960,11 +1961,30 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
         block_template_stats_.witness_nonce_size = 8;
     }
 
+    std::unordered_map<uint256, uint64_t> accepted_fees;
+    if (transaction_fees_out) {
+        accepted_fees.reserve(block->vtx.size() - 1);
+        uint64_t sum = 0;
+        for (size_t i = 1; i < block->vtx.size(); ++i) {
+            const auto id = block->vtx[i].GetTxid().AsUint256();
+            const auto fee = capture.metadata.at(id).fee;
+            if (!accepted_fees.emplace(id, fee).second)
+                throw std::logic_error("Duplicate template transaction fee");
+            auto next = dinero::CheckedAddUna(sum, fee);
+            if (!next) throw std::runtime_error("Template response fee overflow");
+            sum = *next;
+        }
+        if (sum != total_fees) throw std::logic_error("Template response fee mismatch");
+    }
+
     dinero::g_logger.info("CreateNewBlock: height=" + std::to_string(height) +
                          " txs=" + std::to_string(block->vtx.size()) +
                          " fees=" + std::to_string(total_fees / COIN) + " DIN" +
                          " weight=" + std::to_string(block_template_stats_.block_weight) +
                          " size=" + std::to_string(block_template_stats_.block_size));
+
+    // Publication is last and nonthrowing; failure preserves the caller's old result.
+    if (transaction_fees_out) transaction_fees_out->swap(accepted_fees);
 
     return block;
 }

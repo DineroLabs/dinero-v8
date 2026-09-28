@@ -301,11 +301,13 @@ public:
      * - Bitcoin Core compatible behavior
      *
      * @param coinbase_address Address to receive coinbase reward + fees
+     * @param transaction_fees_out Optional accepted fee map, replaced only on success
      * @return Complete block template ready for mining, or nullptr on failure
      */
     std::unique_ptr<Block> CreateNewBlock(
         const std::string& coinbase_address,
-        const std::unordered_set<uint256>& excluded_txids = {});
+        const std::unordered_set<uint256>& excluded_txids = {},
+        std::unordered_map<uint256, uint64_t>* transaction_fees_out = nullptr);
 
     /**
      * @brief Get statistics from the last CreateNewBlock() call
