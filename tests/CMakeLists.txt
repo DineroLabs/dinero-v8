@@ -6407,6 +6407,68 @@ add_test(NAME MempoolRankedRpc COMMAND test_mempool_ranked_rpc)
 set_tests_properties(MempoolRankedRpc PROPERTIES
   LABELS "mempool;rpc;ranked;body" TIMEOUT 60)
 
+add_executable(test_mempool_address_capture
+  tests/rpc/test_mempool_address_capture.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/legacy_globals_stub.cpp
+  src/daemon/tx_relay_manager.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  # Optional typed readers introduce consensus/wallet references. Keep those
+  # real archives inside the same Linux rescan group; the root declares them
+  # later, so resolve their presence at generation time (CMake 3.20 compatible).
+  target_link_libraries(test_mempool_address_capture PRIVATE
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
+    dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_address_capture PRIVATE
+    dinero_rpc_handlers dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_address_capture PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_address_capture build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_address_capture)
+target_include_directories(test_mempool_address_capture PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_address_capture PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_address_capture_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_address_capture PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_address_capture PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_address_capture_fixture)
+add_test(NAME MempoolAddressCapture COMMAND test_mempool_address_capture)
+set_tests_properties(MempoolAddressCapture PROPERTIES
+  LABELS "mempool;rpc;address;body" TIMEOUT 60)
+
 add_executable(test_mempool_retained_load
   tests/mempool/test_mempool_retained_load.cpp
   src/daemon/mempool.cpp
@@ -6418,8 +6480,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Wallet now references chainstate/core members after their initial scan.
   # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
   # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  # Optional typed readers introduce consensus/wallet references. Keep those
+  # real archives inside the same Linux rescan group; the root declares them
+  # later, so resolve their presence at generation time (CMake 3.20 compatible).
   target_link_libraries(test_mempool_retained_load PRIVATE
-    "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
+    dinero_wallet dinero_chainstate
     dinero_consensus dinero_shielded dinero_bridge dinero_pool
     dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
     dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
@@ -6472,8 +6542,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Wallet now references chainstate/core members after their initial scan.
   # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
   # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  # Optional typed readers introduce consensus/wallet references. Keep those
+  # real archives inside the same Linux rescan group; the root declares them
+  # later, so resolve their presence at generation time (CMake 3.20 compatible).
   target_link_libraries(test_mempool_typed_package PRIVATE
-    "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
+    dinero_wallet dinero_chainstate
     dinero_consensus dinero_shielded dinero_bridge dinero_pool
     dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
     dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"

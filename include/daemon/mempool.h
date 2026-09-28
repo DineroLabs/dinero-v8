@@ -184,6 +184,7 @@ struct MempoolBlockSelection {
 class Mempool {
     friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
     friend class MempoolTypedPackageTestPeer; // Isolated package-policy graph fixture only.
+    friend class MempoolAddressCaptureTestPeer; // Isolated address reader fixture only.
     friend class MempoolRankedRpcTestPeer; // Isolated ranked reader fixture only.
     friend class MempoolTypedIngressTestPeer; // Isolated lookup-error fixture; no production view setter.
 public:
@@ -285,6 +286,14 @@ public:
     // Historical compatibility: explicitly refuses unsupported body families.
     std::vector<Transaction> getTransactionsByFeeRate(size_t max_count = 1000) const;
     std::vector<uint256> getTransactionIds() const;
+    // One complete body/input-coin snapshot under chainstate -> pool ownership.
+    // Inputs correspond exactly to entry.tx.Inputs(); unavailable input metadata
+    // refuses the whole read. Copies grant no reservation or lasting membership.
+    struct EntryWithInputCoins {
+        MempoolEntry entry;
+        std::vector<consensus::UTXOEntry> input_coins;
+    };
+    std::vector<EntryWithInputCoins> CaptureEntriesWithInputCoins() const;
     std::vector<Transaction> getTransactionsForAddress(const std::string& address) const;
     size_t size() const;
     uint64_t getTotalFees() const;

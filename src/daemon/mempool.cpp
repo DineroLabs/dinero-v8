@@ -1909,6 +1909,50 @@ std::vector<uint256> Mempool::getTransactionIds() const {
     return txids;
 }
 
+std::vector<Mempool::EntryWithInputCoins> Mempool::CaptureEntriesWithInputCoins() const {
+    auto guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
+    if (chainstate_read_guard_factory_ && !guard)
+        throw std::runtime_error("Mempool input snapshot chainstate unavailable");
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    std::vector<EntryWithInputCoins> result;
+    result.reserve(m_transactions.size());
+    for (const auto& [id, entry] : m_transactions) {
+        if (!entry.tx.HasBody() || entry.tx.GetTxid().AsUint256() != id)
+            throw std::runtime_error("Mempool input snapshot body unavailable");
+        EntryWithInputCoins captured{entry, {}};
+        captured.input_coins.reserve(entry.tx.Inputs().size());
+        for (const auto& outpoint : entry.tx.Inputs()) {
+            std::optional<consensus::UTXOEntry> coin;
+            const auto parent = m_transactions.find(outpoint.txid.AsUint256());
+            if (parent != m_transactions.end()) {
+                if (!parent->second.tx.HasBody() ||
+                    parent->second.tx.GetTxid() != outpoint.txid ||
+                    outpoint.vout >= parent->second.tx.OutputCount())
+                    throw std::runtime_error("Mempool input snapshot parent unavailable");
+                // The spent overlay intentionally hides this output. Its actual
+                // immutable parent body is the pending accounting authority.
+                coin = parent->second.tx.OutputCoin(outpoint.vout, parent->second.height);
+            } else if (prebase_coin_predicate_ && prebase_coin_predicate_(outpoint)) {
+                // Never substitute a stale auxiliary row for live-forest proof.
+                if (prebase_coin_resolver_) coin = prebase_coin_resolver_(outpoint);
+            } else {
+                if (!chain_state_view_)
+                    throw std::runtime_error("Mempool input snapshot coin view unavailable");
+                const auto found = chain_state_view_->getCoin(outpoint);
+                if (found.ok()) coin = found.value();
+                else if (found.status() != Status::NotFound)
+                    throw std::runtime_error("Mempool input snapshot coin read failed");
+                if (!coin && prebase_coin_resolver_)
+                    coin = prebase_coin_resolver_(outpoint);
+            }
+            if (!coin) throw std::runtime_error("Mempool input snapshot coin unavailable");
+            captured.input_coins.push_back(std::move(*coin));
+        }
+        result.push_back(std::move(captured));
+    }
+    return result;
+}
+
 std::vector<Transaction> Mempool::getTransactionsForAddress(const std::string& address) const {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
 

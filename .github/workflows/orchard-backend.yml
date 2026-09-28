@@ -862,6 +862,25 @@ jobs:
           assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
           PYTEST
 
+      - name: Owned typed pending address capture
+        run: |
+          cmake --build build-orchard-root --target test_mempool_address_capture --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MempoolAddressCapture|AddressBalanceMempoolOverlay|AddressIndexCrossHRP|P2MRAddressIndexRpcSmoke|AddressParentChildMempoolLifecycle)$' --show-only=json-v1 > orchard-address-capture-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-address-capture-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['AddressBalanceMempoolOverlay','AddressIndexCrossHRP','AddressParentChildMempoolLifecycle','MempoolAddressCapture','P2MRAddressIndexRpcSmoke']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolAddressCapture|AddressBalanceMempoolOverlay|AddressIndexCrossHRP|P2MRAddressIndexRpcSmoke|AddressParentChildMempoolLifecycle)$' --verbose --no-tests=error --output-log orchard-address-capture-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-address-capture-execution.log').read_text()
+          for case in ['SignedParentChildAllAddressRpcs','MissingInputAndClosedServiceRefuse','PrebaseAuthorizationAndSingleBatchCapture','ReadFailureAndConfidentialAmountsRefuse','TypedBodyAndMatchingInputsStayOwned']:
+              assert log.count('[       OK ] MempoolAddressCapture.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 5' in log
+          PYTEST
+
       - name: Require and execute all-ancestor package bounds
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --show-only=json-v1 > orchard-package-bounds-inventory.json
@@ -1901,6 +1920,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-address-capture-inventory.json
+            orchard-address-capture-execution.log
             orchard-typed-package-inventory.json
             orchard-typed-package-execution.log
             orchard-retained-load-inventory.json
