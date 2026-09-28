@@ -233,6 +233,10 @@ public:
     // Phase M.0: Now uses OutPoint directly
     bool isOutputSpentInMempool(const OutPoint& outpoint) const;
 
+    // Copied, sorted spending transaction IDs at one pool-lock snapshot.
+    // This grants no reservation or continued membership after return.
+    std::vector<uint256> getInputSpenders(const OutPoint& outpoint) const;
+
     // Snapshot confirmed, mature, unspent candidates under chainstate -> mempool
     // locks. Results correspond to candidates; unavailable entries are nullopt.
     // Frozen snapshot coins require live-forest authorization. Copied results
@@ -608,6 +612,8 @@ private:
     void evictTransactionsLocked();
     bool removeTransactionLocked(const uint256& txid);  // Lock-free version (caller holds m_mutex)
     void rebuildCoinsViewLocked();
+    std::vector<uint256> getInputSpendersLocked(const OutPoint& outpoint) const;
+    void releaseInputSpenderLocked(const OutPoint& outpoint, const uint256& txid);
     uint64_t getTotalFeesLocked() const;
     size_t getTotalSizeLocked() const;
     bool isSelectableAtHeightLocked(const MempoolEntry& entry,
@@ -619,7 +625,9 @@ private:
 
     // Data structures (Phase M.0: Changed to uint256 and OutPoint)
     std::unordered_map<uint256, MempoolEntry> m_transactions;      // txid -> entry
-    std::unordered_set<OutPoint> m_spent_outputs;                  // OutPoint tracking (replaced string concat)
+    // Each input retains its actual owners. Canonical admission enforces
+    // conflict policy; the transparent synthetic helper may have multiple.
+    std::unordered_map<OutPoint, std::unordered_set<uint256>> m_spent_outputs;
     std::multimap<double, uint256> m_fee_index;                    // package selection score -> txid (sorted)
     std::multimap<std::chrono::time_point<std::chrono::steady_clock>, uint256> m_time_index; // time -> txid
     std::unordered_map<uint256, std::unordered_set<uint256>> m_children_index; // parent → children

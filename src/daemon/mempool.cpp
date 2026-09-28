@@ -545,23 +545,6 @@ bool Mempool::addTransaction(const Transaction& tx, bool relay) {
     return result.accepted();
 }
 
-void Mempool::addUnchecked(const Transaction& tx) {
-    if (tx.HasConfidentialOutputs()) {
-        throw std::logic_error(
-            "addUnchecked() rejects confidential transactions; use canonical ingress");
-    }
-    std::unique_lock<std::shared_mutex> lock(m_mutex);
-    uint256 txid_u256 = tx.GetTxid().AsUint256();
-    MempoolEntry entry(tx, /*fee=*/0, /*block_height=*/0);
-    for (const auto& input : tx.vin) {
-        OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        m_spent_outputs.insert(outpoint);
-        entry.spends.push_back(outpoint);
-    }
-    m_transactions[txid_u256] = entry;
-    rebuildCoinsViewLocked();
-}
-
 struct Mempool::StateRollback {
     Mempool& pool;
     decltype(m_transactions) transactions;
@@ -615,6 +598,25 @@ struct Mempool::StateRollback {
     ~StateRollback() noexcept { if (!committed) Swap(); }
 };
 
+void Mempool::addUnchecked(const Transaction& tx) {
+    if (tx.HasConfidentialOutputs()) {
+        throw std::logic_error(
+            "addUnchecked() rejects confidential transactions; use canonical ingress");
+    }
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    uint256 txid_u256 = tx.GetTxid().AsUint256();
+    StateRollback rollback(*this);
+    MempoolEntry entry(tx, /*fee=*/0, /*block_height=*/0);
+    for (const auto& input : tx.vin) {
+        OutPoint outpoint{input.prevout.txid, input.prevout.vout};
+        m_spent_outputs[outpoint].insert(txid_u256);
+        entry.spends.push_back(outpoint);
+    }
+    m_transactions[txid_u256] = entry;
+    rebuildCoinsViewLocked();
+    rollback.committed = true;
+}
+
 TxAcceptResult Mempool::submitTransactionInternal(
     const Transaction& tx,
     const std::string& source,
@@ -662,15 +664,9 @@ TxAcceptResult Mempool::submitTransactionInternal(
     for (const auto& input : tx.vin) {
         // Phase M.0: Create OutPoint struct from input
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        if (m_spent_outputs.find(outpoint) != m_spent_outputs.end()) {
-            // Find which transaction spends this outpoint
-            for (const auto& [mempool_txid, entry] : m_transactions) {
-                for (const auto& spent : entry.spends) {
-                    if (spent == outpoint) {
-                        conflicting_txids.push_back(mempool_txid);
-                        break;
-                    }
-                }
+        for (const auto& owner : getInputSpendersLocked(outpoint)) {
+            if (std::find(conflicting_txids.begin(), conflicting_txids.end(), owner) == conflicting_txids.end()) {
+                conflicting_txids.push_back(owner);
             }
         }
     }
@@ -1028,7 +1024,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     // Update spent outputs tracking
     for (const auto& input : tx.vin) {
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        m_spent_outputs.insert(outpoint);
+        m_spent_outputs[outpoint].insert(txid_u256);
         entry.spends.push_back(outpoint);
     }
 
@@ -1121,7 +1117,7 @@ bool Mempool::removeTransaction(const uint256& txid) {
 
     // Remove from spent outputs tracking
     for (const auto& outpoint : entry.spends) {
-        m_spent_outputs.erase(outpoint);
+        releaseInputSpenderLocked(outpoint, txid);
     }
 
     // Remove from indices
@@ -1654,7 +1650,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
     // Update spent outputs tracking
     for (const auto& input : tx.vin) {
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        m_spent_outputs.insert(outpoint);
+        m_spent_outputs[outpoint].insert(txid_u256);
         entry.spends.push_back(outpoint);
     }
 
@@ -1786,6 +1782,34 @@ std::vector<std::optional<consensus::UTXOEntry>> Mempool::getConfirmedWalletCoin
 bool Mempool::isOutputSpentInMempool(const OutPoint& outpoint) const {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
     return m_spent_outputs.find(outpoint) != m_spent_outputs.end();
+}
+
+std::vector<uint256> Mempool::getInputSpenders(const OutPoint& outpoint) const {
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    return getInputSpendersLocked(outpoint);
+}
+
+std::vector<uint256> Mempool::getInputSpendersLocked(const OutPoint& outpoint) const {
+    const auto found = m_spent_outputs.find(outpoint);
+    if (found == m_spent_outputs.end()) return {};
+    if (found->second.empty()) throw std::logic_error("Empty mempool input owner set");
+    std::vector<uint256> owners(found->second.begin(), found->second.end());
+    for (const auto& owner : owners) {
+        const auto entry = m_transactions.find(owner);
+        if (entry == m_transactions.end() ||
+            std::find(entry->second.spends.begin(), entry->second.spends.end(), outpoint) == entry->second.spends.end()) {
+            throw std::logic_error("Mempool input owner mismatch");
+        }
+    }
+    std::sort(owners.begin(), owners.end());
+    return owners;
+}
+
+void Mempool::releaseInputSpenderLocked(const OutPoint& outpoint, const uint256& txid) {
+    const auto found = m_spent_outputs.find(outpoint);
+    if (found == m_spent_outputs.end()) return;
+    found->second.erase(txid);
+    if (found->second.empty()) m_spent_outputs.erase(found);
 }
 
 std::shared_ptr<Transaction> Mempool::getTransaction(const uint256& txid) const {
@@ -2805,7 +2829,7 @@ bool Mempool::removeTransactionLocked(const uint256& txid) {
 
     // Remove from spent outputs tracking
     for (const auto& outpoint : entry.spends) {
-        m_spent_outputs.erase(outpoint);
+        releaseInputSpenderLocked(outpoint, txid);
     }
 
     // Remove from indices

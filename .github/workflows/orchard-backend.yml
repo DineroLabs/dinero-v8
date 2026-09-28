@@ -670,6 +670,24 @@ jobs:
           if sorted(re.findall(r'\[       OK \] MempoolMaintenanceOwner\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Maintenance owner cases did not complete exactly once')
           PYTEST
+      - name: Require and execute mempool input ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_input_owners --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolInputOwners$' --show-only=json-v1 > orchard-input-owners-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-input-owners-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolInputOwners'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Input owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolInputOwners$' --verbose --no-tests=error --output-log orchard-input-owners-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-input-owners-execution.log').read()
+          expected=['AdmissionAndReplacementPreserveExactOwners','PreparedPublicationAndConfirmationRetainChildOwner','MaintenanceAndClearReleaseOwners','SyntheticSharedInputRemovalRetainsRemainingOwner']
+          if sorted(re.findall(r'\[       OK \] MempoolInputOwners\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Input owner cases did not complete exactly once')
+          PYTEST
       - name: Require and execute all-ancestor package bounds
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --show-only=json-v1 > orchard-package-bounds-inventory.json
@@ -1693,6 +1711,8 @@ jobs:
             orchard-admission-owner-execution.log
             orchard-maintenance-owner-inventory.json
             orchard-maintenance-owner-execution.log
+            orchard-input-owners-inventory.json
+            orchard-input-owners-execution.log
             orchard-package-bounds-inventory.json
             orchard-package-bounds-execution.log
             orchard-replacement-policy-inventory.json
