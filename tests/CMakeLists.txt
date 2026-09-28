@@ -6555,6 +6555,50 @@ add_test(NAME MiningTemplateResult COMMAND test_mining_template_result)
 set_tests_properties(MiningTemplateResult PROPERTIES
   LABELS "mempool;mining;result" TIMEOUT 60)
 
+add_executable(test_mining_chain_guard
+  tests/mempool/test_mining_chain_guard.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_chain_guard PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_chain_guard PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_chain_guard PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_chain_guard build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_chain_guard)
+target_include_directories(test_mining_chain_guard PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_chain_guard PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MiningChainGuard COMMAND test_mining_chain_guard)
+set_tests_properties(MiningChainGuard PROPERTIES
+  LABELS "mempool;mining;chain" TIMEOUT 60)
+
 add_test(NAME MiningRpcResult COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_mining_rpc_result.py)
 set_tests_properties(MiningRpcResult PROPERTIES
   ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"

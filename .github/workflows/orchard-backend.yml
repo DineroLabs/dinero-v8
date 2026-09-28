@@ -375,6 +375,24 @@ jobs:
           cases=['CapturedFeesSurvivePoolRemoval','ExcludedAncestorsHaveNoResultFees','FailurePreservesOutputAndEmptyRetryReplacesIt']
           assert sorted(re.findall(r'\[       OK \] MiningTemplateResult\.(\w+)',log))==sorted(cases)
           PYSNAPSHOT
+      - name: Selected-chain ownership during mining construction
+        run: |
+          cmake --build build-orchard-root --target test_mining_chain_guard --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningChainGuard$' --show-only=json-v1 > orchard-mining-chain-guard-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-chain-guard-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningChainGuard']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningChainGuard$' --verbose --no-tests=error --output-log orchard-mining-chain-guard-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-chain-guard-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningChainGuard']
+          cases=['ChainPrecedesPoolAndOutlivesPoolRelease','CapturedFactorySurvivesReplacementAndUnavailableRefusesEarly','ExplicitParentMustEqualCurrentDurableTip']
+          assert sorted(re.findall(r'\[       OK \] MiningChainGuard\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
       - name: Actual mining RPC result and accepted template
         run: |
           ctest --test-dir build-orchard-root -R '^MiningRpcResult$' --show-only=json-v1 > orchard-mining-rpc-result-inventory.json
@@ -1581,6 +1599,8 @@ jobs:
             orchard-refresh-owner-execution.log
             orchard-relay-refresh-owner-inventory.json
             orchard-relay-refresh-owner-execution.log
+            orchard-mining-chain-guard-inventory.json
+            orchard-mining-chain-guard-execution.log
             orchard-mining-template-result-inventory.json
             orchard-mining-template-result-execution.log
             orchard-mining-rpc-result-inventory.json

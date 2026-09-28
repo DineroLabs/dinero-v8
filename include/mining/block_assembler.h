@@ -423,6 +423,12 @@ public:
     class Mempool* getMempool() const;
     void SetMempoolAccessFactory(MempoolAccessFactory factory);
 
+    // Hold selected-chain exclusion before pool acquisition through construction.
+    // Unconfigured callers retain their existing external serialization contract.
+    struct ChainstateReadGuard { virtual ~ChainstateReadGuard() = default; };
+    using ChainstateReadGuardFactory = std::function<std::unique_ptr<ChainstateReadGuard>()>;
+    void SetChainstateReadGuardFactory(ChainstateReadGuardFactory factory);
+
     // ========================================================================
     // Phase M.0: Merkle tree calculation (public for golden testing)
     // ========================================================================
@@ -524,6 +530,10 @@ private:
         Mempool* pool = nullptr;
     };
     PoolOperation AcquireMempoolAccess() const;
+    mutable std::mutex chainstate_guard_mutex_;
+    std::shared_ptr<const ChainstateReadGuardFactory> chainstate_guard_factory_;
+    std::unique_ptr<ChainstateReadGuard> AcquireChainstateReadGuard() const;
+
     BlockRelayManager* block_relay_manager_;  // Phase W.1.3: For network-aware mining (optional)
 
     // Utreexo integration

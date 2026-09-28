@@ -276,6 +276,27 @@ BlockAssembler::PoolOperation BlockAssembler::AcquireMempoolAccess() const {
     return {std::move(owner), pool};
 }
 
+void BlockAssembler::SetChainstateReadGuardFactory(ChainstateReadGuardFactory factory) {
+    if (!factory) throw std::invalid_argument("BlockAssembler requires a chainstate guard factory");
+    auto next = std::make_shared<const ChainstateReadGuardFactory>(std::move(factory));
+    {
+        std::lock_guard<std::mutex> lock(chainstate_guard_mutex_);
+        next.swap(chainstate_guard_factory_);
+    }
+}
+
+std::unique_ptr<BlockAssembler::ChainstateReadGuard> BlockAssembler::AcquireChainstateReadGuard() const {
+    std::shared_ptr<const ChainstateReadGuardFactory> factory;
+    {
+        std::lock_guard<std::mutex> lock(chainstate_guard_mutex_);
+        factory = chainstate_guard_factory_;
+    }
+    if (!factory) return nullptr;
+    auto guard = (*factory)();
+    if (!guard) throw std::runtime_error("BlockAssembler chainstate owner unavailable");
+    return guard;
+}
+
 // ============================================================================
 // Template Determinism Guard (Consensus Safety)
 // ============================================================================
@@ -447,6 +468,7 @@ static BlockAssembler::TxEntryFlags BuildTxFlags(const Transaction& tx, bool is_
 }
 
 std::shared_ptr<MiningJob> BlockAssembler::CreateJob(const uint256* explicit_tip_hash) {
+    auto chain_guard = AcquireChainstateReadGuard();
     if (!chain_db_) {
         dinero::g_logger.error("BlockAssembler: ChainDB not initialized");
         return nullptr;
@@ -460,36 +482,20 @@ std::shared_ptr<MiningJob> BlockAssembler::CreateJob(const uint256* explicit_tip
     UpdateSupplyState();
     UpdateAlgoState();
 
-    // Get chain tip - use explicit hash if provided (avoids race after block acceptance)
-    uint256 prev_hash;
-    uint32_t parent_height;
-
-    if (explicit_tip_hash) {
-        // Explicit tip provided - get height by hash (NO getTip() race!)
-        prev_hash = *explicit_tip_hash;
-
-        // Query height directly by hash
-        auto height_result = chain_db_->getBlockHeight(prev_hash);
-        if (height_result.status() != dinero::Status::Ok) {
-            dinero::g_logger.error("BlockAssembler: Failed to get height for explicit hash: " +
-                                  prev_hash.GetHex());
-            return nullptr;
-        }
-        parent_height = static_cast<uint32_t>(height_result.value());
-
-        dinero::g_logger.info("BlockAssembler: Using explicit tip - hash=" + prev_hash.GetHex().substr(0, 16) +
-                             "... height=" + std::to_string(parent_height));
-    } else {
-        // No explicit tip - query current tip from ChainDB (default behavior)
-        auto tip_result = chain_db_->getTip();
-        if (tip_result.status() != dinero::Status::Ok) {
-            dinero::g_logger.error("BlockAssembler: Failed to get chain tip from ChainDB");
-            return nullptr;
-        }
-        const auto& tip = tip_result.value();
-        prev_hash = tip.hash;
-        parent_height = tip.height;
+    // An explicit parent is an expectation, not permission to build on an old
+    // stored header while reading the current selected coins and forest.
+    const auto tip_result = chain_db_->getTip();
+    if (!tip_result.ok()) {
+        dinero::g_logger.error("BlockAssembler: Failed to get selected chain tip");
+        return nullptr;
     }
+    const auto& tip = tip_result.value();
+    if (explicit_tip_hash && *explicit_tip_hash != tip.hash) {
+        dinero::g_logger.warning("BlockAssembler: Explicit parent is no longer the selected durable tip");
+        return nullptr;
+    }
+    const uint256 prev_hash = tip.hash;
+    const uint32_t parent_height = tip.height;
 
     job->height = parent_height + 1;
 
@@ -1330,6 +1336,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
     const std::unordered_set<uint256>& excluded_txids,
     std::unordered_map<uint256, uint64_t>* transaction_fees_out
 ) {
+    auto chain_guard = AcquireChainstateReadGuard();
     auto pool_use = AcquireMempoolAccess();
     auto* pool = pool_use.pool;
     last_template_error_.clear();

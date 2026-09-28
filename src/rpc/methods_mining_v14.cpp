@@ -269,6 +269,10 @@ din::Json rpc_getblocktemplate_v14(const ExecutionContext& ctx, const din::Json&
         }
     }
 
+    // Longpoll has finished. Keep selected coins, forest and tip from changing
+    // during readiness, construction and response serialization; acquire before pool use.
+    auto chain_guard = chainstate->AcquireBlockIngressActivationLock();
+
     // Safety gate: refuse templates when disconnected/behind, unless explicitly
     // configured for isolated mining (regtest default).
     auto config_service = std::dynamic_pointer_cast<::dinero::ConfigService>(ctx.daemon->config);
@@ -842,6 +846,8 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
         result["error"] = "Invalid mining address";
         return result;
     }
+
+    auto chain_guard = chainstate->AcquireBlockIngressActivationLock();
 
     // Apply the same safety gate as getblocktemplate to prevent local-only
     // template generation while disconnected/behind.
