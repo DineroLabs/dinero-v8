@@ -14494,3 +14494,81 @@ if(DINERO_USE_VENDORED_DEPS)
   add_test(NAME RocksDBChecksum COMMAND test_rocksdb_checksum)
   set_tests_properties(RocksDBChecksum PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE LABELS "storage;checksum;platform")
 endif()
+
+# Attach after root CMake has also declared its Orchard service fixtures.
+function(dinero_attach_real_mempool_fixture_runtime)
+  # Chainstate now prepares real mempool transitions and retains service operation
+  # owners. The former no-op mempool stubs cannot implement those contracts.
+  # Compile the real runtime once for the affected service/storage/RPC fixtures;
+  # preserve each fixture and its existing vault isolation (or real vault runtime).
+  add_library(dinero_test_mempool_runtime OBJECT
+    src/daemon/mempool.cpp src/daemon/tx_relay_manager.cpp)
+  target_include_directories(dinero_test_mempool_runtime PRIVATE
+    ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+  target_link_libraries(dinero_test_mempool_runtime PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
+  set(_real_mempool_fixture_targets
+    test_assumeutxo_replay
+    test_block_acceptor_fees
+    test_block_ingress_service
+    test_block_template_determinism
+    test_block_validation_invariants
+    test_csn_shielded_delta_parity
+    test_forward_sync_activation_retry
+    test_orchard_runtime_reader
+    test_orchard_service_startup
+    test_p2p_service_shutdown_order
+    test_persist_pre_base_body_position
+    test_realign_shielded_after_heal
+    test_reconstruct_spent_coins
+    test_rpc_handler_drain
+    test_shielded_state_startup
+    test_utreexo_ephemeral
+    test_wallet_descriptor_active_context
+    test_wallet_pq_rpc_owner
+    test_wallet_psbt_policy_context
+  )
+  set(_built_mempool_fixture_targets "")
+  foreach(_fixture IN LISTS _real_mempool_fixture_targets)
+    if(NOT TARGET ${_fixture})
+      continue()
+    endif()
+    get_target_property(_sources ${_fixture} SOURCES)
+    list(FILTER _sources EXCLUDE REGEX "(^|/)tests/stubs/(mempool_test_stubs|daemon_test_stubs)\\.cpp$")
+    set_property(TARGET ${_fixture} PROPERTY SOURCES "${_sources}")
+    target_sources(${_fixture} PRIVATE $<TARGET_OBJECTS:dinero_test_mempool_runtime>)
+    get_target_property(_definitions ${_fixture} COMPILE_DEFINITIONS)
+    if(NOT "DINERO_TEST_REAL_VAULT_RUNTIME=1" IN_LIST _definitions)
+      target_sources(${_fixture} PRIVATE tests/stubs/vault_test_stubs.cpp)
+    endif()
+    target_include_directories(${_fixture} PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_libraries(${_fixture} PRIVATE
+        "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+        dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+        dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+        dinero_crypto "-Wl,--end-group" secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
+    else()
+      target_link_libraries(${_fixture} PRIVATE
+        dinero_core dinero_wallet dinero_chainstate dinero_consensus dinero_shielded
+        dinero_bridge dinero_pool dinero_lightning_keys dinero_address_encoding dinero_bip32
+        dinero_pq dinero_zk dinero_tx_primitives dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
+    endif()
+    if(TARGET bulletproofs_ffi)
+      target_link_libraries(${_fixture} PRIVATE bulletproofs_ffi)
+      if(TARGET build_bulletproofs_ffi)
+        add_dependencies(${_fixture} build_bulletproofs_ffi)
+      endif()
+    endif()
+    link_zstd_if_needed(${_fixture})
+    if(APPLE)
+      target_link_libraries(${_fixture} PRIVATE "-framework Security" "-framework CoreFoundation")
+    endif()
+    list(APPEND _built_mempool_fixture_targets "${_fixture}")
+  endforeach()
+  list(JOIN _built_mempool_fixture_targets "\n" _real_mempool_fixture_lines)
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/real-mempool-fixture-targets.txt"
+    CONTENT "${_real_mempool_fixture_lines}\n")
+endfunction()
+cmake_language(DEFER CALL dinero_attach_real_mempool_fixture_runtime)

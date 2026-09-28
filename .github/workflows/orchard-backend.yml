@@ -279,6 +279,30 @@ jobs:
           if sorted(re.findall(r'\[       OK \] ChainstateCommitBatchInterval\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Checkpoint interval cases did not complete exactly once')
           PYTEST
+      - name: Build and execute real mempool runtime test consumers
+        run: |
+          mapfile -t targets < build-orchard-root/real-mempool-fixture-targets.txt
+          test "${#targets[@]}" -eq 19
+          cmake --build build-orchard-root --parallel 4 --target "${targets[@]}" -- -k 0
+          ctest --test-dir build-orchard-root --show-only=json-v1 > orchard-real-mempool-all-inventory.json
+          python3 - <<'PYTEST'
+          import json,pathlib,re
+          targets=set(pathlib.Path('build-orchard-root/real-mempool-fixture-targets.txt').read_text().splitlines())
+          all_tests=json.load(open('orchard-real-mempool-all-inventory.json'))['tests']
+          tests=[t for t in all_tests if t.get('command') and pathlib.Path(t['command'][0]).name in targets]
+          if {pathlib.Path(t['command'][0]).name for t in tests}!=targets or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Real mempool test consumers missing or disabled')
+          json.dump({'tests':tests},open('orchard-real-mempool-inventory.json','w'),indent=2)
+          pathlib.Path('orchard-real-mempool-regex.txt').write_text('^('+'|'.join(re.escape(t['name']) for t in tests)+')$')
+          PYTEST
+          ctest --test-dir build-orchard-root -R "$(cat orchard-real-mempool-regex.txt)" --verbose --no-tests=error --output-log orchard-real-mempool-execution.log
+          python3 - <<'PYTEST'
+          import json,re
+          names=[t['name'] for t in json.load(open('orchard-real-mempool-inventory.json'))['tests']]
+          log=open('orchard-real-mempool-execution.log').read()
+          if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(names):
+              raise SystemExit('Real mempool test consumer executions incomplete')
+          PYTEST
       - name: Require and execute daemon mempool lifecycle jobs
         run: |
           ctest --test-dir build-orchard-root -R '^(DaemonServiceRelease|ContextualLocksLifecycle|CsnSpendReorgReconciliation|ParallelBlockDownloadTargeted)$' --show-only=json-v1 > orchard-daemon-mempool-jobs-inventory.json
@@ -1432,6 +1456,10 @@ jobs:
             orchard-refresh-owner-execution.log
             orchard-relay-refresh-owner-inventory.json
             orchard-relay-refresh-owner-execution.log
+            orchard-real-mempool-all-inventory.json
+            orchard-real-mempool-inventory.json
+            orchard-real-mempool-regex.txt
+            orchard-real-mempool-execution.log
             orchard-daemon-mempool-jobs-inventory.json
             orchard-daemon-mempool-jobs-execution.log
             orchard-mempool-service-owner-inventory.json
