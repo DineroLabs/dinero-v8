@@ -12055,6 +12055,27 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_tx_relay_g3.cpp)
   add_test(NAME TxRelayG3Verification COMMAND test_tx_relay_g3)
 endif()
 
+# Relay callback and prepared proof-refresh ownership.
+add_executable(test_relay_refresh_owner
+  tests/p2p/test_relay_refresh_owner.cpp
+  src/daemon/tx_relay_manager.cpp
+  src/mempool/tx_orphan_pool.cpp
+  src/daemon/interfaces/ingress_types.cpp
+  src/primitives/transaction.cpp
+  src/primitives/transaction_serializer.cpp
+  src/primitives/uint256.cpp
+  src/crypto/params_stub.cpp
+  src/common/sha256d.cpp
+  src/common/logger.cpp
+)
+target_link_libraries(test_relay_refresh_owner PRIVATE dinero_crypto GTest::gtest GTest::gtest_main)
+target_include_directories(test_relay_refresh_owner PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+if(APPLE)
+  target_link_libraries(test_relay_refresh_owner PRIVATE "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME RelayRefreshOwner COMMAND test_relay_refresh_owner)
+set_tests_properties(RelayRefreshOwner PROPERTIES LABELS "relay;refresh;owner" TIMEOUT 60)
+
 # Issue #6: CSN Proof Refresh Tests
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/p2p/test_csn_proof_refresh.cpp)
   add_executable(test_csn_proof_refresh

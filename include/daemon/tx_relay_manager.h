@@ -26,6 +26,7 @@
 #include "primitives/uint256.h"
 #include "daemon/interfaces/ingress_types.h"  // TxAcceptResult, TxRejectCode
 #include <functional>
+#include <atomic>
 #include <unordered_set>
 #include <unordered_map>
 #include <mutex>
@@ -101,21 +102,24 @@ public:
      * Set callback for sending P2P messages
      */
     void SetSendMessageCallback(SendMessageCallback callback) {
-        send_message_callback_ = callback;
+        { std::lock_guard<std::mutex> lock(callback_mutex_); send_message_callback_.swap(callback); }
+        // Destroy the replaced callable after releasing callback ownership.
     }
 
     /**
      * Set callback for transaction validation
      */
     void SetValidateTxCallback(ValidateTxCallback callback) {
-        validate_tx_callback_ = callback;
+        { std::lock_guard<std::mutex> lock(callback_mutex_); validate_tx_callback_.swap(callback); }
+        // Destroy the replaced callable after releasing callback ownership.
     }
 
     /**
      * Set callback for transaction retrieval from mempool
      */
     void SetRetrieveTxCallback(RetrieveTxCallback callback) {
-        retrieve_tx_callback_ = callback;
+        { std::lock_guard<std::mutex> lock(callback_mutex_); retrieve_tx_callback_.swap(callback); }
+        // Destroy the replaced callable after releasing callback ownership.
     }
 
     /**
@@ -133,7 +137,8 @@ public:
      * Preferred over SetValidateTxCallback when orphan pool is enabled.
      */
     void SetSubmitTxCallback(SubmitTxCallback callback) {
-        submit_tx_callback_ = callback;
+        { std::lock_guard<std::mutex> lock(callback_mutex_); submit_tx_callback_.swap(callback); }
+        // Destroy the replaced callable after releasing callback ownership.
     }
 
     /**
@@ -220,6 +225,23 @@ public:
      */
     void OnTipChanged();
 
+    // Selected-chain ownership precedes this lock. Thread-affine; the relay
+    // outlives the prepared object. Abandon preserves pending requests. No relay
+    // API may be called while holding it. Publication has no external callbacks.
+    class PreparedTipUpdate final {
+    public:
+        ~PreparedTipUpdate();
+        PreparedTipUpdate(const PreparedTipUpdate&) = delete;
+        PreparedTipUpdate& operator=(const PreparedTipUpdate&) = delete;
+        void PublishAfterCommit() noexcept;
+    private:
+        friend class TxRelayManager;
+        struct Impl;
+        explicit PreparedTipUpdate(std::unique_ptr<Impl>);
+        std::unique_ptr<Impl> impl_;
+    };
+    [[nodiscard]] std::unique_ptr<PreparedTipUpdate> PrepareTipChanged();
+
     /**
      * Record that a peer successfully served a utxotx message.
      * Makes this peer preferred for future refresh requests.
@@ -248,12 +270,14 @@ public:
     /**
      * Enable CSN mode: getdata uses MSG_UTREEXO_TX instead of MSG_TX
      */
-    void SetCsnMode(bool csn) { csn_mode_ = csn; }
+    void SetCsnMode(bool csn) { csn_mode_.store(csn); }
 
 private:
     // Logger
     ILogger* logger_;
 
+    // Only snapshot/replace under this mutex; invoke and destroy outside it.
+    mutable std::mutex callback_mutex_;
     // Callbacks
     SendMessageCallback send_message_callback_;
     ValidateTxCallback validate_tx_callback_;
@@ -267,7 +291,7 @@ private:
     std::chrono::steady_clock::time_point last_orphan_expiry_;
 
     // Phase #4: CSN mode — use MSG_UTREEXO_TX in getdata
-    bool csn_mode_ = false;
+    std::atomic<bool> csn_mode_{false};
 
     // Seen transactions (duplicate prevention)
     mutable std::mutex seen_txs_mutex_;
@@ -275,7 +299,12 @@ private:
 
     // Proof refresh state (#6)
     mutable std::mutex refresh_mutex_;
-    std::unordered_map<uint256, std::chrono::steady_clock::time_point> pending_refresh_;
+    struct RefreshBatch {};
+    struct PendingRefresh {
+        std::chrono::steady_clock::time_point started;
+        std::shared_ptr<const RefreshBatch> batch;
+    };
+    std::unordered_map<uint256, PendingRefresh> pending_refresh_;
     std::unordered_set<std::string> bridge_capable_peers_;
     size_t refresh_rr_index_ = 0;
     std::chrono::steady_clock::time_point last_refresh_batch_;
@@ -290,7 +319,7 @@ private:
     std::vector<uint8_t> SerializeInv(const uint256& txid) const;
 
     // Helper: Serialize getdata message
-    std::vector<uint8_t> SerializeGetData(const uint256& txid) const;
+    std::vector<uint8_t> SerializeGetData(const uint256& txid, bool csn) const;
 
     // Helper: Serialize tx message
     std::vector<uint8_t> SerializeTx(const Transaction& tx) const;
