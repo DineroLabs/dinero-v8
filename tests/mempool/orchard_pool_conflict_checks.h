@@ -165,3 +165,5 @@ TEST_F(OrchardPoolConflicts, PreparationFailurePreservesEntriesIndexesAndRetry) 
 }
 #endif
 }
+
+#include "orchard_typed_pool_tip_checks.h"

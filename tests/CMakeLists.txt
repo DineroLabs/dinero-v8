@@ -6660,6 +6660,9 @@ endfunction()
 cmake_language(DEFER CALL dinero_attach_orchard_mempool_typed_package_fixture)
 add_test(NAME MempoolTypedPackage COMMAND test_mempool_typed_package)
 add_test(NAME OrchardPoolConflicts COMMAND test_mempool_typed_package --gtest_filter=OrchardPoolConflicts.*)
+add_test(NAME OrchardTypedPoolTip COMMAND test_mempool_typed_package --gtest_filter=OrchardTypedPoolTip.*)
+set_tests_properties(OrchardTypedPoolTip PROPERTIES
+  LABELS "mempool;orchard;bridge;relay;mandatory" TIMEOUT 60)
 set_tests_properties(OrchardPoolConflicts PROPERTIES
   LABELS "mempool;orchard;conflicts;mandatory" TIMEOUT 60)
 set_tests_properties(MempoolTypedPackage PROPERTIES

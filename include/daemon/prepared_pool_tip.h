@@ -8,7 +8,7 @@
 #include <utility>
 
 namespace dinero {
-// One prepared update for the existing transparent pool and its proof caches.
+// One prepared update for typed pool conflict effects and its proof caches.
 // Caller holds selected-chain ownership and keeps the pool alive through this
 // object's lifetime. This does not own service shutdown or other consumers.
 // Lock order: selected chain -> pool -> bridge cache -> relay refresh.
@@ -25,6 +25,15 @@ public:
             if (!tx.IsCoinbase()) for (const auto& input : tx.vin)
                 effects.spent_transparent_inputs.emplace_back(input.prevout.txid,input.prevout.vout);
         }
+        return ConnectEffects(pool,std::move(bridge),std::move(relay),effects,height,root);
+    }
+    // The caller owns exact validated block effects and selected-chain/service
+    // lifetime. Preparation is reversible; publish only after canonical commit.
+    // This accepts both transaction families without Historical conversion.
+    static std::unique_ptr<PreparedPoolTip> ConnectEffects(
+        Mempool& pool, std::shared_ptr<network::BridgeNode> bridge,
+        std::shared_ptr<TxRelayManager> relay, const ConnectedBlockEffects& effects,
+        uint32_t height, const std::vector<uint8_t>& root) {
         auto result=std::unique_ptr<PreparedPoolTip>(new PreparedPoolTip(std::move(bridge),std::move(relay)));
         result->pool_=pool.prepareBlockConnected(effects,height,root,result->Policy());
         result->PrepareCaches();

@@ -862,6 +862,25 @@ jobs:
           assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
           PYTEST
 
+      - name: Typed pool tip cache publication
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardTypedPoolTip$' --show-only=json-v1 > orchard-typed-pool-tip-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-pool-tip-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardTypedPoolTip']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardTypedPoolTip$' --verbose --no-tests=error --output-log orchard-typed-pool-tip-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-pool-tip-execution.log').read_text()
+          for case in ['HistoricalAdapterAndEffectsHaveSamePublication','NullifierConflictAbandonsOrPublishesAllCacheOwners','PreparationFailureAndAmbiguousRefreshRetainCorrectState']:
+              assert log.count('[       OK ] OrchardTypedPoolTip.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Orchard nullifier block conflict reconciliation
         run: |
           cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
@@ -2013,6 +2032,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-typed-pool-tip-inventory.json
+            orchard-typed-pool-tip-execution.log
             orchard-pool-conflicts-inventory.json
             orchard-pool-conflicts-execution.log
             orchard-mining-topology-inventory.json
