@@ -6418,14 +6418,33 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Wallet now references chainstate/core members after their initial scan.
   # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
   # Raw group flags preserve compatibility with the CMake 3.20 minimum.
-  # Optional typed readers introduce consensus/wallet references. Keep those
-  # real archives inside the same Linux rescan group; the root declares them
-  # later, so resolve their presence at generation time (CMake 3.20 compatible).
+  # Core also reaches the optional runtime/wallet-delivery graph. Its entire
+  # project archive closure must share the rescan group: grouping only the
+  # transaction reader leaves late wallet->core backreferences unresolved.
+  # These targets are declared later; generation-time presence keeps OFF and
+  # CMake 3.20 supported without adding stubs or whole-archive extraction.
   target_link_libraries(test_mempool_address_capture PRIVATE
     "-Wl,--start-group" dinero_rpc_handlers dinero_core
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
     "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_gpu_mining>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_runtime_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_header>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_index_delivery>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_account_replay>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_archive>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_account>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_scan>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_queue>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_storage>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_chainstate_write>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_staging>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_coins>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_state_root>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_legacy_accounting>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_transparent>"
     "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
     dinero_wallet dinero_chainstate
     dinero_consensus dinero_shielded dinero_bridge dinero_pool
@@ -6480,14 +6499,33 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Wallet now references chainstate/core members after their initial scan.
   # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
   # Raw group flags preserve compatibility with the CMake 3.20 minimum.
-  # Optional typed readers introduce consensus/wallet references. Keep those
-  # real archives inside the same Linux rescan group; the root declares them
-  # later, so resolve their presence at generation time (CMake 3.20 compatible).
+  # Core also reaches the optional runtime/wallet-delivery graph. Its entire
+  # project archive closure must share the rescan group: grouping only the
+  # transaction reader leaves late wallet->core backreferences unresolved.
+  # These targets are declared later; generation-time presence keeps OFF and
+  # CMake 3.20 supported without adding stubs or whole-archive extraction.
   target_link_libraries(test_mempool_retained_load PRIVATE
     "-Wl,--start-group" dinero_rpc_handlers dinero_core
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
     "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_gpu_mining>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_runtime_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_header>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_index_delivery>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_account_replay>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_archive>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_account>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_scan>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_queue>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_storage>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_chainstate_write>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_staging>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_coins>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_state_root>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_legacy_accounting>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_transparent>"
     "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
     dinero_wallet dinero_chainstate
     dinero_consensus dinero_shielded dinero_bridge dinero_pool
@@ -6542,14 +6580,33 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # Wallet now references chainstate/core members after their initial scan.
   # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
   # Raw group flags preserve compatibility with the CMake 3.20 minimum.
-  # Optional typed readers introduce consensus/wallet references. Keep those
-  # real archives inside the same Linux rescan group; the root declares them
-  # later, so resolve their presence at generation time (CMake 3.20 compatible).
+  # Core also reaches the optional runtime/wallet-delivery graph. Its entire
+  # project archive closure must share the rescan group: grouping only the
+  # transaction reader leaves late wallet->core backreferences unresolved.
+  # These targets are declared later; generation-time presence keeps OFF and
+  # CMake 3.20 supported without adding stubs or whole-archive extraction.
   target_link_libraries(test_mempool_typed_package PRIVATE
     "-Wl,--start-group" dinero_rpc_handlers dinero_core
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_mempool_body>"
     "$<TARGET_NAME_IF_EXISTS:dinero_transaction_reader>"
     "$<TARGET_NAME_IF_EXISTS:dinero_orchard_backend>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_gpu_mining>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_runtime_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_header>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_index_delivery>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_account_replay>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_archive>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_account>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_scan>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_operation_queue>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_wallet_storage>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_chainstate_write>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_staging>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_coins>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_block_reader>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_state_root>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_legacy_accounting>"
+    "$<TARGET_NAME_IF_EXISTS:dinero_orchard_transparent>"
     "$<$<TARGET_EXISTS:dinero_transaction_reader>:dinero_consensus_core>"
     dinero_wallet dinero_chainstate
     dinero_consensus dinero_shielded dinero_bridge dinero_pool
