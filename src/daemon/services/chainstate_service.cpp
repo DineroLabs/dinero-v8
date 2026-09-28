@@ -10493,7 +10493,8 @@ void ChainstateService::ActivateBestChain() {
             if (logger_) logger_->info("[ActivateBestChain] Reconciling mempool after reorg (" +
                          std::to_string(disconnected_txs.size()) + " txs from disconnected blocks)");
 
-            size_t restored = daemon_ctx->mempool->mempool().ReconcileAfterReorg(
+            auto pool_use = MempoolService::AcquirePoolUse(daemon_ctx->mempool);
+            size_t restored = pool_use->Pool().ReconcileAfterReorg(
                 disconnected_txs,
                 connected_txs
             );
@@ -13397,7 +13398,8 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
                 reconnect_fork,
                 &connected_txs);
 
-            const size_t restored = daemon_ctx->mempool->mempool().ReconcileAfterReorg(
+            auto pool_use = MempoolService::AcquirePoolUse(daemon_ctx->mempool);
+            const size_t restored = pool_use->Pool().ReconcileAfterReorg(
                 disconnected_txs,
                 connected_txs
             );

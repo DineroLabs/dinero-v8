@@ -3630,7 +3630,8 @@ bool DaemonApp::Init(int argc, char** argv) {
                             }
                         } else {
                             // CSN PATH: Serve cached utxotx payload from mempool
-                            auto cached = mempool_for_getdata->mempool().getCachedUtxoTxPayload(hash);
+                            auto pool_use = MempoolService::AcquirePoolUse(mempool_for_getdata);
+                            auto cached = pool_use->Pool().getCachedUtxoTxPayload(hash);
                             if (!cached.has_value()) {
                                 g_logger.debug("[TX-RELAY] No cached utxotx for " + hash.GetHex().substr(0, 16) +
                                               " (not found or stale)");
@@ -5549,13 +5550,16 @@ bool DaemonApp::Init(int argc, char** argv) {
 
                             // 8. Accept into mempool or refresh existing proof
                             if (mempool_for_utxotx) {
+                                // Retain the same service operation through admission, proof
+                                // metadata, payload caching and synchronous relay callbacks.
+                                auto pool_use = MempoolService::AcquirePoolUse(mempool_for_utxotx);
                                 bool already_in_mempool = mempool_for_utxotx->hasTransaction(txid);
 
                                 if (already_in_mempool) {
                                     // REFRESH PATH (#6): TX already in mempool, update proof + cache
-                                    mempool_for_utxotx->mempool().refreshProof(
+                                    pool_use->Pool().refreshProof(
                                         txid, acc_root, stateless_node->GetSyncHeight());
-                                    mempool_for_utxotx->mempool().setCachedUtxoTxPayload(
+                                    pool_use->Pool().setCachedUtxoTxPayload(
                                         txid, std::vector<uint8_t>(payload.begin(), payload.end()));
                                     if (tx_relay_for_utxotx) {
                                         tx_relay_for_utxotx->CompleteRefresh(txid);
@@ -5568,9 +5572,9 @@ bool DaemonApp::Init(int argc, char** argv) {
                                     bool accepted_new_tx = false;
                                     auto submit_result = mempool_for_utxotx->Submit(tx, TxOrigin::P2P);
                                     if (submit_result.accepted()) {
-                                        mempool_for_utxotx->mempool().refreshProof(
+                                        pool_use->Pool().refreshProof(
                                             txid, acc_root, stateless_node->GetSyncHeight());
-                                        mempool_for_utxotx->mempool().setCachedUtxoTxPayload(
+                                        pool_use->Pool().setCachedUtxoTxPayload(
                                             txid, std::vector<uint8_t>(payload.begin(), payload.end()));
                                         accepted_new_tx = true;
                                     } else {
@@ -7127,7 +7131,8 @@ bool DaemonApp::Start() {
     // ChainstateService::Init()) but BEFORE services Start() so that
     // ChainstateService::Start() → ActivateBestChain() → ConnectBlock()
     if (ctx_.mempool && ctx_.mempool->isInitialized() && ctx_.chainstate) {
-        auto& mempool = ctx_.mempool->mempool();
+        auto pool_use = MempoolService::AcquirePoolUse(ctx_.mempool);
+        auto& mempool = pool_use->Pool();
         auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_.chainstate);
         if (chainstate) {
             mempool.setShieldedState(chainstate->GetShieldedCommitmentTree(),
@@ -7364,7 +7369,8 @@ bool DaemonApp::Start() {
         if (mempool_service) {
             std::cout << "[DaemonApp] Loading mempool from disk..." << std::endl;
 
-            Mempool& mempool = mempool_service->mempool();
+            auto pool_use = MempoolService::AcquirePoolUse(mempool_service);
+            Mempool& mempool = pool_use->Pool();
             std::string mempool_path = mempool.getDefaultMempoolPath();
 
             // Get data directory for correct path
@@ -7635,7 +7641,8 @@ void DaemonApp::Stop() {
         if (mempool_service) {
             std::cout << "[DaemonApp] Saving mempool to disk..." << std::endl;
 
-            Mempool& mempool = mempool_service->mempool();
+            auto pool_use = MempoolService::AcquirePoolUse(mempool_service);
+            Mempool& mempool = pool_use->Pool();
             std::string mempool_path = mempool.getDefaultMempoolPath();
 
             // Get data directory for correct path
