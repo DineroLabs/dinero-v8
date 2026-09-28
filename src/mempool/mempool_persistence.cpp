@@ -139,7 +139,7 @@ bool MempoolPersistence::save(
         // For each transaction
         for (const auto& entry : entries) {
             // Serialize transaction to canonical wire bytes (proven in v0.13.0.1)
-            std::vector<uint8_t> tx_bytes = entry.tx.Serialize(true);
+            std::vector<uint8_t> tx_bytes = entry.tx.Historical().Serialize(true);
 
             // Tx bytes length + tx bytes
             writeBytes(data, tx_bytes);

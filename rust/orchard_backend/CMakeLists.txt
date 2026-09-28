@@ -79,6 +79,9 @@ add_library(dinero_transaction_reader STATIC
   "${ORCHARD_HOST_ROOT}/src/consensus/orchard_coin_snapshot.cpp")
 target_include_directories(dinero_transaction_reader PUBLIC "${ORCHARD_HOST_ROOT}/include")
 target_link_libraries(dinero_transaction_reader PUBLIC dinero_orchard_backend)
+add_library(dinero_orchard_mempool_body STATIC
+  "${ORCHARD_HOST_ROOT}/src/daemon/orchard_mempool_transaction.cpp")
+target_link_libraries(dinero_orchard_mempool_body PUBLIC dinero_transaction_reader)
 if(TARGET dinero_consensus_core)
   target_link_libraries(dinero_transaction_reader PUBLIC dinero_consensus_core)
 else()

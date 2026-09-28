@@ -288,11 +288,11 @@ public:
         }
 
         auto it = mempool_entries_->find(txid);
-        if (it == mempool_entries_->end() || vout >= it->second.tx.vout.size()) {
+        if (it == mempool_entries_->end() || vout >= it->second.tx.Historical().vout.size()) {
             return false;
         }
 
-        const auto& txout = it->second.tx.vout[vout];
+        const auto& txout = it->second.tx.Historical().vout[vout];
         out.value = txout.value;
         out.scriptPubKey = txout.scriptPubKey;
         out.height = it->second.height;
@@ -416,31 +416,31 @@ double GetPackageSelectionScore(const MempoolEntry& entry) {
 void PopulatePrivacyLaneMetrics(MempoolEntry& entry, const mining::CTSelectionConfig& config) {
     entry.is_confidential = false;
     entry.total_proof_bytes = 0;
-    entry.effective_vsize = std::max<size_t>(entry.tx.GetVirtualSize(), 1);
+    entry.effective_vsize = std::max<size_t>(entry.tx.Historical().GetVirtualSize(), 1);
     entry.adjusted_fee_rate = entry.fee_rate;
     entry.ancestor_effective_vsize = entry.effective_vsize;
     entry.ancestor_adjusted_feerate = entry.adjusted_fee_rate;
 
-    for (const auto& output : entry.tx.vout) {
+    for (const auto& output : entry.tx.Historical().vout) {
         if (output.is_confidential) {
             entry.is_confidential = true;
             break;
         }
     }
 
-    if (entry.tx.HasExplicitFee()) {
-        entry.fee = entry.tx.GetExplicitFee();
+    if (entry.tx.Historical().HasExplicitFee()) {
+        entry.fee = entry.tx.Historical().GetExplicitFee();
         entry.fee_rate = entry.tx_size > 0 ? static_cast<double>(entry.fee) / entry.tx_size : 0.0;
     }
 
     if (entry.is_confidential) {
         mining::CTSelectionPolicy ct_policy(config);
-        const auto weight_info = ct_policy.GetWeightInfo(entry.tx);
+        const auto weight_info = ct_policy.GetWeightInfo(entry.tx.Historical());
         entry.total_proof_bytes = weight_info.proof_bytes;
         entry.effective_vsize = static_cast<size_t>((weight_info.total_weight + 3) / 4);
     }
 
-    const uint64_t effective_fee = entry.tx.HasExplicitFee() ? entry.tx.GetExplicitFee() : entry.fee;
+    const uint64_t effective_fee = entry.tx.Historical().HasExplicitFee() ? entry.tx.Historical().GetExplicitFee() : entry.fee;
     entry.adjusted_fee_rate = entry.effective_vsize > 0
         ? static_cast<double>(effective_fee) / entry.effective_vsize
         : 0.0;
@@ -598,7 +598,9 @@ struct Mempool::StateRollback {
     ~StateRollback() noexcept { if (!committed) Swap(); }
 };
 
-void Mempool::addUnchecked(const Transaction& tx) {
+void Mempool::addUnchecked(const Transaction& incoming_tx) {
+    const MempoolTransaction transaction(incoming_tx);
+    const Transaction& tx = transaction.Historical();
     if (tx.HasConfidentialOutputs()) {
         throw std::logic_error(
             "addUnchecked() rejects confidential transactions; use canonical ingress");
@@ -606,11 +608,10 @@ void Mempool::addUnchecked(const Transaction& tx) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     uint256 txid_u256 = tx.GetTxid().AsUint256();
     StateRollback rollback(*this);
-    MempoolEntry entry(tx, /*fee=*/0, /*block_height=*/0);
+    MempoolEntry entry(transaction, /*fee=*/0, /*block_height=*/0);
     for (const auto& input : tx.vin) {
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         m_spent_outputs[outpoint].insert(txid_u256);
-        entry.spends.push_back(outpoint);
     }
     m_transactions[txid_u256] = entry;
     rebuildCoinsViewLocked();
@@ -618,10 +619,14 @@ void Mempool::addUnchecked(const Transaction& tx) {
 }
 
 TxAcceptResult Mempool::submitTransactionInternal(
-    const Transaction& tx,
+    const Transaction& incoming_tx,
     const std::string& source,
     bool relay,
     bool test_only) {
+    // Capture one immutable body before callbacks, selected-chain acquisition,
+    // validation or pool mutation. Insertion and observers retain this owner.
+    const MempoolTransaction transaction(incoming_tx);
+    const Transaction& tx = transaction.Historical();
     auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
     if (chainstate_read_guard_factory_ && !chainstate_guard) {
         return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, "chainstate unavailable");
@@ -808,10 +813,10 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
         ancestor_count++;
         ancestor_size += ancestor_it->second.tx_size;
-        ancestor_has_auth |= consensus::shielded::HasShieldedResources(ancestor_it->second.tx);
+        ancestor_has_auth |= consensus::shielded::HasShieldedResources(ancestor_it->second.tx.Historical());
 
         // Add this ancestor's parents
-        for (const auto& input : ancestor_it->second.tx.vin) {
+        for (const auto& input : ancestor_it->second.tx.Historical().vin) {
             TxId grandparent_txid = input.prevout.txid;
             if (m_transactions.find(grandparent_txid.AsUint256()) != m_transactions.end() &&
                 !visited_ancestors.count(grandparent_txid.AsUint256())) {
@@ -859,7 +864,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
         uint32_t descendant_count = 1;  // Count the new transaction
         uint64_t descendant_size = tx_size;
         bool descendant_has_auth = consensus::shielded::HasShieldedResources(tx) ||
-            consensus::shielded::HasShieldedResources(parent_it->second.tx);
+            consensus::shielded::HasShieldedResources(parent_it->second.tx.Historical());
         std::unordered_set<uint256> visited_descendants;
         std::vector<uint256> to_visit_descendants;
 
@@ -868,7 +873,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
             if (mempool_txid == parent_txid.AsUint256() || replaced_txids.count(mempool_txid)) continue;
 
             // Check if this transaction spends from the parent
-            for (const auto& tx_input : entry.tx.vin) {
+            for (const auto& tx_input : entry.tx.Historical().vin) {
                 TxId input_parent_txid = tx_input.prevout.txid;
                 if (input_parent_txid.AsUint256() == parent_txid.AsUint256()) {
                     to_visit_descendants.push_back(mempool_txid);
@@ -890,13 +895,13 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
             descendant_count++;
             descendant_size += descendant_it->second.tx_size;
-            descendant_has_auth |= consensus::shielded::HasShieldedResources(descendant_it->second.tx);
+            descendant_has_auth |= consensus::shielded::HasShieldedResources(descendant_it->second.tx.Historical());
 
             // Add this descendant's children
             for (const auto& [mempool_txid, entry] : m_transactions) {
                 if (replaced_txids.count(mempool_txid) || visited_descendants.count(mempool_txid)) continue;
 
-                for (const auto& tx_input : entry.tx.vin) {
+                for (const auto& tx_input : entry.tx.Historical().vin) {
                     TxId input_parent_txid = tx_input.prevout.txid;
                     if (input_parent_txid.AsUint256() == current) {
                         to_visit_descendants.push_back(mempool_txid);
@@ -965,14 +970,14 @@ TxAcceptResult Mempool::submitTransactionInternal(
     }
     
     // Create mempool entry
-    MempoolEntry entry(tx, fee, current_height);
+    MempoolEntry entry(transaction, fee, current_height);
     PopulatePrivacyLaneMetrics(entry, ct_config_);
 
     // Phase 8 Commit 2: compute VWU for ordering/eviction/RBF. Done after
     // PopulatePrivacyLaneMetrics so the CT vsize is already settled
     // (though VWU doesn't consume it) and before ancestor rollup so we
     // can include ancestors' VWU in entry.ancestor_vwu.
-    entry.vwu = computeVWUForTx(entry.tx);
+    entry.vwu = computeVWUForTx(entry.tx.Historical());
     if (entry.vwu == 0) {
         // Defensive fallback: ordering denominators can never be zero.
         entry.vwu = std::max<uint64_t>(entry.tx_size, 1);
@@ -1025,7 +1030,6 @@ TxAcceptResult Mempool::submitTransactionInternal(
     for (const auto& input : tx.vin) {
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         m_spent_outputs[outpoint].insert(txid_u256);
-        entry.spends.push_back(outpoint);
     }
 
     // Add to main storage
@@ -1234,12 +1238,12 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
         if (it != m_transactions.end()) {
             const MempoolEntry& parent = it->second;
 
-            if (input.prevout.vout >= parent.tx.vout.size()) {
+            if (input.prevout.vout >= parent.tx.Historical().vout.size()) {
                 return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX,
                     "Input references invalid output index", txid_u256);
             }
 
-            coin_value = parent.tx.vout[input.prevout.vout].value.GetUna();  // AmountUna → uint64_t
+            coin_value = parent.tx.Historical().vout[input.prevout.vout].value.GetUna();  // AmountUna → uint64_t
             found = true;
             OutPoint outpoint{input_txid, input.prevout.vout};
             MPLOG_DEBUG("TEST_ONLY: Input from mempool: " + outpoint.ToString() +
@@ -1359,7 +1363,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
         bool rbf_signaled = true;
         for (const auto* conflicting : conflicting_entries) {
             bool tx_signals_rbf = false;
-            for (const auto& input : conflicting->tx.vin) {
+            for (const auto& input : conflicting->tx.Historical().vin) {
                 if (input.sequence < 0xfffffffe) {
                     tx_signals_rbf = true;
                     break;
@@ -1539,7 +1543,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
             if (mempool_txid == parent_txid) continue;  // Skip the parent itself
 
             // Check if this transaction spends from the parent
-            for (const auto& tx_input : mempool_entry.tx.vin) {
+            for (const auto& tx_input : mempool_entry.tx.Historical().vin) {
                 TxId input_parent_txid = tx_input.prevout.txid;
                 if (input_parent_txid.AsUint256() == parent_txid) {
                     to_visit_descendants.push_back(mempool_txid);
@@ -1566,7 +1570,7 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
             for (const auto& [mempool_txid, mempool_entry] : m_transactions) {
                 if (visited_descendants.count(mempool_txid)) continue;
 
-                for (const auto& tx_input : mempool_entry.tx.vin) {
+                for (const auto& tx_input : mempool_entry.tx.Historical().vin) {
                     TxId input_parent_txid = tx_input.prevout.txid;
                     if (input_parent_txid.AsUint256() == current) {
                         to_visit_descendants.push_back(mempool_txid);
@@ -1651,7 +1655,6 @@ TxAcceptResult Mempool::submitTransactionTestOnly(const Transaction& tx, const s
     for (const auto& input : tx.vin) {
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         m_spent_outputs[outpoint].insert(txid_u256);
-        entry.spends.push_back(outpoint);
     }
 
     // Add to main storage
@@ -1817,7 +1820,7 @@ std::shared_ptr<Transaction> Mempool::getTransaction(const uint256& txid) const 
 
     auto it = m_transactions.find(txid);
     if (it != m_transactions.end()) {
-        return std::make_shared<Transaction>(it->second.tx);
+        return std::make_shared<Transaction>(it->second.tx.Historical());
     }
     return nullptr;
 }
@@ -1867,7 +1870,7 @@ std::vector<Transaction> Mempool::getAllTransactions() const {
     transactions.reserve(m_transactions.size());
     
     for (const auto& pair : m_transactions) {
-        transactions.push_back(pair.second.tx);
+        transactions.push_back(pair.second.tx.Historical());
     }
     
     return transactions;
@@ -1886,7 +1889,7 @@ std::vector<Transaction> Mempool::getTransactionsByFeeRate(size_t max_count) con
         
         auto tx_it = m_transactions.find(it->second);
         if (tx_it != m_transactions.end()) {
-            transactions.push_back(tx_it->second.tx);
+            transactions.push_back(tx_it->second.tx.Historical());
         }
     }
     
@@ -1925,7 +1928,7 @@ std::vector<Transaction> Mempool::getTransactionsForAddress(const std::string& a
 
     // Scan all mempool transactions for outputs to this script or inputs spending it.
     for (const auto& pair : m_transactions) {
-        const Transaction& tx = pair.second.tx;
+        const Transaction& tx = pair.second.tx.Historical();
         bool involves_address = false;
 
         // Check outputs.
@@ -1947,8 +1950,8 @@ std::vector<Transaction> Mempool::getTransactionsForAddress(const std::string& a
 
                 auto parent_it = m_transactions.find(input.prevout.txid.AsUint256());
                 if (parent_it != m_transactions.end() &&
-                    input.prevout.vout < parent_it->second.tx.vout.size() &&
-                    parent_it->second.tx.vout[input.prevout.vout].scriptPubKey == target_script) {
+                    input.prevout.vout < parent_it->second.tx.Historical().vout.size() &&
+                    parent_it->second.tx.Historical().vout[input.prevout.vout].scriptPubKey == target_script) {
                     matched_input = true;
                 }
 
@@ -2160,7 +2163,7 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
         std::vector<uint256> to_visit;
 
         // Start with direct parents
-        for (const auto& input : entry.tx.vin) {
+        for (const auto& input : entry.tx.Historical().vin) {
             TxId parent_txid = input.prevout.txid;
 
             if (isTemplateExcludedLocked(parent_txid.AsUint256(), now, nullptr)) {
@@ -2215,7 +2218,7 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
                                       : static_cast<uint64_t>(ancestor_entry.tx_size);
 
             // Add this ancestor's parents to visit list
-            for (const auto& input : ancestor_entry.tx.vin) {
+            for (const auto& input : ancestor_entry.tx.Historical().vin) {
                 TxId grandparent_txid = input.prevout.txid;
                 if (isTemplateExcludedLocked(grandparent_txid.AsUint256(), now, nullptr)) {
                     excluded_ancestor = true;
@@ -2349,17 +2352,17 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
         for (const auto& ancestor : score.ancestors) {
             if (!included.count(ancestor)) {
                 auto it = m_transactions.find(ancestor);
-                if (it != m_transactions.end()) add_auth_resources(it->second.tx);
+                if (it != m_transactions.end()) add_auth_resources(it->second.tx.Historical());
             }
         }
-        add_auth_resources(score.entry->tx);
+        add_auth_resources(score.entry->tx.Historical());
         if (!auth_resources_ok) continue;
 
-        uint64_t package_weight = score.entry->tx.GetWeight();
+        uint64_t package_weight = score.entry->tx.Historical().GetWeight();
         for (const auto& ancestor : score.ancestors) {
             if (!included.count(ancestor)) {
                 auto it = m_transactions.find(ancestor);
-                if (it != m_transactions.end()) package_weight += it->second.tx.GetWeight();
+                if (it != m_transactions.end()) package_weight += it->second.tx.Historical().GetWeight();
             }
         }
 
@@ -2374,18 +2377,18 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
             if (!included.count(ancestor_txid)) {
                 auto ancestor_it = m_transactions.find(ancestor_txid);
                 if (ancestor_it != m_transactions.end()) {
-                    selected.push_back(ancestor_it->second.tx);
+                    selected.push_back(ancestor_it->second.tx.Historical());
                     included.insert(ancestor_txid);
                     current_size += ancestor_it->second.tx_size;
-                    current_weight += ancestor_it->second.tx.GetWeight();
+                    current_weight += ancestor_it->second.tx.Historical().GetWeight();
                 }
             }
         }
         // Include the transaction itself
-        selected.push_back(score.entry->tx);
+        selected.push_back(score.entry->tx.Historical());
         included.insert(score.txid);
         current_size += score.entry->tx_size;
-        current_weight += score.entry->tx.GetWeight();
+        current_weight += score.entry->tx.Historical().GetWeight();
         current_auth_resources = candidate_auth_resources;
 
         MPLOG_DEBUG("CPFP: Selected " + score.txid.GetHex() + " with " +
@@ -2418,7 +2421,7 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
 bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
                                          uint32_t next_block_height,
                                          std::string* reason) const {
-    const Transaction& tx = entry.tx;
+    const Transaction& tx = entry.tx.Historical();
     if (next_block_height == 0) {
         return true;
     }
@@ -2433,7 +2436,7 @@ bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,
         const OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         const auto parent = m_transactions.find(input.prevout.txid.AsUint256());
         if (parent != m_transactions.end() &&
-            input.prevout.vout < parent->second.tx.vout.size()) {
+            input.prevout.vout < parent->second.tx.Historical().vout.size()) {
             continue;  // Unconfirmed transaction outputs are not coinbase.
         }
 
@@ -2654,7 +2657,7 @@ std::vector<uint256> GatherRemovalBranch(
     const std::vector<uint256>& roots) {
     std::unordered_map<uint256, std::vector<uint256>> children;
     for (const auto& [txid, entry] : entries) {
-        for (const auto& input : entry.tx.vin) {
+        for (const auto& input : entry.tx.Historical().vin) {
             const auto& parent = input.prevout.txid.AsUint256();
             if (entries.count(parent)) children[parent].push_back(txid);
         }
@@ -2865,21 +2868,21 @@ void Mempool::rebuildCoinsViewLocked() {
     coins_view_.clear();
 
     for (const auto& [txid, entry] : m_transactions) {
-        for (size_t vout = 0; vout < entry.tx.vout.size(); ++vout) {
+        for (size_t vout = 0; vout < entry.tx.Historical().vout.size(); ++vout) {
             OutPoint out{TxId(txid), static_cast<uint32_t>(vout)};
             consensus::UTXOEntry utxo_entry;
-            utxo_entry.value = entry.tx.vout[vout].value;
-            utxo_entry.scriptPubKey = entry.tx.vout[vout].scriptPubKey;
+            utxo_entry.value = entry.tx.Historical().vout[vout].value;
+            utxo_entry.scriptPubKey = entry.tx.Historical().vout[vout].scriptPubKey;
             utxo_entry.height = entry.height;
             utxo_entry.isCoinbase = false;
-            utxo_entry.is_confidential = entry.tx.vout[vout].is_confidential;
-            utxo_entry.commitment = entry.tx.vout[vout].commitment;
+            utxo_entry.is_confidential = entry.tx.Historical().vout[vout].is_confidential;
+            utxo_entry.commitment = entry.tx.Historical().vout[vout].commitment;
             coins_view_.addCoin(out, utxo_entry);
         }
     }
 
     for (const auto& [txid, entry] : m_transactions) {
-        for (const auto& input : entry.tx.vin) {
+        for (const auto& input : entry.tx.Historical().vin) {
             OutPoint out{input.prevout.txid, input.prevout.vout};
             coins_view_.spendCoin(out);
         }
@@ -3500,12 +3503,12 @@ bool Mempool::validateTransaction(
 
         for (const auto& spend : bundle.spends) {
             for (const auto& [mempool_txid, entry] : m_transactions) {
-                if (entry.tx.shielded_bundle_bytes.empty()) {
+                if (entry.tx.Historical().shielded_bundle_bytes.empty()) {
                     continue;
                 }
                 consensus::shielded::ShieldedBundle mempool_bundle;
                 if (consensus::shielded::DeserializeShieldedBundle(
-                        entry.tx.shielded_bundle_bytes, &mempool_bundle) !=
+                        entry.tx.Historical().shielded_bundle_bytes, &mempool_bundle) !=
                     consensus::shielded::BundleDecodeError::Ok) {
                     continue;
                 }
@@ -3728,8 +3731,8 @@ std::optional<consensus::UTXOEntry> Mempool::recoverConflictedInputUTXO(const Ou
     }
 
     auto parent_it = m_transactions.find(outpoint.txid.AsUint256());
-    if (parent_it != m_transactions.end() && outpoint.vout < parent_it->second.tx.vout.size()) {
-        const auto& output = parent_it->second.tx.vout[outpoint.vout];
+    if (parent_it != m_transactions.end() && outpoint.vout < parent_it->second.tx.Historical().vout.size()) {
+        const auto& output = parent_it->second.tx.Historical().vout[outpoint.vout];
         consensus::UTXOEntry recovered;
         recovered.value = output.value;
         recovered.scriptPubKey = output.scriptPubKey;

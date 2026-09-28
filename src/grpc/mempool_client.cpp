@@ -142,7 +142,7 @@ StatusOr<MempoolEntry> MempoolClient::GetMempoolTransaction(const uint256& txid)
 
     // Create MempoolEntry
     MempoolEntry entry;
-    entry.tx = tx;
+    entry.tx = MempoolTransaction(tx);
     entry.fee = response.fee();
     entry.tx_size = response.vsize();
     // Convert Unix timestamp to steady_clock

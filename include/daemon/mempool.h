@@ -2,6 +2,7 @@
 
 #include "consensus/outpoint.h"  // Phase M.0: Canonical OutPoint
 #include "daemon/connected_block_effects.h"
+#include "daemon/mempool_transaction.h"
 #include "primitives/uint256.h"  // Phase M.0: uint256 type
 #include "daemon/interfaces/ingress_types.h"  // Step 5: Canonical ingress types
 #include <unordered_map>
@@ -73,7 +74,7 @@ namespace policy {
  * Phase M.0: Updated to use uint256 and OutPoint
  */
 struct MempoolEntry {
-    Transaction tx;                                              // The transaction
+    MempoolTransaction tx;                                      // Immutable owned body; explicit family access
     uint64_t fee;                                               // Transaction fee in una
     double fee_rate;                                            // Fee per byte (una/byte)
     std::chrono::time_point<std::chrono::steady_clock> time;    // When added to mempool
@@ -122,10 +123,16 @@ struct MempoolEntry {
     }
 
     MempoolEntry(const Transaction& transaction, uint64_t tx_fee, uint32_t block_height)
-        : tx(transaction), fee(tx_fee), height(block_height),
+        : MempoolEntry(MempoolTransaction(transaction), tx_fee, block_height) {}
+
+    MempoolEntry(MempoolTransaction transaction, uint64_t tx_fee, uint32_t block_height)
+        : tx(std::move(transaction)), fee(tx_fee), height(block_height),
           ancestor_fee(0), ancestor_size(0), ancestor_feerate(0.0),
           effective_vsize(0), ancestor_effective_vsize(0), ancestor_adjusted_feerate(0.0),
           is_confidential(false), total_proof_bytes(0), adjusted_fee_rate(0.0) {
+        if (tx.IsOrchard() && tx.ExplicitFee() != std::optional<uint64_t>(tx_fee))
+            throw std::invalid_argument("Orchard mempool entry fee mismatch");
+        spends = tx.Inputs();
         time = std::chrono::steady_clock::now();
         tx_size = tx.GetSize(); // Actual serialized bytes, including witness
         fee_rate = tx_size > 0 ? static_cast<double>(fee) / tx_size : 0.0;
@@ -134,10 +141,12 @@ struct MempoolEntry {
         ancestor_adjusted_feerate = fee_rate;
 
         // Compute CT metadata
-        for (const auto& output : tx.vout) {
-            if (output.is_confidential) {
-                is_confidential = true;
-                total_proof_bytes += output.range_proof.size();
+        if (!tx.IsOrchard()) {
+            for (const auto& output : tx.Historical().vout) {
+                if (output.is_confidential) {
+                    is_confidential = true;
+                    total_proof_bytes += output.range_proof.size();
+                }
             }
         }
         adjusted_fee_rate = effective_vsize > 0 ? static_cast<double>(fee) / effective_vsize : fee_rate;
@@ -219,8 +228,8 @@ public:
     bool hasTransaction(const uint256& txid) const;
     std::shared_ptr<Transaction> getTransaction(const uint256& txid) const;
 
-    // STEP 2: TEST_ONLY transaction submission (bypasses signature validation)
-    // Note: Still returns structured result for consistency
+    // Preflight through canonical signature and policy validation, without
+    // admission or relay. A pass does not authorize a later submission.
     TxAcceptResult submitTransactionTestOnly(const Transaction& tx, const std::string& source);
 
     // Unchecked insertion: no validation, no fee calc, no UTXO lookups.

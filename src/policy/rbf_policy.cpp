@@ -27,10 +27,10 @@ size_t GetEffectiveVirtualSize(
     const mining::CTSelectionPolicy& ct_policy)
 {
     if (!entry.is_confidential) {
-        return entry.tx.GetVirtualSize();
+        return entry.tx.Historical().GetVirtualSize();
     }
 
-    const auto weight_info = ct_policy.GetWeightInfo(entry.tx);
+    const auto weight_info = ct_policy.GetWeightInfo(entry.tx.Historical());
     return static_cast<size_t>((weight_info.total_weight + 3) / 4);
 }
 
@@ -76,7 +76,7 @@ bool RBFPolicy::checkNoNewUnconfirmed(
     // Build set of all inputs from original transactions being replaced
     std::unordered_set<std::string> original_inputs;
     for (const auto& entry : original_entries) {
-        for (const auto& input : entry.tx.vin) {
+        for (const auto& input : entry.tx.Historical().vin) {
             // Phase M.0: Convert uint256 to hex for outpoint string
             std::string outpoint = input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
             original_inputs.insert(outpoint);
@@ -296,7 +296,7 @@ RBFConflictSet RBFPolicy::buildConflictSet(
         bool is_conflict = false;
 
         // Check if this transaction spends any of the same outpoints
-        for (const auto& input : entry.tx.vin) {
+        for (const auto& input : entry.tx.Historical().vin) {
             // Phase M.0: Convert uint256 to hex for outpoint string
             std::string outpoint = input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
             if (replacement_outpoints.find(outpoint) != replacement_outpoints.end()) {
@@ -307,11 +307,11 @@ RBFConflictSet RBFPolicy::buildConflictSet(
 
         if (is_conflict) {
             // Phase M.4: GetTxid() returns TxId, extract uint256 for storage
-            TxId txid = entry.tx.GetTxid();
+            TxId txid = entry.tx.Historical().GetTxid();
             conflict_set.direct_conflicts.insert(txid.AsUint256());
             conflict_set.total_fee += entry.fee;
             conflict_set.total_size += entry.tx_size;
-            conflict_set.total_virtual_size += entry.tx.GetVirtualSize();
+            conflict_set.total_virtual_size += entry.tx.Historical().GetVirtualSize();
             conflict_set.total_effective_vsize += GetEffectiveVirtualSize(entry, ct_policy);
             conflict_set.conflict_count++;
 
@@ -331,7 +331,7 @@ RBFConflictSet RBFPolicy::buildConflictSet(
 
         for (const auto& entry : mempool_entries) {
             // Phase M.4: GetTxid() returns TxId, extract uint256 for storage
-            TxId txid = entry.tx.GetTxid();
+            TxId txid = entry.tx.Historical().GetTxid();
 
             // Skip if already in conflict set
             if (all_conflicts.find(txid.AsUint256()) != all_conflicts.end()) {
@@ -339,7 +339,7 @@ RBFConflictSet RBFPolicy::buildConflictSet(
             }
 
             // Check if this transaction spends from any conflicting transaction
-            for (const auto& input : entry.tx.vin) {
+            for (const auto& input : entry.tx.Historical().vin) {
                 // Phase M.4: input.prevout.txid is TxId, extract uint256 for find()
                 if (all_conflicts.find(input.prevout.txid.AsUint256()) != all_conflicts.end()) {
                     // This transaction is a descendant of a conflict
@@ -347,7 +347,7 @@ RBFConflictSet RBFPolicy::buildConflictSet(
                     all_conflicts.insert(txid.AsUint256());
                     conflict_set.total_fee += entry.fee;
                     conflict_set.total_size += entry.tx_size;
-                    conflict_set.total_virtual_size += entry.tx.GetVirtualSize();
+                    conflict_set.total_virtual_size += entry.tx.Historical().GetVirtualSize();
                     conflict_set.total_effective_vsize += GetEffectiveVirtualSize(entry, ct_policy);
                     conflict_set.conflict_count++;
 

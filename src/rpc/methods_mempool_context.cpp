@@ -366,7 +366,7 @@ din::Json rpc_context_mempool_getmempoolentry(const ExecutionContext& ctx, const
         result["spentby"] = spentby_array;
 
         // BIP125 replaceability derived from transaction sequence signaling.
-        result["bip125-replaceable"] = SignalsRBF(entry.tx);
+        result["bip125-replaceable"] = SignalsRBF(entry.tx.Historical());
 
         dinero::g_logger.debug("[Mempool RPC] getmempoolentry: " + txid_hex);
 

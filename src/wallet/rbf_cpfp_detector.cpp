@@ -97,7 +97,7 @@ RbfCapability RbfCpfpDetector::CheckRbfCapability(
     // Any input with sequence < 0xfffffffe signals RBF
     const auto& entry = *entry_opt;
     bool signals_rbf = false;
-    for (const auto& vin : entry.tx.vin) {
+    for (const auto& vin : entry.tx.Historical().vin) {
         if (vin.sequence < 0xfffffffe) {
             signals_rbf = true;
             break;

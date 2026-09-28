@@ -688,6 +688,24 @@ jobs:
           if sorted(re.findall(r'\[       OK \] MempoolInputOwners\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Input owner cases did not complete exactly once')
           PYTEST
+      - name: Require and execute mempool transaction body ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_transaction_body --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolTransactionBody$' --show-only=json-v1 > orchard-transaction-body-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-transaction-body-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolTransactionBody'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Transaction body test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolTransactionBody$' --verbose --no-tests=error --output-log orchard-transaction-body-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-transaction-body-execution.log').read()
+          expected=['HistoricalCopyRetainsBodyAndInputs','AdmissionCapturesBeforeChainCallback','EmptyAndWrongFamilyAccessRefuse','OrchardEntryOwnsCanonicalBodyWithoutLegacyConversion']
+          if sorted(re.findall(r'\[       OK \] MempoolTransactionBody\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Transaction body cases did not complete exactly once')
+          PYTEST
       - name: Require and execute all-ancestor package bounds
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --show-only=json-v1 > orchard-package-bounds-inventory.json
@@ -1713,6 +1731,8 @@ jobs:
             orchard-maintenance-owner-execution.log
             orchard-input-owners-inventory.json
             orchard-input-owners-execution.log
+            orchard-transaction-body-inventory.json
+            orchard-transaction-body-execution.log
             orchard-package-bounds-inventory.json
             orchard-package-bounds-execution.log
             orchard-replacement-policy-inventory.json

@@ -6031,6 +6031,59 @@ add_test(NAME MempoolInputOwners COMMAND test_mempool_input_owners)
 set_tests_properties(MempoolInputOwners PROPERTIES
   LABELS "mempool;inputs;owner" TIMEOUT 60)
 
+add_executable(test_mempool_transaction_body
+  tests/mempool/test_mempool_transaction_body.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_transaction_body PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_transaction_body PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_transaction_body PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_transaction_body build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_transaction_body)
+target_include_directories(test_mempool_transaction_body PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_transaction_body PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_body_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_transaction_body PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_transaction_body PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_body_fixture)
+add_test(NAME MempoolTransactionBody COMMAND test_mempool_transaction_body)
+set_tests_properties(MempoolTransactionBody PROPERTIES
+  LABELS "mempool;body;owner" TIMEOUT 60)
+
 add_executable(test_mempool_admission_owner
   tests/mempool/test_mempool_admission_owner.cpp
   src/daemon/mempool.cpp
