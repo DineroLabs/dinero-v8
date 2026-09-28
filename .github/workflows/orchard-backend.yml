@@ -841,6 +841,27 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 4' in log
           PYTEST
 
+      - name: Typed mempool dependency policy
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MempoolTypedPackage|AssumeUtxoPrebaseMempoolResolution)$' --show-only=json-v1 > orchard-typed-package-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-package-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['AssumeUtxoPrebaseMempoolResolution','MempoolTypedPackage']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolTypedPackage|AssumeUtxoPrebaseMempoolResolution)$' --verbose --no-tests=error --output-log orchard-typed-package-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-package-execution.log').read_text()
+          for case in ['SignedAdmissionUsesCapturedPolicyAncestors','SharedAncestorsAndReplacementExclusion','RefusalPreservesPriorAncestorResult','MixedFamilyGraphKeepsOrdinaryByteProfile']:
+              assert log.count('[       OK ] MempoolTypedPackage.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 2' in log
+          assert 'PREBASE_MEMPOOL_MODE ASSERTIONS PASSED' in log
+          assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
+          PYTEST
+
       - name: Require and execute all-ancestor package bounds
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --show-only=json-v1 > orchard-package-bounds-inventory.json
@@ -1880,6 +1901,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-typed-package-inventory.json
+            orchard-typed-package-execution.log
             orchard-retained-load-inventory.json
             orchard-retained-load-execution.log
             orchard-package-bounds-inventory.json

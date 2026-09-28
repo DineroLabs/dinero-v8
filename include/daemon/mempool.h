@@ -183,6 +183,7 @@ struct MempoolBlockSelection {
 
 class Mempool {
     friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
+    friend class MempoolTypedPackageTestPeer; // Isolated package-policy graph fixture only.
     friend class MempoolRankedRpcTestPeer; // Isolated ranked reader fixture only.
     friend class MempoolTypedIngressTestPeer; // Isolated lookup-error fixture; no production view setter.
 public:
@@ -604,6 +605,13 @@ private:
     // structured result, returning only bool for backwards compatibility.
     // ========================================================================
     bool addTransaction(const Transaction& tx, bool relay = true);
+
+    // Caller holds m_mutex; typed dependency policy only, no admission effects.
+    TxAcceptResult checkAdmissionPackageLocked(
+        const MempoolTransaction& transaction,
+        const std::unordered_set<uint256>& replaced_txids,
+        bool auth_packages,
+        std::unordered_set<uint256>& ancestors) const;
 
     // Internal implementation that returns structured result
     TxAcceptResult submitTransactionInternal(

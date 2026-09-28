@@ -596,6 +596,174 @@ void Mempool::addUnchecked(const Transaction& incoming_tx) {
     rollback.committed = true;
 }
 
+TxAcceptResult Mempool::checkAdmissionPackageLocked(
+    const MempoolTransaction& transaction,
+    const std::unordered_set<uint256>& replaced_txids,
+    bool auth_packages,
+    std::unordered_set<uint256>& ancestors) const {
+    // Caller owns m_mutex. Publish the complete ancestor inventory only after
+    // every ancestor and descendant check succeeds. This is policy, not proof
+    // validation or permission to admit an Orchard transaction.
+    const auto txid_u256 = transaction.GetTxid().AsUint256();
+    const auto tx_size = transaction.GetSize();
+    const auto has_historical_auth = [](const MempoolTransaction& body) {
+        return !body.IsOrchard() &&
+            consensus::shielded::HasShieldedResources(body.Historical());
+    };
+    // Calculate ancestors (unconfirmed parents)
+    uint32_t ancestor_count = 0;
+    uint64_t ancestor_size = tx_size;  // Start with this transaction's size
+    bool ancestor_has_auth = has_historical_auth(transaction);
+
+    std::unordered_set<uint256> visited_ancestors;
+    std::vector<uint256> to_visit_ancestors;
+
+    // Find all ancestors
+    for (const auto& input : transaction.Inputs()) {
+        TxId parent_txid = input.txid;
+        if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
+            to_visit_ancestors.push_back(parent_txid.AsUint256());
+        }
+    }
+
+    // BFS to find all ancestors
+    while (!to_visit_ancestors.empty()) {
+        uint256 current = to_visit_ancestors.back();
+        to_visit_ancestors.pop_back();
+
+        if (replaced_txids.count(current) || visited_ancestors.count(current)) continue;
+        visited_ancestors.insert(current);
+
+        auto ancestor_it = m_transactions.find(current);
+        if (ancestor_it == m_transactions.end()) continue;
+
+        ancestor_count++;
+        ancestor_size += ancestor_it->second.tx_size;
+        ancestor_has_auth |= has_historical_auth(ancestor_it->second.tx);
+
+        // Add this ancestor's parents
+        for (const auto& input : ancestor_it->second.tx.Inputs()) {
+            TxId grandparent_txid = input.txid;
+            if (m_transactions.find(grandparent_txid.AsUint256()) != m_transactions.end() &&
+                !visited_ancestors.count(grandparent_txid.AsUint256())) {
+                to_visit_ancestors.push_back(grandparent_txid.AsUint256());
+            }
+        }
+    }
+
+    // Check ancestor limits
+    constexpr uint32_t MAX_ANCESTORS = 25;
+    const uint64_t MAX_ANCESTOR_SIZE = consensus::shielded::PackageByteLimit(auth_packages, ancestor_has_auth);
+
+    if (ancestor_count > MAX_ANCESTORS) {
+        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: too many ancestors (" +
+                    std::to_string(ancestor_count) + " > " + std::to_string(MAX_ANCESTORS) + ")");
+        return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_ANCESTORS,
+            "Transaction has " + std::to_string(ancestor_count) + " ancestors (limit: " +
+            std::to_string(MAX_ANCESTORS) + ")", txid_u256);
+    }
+
+    if (ancestor_size > MAX_ANCESTOR_SIZE) {
+        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: ancestor size too large (" +
+                    std::to_string(ancestor_size) + " > " + std::to_string(MAX_ANCESTOR_SIZE) + " bytes)");
+        return TxAcceptResult::Rejected(TxRejectCode::ANCESTOR_SIZE_EXCEEDED,
+            "Ancestor size " + std::to_string(ancestor_size) + " bytes exceeds limit " +
+            std::to_string(MAX_ANCESTOR_SIZE) + " bytes", txid_u256);
+    }
+
+    // Calculate descendants (transactions that spend from unconfirmed txs)
+    // Every surviving ancestor gains this descendant, including ancestors
+    // beyond direct inputs. Reuse the complete traversal already checked above.
+    for (const auto& ancestor_txid : visited_ancestors) {
+        const TxId parent_txid(ancestor_txid);
+
+        auto parent_it = m_transactions.find(parent_txid.AsUint256());
+        if (parent_it == m_transactions.end() || replaced_txids.count(parent_txid.AsUint256())) continue;
+
+        // Count descendants of this parent (including the new transaction)
+        uint32_t descendant_count = 1;  // Count the new transaction
+        uint64_t descendant_size = tx_size;
+        bool descendant_has_auth = has_historical_auth(transaction) ||
+            has_historical_auth(parent_it->second.tx);
+        std::unordered_set<uint256> visited_descendants;
+        std::vector<uint256> to_visit_descendants;
+
+        // Find all existing descendants of parent
+        for (const auto& [mempool_txid, entry] : m_transactions) {
+            if (mempool_txid == parent_txid.AsUint256() || replaced_txids.count(mempool_txid)) continue;
+
+            // Check if this transaction spends from the parent
+            for (const auto& tx_input : entry.tx.Inputs()) {
+                TxId input_parent_txid = tx_input.txid;
+                if (input_parent_txid.AsUint256() == parent_txid.AsUint256()) {
+                    to_visit_descendants.push_back(mempool_txid);
+                    break;
+                }
+            }
+        }
+
+        // BFS to find all descendants
+        while (!to_visit_descendants.empty()) {
+            uint256 current = to_visit_descendants.back();
+            to_visit_descendants.pop_back();
+
+            if (replaced_txids.count(current) || visited_descendants.count(current)) continue;
+            visited_descendants.insert(current);
+
+            auto descendant_it = m_transactions.find(current);
+            if (descendant_it == m_transactions.end()) continue;
+
+            descendant_count++;
+            descendant_size += descendant_it->second.tx_size;
+            descendant_has_auth |= has_historical_auth(descendant_it->second.tx);
+
+            // Add this descendant's children
+            for (const auto& [mempool_txid, entry] : m_transactions) {
+                if (replaced_txids.count(mempool_txid) || visited_descendants.count(mempool_txid)) continue;
+
+                for (const auto& tx_input : entry.tx.Inputs()) {
+                    TxId input_parent_txid = tx_input.txid;
+                    if (input_parent_txid.AsUint256() == current) {
+                        to_visit_descendants.push_back(mempool_txid);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Check descendant limits for this parent
+        constexpr uint32_t MAX_DESCENDANTS = consensus::shielded::kMaxPackageTransactions;
+        const uint64_t MAX_DESCENDANT_SIZE = consensus::shielded::PackageByteLimit(auth_packages, descendant_has_auth);
+
+        if (descendant_count > MAX_DESCENDANTS) {
+            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
+                        parent_txid.AsUint256().GetHex() + " to exceed descendant limit (" +
+                        std::to_string(descendant_count) + " > " + std::to_string(MAX_DESCENDANTS) + ")");
+            return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_DESCENDANTS,
+                "Would cause parent " + parent_txid.AsUint256().GetHex().substr(0, 16) + "... to have " +
+                std::to_string(descendant_count) + " descendants (limit: " + std::to_string(MAX_DESCENDANTS) + ")",
+                txid_u256);
+        }
+
+        if (descendant_size > MAX_DESCENDANT_SIZE) {
+            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
+                        parent_txid.AsUint256().GetHex() + " to exceed descendant size limit (" +
+                        std::to_string(descendant_size) + " > " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)");
+            return TxAcceptResult::Rejected(TxRejectCode::DESCENDANT_SIZE_EXCEEDED,
+                "Would cause parent descendant size " + std::to_string(descendant_size) +
+                " bytes (limit: " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)", txid_u256);
+        }
+    }
+
+    if (ancestor_count > 0) {
+        MPLOG_DEBUG("Transaction " + txid_u256.GetHex() + " has " + std::to_string(ancestor_count) +
+                     " ancestors (" + std::to_string(ancestor_size) + " bytes)");
+    }
+
+    ancestors.swap(visited_ancestors);
+    return TxAcceptResult::Accepted(txid_u256);
+}
+
 TxAcceptResult Mempool::submitTransactionInternal(
     const Transaction& incoming_tx,
     const std::string& source,
@@ -756,9 +924,6 @@ TxAcceptResult Mempool::submitTransactionInternal(
     //
     // These limits prevent mempool DoS attacks via deep transaction chains.
 
-    // Calculate ancestors (unconfirmed parents)
-    uint32_t ancestor_count = 0;
-    uint64_t ancestor_size = tx_size;  // Start with this transaction's size
     uint64_t package_height = 0;
     if (chain_db_) {
         auto tip = chain_db_->getTip();
@@ -766,163 +931,12 @@ TxAcceptResult Mempool::submitTransactionInternal(
     }
     const bool auth_packages = consensus::shielded::AuthResourcesActive(package_height,
         dinero::Params().shielded_spend_auth_activation_height);
-    bool ancestor_has_auth = consensus::shielded::HasShieldedResources(tx);
-
     std::unordered_set<uint256> visited_ancestors;
-    std::vector<uint256> to_visit_ancestors;
-
-    // Find all ancestors
-    for (const auto& input : tx.vin) {
-        TxId parent_txid = input.prevout.txid;
-        if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
-            to_visit_ancestors.push_back(parent_txid.AsUint256());
-        }
-    }
-
-    // BFS to find all ancestors
-    while (!to_visit_ancestors.empty()) {
-        uint256 current = to_visit_ancestors.back();
-        to_visit_ancestors.pop_back();
-
-        if (replaced_txids.count(current) || visited_ancestors.count(current)) continue;
-        visited_ancestors.insert(current);
-
-        auto ancestor_it = m_transactions.find(current);
-        if (ancestor_it == m_transactions.end()) continue;
-
-        ancestor_count++;
-        ancestor_size += ancestor_it->second.tx_size;
-        ancestor_has_auth |= consensus::shielded::HasShieldedResources(ancestor_it->second.tx.Historical());
-
-        // Add this ancestor's parents
-        for (const auto& input : ancestor_it->second.tx.Historical().vin) {
-            TxId grandparent_txid = input.prevout.txid;
-            if (m_transactions.find(grandparent_txid.AsUint256()) != m_transactions.end() &&
-                !visited_ancestors.count(grandparent_txid.AsUint256())) {
-                to_visit_ancestors.push_back(grandparent_txid.AsUint256());
-            }
-        }
-    }
-
-    // Check ancestor limits
-    constexpr uint32_t MAX_ANCESTORS = 25;
-    const uint64_t MAX_ANCESTOR_SIZE = consensus::shielded::PackageByteLimit(auth_packages, ancestor_has_auth);
-
-    if (ancestor_count > MAX_ANCESTORS) {
-        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: too many ancestors (" +
-                    std::to_string(ancestor_count) + " > " + std::to_string(MAX_ANCESTORS) + ")");
-        if (!test_only) {
-            m_total_tx_rejected.fetch_add(1);
-        }
-        return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_ANCESTORS,
-            "Transaction has " + std::to_string(ancestor_count) + " ancestors (limit: " +
-            std::to_string(MAX_ANCESTORS) + ")", txid_u256);
-    }
-
-    if (ancestor_size > MAX_ANCESTOR_SIZE) {
-        MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: ancestor size too large (" +
-                    std::to_string(ancestor_size) + " > " + std::to_string(MAX_ANCESTOR_SIZE) + " bytes)");
-        if (!test_only) {
-            m_total_tx_rejected.fetch_add(1);
-        }
-        return TxAcceptResult::Rejected(TxRejectCode::ANCESTOR_SIZE_EXCEEDED,
-            "Ancestor size " + std::to_string(ancestor_size) + " bytes exceeds limit " +
-            std::to_string(MAX_ANCESTOR_SIZE) + " bytes", txid_u256);
-    }
-
-    // Calculate descendants (transactions that spend from unconfirmed txs)
-    // Every surviving ancestor gains this descendant, including ancestors
-    // beyond direct inputs. Reuse the complete traversal already checked above.
-    for (const auto& ancestor_txid : visited_ancestors) {
-        const TxId parent_txid(ancestor_txid);
-
-        auto parent_it = m_transactions.find(parent_txid.AsUint256());
-        if (parent_it == m_transactions.end() || replaced_txids.count(parent_txid.AsUint256())) continue;
-
-        // Count descendants of this parent (including the new transaction)
-        uint32_t descendant_count = 1;  // Count the new transaction
-        uint64_t descendant_size = tx_size;
-        bool descendant_has_auth = consensus::shielded::HasShieldedResources(tx) ||
-            consensus::shielded::HasShieldedResources(parent_it->second.tx.Historical());
-        std::unordered_set<uint256> visited_descendants;
-        std::vector<uint256> to_visit_descendants;
-
-        // Find all existing descendants of parent
-        for (const auto& [mempool_txid, entry] : m_transactions) {
-            if (mempool_txid == parent_txid.AsUint256() || replaced_txids.count(mempool_txid)) continue;
-
-            // Check if this transaction spends from the parent
-            for (const auto& tx_input : entry.tx.Historical().vin) {
-                TxId input_parent_txid = tx_input.prevout.txid;
-                if (input_parent_txid.AsUint256() == parent_txid.AsUint256()) {
-                    to_visit_descendants.push_back(mempool_txid);
-                    break;
-                }
-            }
-        }
-
-        // BFS to find all descendants
-        while (!to_visit_descendants.empty()) {
-            uint256 current = to_visit_descendants.back();
-            to_visit_descendants.pop_back();
-
-            if (replaced_txids.count(current) || visited_descendants.count(current)) continue;
-            visited_descendants.insert(current);
-
-            auto descendant_it = m_transactions.find(current);
-            if (descendant_it == m_transactions.end()) continue;
-
-            descendant_count++;
-            descendant_size += descendant_it->second.tx_size;
-            descendant_has_auth |= consensus::shielded::HasShieldedResources(descendant_it->second.tx.Historical());
-
-            // Add this descendant's children
-            for (const auto& [mempool_txid, entry] : m_transactions) {
-                if (replaced_txids.count(mempool_txid) || visited_descendants.count(mempool_txid)) continue;
-
-                for (const auto& tx_input : entry.tx.Historical().vin) {
-                    TxId input_parent_txid = tx_input.prevout.txid;
-                    if (input_parent_txid.AsUint256() == current) {
-                        to_visit_descendants.push_back(mempool_txid);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Check descendant limits for this parent
-        constexpr uint32_t MAX_DESCENDANTS = consensus::shielded::kMaxPackageTransactions;
-        const uint64_t MAX_DESCENDANT_SIZE = consensus::shielded::PackageByteLimit(auth_packages, descendant_has_auth);
-
-        if (descendant_count > MAX_DESCENDANTS) {
-            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
-                        parent_txid.AsUint256().GetHex() + " to exceed descendant limit (" +
-                        std::to_string(descendant_count) + " > " + std::to_string(MAX_DESCENDANTS) + ")");
-            if (!test_only) {
-                m_total_tx_rejected.fetch_add(1);
-            }
-            return TxAcceptResult::Rejected(TxRejectCode::TOO_MANY_DESCENDANTS,
-                "Would cause parent " + parent_txid.AsUint256().GetHex().substr(0, 16) + "... to have " +
-                std::to_string(descendant_count) + " descendants (limit: " + std::to_string(MAX_DESCENDANTS) + ")",
-                txid_u256);
-        }
-
-        if (descendant_size > MAX_DESCENDANT_SIZE) {
-            MPLOG_WARN("Transaction " + txid_u256.GetHex() + " rejected: would cause parent " +
-                        parent_txid.AsUint256().GetHex() + " to exceed descendant size limit (" +
-                        std::to_string(descendant_size) + " > " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)");
-            if (!test_only) {
-                m_total_tx_rejected.fetch_add(1);
-            }
-            return TxAcceptResult::Rejected(TxRejectCode::DESCENDANT_SIZE_EXCEEDED,
-                "Would cause parent descendant size " + std::to_string(descendant_size) +
-                " bytes (limit: " + std::to_string(MAX_DESCENDANT_SIZE) + " bytes)", txid_u256);
-        }
-    }
-
-    if (ancestor_count > 0) {
-        MPLOG_DEBUG("Transaction " + txid_u256.GetHex() + " has " + std::to_string(ancestor_count) +
-                     " ancestors (" + std::to_string(ancestor_size) + " bytes)");
+    const auto package_result = checkAdmissionPackageLocked(
+        transaction, replaced_txids, auth_packages, visited_ancestors);
+    if (!package_result.accepted()) {
+        if (!test_only) m_total_tx_rejected.fetch_add(1);
+        return package_result;
     }
 
     // All canonical validation and policy checks have passed. A
