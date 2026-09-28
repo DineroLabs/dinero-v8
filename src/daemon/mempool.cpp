@@ -602,6 +602,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     // Phase M.0: Use OutPoint struct instead of string concatenation
     // Build list of conflicting transactions
     std::vector<uint256> conflicting_txids;
+    std::unordered_set<uint256> replaced_txids;
     for (const auto& input : tx.vin) {
         // Phase M.0: Create OutPoint struct from input
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
@@ -675,28 +676,17 @@ TxAcceptResult Mempool::submitTransactionInternal(
                 "RBF replacement rejected: " + rbf_error, txid_u256);
         }
 
-        // RBF validation passed - remove all conflicting transactions
-        MPLOG_INFO(std::string(test_only ? "RBF replacement test accepted: "
-                                        : "RBF replacement accepted: ") +
-                   txid_u256.GetHex() + " replaces " +
-                   std::to_string(conflict_set.conflict_count) + " transactions");
-
-        // Create a copy of direct and descendant conflicts for removal (Phase M.0: uint256)
-        std::vector<uint256> txids_to_remove;
-        txids_to_remove.insert(txids_to_remove.end(),
-                              conflict_set.direct_conflicts.begin(),
-                              conflict_set.direct_conflicts.end());
-        txids_to_remove.insert(txids_to_remove.end(),
-                              conflict_set.descendant_conflicts.begin(),
-                              conflict_set.descendant_conflicts.end());
-
-        // A dry-run must never evict or otherwise mutate existing entries.
-        if (!test_only) {
-            for (const auto& conflict_txid : txids_to_remove) {
-                removeTransactionLocked(conflict_txid);
-                MPLOG_DEBUG("Removed conflicting transaction: " + conflict_txid.GetHex());
+        // Project policy against the surviving pool without changing entries,
+        // dependency indexes or the coin overlay. Actual replacement follows
+        // every policy check and the test-only boundary below.
+        replaced_txids.insert(conflict_set.direct_conflicts.begin(), conflict_set.direct_conflicts.end());
+        replaced_txids.insert(conflict_set.descendant_conflicts.begin(), conflict_set.descendant_conflicts.end());
+        for (const auto& input : tx.vin) {
+            if (replaced_txids.count(input.prevout.txid.AsUint256())) {
+                if (!test_only) m_total_tx_rejected.fetch_add(1);
+                return TxAcceptResult::Rejected(TxRejectCode::RBF_REJECTED,
+                    "Replacement depends on an output removed by replacement", txid_u256);
             }
-            rebuildCoinsViewLocked();
         }
     }
 
@@ -758,7 +748,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
         uint256 current = to_visit_ancestors.back();
         to_visit_ancestors.pop_back();
 
-        if (visited_ancestors.count(current)) continue;
+        if (replaced_txids.count(current) || visited_ancestors.count(current)) continue;
         visited_ancestors.insert(current);
 
         auto ancestor_it = m_transactions.find(current);
@@ -811,7 +801,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
         TxId parent_txid = input.prevout.txid;
 
         auto parent_it = m_transactions.find(parent_txid.AsUint256());
-        if (parent_it == m_transactions.end()) continue;  // Parent not in mempool
+        if (parent_it == m_transactions.end() || replaced_txids.count(parent_txid.AsUint256())) continue;
 
         // Count descendants of this parent (including the new transaction)
         uint32_t descendant_count = 1;  // Count the new transaction
@@ -823,7 +813,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
         // Find all existing descendants of parent
         for (const auto& [mempool_txid, entry] : m_transactions) {
-            if (mempool_txid == parent_txid.AsUint256()) continue;  // Skip the parent itself
+            if (mempool_txid == parent_txid.AsUint256() || replaced_txids.count(mempool_txid)) continue;
 
             // Check if this transaction spends from the parent
             for (const auto& tx_input : entry.tx.vin) {
@@ -840,7 +830,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
             uint256 current = to_visit_descendants.back();
             to_visit_descendants.pop_back();
 
-            if (visited_descendants.count(current)) continue;
+            if (replaced_txids.count(current) || visited_descendants.count(current)) continue;
             visited_descendants.insert(current);
 
             auto descendant_it = m_transactions.find(current);
@@ -852,7 +842,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
             // Add this descendant's children
             for (const auto& [mempool_txid, entry] : m_transactions) {
-                if (visited_descendants.count(mempool_txid)) continue;
+                if (replaced_txids.count(mempool_txid) || visited_descendants.count(mempool_txid)) continue;
 
                 for (const auto& tx_input : entry.tx.vin) {
                     TxId input_parent_txid = tx_input.prevout.txid;
@@ -905,6 +895,12 @@ TxAcceptResult Mempool::submitTransactionInternal(
     if (test_only) {
         return TxAcceptResult::Accepted(txid_u256);
     }
+
+    // No rejection below this boundary may be attributed to an unperformed
+    // policy check. Allocation/observer exceptions during publication remain a
+    // separate atomic-admission concern; this is not rollback ownership.
+    for (const auto& conflict_txid : replaced_txids) removeTransactionLocked(conflict_txid);
+    if (!replaced_txids.empty()) rebuildCoinsViewLocked();
 
     // Get current blockchain height from ChainDB
     uint32_t current_height = 0;
