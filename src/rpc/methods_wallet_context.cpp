@@ -626,6 +626,18 @@ std::vector<SnapshotScopedAddressEntry> ParseScopedSnapshotAddresses(const din::
  * OLD: dinero::legacy::g_wallet_manager()->getBalance()
  * NEW: ctx.daemon->wallet->get().getBalance()
  */
+static din::Json ReservationAmount(const std::optional<double>& value) {
+    return value ? din::Json(*value) : din::Json(Json::nullValue);
+}
+static const char* ReservationStatusName(dinero::WalletManager::ReservationStatus status) {
+    switch (status) {
+        case dinero::WalletManager::ReservationStatus::Authenticated: return "authenticated";
+        case dinero::WalletManager::ReservationStatus::UnlockRequired: return "unlock_required";
+        case dinero::WalletManager::ReservationStatus::Untracked: return "untracked";
+    }
+    throw std::logic_error("Unknown reservation status");
+}
+
 din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
@@ -656,48 +668,30 @@ din::Json rpc_context_wallet_getbalance(const ExecutionContext& ctx, const din::
             }
         }
 
-        auto balance = mgr.getBalance();
-
-        // Phase 35.3: Compute locked balance
-        double locked_balance = mgr.getLockedBalance();
+        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto& balance = summary.balance;
+        result["reservation_status"] = ReservationStatusName(summary.reservations);
 
         // Phase 35: Enhanced balance breakdown
         result["confirmed"] = balance.confirmed;
         result["unconfirmed"] = balance.unconfirmed;
         result["immature"] = balance.immature;
-        result["locked"] = locked_balance;  // Phase 35.3: Actual locked balance
+        result["locked"] = ReservationAmount(summary.locked);
         result["total"] = balance.total;
-        result["spendable"] = balance.spendable;
+        result["spendable"] = ReservationAmount(summary.available_confirmed);
         result["utxo_count"] = balance.utxo_count;
 
-        // PQ health ratio: what fraction of the wallet's confirmed balance
-        // is held in quantum-resistant (P2MR) UTXOs. Read-only metric —
-        // no enforcement, just visibility for the user or a future UI.
-        {
-            auto utxos = mgr.listUnspentUTXOs(1, 9999999);
-            int64_t p2mr_una = 0;
-            int64_t total_una = 0;
-            for (const auto& u : utxos) {
-                if (!u.spendable || !u.is_mature) continue;
-                total_una += u.amount_una;
-                const auto& spk = u.script_pubkey;
-                if (spk.length() == 68 && spk.rfind("5320", 0) == 0) {
-                    p2mr_una += u.amount_una;
-                }
-            }
-            double pq_ratio = (total_una > 0)
-                ? static_cast<double>(p2mr_una) / static_cast<double>(total_una)
-                : 0.0;
-            result["pq_ratio"]        = pq_ratio;
-            result["pq_balance_din"]  = static_cast<double>(p2mr_una) / 1e8;
-            result["pq_balance_una"]  = static_cast<int64_t>(p2mr_una);
-        }
+        // Same wallet snapshot as the balance and recorded reservations.
+        result["pq_ratio"] = balance.confirmed > 0
+            ? (static_cast<double>(summary.pq_confirmed_una) / 1e8) / balance.confirmed : 0.0;
+        result["pq_balance_din"] = static_cast<double>(summary.pq_confirmed_una) / 1e8;
+        result["pq_balance_una"] = static_cast<Json::UInt64>(summary.pq_confirmed_una);
 
         // Phase 35: Detailed breakdown for verification
         din::Json breakdown;
-        breakdown["spendable"] = balance.spendable;  // confirmed - locked
+        breakdown["spendable"] = ReservationAmount(summary.available_confirmed);  // confirmed - locked
         breakdown["pending"] = balance.unconfirmed;  // unconfirmed
-        breakdown["unspendable"] = balance.immature + locked_balance;  // immature + locked
+        breakdown["unspendable"] = ReservationAmount(summary.unavailable_confirmed_and_immature);
         result["breakdown"] = breakdown;
 
         // Phase F: Add confidential balance if chainstate/UTXOIndex available
@@ -813,7 +807,10 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         result["walletname"] = mgr.current();
 
         // Balance aggregation (read-only)
-        auto balance = mgr.getBalance();
+        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto& balance = summary.balance;
+        result["walletname"] = summary.wallet_name;
+        result["reservation_status"] = ReservationStatusName(summary.reservations);
         result["balance"] = balance.total;
         result["transparent_balance"] = balance.total;
         result["confirmed_balance"] = balance.confirmed;
@@ -837,11 +834,10 @@ din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext& ctx, const di
         }
 
         // Locked balance (Phase 35.3)
-        double locked_balance = mgr.getLockedBalance();
-        result["locked_balance"] = locked_balance;
+        result["locked_balance"] = ReservationAmount(summary.locked);
 
         // Spendable balance
-        result["spendable_balance"] = balance.spendable;
+        result["spendable_balance"] = ReservationAmount(summary.available_confirmed);
 
         // Transaction count (read-only - no limit to get full count)
         auto tx_history = mgr.getTransactionHistory(999999, 0);
@@ -1360,19 +1356,21 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
         wallet_obj["unlocked"] = !mgr.isWalletLocked();
         wallet_obj["hd_enabled"] = (mgr.getHDWallet() != nullptr);
 
-        const auto balance = mgr.getBalance();
-        const double locked_balance = mgr.getLockedBalance();
+        const auto summary = mgr.getBalanceSummary(ctx.walletName);
+        const auto& balance = summary.balance;
+        wallet_obj["name"] = summary.wallet_name;
+        balances["reservation_status"] = ReservationStatusName(summary.reservations);
         balances["confirmed"] = balance.confirmed;
         balances["unconfirmed"] = balance.unconfirmed;
         balances["immature"] = balance.immature;
-        balances["locked"] = locked_balance;
+        balances["locked"] = ReservationAmount(summary.locked);
         balances["total"] = balance.total;
-        balances["spendable"] = balance.spendable;
+        balances["spendable"] = ReservationAmount(summary.available_confirmed);
         balances["utxo_count"] = balance.utxo_count;
         balances["immature_utxo_count"] = balance.immature_utxo_count;
-        balances["breakdown"]["spendable"] = balance.spendable;
+        balances["breakdown"]["spendable"] = ReservationAmount(summary.available_confirmed);
         balances["breakdown"]["pending"] = balance.unconfirmed;
-        balances["breakdown"]["unspendable"] = balance.immature + locked_balance;
+        balances["breakdown"]["unspendable"] = ReservationAmount(summary.unavailable_confirmed_and_immature);
 
         const auto addresses = mgr.listAddresses(true);
         receive_obj["known_address_count"] = static_cast<Json::UInt64>(addresses.size());
@@ -1444,7 +1442,12 @@ din::Json rpc_context_wallet_snapshot(const ExecutionContext& ctx, const din::Js
             addr_obj["confirmed"] = addr_balance.confirmed;
             addr_obj["unconfirmed"] = addr_balance.unconfirmed;
             addr_obj["immature"] = addr_balance.immature;
-            addr_obj["spendable"] = addr_balance.spendable;
+            std::vector<uint8_t> exact_script;
+            const bool known_script = util::unhex(addr_row.script_pubkey, exact_script) && !exact_script.empty();
+            const auto available = summary.available_by_script.find(known_script ? util::hex(exact_script) : "");
+            addr_obj["spendable"] = available == summary.available_by_script.end()
+                ? din::Json(Json::nullValue) : din::Json(available->second);
+            addr_obj["reservation_status"] = ReservationStatusName(summary.reservations);
             addr_obj["utxo_count"] = addr_balance.utxo_count;
 
             funded_entries.push_back(FundedAddressEntry{

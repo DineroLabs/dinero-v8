@@ -22,6 +22,9 @@
 #include <cstring>
 
 void registerV7PqWalletMethods();
+din::Json rpc_context_wallet_getbalance(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext&,const din::Json&);
+din::Json rpc_context_wallet_snapshot(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext&,const din::Json&);
 namespace {
@@ -282,6 +285,80 @@ TEST_F(WalletPendingPayment, CorruptOwnerReadFailureAndIntentRefuse) {
     EXPECT_EQ(envelope(db),stored);EXPECT_EQ(w.getPendingPayments().size(),1u);
     struct Interrupt {sqlite3* db;bool fired=false;static int trace(unsigned type,void* p,void* stmt,void*){auto& h=*static_cast<Interrupt*>(p);const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));if(type==SQLITE_TRACE_ROW && !h.fired && s && std::strstr(s,"SELECT pending_payment_owner")){h.fired=true;sqlite3_interrupt(h.db);}return 0;}} interrupted{db};
     sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);EXPECT_THROW(w.getPendingPayments(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);EXPECT_EQ(w.getPendingPayments().size(),1u);
+}
+
+class WalletReservationBalance : public WalletPendingPayment {};
+TEST_F(WalletReservationBalance, AuthenticatedReservationMaturityAndReopen) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();w.setBlockchainHeight(100);
+    fund(old);fund(modern);fund(hd);
+    auto immature=hd;immature.vout=3;fund(immature);
+    auto unconfirmed=hd;unconfirmed.vout=4;fund(unconfirmed);
+    auto spent=hd;spent.vout=5;fund(spent);
+    sql(db,"UPDATE utxos SET is_coinbase=1,height=2 WHERE vout=3");
+    sql(db,"UPDATE utxos SET height=0 WHERE vout=4");
+    sql(db,"UPDATE utxos SET is_spent=1 WHERE vout=5");
+    w.lockUTXO(hd.GetTxIdHex(),hd.vout);w.lockUTXO(immature.GetTxIdHex(),immature.vout);
+    w.lockUTXO(unconfirmed.GetTxIdHex(),unconfirmed.vout);w.lockUTXO(spent.GetTxIdHex(),spent.vout);
+    ASSERT_TRUE(stage(payment()).success);
+    // A manual lock overlapping a retained reservation must not double count.
+    w.lockUTXO(old.GetTxIdHex(),old.vout);
+    const auto stored=envelope(db);const auto changes=sqlite3_total_changes(db);
+    auto summary=w.getBalanceSummary("owner");
+    EXPECT_EQ(summary.reservations,dinero::WalletManager::ReservationStatus::Authenticated);
+    EXPECT_DOUBLE_EQ(summary.balance.confirmed,0.003);EXPECT_DOUBLE_EQ(summary.balance.unconfirmed,0.001);
+    EXPECT_DOUBLE_EQ(summary.balance.immature,0.001);EXPECT_DOUBLE_EQ(summary.balance.total,0.005);
+    EXPECT_EQ(summary.balance.utxo_count,5);EXPECT_EQ(summary.balance.immature_utxo_count,1);
+    ASSERT_TRUE(summary.locked);EXPECT_DOUBLE_EQ(*summary.locked,0.005);
+    ASSERT_TRUE(summary.available_confirmed);EXPECT_DOUBLE_EQ(*summary.available_confirmed,0);
+    ASSERT_TRUE(summary.unavailable_confirmed_and_immature);EXPECT_DOUBLE_EQ(*summary.unavailable_confirmed_and_immature,0.004);
+    EXPECT_DOUBLE_EQ(summary.available_by_script.at(util::hex(hd.spk)),0);
+    EXPECT_EQ(sqlite3_total_changes(db),changes);EXPECT_EQ(envelope(db),stored);
+    EXPECT_THROW(w.getBalanceSummary("other"),std::runtime_error);
+    EXPECT_EQ(w.unlockAllUTXOs(),5u);
+    summary=w.getBalanceSummary();EXPECT_DOUBLE_EQ(*summary.locked,0.002);EXPECT_DOUBLE_EQ(*summary.available_confirmed,0.001);
+    w.open("owner");w.unlockWallet("historical-rpc",0);summary=w.getBalanceSummary("owner");
+    EXPECT_DOUBLE_EQ(*summary.locked,0.002);EXPECT_DOUBLE_EQ(*summary.available_confirmed,0.001);EXPECT_EQ(envelope(w.getCurrentDatabase()),stored);
+}
+TEST_F(WalletReservationBalance, LockedRpcAmountsAreExplicitlyUnavailable) {
+    auto& w=service->get();w.setBlockchainHeight(100);fund(old);fund(modern);fund(hd);
+    ASSERT_TRUE(stage(payment()).success);const auto stored=envelope(w.getCurrentDatabase());w.lockWallet();
+    const auto summary=w.getBalanceSummary("owner");EXPECT_EQ(summary.reservations,dinero::WalletManager::ReservationStatus::UnlockRequired);
+    EXPECT_DOUBLE_EQ(summary.balance.confirmed,0.003);EXPECT_FALSE(summary.locked);EXPECT_FALSE(summary.available_confirmed);
+    EXPECT_FALSE(summary.unavailable_confirmed_and_immature);EXPECT_TRUE(summary.available_by_script.empty());
+    const auto balance=rpc_context_wallet_getbalance(ctx,din::Json());ASSERT_FALSE(balance.isMember("error"))<<balance.toStyledString();
+    EXPECT_DOUBLE_EQ(balance["confirmed"].asDouble(),0.003);EXPECT_TRUE(balance["locked"].isNull());EXPECT_TRUE(balance["spendable"].isNull());
+    EXPECT_EQ(balance["reservation_status"].asString(),"unlock_required");EXPECT_TRUE(balance["breakdown"]["unspendable"].isNull());
+    const auto info=rpc_context_wallet_getwalletinfo(ctx,din::Json());ASSERT_FALSE(info.isMember("error"))<<info.toStyledString();
+    EXPECT_DOUBLE_EQ(info["balance"].asDouble(),0.003);EXPECT_TRUE(info["locked_balance"].isNull());EXPECT_TRUE(info["spendable_balance"].isNull());
+    EXPECT_EQ(info["reservation_status"].asString(),"unlock_required");
+    const auto snapshot=rpc_context_wallet_snapshot(ctx,din::Json());ASSERT_FALSE(snapshot.isMember("error"))<<snapshot.toStyledString();
+    EXPECT_DOUBLE_EQ(snapshot["balances"]["confirmed"].asDouble(),0.003);EXPECT_TRUE(snapshot["balances"]["locked"].isNull());
+    EXPECT_TRUE(snapshot["balances"]["spendable"].isNull());EXPECT_EQ(snapshot["balances"]["reservation_status"].asString(),"unlock_required");
+    ctx.walletName="other";EXPECT_TRUE(rpc_context_wallet_getbalance(ctx,din::Json()).isMember("error"));
+    EXPECT_TRUE(rpc_context_wallet_getwalletinfo(ctx,din::Json()).isMember("error"));EXPECT_TRUE(rpc_context_wallet_snapshot(ctx,din::Json()).isMember("error"));ctx.walletName="owner";
+    w.unlockWallet("historical-rpc",0);const auto unlocked=rpc_context_wallet_getbalance(ctx,din::Json());ASSERT_FALSE(unlocked.isMember("error"));
+    EXPECT_EQ(unlocked["reservation_status"].asString(),"authenticated");EXPECT_DOUBLE_EQ(unlocked["spendable"].asDouble(),0.001);
+    EXPECT_DOUBLE_EQ(unlocked["locked"].asDouble(),0.002);EXPECT_EQ(envelope(w.getCurrentDatabase()),stored);
+}
+TEST_F(WalletReservationBalance, UntrackedAndIncompleteReadsNeverClaimAuthentication) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();w.setBlockchainHeight(100);fund(old);fund(modern);
+    w.lockUTXO(old.GetTxIdHex(),old.vout);w.lockWallet();
+    auto summary=w.getBalanceSummary();EXPECT_EQ(summary.reservations,dinero::WalletManager::ReservationStatus::Untracked);
+    EXPECT_DOUBLE_EQ(*summary.locked,0.001);EXPECT_DOUBLE_EQ(*summary.available_confirmed,0.001);
+    sql(db,"UPDATE utxos SET amount='bad' WHERE vout=1");EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
+    EXPECT_TRUE(rpc_context_wallet_getbalance(ctx,din::Json()).isMember("error"));sql(db,"UPDATE utxos SET amount=100000 WHERE vout=1");
+    sql(db,"UPDATE utxos SET txid=upper(substr(txid,1,63)||'a') WHERE vout=1");
+    EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
+    sql(db,"UPDATE utxos SET txid='"+old.GetTxIdHex()+"' WHERE vout=1");
+    sql(db,"BEGIN");EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
+    struct Interrupt {sqlite3* db;bool fired=false;static int trace(unsigned type,void* p,void* stmt,void*) {auto& h=*static_cast<Interrupt*>(p);const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));if(type==SQLITE_TRACE_ROW && !h.fired && s && std::strstr(s,"SELECT txid,vout,amount,height,is_coinbase,is_spent")){h.fired=true;sqlite3_interrupt(h.db);}return 0;}} interrupted{db};
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char*,const char*,const char*) {return op==SQLITE_READ && table && std::strcmp(table,"utxos")==0?SQLITE_DENY:SQLITE_OK;},nullptr);
+    EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);sqlite3_set_authorizer(db,nullptr,nullptr);
+    w.unlockWallet("historical-rpc",0);w.unlockAllUTXOs();ASSERT_TRUE(stage(payment()).success);const auto stored=envelope(db);
+    sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'00'");EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
+    const auto failed=rpc_context_wallet_getbalance(ctx,din::Json());EXPECT_TRUE(failed.isMember("error"));EXPECT_FALSE(failed.isMember("confirmed"));
+    sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'"+stored+"'");summary=w.getBalanceSummary();EXPECT_EQ(summary.reservations,dinero::WalletManager::ReservationStatus::Authenticated);EXPECT_DOUBLE_EQ(*summary.locked,0.002);
 }
 
 }

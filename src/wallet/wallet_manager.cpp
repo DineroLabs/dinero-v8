@@ -5617,6 +5617,103 @@ size_t WalletManager::unlockAllUTXOs() {
     const auto count=locked_utxos_.size();locked_utxos_.clear();return count;
 }
 
+WalletManager::BalanceSummary WalletManager::getBalanceSummary(const std::string& expected_wallet) const {
+    auto& self = const_cast<WalletManager&>(*this);
+    auto lease = self.AcquireDatabaseLease();
+    if (!db_ || current_wallet_id_ < 0 ||
+        (!expected_wallet.empty() && lease->WalletName() != expected_wallet))
+        throw std::runtime_error("Balance wallet ownership unavailable");
+    IssuedAddressTransaction transaction(db_);
+    BalanceSummary result;
+    result.wallet_name = lease->WalletName();
+    auto locks = locked_utxos_;
+    std::unique_ptr<RecoverySeed> pin;
+    const bool installed = PaymentColumn(db_);
+    self.checkUnlockTimeout();
+    if (installed && wallet_locked_) {
+        result.reservations = ReservationStatus::UnlockRequired;
+    } else if (installed) {
+        pin = lease->CopyRecoverySeed(lease->Session());
+        for (const auto& payment : ReadPendingPaymentsOwned(pin->Bytes()))
+            for (const auto& input : payment.inputs)
+                locks.insert(input.txid + ":" + std::to_string(input.vout));
+        result.reservations = ReservationStatus::Authenticated;
+    }
+    // Capture the wallet's observed height without acquiring selected-chain locks.
+    // This is not a certificate that the wallet has caught up to the chain.
+    const int64_t tip = getBlockchainHeight();
+    uint64_t confirmed = 0, unconfirmed = 0, immature = 0, locked = 0, locked_confirmed = 0;
+    std::map<std::string, uint64_t> available_by_script;
+    IssuedStatement query(db_, "SELECT txid,vout,amount,height,is_coinbase,is_spent,script_pubkey "
+                               "FROM utxos WHERE wallet_id=? ORDER BY txid,vout");
+    query.Int(1, current_wallet_id_);
+    int rc;
+    while ((rc = sqlite3_step(query.value.get())) == SQLITE_ROW) {
+        auto* q = query.value.get();
+        for (int col : {1, 2, 3, 4, 5})
+            if (sqlite3_column_type(q, col) != SQLITE_INTEGER)
+                throw std::runtime_error("Balance coin integer malformed");
+        const auto index = sqlite3_column_int64(q, 1), amount = sqlite3_column_int64(q, 2);
+        const auto height = sqlite3_column_int64(q, 3), coinbase = sqlite3_column_int64(q, 4);
+        const auto spent = sqlite3_column_int64(q, 5);
+        if (index < 0 || index > UINT32_MAX || amount < 0 || height < -1 || height > UINT32_MAX ||
+            (coinbase != 0 && coinbase != 1) || (spent != 0 && spent != 1))
+            throw std::runtime_error("Balance coin range malformed");
+        const auto text = [&](int col) {
+            if (sqlite3_column_type(q, col) != SQLITE_TEXT)
+                throw std::runtime_error("Balance coin text malformed");
+            const auto* bytes = static_cast<const char*>(sqlite3_column_blob(q, col));
+            const int size = sqlite3_column_bytes(q, col);
+            if (!bytes || size <= 0) throw std::runtime_error("Balance coin text missing");
+            return std::string(bytes, size);
+        };
+        const auto txid = text(0), script = text(6);
+        std::vector<uint8_t> decoded_txid, decoded_script;
+        if (txid.size() != 64 || !util::unhex(txid, decoded_txid) ||
+            txid != util::hex(decoded_txid) ||
+            !util::unhex(script, decoded_script) || decoded_script.empty())
+            throw std::runtime_error("Balance coin encoding malformed");
+        if (spent) continue;
+        if (result.balance.utxo_count == INT_MAX) throw std::runtime_error("Balance coin count exceeded");
+        ++result.balance.utxo_count;
+        const uint64_t value = static_cast<uint64_t>(amount);
+        const int64_t confirmations = height > 0 ? tip - height + 1 : 0;
+        const bool eligible = confirmations >= 1 && (!coinbase || confirmations >= 100);
+        if (confirmations < 1) unconfirmed = PaymentSum(unconfirmed, value);
+        else if (!eligible) {
+            immature = PaymentSum(immature, value);
+            ++result.balance.immature_utxo_count;
+        } else {
+            confirmed = PaymentSum(confirmed, value);
+            if (decoded_script.size() == 34 && decoded_script[0] == 0x53 && decoded_script[1] == 0x20)
+                result.pq_confirmed_una = PaymentSum(result.pq_confirmed_una, value);
+        }
+        auto& script_available = available_by_script[util::hex(decoded_script)];
+        const bool reserved = locks.count(txid + ":" + std::to_string(index)) != 0;
+        if (eligible && !reserved) script_available = PaymentSum(script_available, value);
+        if (reserved) {
+            locked = PaymentSum(locked, value);
+            if (eligible) locked_confirmed = PaymentSum(locked_confirmed, value);
+        }
+    }
+    IssuanceCheck(db_, rc, SQLITE_DONE);
+    const auto total = PaymentSum(PaymentSum(confirmed, unconfirmed), immature);
+    result.balance.confirmed = static_cast<double>(confirmed) / 1e8;
+    result.balance.unconfirmed = static_cast<double>(unconfirmed) / 1e8;
+    result.balance.immature = static_cast<double>(immature) / 1e8;
+    result.balance.total = static_cast<double>(total) / 1e8;
+    // Consumers must use the optional value; never turn unknown reservations into zero locks.
+    if (result.reservations != ReservationStatus::UnlockRequired) {
+        for (const auto& [script, value] : available_by_script)
+            result.available_by_script.emplace(script, static_cast<double>(value) / 1e8);
+        result.locked = static_cast<double>(locked) / 1e8;
+        result.available_confirmed = static_cast<double>(confirmed - locked_confirmed) / 1e8;
+        result.unavailable_confirmed_and_immature = static_cast<double>(PaymentSum(immature, locked_confirmed)) / 1e8;
+    }
+    transaction.Commit();
+    return result;
+}
+
 double WalletManager::getLockedBalance() const {
     auto& self=const_cast<WalletManager&>(*this);auto lease=self.AcquireDatabaseLease();
     if(!db_)return 0.0;

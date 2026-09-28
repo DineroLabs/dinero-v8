@@ -618,6 +618,23 @@ jobs:
           if log.count('PASS RocksDBChecksum.ReferenceAndIncremental')!=1:
               raise SystemExit('RocksDB checksum reference case did not complete exactly once')
           PYTEST
+      - name: Require and execute authenticated wallet reservation balances
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletReservationBalance$' --show-only=json-v1 > orchard-reservation-balance-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-reservation-balance-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletReservationBalance'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Reservation balance test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletReservationBalance$' --verbose --no-tests=error --output-log orchard-reservation-balance-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-reservation-balance-execution.log').read()
+          expected=['AuthenticatedReservationMaturityAndReopen','LockedRpcAmountsAreExplicitlyUnavailable','UntrackedAndIncompleteReadsNeverClaimAuthentication']
+          if sorted(re.findall(r'\[       OK \] WalletReservationBalance\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Reservation balance cases did not complete exactly once')
+          PYTEST
       - name: Require and execute durable wallet payment ownership
         run: |
           ctest --test-dir build-orchard-root -R '^WalletPendingPayment$' --show-only=json-v1 > orchard-pending-payment-inventory.json
@@ -1148,6 +1165,8 @@ jobs:
             orchard-pq-root-provider-execution.log
             orchard-historical-rpc-inventory.json
             orchard-historical-rpc-execution.log
+            orchard-reservation-balance-inventory.json
+            orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
             orchard-owned-signing-inventory.json

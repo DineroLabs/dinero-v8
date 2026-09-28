@@ -451,6 +451,23 @@ public:
         int utxo_count = 0;
         int immature_utxo_count = 0;
     };
+    // One checked wallet snapshot. Availability concerns recorded reservations,
+    // not complete key discovery, chain readiness or authorization to spend.
+    enum class ReservationStatus { Untracked, Authenticated, UnlockRequired };
+    struct BalanceSummary {
+        struct RecordedBalance {
+            double confirmed = 0, unconfirmed = 0, immature = 0, total = 0;
+            int utxo_count = 0, immature_utxo_count = 0;
+        } balance;
+        std::string wallet_name;
+        ReservationStatus reservations = ReservationStatus::Untracked;
+        std::optional<double> locked;
+        std::optional<double> available_confirmed;
+        std::optional<double> unavailable_confirmed_and_immature;
+        uint64_t pq_confirmed_una = 0;
+        std::map<std::string, double> available_by_script;
+    };
+    BalanceSummary getBalanceSummary(const std::string& expected_wallet = {}) const;
     Balance getBalance(const void* mempool_ptr = nullptr) const;
     Balance getAddressBalance(const std::string& address, const void* mempool_ptr = nullptr) const;
     Balance getScriptPubKeyBalance(const std::string& script_pubkey, const void* mempool_ptr = nullptr) const;
