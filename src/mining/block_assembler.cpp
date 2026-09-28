@@ -967,15 +967,14 @@ std::vector<Transaction> BlockAssembler::SelectTransactions(
         return selected;
     }
     
-    auto capture = pool->CaptureBlockSelection(max_weight / 4, max_weight, target_height);
+    const uint64_t selection_weight = static_cast<uint64_t>(max_weight) *
+        ((use_intelligent_selection_ && block_relay_manager_) ? 2U : 1U);
+    const auto capture = pool->CaptureBlockSelection(selection_weight / 4,
+                                                    selection_weight, target_height);
     if (!capture.available) throw std::runtime_error("Mining selection chain owner unavailable");
-    for (const auto& tx : capture.transactions) {
-        const auto fee = capture.metadata.at(tx.GetTxid().AsUint256()).fee;
-        auto next = dinero::CheckedAddUna(total_fees, fee);
-        if (!next) throw std::runtime_error("Mining selection fee overflow");
-        total_fees = *next;
-    }
-    selected = std::move(capture.transactions);
+    std::vector<std::string> included_txids;
+    selected = selectTransactionsForBlock(capture, max_weight, target_height,
+                                           total_fees, included_txids);
 
     dinero::g_logger.debug("Selected " + std::to_string(selected.size()) +
                           " transactions with exact total fees: " + std::to_string(total_fees));

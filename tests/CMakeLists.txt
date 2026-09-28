@@ -6467,6 +6467,50 @@ add_test(NAME MiningPackageSelection COMMAND test_mining_package_selection)
 set_tests_properties(MiningPackageSelection PROPERTIES
   LABELS "mempool;mining;package" TIMEOUT 60)
 
+add_executable(test_mining_job_policy
+  tests/mempool/test_mining_job_policy.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/tx_relay_manager.cpp
+  tests/stubs/vault_test_stubs.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mining_job_policy PRIVATE
+    "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mining_job_policy PRIVATE
+    dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate dinero_bridge
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mining_job_policy PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mining_job_policy build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mining_job_policy)
+target_include_directories(test_mining_job_policy PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mining_job_policy PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+add_test(NAME MiningJobPolicy COMMAND test_mining_job_policy)
+set_tests_properties(MiningJobPolicy PROPERTIES
+  LABELS "mempool;mining;job" TIMEOUT 60)
+
 add_executable(benchmark_covenant_validation
   tests/benchmarks/benchmark_covenant_validation.cpp
 )

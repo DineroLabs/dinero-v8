@@ -339,6 +339,24 @@ jobs:
           cases=['RankedChildRetainsParentAndExactWeight','SharedParentIncludedExactlyOnce','RejectedParentCannotLeaveSelectedChild']
           assert sorted(re.findall(r'\[       OK \] MiningPackageSelection\.(\w+)',log))==sorted(cases)
           PYSNAPSHOT
+      - name: Shared mining job selection policy
+        run: |
+          cmake --build build-orchard-root --target test_mining_job_policy --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningJobPolicy$' --show-only=json-v1 > orchard-mining-job-policy-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-job-policy-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningJobPolicy']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningJobPolicy$' --verbose --no-tests=error --output-log orchard-mining-job-policy-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-job-policy-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningJobPolicy']
+          cases=['JobAppliesParentPolicyAndRetry','JobIncludesSharedParentExactlyOnce','JobHonorsExactWeightBoundary']
+          assert sorted(re.findall(r'\[       OK \] MiningJobPolicy\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
       - name: Retained mining-template mempool owner
         run: |
           cmake --build build-orchard-root --target test_mining_pool_owner test_utreexo_safety_gate test_block_template_determinism --parallel 4 -- -k 0
@@ -1528,6 +1546,8 @@ jobs:
             orchard-refresh-owner-execution.log
             orchard-relay-refresh-owner-inventory.json
             orchard-relay-refresh-owner-execution.log
+            orchard-mining-job-policy-inventory.json
+            orchard-mining-job-policy-execution.log
             orchard-mining-package-selection-inventory.json
             orchard-mining-package-selection-execution.log
             orchard-mining-selection-snapshot-inventory.json
