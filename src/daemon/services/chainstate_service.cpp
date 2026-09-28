@@ -5458,7 +5458,8 @@ void ChainstateService::notifyBlockConnected(const Block& block, uint32_t height
     if (ctx && ctx->mempool) {
         std::vector<uint8_t> new_root;
         if (consensus_utxo_set_) new_root=consensus_utxo_set_->SnapshotForestCommitment();
-        auto prepared=PreparedPoolTip::Connect(ctx->mempool->mempool(),bridge_node_,ctx->tx_relay,
+        auto pool_use=MempoolService::AcquirePoolUse(ctx->mempool);
+        auto prepared=PreparedPoolTip::Connect(pool_use->Pool(),bridge_node_,ctx->tx_relay,
                                               block,height,new_root);
         prepared->PublishAfterCommit();
         prepared->RequestRefresh();
@@ -5490,7 +5491,8 @@ void ChainstateService::notifyBlockDisconnected(const Block& block, uint32_t hei
 
     auto* ctx = DaemonContext::instance();
     if (ctx && ctx->mempool) {
-        auto prepared=PreparedPoolTip::Disconnect(ctx->mempool->mempool(),bridge_node_,ctx->tx_relay,height);
+        auto pool_use=MempoolService::AcquirePoolUse(ctx->mempool);
+        auto prepared=PreparedPoolTip::Disconnect(pool_use->Pool(),bridge_node_,ctx->tx_relay,height);
         prepared->PublishAfterCommit();
         prepared->RequestRefresh();
     }
