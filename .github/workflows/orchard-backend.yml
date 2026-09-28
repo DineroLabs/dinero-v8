@@ -209,7 +209,7 @@ jobs:
             -DBUILD_TESTING=ON
       - name: Build daemon and root Orchard targets
         run: |
-          cmake --build build-orchard-root --target dinerod test_chainstate_commit_batch_interval test_mempool_callback_owner test_mempool_replacement_policy test_mempool_package_bounds test_mempool_maintenance_owner test_mempool_admission_owner test_mempool_policy_owner test_mempool_block_owner test_mempool_refresh_owner test_relay_refresh_owner test_tx_relay_g3 test_csn_proof_refresh test_header_sync_p2p_integration test_rocksdb_checksum test_wallet_historical_rpc test_rpc_handler_drain test_wallet_pq_rpc_owner test_wallet_mainnet_readiness test_mining_height2 test_wallet_height2_coinbase test_pruning test_header_status_bits test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
+          cmake --build build-orchard-root --target dinerod test_chainstate_commit_batch_interval test_mempool_callback_owner test_mempool_replacement_policy test_mempool_package_bounds test_mempool_maintenance_owner test_mempool_admission_owner test_mempool_policy_owner test_mempool_block_owner test_mempool_refresh_owner test_mempool_prepared_refresh test_relay_refresh_owner test_tx_relay_g3 test_csn_proof_refresh test_header_sync_p2p_integration test_rocksdb_checksum test_wallet_historical_rpc test_rpc_handler_drain test_wallet_pq_rpc_owner test_wallet_mainnet_readiness test_mining_height2 test_wallet_height2_coinbase test_pruning test_header_status_bits test_template_maturity test_wallet_input_coins test_header_metadata_recovery v7_p2mr_key_read_test v7_p2mr_inventory_test test_assumeutxo_replay test_wallet_rescan_utxoset test_orchard_account_delivery test_orchard_index_delivery test_wallet_database_lease test_wallet_block_disconnect test_wallet_revert_atomic test_mempool_proof_staleness test_utxo_publication test_orchard_state_commitment test_orchard_state_root test_orchard_legacy_accounting test_orchard_runtime_reader test_orchard_service_startup test_shielded_state_startup test_legacy_retirement test_state_commitment_canonical test_state_commitment_encoding test_state_commitment_external_vectors test_state_commitment_transitions test_orchard_backend test_orchard_wallet test_orchard_wallet_shield test_orchard_wallet_spend test_orchard_wallet_storage test_orchard_wallet_scan test_orchard_operation_queue test_orchard_proof_jobs test_orchard_wallet_account test_orchard_chain_restore test_orchard_operation_archive test_orchard_transaction_reader test_orchard_coin_snapshot test_orchard_transparent test_orchard_authorization test_orchard_state_transition test_orchard_block_reader test_orchard_block_coins test_orchard_resources test_orchard_block_filter test_orchard_header test_orchard_forest_transition test_orchard_block_staging test_orchard_state_storage test_orchard_legacy_boundary test_block_storage_roundtrip test_archival_block_reader --parallel 2
           ./build-orchard-root/dinerod --version
       - name: Require and execute initial mining and coinbase indexing fixtures
         run: |
@@ -295,6 +295,23 @@ jobs:
           expected=['OperationRetainsCallbackSnapshot','CompletionInsideSendDoesNotRecreateReservation','TipChangeDiscardsUnsentBatchAndReplacementIsOwned','SendExceptionRetainsAttemptAndReleasesOnlyUnsent','PreparedTipAbandonsOrPublishesWithoutExternalCalls']
           if sorted(re.findall(r'\[       OK \] RelayRefreshOwner\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Relay refresh owner cases did not complete exactly once')
+          PYTEST
+      - name: Require and execute combined mempool block and refresh ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^MempoolPreparedRefresh$' --show-only=json-v1 > orchard-prepared-refresh-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-prepared-refresh-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['MempoolPreparedRefresh'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Refresh owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolPreparedRefresh$' --verbose --no-tests=error --output-log orchard-prepared-refresh-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-prepared-refresh-execution.log').read()
+          expected=['ConnectAbandonsOrPublishesBlockAndRefreshTogether','RefreshPreparationFailureRestoresCompleteBlockTransition','DisconnectUsesParentHeightAndPreservesAbandonedAttempts','ConfirmationPreparedBeforeBaseCommitRetainsChildOverlay']
+          if sorted(re.findall(r'\[       OK \] MempoolPreparedRefresh\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Refresh owner cases did not complete exactly once')
           PYTEST
       - name: Require and execute mempool stale proof refresh ownership
         run: |
@@ -1340,6 +1357,14 @@ jobs:
             orchard-header-recovery-execution.log
             orchard-checkpoint-interval-inventory.json
             orchard-checkpoint-interval-execution.log
+            orchard-block-owner-inventory.json
+            orchard-block-owner-execution.log
+            orchard-refresh-owner-inventory.json
+            orchard-refresh-owner-execution.log
+            orchard-relay-refresh-owner-inventory.json
+            orchard-relay-refresh-owner-execution.log
+            orchard-prepared-refresh-inventory.json
+            orchard-prepared-refresh-execution.log
             orchard-policy-owner-inventory.json
             orchard-policy-owner-execution.log
             orchard-admission-owner-inventory.json

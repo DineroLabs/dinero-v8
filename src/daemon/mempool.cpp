@@ -2849,9 +2849,11 @@ struct Mempool::PreparedBlockUpdate::Impl {
     std::unique_lock<std::shared_mutex> lock;
     std::unique_ptr<StateRollback> staged;
     const size_t evicted;
+    const std::vector<uint256> refresh_candidates;
     bool published = false;
     Impl(std::unique_lock<std::shared_mutex> held, std::unique_ptr<StateRollback> state,
-         size_t count) : lock(std::move(held)), staged(std::move(state)), evicted(count) {}
+         size_t count, std::vector<uint256> refresh)
+        : lock(std::move(held)), staged(std::move(state)), evicted(count), refresh_candidates(std::move(refresh)) {}
     ~Impl() noexcept {
         if (thread != std::this_thread::get_id()) std::terminate();
     }
@@ -2860,6 +2862,9 @@ Mempool::PreparedBlockUpdate::PreparedBlockUpdate(std::unique_ptr<Impl> impl)
     : impl_(std::move(impl)) {}
 Mempool::PreparedBlockUpdate::~PreparedBlockUpdate() = default;
 size_t Mempool::PreparedBlockUpdate::EvictedCount() const noexcept { return impl_->evicted; }
+const std::vector<uint256>& Mempool::PreparedBlockUpdate::RefreshCandidates() const noexcept {
+    return impl_->refresh_candidates;
+}
 void Mempool::PreparedBlockUpdate::PublishAfterCommit() noexcept {
     if (impl_->thread != std::this_thread::get_id() || impl_->published) std::terminate();
     impl_->staged->Swap();
@@ -2867,24 +2872,31 @@ void Mempool::PreparedBlockUpdate::PublishAfterCommit() noexcept {
     impl_->lock.unlock();
 }
 std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockConnected(
-    const ConnectedBlockEffects& effects, uint32_t height, const std::vector<uint8_t>& new_root) {
+    const ConnectedBlockEffects& effects, uint32_t height, const std::vector<uint8_t>& new_root,
+    std::optional<ProofRefreshPolicy> refresh) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     auto staged = std::make_unique<StateRollback>(*this);
     const auto evicted = applyBlockConnectedLocked(effects, height, new_root);
+    auto candidates = refresh ? selectStaleForRefreshLocked(height, refresh->batch_size,
+        refresh->max_age_blocks, refresh->max_attempts, refresh->overload_threshold) : std::vector<uint256>{};
     // Restore live state and retain the complete prepared state. Its destructor
     // now discards that state if the caller abandons the canonical transition.
     staged->Swap();
     staged->committed = true;
-    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), evicted);
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), evicted, std::move(candidates));
     return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
 }
-std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockDisconnected(uint32_t height) {
+std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockDisconnected(
+    uint32_t height, std::optional<ProofRefreshPolicy> refresh) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     auto staged = std::make_unique<StateRollback>(*this);
     applyBlockDisconnectedLocked(height);
+    const auto parent_height = height > 0 ? height - 1 : 0;
+    auto candidates = refresh ? selectStaleForRefreshLocked(parent_height, refresh->batch_size,
+        refresh->max_age_blocks, refresh->max_attempts, refresh->overload_threshold) : std::vector<uint256>{};
     staged->Swap();
     staged->committed = true;
-    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), 0);
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), 0, std::move(candidates));
     return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
 }
 size_t Mempool::onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
@@ -3042,6 +3054,12 @@ std::vector<uint256> Mempool::selectStaleForRefresh(
     size_t stale_overload_threshold
 ) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
+    return selectStaleForRefreshLocked(chain_height, max_refresh_batch,
+        max_proof_age_blocks, max_refresh_attempts, stale_overload_threshold);
+}
+std::vector<uint256> Mempool::selectStaleForRefreshLocked(
+    uint32_t chain_height, size_t max_refresh_batch, uint32_t max_proof_age_blocks,
+    uint32_t max_refresh_attempts, size_t stale_overload_threshold) {
     std::vector<uint256> stale_txids;
     stale_txids.reserve(m_transactions.size());
     for (const auto& [txid, entry] : m_transactions) {

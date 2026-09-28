@@ -1,0 +1,7 @@
+# Prepare block reconciliation and proof-refresh selection together
+
+Prepared mempool block updates optionally include the existing bounded stale-proof policy. Conflict/confirmation handling, proof staleness, dependent evictions, selected refresh attempts and counters are retained in one proposal. Failure during refresh preparation restores the entire pre-block pool. Abandon preserves prior state; publication swaps the complete proposal once. Immutable candidate IDs belong to the prepared object; downstream requests are permitted only after canonical commit/publication. Disconnect selection uses the parent height with a saturated zero boundary. EvictedCount retains its existing block-conflict meaning; stale-policy eviction counters remain separate.
+
+Existing immediate block APIs and standalone refresh selection retain their behavior. The new optional composition avoids acquiring the pool mutex recursively and removes fallible selection from future post-commit provider publication. It does not send requests, prove cryptographic refresh, install the production provider, cover other consumers, persist a pool receipt or establish Orchard admission/readmission/relay/mining. Full-state copies remain a load/resident gate. Mainnet remains unset.
+
+Patched fixtures also advance the real isolated coin base only after preparation, then publish and verify that a confirmed parent remains spent by its retained child and a grandchild can be admitted. This checks ordering at the component boundary, not a complete canonical chain commit.

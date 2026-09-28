@@ -306,12 +306,19 @@ public:
     // other pool APIs while holding it; the Mempool must outlive the object.
     // Preparation may allocate/refuse. Abandon leaves the live pool unchanged;
     // publication after canonical commit performs only nonthrowing state swaps.
+    struct ProofRefreshPolicy {
+        size_t batch_size = 20;
+        uint32_t max_age_blocks = 2, max_attempts = 1;
+        size_t overload_threshold = 256;
+    };
     class PreparedBlockUpdate final {
     public:
         ~PreparedBlockUpdate();
         PreparedBlockUpdate(const PreparedBlockUpdate&) = delete;
         PreparedBlockUpdate& operator=(const PreparedBlockUpdate&) = delete;
         size_t EvictedCount() const noexcept;
+        // Immutable proposal; callers may request these only after publication.
+        const std::vector<uint256>& RefreshCandidates() const noexcept;
         void PublishAfterCommit() noexcept;
     private:
         friend class Mempool;
@@ -321,8 +328,10 @@ public:
     };
     [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockConnected(
         const ConnectedBlockEffects&, uint32_t height,
-        const std::vector<uint8_t>& new_root = {});
-    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockDisconnected(uint32_t height);
+        const std::vector<uint8_t>& new_root = {},
+        std::optional<ProofRefreshPolicy> refresh = std::nullopt);
+    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockDisconnected(
+        uint32_t height, std::optional<ProofRefreshPolicy> refresh = std::nullopt);
 
     // Caller must derive these effects from the exact validated block body.
     // This reconciles the legacy transparent pool only; Orchard nullifier
@@ -542,6 +551,7 @@ public:
 private:
     // Construct only while holding m_mutex; restores local pool state on failure.
     struct StateRollback;
+    std::vector<uint256> selectStaleForRefreshLocked(uint32_t, size_t, uint32_t, uint32_t, size_t);
     size_t applyBlockConnectedLocked(const ConnectedBlockEffects&, uint32_t, const std::vector<uint8_t>&);
     void applyBlockDisconnectedLocked(uint32_t);
     // ========================================================================
