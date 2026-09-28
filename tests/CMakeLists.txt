@@ -6407,6 +6407,60 @@ add_test(NAME MempoolRankedRpc COMMAND test_mempool_ranked_rpc)
 set_tests_properties(MempoolRankedRpc PROPERTIES
   LABELS "mempool;rpc;ranked;body" TIMEOUT 60)
 
+add_executable(test_mempool_retained_load
+  tests/mempool/test_mempool_retained_load.cpp
+  src/daemon/mempool.cpp
+  src/daemon/config.cpp
+  src/daemon/legacy_globals_stub.cpp
+  src/daemon/tx_relay_manager.cpp
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Wallet now references chainstate/core members after their initial scan.
+  # Rescan the actual mutually dependent archives, as for nodecore_runtime_driver.
+  # Raw group flags preserve compatibility with the CMake 3.20 minimum.
+  target_link_libraries(test_mempool_retained_load PRIVATE
+    "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+    dinero_consensus dinero_shielded dinero_bridge dinero_pool
+    dinero_lightning_keys dinero_address_encoding dinero_bip32 dinero_pq
+    dinero_zk dinero_tx_primitives dinero_crypto "-Wl,--end-group"
+    secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main)
+else()
+  target_link_libraries(test_mempool_retained_load PRIVATE
+    dinero_rpc_handlers dinero_core dinero_consensus dinero_pq dinero_shielded dinero_chainstate
+    dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES}
+    GTest::gtest GTest::gtest_main
+  )
+endif()
+if(TARGET bulletproofs_ffi)
+  target_link_libraries(test_mempool_retained_load PRIVATE bulletproofs_ffi)
+  if(TARGET build_bulletproofs_ffi)
+    add_dependencies(test_mempool_retained_load build_bulletproofs_ffi)
+  endif()
+endif()
+link_zstd_if_needed(test_mempool_retained_load)
+target_include_directories(test_mempool_retained_load PRIVATE
+  ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/third_party/googletest/googletest/include
+)
+if(APPLE)
+  target_link_libraries(test_mempool_retained_load PRIVATE
+    "-framework Security" "-framework CoreFoundation")
+endif()
+# Root CMake declares the optional backend after including this file.
+function(dinero_attach_orchard_mempool_retained_load_fixture)
+  if(TARGET dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_retained_load PRIVATE dinero_orchard_mempool_body)
+    target_compile_definitions(test_mempool_retained_load PRIVATE
+      DINERO_TEST_ORCHARD_BODY=1
+      DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+  endif()
+endfunction()
+cmake_language(DEFER CALL dinero_attach_orchard_mempool_retained_load_fixture)
+add_test(NAME MempoolRetainedLoad COMMAND test_mempool_retained_load)
+set_tests_properties(MempoolRetainedLoad PROPERTIES
+  LABELS "mempool;persistence;recovery;body" TIMEOUT 60)
+
 add_executable(test_mempool_admission_owner
   tests/mempool/test_mempool_admission_owner.cpp
   src/daemon/mempool.cpp
@@ -13818,6 +13872,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_proof_staleness.cpp)
   add_executable(test_mempool_proof_staleness
     tests/mempool/test_mempool_proof_staleness.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
+    tests/stubs/mempool_relay_reader_stub.cpp
     src/mempool/coins_view_mempool.cpp
     src/daemon/mempool.cpp
     src/mining/address_validator.cpp
@@ -13852,6 +13907,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/mempool/test_mempool_address_queries.cpp)
   add_executable(test_mempool_address_queries
     tests/mempool/test_mempool_address_queries.cpp
     tests/mempool/test_mempool_proof_staleness_stubs.cpp
+    tests/stubs/mempool_relay_reader_stub.cpp
     src/daemon/mempool.cpp
     src/mining/address_validator.cpp
     src/daemon/bech32_decode.cpp

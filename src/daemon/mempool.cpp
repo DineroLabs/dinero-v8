@@ -3,6 +3,7 @@
 #include "consensus/block_index.h"
 #include "consensus/shielded/resource_limits.h"
 #include "daemon/mempool.h"
+#include "daemon/relay_transaction_reader.h"
 #include "dinero/compat/int128.hpp"
 #include "primitives/block.h"  // Block type for onBlockConnected/onBlockDisconnected
 #include "storage/chain_db.h"  // ChainDB - single source of truth for blockchain state
@@ -3861,6 +3862,10 @@ bool Mempool::saveToDisk(const std::string& filepath) {
     // - Atomic write (.tmp → rename)
 
     try {
+        std::unique_lock<std::recursive_mutex> operation(m_persistence_mutex, std::try_to_lock);
+        if (!operation.owns_lock() || m_persistence_operation_active || m_persistence_recovery_incomplete) return false;
+        m_persistence_operation_active = true;
+        struct ReleaseOperation { bool& active; ~ReleaseOperation() { active = false; } } release{m_persistence_operation_active};
         std::lock_guard<std::shared_mutex> lock(m_mutex);
 
         // Convert m_transactions map to vector for MempoolPersistence
@@ -3884,91 +3889,83 @@ bool Mempool::saveToDisk(const std::string& filepath) {
 }
 
 bool Mempool::loadFromDisk(const std::string& filepath) {
-    // STEP C: Load mempool on startup
-    // Rules:
-    // - Deserialize each transaction
-    // - Revalidate against current policy
-    // - Drop if expired/conflicts/invalid
-    // - Persistence does NOT bypass policy
-
+    std::unique_lock<std::recursive_mutex> operation(m_persistence_mutex, std::try_to_lock);
+    if (!operation.owns_lock() || m_persistence_operation_active) return false;
+    m_persistence_operation_active = true;
+    struct ReleaseOperation { bool& active; ~ReleaseOperation() { active = false; } } release{m_persistence_operation_active};
+    if (m_persistence_recovery_incomplete && m_persistence_recovery_path != filepath)
+        return false; // Another file cannot discharge this retained recovery.
+    const bool retrying = m_persistence_recovery_incomplete;
+    m_persistence_recovery_incomplete = true; // Before reads, allocations or admission.
     try {
-        MPLOG_INFO("Loading mempool from " + filepath);
-
-        // Delegate to MempoolPersistence::load()
-        std::vector<MempoolPersistence::PersistedEntry> persisted = MempoolPersistence::load(filepath);
-
-        if (persisted.empty()) {
-            MPLOG_INFO("No transactions loaded (empty file or error)");
-            return true;  // Not an error - empty mempool is valid
-        }
-
-        size_t loaded = 0;
-        size_t rejected = 0;
-
-        struct PendingReloadTx {
-            Transaction tx;
-            std::string txid_hex;
-        };
-
-        std::vector<PendingReloadTx> pending;
+        m_persistence_recovery_path = filepath;
+        const auto persisted = MempoolPersistence::load(filepath);
+        std::vector<MempoolTransaction> pending;
         pending.reserve(persisted.size());
-
-        // Deserialize first so we can replay persisted transactions in
-        // dependency-safe passes instead of assuming file order is valid.
+        std::unordered_set<uint256> identities;
+        // Decode the complete file before any admission. Stored metadata is
+        // never authority for fee, height, expiry or transaction validity.
         for (const auto& entry : persisted) {
-            Transaction tx;
-            if (!TransactionSerializer::Deserialize(tx, entry.tx_bytes)) {
-                rejected++;
-                MPLOG_WARN("Failed to deserialize transaction from mempool file");
-                continue;
-            }
-            pending.push_back(PendingReloadTx{tx, tx.GetTxid().AsUint256().GetHex()});
+            auto body = DecodeRelayTransaction(entry.tx_bytes, RelayTransactionReadMode::AvailableFamilies);
+            if (!identities.insert(body.GetTxid().AsUint256()).second)
+                throw std::runtime_error("Duplicate mempool file transaction");
+            pending.push_back(std::move(body));
         }
-
-        size_t pass = 0;
+        if (!m_persistence_recovery_bodies.empty()) {
+            if (pending.size() != m_persistence_recovery_bodies.size()) return false;
+            for (size_t i = 0; i < pending.size(); ++i)
+                if (pending[i].Serialize() != m_persistence_recovery_bodies[i].Serialize()) return false;
+        } else {
+            // Retain actual bodies before the first admission. An empty or
+            // changed retry file cannot erase a known unresolved inventory.
+            m_persistence_recovery_bodies = pending;
+        }
         while (!pending.empty()) {
-            pass++;
-            size_t loaded_this_pass = 0;
-            std::vector<PendingReloadTx> retry;
+            size_t resolved = 0;
+            std::vector<MempoolTransaction> retry;
             retry.reserve(pending.size());
-
-            for (auto& pending_tx : pending) {
-                // Revalidate via canonical ingress. false = don't relay because
-                // this is restart recovery, not new network admission.
-                auto result = submitTransactionInternal(pending_tx.tx, "disk-load", false);
-                if (result.accepted()) {
-                    loaded++;
-                    loaded_this_pass++;
+            for (auto& body : pending) {
+                if (body.IsOrchard()) {
+                    // Actual family validator remains unavailable. Preserve
+                    // its original file, never cast into historical ingress.
+                    retry.push_back(std::move(body));
+                    continue;
+                }
+                const auto result = submitTransactionInternal(body.Historical(), "disk-load", false);
+                if (result.accepted()) { ++resolved; continue; }
+                if (result.code == TxRejectCode::ALREADY_IN_MEMPOOL) {
+                    const auto present = getMempoolEntry(body.GetTxid().AsUint256());
+                    if (present && present->tx.Serialize() == body.Serialize()) {
+                        ++resolved;
+                        continue;
+                    }
+                    retry.push_back(std::move(body));
+                } else if (result.code == TxRejectCode::MISSING_INPUTS ||
+                           result.code == TxRejectCode::UNAVAILABLE) {
+                    retry.push_back(std::move(body));
                 } else {
-                    retry.push_back(std::move(pending_tx));
+                    ++resolved; // Existing known policy rejection; not admitted.
                 }
             }
-
-            if (retry.empty()) {
-                break;
-            }
-
-            if (loaded_this_pass == 0) {
-                rejected += retry.size();
-                for (const auto& pending_tx : retry) {
-                    MPLOG_DEBUG("Rejected transaction " + pending_tx.txid_hex +
-                                " during mempool load (policy/expired/conflict)");
-                }
-                break;
-            }
-
-            MPLOG_DEBUG("Mempool disk-load pass " + std::to_string(pass) +
-                        ": loaded " + std::to_string(loaded_this_pass) +
-                        ", retrying " + std::to_string(retry.size()) + " dependent transaction(s)");
+            if (retry.empty()) break;
+            if (resolved == 0) return false; // Original file retained for retry.
             pending = std::move(retry);
         }
-
-        MPLOG_INFO("Loaded " + std::to_string(loaded) + " transactions, rejected " + std::to_string(rejected));
+        m_persistence_recovery_bodies.clear();
+        m_persistence_recovery_path.clear();
+        m_persistence_recovery_incomplete = false;
         return true;
-
+    } catch (const MempoolPersistence::MissingFile&) {
+        if (retrying) return false;
+        m_persistence_recovery_bodies.clear();
+        m_persistence_recovery_path.clear();
+        m_persistence_recovery_incomplete = false;
+        return true; // Initial absent file only; no pending owner to discharge.
     } catch (const std::exception& e) {
-        // Never throw - return false on failure
-        MPLOG_ERR("Exception loading mempool: " + std::string(e.what()));
+        try { MPLOG_ERR("Mempool recovery incomplete; original file retained: " + std::string(e.what())); }
+        catch (...) {}
+        return false;
+    } catch (...) {
         return false;
     }
 }

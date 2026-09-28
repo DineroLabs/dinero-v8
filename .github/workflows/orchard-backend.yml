@@ -820,6 +820,27 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Retained mempool file recovery
+        run: |
+          cmake --build build-orchard-root --target test_mempool_retained_load test_covenant_system_lifecycle test_mempool_proof_staleness test_mempool_address_queries --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MempoolRetainedLoad|CovenantSystemLifecycle|MempoolProofStaleness|MempoolAddressQueries)$' --show-only=json-v1 > orchard-retained-load-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-retained-load-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['CovenantSystemLifecycle','MempoolAddressQueries','MempoolProofStaleness','MempoolRetainedLoad']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(MempoolRetainedLoad|CovenantSystemLifecycle|MempoolProofStaleness|MempoolAddressQueries)$' --verbose --no-tests=error --output-log orchard-retained-load-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-retained-load-execution.log').read_text()
+          for case in ['SignedDependencyOrderAndReopen','UnavailableCoinsRetainFileUntilRetry','WholeFileFailureHasNoAdmission','UnavailableOrchardFileRetainsCanonicalBody']:
+              assert log.count('[       OK ] MempoolRetainedLoad.'+case+' ')==1
+          assert 'All mempool address-query tests passed (' in log
+          assert ' assertions passed!' in log
+          assert '100% tests passed, 0 tests failed out of 4' in log
+          PYTEST
+
       - name: Require and execute all-ancestor package bounds
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --show-only=json-v1 > orchard-package-bounds-inventory.json
@@ -1859,6 +1880,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-retained-load-inventory.json
+            orchard-retained-load-execution.log
             orchard-package-bounds-inventory.json
             orchard-package-bounds-execution.log
             orchard-replacement-policy-inventory.json

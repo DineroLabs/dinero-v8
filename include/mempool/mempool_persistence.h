@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
+#include <stdexcept>
 
 namespace dinero {
 
@@ -39,13 +40,20 @@ struct MempoolEntry;
 
 class MempoolPersistence {
 public:
+    class MissingFile : public std::runtime_error {
+    public:
+        MissingFile() : std::runtime_error("Mempool file absent") {}
+    };
     // ═══════════════════════════════════════════════════════════════════════
     // Serialization Format Constants
     // ═══════════════════════════════════════════════════════════════════════
 
     static constexpr uint8_t MAGIC[8] = {'M', 'E', 'M', 'P', 'O', 'O', 'L', 'V'};
     static constexpr uint32_t VERSION = 1;
-    static constexpr size_t MAX_PERSISTED_TXS = 100000;  // Sanity limit
+    static constexpr size_t MAX_PERSISTED_TXS = 100000;
+    // Operational file budget, enforced by both writer and reader. Not a
+    // consensus limit or a resident-memory/load qualification.
+    static constexpr size_t MAX_PERSISTED_FILE_BYTES = size_t{512} * 1024 * 1024;
 
     // ═══════════════════════════════════════════════════════════════════════
     // Persisted Transaction Entry
@@ -53,7 +61,7 @@ public:
 
     struct PersistedEntry {
         std::vector<uint8_t> tx_bytes;  // Canonical wire bytes (proven in v0.13.0.1)
-        uint64_t arrival_time;          // Unix timestamp (seconds since epoch)
+        uint64_t arrival_time;          // Legacy opaque clock ticks; not trusted recovery time
         uint64_t fee;                   // Transaction fee in una
         uint32_t height;                // Block height when added
 
@@ -85,12 +93,12 @@ public:
      * Load mempool entries from disk
      *
      * Rules:
-     * - Returns empty vector on any failure (corrupt file, missing, etc.)
-     * - Never throws
+     * - Missing file throws MissingFile; malformed/unreadable/incomplete file throws
+     * - No partial prefix is returned on failure
      * - Caller must validate each entry against current policy
      *
      * @param filepath Path to load file
-     * @return Vector of persisted entries (may be empty)
+     * @return Complete persisted entries (empty only for a valid empty file)
      */
     static std::vector<PersistedEntry> load(const std::string& filepath);
 

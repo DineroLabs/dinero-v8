@@ -7405,7 +7405,7 @@ bool DaemonApp::Start() {
             if (mempool.loadFromDisk(mempool_path)) {
                 std::cout << "[DaemonApp] ✅ Mempool loaded from " << mempool_path << std::endl;
             } else {
-                std::cout << "[DaemonApp] ℹ️  Mempool load failed or file not found (starting with empty mempool)" << std::endl;
+                std::cout << "[DaemonApp] ℹ️  Mempool recovery incomplete; original file retained and overwrite disabled" << std::endl;
             }
         }
     }

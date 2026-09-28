@@ -661,6 +661,13 @@ private:
     uint32_t current_block_height_ = 0;              // Updated on each block connect
 
     // Thread safety
+    // Serializes disk recovery and overwrite permission. Reentrant/concurrent
+    // load/save refuses via try_lock; canonical admission takes its own locks.
+    mutable std::recursive_mutex m_persistence_mutex;
+    bool m_persistence_operation_active = false;
+    bool m_persistence_recovery_incomplete = false;
+    std::string m_persistence_recovery_path;
+    std::vector<MempoolTransaction> m_persistence_recovery_bodies;
     mutable std::shared_mutex m_mutex;
     
     // Configuration
