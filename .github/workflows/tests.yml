@@ -694,6 +694,19 @@ jobs:
             done
           done
 
+      # The three-node test preserves failure logs in /tmp. Its shutdown tail
+      # can omit the initiating startup error; retain complete stdout logs.
+      # Exact .log allowlist excludes cookies, wallets and database files.
+      - name: Collect parallel-download failure logs
+        if: always()
+        run: |
+          dest=build-tests/Testing/parallel-download-logs
+          mkdir -p "$dest"
+          for f in /tmp/dinero_parallel_dl_a_*.log /tmp/dinero_parallel_dl_b_*.log /tmp/dinero_parallel_dl_c_*.log; do
+            [ -f "$f" ] || continue
+            gzip -c "$f" > "$dest/$(basename "$f").gz"
+          done
+
       - name: Collect snapshot-binding failure evidence
         if: always()
         run: |
