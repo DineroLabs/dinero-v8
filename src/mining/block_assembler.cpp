@@ -1977,17 +1977,23 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
     uint64_t& total_fees_out,
     std::vector<std::string>& included_txids_out
 ) {
-    // Phase W.1.3: Use intelligent selection if enabled
+    // Ranking may change priority, but both paths pass through the same
+    // policy and ancestor-preservation checks below.
+    std::vector<Transaction> ranked;
     if (use_intelligent_selection_ && block_relay_manager_) {
-        return selectTransactionsIntelligent(capture, max_weight, target_height, total_fees_out, included_txids_out);
+        uint64_t ranking_fees = 0;
+        std::vector<std::string> ranking_ids;
+        ranked = selectTransactionsIntelligent(capture, max_weight, target_height,
+                                               ranking_fees, ranking_ids);
+    } else {
+        ranked = capture.transactions;
     }
-
-    // Default: Use standard CPFP-aware selection
+    const auto& candidates = ranked;
     std::vector<Transaction> selected;
+    std::unordered_set<uint256> accepted;
+    uint64_t selected_weight = 0;
     total_fees_out = 0;
     included_txids_out.clear();
-
-    const auto& candidates = capture.transactions;
 
     // Apply CT selection policy if enabled
     size_t ct_count = 0;
@@ -2007,6 +2013,22 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
     size_t scheme_cap_excluded = 0;
 
     for (const auto& tx : candidates) {
+        const auto txid = tx.GetTxid().AsUint256();
+        if (accepted.count(txid)) continue;
+        bool missing_parent = false;
+        for (const auto& input : tx.vin) {
+            const auto parent = input.prevout.txid.AsUint256();
+            if (capture.metadata.count(parent) && !accepted.count(parent)) {
+                missing_parent = true;
+                break;
+            }
+        }
+        if (missing_parent) continue;
+        const uint64_t weight = tx.GetWeight();
+        if (weight > max_weight || selected_weight > max_weight - weight) continue;
+        size_t add_ct_count = 0;
+        size_t add_ct_proof_bytes = 0;
+
         // Check if CT is disabled
         if (!ct_enabled_ && ct_policy_ && ct_policy_->HasConfidentialOutputs(tx)) {
             continue;  // Skip CT transactions when CT mining is disabled
@@ -2020,10 +2042,9 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
                 continue;  // Skip this CT transaction
             }
 
-            // Update CT counters
-            auto weight_info = ct_policy_->GetWeightInfo(tx);
-            ct_count++;
-            ct_proof_bytes += weight_info.proof_bytes;
+            const auto weight_info = ct_policy_->GetWeightInfo(tx);
+            add_ct_count = 1;
+            add_ct_proof_bytes = weight_info.proof_bytes;
         }
 
         // Phase 8.5 Commit 2: per-scheme input-count ceiling. Scan this
@@ -2072,7 +2093,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
         // under the cap after a larger one was skipped.
         if (max_block_vwu_ > 0) {
             const uint64_t tx_vwu = capture.metadata.at(tx.GetTxid().AsUint256()).vwu;
-            if (template_vwu + tx_vwu > max_block_vwu_) {
+            if (tx_vwu > max_block_vwu_ || template_vwu > max_block_vwu_ - tx_vwu) {
                 ++vwu_excluded;
                 continue;
             }
@@ -2083,6 +2104,10 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
         for (const auto& [scheme_id, add] : tx_scheme_inputs) {
             scheme_input_counts[scheme_id] += add;
         }
+        ct_count += add_ct_count;
+        ct_proof_bytes += add_ct_proof_bytes;
+        selected_weight += weight;
+        accepted.insert(txid);
         selected.push_back(tx);
     }
 
@@ -2117,10 +2142,10 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
         total_fees_out = *next;
     }
 
-    // Apply batch optimization if CT policy is set
-    if (ct_policy_ && ct_policy_->ShouldUseBatchVerification(ct_count)) {
-        selected = ct_policy_->OptimizeForBatchVerification(std::move(selected));
-        dinero::g_logger.debug("Applied CT batch optimization for " + std::to_string(ct_count) + " CT transactions");
+    // Preserve parent-before-child ordering for block commitment. Proof
+    // batching is a verifier concern and must not reorder dependent transactions.
+    if (use_intelligent_selection_ && block_relay_manager_) {
+        last_template_txids_ = accepted;
     }
 
     dinero::g_logger.debug("selectTransactionsForBlock: selected " + std::to_string(selected.size()) +
@@ -2373,37 +2398,54 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
 
     dinero::g_logger.debug("selectTransactionsIntelligent: Scored " + std::to_string(scored_txs.size()) + " transactions");
 
-    // Step 6: Select top-scored transactions up to weight limit
-    uint32_t current_weight = 0;
-    std::unordered_set<uint256> selected_set;  // For fast lookup
-
+    std::unordered_map<uint256, size_t> positions;
+    positions.reserve(all_txs.size());
+    for (size_t i = 0; i < all_txs.size(); ++i)
+        positions.emplace(all_txs[i].GetTxid().AsUint256(), i);
+    uint64_t current_weight = 0;
+    std::unordered_set<uint256> selected_set;
     for (const auto& scored : scored_txs) {
-        // Find the transaction
-        auto it = std::find_if(all_txs.begin(), all_txs.end(),
-                              [&scored](const Transaction& tx) {
-                                  // Phase M.4: GetTxid() returns TxId, convert to uint256 for comparison
-                                  return tx.GetTxid().AsUint256() == scored.txid;
-                              });
-
-        if (it == all_txs.end()) continue;
-
-        const Transaction& tx = *it;
-        uint32_t tx_weight = tx.GetSize() * 4;  // Approximate weight
-
-        if (current_weight + tx_weight > max_weight) {
-            break;  // Block full
+        if (selected_set.count(scored.txid)) continue;
+        std::unordered_set<uint256> required;
+        std::vector<uint256> pending{scored.txid};
+        while (!pending.empty()) {
+            const auto id = pending.back();
+            pending.pop_back();
+            if (selected_set.count(id) || !required.insert(id).second) continue;
+            const auto found = positions.find(id);
+            if (found == positions.end()) throw std::logic_error("Missing captured package transaction");
+            for (const auto& input : all_txs[found->second].vin) {
+                const auto parent = input.prevout.txid.AsUint256();
+                if (positions.count(parent)) pending.push_back(parent);
+            }
         }
-
-        // Add transaction
-        selected.push_back(tx);
-        selected_set.insert(scored.txid);
-        current_weight += tx_weight;
-
-        const auto fee = capture.metadata.at(scored.txid).fee;
-        auto next = dinero::CheckedAddUna(total_fees_out, fee);
-        if (!next) throw std::runtime_error("Mining selection fee overflow");
-        total_fees_out = *next;
-        included_txids_out.push_back(scored.txid.GetHex());
+        std::vector<size_t> package;
+        package.reserve(required.size());
+        for (const auto& id : required) package.push_back(positions.at(id));
+        // The capture is already in CPFP parent-before-child order.
+        std::sort(package.begin(), package.end());
+        uint64_t package_weight = 0;
+        bool fits = true;
+        for (const auto index : package) {
+            const uint64_t weight = all_txs[index].GetWeight();
+            if (weight > max_weight || package_weight > max_weight - weight) {
+                fits = false;
+                break;
+            }
+            package_weight += weight;
+        }
+        if (!fits || current_weight > max_weight - package_weight) continue;
+        for (const auto index : package) {
+            const auto& tx = all_txs[index];
+            const auto id = tx.GetTxid().AsUint256();
+            auto next = dinero::CheckedAddUna(total_fees_out, capture.metadata.at(id).fee);
+            if (!next) throw std::runtime_error("Mining package fee overflow");
+            total_fees_out = *next;
+            selected.push_back(tx);
+            selected_set.insert(id);
+            included_txids_out.push_back(id.GetHex());
+        }
+        current_weight += package_weight;
     }
 
     dinero::g_logger.info("selectTransactionsIntelligent: selected " + std::to_string(selected.size()) +
