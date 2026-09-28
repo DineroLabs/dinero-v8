@@ -23,6 +23,7 @@
  */
 
 #include "primitives/transaction.h"
+#include "daemon/mempool_transaction.h"
 #include "primitives/uint256.h"
 #include "daemon/interfaces/ingress_types.h"  // TxAcceptResult, TxRejectCode
 #include <functional>
@@ -32,6 +33,7 @@
 #include <mutex>
 #include <chrono>
 #include <memory>
+#include <utility>
 
 namespace dinero {
 
@@ -86,6 +88,10 @@ public:
         Transaction& out_tx
     )>;
 
+    // Captured immutable body, not an admission certificate. A missing body
+    // means unavailable; callers never manufacture a historical conversion.
+    using RetrieveBodyCallback = std::function<std::optional<MempoolTransaction>(const uint256&)>;
+
     /**
      * Constructor
      * @param logger Logger instance
@@ -117,9 +123,24 @@ public:
     /**
      * Set callback for transaction retrieval from mempool
      */
-    void SetRetrieveTxCallback(RetrieveTxCallback callback) {
+    void SetRetrieveBodyCallback(RetrieveBodyCallback callback) {
         { std::lock_guard<std::mutex> lock(callback_mutex_); retrieve_tx_callback_.swap(callback); }
-        // Destroy the replaced callable after releasing callback ownership.
+        // The replaced callable is destroyed outside callback ownership.
+    }
+
+    // Compatibility adapter for historical callers. Both setters replace the
+    // same captured callback; no stale fallback remains behind a newer owner.
+    void SetRetrieveTxCallback(RetrieveTxCallback callback) {
+        RetrieveBodyCallback owned;
+        if (callback) {
+            owned = [callback = std::move(callback)](const uint256& id)
+                -> std::optional<MempoolTransaction> {
+                Transaction tx;
+                if (!callback(id, tx)) return std::nullopt;
+                return MempoolTransaction(tx);
+            };
+        }
+        SetRetrieveBodyCallback(std::move(owned));
     }
 
     /**
@@ -282,7 +303,7 @@ private:
     SendMessageCallback send_message_callback_;
     ValidateTxCallback validate_tx_callback_;
     SubmitTxCallback submit_tx_callback_;
-    RetrieveTxCallback retrieve_tx_callback_;
+    RetrieveBodyCallback retrieve_tx_callback_;
 
     // Transaction orphan pool (non-owning — lifetime managed by DaemonApp)
     TxOrphanPool* orphan_pool_ = nullptr;
@@ -322,7 +343,7 @@ private:
     std::vector<uint8_t> SerializeGetData(const uint256& txid, bool csn) const;
 
     // Helper: Serialize tx message
-    std::vector<uint8_t> SerializeTx(const Transaction& tx) const;
+    std::vector<uint8_t> SerializeTx(const MempoolTransaction& tx) const;
 };
 
 } // namespace dinero

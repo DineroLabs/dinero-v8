@@ -102,7 +102,7 @@ void TxRelayManager::HandleInv(const std::string& peer_address, const uint256& t
 
 void TxRelayManager::HandleGetData(const std::string& peer_address, const uint256& txid) {
     SendMessageCallback send;
-    RetrieveTxCallback retrieve;
+    RetrieveBodyCallback retrieve;
     { std::lock_guard<std::mutex> lock(callback_mutex_); send = send_message_callback_; retrieve = retrieve_tx_callback_; }
 
     if (logger_) {
@@ -127,8 +127,8 @@ void TxRelayManager::HandleGetData(const std::string& peer_address, const uint25
     }
 
     // Retrieve transaction from mempool
-    Transaction tx;
-    if (!retrieve(txid, tx)) {
+    const auto tx = retrieve(txid);
+    if (!tx || !tx->HasBody() || tx->GetTxid().AsUint256() != txid) {
         if (logger_) {
             logger_->warning("[TxRelayManager] Transaction not found in mempool: " +
                            txid.GetHex().substr(0, 16) + "...");
@@ -137,7 +137,7 @@ void TxRelayManager::HandleGetData(const std::string& peer_address, const uint25
     }
 
     // Serialize and send transaction to requesting peer
-    auto tx_payload = SerializeTx(tx);
+    auto tx_payload = SerializeTx(*tx);
     if (tx_payload.empty()) {
         if (logger_) {
             logger_->error("[TxRelayManager] Failed to serialize tx: " +
@@ -460,8 +460,8 @@ std::vector<uint8_t> TxRelayManager::SerializeGetData(const uint256& txid, bool 
     return payload;
 }
 
-std::vector<uint8_t> TxRelayManager::SerializeTx(const Transaction& tx) const {
-    // Serialize transaction using Transaction::Serialize()
+std::vector<uint8_t> TxRelayManager::SerializeTx(const MempoolTransaction& tx) const {
+    // Serialize the actual captured family without a historical conversion.
     try {
         std::vector<uint8_t> payload = tx.Serialize();
 

@@ -6477,24 +6477,17 @@ bool DaemonApp::Init(int argc, char** argv) {
                     });
 
                     // Wire TxRelayManager retrieve callback (TxRelay → MempoolService)
-                    tx_relay->SetRetrieveTxCallback([mempool](
-                        const uint256& txid,
-                        Transaction& out_tx
-                    ) -> bool {
+                    tx_relay->SetRetrieveBodyCallback([mempool](
+                        const uint256& txid
+                    ) -> std::optional<MempoolTransaction> {
                         try {
-                            // Retrieve transaction from mempool
-                            auto tx_ptr = mempool->getTransaction(txid);
-                            if (!tx_ptr) {
-                                g_logger.debug("[TxRelay] Transaction not found in mempool: " +
-                                             txid.GetHex().substr(0, 16) + "...");
-                                return false;
-                            }
-
-                            out_tx = *tx_ptr;
-                            return true;
+                            auto use = MempoolService::AcquirePoolUse(mempool);
+                            const auto entry = use->Pool().getMempoolEntry(txid);
+                            if (!entry) return std::nullopt;
+                            return entry->tx;
                         } catch (const std::exception& e) {
                             g_logger.error("[TxRelay] Transaction retrieval failed: " + std::string(e.what()));
-                            return false;
+                            return std::nullopt;
                         }
                     });
                 }

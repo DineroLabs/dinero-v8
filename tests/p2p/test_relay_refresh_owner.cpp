@@ -20,7 +20,7 @@ TEST(RelayRefreshOwner, OperationRetainsCallbackSnapshot) {
     relay.SetRetrieveTxCallback([&](const auto&,Transaction& tx){
         relay.SetRetrieveTxCallback({});relay.SetSendMessageCallback([&](const auto&,const auto&,const auto&){++first;});tx=Tx(3);return true;
     });
-    relay.HandleGetData("fixture-peer",Id(3));EXPECT_EQ(next,2U);EXPECT_EQ(first,1U);
+    relay.HandleGetData("fixture-peer",Tx(3).GetTxid().AsUint256());EXPECT_EQ(next,2U);EXPECT_EQ(first,1U);
     size_t validated=0;relay.SetValidateTxCallback([&](const auto&,const auto&){++validated;relay.SetValidateTxCallback({});return true;});
     const auto tx=Tx(4);relay.HandleTx("fixture-peer",tx);EXPECT_EQ(validated,1U);EXPECT_TRUE(relay.IsTxSeen(tx.GetTxid().AsUint256()));
     size_t submitted=0;relay.SetSubmitTxCallback([&](const auto& item,const auto&){++submitted;relay.SetSubmitTxCallback({});return TxAcceptResult::Accepted(item.GetTxid().AsUint256());});
