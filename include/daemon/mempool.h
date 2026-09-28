@@ -409,10 +409,10 @@ public:
     uint64_t computeVWUForTx(const Transaction& tx) const;
 
     // Configuration
-    void setMaxSize(size_t max_size) { m_max_size = max_size; }
-    void setMaxAge(std::chrono::hours max_age) { m_max_age = max_age; }
-    void setMinFeeRate(double min_fee_rate) { m_min_fee_rate = min_fee_rate; }
-    double getMinFeeRate() const { return m_min_fee_rate; }
+    void setMaxSize(size_t max_size) { std::unique_lock<std::shared_mutex> lock(m_mutex); m_max_size = max_size; }
+    void setMaxAge(std::chrono::hours max_age) { std::unique_lock<std::shared_mutex> lock(m_mutex); m_max_age = max_age; }
+    void setMinFeeRate(double min_fee_rate) { std::unique_lock<std::shared_mutex> lock(m_mutex); m_min_fee_rate = min_fee_rate; }
+    double getMinFeeRate() const { std::shared_lock<std::shared_mutex> lock(m_mutex); return m_min_fee_rate; }
 
     /**
      * Enable/disable RBF (Replace-By-Fee)
@@ -432,9 +432,24 @@ public:
     RBFRuntimeConfig getRBFRuntimeConfig() const;
 
     // CT Fee Policy Configuration (Phase 3)
-    void SetCTConfig(const mining::CTSelectionConfig& config) { ct_config_ = config; }
-    const mining::CTSelectionConfig& GetCTConfig() const { return ct_config_; }
-    mining::CTSelectionConfig& GetCTConfig() { return ct_config_; }
+    void SetCTConfig(const mining::CTSelectionConfig& config) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_ = config;
+    }
+    mining::CTSelectionConfig GetCTConfig() const {
+        std::shared_lock<std::shared_mutex> lock(m_mutex); return ct_config_;
+    }
+    void SetCTMinFeeRate(uint64_t rate) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.ct_min_fee_rate = rate;
+    }
+    void SetCTWeightMultiplier(double multiplier) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.ct_weight_multiplier = multiplier;
+    }
+    void SetCTMaxPerBlock(size_t count) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.max_ct_per_block = count;
+    }
+    void SetCTProofWeightFactor(uint32_t factor) {
+        std::unique_lock<std::shared_mutex> lock(m_mutex); ct_config_.ct_proof_weight_factor = factor;
+    }
 
     // Network integration (Phase M.0: Changed to uint256)
     void broadcastTransaction(const uint256& txid);
