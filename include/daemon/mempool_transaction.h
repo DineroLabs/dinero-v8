@@ -2,6 +2,7 @@
 #include "consensus/outpoint.h"
 #include "consensus/utxo_entry.h"
 #include "primitives/transaction.h"
+#include <array>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -25,6 +26,10 @@ private:
         virtual size_t GetBaseSize() const = 0;
         virtual size_t GetWeight() const = 0;
         virtual const std::vector<OutPoint>& Inputs() const noexcept = 0;
+        virtual const std::vector<std::array<uint8_t, 32>>& OrchardNullifiers() const noexcept {
+            static const std::vector<std::array<uint8_t, 32>> empty;
+            return empty;
+        }
         virtual size_t OutputCount() const noexcept = 0;
         virtual consensus::UTXOEntry OutputCoin(size_t, uint32_t) const = 0;
         virtual std::optional<uint64_t> ExplicitFee() const = 0;
@@ -89,6 +94,10 @@ public:
     size_t GetWeight() const { return Checked().GetWeight(); }
     size_t GetVirtualSize() const { return (GetWeight() + 3) / 4; }
     const std::vector<OutPoint>& Inputs() const { return Checked().Inputs(); }
+    // Structural identities for conflict reconciliation, not proof validity.
+    const std::vector<std::array<uint8_t, 32>>& OrchardNullifiers() const {
+        return Checked().OrchardNullifiers();
+    }
     size_t OutputCount() const { return Checked().OutputCount(); }
     // Structural output metadata for the existing pool overlay. The caller
     // supplies the entry height; this is not proof of admission or provenance.

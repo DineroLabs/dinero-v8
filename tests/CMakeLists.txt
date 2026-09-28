@@ -6651,7 +6651,7 @@ endif()
 # Root CMake declares the optional backend after including this file.
 function(dinero_attach_orchard_mempool_typed_package_fixture)
   if(TARGET dinero_orchard_mempool_body)
-    target_link_libraries(test_mempool_typed_package PRIVATE dinero_orchard_mempool_body)
+    target_link_libraries(test_mempool_typed_package PRIVATE dinero_orchard_mempool_body dinero_orchard_block_reader)
     target_compile_definitions(test_mempool_typed_package PRIVATE
       DINERO_TEST_ORCHARD_BODY=1
       DINERO_ORCHARD_BODY_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
@@ -6659,6 +6659,9 @@ function(dinero_attach_orchard_mempool_typed_package_fixture)
 endfunction()
 cmake_language(DEFER CALL dinero_attach_orchard_mempool_typed_package_fixture)
 add_test(NAME MempoolTypedPackage COMMAND test_mempool_typed_package)
+add_test(NAME OrchardPoolConflicts COMMAND test_mempool_typed_package --gtest_filter=OrchardPoolConflicts.*)
+set_tests_properties(OrchardPoolConflicts PROPERTIES
+  LABELS "mempool;orchard;conflicts;mandatory" TIMEOUT 60)
 set_tests_properties(MempoolTypedPackage PROPERTIES
   LABELS "mempool;package;policy;body" TIMEOUT 60)
 

@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iterator>
 #endif
+#include "orchard_pool_conflict_checks.h"
 namespace dinero {
 class MempoolTypedPackageTestPeer {
 public:

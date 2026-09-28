@@ -183,6 +183,7 @@ struct MempoolBlockSelection {
 
 class Mempool {
     friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
+    friend class MempoolOrchardConflictTestPeer; // Isolated structural conflict fixture only.
     friend class MempoolTypedPackageTestPeer; // Isolated package-policy graph fixture only.
     friend class MempoolAddressCaptureTestPeer; // Isolated address reader fixture only.
     friend class MempoolRankedRpcTestPeer; // Isolated ranked reader fixture only.
@@ -384,8 +385,8 @@ public:
         uint32_t height, std::optional<ProofRefreshPolicy> refresh = std::nullopt);
 
     // Caller must derive these effects from the exact validated block body.
-    // This reconciles the legacy transparent pool only; Orchard nullifier
-    // conflicts need the separate Orchard admission pool before activation.
+    // Reconciles transparent and Orchard nullifier conflicts in present entries.
+    // This does not authorize Orchard admission or readmission.
     size_t onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
                             const std::vector<uint8_t>& new_root = {});
 

@@ -862,6 +862,25 @@ jobs:
           assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
           PYTEST
 
+      - name: Orchard nullifier block conflict reconciliation
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardPoolConflicts$' --show-only=json-v1 > orchard-pool-conflicts-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pool-conflicts-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardPoolConflicts']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardPoolConflicts$' --verbose --no-tests=error --output-log orchard-pool-conflicts-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-pool-conflicts-execution.log').read_text()
+          for case in ['HistoricalBodiesHaveNoOrchardNullifiers','AllActionIdentitiesSurviveBodyCopyAndBlockExtraction','ConflictAndDescendantsAbandonThenPublish','ConfirmationRetainsTransparentChildAndExactBody','PreparationFailurePreservesEntriesIndexesAndRetry']:
+              assert log.count('[       OK ] OrchardPoolConflicts.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Parent-first mining package selection
         run: |
           cmake --build build-orchard-root --target test_mining_package_selection --parallel 4 -- -k 0
@@ -1994,6 +2013,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-pool-conflicts-inventory.json
+            orchard-pool-conflicts-execution.log
             orchard-mining-topology-inventory.json
             orchard-mining-topology-execution.log
             orchard-first-boundary-inventory.json

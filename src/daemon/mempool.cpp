@@ -3065,6 +3065,8 @@ size_t Mempool::applyBlockConnectedLocked(const ConnectedBlockEffects& effects, 
 
     std::unordered_set<uint256> confirmed_txids(
         effects.confirmed_txids.begin(), effects.confirmed_txids.end());
+    const std::set<std::array<uint8_t, 32>> orchard_nullifiers(
+        effects.orchard_nullifiers.begin(), effects.orchard_nullifiers.end());
 
     // Collect the entire conflicting branch BEFORE removal changes dependency
     // indexes. A confirmed parent merely moved into chainstate; its children
@@ -3081,17 +3083,18 @@ size_t Mempool::applyBlockConnectedLocked(const ConnectedBlockEffects& effects, 
             to_remove.push_back(txid);
             continue;
         }
-        for (const auto& spent : entry.spends) {
-            if (block_spends.count(spent)) {
-                conflicts.insert(txid);
-                conflict_queue.push_back(txid);
-                break;
-            }
+        bool conflict = false;
+        for (const auto& spent : entry.tx.Inputs()) {
+            if (block_spends.count(spent)) { conflict = true; break; }
         }
+        if (!conflict) for (const auto& nullifier : entry.tx.OrchardNullifiers()) {
+            if (orchard_nullifiers.count(nullifier)) { conflict = true; break; }
+        }
+        if (conflict && conflicts.insert(txid).second) conflict_queue.push_back(txid);
     }
     if (!conflict_queue.empty()) {
         for (const auto& [txid, entry] : m_transactions) {
-            for (const auto& spent : entry.spends) {
+            for (const auto& spent : entry.tx.Inputs()) {
                 const auto& parent = spent.txid.AsUint256();
                 if (m_transactions.count(parent)) children[parent].push_back(txid);
             }
