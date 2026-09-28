@@ -7,6 +7,11 @@
 namespace dinero {
 
 bool TxOrphanPool::addOrphan(const Transaction& tx, const std::string& peer_id) {
+    return addOrphan(MempoolTransaction(tx), peer_id);
+}
+
+bool TxOrphanPool::addOrphan(MempoolTransaction tx, const std::string& peer_id) {
+    if (!tx.HasBody()) return false;
     std::lock_guard<std::mutex> lock(m_mutex);
 
     uint256 txid = tx.GetTxid().AsUint256();
@@ -21,41 +26,58 @@ bool TxOrphanPool::addOrphan(const Transaction& tx, const std::string& peer_id) 
     std::string resource_error;
     // Height-free holding area, like the wire prefilter. Actual acceptance is
     // still contextual. Keep the old 10 MB total budget with larger objects.
-    if (!consensus::shielded::CheckTxResourceEnvelope(tx, true, resource_error)) {
+    if ((tx.IsOrchard() && tx_size > MAX_ORPHAN_TX_SIZE) ||
+        (!tx.IsOrchard() && !consensus::shielded::CheckTxResourceEnvelope(
+            tx.Historical(), true, resource_error))) {
         g_logger.debug("[OrphanPool] Rejected oversized orphan " + txid.GetHex().substr(0, 16) +
                       "... (" + std::to_string(tx_size) + " bytes)");
         return false;
     }
 
     // Per-peer limit
-    if (m_peer_orphan_count[peer_id] >= MAX_ORPHANS_PER_PEER) {
+    const auto peer = m_peer_orphan_count.find(peer_id);
+    if (peer != m_peer_orphan_count.end() && peer->second >= MAX_ORPHANS_PER_PEER) {
         g_logger.debug("[OrphanPool] Per-peer limit reached for " + peer_id);
         return false;
     }
 
-    // Pool full — evict a random orphan
-    while (m_orphans.size() >= MAX_ORPHAN_TRANSACTIONS ||
-           tx_size > MAX_ORPHAN_BYTES - m_total_bytes) {
-        if (!evictRandom()) return false;
+    if (tx_size > MAX_ORPHAN_BYTES) return false;
+    auto old_orphans = m_orphans;
+    auto old_parents = m_outpoint_to_orphans;
+    auto old_peers = m_peer_orphan_count;
+    const auto old_bytes = m_total_bytes;
+    try {
+        // Pool full — evict a random orphan
+        while (m_orphans.size() >= MAX_ORPHAN_TRANSACTIONS ||
+               tx_size > MAX_ORPHAN_BYTES - m_total_bytes) {
+            if (!evictRandom()) throw std::logic_error("Orphan eviction invariant failed");
+        }
+
+        // Build orphan entry
+        OrphanEntry entry;
+        entry.tx = tx;
+        entry.txid = txid;
+        entry.peer_id = peer_id;
+        entry.expiry = std::chrono::steady_clock::now() + ORPHAN_TX_EXPIRE_TIME;
+        entry.tx_size = tx_size;
+
+        // Index by missing parent prevout txids
+        for (const auto& input : tx.Inputs()) {
+            uint256 prevout_txid = input.txid.AsUint256();
+            m_outpoint_to_orphans[prevout_txid].insert(txid);
+        }
+
+        m_total_bytes += tx_size;
+        m_orphans[txid] = std::move(entry);
+        m_peer_orphan_count[peer_id]++;
+
+    } catch (...) {
+        m_orphans.swap(old_orphans);
+        m_outpoint_to_orphans.swap(old_parents);
+        m_peer_orphan_count.swap(old_peers);
+        m_total_bytes = old_bytes;
+        throw;
     }
-
-    // Build orphan entry
-    OrphanEntry entry;
-    entry.tx = tx;
-    entry.txid = txid;
-    entry.peer_id = peer_id;
-    entry.expiry = std::chrono::steady_clock::now() + ORPHAN_TX_EXPIRE_TIME;
-    entry.tx_size = tx_size;
-
-    // Index by missing parent prevout txids
-    for (const auto& input : tx.vin) {
-        uint256 prevout_txid = input.prevout.txid.AsUint256();
-        m_outpoint_to_orphans[prevout_txid].insert(txid);
-    }
-
-    m_total_bytes += tx_size;
-    m_orphans[txid] = std::move(entry);
-    m_peer_orphan_count[peer_id]++;
 
     g_logger.debug("[OrphanPool] Added orphan " + txid.GetHex().substr(0, 16) +
                   "... from " + peer_id + " (pool size: " + std::to_string(m_orphans.size()) + ")");
@@ -69,8 +91,8 @@ void TxOrphanPool::eraseOrphanLocked(const uint256& txid) {
     const auto& entry = it->second;
 
     // Remove from parent index
-    for (const auto& input : entry.tx.vin) {
-        uint256 prevout_txid = input.prevout.txid.AsUint256();
+    for (const auto& input : entry.tx.Inputs()) {
+        uint256 prevout_txid = input.txid.AsUint256();
         auto parent_it = m_outpoint_to_orphans.find(prevout_txid);
         if (parent_it != m_outpoint_to_orphans.end()) {
             parent_it->second.erase(txid);
@@ -111,9 +133,18 @@ void TxOrphanPool::eraseOrphansForPeer(const std::string& peer_id) {
 }
 
 std::vector<Transaction> TxOrphanPool::getOrphansForParent(const uint256& parent_txid) {
+    const auto bodies = getOrphanBodiesForParent(parent_txid);
+    std::vector<Transaction> result;
+    result.reserve(bodies.size());
+    // A legacy caller must not silently omit an unsupported present body.
+    for (const auto& body : bodies) result.push_back(body.Historical());
+    return result;
+}
+
+std::vector<MempoolTransaction> TxOrphanPool::getOrphanBodiesForParent(const uint256& parent_txid) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    std::vector<Transaction> result;
+    std::vector<MempoolTransaction> result;
     auto it = m_outpoint_to_orphans.find(parent_txid);
     if (it == m_outpoint_to_orphans.end()) {
         return result;

@@ -30,6 +30,7 @@ enum class TxRejectCode {
     MISSING_INPUTS,              // Referenced UTXOs not found
     SCRIPT_VERIFY_FAILED,        // Script/signature validation failed
     LOCKTIME_NOT_SATISFIED,      // Transaction not yet valid (timelock)
+    UNAVAILABLE,                // Required validator/service unavailable; retryable, not invalidity
 };
 
 /**

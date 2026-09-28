@@ -6459,20 +6459,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                 });
 
                 // Wire TxRelayManager structured submit callback (TxRelay → MempoolService)
-                // Uses submitTransaction() for structured results (enables orphan pool)
+                // Typed ingress preserves P2P origin and structured retryable results
                 auto mempool = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
                 if (mempool) {
-                    tx_relay->SetSubmitTxCallback([mempool](
-                        const Transaction& tx,
+                    tx_relay->SetSubmitBodyCallback([mempool](
+                        const MempoolTransaction& tx,
                         const std::string& peer_address
                     ) -> TxAcceptResult {
                         try {
                             // Route to MempoolService for mempool validation
                             // relay=false: TxRelayManager handles relay after acceptance
-                            return mempool->submitTransaction(tx, "p2p:" + peer_address, false);
+                            return mempool->SubmitBody(tx, TxOrigin::P2P);
                         } catch (const std::exception& e) {
-                            g_logger.error("[TxRelay] Transaction validation failed: " + std::string(e.what()));
-                            return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, e.what());
+                            g_logger.error("[TxRelay] Transaction validation unavailable for " + peer_address + ": " + std::string(e.what()));
+                            return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE, e.what());
                         }
                     });
 

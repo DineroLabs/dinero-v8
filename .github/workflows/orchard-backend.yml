@@ -744,6 +744,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Typed incoming body and retained orphan ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_ingress --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolTypedIngress$' --show-only=json-v1 > orchard-typed-ingress-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-ingress-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolTypedIngress']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolTypedIngress$' --verbose --no-tests=error --output-log orchard-typed-ingress-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-ingress-execution.log').read_text()
+          for case in ['CapturedHistoricalAdmissionAndCallbackReplacement','MissingSecondParentRemainsRetryable','HistoricalAdapterSharesCallbackOwner','OrchardUnavailableBeforeLegacyValidation','MixedOrphanInventoryOwnsCanonicalBodies']:
+              assert log.count('[       OK ] MempoolTypedIngress.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Typed raw mempool RPC capture
         run: |
           cmake --build build-orchard-root --target test_mempool_raw_rpc --parallel 4 -- -k 0
@@ -1794,6 +1813,8 @@ jobs:
             orchard-output-coins-execution.log
             orchard-typed-relay-inventory.json
             orchard-typed-relay-execution.log
+            orchard-typed-ingress-inventory.json
+            orchard-typed-ingress-execution.log
             orchard-raw-rpc-inventory.json
             orchard-raw-rpc-execution.log
             orchard-package-bounds-inventory.json

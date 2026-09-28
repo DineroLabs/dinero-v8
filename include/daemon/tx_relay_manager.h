@@ -157,9 +157,25 @@ public:
      * Set callback for structured transaction submission.
      * Preferred over SetValidateTxCallback when orphan pool is enabled.
      */
-    void SetSubmitTxCallback(SubmitTxCallback callback) {
+    using SubmitBodyCallback = std::function<TxAcceptResult(
+        const MempoolTransaction&, const std::string&)>;
+
+    void SetSubmitBodyCallback(SubmitBodyCallback callback) {
         { std::lock_guard<std::mutex> lock(callback_mutex_); submit_tx_callback_.swap(callback); }
-        // Destroy the replaced callable after releasing callback ownership.
+    }
+
+    void SetSubmitTxCallback(SubmitTxCallback callback) {
+        SubmitBodyCallback owned;
+        if (callback) {
+            owned = [callback = std::move(callback)](const MempoolTransaction& body,
+                                                     const std::string& peer) {
+                if (!body.HasBody() || body.IsOrchard())
+                    return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,
+                        "Historical relay validator cannot validate this body");
+                return callback(body.Historical(), peer);
+            };
+        }
+        SetSubmitBodyCallback(std::move(owned));
     }
 
     /**
@@ -226,6 +242,7 @@ public:
      * @param tx Transaction data
      */
     void HandleTx(const std::string& peer_address, const Transaction& tx);
+    void HandleTx(const std::string& peer_address, MempoolTransaction body);
 
     // ========================================================================
     // Proof Refresh (#6)
@@ -302,7 +319,7 @@ private:
     // Callbacks
     SendMessageCallback send_message_callback_;
     ValidateTxCallback validate_tx_callback_;
-    SubmitTxCallback submit_tx_callback_;
+    SubmitBodyCallback submit_tx_callback_;
     RetrieveBodyCallback retrieve_tx_callback_;
 
     // Transaction orphan pool (non-owning — lifetime managed by DaemonApp)

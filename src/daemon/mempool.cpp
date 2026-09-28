@@ -186,7 +186,7 @@ public:
 
     StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& outpoint) const override {
         if (!chain_db_) {
-            return Status::NotFound;
+            return Status::Internal;
         }
 
         // ChainDB::getCoin returns StatusOr<Coin>
@@ -296,37 +296,32 @@ public:
         return true;
     }
 
-    bool HaveUTXO(const uint256& txid, uint32_t vout) const override {
-        if (!coins_view_) return false;
-        // Phase M.4.3-B: OutPoint uses TxId, wrap uint256 explicitly
-        OutPoint out{TxId(txid), vout};
-        auto result = coins_view_->getCoin(out);
-        if (result.status() == Status::Ok) {
-            return true;
+    StatusOr<consensus::UTXOEntry> CaptureCoin(
+        const uint256& txid, uint32_t vout, bool* invalid_parent_output = nullptr) const {
+        if (invalid_parent_output) *invalid_parent_output = false;
+        if (!coins_view_) return Status::Internal;
+        const auto found = coins_view_->getCoin(OutPoint{TxId(txid), vout});
+        if (found.ok() || found.status() != Status::NotFound) return found;
+        // Only a checked absence may use the existing conflicted-parent
+        // fallback. Storage errors are never reinterpreted as missing inputs.
+        consensus::UTXOEntry parent;
+        if (GetMempoolPrevout(txid, vout, parent)) return parent;
+        if (mempool_entries_ && mempool_entries_->count(txid)) {
+            if (invalid_parent_output) *invalid_parent_output = true;
+            return Status::Invalid;
         }
-        consensus::UTXOEntry mempool_prevout;
-        return GetMempoolPrevout(txid, vout, mempool_prevout);
+        return Status::NotFound;
+    }
+
+    bool HaveUTXO(const uint256& txid, uint32_t vout) const override {
+        return CaptureCoin(txid, vout).ok();
     }
 
     bool GetUTXO(const uint256& txid, uint32_t vout, uint64_t& value, std::string& script) const override {
-        if (!coins_view_) return false;
-        // Phase M.4.3-B: OutPoint uses TxId, wrap uint256 explicitly
-        OutPoint out{TxId(txid), vout};
-        auto result = coins_view_->getCoin(out);
-        if (result.status() == Status::Ok) {
-            const consensus::UTXOEntry& utxo = result.value();
-            value = utxo.value.GetUna();
-            // Convert vector<uint8_t> to string
-            script.assign(utxo.scriptPubKey.begin(), utxo.scriptPubKey.end());
-            return true;
-        }
-
-        consensus::UTXOEntry mempool_prevout;
-        if (!GetMempoolPrevout(txid, vout, mempool_prevout)) {
-            return false;
-        }
-        value = mempool_prevout.value.GetUna();
-        script.assign(mempool_prevout.scriptPubKey.begin(), mempool_prevout.scriptPubKey.end());
+        const auto coin = CaptureCoin(txid, vout);
+        if (!coin.ok()) return false;
+        value = coin.value().value.GetUna();
+        script.assign(coin.value().scriptPubKey.begin(), coin.value().scriptPubKey.end());
         return true;
     }
 
@@ -347,22 +342,10 @@ public:
 
     bool GetConfidentialUTXO(const uint256& txid, uint32_t vout,
                             std::vector<uint8_t>& commitment, bool& is_confidential) const override {
-        if (!coins_view_) return false;
-        OutPoint out{TxId(txid), vout};
-        auto result = coins_view_->getCoin(out);
-        if (result.status() == Status::Ok) {
-            const consensus::UTXOEntry& utxo = result.value();
-            is_confidential = utxo.is_confidential;
-            commitment = utxo.commitment;
-            return true;
-        }
-
-        consensus::UTXOEntry mempool_prevout;
-        if (!GetMempoolPrevout(txid, vout, mempool_prevout)) {
-            return false;
-        }
-        is_confidential = mempool_prevout.is_confidential;
-        commitment = mempool_prevout.commitment;
+        const auto coin = CaptureCoin(txid, vout);
+        if (!coin.ok()) return false;
+        is_confidential = coin.value().is_confidential;
+        commitment = coin.value().commitment;
         return true;
     }
 
@@ -623,7 +606,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     const Transaction& tx = transaction.Historical();
     auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
     if (chainstate_read_guard_factory_ && !chainstate_guard) {
-        return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, "chainstate unavailable");
+        return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE, "chainstate unavailable");
     }
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     // Own the selected callback captures before admission publication. Setters
@@ -646,12 +629,13 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
     // Validate transaction
     std::string error;
-    if (!validateTransaction(tx, error)) {
+    TxRejectCode validation_code = TxRejectCode::INVALID_TX;
+    if (!validateTransaction(tx, error, std::nullopt, &validation_code)) {
         MPLOG_WARN("Transaction validation failed for " + txid_u256.GetHex() + ": " + error);
         if (!test_only) {
             m_total_tx_rejected.fetch_add(1);
         }
-        return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX,
+        return TxAcceptResult::Rejected(validation_code,
             "Transaction validation failed: " + error, txid_u256);
     }
 
@@ -3190,7 +3174,9 @@ void Mempool::broadcastTransaction(const uint256& txid) {
 bool Mempool::validateTransaction(
     const Transaction& tx,
     std::string& error,
-    std::optional<uint32_t> target_height) const {
+    std::optional<uint32_t> target_height,
+    TxRejectCode* failure) const {
+    if (failure) *failure = TxRejectCode::INVALID_TX;
     const bool has_shielded_bundle = UsesShieldedValueSemantics(tx);
 
     // Basic transaction validation
@@ -3275,49 +3261,51 @@ bool Mempool::validateTransaction(
         OutPoint outpoint{input.prevout.txid, input.prevout.vout};
         const bool is_frozen_prebase =
             prebase_coin_predicate_ && prebase_coin_predicate_(outpoint);
+        std::optional<consensus::UTXOEntry> captured;
         if (is_frozen_prebase) {
-            const auto prebase = prebase_coin_resolver_
-                ? prebase_coin_resolver_(outpoint)
-                : std::nullopt;
-            if (!prebase.has_value()) {
-                error = "Input UTXO not found: " +
-                        input.prevout.txid.AsUint256().GetHex() + ":" +
-                        std::to_string(input.prevout.vout);
-                return false;
-            }
-            utxo.value = prebase->value.GetUna();
-            spk_str.assign(prebase->scriptPubKey.begin(), prebase->scriptPubKey.end());
-            utxo.is_confidential = prebase->is_confidential;
-            utxo.commitment = prebase->commitment;
-        } else if (!utxo_view.GetUTXO(utxo.txid, utxo.vout, utxo.value, spk_str)) {
-            if (auto recovered = recoverConflictedInputUTXO(outpoint)) {
-                utxo.value = recovered->value.GetUna();
-                spk_str.assign(recovered->scriptPubKey.begin(), recovered->scriptPubKey.end());
-                utxo.is_confidential = recovered->is_confidential;
-                utxo.commitment = recovered->commitment;
-            } else if (prebase_coin_resolver_) {
-                const auto prebase = prebase_coin_resolver_(outpoint);
-                if (!prebase.has_value()) {
-                    error = "Input UTXO not found: " + input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
-                    return false;
-                }
-                utxo.value = prebase->value.GetUna();
-                spk_str.assign(prebase->scriptPubKey.begin(), prebase->scriptPubKey.end());
-                utxo.is_confidential = prebase->is_confidential;
-                utxo.commitment = prebase->commitment;
-            } else {
-                error = "Input UTXO not found: " + input.prevout.txid.AsUint256().GetHex() + ":" + std::to_string(input.prevout.vout);
+            if (prebase_coin_resolver_) captured = prebase_coin_resolver_(outpoint);
+            if (!captured) {
+                if (failure) *failure = TxRejectCode::UNAVAILABLE;
+                error = "Live pre-base input unavailable: " + outpoint.ToString();
                 return false;
             }
         } else {
-            std::vector<uint8_t> commitment;
-            bool is_confidential = false;
-            if (utxo_view.GetConfidentialUTXO(utxo.txid, utxo.vout, commitment, is_confidential) &&
-                is_confidential) {
-                error = "legacy private lane removed";
+            bool invalid_parent_output = false;
+            const auto found = utxo_view.CaptureCoin(utxo.txid, utxo.vout, &invalid_parent_output);
+            if (found.ok()) {
+                captured = found.value();
+            } else if (found.status() == Status::NotFound) {
+                Status recovered_status = Status::NotFound;
+                captured = recoverConflictedInputUTXO(outpoint, &recovered_status);
+                if (!captured && recovered_status != Status::NotFound) {
+                    if (failure) *failure = TxRejectCode::UNAVAILABLE;
+                    error = "Conflicted input lookup unavailable: " + outpoint.ToString();
+                    return false;
+                }
+                if (!captured && prebase_coin_resolver_) {
+                    captured = prebase_coin_resolver_(outpoint);
+                    if (!captured) {
+                        if (failure) *failure = TxRejectCode::UNAVAILABLE;
+                        error = "Live pre-base input unavailable: " + outpoint.ToString();
+                        return false;
+                    }
+                }
+                if (!captured) {
+                    if (failure) *failure = TxRejectCode::MISSING_INPUTS;
+                    error = "Input UTXO not found: " + outpoint.ToString();
+                    return false;
+                }
+            } else {
+                if (failure) *failure = invalid_parent_output
+                    ? TxRejectCode::INVALID_TX : TxRejectCode::UNAVAILABLE;
+                error = "Input UTXO lookup refused: " + outpoint.ToString();
                 return false;
             }
         }
+        utxo.value = captured->value.GetUna();
+        spk_str.assign(captured->scriptPubKey.begin(), captured->scriptPubKey.end());
+        utxo.is_confidential = captured->is_confidential;
+        utxo.commitment = captured->commitment;
 
         // Convert string to vector<uint8_t> for Script
         utxo.spk.assign(spk_str.begin(), spk_str.end());
@@ -3364,11 +3352,13 @@ bool Mempool::validateTransaction(
         next_block_height_for_scripts = *target_height;
     } else {
         if (!chain_db_) {
+            if (failure) *failure = TxRejectCode::UNAVAILABLE;
             error = "Script validation unavailable: ChainDB not initialized";
             return false;
         }
         auto tip_result = chain_db_->getTip();
         if (tip_result.status() != Status::Ok) {
+            if (failure) *failure = TxRejectCode::UNAVAILABLE;
             error = "Script validation unavailable: ChainDB tip not loaded";
             return false;
         }
@@ -3711,21 +3701,25 @@ uint64_t Mempool::calculateFee(const Transaction& tx) const {
     }
 }
 
-std::optional<consensus::UTXOEntry> Mempool::recoverConflictedInputUTXO(const OutPoint& outpoint) const {
+std::optional<consensus::UTXOEntry> Mempool::recoverConflictedInputUTXO(const OutPoint& outpoint, Status* lookup_status) const {
+    if (lookup_status) *lookup_status = Status::NotFound;
     if (m_spent_outputs.find(outpoint) == m_spent_outputs.end()) {
         return std::nullopt;
     }
 
     auto parent_it = m_transactions.find(outpoint.txid.AsUint256());
     if (parent_it != m_transactions.end() && outpoint.vout < parent_it->second.tx.OutputCount()) {
+        if (lookup_status) *lookup_status = Status::Ok;
         return parent_it->second.tx.OutputCoin(outpoint.vout, parent_it->second.height);
     }
 
     if (!chain_state_view_) {
+        if (lookup_status) *lookup_status = Status::Internal;
         return std::nullopt;
     }
 
     auto chain_coin = chain_state_view_->getCoin(outpoint);
+    if (lookup_status) *lookup_status = chain_coin.status();
     if (chain_coin.status() != Status::Ok) {
         return std::nullopt;
     }

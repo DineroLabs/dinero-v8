@@ -155,7 +155,12 @@ void TxRelayManager::HandleGetData(const std::string& peer_address, const uint25
 }
 
 void TxRelayManager::HandleTx(const std::string& peer_address, const Transaction& tx) {
-    SubmitTxCallback submit;
+    HandleTx(peer_address, MempoolTransaction(tx));
+}
+
+void TxRelayManager::HandleTx(const std::string& peer_address, MempoolTransaction tx) {
+    if (!tx.HasBody()) return;
+    SubmitBodyCallback submit;
     ValidateTxCallback validate;
     { std::lock_guard<std::mutex> lock(callback_mutex_); submit = submit_tx_callback_; validate = validate_tx_callback_; }
 
@@ -187,7 +192,7 @@ void TxRelayManager::HandleTx(const std::string& peer_address, const Transaction
     // ═══════════════════════════════════════════════════════════════════════════
     // CONFIDENTIAL TRANSACTION RELAY POLICY
     // ═══════════════════════════════════════════════════════════════════════════
-    if (tx.HasConfidentialOutputs()) {
+    if (!tx.IsOrchard() && tx.Historical().HasConfidentialOutputs()) {
         if (dinero::Params().disable_confidential_transactions) {
             if (logger_) {
                 logger_->warning("[TxRelayManager] Rejecting confidential tx from " + peer_address +
@@ -232,7 +237,7 @@ void TxRelayManager::HandleTx(const std::string& peer_address, const Transaction
 
             // Resolve orphans: check if accepted TX is a parent of any orphans
             if (orphan_pool_) {
-                auto resolved = orphan_pool_->getOrphansForParent(txid);
+                auto resolved = orphan_pool_->getOrphanBodiesForParent(txid);
                 for (const auto& orphan_tx : resolved) {
                     uint256 orphan_txid = orphan_tx.GetTxid().AsUint256();
                     auto orphan_result = submit(orphan_tx, "orphan-resolve");
@@ -244,7 +249,11 @@ void TxRelayManager::HandleTx(const std::string& peer_address, const Transaction
                                          orphan_txid.GetHex().substr(0, 16) + "...");
                         }
                     }
-                    orphan_pool_->eraseOrphan(orphan_txid);
+                    // Another parent may still be missing. Unavailable
+                    // validation is also retryable and cannot erase ownership.
+                    if (orphan_result.code != TxRejectCode::MISSING_INPUTS &&
+                        orphan_result.code != TxRejectCode::UNAVAILABLE)
+                        orphan_pool_->eraseOrphan(orphan_txid);
                 }
             }
 
@@ -274,14 +283,14 @@ void TxRelayManager::HandleTx(const std::string& peer_address, const Transaction
     // ═══════════════════════════════════════════════════════════════════════════
     // LEGACY VALIDATION PATH (bool-only callback, no orphan pool)
     // ═══════════════════════════════════════════════════════════════════════════
-    if (!validate) {
+    if (!validate || tx.IsOrchard()) {
         if (logger_) {
             logger_->error("[TxRelayManager] Cannot validate tx: callback not set");
         }
         return;
     }
 
-    bool accepted = validate(tx, peer_address);
+    bool accepted = validate(tx.Historical(), peer_address);
 
     if (accepted) {
         MarkTxAsSeen(txid);

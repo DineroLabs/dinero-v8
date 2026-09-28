@@ -183,6 +183,7 @@ struct MempoolBlockSelection {
 
 class Mempool {
     friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
+    friend class MempoolTypedIngressTestPeer; // Isolated lookup-error fixture; no production view setter.
 public:
     struct RBFRuntimeConfig {
         bool enabled = false;
@@ -609,10 +610,12 @@ private:
     bool validateTransaction(
         const Transaction& tx,
         std::string& error,
-        std::optional<uint32_t> target_height = std::nullopt) const;
+        std::optional<uint32_t> target_height = std::nullopt,
+        TxRejectCode* failure = nullptr) const;
     bool checkDoubleSpend(const Transaction& tx) const;
     bool checkDependencies(const Transaction& tx) const;
-    std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(const OutPoint& outpoint) const;
+    std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(
+        const OutPoint& outpoint, Status* lookup_status = nullptr) const;
     PreBaseCoinResolver prebase_coin_resolver_;
     PreBaseCoinPredicate prebase_coin_predicate_;
     ChainstateReadGuardFactory chainstate_read_guard_factory_;
