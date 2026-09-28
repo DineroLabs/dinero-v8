@@ -15117,6 +15117,133 @@ bool IsUnambiguousConsensusViolation(const std::string& err) {
 }
 }  // namespace
 
+std::optional<storage::LegacyRetirementRecord>
+ChainstateService::DeriveOrchardBoundaryFromSelectedHistoryUnderLock() {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!activation_mutex_.HeldByCurrentThread() || !chain_db_ || !active_tip_ ||
+        !consensus_utxo_set_ || GetConfig().utreexo_stateless || safe_mode_active_ ||
+        !consensus::OrchardProfileConfigurationValid(Params()) ||
+        uint64_t(active_tip_->height) + 1 != Params().orchard_activation_height)
+        return std::nullopt;
+    try {
+        // This is independent genesis replay, not trust in a tip marker or in
+        // snapshot import. Keep the selected writer owner through comparison
+        // and retirement derivation. Bounds refuse; they never truncate.
+        constexpr uint32_t maximum_blocks = 100000;
+        constexpr size_t maximum_material = 256 * 1024 * 1024;
+        const auto* selected = active_tip_;
+        const auto height = selected->height;
+        const auto hash = selected->hash;
+        if (height >= maximum_blocks) return std::nullopt;
+        const auto tip = chain_db_->getTip();
+        const auto validated = chain_db_->getValidatedTip();
+        if (!tip.ok() || !validated.ok() || tip->height < 0 ||
+            uint32_t(tip->height) != height || tip->hash != hash ||
+            validated->height != tip->height || validated->hash != hash ||
+            consensus_utxo_set_->GetHeight() != height ||
+            consensus_utxo_set_->GetBestBlock() != hash)
+            return std::nullopt;
+        assumeutxo::AssumeUtxoReplayEngine replay;
+        uint256 previous;
+        arith_uint256 work{0};
+        size_t material = 0;
+        for (uint32_t h = 0; h <= height; ++h) {
+            const auto selected_hash = chain_db_->getBlockHashByHeight(int(h));
+            if (!selected_hash.ok()) return std::nullopt;
+            const auto stored_height = chain_db_->getBlockHeight(*selected_hash);
+            const auto stored_header = chain_db_->getHeader(*selected_hash);
+            const auto stored_work = chain_db_->getBlockWork(*selected_hash);
+            const auto body = storage::ReadArchivalBlock(*chain_db_, block_storage_.get(), *selected_hash);
+            if (!stored_height.ok() || *stored_height != int(h) || !stored_header.ok() ||
+                !stored_work.ok() || !body.ok() || body->GetHash() != *selected_hash ||
+                body->header.SerializeForHash() != stored_header->SerializeForHash() ||
+                body->header.prev_block_hash != previous)
+                return std::nullopt;
+            const size_t bytes = body->Serialize().size();
+            if (bytes > maximum_material - material) return std::nullopt;
+            material += bytes;
+            std::string error;
+            if (h == 0 ? !replay.SeedGenesis(*body, error)
+                       : !replay.ConnectAndAdvance(*body, h, *selected_hash, error))
+                return std::nullopt;
+            work += GetBlockProof(body->header.difficulty);
+            if (work != *stored_work) return std::nullopt;
+            previous = *selected_hash;
+        }
+        if (previous != hash || replay.Height() != height ||
+            ChainworkFromHex(selected->chainwork) != work)
+            return std::nullopt;
+        const auto& proven = replay.ProvenUtxos();
+        const auto& live = consensus_utxo_set_->GetUTXOs();
+        const auto same_coin = [](const consensus::UTXOEntry& a, const consensus::UTXOEntry& b) {
+            return a.value.GetUna() == b.value.GetUna() && a.scriptPubKey == b.scriptPubKey &&
+                a.height == b.height && a.isCoinbase == b.isCoinbase &&
+                a.is_confidential == b.is_confidential && a.commitment == b.commitment;
+        };
+        if (live.size() != proven.size()) return std::nullopt;
+        for (const auto& [point, coin] : proven) {
+            const auto found = live.find(point);
+            if (found == live.end() || !same_coin(coin, found->second)) return std::nullopt;
+        }
+        size_t stored_count = 0;
+        bool stored_matches = true;
+        const auto coin_status = chain_db_->forEachUTXO([&](const uint256& txid, uint32_t n, const Coin& coin) {
+            const auto found = proven.find(OutPoint(TxId(txid), n));
+            std::vector<uint8_t> script;
+            if (found == proven.end() || coin.height < 0 || uint32_t(coin.height) > height ||
+                !std::all_of(coin.script_pubkey.begin(), coin.script_pubkey.end(), [](unsigned char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+                }) || !util::unhex(coin.script_pubkey, script) ||
+                !same_coin(found->second, consensus::UTXOEntry(AmountUna::Una(coin.amount), script,
+                    uint32_t(coin.height), coin.coinbase, coin.is_confidential, coin.commitment))) {
+                stored_matches = false;
+                return false;
+            }
+            ++stored_count;
+            return true;
+        });
+        if (coin_status != Status::Ok || !stored_matches || stored_count != proven.size())
+            return std::nullopt;
+        const auto forest_marker = chain_db_->getForestTipMarker();
+        if (!forest_marker.ok() || forest_marker->height != int32_t(height) ||
+            forest_marker->block_hash != hash ||
+            forest_marker->forest_root.GetHex() != replay.UtreexoRootHex())
+            return std::nullopt;
+        {
+            const auto forest_lock = consensus_utxo_set_->LockForestShared();
+            const auto& forest = consensus_utxo_set_->GetForest();
+            if (forest.getCommitment() != replay.Forest()->getCommitment() ||
+                forest.getNumLeaves() != replay.Forest()->getNumLeaves())
+                return std::nullopt;
+        }
+        const auto proven_root = consensus::shielded::ComputeShieldedRoot(
+            *replay.ShieldedTree(), *replay.ShieldedNullifiers(), *replay.ShieldedAnchors());
+        const auto live_root = consensus::shielded::ComputeShieldedRoot(
+            shielded_tree_, shielded_nullifiers_, shielded_anchor_history_);
+        if (!proven_root || !live_root || *proven_root != *live_root ||
+            replay.ShieldedTree()->SerializeFrontier() != shielded_tree_.SerializeFrontier() ||
+            replay.ShieldedAnchors()->SerializePersistenceBytes() != shielded_anchor_history_.SerializePersistenceBytes())
+            return std::nullopt;
+        const auto record = consensus::DeriveSelectedLegacyRetirementUnderLock(
+            *chain_db_, block_storage_.get(), maximum_blocks);
+        const auto stored_frontier = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::Frontier);
+        const auto stored_anchors = chain_db_->getShieldedState(ChainDB::ShieldedStateRecord::AnchorHistory);
+        const auto frontier = replay.ShieldedTree()->SerializeFrontier();
+        const auto anchors = replay.ShieldedAnchors()->SerializePersistenceBytes();
+        if (record.boundary_parent != hash || record.activation_height != uint64_t(height) + 1 ||
+            record.legacy_state_root != *proven_root || !stored_frontier.ok() || !stored_anchors.ok() ||
+            *stored_frontier != std::string(frontier.begin(), frontier.end()) ||
+            *stored_anchors != std::string(anchors.begin(), anchors.end()) || active_tip_ != selected)
+            return std::nullopt;
+        return record;
+    } catch (...) {
+        return std::nullopt;
+    }
+#else
+    return std::nullopt;
+#endif
+}
+
 bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, bool* invalid) {
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (invalid) *invalid=false;
@@ -15129,11 +15256,6 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
         GetConfig().utreexo_stateless || safe_mode_active_ || !runtime_block_notifications_ ||
         !consensus::OrchardProfileConfigurationValid(Params()))
         return fail("orchard-connect-service-not-ready");
-    // A persisted boundary receipt does not certify the validation/provenance
-    // of historical accounting. Until that service-owned source is wired,
-    // activation itself cannot enter through this descendant connection path.
-    if (tip->height==Params().orchard_activation_height)
-        return fail("orchard-connect-boundary-history-unavailable");
     try {
         auto* parent_index=active_tip_;
         const auto headers=header_chain_selector_;
@@ -15163,6 +15285,11 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
         // The active parent's durable state, restored memory and exact retained
         // body/undo must agree before preparing a new generation.
         if (!VerifyConsensusJournalAtActiveTip()) return fail("orchard-connect-parent-audit-failed");
+        std::optional<storage::LegacyRetirementRecord> boundary;
+        if (tip->height==Params().orchard_activation_height) {
+            boundary=DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+            if (!boundary) return fail("orchard-connect-boundary-history-unavailable");
+        }
         const auto consumers=runtime_block_notifications_;
         auto notifications=consumers->Prepare(*body,tip->height,RuntimeBlockDirection::Connect);
         if (!notifications) return fail("orchard-connect-consumers-not-ready");
@@ -15185,7 +15312,7 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
         ChainWriteToken token;
         auto write=PreparedOrchardChainstateWrite::ConnectIndexed(activation_mutex_,*chain_db_,token,
             *block_storage_,*tip,*consensus_utxo_set_,*body->Context(),body->Orchard(),*parent,forest,mtp,
-            witness,tip->height%interval==0,std::nullopt,true);
+            witness,tip->height%interval==0,boundary,true);
         if (active_tip_!=parent_index || tip->pprev!=parent_index ||
             runtime_block_notifications_!=consumers || header_chain_selector_!=headers)
             return fail("orchard-connect-selected-view-changed");

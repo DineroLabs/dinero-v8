@@ -1178,6 +1178,7 @@ private:
         const std::vector<CBlockIndex*>& connect, std::unique_ptr<RuntimeReorgTransition>&);
     bool DisconnectOrchardTip(CBlockIndex*);
     bool ConnectOrchardTip(CBlockIndex*, std::string*, bool*);
+    std::optional<storage::LegacyRetirementRecord> DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
 
     bool LoadShieldedState();
     bool LoadSeparatedShieldedState();

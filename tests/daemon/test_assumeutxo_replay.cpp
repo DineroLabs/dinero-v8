@@ -54,6 +54,12 @@
 #include <vector>
 
 #include "daemon/services/assumeutxo_replay.h"
+#include "daemon/config.h"
+#include "consensus/chainwork.h"
+#include "util/hex.h"
+#include "storage/shielded_cf_comparator.h"
+#include "../storage/shielded_store_fixture.h"
+#undef CHECK
 #include "consensus/utxo_set_digest.h"
 #include "consensus/block_validation.h"
 #include "consensus/chainparams.h"
@@ -83,6 +89,26 @@ struct ShieldedStateStartupTestAccess {
         service.active_tip_ = &tip;
         service.consensus_utxo_set_ = std::make_unique<consensus::ConsensusUTXOSet>();
         service.consensus_utxo_set_->SetBestBlock(tip.hash,tip.height);
+    }
+    // Selected-parent history fixture only; no runtime mutation API.
+    static auto Boundary(ChainstateService& service) {
+        std::lock_guard<AnnotatedRecursiveMutex> lock(service.activation_mutex_);
+        return service.DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+    }
+    static void BoundaryState(ChainstateService& service, CBlockIndex& tip,
+        const assumeutxo::AssumeUtxoReplayEngine& replay) {
+        Select(service,tip);
+        for (const auto& [point,coin]:replay.ProvenUtxos())
+            if (!service.consensus_utxo_set_->AddCoin(point,coin)) throw std::runtime_error("fixture live coin");
+        service.consensus_utxo_set_->ReplaceForestGuarded(*replay.Forest());
+        service.shielded_tree_=*replay.ShieldedTree();
+        service.shielded_anchor_history_=*replay.ShieldedAnchors();
+        if (service.shielded_nullifiers_.Open(":memory:")!=consensus::shielded::NullifierSet::OpenResult::Ok ||
+            !service.shielded_nullifiers_.DeserializeContent(replay.ShieldedNullifiers()->SerializeContent()))
+            throw std::runtime_error("fixture nullifier state");
+    }
+    static void RemoveBoundaryCoin(ChainstateService& s,const OutPoint& point) {
+        s.consensus_utxo_set_->SpendCoin(point);
     }
     static bool TryChain(ChainstateService& service) {
         if (!service.activation_mutex_.try_lock()) return false;
@@ -572,6 +598,8 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
     EXPECT_EQ(origin.status(),Status::Internal);
 }
 #endif
+
+#include "selected_parent_history_checks.h"
 
 }  // namespace dinero
 

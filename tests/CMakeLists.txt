@@ -5088,6 +5088,14 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     LABELS "daemon;assumeutxo;replay"
     TIMEOUT 120
   )
+  add_test(NAME OrchardSelectedParentHistory COMMAND test_assumeutxo_replay
+    --gtest_filter=SelectedParentHistory.*)
+  set_tests_properties(OrchardSelectedParentHistory PROPERTIES
+    LABELS "daemon;orchard;history;mandatory" TIMEOUT 60)
+  add_test(NAME CheckedCoinInventory COMMAND test_assumeutxo_replay
+    --gtest_filter=CheckedCoinInventory.*)
+  set_tests_properties(CheckedCoinInventory PROPERTIES
+    LABELS "storage;inventory;mandatory" TIMEOUT 60)
   message(STATUS "✅ AssumeUTXO replay engine test enabled")
 endif()
 

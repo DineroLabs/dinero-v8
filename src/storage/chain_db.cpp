@@ -2992,8 +2992,7 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
 
         // Parse key: PREFIX_UTXO (1 byte) + txid (32 bytes) + vout (4 bytes big-endian)
         if (key.size() != 37 || key[0] != PREFIX_UTXO) {
-            it->Next();
-            continue;  // Skip malformed keys
+            return Status::Corruption;
         }
 
         // Extract txid (bytes 1-32), convert raw bytes to hex string
@@ -3011,29 +3010,34 @@ Status ChainDB::forEachUTXO(std::function<bool(const uint256& txid, uint32_t vou
         std::memcpy(&be_vout, key.data() + 33, sizeof(be_vout));
         uint32_t vout = bswap32(be_vout);
 
-        // Parse value (same format as getCoin)
+        // Decode completely before calling the visitor. A corrupt row cannot
+        // masquerade as absence, and a visitor exception must reach its owner.
+        Coin coin;
         try {
             Reader r(value);
-            Coin coin;
             coin.amount = r.read<uint64_t>();
             coin.script_pubkey = r.readString();
-            coin.height = r.read<uint32_t>();
-            coin.coinbase = (r.read<uint8_t>() != 0);
+            const auto height = r.read<uint32_t>();
+            const auto coinbase = r.read<uint8_t>();
+            if (height > uint32_t(INT32_MAX) || coinbase > 1) return Status::Corruption;
+            coin.height = int(height);
+            coin.coinbase = coinbase != 0;
             if (!r.eof()) {
-                coin.is_confidential = (r.read<uint8_t>() != 0);
+                const auto confidential = r.read<uint8_t>();
+                if (confidential > 1) return Status::Corruption;
+                coin.is_confidential = confidential != 0;
                 if (!r.eof()) {
                     coin.commitment = r.readBytes();
                 }
             }
 
-            // Call callback, stop if it returns false
-            if (!callback(txid, vout, coin)) {
-                break;
-            }
+            if (!r.eof()) return Status::Corruption;
         } catch (const std::exception&) {
-            // Skip malformed UTXO
+            return Status::Corruption;
         }
-
+        // Preserve the existing deliberate early-stop contract. Complete
+        // inventories must keep visiting until EOF and check the return status.
+        if (!callback(txid, vout, coin)) break;
         it->Next();
     }
 

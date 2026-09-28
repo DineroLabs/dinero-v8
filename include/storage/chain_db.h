@@ -684,6 +684,9 @@ public:
     // Iteration helpers
     Status forEachHeaderHeight(std::function<bool(int height, const uint256& hash)> callback) const;
     Status forEachBlock(std::function<bool(const uint256& hash, const Block& block)> callback) const;
+    // Checked row decoding and terminal iterator status; malformed records
+    // refuse rather than disappear. Visitor exceptions propagate. A false
+    // visitor result still deliberately stops early (not a complete inventory).
     Status forEachUTXO(std::function<bool(const uint256& txid, uint32_t vout, const Coin& coin)> callback) const;
 
     // Phase H.3: Iterate all header metadata (restart recovery - rebuild header tree)

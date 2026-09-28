@@ -862,6 +862,25 @@ jobs:
           assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
           PYTEST
 
+      - name: Independently replayed selected activation parent
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(OrchardSelectedParentHistory|CheckedCoinInventory)$' --show-only=json-v1 > orchard-selected-parent-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-selected-parent-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['CheckedCoinInventory','OrchardSelectedParentHistory']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardSelectedParentHistory|CheckedCoinInventory)$' --verbose --no-tests=error --output-log orchard-selected-parent-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-selected-parent-execution.log').read_text()
+          for name in ['SelectedParentHistory.IndependentReplayMatchesDurableAndLiveState','SelectedParentHistory.StateAndAncestryMismatchRefuseWithoutPublication','CheckedCoinInventory.VisitorFailureAndEarlyStopRemainDistinct','CheckedCoinInventory.MalformedLateRowsRefuseAndLegacyEncodingsRemainReadable']:
+              assert log.count('[       OK ] '+name+' (')==1,name
+          assert '100% tests passed, 0 tests failed out of 2' in log
+          PYTEST
+
       - name: CSN ordered proof receipt acknowledgment
         run: |
           cmake --build build-orchard-root --target test_block_download_scheduler test_block_download_scheduler_restart_bootstrap test_csn_stale_proof_retry --parallel 4 -- -k 0
@@ -1938,6 +1957,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-selected-parent-inventory.json
+            orchard-selected-parent-execution.log
             orchard-csn-proof-receipt-inventory.json
             orchard-csn-proof-receipt-execution.log
             orchard-address-capture-inventory.json
