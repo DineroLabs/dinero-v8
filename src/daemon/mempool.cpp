@@ -35,6 +35,8 @@
 #include <limits>
 #include <stdexcept>
 #include <unordered_set>
+#include <type_traits>
+#include <utility>
 
 // NOTE:
 // Mempool identity and dependency tracking use uint256/OutPoint end-to-end.
@@ -896,9 +898,46 @@ TxAcceptResult Mempool::submitTransactionInternal(
         return TxAcceptResult::Accepted(txid_u256);
     }
 
-    // No rejection below this boundary may be attributed to an unperformed
-    // policy check. Allocation/observer exceptions during publication remain a
-    // separate atomic-admission concern; this is not rollback ownership.
+    // All copies finish before the first mutation. Readers remain excluded by
+    // m_mutex until either publication completes or noexcept swaps restore the
+    // complete prior pool. This temporary full-state copy is not a load bound.
+    struct AdmissionRollback {
+        Mempool& pool;
+        decltype(m_transactions) transactions;
+        decltype(m_spent_outputs) spent;
+        decltype(m_fee_index) fees;
+        decltype(m_time_index) times;
+        decltype(m_children_index) children;
+        decltype(m_template_exclusions) exclusions;
+        CoinsViewMemPool overlay;
+        size_t added_count, removed_count;
+        bool committed = false;
+        explicit AdmissionRollback(Mempool& owner)
+            : pool(owner), transactions(owner.m_transactions), spent(owner.m_spent_outputs),
+              fees(owner.m_fee_index), times(owner.m_time_index), children(owner.m_children_index),
+              exclusions(owner.m_template_exclusions), overlay(owner.coins_view_),
+              added_count(owner.m_total_tx_added.load()), removed_count(owner.m_total_tx_removed.load()) {}
+        ~AdmissionRollback() noexcept {
+            static_assert(std::is_nothrow_swappable_v<decltype(transactions)>);
+            static_assert(std::is_nothrow_swappable_v<decltype(spent)>);
+            static_assert(std::is_nothrow_swappable_v<decltype(fees)>);
+            static_assert(std::is_nothrow_swappable_v<decltype(times)>);
+            static_assert(std::is_nothrow_swappable_v<decltype(children)>);
+            static_assert(std::is_nothrow_swappable_v<decltype(exclusions)>);
+            static_assert(std::is_nothrow_swappable_v<CoinsViewMemPool>);
+            if (committed) return;
+            transactions.swap(pool.m_transactions);
+            spent.swap(pool.m_spent_outputs);
+            fees.swap(pool.m_fee_index);
+            times.swap(pool.m_time_index);
+            children.swap(pool.m_children_index);
+            exclusions.swap(pool.m_template_exclusions);
+            using std::swap;
+            swap(overlay, pool.coins_view_);
+            pool.m_total_tx_added.store(added_count);
+            pool.m_total_tx_removed.store(removed_count);
+        }
+    } admission_rollback(*this);
     for (const auto& conflict_txid : replaced_txids) removeTransactionLocked(conflict_txid);
     if (!replaced_txids.empty()) rebuildCoinsViewLocked();
 
@@ -1017,6 +1056,10 @@ TxAcceptResult Mempool::submitTransactionInternal(
 
     m_total_tx_added.fetch_add(1);
 
+    // Finish local maintenance before making external observer effects.
+    if (getTotalSizeLocked() > m_max_size) evictTransactionsLocked();
+    admission_rollback.committed = true;
+
     // v0.13.0.3: Record transaction entry for fee estimation
     if (fee_estimator_ && chain_db_) {
         auto tip_result = chain_db_->getTip();
@@ -1034,9 +1077,8 @@ TxAcceptResult Mempool::submitTransactionInternal(
         m_sp_scanner_manager->scanMempoolTransaction(tx_hex);
     }
 
-    // Complete pool maintenance while its owner lock is still held. External
-    // callbacks may query or alter the pool and cannot own this critical section.
-    if (getTotalSizeLocked() > m_max_size) evictTransactionsLocked();
+    // Admission and maintenance are published. Later observer errors preserve
+    // that outcome; callbacks may query the pool after these locks are released.
     lock.unlock();
     chainstate_guard.reset();
 
