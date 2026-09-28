@@ -862,6 +862,24 @@ jobs:
           assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
           PYTEST
 
+      - name: First Orchard activation boundary through the service
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardFirstBoundary$' --show-only=json-v1 > orchard-first-boundary-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-first-boundary-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardFirstBoundary']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardFirstBoundary$' --verbose --no-tests=error --output-log orchard-first-boundary-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-first-boundary-execution.log').read_text()
+          assert log.count('[       OK ] OrchardFirstBoundary.ConnectRefusalDisconnectAndReopenReconnect (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Independently replayed selected activation parent
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -1957,6 +1975,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-first-boundary-inventory.json
+            orchard-first-boundary-execution.log
             orchard-selected-parent-inventory.json
             orchard-selected-parent-execution.log
             orchard-csn-proof-receipt-inventory.json

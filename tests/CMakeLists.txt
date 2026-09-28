@@ -5096,6 +5096,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     --gtest_filter=CheckedCoinInventory.*)
   set_tests_properties(CheckedCoinInventory PROPERTIES
     LABELS "storage;inventory;mandatory" TIMEOUT 60)
+  add_test(NAME OrchardFirstBoundary COMMAND test_assumeutxo_replay
+    --gtest_filter=OrchardFirstBoundary.*)
+  set_tests_properties(OrchardFirstBoundary PROPERTIES
+    LABELS "daemon;orchard;boundary;mandatory" TIMEOUT 60)
   message(STATUS "✅ AssumeUTXO replay engine test enabled")
 endif()
 

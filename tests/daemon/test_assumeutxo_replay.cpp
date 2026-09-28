@@ -60,6 +60,19 @@
 #include "storage/shielded_cf_comparator.h"
 #include "../storage/shielded_store_fixture.h"
 #undef CHECK
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+#include "consensus/orchard_block_coins.h"
+#include "consensus/orchard_block_filter.h"
+#include "consensus/orchard_forest_transition.h"
+#include "consensus/orchard_header.h"
+#include "consensus/orchard_state_root.h"
+#include "consensus/witness_commitment.h"
+#include "consensus/state_commitment.h"
+#include "consensus/block_lifecycle.h"
+#include "consensus/utreexo_maturity_leaf_activation.h"
+#include "daemon/runtime_block_reader.h"
+#include "storage/block_storage.h"
+#endif
 #include "consensus/utxo_set_digest.h"
 #include "consensus/block_validation.h"
 #include "consensus/chainparams.h"
@@ -110,6 +123,13 @@ struct ShieldedStateStartupTestAccess {
     static void RemoveBoundaryCoin(ChainstateService& s,const OutPoint& point) {
         s.consensus_utxo_set_->SpendCoin(point);
     }
+    // First boundary fixture invokes the actual service entry points.
+    static bool ConnectBoundary(ChainstateService& s,CBlockIndex* next,std::string& error,bool& invalid) {
+        return s.ConnectTip(next,&error,&invalid);
+    }
+    static bool DisconnectBoundary(ChainstateService& s,CBlockIndex* next) {return s.DisconnectTip(next);}
+    static bool BoundaryTipIs(const ChainstateService& s,const CBlockIndex* tip) {return s.active_tip_==tip;}
+    static bool AuditBoundary(ChainstateService& s) {return s.VerifyConsensusJournalAtActiveTip();}
     static bool TryChain(ChainstateService& service) {
         if (!service.activation_mutex_.try_lock()) return false;
         service.activation_mutex_.unlock(); return true;
@@ -600,6 +620,7 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #endif
 
 #include "selected_parent_history_checks.h"
+#include "orchard_first_boundary_checks.h"
 
 }  // namespace dinero
 
