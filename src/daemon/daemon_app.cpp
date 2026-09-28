@@ -7212,7 +7212,10 @@ bool DaemonApp::Start() {
     // MUST happen after services Init() because Mempool is created in Init()
     // ═══════════════════════════════════════════════════════════════════
     if (ctx_.block_assembler && ctx_.mempool && ctx_.mempool->isInitialized()) {
-        ctx_.block_assembler->setMempool(&ctx_.mempool->mempool());
+        std::weak_ptr<MempoolService> weak_pool = ctx_.mempool;
+        ctx_.block_assembler->SetMempoolAccessFactory([weak_pool]() -> std::unique_ptr<MempoolAccess> {
+            return MempoolService::AcquirePoolUse(weak_pool.lock());
+        });
         std::cout << "[DaemonApp] ✅ BlockAssembler wired to Mempool" << std::endl;
     } else if (ctx_.block_assembler) {
         std::cerr << "[DaemonApp] ⚠️  BlockAssembler created but Mempool not available" << std::endl;

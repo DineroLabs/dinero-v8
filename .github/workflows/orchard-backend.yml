@@ -303,6 +303,24 @@ jobs:
           if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(names):
               raise SystemExit('Real mempool test consumer executions incomplete')
           PYTEST
+      - name: Retained mining-template mempool owner
+        run: |
+          cmake --build build-orchard-root --target test_mining_pool_owner test_utreexo_safety_gate test_block_template_determinism --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(MiningPoolOwner|UtreexoSafetyGate|BlockTemplateDeterminism)$' --show-only=json-v1 > orchard-mining-pool-owner-inventory.json
+          python3 - <<'PYOWNER'
+          import json
+          tests=json.load(open('orchard-mining-pool-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['BlockTemplateDeterminism','MiningPoolOwner','UtreexoSafetyGate']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYOWNER
+          ctest --test-dir build-orchard-root -R '^(MiningPoolOwner|UtreexoSafetyGate|BlockTemplateDeterminism)$' --verbose --no-tests=error --output-log orchard-mining-pool-owner-execution.log
+          python3 - <<'PYOWNER'
+          import re
+          log=open('orchard-mining-pool-owner-execution.log').read()
+          assert sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))==['BlockTemplateDeterminism','MiningPoolOwner','UtreexoSafetyGate']
+          cases=['RpcTemplateRetainsPoolThroughStop','StratumJobUsesOneCapturedPool','UnavailableOwnerPreservesTemplateStateAndBorrowedAccess']
+          assert sorted(re.findall(r'\[       OK \] MiningPoolOwner\.(\w+)',log))==sorted(cases)
+          PYOWNER
       - name: Retained compact-block mempool owner
         run: |
           cmake --build build-orchard-root --target test_block_relay_pool_owner test_block_relay_g2 test_compact_block_binary --parallel 4 -- -k 0
@@ -1474,6 +1492,8 @@ jobs:
             orchard-refresh-owner-execution.log
             orchard-relay-refresh-owner-inventory.json
             orchard-relay-refresh-owner-execution.log
+            orchard-mining-pool-owner-inventory.json
+            orchard-mining-pool-owner-execution.log
             orchard-block-relay-pool-owner-inventory.json
             orchard-block-relay-pool-owner-execution.log
             orchard-real-mempool-all-inventory.json

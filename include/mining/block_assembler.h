@@ -1,4 +1,6 @@
 #pragma once
+#include "daemon/interfaces/mempool_access.h"
+#include <mutex>
 
 #include <vector>
 #include <memory>
@@ -414,7 +416,9 @@ public:
 
     // Week 7: Mempool for transaction selection
     void setMempool(class Mempool* mempool);
-    class Mempool* getMempool() const { return mempool_; }
+    // Legacy borrowed access is unavailable when an owned factory is configured.
+    class Mempool* getMempool() const;
+    void SetMempoolAccessFactory(MempoolAccessFactory factory);
 
     // ========================================================================
     // Phase M.0: Merkle tree calculation (public for golden testing)
@@ -438,7 +442,7 @@ public:
 
 private:
     // Core functionality (Stratum mining)
-    std::vector<Transaction> SelectTransactions(uint32_t max_weight, uint32_t target_height, uint64_t& total_fees);
+    std::vector<Transaction> SelectTransactions(Mempool* pool, uint32_t max_weight, uint32_t target_height, uint64_t& total_fees);
     std::string BuildCoinbaseTransaction(uint32_t height, uint64_t reward, uint64_t fees,
                                        const std::vector<uint8_t>& payout_script);
     std::string GenerateJobId();
@@ -463,6 +467,7 @@ private:
     // Transaction selection (fee-optimal, CPFP-aware, deterministic)
     struct MempoolEntry;  // Forward declare to avoid circular dependency
     std::vector<Transaction> selectTransactionsForBlock(
+        Mempool* pool,
         uint32_t max_weight,
         uint32_t target_height,
         uint64_t& total_fees_out,
@@ -483,6 +488,7 @@ private:
      * @return Vector of selected transactions
      */
     std::vector<Transaction> selectTransactionsIntelligent(
+        Mempool* pool,
         uint32_t max_weight,
         uint32_t target_height,
         uint64_t& total_fees_out,
@@ -490,8 +496,8 @@ private:
     );
 
     // CPFP (Child Pays For Parent) support (v0.14.0.2)
-    double calculateAncestorFeerate(const std::string& txid) const;
-    std::vector<std::string> getUnconfirmedAncestors(const std::string& txid) const;
+    double calculateAncestorFeerate(Mempool* pool, const std::string& txid) const;
+    std::vector<std::string> getUnconfirmedAncestors(Mempool* pool, const std::string& txid) const;
 
     // Block construction helpers
     Transaction createCoinbaseTransaction(
@@ -507,7 +513,14 @@ private:
 private:
     ChainDB* chain_db_;  // ChainDB for persistence (also provides chain tip via getTip())
     // Phase 39: chain_manager_ removed (ChainManager deleted - use chain_db_->getTip() instead)
-    class Mempool* mempool_;  // Mempool for transaction selection
+    class Mempool* mempool_;  // Legacy borrowed pool under mempool_access_mutex_
+    mutable std::mutex mempool_access_mutex_;
+    std::shared_ptr<const MempoolAccessFactory> mempool_access_factory_;
+    struct PoolOperation {
+        std::unique_ptr<MempoolAccess> owner;
+        Mempool* pool = nullptr;
+    };
+    PoolOperation AcquireMempoolAccess() const;
     BlockRelayManager* block_relay_manager_;  // Phase W.1.3: For network-aware mining (optional)
 
     // Utreexo integration
