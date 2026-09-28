@@ -82,6 +82,11 @@ target_link_libraries(dinero_transaction_reader PUBLIC dinero_orchard_backend)
 add_library(dinero_orchard_mempool_body STATIC
   "${ORCHARD_HOST_ROOT}/src/daemon/orchard_mempool_transaction.cpp")
 target_link_libraries(dinero_orchard_mempool_body PUBLIC dinero_transaction_reader)
+if(TARGET dinero_core)
+  target_link_libraries(dinero_core PUBLIC dinero_orchard_mempool_body)
+  set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/relay_transaction_reader.cpp"
+    DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RELAY_READER=1)
+endif()
 if(TARGET dinero_consensus_core)
   target_link_libraries(dinero_transaction_reader PUBLIC dinero_consensus_core)
 else()

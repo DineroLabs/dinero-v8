@@ -26,7 +26,8 @@
 #include "daemon/services/metrics_service.h"
 #include "daemon/utreexo_proof_mode.h"
 #include "daemon/block_relay_manager.h"  // Phase G.2: Block propagation
-#include "daemon/tx_relay_manager.h"  // Phase G.3: Mempool relay
+#include "daemon/tx_relay_manager.h"
+#include "daemon/relay_transaction_reader.h"  // Phase G.3: Mempool relay
 #include "mempool/tx_orphan_pool.h"  // Transaction orphan pool
 #include "network/bridge_node.h"  // Phase P.2: Utreexo proof generation for stateless clients
 #include "network/stateless_node.h"  // Phase P.3: CSN block+proof validation
@@ -516,11 +517,8 @@ Block DeserializeBlockFromP2PMessage(const ::P2PMessage& msg) {
     return *block_opt;
 }
 
-Transaction DeserializeTransactionFromP2PMessage(const ::P2PMessage& msg) {
-    Reader reader(msg.payload);
-    Transaction tx;
-    Deserialize(reader, tx);
-    return tx;
+MempoolTransaction DeserializeTransactionFromP2PMessage(const ::P2PMessage& msg) {
+    return DecodeRelayTransaction(msg.payload, RelayTransactionReadMode::AvailableFamilies);
 }
 
 // Peer ID mapping (simple hash-based for now)
@@ -6165,7 +6163,7 @@ bool DaemonApp::Init(int argc, char** argv) {
                 ) {
                     try {
                         // Deserialize transaction from P2P message
-                        Transaction tx = DeserializeTransactionFromP2PMessage(msg);
+                        auto tx = DeserializeTransactionFromP2PMessage(msg);
 
                         // Route to TxRelayManager
                         tx_relay->HandleTx(peer_addr, tx);
