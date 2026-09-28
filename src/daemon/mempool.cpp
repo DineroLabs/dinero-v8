@@ -574,13 +574,16 @@ struct Mempool::StateRollback {
     std::vector<uint8_t> accumulator_root;
     uint32_t block_height;
     size_t added_count, removed_count;
+    uint64_t stale_evicted, refresh_attempted, refresh_succeeded, refresh_dropped;
     bool committed = false;
     explicit StateRollback(Mempool& owner)
         : pool(owner), transactions(owner.m_transactions), spent(owner.m_spent_outputs),
           fees(owner.m_fee_index), times(owner.m_time_index), children(owner.m_children_index),
           exclusions(owner.m_template_exclusions), overlay(owner.coins_view_),
           accumulator_root(owner.current_accumulator_root_), block_height(owner.current_block_height_),
-          added_count(owner.m_total_tx_added.load()), removed_count(owner.m_total_tx_removed.load()) {}
+          added_count(owner.m_total_tx_added.load()), removed_count(owner.m_total_tx_removed.load()),
+          stale_evicted(owner.m_stale_evicted_total.load()), refresh_attempted(owner.m_refresh_attempted_total.load()),
+          refresh_succeeded(owner.m_refresh_succeeded_total.load()), refresh_dropped(owner.m_refresh_dropped_budget_total.load()) {}
     StateRollback(const StateRollback&) = delete;
     StateRollback& operator=(const StateRollback&) = delete;
     void Swap() noexcept {
@@ -604,6 +607,10 @@ struct Mempool::StateRollback {
         swap(overlay, pool.coins_view_);
         added_count = pool.m_total_tx_added.exchange(added_count);
         removed_count = pool.m_total_tx_removed.exchange(removed_count);
+        stale_evicted = pool.m_stale_evicted_total.exchange(stale_evicted);
+        refresh_attempted = pool.m_refresh_attempted_total.exchange(refresh_attempted);
+        refresh_succeeded = pool.m_refresh_succeeded_total.exchange(refresh_succeeded);
+        refresh_dropped = pool.m_refresh_dropped_budget_total.exchange(refresh_dropped);
     }
     ~StateRollback() noexcept { if (!committed) Swap(); }
 };
@@ -3035,84 +3042,53 @@ std::vector<uint256> Mempool::selectStaleForRefresh(
     size_t stale_overload_threshold
 ) {
     std::unique_lock<std::shared_mutex> lock(m_mutex);
-
     std::vector<uint256> stale_txids;
     stale_txids.reserve(m_transactions.size());
     for (const auto& [txid, entry] : m_transactions) {
-        if (entry.is_proof_stale) {
-            stale_txids.push_back(txid);
-        }
+        if (entry.is_proof_stale) stale_txids.push_back(txid);
     }
+    if (stale_txids.empty()) return {};
 
-    if (stale_txids.empty()) {
-        return {};
+    const bool overloaded = stale_overload_threshold > 0 && stale_txids.size() >= stale_overload_threshold;
+    std::vector<uint256> roots;
+    for (const auto& txid : stale_txids) {
+        const auto& entry = m_transactions.at(txid);
+        const bool too_old = entry.validated_at_height > 0 && chain_height > entry.validated_at_height &&
+            (chain_height - entry.validated_at_height) > max_proof_age_blocks;
+        if (overloaded || too_old || entry.proof_refresh_attempts >= max_refresh_attempts)
+            roots.push_back(txid);
     }
-
-    // Overload guard: under proof-churn pressure, drop stale transactions
-    // instead of triggering repeated proof refresh storms.
-    if (stale_overload_threshold > 0 && stale_txids.size() >= stale_overload_threshold) {
-        size_t removed = 0;
-        for (const auto& txid : stale_txids) {
-            if (removeTransactionLocked(txid)) {
-                removed++;
-            }
-        }
-        if (removed > 0) {
-            rebuildCoinsViewLocked();
-        }
-        if (removed > 0) {
-            m_stale_evicted_total.fetch_add(static_cast<uint64_t>(removed), std::memory_order_relaxed);
-            m_refresh_dropped_budget_total.fetch_add(static_cast<uint64_t>(removed), std::memory_order_relaxed);
-            MPLOG_WARN("[ProofChurnGuard] Bulk-evicted " + std::to_string(removed) +
-                       " stale mempool TXs (threshold=" + std::to_string(stale_overload_threshold) + ")");
-        }
-        return {};
-    }
-
-    std::vector<uint256> to_evict;
+    // Removing an unconfirmed parent also removes every dependent child,
+    // including children with no proof metadata of their own.
+    const auto branch = GatherRemovalBranch(m_transactions, roots);
+    const std::unordered_set<uint256> removed_ids(branch.begin(), branch.end());
     std::vector<uint256> refresh_candidates;
     refresh_candidates.reserve(std::min(max_refresh_batch, stale_txids.size()));
-
-    for (const auto& txid : stale_txids) {
-        auto it = m_transactions.find(txid);
-        if (it == m_transactions.end()) {
-            continue;
-        }
-        auto& entry = it->second;
-
-        const bool too_old =
-            entry.validated_at_height > 0 &&
-            chain_height > entry.validated_at_height &&
-            (chain_height - entry.validated_at_height) > max_proof_age_blocks;
-        const bool attempts_exhausted = entry.proof_refresh_attempts >= max_refresh_attempts;
-
-        if (too_old || attempts_exhausted) {
-            to_evict.push_back(txid);
-            continue;
-        }
-
-        if (refresh_candidates.size() < max_refresh_batch) {
-            entry.proof_refresh_attempts++;
+    if (!overloaded) for (const auto& txid : stale_txids) {
+        if (!removed_ids.count(txid) && refresh_candidates.size() < max_refresh_batch)
             refresh_candidates.push_back(txid);
-            m_refresh_attempted_total.fetch_add(1, std::memory_order_relaxed);
-        }
     }
 
-    size_t removed = 0;
-    for (const auto& txid : to_evict) {
-        if (removeTransactionLocked(txid)) {
-            removed++;
+    StateRollback rollback(*this);
+    for (auto it = branch.rbegin(); it != branch.rend(); ++it) removeTransactionLocked(*it);
+    if (!branch.empty()) rebuildCoinsViewLocked();
+    for (const auto& txid : refresh_candidates) {
+        ++m_transactions.at(txid).proof_refresh_attempts;
+        m_refresh_attempted_total.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!branch.empty()) {
+        // Counters count all removed branch entries, including dependents.
+        m_stale_evicted_total.fetch_add(static_cast<uint64_t>(branch.size()), std::memory_order_relaxed);
+        if (overloaded) {
+            m_refresh_dropped_budget_total.fetch_add(static_cast<uint64_t>(branch.size()), std::memory_order_relaxed);
+            MPLOG_WARN("[ProofChurnGuard] Bulk-evicted " + std::to_string(branch.size()) +
+                       " stale mempool TXs and descendants (threshold=" + std::to_string(stale_overload_threshold) + ")");
+        } else {
+            MPLOG_INFO("[ProofChurnGuard] Evicted " + std::to_string(branch.size()) +
+                       " stale TXs and descendants (age/attempt policy)");
         }
     }
-    if (removed > 0) {
-        rebuildCoinsViewLocked();
-    }
-    if (removed > 0) {
-        m_stale_evicted_total.fetch_add(static_cast<uint64_t>(removed), std::memory_order_relaxed);
-        MPLOG_INFO("[ProofChurnGuard] Evicted " + std::to_string(removed) +
-                   " stale TXs (age/attempt policy)");
-    }
-
+    rollback.committed = true;
     return refresh_candidates;
 }
 

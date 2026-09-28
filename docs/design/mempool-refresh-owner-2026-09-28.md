@@ -1,0 +1,5 @@
+# Owned stale-proof refresh selection
+
+The actual stale-proof policy first computes the complete removal branches from stored inputs, including descendants without their own proof metadata. It chooses refresh candidates only from surviving entries. Removal, indexes/overlay, attempt increments and diagnostic counters share the existing rollback owner. Failure restores prior state; success returns only surviving candidates. Existing age, attempt, overload and batch limits remain unchanged. Eviction counters include all removed dependent entries.
+
+Benign patched fixtures use genuine signed transparent parents/children with synthetic proof-cache metadata. They check age/attempt removal, overload removal of children without metadata, and ordinary logger-exception rollback/retry. This is policy bookkeeping, not cryptographic proof refresh, relay delivery, durable readmission, Orchard admission or release readiness. Full-state-copy load/resident qualification remains open. No unsafe original, race/deadlock or synchronization-removal controls are run. Mainnet activation remains unset.
