@@ -569,6 +569,11 @@ TxAcceptResult Mempool::submitTransactionInternal(
         return TxAcceptResult::Rejected(TxRejectCode::INVALID_TX, "chainstate unavailable");
     }
     std::unique_lock<std::shared_mutex> lock(m_mutex);
+    // Own the selected callback captures before admission publication. Setters
+    // may replace later callbacks without invalidating this notification.
+    const auto accepted_callback = m_tx_accepted_callback;
+    const auto broadcast_callback = relay ? m_tx_broadcast_callback : TxBroadcastCallback{};
+
 
     // Phase M.0: GetTxid() returns TxId, use directly
     TxId txid = tx.GetTxid();
@@ -1033,21 +1038,17 @@ TxAcceptResult Mempool::submitTransactionInternal(
         m_sp_scanner_manager->scanMempoolTransaction(tx_hex);
     }
 
-    // Notify wallet watchers of mempool acceptance (NodeCore → Swift events).
-    if (m_tx_accepted_callback) {
-        m_tx_accepted_callback(tx);
-    }
+    // Complete pool maintenance while its owner lock is still held. External
+    // callbacks may query or alter the pool and cannot own this critical section.
+    if (getTotalSizeLocked() > m_max_size) evictTransactionsLocked();
+    lock.unlock();
+    chainstate_guard.reset();
 
-    // Broadcast to network if requested through the canonical callback path.
-    if (relay && m_tx_broadcast_callback) {
-        lock.unlock();  // Release lock before network call
-        broadcastTransaction(txid_u256);
-    }
-
-    // Check if mempool needs cleanup
-    if (getTotalSizeLocked() > m_max_size) {
-        evictTransactionsLocked();
-    }
+    // These are observations of admission, not a promise of continued pool
+    // membership. Callback errors propagate after publication; a wallet's
+    // durable pending owner must retain an ambiguous submission outcome.
+    if (accepted_callback) accepted_callback(tx);
+    if (broadcast_callback) broadcast_callback(txid_u256);
 
     return TxAcceptResult::Accepted(txid_u256);
 }
@@ -3056,14 +3057,13 @@ std::optional<std::vector<uint8_t>> Mempool::getCachedUtxoTxPayload(const uint25
 }
 
 void Mempool::broadcastTransaction(const uint256& txid) {
-    // Try callback first (P2PService wired via MempoolService)
-    // Callback only needs txid - it will send INV and let peer request full tx
-    if (m_tx_broadcast_callback) {
+    TxBroadcastCallback callback;
+    { std::shared_lock<std::shared_mutex> lock(m_mutex); callback = m_tx_broadcast_callback; }
+    if (callback) {
         MPLOG_INFO("Broadcasting transaction via callback: " + txid.GetHex());
-        m_tx_broadcast_callback(txid);
+        callback(txid);
         return;
     }
-
     MPLOG_WARN("Cannot broadcast transaction: no tx broadcast callback set");
 }
 

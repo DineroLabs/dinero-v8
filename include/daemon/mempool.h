@@ -443,13 +443,18 @@ public:
     // Used by MempoolService to wire P2PService for tx relay
     // Only txid is passed - the callback can fetch tx from mempool if needed
     using TxBroadcastCallback = std::function<void(const uint256& txid)>;
-    void setTxBroadcastCallback(TxBroadcastCallback callback) { m_tx_broadcast_callback = callback; }
+    void setTxBroadcastCallback(TxBroadcastCallback callback) {
+        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_broadcast_callback.swap(callback); }
+        // Release the old callback's captures outside the pool lock.
+    }
 
     // Transaction accepted callback (wallet notifier path)
     // Called after a tx is accepted into the mempool, with the full Transaction object.
     // Used by NodeCore to notify watched-script wallets of mempool events.
     using TxAcceptedCallback = std::function<void(const Transaction& tx)>;
-    void setTxAcceptedCallback(TxAcceptedCallback callback) { m_tx_accepted_callback = callback; }
+    void setTxAcceptedCallback(TxAcceptedCallback callback) {
+        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_accepted_callback.swap(callback); }
+    }
 
     // Logger dependency injection
     void setLogger(ILogger* logger) { m_logger = logger; }
