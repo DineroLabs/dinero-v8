@@ -1165,6 +1165,8 @@ private:
     // Exercises production activation/candidate retry bookkeeping without a
     // running P2P stack. No alternate activation implementation is used.
     friend struct ActivationRetryTestAccess;
+    // Component payment tests install a real isolated index without starting P2P.
+    friend struct WalletBatchPaymentTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};

@@ -4,6 +4,7 @@
 #include "daemon/interfaces/ingress_types.h"  // TxAcceptResult, TxRejectCode (no impl headers)
 #include "primitives/transaction.h"
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace dinero {
@@ -56,6 +57,13 @@ struct ITxIngress {
      * @return Structured result with accept/reject code and reason
      */
     virtual TxAcceptResult Submit(const Transaction& tx, TxOrigin origin) = 0;
+
+    // Validate current policy without admission or relay. A missing capability
+    // is distinct from rejection, and a pass never authorizes later admission.
+    virtual std::optional<TxAcceptResult> Test(const Transaction&, TxOrigin) {
+        return std::nullopt;
+    }
+
 
     /**
      * Check if a transaction is in the mempool.

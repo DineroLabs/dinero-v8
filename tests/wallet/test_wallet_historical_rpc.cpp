@@ -4,6 +4,9 @@
 #include "daemon/daemon_context.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/wallet_service.h"
+#include "daemon/services/chainstate_service.h"
+#include "daemon/interfaces/tx_ingress.h"
+#include <functional>
 #include "rpc/rpc_registry.h"
 #include "wallet/transaction_builder.h"
 #include "wallet/wallet_transaction_signer.h"
@@ -21,7 +24,13 @@
 #include <unistd.h>
 #include <cstring>
 
+namespace dinero {
+struct WalletBatchPaymentTestAccess {
+    static void InstallIndex(ChainstateService& chain,std::unique_ptr<UTXOIndex> index) {chain.utxo_index_=std::move(index);}
+};
+}
 void registerV7PqWalletMethods();
+din::Json rpc_context_wallet_sendmany(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_getbalance(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_getwalletinfo(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_snapshot(const ExecutionContext&,const din::Json&);
@@ -359,6 +368,97 @@ TEST_F(WalletReservationBalance, UntrackedAndIncompleteReadsNeverClaimAuthentica
     sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'00'");EXPECT_THROW(w.getBalanceSummary(),std::runtime_error);
     const auto failed=rpc_context_wallet_getbalance(ctx,din::Json());EXPECT_TRUE(failed.isMember("error"));EXPECT_FALSE(failed.isMember("confirmed"));
     sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'"+stored+"'");summary=w.getBalanceSummary();EXPECT_EQ(summary.reservations,dinero::WalletManager::ReservationStatus::Authenticated);EXPECT_DOUBLE_EQ(*summary.locked,0.002);
+}
+
+class WalletBatchPayment : public WalletPendingPayment {
+protected:
+    dinero::PendingPaymentIntent batch_intent() {
+        return {modern_address,60000,"",{{service->get().getNewAddress(),139000}}};
+    }
+    dinero::UnsignedTransaction batch(const dinero::PendingPaymentIntent& intent,uint32_t offset=0) {
+        auto coins=std::vector<dinero::CanonicalWalletUTXO>{old,modern};
+        for(auto& c:coins)c.vout+=offset;
+        auto input=unsigned_tx(coins);input.tx.vout.clear();
+        dinero::TxOutput first;first.value=dinero::AmountUna::Una(intent.amount_una);first.scriptPubKey=dinero::TransactionBuilder::AddressToScriptPubKey(intent.address);input.tx.vout.push_back(first);
+        for(const auto& recipient:intent.additional_recipients){dinero::TxOutput out;out.value=dinero::AmountUna::Una(recipient.amount_una);out.scriptPubKey=dinero::TransactionBuilder::AddressToScriptPubKey(recipient.address);input.tx.vout.push_back(out);}
+        return input;
+    }
+    dinero::SignResult retain(const dinero::UnsignedTransaction& input,const dinero::PendingPaymentIntent& intent) {
+        auto& w=service->get();return dinero::SignAndStageWalletPayment(w,dinero::CaptureWalletSigningIdentity(w,"owner"),input,intent);
+    }
+};
+TEST_F(WalletBatchPayment, MixedLegacyBatchAndReopen) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();fund(old);fund(modern);
+    const auto single=stage(payment());ASSERT_TRUE(single.success)<<single.error;
+    const auto original=w.getPendingPayments().at(0);const auto initial=envelope(db);
+    const auto intent=batch_intent();auto input=batch(intent,7);for(const auto& c:input.selected_utxos)fund(c);
+    const auto result=retain(input,intent);ASSERT_TRUE(result.success)<<result.error;verify(result.signed_tx.tx,input.selected_utxos);
+    auto records=w.getPendingPayments();ASSERT_EQ(records.size(),2u);EXPECT_EQ(records[0].signed_body,original.signed_body);EXPECT_EQ(records[0].created_at,original.created_at);EXPECT_TRUE(records[0].intent.additional_recipients.empty());
+    ASSERT_EQ(records[1].intent.additional_recipients.size(),1u);EXPECT_EQ(records[1].intent.additional_recipients[0].address,intent.additional_recipients[0].address);EXPECT_EQ(records[1].intent.additional_recipients[0].amount_una,139000u);EXPECT_NE(envelope(db),initial);
+    auto listing=rpc_context_wallet_listpendingpayments(ctx,din::Json());ASSERT_FALSE(listing.isMember("error"))<<listing.toStyledString();ASSERT_EQ(listing["payments"].size(),2u);EXPECT_EQ(listing["payments"][0]["recipients"].size(),1u);EXPECT_EQ(listing["payments"][1]["recipients"].size(),2u);EXPECT_EQ(listing["payments"][1]["total_amount_una"].asUInt64(),199000u);
+    auto history=w.getTransactionHistory();ASSERT_EQ(history.size(),2u);for(const auto& row:history){EXPECT_EQ(row.category,"send");EXPECT_DOUBLE_EQ(row.amount,-0.002);EXPECT_EQ(row.address,modern_address);}
+    const auto saved=envelope(db);w.open("owner");w.unlockWallet("historical-rpc",0);records=w.getPendingPayments();ASSERT_EQ(records.size(),2u);EXPECT_EQ(records[0].signed_body,original.signed_body);EXPECT_EQ(records[1].signed_body,result.signed_tx.tx.Serialize(dinero::TxSerializationMode::WithWitness));EXPECT_EQ(w.getLockedUTXOs().size(),4u);EXPECT_EQ(envelope(w.getCurrentDatabase()),saved);
+    // Equal recipients still require separate actual outputs, not one reused match.
+    auto repeated=intent;repeated.additional_recipients={{modern_address,60000}};auto duplicate=batch(repeated,20);duplicate.tx.vout[0].value=dinero::AmountUna::Una(139000);
+    for(const auto& c:duplicate.selected_utxos)fund(c);auto refused=retain(duplicate,repeated);EXPECT_FALSE(refused.success);EXPECT_EQ(envelope(w.getCurrentDatabase()),saved);
+}
+TEST_F(WalletBatchPayment, OutputIntentAndCommitRefuseWithoutPublication) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();fund(old);fund(modern);const auto intent=batch_intent();const auto input=batch(intent);
+    auto wrong=intent;wrong.additional_recipients[0].amount_una++;auto result=retain(input,wrong);EXPECT_FALSE(result.success);EXPECT_TRUE(result.signed_tx.tx.vin.empty());EXPECT_EQ(count(db,"transactions"),0);EXPECT_TRUE(w.getPendingPayments().empty());
+    sqlite3_commit_hook(db,[](void*){return 1;},nullptr);result=retain(input,intent);sqlite3_commit_hook(db,nullptr,nullptr);
+    EXPECT_FALSE(result.success);EXPECT_TRUE(result.signed_tx.tx.vin.empty());EXPECT_EQ(count(db,"transactions"),0);EXPECT_TRUE(w.getPendingPayments().empty());EXPECT_TRUE(w.getLockedUTXOs().empty());
+    result=retain(input,intent);ASSERT_TRUE(result.success)<<result.error;EXPECT_EQ(w.getPendingPayments().size(),1u);
+}
+class WalletBatchRpc : public WalletPendingPayment {
+protected:
+    struct Ingress final:dinero::ITxIngress {
+        std::function<std::optional<dinero::TxAcceptResult>(const dinero::Transaction&)> test;
+        std::function<dinero::TxAcceptResult(const dinero::Transaction&)> submit;
+        int tests=0,submits=0;
+        std::optional<dinero::TxAcceptResult> Test(const dinero::Transaction& tx,dinero::TxOrigin origin) override {EXPECT_EQ(origin,dinero::TxOrigin::WALLET);++tests;return test?test(tx):std::nullopt;}
+        dinero::TxAcceptResult Submit(const dinero::Transaction& tx,dinero::TxOrigin origin) override {EXPECT_EQ(origin,dinero::TxOrigin::WALLET);++submits;return submit(tx);}
+        bool HasTransaction(const dinero::uint256&)const override{return false;}
+        std::shared_ptr<dinero::Transaction> GetTransaction(const dinero::uint256&)const override{return {};}
+    };
+    std::shared_ptr<dinero::ChainstateService> chain;
+    std::shared_ptr<Ingress> ingress;
+    void SetUp() override {
+        WalletPendingPayment::SetUp();if(HasFatalFailure())return;
+        chain=std::make_shared<dinero::ChainstateService>();dinero::WalletBatchPaymentTestAccess::InstallIndex(*chain,std::move(index));daemon.chainstate=chain;
+        ingress=std::make_shared<Ingress>();daemon.tx_ingress=ingress.get();
+        auto& w=service->get();w.setBlockchainHeight(100);fund(hd);
+        ASSERT_TRUE(chain->utxoIndex()->AddUTXO(dinero::WalletUTXO(dinero::TxId(hd.txid),hd.vout,hd.value,hd.spk,hd.path,hd.height)));
+    }
+    void TearDown() override {service->get().setUTXOIndex(nullptr);daemon.tx_ingress=nullptr;ingress.reset();daemon.chainstate.reset();chain.reset();WalletPendingPayment::TearDown();}
+    din::Json request() {
+        din::Json result(Json::arrayValue),recipients;recipients[modern_address]="0.00020000";recipients[service->get().getNewAddress()]="0.00030000";result.append(recipients);result.append(1.0);return result;
+    }
+    void before_preflight(const dinero::Transaction& tx) {
+        auto& w=service->get();EXPECT_TRUE(sqlite3_get_autocommit(w.getCurrentDatabase()));EXPECT_TRUE(w.getPendingPayments().empty());EXPECT_EQ(count(w.getCurrentDatabase(),"transactions"),0);verify(tx,{hd});
+    }
+    void at_submission(const dinero::Transaction& tx) {
+        auto& w=service->get();EXPECT_TRUE(sqlite3_get_autocommit(w.getCurrentDatabase()));auto records=w.getPendingPayments();ASSERT_EQ(records.size(),1u);EXPECT_EQ(records[0].signed_body,tx.Serialize(dinero::TxSerializationMode::WithWitness));ASSERT_EQ(records[0].intent.additional_recipients.size(),1u);EXPECT_EQ(records[0].intent.amount_una+records[0].intent.additional_recipients[0].amount_una,50000u);EXPECT_EQ(count(w.getCurrentDatabase(),"transactions"),1);EXPECT_TRUE(w.isUTXOLocked(hd.GetTxIdHex(),hd.vout));verify(tx,{hd});
+    }
+};
+TEST_F(WalletBatchRpc, PreflightThenRetainBeforeOneRejectedSubmission) {
+    std::vector<std::vector<uint8_t>> candidates;
+    ingress->test=[&](const dinero::Transaction& tx){before_preflight(tx);candidates.push_back(tx.Serialize(dinero::TxSerializationMode::WithWitness));return ingress->tests==1?dinero::TxAcceptResult::Rejected(dinero::TxRejectCode::INSUFFICIENT_FEE,"fixture preflight fee"):dinero::TxAcceptResult::Accepted(tx.GetTxid().AsUint256());};
+    ingress->submit=[&](const dinero::Transaction& tx){at_submission(tx);return dinero::TxAcceptResult::Rejected(dinero::TxRejectCode::INSUFFICIENT_FEE,"fixture policy changed after preflight");};
+    const auto result=rpc_context_wallet_sendmany(ctx,request());ASSERT_TRUE(result.isMember("error"))<<result.toStyledString();EXPECT_TRUE(result["payment_retained"].asBool());EXPECT_EQ(ingress->tests,2);EXPECT_EQ(ingress->submits,1);ASSERT_EQ(candidates.size(),2u);EXPECT_NE(candidates[0],candidates[1]);
+    auto& w=service->get();const auto records=w.getPendingPayments();ASSERT_EQ(records.size(),1u);dinero::Transaction preflight,retained;ASSERT_TRUE(dinero::TransactionSerializer::Deserialize(preflight,util::hex(candidates[1])));ASSERT_TRUE(dinero::TransactionSerializer::Deserialize(retained,util::hex(records[0].signed_body)));EXPECT_EQ(retained.Serialize(dinero::TxSerializationMode::WithoutWitness),preflight.Serialize(dinero::TxSerializationMode::WithoutWitness));EXPECT_EQ(records[0].txid,result["txid"].asString());w.open("owner");w.unlockWallet("historical-rpc",0);EXPECT_EQ(w.getPendingPayments()[0].signed_body,records[0].signed_body);
+}
+TEST_F(WalletBatchRpc, UnavailablePreflightThenSubmissionExceptionRetains) {
+    const auto p=request();auto result=rpc_context_wallet_sendmany(ctx,p);EXPECT_TRUE(result.isMember("error"));EXPECT_FALSE(result.isMember("payment_retained"));EXPECT_EQ(ingress->submits,0);EXPECT_TRUE(service->get().getPendingPayments().empty());
+    ingress->test=[&](const dinero::Transaction& tx){before_preflight(tx);return dinero::TxAcceptResult::Accepted(tx.GetTxid().AsUint256());};
+    ingress->submit=[&](const dinero::Transaction& tx)->dinero::TxAcceptResult{at_submission(tx);throw std::runtime_error("fixture submission result unavailable");};
+    result=rpc_context_wallet_sendmany(ctx,p);EXPECT_TRUE(result.isMember("error"));EXPECT_TRUE(result["payment_retained"].asBool());EXPECT_EQ(ingress->submits,1);auto& w=service->get();auto records=w.getPendingPayments();ASSERT_EQ(records.size(),1u);EXPECT_EQ(records[0].txid,result["txid"].asString());EXPECT_FALSE(w.unlockUTXO(hd.GetTxIdHex(),hd.vout));
+}
+TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
+    ingress->test=[&](const dinero::Transaction& tx){before_preflight(tx);return dinero::TxAcceptResult::Accepted(tx.GetTxid().AsUint256());};
+    ingress->submit=[&](const dinero::Transaction& tx){at_submission(tx);return dinero::TxAcceptResult::Accepted(tx.GetTxid().AsUint256());};
+    auto p=request();auto malformed=p;malformed[0][modern_address]="not-an-amount";auto result=rpc_context_wallet_sendmany(ctx,malformed);EXPECT_TRUE(result.isMember("error"));EXPECT_EQ(ingress->tests,0);EXPECT_EQ(ingress->submits,0);EXPECT_TRUE(service->get().getPendingPayments().empty());
+    ctx.walletName="other";result=rpc_context_wallet_sendmany(ctx,p);EXPECT_TRUE(result.isMember("error"));EXPECT_EQ(ingress->tests,0);ctx.walletName="owner";
+    result=rpc_context_wallet_sendmany(ctx,p);EXPECT_FALSE(result.isMember("error"))<<result.toStyledString();EXPECT_TRUE(result["payment_retained"].asBool());EXPECT_EQ(result["recipients"].asInt(),2);EXPECT_EQ(ingress->tests,1);EXPECT_EQ(ingress->submits,1);EXPECT_EQ(service->get().getPendingPayments().size(),1u);
 }
 
 }

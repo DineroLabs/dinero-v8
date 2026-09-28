@@ -618,6 +618,23 @@ jobs:
           if log.count('PASS RocksDBChecksum.ReferenceAndIncremental')!=1:
               raise SystemExit('RocksDB checksum reference case did not complete exactly once')
           PYTEST
+      - name: Require and execute durable batch payment ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletBatchPayment$' --show-only=json-v1 > orchard-batch-payment-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-batch-payment-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletBatchPayment'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Batch payment test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletBatchPayment$' --verbose --no-tests=error --output-log orchard-batch-payment-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-batch-payment-execution.log').read()
+          expected=['WalletBatchPayment.MixedLegacyBatchAndReopen','WalletBatchPayment.OutputIntentAndCommitRefuseWithoutPublication','WalletBatchRpc.PreflightThenRetainBeforeOneRejectedSubmission','WalletBatchRpc.UnavailablePreflightThenSubmissionExceptionRetains','WalletBatchRpc.SuccessfulSubmissionAndInvalidInputBeforeEffects']
+          if sorted(re.findall(r'\[       OK \] (WalletBatch(?:Payment|Rpc)\.\w+)',log))!=sorted(expected):
+              raise SystemExit('Batch payment cases did not complete exactly once')
+          PYTEST
       - name: Require and execute authenticated wallet reservation balances
         run: |
           ctest --test-dir build-orchard-root -R '^WalletReservationBalance$' --show-only=json-v1 > orchard-reservation-balance-inventory.json
@@ -1165,6 +1182,8 @@ jobs:
             orchard-pq-root-provider-execution.log
             orchard-historical-rpc-inventory.json
             orchard-historical-rpc-execution.log
+            orchard-batch-payment-inventory.json
+            orchard-batch-payment-execution.log
             orchard-reservation-balance-inventory.json
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json

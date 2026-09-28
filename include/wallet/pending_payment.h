@@ -4,10 +4,17 @@
 #include <vector>
 namespace dinero {
 // Intent supplied by a wallet-created payment RPC, not arbitrary raw signing.
+struct PendingPaymentRecipient {
+    std::string address;
+    uint64_t amount_una = 0;
+};
 struct PendingPaymentIntent {
     std::string address;
     uint64_t amount_una=0;
     std::string label;
+    // The primary recipient above retains the original single-payment API.
+    // Additional recipients are explicit request data, never inferred change.
+    std::vector<PendingPaymentRecipient> additional_recipients;
 };
 struct PendingPaymentInput {
     std::string txid;

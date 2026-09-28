@@ -3231,7 +3231,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
 
     // params[0] = { "address1": amount1, "address2": amount2, ... }
     // params[1] = optional fee_rate
-    if (params.empty() || !params[0].isObject()) {
+    if (!params.isArray() || params.empty() || !params[0].isObject()) {
         result["error"] = "Usage: wallet.sendmany {\"address1\": amount1, \"address2\": amount2, ...} [fee_rate]";
         return result;
     }
@@ -3268,8 +3268,15 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         din::Json recipients_obj = params[0];
         double fee_rate = 1.0;
 
-        if (params.size() >= 2 && params[1].is<double>()) {
-            fee_rate = params[1].as<double>();
+        if (params.size() >= 2) {
+            if (!params[1].isNumeric()) { result["error"] = "Invalid fee rate"; return result; }
+            fee_rate = params[1].asDouble();
+        }
+        const double max_safe_rate = static_cast<double>(
+            dinero::MAX_SUPPLY_UNA_CONST / dinero::consensus::MAX_BLOCK_WEIGHT);
+        if (!std::isfinite(fee_rate) || fee_rate <= 0 || fee_rate > max_safe_rate) {
+            result["error"] = "Invalid fee rate: outside safe transaction fee range";
+            return result;
         }
 
         // Parse recipients using getMemberNames() for jsoncpp iteration
@@ -3277,17 +3284,16 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         int64_t total_amount = 0;
 
         auto member_names = recipients_obj.getMemberNames();
+        if (member_names.size() > 4096) { result["error"] = "Payment recipient capacity exceeded"; return result; }
         for (const auto& address : member_names) {
-            double amount_din = recipients_obj[address].as<double>();
-
-            if (amount_din <= 0) {
-                result["error"] = "Invalid amount for address: " + address;
+            uint64_t amount_una = 0; std::string error;
+            if (!dinero::rpc::ParseDinAmountToUna(recipients_obj[address], amount_una, error) ||
+                amount_una > dinero::MAX_SUPPLY_UNA_CONST - static_cast<uint64_t>(total_amount)) {
+                result["error"] = "Invalid amount for address: " + address + ": " + error;
                 return result;
             }
-
-            int64_t amount_una = static_cast<int64_t>(amount_din * 1e8);
-            recipients.push_back({address, amount_una});
-            total_amount += amount_una;
+            recipients.push_back({address, static_cast<int64_t>(amount_una)});
+            total_amount += static_cast<int64_t>(amount_una);
         }
 
         if (recipients.empty()) {
@@ -3436,6 +3442,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         std::string last_reject_reason;
         constexpr int kMaxFeeAttempts = 4;
         int fee_attempt = 0;
+        dinero::UnsignedTransaction unsigned_tx;
 
         // Broadcast through canonical ingress interface (Step 5).
         if (!ctx.daemon->tx_ingress) {
@@ -3444,6 +3451,10 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         }
 
         for (; fee_attempt < kMaxFeeAttempts; ++fee_attempt) {
+            if (!std::isfinite(effective_fee_rate) || effective_fee_rate > max_safe_rate) {
+                result["error"] = "Required fee rate exceeds safe transaction fee range";
+                return result;
+            }
             dinero::TransactionBuilder::BuildOptions options;
             options.fee_rate = effective_fee_rate;
             options.change_address = change_address;
@@ -3455,7 +3466,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
                 return result;
             }
 
-            dinero::UnsignedTransaction unsigned_tx;
+            unsigned_tx = dinero::UnsignedTransaction{};
             unsigned_tx.tx=build_result.transaction;
             unsigned_tx.selected_utxos=build_result.selected_utxos;
             unsigned_tx.fee=build_result.fee;unsigned_tx.change_amount=build_result.change_amount;
@@ -3464,8 +3475,9 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
             if(!signed_result.success){result["error"]="Transaction signing failed: "+signed_result.error;return result;}
             build_result.transaction=std::move(signed_result.signed_tx.tx);
 
-            auto submit_result = ctx.daemon->tx_ingress->Submit(
-                build_result.transaction, dinero::TxOrigin::WALLET);
+            const auto preflight = ctx.daemon->tx_ingress->Test(build_result.transaction, dinero::TxOrigin::WALLET);
+            if (!preflight) { result["error"] = "Transaction preflight unavailable"; return result; }
+            const auto& submit_result = *preflight;
             if (!submit_result.rejected()) {
                 break;
             }
@@ -3475,7 +3487,7 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
 
             if (submit_result.code != dinero::TxRejectCode::INSUFFICIENT_FEE ||
                 fee_attempt + 1 >= kMaxFeeAttempts) {
-                result["error"] = "Transaction rejected by mempool";
+                result["error"] = "Transaction preflight refused";
                 result["reject_code"] = TxRejectCodeToString(last_reject_code);
                 result["reject_reason"] = last_reject_reason;
                 return result;
@@ -3483,14 +3495,31 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
 
             if (ctx.logger) {
                 ctx.logger->warning(
-                    "[wallet.sendmany] Rebuilding after insufficient-fee rejection at " +
+                    "[wallet.sendmany] Rebuilding before submission after insufficient-fee preflight at " +
                     std::to_string(effective_fee_rate) + " sat/vB: " + submit_result.message);
             }
 
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
-        std::string txid = build_result.transaction.GetTxid().AsUint256().GetHex();
+        dinero::PendingPaymentIntent intent{recipients.front().address, static_cast<uint64_t>(recipients.front().amount), ""};
+        for (size_t i = 1; i < recipients.size(); ++i)
+            intent.additional_recipients.push_back({recipients[i].address, static_cast<uint64_t>(recipients[i].amount)});
+        auto retained = dinero::SignAndStageWalletPayment(wallet_service->get(), signing_identity, unsigned_tx, intent);
+        if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
+        build_result.transaction = std::move(retained.signed_tx.tx);
+        const std::string txid = build_result.transaction.GetTxid().AsUint256().GetHex();
+        result["txid"] = txid;
+        result["payment_retained"] = true;
+        // Actual admission occurs exactly once, after durable ownership. A
+        // concurrent policy/chain change cannot trigger another exposed body.
+        const auto submitted = ctx.daemon->tx_ingress->Submit(build_result.transaction, dinero::TxOrigin::WALLET);
+        if (submitted.rejected()) {
+            result["error"] = "Retained payment rejected by mempool";
+            result["reject_code"] = TxRejectCodeToString(submitted.code);
+            result["reject_reason"] = submitted.message;
+            return result;
+        }
 
         result["txid"] = txid;
         result["recipients"] = static_cast<int>(recipients.size());
@@ -7898,6 +7927,15 @@ din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,con
         for(const auto& p:payments) {
             din::Json row;row["txid"]=p.txid;row["hex"]=util::hex(p.signed_body);row["address"]=p.intent.address;
             row["amount_una"]=static_cast<din::Json::UInt64>(p.intent.amount_una);row["fee_una"]=static_cast<din::Json::UInt64>(p.fee_una);
+            row["recipients"] = din::arr();
+            uint64_t total = p.intent.amount_una;
+            din::Json primary;primary["address"] = p.intent.address;
+            primary["amount_una"] = static_cast<din::Json::UInt64>(p.intent.amount_una);row["recipients"].append(primary);
+            for (const auto& recipient : p.intent.additional_recipients) {
+                din::Json item;item["address"] = recipient.address;item["amount_una"] = static_cast<din::Json::UInt64>(recipient.amount_una);
+                row["recipients"].append(item);total += recipient.amount_una;
+            }
+            row["total_amount_una"] = static_cast<din::Json::UInt64>(total);
             row["label"]=p.intent.label;row["created_at"]=static_cast<din::Json::Int64>(p.created_at);row["state"]="retained";
             row["inputs"]=din::arr();
             for(const auto& in:p.inputs){din::Json coin;coin["txid"]=in.txid;coin["vout"]=in.vout;coin["amount_una"]=static_cast<din::Json::UInt64>(in.amount_una);row["inputs"].append(coin);}

@@ -3453,6 +3453,22 @@ std::vector<uint8_t> PaymentScript(const std::string& address) {
     }
     throw std::runtime_error("Pending payment requires a valid witness address");
 }
+std::vector<PendingPaymentRecipient> PaymentRecipients(const PendingPaymentIntent& intent) {
+    if (intent.additional_recipients.size() >= kPaymentCount)
+        throw std::runtime_error("Payment recipient capacity exceeded");
+    std::vector<PendingPaymentRecipient> result{{intent.address, intent.amount_una}};
+    result.insert(result.end(), intent.additional_recipients.begin(), intent.additional_recipients.end());
+    for (const auto& recipient : result) {
+        if (recipient.address.empty() || recipient.address.find('\0') != std::string::npos || !recipient.amount_una)
+            throw std::runtime_error("Payment recipient invalid");
+    }
+    return result;
+}
+uint64_t PaymentIntentTotal(const PendingPaymentIntent& intent) {
+    uint64_t total = 0;
+    for (const auto& recipient : PaymentRecipients(intent)) total = PaymentSum(total, recipient.amount_una);
+    return total;
+}
 void ValidatePayment(const PendingPayment& p) {
     Transaction tx;size_t consumed=0;
     if(p.signed_body.empty() || p.signed_body.size()>kPaymentBytes ||
@@ -3462,8 +3478,10 @@ void ValidatePayment(const PendingPayment& p) {
        p.inputs.size()>kPaymentCount || p.created_at<=0 || p.intent.amount_una==0 ||
        p.intent.address.empty() || p.intent.address.find('\0')!=std::string::npos || p.intent.label.find('\0')!=std::string::npos)
         throw std::runtime_error("Pending payment body invalid");
-    const auto recipient=PaymentScript(p.intent.address);
-    std::set<std::string> seen;uint64_t input=0,output=0;bool matched=false;
+    std::multiset<std::pair<std::vector<uint8_t>, uint64_t>> required;
+    for (const auto& recipient : PaymentRecipients(p.intent))
+        required.emplace(PaymentScript(recipient.address), recipient.amount_una);
+    std::set<std::string> seen;uint64_t input=0,output=0;
     for(size_t i=0;i<p.inputs.size();++i) {
         const auto& coin=p.inputs[i];const auto& in=tx.vin[i];
         if(coin.txid!=in.prevout.txid.AsUint256().GetHex() || coin.vout!=in.prevout.vout || coin.script.empty() ||
@@ -3474,21 +3492,32 @@ void ValidatePayment(const PendingPayment& p) {
     for(const auto& out:tx.vout) {
         if(out.is_confidential)throw std::runtime_error("Confidential payment owner unsupported");
         output=PaymentSum(output,out.value.GetUna());
-        matched|=out.scriptPubKey==recipient && out.value.GetUna()==p.intent.amount_una;
+        auto match = required.find({out.scriptPubKey, out.value.GetUna()});
+        if (match != required.end()) required.erase(match);
     }
-    if(!matched || input<output || input-output!=p.fee_una)
+    if(!required.empty() || input<output || input-output!=p.fee_una)
         throw std::runtime_error("Payment intent or fee mismatch");
-    (void)PaymentSum(p.intent.amount_una,p.fee_una);
+    (void)PaymentSum(PaymentIntentTotal(p.intent),p.fee_una);
 }
 std::string EncodePayments(const std::string& identity,const std::vector<PendingPayment>& records) {
     if(records.empty() || records.size()>kPaymentCount)throw std::runtime_error("Payment count invalid");
-    std::string out="DNPP01";PaymentField(out,identity);PaymentU64(out,records.size());
+    const bool batch = std::any_of(records.begin(), records.end(), [](const auto& p) {
+        return !p.intent.additional_recipients.empty();
+    });
+    std::string out=batch?"DNPP02":"DNPP01";PaymentField(out,identity);PaymentU64(out,records.size());
     std::set<std::string> txids,reservations;
     for(const auto& p:records) {
         ValidatePayment(p);
         if(!txids.insert(p.txid).second)throw std::runtime_error("Duplicate payment body");
         PaymentField(out,p.txid);PaymentBlob(out,p.signed_body);PaymentField(out,p.intent.address);
-        PaymentU64(out,p.intent.amount_una);PaymentField(out,p.intent.label);PaymentU64(out,p.fee_una);
+        PaymentU64(out,p.intent.amount_una);PaymentField(out,p.intent.label);
+        if (batch) {
+            PaymentU64(out, p.intent.additional_recipients.size());
+            for (const auto& recipient : p.intent.additional_recipients) {
+                PaymentField(out, recipient.address);PaymentU64(out, recipient.amount_una);
+            }
+        }
+        PaymentU64(out,p.fee_una);
         PaymentU64(out,uint64_t(p.created_at));PaymentU64(out,p.inputs.size());
         for(const auto& in:p.inputs) {
             if(!reservations.insert(in.txid+":"+std::to_string(in.vout)).second)
@@ -3500,14 +3529,21 @@ std::string EncodePayments(const std::string& identity,const std::vector<Pending
     return out;
 }
 std::vector<PendingPayment> DecodePayments(const std::string& plain,const std::string& identity) {
-    if(plain.size()>kPaymentBytes || plain.substr(0,6)!="DNPP01")throw std::runtime_error("Payment format invalid");
+    const bool batch = plain.substr(0,6)=="DNPP02";
+    if(plain.size()>kPaymentBytes || (!batch && plain.substr(0,6)!="DNPP01"))throw std::runtime_error("Payment format invalid");
     PaymentReader r{std::string_view(plain).substr(6)};
     if(r.Field()!=identity)throw std::runtime_error("Payment belongs to another wallet");
     const auto n=r.U64();if(!n || n>kPaymentCount)throw std::runtime_error("Payment count invalid");
     std::vector<PendingPayment> result;
     for(uint64_t i=0;i<n;++i) {
         PendingPayment p;p.txid=r.Field();p.signed_body=r.Blob();p.intent.address=r.Field();
-        p.intent.amount_una=r.U64();p.intent.label=r.Field();p.fee_una=r.U64();
+        p.intent.amount_una=r.U64();p.intent.label=r.Field();
+        if (batch) {
+            const auto count = r.U64();
+            if (count >= kPaymentCount) throw std::runtime_error("Payment recipient capacity exceeded");
+            for (uint64_t j = 0; j < count; ++j) p.intent.additional_recipients.push_back({r.Field(), r.U64()});
+        }
+        p.fee_una=r.U64();
         auto time=r.U64();if(time>INT64_MAX)throw std::runtime_error("Payment time invalid");p.created_at=int64_t(time);
         const auto count=r.U64();if(!count || count>kPaymentCount)throw std::runtime_error("Payment inputs invalid");
         for(uint64_t j=0;j<count;++j) {
@@ -3548,7 +3584,7 @@ std::vector<PendingPayment> WalletManager::ReadPendingPaymentsOwned(std::span<co
         };
         if(!text(0,p.intent.address) || !text(2,"send") || !text(3,p.intent.label) ||
            sqlite3_column_type(history.value.get(),1)!=SQLITE_FLOAT ||
-           sqlite3_column_double(history.value.get(),1)!=-static_cast<double>(PaymentSum(p.intent.amount_una,p.fee_una))/1e8 ||
+           sqlite3_column_double(history.value.get(),1)!=-static_cast<double>(PaymentSum(PaymentIntentTotal(p.intent),p.fee_una))/1e8 ||
            sqlite3_column_type(history.value.get(),4)!=SQLITE_INTEGER || sqlite3_column_int64(history.value.get(),4)!=p.created_at)
             throw std::runtime_error("Pending payment history differs from retained intent");
         history.Done();
@@ -3572,15 +3608,16 @@ void WalletManager::DatabaseLease::StagePayment(const RecoverySeed& pin,const Un
         throw std::runtime_error("Payment owner does not match wallet lease");
     if(input.tx.Serialize(TxSerializationMode::WithoutWitness)!=signed_tx.Serialize(TxSerializationMode::WithoutWitness) ||
        input.selected_utxos.size()!=signed_tx.vin.size())throw std::runtime_error("Payment signing body changed");
-    // The payment API has one explicit recipient and at most one authenticated
-    // change output. Raw signing and multi-recipient replacement have separate contracts.
-    const auto recipient=PaymentScript(intent.address);std::vector<uint8_t> change;
+    // Exact explicit recipients plus at most one authenticated change output.
+    // This API never replaces another retained body or reuses its reservations.
+    const auto recipients=PaymentRecipients(intent);std::vector<uint8_t> change;
     if(input.change_amount) {
         change=PaymentScript(input.change_address);
         if(!ResolveSigningKey(util::hex(change),pin))
             throw std::runtime_error("Payment change owner unavailable");
     }
-    std::vector<std::pair<std::vector<uint8_t>,uint64_t>> expected{{recipient,intent.amount_una}},actual;
+    std::vector<std::pair<std::vector<uint8_t>,uint64_t>> expected,actual;
+    for (const auto& recipient : recipients) expected.emplace_back(PaymentScript(recipient.address), recipient.amount_una);
     if(input.change_amount)expected.emplace_back(change,input.change_amount);
     for(const auto& out:signed_tx.vout)actual.emplace_back(out.scriptPubKey,out.value.GetUna());
     std::sort(expected.begin(),expected.end());std::sort(actual.begin(),actual.end());
@@ -3623,7 +3660,7 @@ void WalletManager::DatabaseLease::StagePayment(const RecoverySeed& pin,const Un
     IssuedStatement save(db_,"UPDATE wallet_meta SET pending_payment_owner=? WHERE id=1");save.Blob(1,sealed.data(),int(sealed.size()));save.Done(true);
     IssuedStatement history(db_,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,'send',?,?,0,0)");
     history.Int(1,owner_.current_wallet_id_);history.Text(2,p.txid);history.Text(3,p.intent.address);
-    const auto spent=PaymentSum(p.intent.amount_una,p.fee_una);
+    const auto spent=PaymentSum(PaymentIntentTotal(p.intent),p.fee_una);
     IssuanceCheck(db_,sqlite3_bind_double(history.value.get(),4,-static_cast<double>(spent)/1e8),SQLITE_OK);
     history.Text(5,p.intent.label);history.Int(6,p.created_at);history.Done(true);
     transaction.Commit();

@@ -87,9 +87,12 @@ public:
         return mempool_->submitTransaction(tx, source, relay);
     }
 
-    /**
-     * Check if transaction is in mempool (ITxIngress interface)
-     */
+    // Policy preflight has no admission or relay effects; Submit revalidates.
+    std::optional<TxAcceptResult> Test(const Transaction& tx, TxOrigin origin) override {
+        if (!mempool_) return std::nullopt;
+        return mempool_->submitTransactionTestOnly(tx, TxOriginToString(origin));
+    }
+
     bool HasTransaction(const uint256& txid) const override {
         return mempool_->hasTransaction(txid);
     }
