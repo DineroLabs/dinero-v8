@@ -182,6 +182,7 @@ struct MempoolBlockSelection {
 };
 
 class Mempool {
+    friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
 public:
     struct RBFRuntimeConfig {
         bool enabled = false;

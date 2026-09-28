@@ -207,7 +207,7 @@ din::Json rpc_context_mempool_getrawmempool(const ExecutionContext& ctx, const d
 din::Json rpc_context_mempool_gettransaction(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
 
-    if (params.empty() || !params[0].is<std::string>()) {
+    if (!params.isArray() || params.size() != 1 || !params[0].is<std::string>()) {
         result["error"] = "Usage: mempool.gettransaction <txid>";
         return result;
     }
@@ -225,28 +225,30 @@ din::Json rpc_context_mempool_gettransaction(const ExecutionContext& ctx, const 
 
     try {
         std::string txid_hex = params[0].as<std::string>();
-        uint256 txid = uint256::FromHexUnsafe(txid_hex);  // Phase M.0: RPC boundary conversion
-        auto& mempool = mempool_service->mempool();
-
-        if (!mempool.hasTransaction(txid)) {
+        uint256 txid;
+        if (txid_hex.size() != 64 ||
+            txid_hex.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos ||
+            !uint256::FromHex(txid_hex, txid)) {
+            result["error"] = "Invalid transaction ID";
+            return result;
+        }
+        auto use = dinero::MempoolService::AcquirePoolUse(mempool_service);
+        // One owned entry capture supplies both canonical bytes and metrics.
+        // Absence is distinct from an unavailable service. No historical cast.
+        const auto entry = use->Pool().getMempoolEntry(txid);
+        if (!entry) {
             result["error"] = "Transaction not in mempool";
             return result;
         }
-
-        auto tx_ptr = mempool.getTransaction(txid);
-        if (!tx_ptr) {
-            result["error"] = "Failed to get transaction";
-            return result;
-        }
-
-        auto serialized = tx_ptr->Serialize();
+        const auto& body = entry->tx;
+        auto serialized = body.Serialize();
         std::string hex_str = dinero::jj::toHex(serialized);
 
         result["txid"] = txid.GetHex();  // Phase M.0: RPC boundary conversion
         result["hex"] = hex_str;
-        result["size"] = static_cast<int>(serialized.size());
-        result["vsize"] = static_cast<int>(serialized.size());
-        result["weight"] = static_cast<int>(serialized.size() * 4);
+        result["size"] = static_cast<Json::UInt64>(serialized.size());
+        result["vsize"] = static_cast<Json::UInt64>(body.GetVirtualSize());
+        result["weight"] = static_cast<Json::UInt64>(body.GetWeight());
 
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to get transaction: ") + e.what();
