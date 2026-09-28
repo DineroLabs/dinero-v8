@@ -821,6 +821,7 @@ void BlockDownloadScheduler::TickLocked() {
                     gap_state.block_hash = header_hash;
                     gap_state.status = FetchStatus::MISSING;
                     gap_state.side_accepted = false;
+                    gap_state.stateless_proof_staged = false;
                     gap_state.stored_pos = FilePosition();
                     expected_blocks_.insert(header_hash);
                     // Point the request cursor at the re-seated frontier so
@@ -852,7 +853,7 @@ void BlockDownloadScheduler::TickLocked() {
                 retry_gap = true;
                 retry_reason = "request lost";
             } else if (gap_state.status == FetchStatus::RECEIVED &&
-                       !stateless_reorg_barrier &&
+                       (!stateless_reorg_barrier || !gap_state.stateless_proof_staged) &&
                        now - gap_state.received_time >= tip_retry_timeout_) {
                 // Receipt precedes ordered proof validation. Give the worker
                 // the existing frontier retry interval before treating lack of
@@ -862,7 +863,7 @@ void BlockDownloadScheduler::TickLocked() {
                 // Explicit ReRequestBlock() still retries rejected proofs
                 // immediately; a stalled receipt still expires here.
                 retry_gap = true;
-                retry_reason = "received proof deadline expired with active tip still behind";
+                retry_reason = "received proof deadline expired without completed ordered validation";
             } else if (gap_state.status == FetchStatus::CONNECTED) {
                 bool active_chain_matches = false;
                 if (get_block_hash_at_height_callback_ && want > 0) {
@@ -951,8 +952,10 @@ void BlockDownloadScheduler::TickLocked() {
             // the active tip cannot advance the tip on its own. So request the
             // frontier AND keep downloading its descendants (fall through to
             // the normal window-filling loop) instead of stopping here. A
-            // RECEIVED competing block stays RECEIVED (stored, awaiting
-            // ActivateBestChain's canonical reorg) rather than being retried.
+            // RECEIVED competing block with acknowledged durable proof staging
+            // stays RECEIVED awaiting ActivateBestChain's canonical reorg.
+            // An unacknowledged receipt still expires above: queue/cursor changes
+            // may discard its pending proof before the ordered worker sees it.
             // ActivateBestChain owns the forest rewind + replay; the scheduler
             // only assembles.
             if (stateless_reorg_barrier &&
@@ -1787,6 +1790,7 @@ void BlockDownloadScheduler::ScanForMissingBlocks() {
                 fs.status = FetchStatus::MISSING;
                 fs.stored_pos = FilePosition();
                 fs.side_accepted = false;
+                fs.stateless_proof_staged = false;
                 expected_blocks_.insert(header_hash);
             }
         }
@@ -1824,7 +1828,12 @@ BlockDownloadScheduler::FindStatelessFrontierLocked(uint32_t actual_tip) {
             continue;
         }
 
-        if (fetch_state.status == FetchStatus::CONNECTED) {
+        if (fetch_state.status == FetchStatus::CONNECTED ||
+            (fetch_state.status == FetchStatus::RECEIVED &&
+             fetch_state.stateless_proof_staged)) {
+            // Staged competing ancestors still await ABC, but must not hide a
+            // later receipt whose ordered proof work was lost. This skips only
+            // retry selection; it never changes canonical connection status.
             continue;
         }
 
@@ -1880,6 +1889,7 @@ bool BlockDownloadScheduler::ReRequestBlock(const uint256& block_hash) {
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
             fetch_state.status = FetchStatus::MISSING;
+            fetch_state.stateless_proof_staged = false;
             // The caller no longer has a usable body/proof receipt. Retaining
             // the old receipt would let the stale-request sweep cancel this
             // explicit retry as "already present" without delivering a reply.
@@ -1899,12 +1909,26 @@ bool BlockDownloadScheduler::MarkBlockInvalid(const uint256& block_hash) {
     for (auto& fetch_state : missing_blocks_) {
         if (fetch_state.block_hash == block_hash) {
             fetch_state.status = FetchStatus::INVALID;
+            fetch_state.stateless_proof_staged = false;
             fetch_state.stored_pos = FilePosition();
             in_flight_blocks_.erase(block_hash);
             received_blocks_.erase(block_hash);
             g_logger.error("[BlockDownloadScheduler] Marked block INVALID: " +
                            block_hash.GetHex() +
                            " (height " + std::to_string(fetch_state.height) + ")");
+            return true;
+        }
+    }
+    return false;
+}
+
+bool BlockDownloadScheduler::AcknowledgeStatelessProofStaged(const uint256& block_hash) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!stateless_mode_) return false;
+    for (auto& state : missing_blocks_) {
+        if (state.block_hash == block_hash) {
+            if (state.status != FetchStatus::RECEIVED) return false;
+            state.stateless_proof_staged = true;
             return true;
         }
     }

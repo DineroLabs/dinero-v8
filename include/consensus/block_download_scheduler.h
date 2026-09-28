@@ -83,6 +83,9 @@ struct BlockFetchState {
     // full acceptance pass under the block-ingress lock); it is promoted to
     // CONNECTED once the active chain carries this hash at this height.
     bool side_accepted = false;
+    // Ordered CSN proof validation and replay/delta persistence completed for
+    // this exact hash. Receipt alone is not this acknowledgment or activation.
+    bool stateless_proof_staged = false;
 
     BlockFetchState(const uint256& hash, uint32_t h)
         : block_hash(hash), height(h), status(FetchStatus::MISSING) {}
@@ -329,6 +332,12 @@ public:
      * @return true if the block was found and marked invalid
      */
     bool MarkBlockInvalid(const uint256& block_hash);
+
+    // Called by the ordered CSN worker only after successful proof validation
+    // and durable replay/delta staging. Acknowledges a current RECEIVED hash;
+    // never changes canonical membership or turns missing/invalid data valid.
+    bool AcknowledgeStatelessProofStaged(const uint256& block_hash);
+
 
     /**
      * Mark a queued block as consumed by the ordered validation path.

@@ -4541,6 +4541,16 @@ bool DaemonApp::Init(int argc, char** argv) {
                                 }
                                 chainstate_service->PersistStoredBodyPosition(
                                     pending.proof_msg.block_hash, pending.stored_pos);
+                                // A raw receipt is not completed ordered proof work.
+                                // Only the successful proof + durable sidecars above
+                                // may suppress competing-frontier receipt retries.
+                                // A concurrent explicit retry can make this a no-op;
+                                // that retry will deliver another owned receipt.
+                                if (block_download_for_csn &&
+                                    chainstate_service->hasBlockByHash(pending.proof_msg.block_hash)) {
+                                    block_download_for_csn->AcknowledgeStatelessProofStaged(
+                                        pending.proof_msg.block_hash);
+                                }
 
                                 lk.lock();
                                 if (!reorg_state->active ||

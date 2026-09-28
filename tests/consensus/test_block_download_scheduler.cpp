@@ -3381,5 +3381,93 @@ int main() {
     if (!ok) return 1;
 }
 
+    // CSN_PROOF_RECEIPT_BEGIN
+    // Benign completed-receipt lifecycle. Body storage must not certify that
+    // ordered proof work survived a cursor/branch change; staging is explicit.
+    {
+        dcs::HeaderChainSelector selector;
+        std::vector<uint256> main_hashes, fork_hashes;
+        BuildLinearHeaders(selector, 3, &main_hashes, 31'000'000);
+        AppendForkHeaders(selector, main_hashes[2], 3, &fork_hashes, 32'000'000);
+        dcs::BlockDownloadScheduler scheduler(&selector, nullptr);
+        scheduler.SetStatelessMode(true);
+        scheduler.SetLocalTipHeight(3);
+        scheduler.SetGetTipHeightCallback([] { return uint32_t{3}; });
+        scheduler.SetGetBlockHashAtHeightCallback([&](uint32_t height, uint256& hash) {
+            if (height >= main_hashes.size()) return false;
+            hash = main_hashes[height];
+            return true;
+        });
+        scheduler.SetTipRetryTimeout(std::chrono::hours(1));
+        scheduler.SetStaleRequestTimeoutSeconds(3600);
+        std::vector<uint256> requests;
+        scheduler.SetSendGetDataCallback([&](const uint256& hash, uint32_t) {
+            requests.push_back(hash);
+        });
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(requests.size() == 3, "receipt fixture assembles all fork bodies")) return 1;
+        if (!Require(!scheduler.AcknowledgeStatelessProofStaged(fork_hashes[0]),
+                     "a request without receipt cannot be acknowledged")) return 1;
+        if (!Require(!scheduler.AcknowledgeStatelessProofStaged(main_hashes[3]),
+                     "another branch hash cannot be acknowledged")) return 1;
+        const Block body = MakeBlockForHash(selector, fork_hashes[0]);
+        if (!Require(scheduler.OnBlockReceived(body), "competing receipt stored")) return 1;
+        // Assemble all replies before advancing the receipt timer. Otherwise
+        // zero also expires an unrelated REQUESTED descendant at active_tip+1.
+        for (size_t i = 1; i < fork_hashes.size(); ++i) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[i])),
+                         "initial descendant receipt stored")) return 1;
+        }
+        requests.clear();
+        scheduler.Tick();
+        if (!Require(requests.empty(), "unexpired receipt must not cause immediate retries")) return 1;
+        scheduler.SetTipRetryTimeout(std::chrono::milliseconds(0));
+        scheduler.Tick();
+        if (!Require(requests.size() == 1 && requests[0] == fork_hashes[0],
+                     "expired unacknowledged competing receipt retries exact frontier")) return 1;
+        if (!Require(!scheduler.HasReceivedBlock(fork_hashes[0]) &&
+                     scheduler.IsBlockInFlight(fork_hashes[0]),
+                     "expired receipt leaves no stale receive authority")) return 1;
+        if (!Require(scheduler.OnBlockReceived(body), "retried receipt stored")) return 1;
+        if (!Require(scheduler.AcknowledgeStatelessProofStaged(fork_hashes[0]),
+                     "ordered worker can acknowledge current receipt")) return 1;
+        if (!Require(!scheduler.IsBlockConnected(fork_hashes[0]),
+                     "proof staging never claims canonical connection")) return 1;
+        for (size_t i = 1; i < fork_hashes.size(); ++i) {
+            if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[i])),
+                         "descendant receipt stored")) return 1;
+            if (!Require(scheduler.AcknowledgeStatelessProofStaged(fork_hashes[i]),
+                         "descendant proof staged")) return 1;
+        }
+        requests.clear();
+        scheduler.Tick();
+        scheduler.OnHeadersProcessed();
+        scheduler.Tick();
+        if (!Require(requests.empty(), "staged exact hashes survive rescan without retry")) return 1;
+        if (!Require(scheduler.ReRequestBlock(fork_hashes[1]), "descendant retry can be requested")) return 1;
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[1])),
+                     "descendant gets a fresh unacknowledged receipt")) return 1;
+        scheduler.Tick();
+        if (!Require(requests.size() == 1 && requests[0] == fork_hashes[1],
+                     "staged ancestor must not hide lost descendant proof work")) return 1;
+        if (!Require(scheduler.OnBlockReceived(MakeBlockForHash(selector, fork_hashes[1])) &&
+                     scheduler.AcknowledgeStatelessProofStaged(fork_hashes[1]),
+                     "retried descendant can stage normally")) return 1;
+        if (!Require(scheduler.ReRequestBlock(fork_hashes[0]),
+                     "explicit invalidation of receipt remains available")) return 1;
+        scheduler.Tick();
+        if (!Require(scheduler.OnBlockReceived(body), "explicit retry receipt stored")) return 1;
+        requests.clear();
+        scheduler.Tick();
+        if (!Require(requests.size() == 1 && requests[0] == fork_hashes[0],
+                     "explicit retry requires new ordered proof acknowledgment")) return 1;
+        if (!Require(scheduler.MarkBlockInvalid(fork_hashes[0]), "invalid fixture hash recorded")) return 1;
+        if (!Require(!scheduler.AcknowledgeStatelessProofStaged(fork_hashes[0]),
+                     "acknowledgment cannot revive an invalid block")) return 1;
+        std::cout << "[PASS] StatelessProofReceiptAcknowledgment: bounded retry, staged wait, exact hash and rescan\n";
+    }
+    // CSN_PROOF_RECEIPT_END
+
     return 0;
 }

@@ -862,6 +862,24 @@ jobs:
           assert 'C (NO ADMISSION): both refused transaction identities are absent' in log
           PYTEST
 
+      - name: CSN ordered proof receipt acknowledgment
+        run: |
+          cmake --build build-orchard-root --target test_block_download_scheduler test_block_download_scheduler_restart_bootstrap test_csn_stale_proof_retry --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(BlockDownloadScheduler|BlockDownloadSchedulerRestartBootstrap|CsnStaleProofRetry|CsnStoredProofRetry|RestartChurnBoringnessGate)$' --show-only=json-v1 > orchard-csn-proof-receipt-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-csn-proof-receipt-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['BlockDownloadScheduler','BlockDownloadSchedulerRestartBootstrap','CsnStaleProofRetry','CsnStoredProofRetry','RestartChurnBoringnessGate']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(BlockDownloadScheduler|BlockDownloadSchedulerRestartBootstrap|CsnStaleProofRetry|CsnStoredProofRetry|RestartChurnBoringnessGate)$' --verbose --no-tests=error --output-log orchard-csn-proof-receipt-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-csn-proof-receipt-execution.log').read_text()
+          assert log.count('[PASS] StatelessProofReceiptAcknowledgment:')==1
+          assert '100% tests passed, 0 tests failed out of 5' in log
+          PYTEST
+
       - name: Owned typed pending address capture
         run: |
           cmake --build build-orchard-root --target test_mempool_address_capture --parallel 4 -- -k 0
@@ -1920,6 +1938,8 @@ jobs:
             orchard-raw-rpc-execution.log
             orchard-ranked-rpc-inventory.json
             orchard-ranked-rpc-execution.log
+            orchard-csn-proof-receipt-inventory.json
+            orchard-csn-proof-receipt-execution.log
             orchard-address-capture-inventory.json
             orchard-address-capture-execution.log
             orchard-typed-package-inventory.json
