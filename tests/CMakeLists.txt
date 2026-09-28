@@ -425,7 +425,7 @@ target_include_directories(test_chainstate_commit_batch_interval BEFORE PRIVATE
 target_link_libraries(test_chainstate_commit_batch_interval PRIVATE
   GTest::gtest_main
   Threads::Threads
-  ${ROCKSDB_LIBRARY}
+  RocksDB::rocksdb
 )
 add_test(NAME ChainstateCommitBatchInterval COMMAND test_chainstate_commit_batch_interval)
 set_tests_properties(ChainstateCommitBatchInterval PROPERTIES
