@@ -7318,12 +7318,22 @@ bool DaemonApp::Start() {
             auto utreexo_forest = chainstate->utreexoForest();
             auto utxo_index = chainstate->utxoIndex();
 
-            if (utreexo_forest && utxo_index) {
-                ctx_.block_assembler->SetConsensusUTXOSet(chainstate->GetConsensusUTXOSet());  // snapshot forest under shared lock (UAF guard)
-                // v2.2.0: Create adapter to bridge wallet UTXOIndex to consensus IUTXOProvider
-                // BlockAssembler takes shared_ptr<IUTXOProvider> - lifetime managed automatically
-                auto assembler_utxo_adapter = std::make_shared<consensus::WalletUTXOAdapter>(utxo_index);
-                ctx_.block_assembler->SetUTXOProvider(assembler_utxo_adapter);
+            auto* consensus_utxo_set = chainstate->GetConsensusUTXOSet();
+            if (utreexo_forest && consensus_utxo_set &&
+                (!GetConfig().utreexo_stateless || utxo_index)) {
+                ctx_.block_assembler->SetConsensusUTXOSet(consensus_utxo_set);
+                if (!GetConfig().utreexo_stateless) {
+                    // Covered operations retain the selected-chain guard. Mining
+                    // full-node inputs must not depend on local wallet ownership.
+                    std::shared_ptr<consensus::IUTXOProvider> provider(
+                        static_cast<consensus::IUTXOProvider*>(consensus_utxo_set),
+                        [](consensus::IUTXOProvider*) {});
+                    ctx_.block_assembler->SetUTXOProvider(std::move(provider));
+                } else {
+                    // Keep existing stateless behavior pending pre-base/oracle qualification.
+                    ctx_.block_assembler->SetUTXOProvider(
+                        std::make_shared<consensus::WalletUTXOAdapter>(utxo_index));
+                }
 
                 // Wire BlockValidator for Utreexo root computation (single source of truth)
                 // This ensures BlockAssembler uses the same ComputeUtreexoRootPure as validation

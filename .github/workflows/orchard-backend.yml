@@ -410,6 +410,23 @@ jobs:
           for marker in ['PASS actual RPC returns accepted body and exact transaction fees','PASS exclusion and actual mining.getjob preserve the admitted pool','PASS returned RPC template accepted and later response has no stale fees']:
               assert marker in log
           PYINNER
+      - name: Full-node mining of foreign-wallet inputs
+        run: |
+          ctest --test-dir build-orchard-root -R '^MiningChainProvider$' --show-only=json-v1 > orchard-mining-chain-provider-inventory.json
+          python3 - <<'PYINNER'
+          import json
+          tests=json.load(open('orchard-mining-chain-provider-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningChainProvider']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYINNER
+          ctest --test-dir build-orchard-root -R '^MiningChainProvider$' --verbose --no-tests=error --output-log orchard-mining-chain-provider-execution.log
+          python3 - <<'PYINNER'
+          import re
+          log=open('orchard-mining-chain-provider-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningChainProvider']
+          for marker in ['PASS independent full node holds source chain without source wallet coins','PASS foreign-wallet job accepted and reopened round 1','PASS foreign-wallet job accepted and reopened round 2']:
+              assert marker in log
+          PYINNER
       - name: Retained mining-template mempool owner
         run: |
           cmake --build build-orchard-root --target test_mining_pool_owner test_utreexo_safety_gate test_block_template_determinism --parallel 4 -- -k 0
@@ -1603,6 +1620,8 @@ jobs:
             orchard-mining-chain-guard-execution.log
             orchard-mining-template-result-inventory.json
             orchard-mining-template-result-execution.log
+            orchard-mining-chain-provider-inventory.json
+            orchard-mining-chain-provider-execution.log
             orchard-mining-rpc-result-inventory.json
             orchard-mining-rpc-result-execution.log
             orchard-mining-job-policy-inventory.json

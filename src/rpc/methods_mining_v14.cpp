@@ -27,6 +27,7 @@
 #include "consensus/state_commitment.h"
 #include "rpc/longpoll_notifier.h"  // Server-side long-poll for getblocktemplate
 #include "daemon/daemon_context.h"
+#include "daemon/config.h"
 #include "daemon/services/chainstate_service.h"
 #include "daemon/services/config_service.h"
 #include "daemon/services/mempool_service.h"
@@ -881,11 +882,24 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
 
     auto* utreexo_forest = chainstate->utreexoForest();
     auto* utxo_index = chainstate->utxoIndex();
-    std::shared_ptr<dinero::consensus::WalletUTXOAdapter> utxo_adapter;
-    if (utreexo_forest && utxo_index) {
-        utxo_adapter = std::make_shared<dinero::consensus::WalletUTXOAdapter>(utxo_index);
-        assembler.SetConsensusUTXOSet(chainstate->GetConsensusUTXOSet());  // snapshot forest under shared lock (UAF guard)
-        assembler.SetUTXOProvider(utxo_adapter);
+    auto* consensus_utxo_set = chainstate->GetConsensusUTXOSet();
+    if (utreexo_forest && consensus_utxo_set) {
+        if (!::GetConfig().utreexo_stateless) {
+            // Full-node templates consume selected chain coins, including inputs
+            // unrelated to the local wallet. The outer activation guard retains
+            // the selected view through construction; chainstate owns the set.
+            std::shared_ptr<dinero::consensus::IUTXOProvider> provider(
+                static_cast<dinero::consensus::IUTXOProvider*>(consensus_utxo_set),
+                [](dinero::consensus::IUTXOProvider*) {});
+            assembler.SetConsensusUTXOSet(consensus_utxo_set);
+            assembler.SetUTXOProvider(std::move(provider));
+        } else if (utxo_index) {
+            // Preserve the existing stateless path. Frozen/pre-base resolution
+            // and the Utreexo oracle require separate qualification.
+            assembler.SetConsensusUTXOSet(consensus_utxo_set);
+            assembler.SetUTXOProvider(
+                std::make_shared<dinero::consensus::WalletUTXOAdapter>(utxo_index));
+        }
     }
 
     // Wire BlockValidator for Utreexo root computation (single source of truth)

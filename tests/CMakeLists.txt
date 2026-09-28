@@ -6605,6 +6605,12 @@ set_tests_properties(MiningRpcResult PROPERTIES
   LABELS "mining;rpc;integration"
   RUN_SERIAL TRUE TIMEOUT 180)
 
+add_test(NAME MiningChainProvider COMMAND python3 ${CMAKE_SOURCE_DIR}/tests/integration/test_mining_chain_provider.py)
+set_tests_properties(MiningChainProvider PROPERTIES
+  ENVIRONMENT "DINEROD=$<TARGET_FILE:dinerod>"
+  LABELS "mining;rpc;integration"
+  RUN_SERIAL TRUE TIMEOUT 180)
+
 add_executable(benchmark_covenant_validation
   tests/benchmarks/benchmark_covenant_validation.cpp
 )
