@@ -303,6 +303,24 @@ jobs:
           if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(names):
               raise SystemExit('Real mempool test consumer executions incomplete')
           PYTEST
+      - name: Retained compact-block mempool owner
+        run: |
+          cmake --build build-orchard-root --target test_block_relay_pool_owner test_block_relay_g2 test_compact_block_binary --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(BlockRelayPoolOwner|BlockRelayG2Verification|CompactBlockBinarySerialization)$' --show-only=json-v1 > orchard-block-relay-pool-owner-inventory.json
+          python3 - <<'PYOWNER'
+          import json
+          tests=json.load(open('orchard-block-relay-pool-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['BlockRelayG2Verification','BlockRelayPoolOwner','CompactBlockBinarySerialization']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYOWNER
+          ctest --test-dir build-orchard-root -R '^(BlockRelayPoolOwner|BlockRelayG2Verification|CompactBlockBinarySerialization)$' --verbose --no-tests=error --output-log orchard-block-relay-pool-owner-execution.log
+          python3 - <<'PYOWNER'
+          import re
+          log=open('orchard-block-relay-pool-owner-execution.log').read()
+          assert sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))==['BlockRelayG2Verification','BlockRelayPoolOwner','CompactBlockBinarySerialization']
+          cases=['ReconstructionRetainsServiceThroughValidationAndStop','FactoryReplacementRetainsCapturedOwner','UnavailableOwnerHasNoRelayEffectsAndRetryWorks']
+          assert sorted(re.findall(r'\[       OK \] BlockRelayPoolOwner\.(\w+)',log))==sorted(cases)
+          PYOWNER
       - name: Require and execute daemon mempool lifecycle jobs
         run: |
           ctest --test-dir build-orchard-root -R '^(DaemonServiceRelease|ContextualLocksLifecycle|CsnSpendReorgReconciliation|ParallelBlockDownloadTargeted)$' --show-only=json-v1 > orchard-daemon-mempool-jobs-inventory.json
@@ -1456,6 +1474,8 @@ jobs:
             orchard-refresh-owner-execution.log
             orchard-relay-refresh-owner-inventory.json
             orchard-relay-refresh-owner-execution.log
+            orchard-block-relay-pool-owner-inventory.json
+            orchard-block-relay-pool-owner-execution.log
             orchard-real-mempool-all-inventory.json
             orchard-real-mempool-inventory.json
             orchard-real-mempool-regex.txt

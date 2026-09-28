@@ -2746,7 +2746,10 @@ bool DaemonApp::Init(int argc, char** argv) {
             // Phase G.13: Wire BlockRelayManager to the canonical daemon mempool for
             // compact-block reconstruction against live transaction state.
             if (ctx_.block_relay && mempool_service) {
-                ctx_.block_relay->SetMempool(&mempool_service->mempool());
+                std::weak_ptr<MempoolService> weak_pool = mempool_service;
+                ctx_.block_relay->SetMempoolAccessFactory([weak_pool]() -> std::unique_ptr<MempoolAccess> {
+                    return MempoolService::AcquirePoolUse(weak_pool.lock());
+                });
                 ctx_.block_relay->SetChainDB(chainstate_service->GetChainDB());
                 std::cout << "[DaemonApp] ✅ BlockRelayManager wired to MempoolService (compact reconstruction)" << std::endl;
             }

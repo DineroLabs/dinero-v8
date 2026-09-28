@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/iservice.h"
+#include "daemon/interfaces/mempool_access.h"
 #include "daemon/mempool.h"
 #include "daemon/interfaces/tx_ingress.h"  // Step 5: ITxIngress, IBlockTemplateSource
 #include "daemon/interfaces/origin.h"      // Step 5: TxOrigin
@@ -52,12 +53,12 @@ public:
     // Acquire while selected-chain ownership is held, before pool/cache locks.
     // Stop must run outside selected-chain ownership and refuses same-thread
     // shutdown from an active operation. Init/Start remain serialized startup.
-    class PoolUse final {
+    class PoolUse final : public MempoolAccess {
     public:
-        ~PoolUse() noexcept;
+        ~PoolUse() noexcept override;
         PoolUse(const PoolUse&)=delete;
         PoolUse& operator=(const PoolUse&)=delete;
-        Mempool& Pool() const;
+        Mempool& Pool() const override;
     private:
         friend class MempoolService;
         PoolUse(const MempoolService&,std::shared_ptr<MempoolService>);
