@@ -2006,6 +2006,13 @@ bool Mempool::isTemplateExcludedLocked(const uint256& txid,
 std::vector<Transaction> Mempool::selectTransactionsForBlock(
     size_t max_block_size, uint64_t max_block_weight,
     uint32_t next_block_height) const {
+    auto capture = CaptureBlockSelection(max_block_size, max_block_weight, next_block_height);
+    return std::move(capture.transactions);
+}
+
+MempoolBlockSelection Mempool::CaptureBlockSelection(
+    size_t max_block_size, uint64_t max_block_weight,
+    uint32_t next_block_height) const {
 
     auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
     if (chainstate_read_guard_factory_ && !chainstate_guard) return {};
@@ -2369,7 +2376,19 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
                  std::to_string(excluded_descendants) + ", height_rule_excluded=" +
                  std::to_string(height_rule_excluded) + ")");
 
-    return selected;
+    MempoolBlockSelection capture;
+    capture.available = true;
+    capture.pool_size = m_transactions.size();
+    capture.pool_bytes = getTotalSizeLocked();
+    capture.metadata.reserve(selected.size());
+    for (const auto& tx : selected) {
+        const auto id = tx.GetTxid().AsUint256();
+        const auto& entry = m_transactions.at(id);
+        const auto vwu = entry.vwu != 0 ? entry.vwu : computeVWUForTx(tx);
+        capture.metadata.emplace(id, MempoolTemplateMetadata{entry.fee, vwu, entry.time});
+    }
+    capture.transactions = std::move(selected);
+    return capture;
 }
 
 bool Mempool::isSelectableAtHeightLocked(const MempoolEntry& entry,

@@ -157,6 +157,21 @@ struct MempoolEntry {
  * - Network relay coordination
  */
 // Phase M.0: daemon::Mempool (high-level mempool, separate from TxMempool)
+// Values copied together with selected transactions while the pool read lock
+// and selected-chain read guard are held. No reference into the live pool escapes.
+struct MempoolTemplateMetadata {
+    uint64_t fee = 0;
+    uint64_t vwu = 0;
+    std::chrono::steady_clock::time_point entered;
+};
+struct MempoolBlockSelection {
+    bool available = false;
+    std::vector<Transaction> transactions;
+    std::unordered_map<uint256, MempoolTemplateMetadata> metadata;
+    size_t pool_size = 0;
+    size_t pool_bytes = 0;
+};
+
 class Mempool {
 public:
     struct RBFRuntimeConfig {
@@ -265,6 +280,10 @@ public:
         uint64_t max_block_weight = 4000000, // 4M weight units
         uint32_t next_block_height = 0
     ) const;
+
+    MempoolBlockSelection CaptureBlockSelection(
+        size_t max_block_size, uint64_t max_block_weight,
+        uint32_t next_block_height) const;
 
     /**
      * Temporarily exclude a mempool transaction from block template assembly.

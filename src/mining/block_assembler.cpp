@@ -967,31 +967,15 @@ std::vector<Transaction> BlockAssembler::SelectTransactions(
         return selected;
     }
     
-    // Week 7: Use mempool's built-in selection method (implements fee-rate sorting, weight limits, dependency checking).
-    // Pass the actual candidate height so height-gated consensus checks use
-    // the rule set this template will be validated under.
-    selected = pool->selectTransactionsForBlock(
-        max_block_weight_ / 4,  // max_block_size (approximate: weight / 4)
-        max_weight,              // max_block_weight
-        target_height            // target block height
-    );
-
-    // Calculate total fees from selected transactions (exact, per-tx summation)
-    // This is not an estimate - it's the actual fees this block commits to.
-    // Required for: CPFP correctness, RBF accounting, CT fee validation, audit trails.
-    total_fees = 0;
-    for (const auto& tx : selected) {
-        TxId txid = tx.GetTxid();
-        auto entry = pool->getMempoolEntry(txid.AsUint256());
-        if (entry) {
-            total_fees += entry->fee;
-        } else {
-            // Transaction was in selection but not in mempool (race condition)
-            // Log but don't fail - this can happen during reorgs
-            dinero::g_logger.warning("SelectTransactions: tx " + txid.AsUint256().GetHex().substr(0, 16) +
-                                    "... not found in mempool during fee calculation");
-        }
+    auto capture = pool->CaptureBlockSelection(max_weight / 4, max_weight, target_height);
+    if (!capture.available) throw std::runtime_error("Mining selection chain owner unavailable");
+    for (const auto& tx : capture.transactions) {
+        const auto fee = capture.metadata.at(tx.GetTxid().AsUint256()).fee;
+        auto next = dinero::CheckedAddUna(total_fees, fee);
+        if (!next) throw std::runtime_error("Mining selection fee overflow");
+        total_fees = *next;
     }
+    selected = std::move(capture.transactions);
 
     dinero::g_logger.debug("Selected " + std::to_string(selected.size()) +
                           " transactions with exact total fees: " + std::to_string(total_fees));
@@ -1394,10 +1378,15 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
         chain_db_);
     uint64_t block_subsidy = dinero::ConsensusSubsidy::GetBlockSubsidy(height, dinero::Params().sixty_second_activation_height).GetUna();
 
+    const uint64_t selection_weight = static_cast<uint64_t>(max_block_weight_) *
+        ((use_intelligent_selection_ && block_relay_manager_) ? 2U : 1U);
+    const auto capture = pool->CaptureBlockSelection(selection_weight / 4, selection_weight, height);
+    if (!capture.available) throw std::runtime_error("Mining selection chain owner unavailable");
+
     uint64_t total_fees = 0;
     std::vector<std::string> included_txids;
     std::vector<Transaction> selected_txs = selectTransactionsForBlock(
-        pool,
+        capture,
         max_block_weight_,
         height,
         total_fees,
@@ -1414,7 +1403,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
             included_txids.clear();
             for (const auto& tx : filtered) {
                 const auto txid = tx.GetTxid().AsUint256();
-                total_fees += pool->getTransactionFee(txid).value_or(0);
+                total_fees += capture.metadata.at(txid).fee;
                 included_txids.push_back(txid.GetHex());
             }
             selected_txs = std::move(filtered);
@@ -1713,8 +1702,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
     };
 
     auto fee_for_tx = [&](const Transaction& tx) -> uint64_t {
-        auto fee_opt = pool->getTransactionFee(tx.GetTxid().AsUint256());
-        return fee_opt.has_value() ? fee_opt.value() : 0;
+        return capture.metadata.at(tx.GetTxid().AsUint256()).fee;
     };
 
     if (utxo_provider_ && !selected_txs.empty()) {
@@ -1962,8 +1950,8 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
     block_template_stats_.total_fees = total_fees;
     block_template_stats_.block_weight = calculateBlockWeight(block->vtx);
     block_template_stats_.block_size = calculateBlockSize(block->vtx);
-    block_template_stats_.mempool_size = pool->size();
-    block_template_stats_.rejected_txs = pool->size() - selected_txs.size();
+    block_template_stats_.mempool_size = capture.pool_size;
+    block_template_stats_.rejected_txs = capture.pool_size - selected_txs.size();
     block_template_stats_.height = height;
     block_template_stats_.prev_block = prev_hash.GetHex();
     block_template_stats_.witness_nonce_offset = 0;
@@ -1983,7 +1971,7 @@ std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
 }
 
 std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
-    Mempool* pool,
+    const MempoolBlockSelection& capture,
     uint32_t max_weight,
     uint32_t target_height,
     uint64_t& total_fees_out,
@@ -1991,7 +1979,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
 ) {
     // Phase W.1.3: Use intelligent selection if enabled
     if (use_intelligent_selection_ && block_relay_manager_) {
-        return selectTransactionsIntelligent(pool, max_weight, target_height, total_fees_out, included_txids_out);
+        return selectTransactionsIntelligent(capture, max_weight, target_height, total_fees_out, included_txids_out);
     }
 
     // Default: Use standard CPFP-aware selection
@@ -1999,19 +1987,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
     total_fees_out = 0;
     included_txids_out.clear();
 
-    if (!pool) {
-        return selected;
-    }
-
-    // Phase 34: Use mempool's selectTransactionsForBlock() (CPFP-aware)
-    // The daemon::Mempool already implements:
-    // - Ancestor fee rate calculation (CPFP)
-    // - Deterministic sorting (by ancestor feerate)
-    // - Package selection (ensures ancestors included before children)
-    // - Weight/size limit enforcement
-    size_t max_size = max_weight / 4;  // Approximate: weight / 4 = size
-    auto candidates = pool->selectTransactionsForBlock(max_size, max_weight,
-                                                           target_height);
+    const auto& candidates = capture.transactions;
 
     // Apply CT selection policy if enabled
     size_t ct_count = 0;
@@ -2095,7 +2071,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
         // deliberately NOT a break: a later smaller tx might still fit
         // under the cap after a larger one was skipped.
         if (max_block_vwu_ > 0) {
-            const uint64_t tx_vwu = pool->computeVWUForTx(tx);
+            const uint64_t tx_vwu = capture.metadata.at(tx.GetTxid().AsUint256()).vwu;
             if (template_vwu + tx_vwu > max_block_vwu_) {
                 ++vwu_excluded;
                 continue;
@@ -2135,11 +2111,10 @@ std::vector<Transaction> BlockAssembler::selectTransactionsForBlock(
         std::string txid_hex = txid.AsUint256().GetHex();
         included_txids_out.push_back(txid_hex);
 
-        // Get fee from mempool (Phase M.4: Convert TxId to uint256 for mempool API)
-        auto fee_opt = pool->getTransactionFee(txid.AsUint256());
-        if (fee_opt.has_value()) {
-            total_fees_out += fee_opt.value();
-        }
+        const auto fee = capture.metadata.at(txid.AsUint256()).fee;
+        auto next = dinero::CheckedAddUna(total_fees_out, fee);
+        if (!next) throw std::runtime_error("Mining selection fee overflow");
+        total_fees_out = *next;
     }
 
     // Apply batch optimization if CT policy is set
@@ -2322,7 +2297,7 @@ std::vector<std::string> BlockAssembler::getUnconfirmedAncestors(Mempool* pool, 
 // ============================================================================
 
 std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
-    Mempool* pool,
+    const MempoolBlockSelection& capture,
     uint32_t max_weight,
     uint32_t target_height,
     uint64_t& total_fees_out,
@@ -2332,8 +2307,8 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
     total_fees_out = 0;
     included_txids_out.clear();
 
-    if (!pool || !block_relay_manager_) {
-        dinero::g_logger.warning("selectTransactionsIntelligent: Missing mempool or block_relay_manager");
+    if (!block_relay_manager_) {
+        dinero::g_logger.warning("selectTransactionsIntelligent: Missing block_relay_manager");
         return selected;
     }
 
@@ -2344,7 +2319,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
 
     // Step 2: Create BlockAssemblyContext from current network state (Phase W.1.4: use actual last_template_time)
     auto context = BlockAssemblyContext::CreateFromNetworkState(
-        pool,
+        nullptr,
         block_relay_manager_,
         last_template_time_ms_
     );
@@ -2355,10 +2330,9 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
                          ", compact_success=" + std::to_string(context.compact_success_rate) +
                          ", template_age=" + std::to_string((current_time_ms - last_template_time_ms_) / 1000) + "s");
 
-    // Step 3: Get all transactions from mempool (CPFP-aware sorted)
-    size_t max_size = max_weight / 4;  // Approximate: weight / 4 = size
-    auto all_txs = pool->selectTransactionsForBlock(max_size * 2, max_weight * 2,
-                                                        target_height);  // Get more candidates
+    context.mempool_pressure = static_cast<double>(capture.pool_bytes) / 1000000;
+    context.mempool_delta_count = capture.pool_size;
+    const auto& all_txs = capture.transactions;
 
     if (all_txs.empty()) {
         dinero::g_logger.debug("selectTransactionsIntelligent: No transactions in mempool");
@@ -2373,11 +2347,8 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
         TxId txid_semantic = tx.GetTxid();  // Phase M.4: GetTxid() returns TxId
         uint256 txid = txid_semantic.AsUint256();  // Convert for mempool/scorer API
 
-        // Get fee and entry time from mempool
-        auto fee_opt = pool->getTransactionFee(txid);
-        if (!fee_opt.has_value()) continue;
-
-        uint64_t fee = fee_opt.value();
+        const auto& metadata = capture.metadata.at(txid);
+        const uint64_t fee = metadata.fee;
         size_t tx_size = tx.GetSize();
         if (tx_size == 0) continue;
 
@@ -2386,7 +2357,7 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
         // CPFP-aware mempool selector (which also uses VWU after Commit
         // 2) so a P2MR spend isn't preferentially picked just because
         // its ML-DSA witness bytes got the BIP141 4× discount.
-        const uint64_t vwu = pool->computeVWUForTx(tx);
+        const uint64_t vwu = metadata.vwu;
         const uint64_t denom = vwu > 0 ? vwu : static_cast<uint64_t>(tx_size);
         uint64_t fee_rate = fee / denom;  // una / VWU
 
@@ -2428,11 +2399,10 @@ std::vector<Transaction> BlockAssembler::selectTransactionsIntelligent(
         selected_set.insert(scored.txid);
         current_weight += tx_weight;
 
-        // Track fees and txids
-        auto fee_opt = pool->getTransactionFee(scored.txid);
-        if (fee_opt.has_value()) {
-            total_fees_out += fee_opt.value();
-        }
+        const auto fee = capture.metadata.at(scored.txid).fee;
+        auto next = dinero::CheckedAddUna(total_fees_out, fee);
+        if (!next) throw std::runtime_error("Mining selection fee overflow");
+        total_fees_out = *next;
         included_txids_out.push_back(scored.txid.GetHex());
     }
 

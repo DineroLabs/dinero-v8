@@ -303,6 +303,24 @@ jobs:
           if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(names):
               raise SystemExit('Real mempool test consumer executions incomplete')
           PYTEST
+      - name: Consistent mining selection and fee snapshot
+        run: |
+          cmake --build build-orchard-root --target test_mining_selection_snapshot --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MiningSelectionSnapshot$' --show-only=json-v1 > orchard-mining-selection-snapshot-inventory.json
+          python3 - <<'PYSNAPSHOT'
+          import json
+          tests=json.load(open('orchard-mining-selection-snapshot-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MiningSelectionSnapshot']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYSNAPSHOT
+          ctest --test-dir build-orchard-root -R '^MiningSelectionSnapshot$' --verbose --no-tests=error --output-log orchard-mining-selection-snapshot-execution.log
+          python3 - <<'PYSNAPSHOT'
+          import re
+          log=open('orchard-mining-selection-snapshot-execution.log').read()
+          assert re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log)==['MiningSelectionSnapshot']
+          cases=['CapturedMetadataSurvivesPoolClear','JobAndRpcTemplateKeepCapturedFees','UnavailableChainCaptureRefusesMining']
+          assert sorted(re.findall(r'\[       OK \] MiningSelectionSnapshot\.(\w+)',log))==sorted(cases)
+          PYSNAPSHOT
       - name: Retained mining-template mempool owner
         run: |
           cmake --build build-orchard-root --target test_mining_pool_owner test_utreexo_safety_gate test_block_template_determinism --parallel 4 -- -k 0
@@ -1492,6 +1510,8 @@ jobs:
             orchard-refresh-owner-execution.log
             orchard-relay-refresh-owner-inventory.json
             orchard-relay-refresh-owner-execution.log
+            orchard-mining-selection-snapshot-inventory.json
+            orchard-mining-selection-snapshot-execution.log
             orchard-mining-pool-owner-inventory.json
             orchard-mining-pool-owner-execution.log
             orchard-block-relay-pool-owner-inventory.json

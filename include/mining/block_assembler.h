@@ -26,6 +26,7 @@ namespace dinero {
     class ChainDB;  // ChainDB for context injection
     // Phase 39: ChainManager forward declaration removed (ChainManager deleted)
     struct ChainParams;
+    struct MempoolBlockSelection;
     struct SupplyState;
     class BlockRelayManager;  // Phase W.1.3: For network context
 
@@ -467,7 +468,7 @@ private:
     // Transaction selection (fee-optimal, CPFP-aware, deterministic)
     struct MempoolEntry;  // Forward declare to avoid circular dependency
     std::vector<Transaction> selectTransactionsForBlock(
-        Mempool* pool,
+        const MempoolBlockSelection& capture,
         uint32_t max_weight,
         uint32_t target_height,
         uint64_t& total_fees_out,
@@ -488,7 +489,7 @@ private:
      * @return Vector of selected transactions
      */
     std::vector<Transaction> selectTransactionsIntelligent(
-        Mempool* pool,
+        const MempoolBlockSelection& capture,
         uint32_t max_weight,
         uint32_t target_height,
         uint64_t& total_fees_out,
