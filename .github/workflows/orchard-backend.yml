@@ -148,7 +148,7 @@ jobs:
           python3 - <<'PY'
           import json
           tests = {x['name'] for x in json.load(open('orchard-test-inventory.json'))['tests']}
-          if tests != {'OrchardAuthorization', 'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardTransactionReader', 'OrchardCoinSnapshot', 'OrchardTransparent', 'OrchardStateTransition', 'OrchardWalletKeys', 'OrchardWalletShield', 'OrchardWalletSpend', 'OrchardWalletStorage'}:
+          if tests != {'OrchardAuthorization', 'OrchardBackendCpp', 'OrchardBackendRust', 'OrchardTransactionReader', 'OrchardCoinSnapshot', 'OrchardTransparent', 'OrchardStateTransition', 'OrchardTransactionContext', 'OrchardWalletKeys', 'OrchardWalletShield', 'OrchardWalletSpend', 'OrchardWalletStorage'}:
               raise SystemExit(f'wrong Orchard test inventory: {tests}')
           PY
           ctest --test-dir build-orchard-backend --output-on-failure --no-tests=error
@@ -282,7 +282,7 @@ jobs:
       - name: Build and execute real mempool runtime test consumers
         run: |
           mapfile -t targets < build-orchard-root/real-mempool-fixture-targets.txt
-          test "${#targets[@]}" -eq 19
+          test "${#targets[@]}" -eq 20
           cmake --build build-orchard-root --parallel 4 --target "${targets[@]}" -- -k 0
           ctest --test-dir build-orchard-root --show-only=json-v1 > orchard-real-mempool-all-inventory.json
           python3 - <<'PYTEST'
@@ -753,6 +753,24 @@ jobs:
           for marker in ['ALL WALLET AUTHORITATIVE-MNEMONIC ASSERTIONS PASSED', '[PASS] existing default is preserved and restored identity reopens under a new name']:
               if log.count(marker) != 1:
                   raise SystemExit('Mnemonic recovery must complete all preservation assertions exactly once')
+          PYTEST
+      - name: Require and execute Orchard transaction context checks
+        run: |
+          cmake --build build-orchard-root --target test_orchard_transaction_context --parallel 2
+          ctest --test-dir build-orchard-root -R '^OrchardTransactionContext$' --show-only=json-v1 > orchard-transaction-context-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-transaction-context-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['OrchardTransactionContext'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Orchard transaction context test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardTransactionContext$' --verbose --no-tests=error --output-log orchard-transaction-context-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-transaction-context-execution.log').read()
+          expected=['MatchesBlockPreparation','SelectedParentRulesRemainRequired','ConflictsAndLookupFailures']
+          if sorted(re.findall(r'PASS (\w+)',log))!=sorted(expected):
+              raise SystemExit('Orchard transaction context cases did not complete exactly once')
           PYTEST
       - name: Require and execute all root Orchard lanes
         run: |
@@ -1683,6 +1701,8 @@ jobs:
             orchard-mempool-callback-execution.log
             orchard-wallet-input-maturity-inventory.json
             orchard-wallet-input-maturity-execution.log
+            orchard-transaction-context-inventory.json
+            orchard-transaction-context-execution.log
             orchard-root-inventory.json
             orchard-root-execution.log
             orchard-root-detailed-execution.log

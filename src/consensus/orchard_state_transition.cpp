@@ -17,14 +17,13 @@ bool Lookup(const std::function<StatusOr<bool>(const uint256&)>& fn, const uint2
     return result.value();
 }
 } // namespace
-PreparedOrchardState PrepareOrchardStateTransition(const OrchardBlockContext& context,
+CheckedOrchardTransactions CheckOrchardTransactions(const OrchardTransactionContext& context,
     const std::optional<storage::OrchardStoredState>& parent,
     std::span<const VerifiedOrchardAuthorizations> transactions, const OrchardStateLookups& lookups) {
     if (context.activation_height == UINT32_MAX || context.activation_height == 0 ||
         context.height < context.activation_height) Fail(Error::Inactive);
     if (context.height == 0 || context.height > uint32_t(std::numeric_limits<int32_t>::max()) ||
-        context.block_hash.IsNull() || context.parent_hash.IsNull() ||
-        context.block_hash == context.parent_hash) Fail(Error::Context);
+        context.parent_hash.IsNull()) Fail(Error::Context);
     // Validate even empty-block signing domains; no default implicit mainnet.
     (void)orchard::SigningContext::Create(context.domain, 0, {}, {}, 0);
     if (transactions.size() > storage::ORCHARD_STORED_BLOCK_NULLIFIER_LIMIT) Fail(Error::ResourceLimit);
@@ -91,8 +90,26 @@ PreparedOrchardState PrepareOrchardStateTransition(const OrchardBlockContext& co
         balance = updated.value(); flows.push_back(flow);
         frontier = std::make_unique<orchard::OrchardFrontier>(frontier->Append(commitments));
     }
-    storage::OrchardStoredState next{context.height, context.block_hash, WireHash(frontier->Root()),
-        balance, frontier->Size(), std::string(frontier->Bytes().begin(), frontier->Bytes().end())};
-    return PreparedOrchardState(parent, std::move(next), std::move(nullifiers), std::move(flows), fees);
+    return CheckedOrchardTransactions(parent, balance, frontier->Size(), WireHash(frontier->Root()),
+        std::string(frontier->Bytes().begin(), frontier->Bytes().end()),
+        std::move(nullifiers), std::move(flows), fees);
+}
+
+PreparedOrchardState PrepareOrchardStateTransition(const OrchardBlockContext& context,
+    const std::optional<storage::OrchardStoredState>& parent,
+    std::span<const VerifiedOrchardAuthorizations> transactions, const OrchardStateLookups& lookups) {
+    // A real block identity is required only by the block-state preparation
+    // path. Transaction eligibility never fabricates one for its checks.
+    if (context.activation_height == UINT32_MAX || context.activation_height == 0 ||
+        context.height < context.activation_height) Fail(Error::Inactive);
+    if (context.block_hash.IsNull() || context.block_hash == context.parent_hash)
+        Fail(Error::Context);
+    const auto checked = CheckOrchardTransactions(
+        {context.height, context.parent_hash, context.activation_height, context.domain},
+        parent, transactions, lookups);
+    storage::OrchardStoredState next{context.height, context.block_hash, checked.Anchor(),
+        checked.PoolBalance(), checked.TreeSize(), checked.Frontier()};
+    return PreparedOrchardState(checked.Parent(), std::move(next), checked.Nullifiers(),
+        checked.Flows(), checked.Fees());
 }
 } // namespace dinero::consensus

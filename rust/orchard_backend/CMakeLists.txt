@@ -218,6 +218,11 @@ if(DINERO_ORCHARD_BUILD_TESTS)
   add_executable(test_orchard_state_transition "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_state_transition.cpp")
   target_link_libraries(test_orchard_state_transition PRIVATE dinero_orchard_transparent)
   add_test(NAME OrchardStateTransition COMMAND test_orchard_state_transition "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  add_executable(test_orchard_transaction_context "${ORCHARD_HOST_ROOT}/tests/consensus/test_orchard_transaction_context.cpp")
+  target_link_libraries(test_orchard_transaction_context PRIVATE dinero_orchard_transparent)
+  add_test(NAME OrchardTransactionContext COMMAND test_orchard_transaction_context "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+  set_tests_properties(OrchardTransactionContext PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+    ENVIRONMENT "RAYON_NUM_THREADS=2" LABELS "orchard;integration-staging")
   if(TARGET dinero_orchard_block_staging)
     add_executable(test_orchard_runtime_reader
       "${ORCHARD_HOST_ROOT}/tests/daemon/test_orchard_runtime_reader.cpp"

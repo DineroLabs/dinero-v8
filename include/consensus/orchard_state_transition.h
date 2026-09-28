@@ -39,6 +39,51 @@ struct OrchardStateLookups {
     std::function<StatusOr<bool>(const uint256&)> active_anchor;
     std::function<StatusOr<bool>(const uint256&)> spent_nullifier;
 };
+// Selected-parent transaction context. Unlike OrchardBlockContext this cannot
+// carry a candidate block identity. Validation does not publish chain state and
+// is not an admission, reservation, or lasting selected-parent certificate.
+struct OrchardTransactionContext {
+    uint32_t height = 0;
+    uint256 parent_hash;
+    uint32_t activation_height = UINT32_MAX;
+    orchard::SigningDomain domain;
+};
+class CheckedOrchardTransactions;
+[[nodiscard]] CheckedOrchardTransactions CheckOrchardTransactions(
+    const OrchardTransactionContext&, const std::optional<storage::OrchardStoredState>&,
+    std::span<const VerifiedOrchardAuthorizations>, const OrchardStateLookups&);
+
+// Immutable result for one ordered sequence against one selected parent. The
+// caller owns chain/coin/pool locks and must supply every relevant transaction
+// in order. Pending conflicts, policy, persistence and relay remain separate.
+class CheckedOrchardTransactions {
+public:
+    const auto& Parent() const noexcept { return parent_; }
+    uint64_t PoolBalance() const noexcept { return pool_balance_; }
+    uint64_t TreeSize() const noexcept { return tree_size_; }
+    const uint256& Anchor() const noexcept { return anchor_; }
+    const std::string& Frontier() const noexcept { return frontier_; }
+    const auto& Nullifiers() const noexcept { return nullifiers_; }
+    const auto& Flows() const noexcept { return flows_; }
+    uint64_t Fees() const noexcept { return fees_; }
+private:
+    friend CheckedOrchardTransactions CheckOrchardTransactions(
+        const OrchardTransactionContext&, const std::optional<storage::OrchardStoredState>&,
+        std::span<const VerifiedOrchardAuthorizations>, const OrchardStateLookups&);
+    CheckedOrchardTransactions(std::optional<storage::OrchardStoredState> parent,
+        uint64_t balance, uint64_t size, uint256 anchor, std::string frontier,
+        std::vector<uint256> nullifiers, std::vector<OrchardValueFlow> flows, uint64_t fees)
+        : parent_(std::move(parent)), pool_balance_(balance), tree_size_(size), anchor_(anchor),
+          frontier_(std::move(frontier)), nullifiers_(std::move(nullifiers)),
+          flows_(std::move(flows)), fees_(fees) {}
+    const std::optional<storage::OrchardStoredState> parent_;
+    const uint64_t pool_balance_, tree_size_;
+    const uint256 anchor_;
+    const std::string frontier_;
+    const std::vector<uint256> nullifiers_;
+    const std::vector<OrchardValueFlow> flows_;
+    const uint64_t fees_;
+};
 class PreparedOrchardState;
 [[nodiscard]] PreparedOrchardState PrepareOrchardStateTransition(
     const OrchardBlockContext&, const std::optional<storage::OrchardStoredState>&,
