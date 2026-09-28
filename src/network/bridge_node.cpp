@@ -523,73 +523,78 @@ BridgeNode::GenerateProofForUTXO(const uint256& txid, uint32_t vout) {
 
 std::optional<std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>>>
 BridgeNode::GenerateProofsForTransaction(const Transaction& tx) {
-    const uint256 txid = tx.GetTxid().AsUint256();
+    std::vector<OutPoint> inputs;
+    for (const auto& input : tx.vin)
+        if (!input.prevout.txid.IsNull()) inputs.emplace_back(input.prevout.txid,input.prevout.vout);
+    auto captured = CaptureInputProofs(tx.GetTxid().AsUint256(),inputs);
+    if (!captured) return std::nullopt;
+    return std::move(captured->proofs);
+}
+
+std::optional<BridgeNode::CapturedInputProofs>
+BridgeNode::CaptureInputProofs(const uint256& txid, const std::vector<OutPoint>& inputs) {
     std::shared_ptr<const TxCacheGeneration> generation;
     { std::lock_guard<std::mutex> lock(cache_mutex_); generation = tx_cache_generation_; }
     const auto current_root = GetCurrentForestCommitment();
-
-    // Check tx-proof cache first (valid only for current root).
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
         if (generation != tx_cache_generation_) return std::nullopt;
-        auto cache_it = tx_proof_cache_.find(txid);
-        if (cache_it != tx_proof_cache_.end()) {
-            if (!isTxCacheEntryExpired(cache_it->second) &&
-                cache_it->second.root_at_generation == current_root) {
-                cache_hits_++;
-                cache_it->second.access_count++;
-                touchTxCacheLRU(txid);
-                return cache_it->second.proofs;
+        auto found = tx_proof_cache_.find(txid);
+        if (found != tx_proof_cache_.end()) {
+            if (!isTxCacheEntryExpired(found->second) &&
+                found->second.root_at_generation == current_root && found->second.inputs == inputs) {
+                ++cache_hits_; ++found->second.access_count; touchTxCacheLRU(txid);
+                return CapturedInputProofs{found->second.root_at_generation,found->second.proofs};
             }
-
-            eraseTxCacheEntryLocked(txid);
-            cache_evictions_++;
+            eraseTxCacheEntryLocked(txid); ++cache_evictions_;
         }
-        cache_misses_++;
+        ++cache_misses_;
     }
-
-    std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> results;
-
-    for (size_t i = 0; i < tx.vin.size(); ++i) {
-        const auto& input = tx.vin[i];
-
-        // Skip coinbase inputs
-        if (input.prevout.txid.IsNull()) continue;
-
-        auto proof_opt = GenerateProofForUTXO(
-            input.prevout.txid.AsUint256(),
-            input.prevout.vout
-        );
-
-        if (!proof_opt.has_value()) {
-            return std::nullopt;  // If any input fails, fail whole tx
+    // Resolve metadata before taking the forest lock: the provider may itself
+    // acquire ownership or notify cache invalidation. Each copied coin must then
+    // have an inclusion proof in the one captured forest below.
+    std::vector<consensus::UTXOEntry> coins;
+    coins.reserve(inputs.size());
+    for (const auto& input : inputs) {
+        if (input.txid.IsNull()) return std::nullopt;
+        auto coin = utxo_provider_->GetUTXO(input);
+        if (!coin) return std::nullopt;
+        coins.push_back(std::move(*coin));
+    }
+    CapturedInputProofs captured;
+    captured.proofs.reserve(inputs.size());
+    bool complete = false;
+    readForestShared([&](const consensus::UtreexoForest& forest) {
+        captured.root = forest.getCommitment();
+        if (captured.root != current_root) return;
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            const auto& input = inputs[i]; const auto& coin = coins[i];
+            const auto leaf = ComputeLeafHash(input.txid.AsUint256(),input.vout,
+                coin.value.GetUna(),coin.scriptPubKey,coin.height,coin.isCoinbase);
+            const auto position = forest.findLeafPosition(leaf);
+            if (!position) return;
+            auto proof = forest.prove(*position);
+            if (!proof || !proof->verify(leaf,forest.getRoots())) return;
+            consensus::SpentOutputData spent;
+            spent.value=coin.value.GetUna(); spent.scriptPubKey=coin.scriptPubKey;
+            spent.created_height=coin.height; spent.is_coinbase=coin.isCoinbase;
+            spent.is_confidential=coin.is_confidential; spent.commitment=coin.commitment;
+            captured.proofs.emplace_back(std::move(*proof),std::move(spent));
         }
-
-        results.push_back(std::move(proof_opt.value()));
-    }
-
-    // Cache successful proof generation for repeated utxotx requests at same tip/root.
+        complete = true;
+    });
+    if (!complete) return std::nullopt;
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
-        // An invalidation may occur while UTXOs/proofs are being gathered.
-        // Discard the obsolete result instead of refilling a cleared cache.
         if (generation != tx_cache_generation_) return std::nullopt;
         CachedTxProofEntry entry;
-        entry.proofs = results;
-        entry.root_at_generation = current_root;
-        entry.cached_at = std::chrono::steady_clock::now();
-        entry.access_count = 0;
-
-        if (tx_proof_cache_.size() >= tx_cache_max_size_) {
-            evictOldestTxCacheEntry();
-        }
-        eraseTxCacheEntryLocked(txid);
-        tx_proof_cache_[txid] = std::move(entry);
-        tx_cache_lru_list_.push_front(txid);
-        tx_cache_lru_lookup_[txid] = tx_cache_lru_list_.begin();
+        entry.proofs=captured.proofs; entry.inputs=inputs; entry.root_at_generation=captured.root;
+        entry.cached_at=std::chrono::steady_clock::now(); entry.access_count=0;
+        if (tx_proof_cache_.size() >= tx_cache_max_size_) evictOldestTxCacheEntry();
+        eraseTxCacheEntryLocked(txid); tx_proof_cache_[txid]=std::move(entry);
+        tx_cache_lru_list_.push_front(txid); tx_cache_lru_lookup_[txid]=tx_cache_lru_list_.begin();
     }
-
-    return results;
+    return captured;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

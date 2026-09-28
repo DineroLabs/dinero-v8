@@ -77,3 +77,5 @@ TEST_F(OrchardTypedPoolTip, PreparationFailureAndAmbiguousRefreshRetainCorrectSt
 }
 #endif
 }
+
+#include "typed_bridge_proof_owner_checks.h"

@@ -177,14 +177,25 @@ public:
     /**
      * @brief Generate Utreexo proofs for all inputs of a transaction
      *
-     * For each non-coinbase input, calls GenerateProofForUTXO() to produce
-     * per-input inclusion proofs + spent output metadata.
+     * Delegates all non-coinbase inputs to one captured forest snapshot;
+     * this compatibility API returns only its per-input proofs and metadata.
      *
      * @param tx Transaction to generate proofs for
      * @return Per-input (UtreexoProof, SpentOutputData) vector, or nullopt if any input fails
      */
     std::optional<std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>>>
     GenerateProofsForTransaction(const Transaction& tx);
+
+    struct CapturedInputProofs {
+        consensus::UtreexoHash root;
+        std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> proofs;
+    };
+    // Caller serializes provider coin access; all copied metadata must prove
+    // under one guarded forest snapshot.
+    // Owns that snapshot's root; does not claim it remains selected afterward.
+    // A bridge without a forest owner requires external forest serialization.
+    std::optional<CapturedInputProofs> CaptureInputProofs(
+        const uint256& txid, const std::vector<OutPoint>& inputs);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Request Handling
@@ -543,6 +554,7 @@ private:
     // Transaction proof cache (utxotx serving): txid -> per-input proofs.
     // Entries are valid only for root_at_generation.
     struct CachedTxProofEntry {
+        std::vector<OutPoint> inputs;
         std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> proofs;
         consensus::UtreexoHash root_at_generation;
         std::chrono::steady_clock::time_point cached_at;

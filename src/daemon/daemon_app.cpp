@@ -1,3 +1,4 @@
+#include "daemon/utreexo_tx_payload.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
 #ifdef __APPLE__
@@ -3529,105 +3530,23 @@ bool DaemonApp::Init(int argc, char** argv) {
                         };
 
                         if (bridge_node) {
-                            // BRIDGE PATH: Generate fresh proofs from the forest
-                            auto tx_ptr = mempool_for_getdata->getTransaction(hash);
-                            if (!tx_ptr) {
-                                g_logger.debug("[TX-RELAY] TX not in mempool: " + hash.GetHex().substr(0, 16));
+                            std::unique_ptr<MempoolService::PoolUse> pool_use;
+                            std::optional<std::vector<uint8_t>> payload;
+                            {
+                                auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                pool_use = MempoolService::AcquirePoolUse(mempool_for_getdata);
+                                const auto entry = pool_use->Pool().getMempoolEntry(hash);
+                                if (entry && entry->tx.HasBody() && entry->tx.GetTxid().AsUint256() == hash)
+                                    payload = CaptureUtreexoTransactionPayload(entry->tx,*bridge_node);
+                            }
+                            if (!payload) {
                                 sendUtreexoTxNotFound();
                             } else {
-                                const Transaction& tx = *tx_ptr;
-
-                                // 2. Generate per-input proofs
-                                auto proofs_opt = bridge_node->GenerateProofsForTransaction(tx);
-                                if (!proofs_opt.has_value()) {
-                                    g_logger.warning("[TX-RELAY] Failed to generate utreexo proofs for tx " +
-                                                    hash.GetHex().substr(0, 16));
-                                    sendUtreexoTxNotFound();
-                                } else {
-                                    const auto& proofs = proofs_opt.value();
-
-                                    // 3. Get current accumulator root
-                                    auto acc_root = bridge_node->GetCurrentForestCommitment();
-
-                                    // 4. Serialize utxotx wire format
-                                    std::vector<uint8_t> tx_serialized = tx.Serialize();
-                                    uint32_t tx_size = static_cast<uint32_t>(tx_serialized.size());
-                                    uint32_t num_proofs = static_cast<uint32_t>(proofs.size());
-
-                                    std::vector<uint8_t> payload;
-                                    payload.reserve(1 + 32 + 4 + tx_size + 4 + num_proofs * 256 + 32);
-
-                                    // Version (1 byte): v2 carries created_height/is_coinbase metadata.
-                                    payload.push_back(0x02);
-
-                                    // Txid (32 bytes)
-                                    payload.insert(payload.end(), hash.begin(), hash.end());
-
-                                    // TX size (4 bytes LE)
-                                    payload.push_back(tx_size & 0xFF);
-                                    payload.push_back((tx_size >> 8) & 0xFF);
-                                    payload.push_back((tx_size >> 16) & 0xFF);
-                                    payload.push_back((tx_size >> 24) & 0xFF);
-
-                                    // TX data
-                                    payload.insert(payload.end(), tx_serialized.begin(), tx_serialized.end());
-
-                                    // Num proofs (4 bytes LE)
-                                    payload.push_back(num_proofs & 0xFF);
-                                    payload.push_back((num_proofs >> 8) & 0xFF);
-                                    payload.push_back((num_proofs >> 16) & 0xFF);
-                                    payload.push_back((num_proofs >> 24) & 0xFF);
-
-                                    // Per-input proofs
-                                    for (const auto& [proof, spent] : proofs) {
-                                        auto proof_bytes = proof.serialize();
-                                        uint32_t proof_size = static_cast<uint32_t>(proof_bytes.size());
-
-                                        // Proof size (4 bytes LE)
-                                        payload.push_back(proof_size & 0xFF);
-                                        payload.push_back((proof_size >> 8) & 0xFF);
-                                        payload.push_back((proof_size >> 16) & 0xFF);
-                                        payload.push_back((proof_size >> 24) & 0xFF);
-
-                                        // Proof data
-                                        payload.insert(payload.end(), proof_bytes.begin(), proof_bytes.end());
-
-                                        // Value (8 bytes LE)
-                                        uint64_t value = spent.value;
-                                        for (int b = 0; b < 8; b++)
-                                            payload.push_back((value >> (b * 8)) & 0xFF);
-
-                                        // Script size (4 bytes LE)
-                                        uint32_t script_size = static_cast<uint32_t>(spent.scriptPubKey.size());
-                                        payload.push_back(script_size & 0xFF);
-                                        payload.push_back((script_size >> 8) & 0xFF);
-                                        payload.push_back((script_size >> 16) & 0xFF);
-                                        payload.push_back((script_size >> 24) & 0xFF);
-
-                                        // ScriptPubKey
-                                        payload.insert(payload.end(), spent.scriptPubKey.begin(), spent.scriptPubKey.end());
-
-                                        // v2 maturity metadata: created_height (4 bytes LE) + flags (bit 0 = coinbase)
-                                        payload.push_back(spent.created_height & 0xFF);
-                                        payload.push_back((spent.created_height >> 8) & 0xFF);
-                                        payload.push_back((spent.created_height >> 16) & 0xFF);
-                                        payload.push_back((spent.created_height >> 24) & 0xFF);
-                                        payload.push_back(spent.is_coinbase ? 0x01 : 0x00);
-                                    }
-
-                                    // Accumulator root (32 bytes)
-                                    payload.insert(payload.end(), acc_root.begin(), acc_root.end());
-
-                                    // 5. Send utxotx message
-                                    ::P2PMessage utxotx_msg;
-                                    utxotx_msg.command = "utxotx";
-                                    utxotx_msg.payload = std::move(payload);
-                                    utxotx_msg.checksum = 0;
-                                    p2p_service->get().send_to_peer(peer_addr, utxotx_msg);
-
-                                    g_logger.info("[TX-RELAY] Sent utxotx " + hash.GetHex().substr(0, 16) +
-                                                 "... to " + peer_addr + " (" + std::to_string(num_proofs) + " proofs)");
-                                }
+                                ::P2PMessage utxotx_msg;
+                                utxotx_msg.command = "utxotx";
+                                utxotx_msg.payload = std::move(*payload);
+                                utxotx_msg.checksum = 0;
+                                p2p_service->get().send_to_peer(peer_addr,utxotx_msg);
                             }
                         } else {
                             // CSN PATH: Serve cached utxotx payload from mempool

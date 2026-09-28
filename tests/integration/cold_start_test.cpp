@@ -268,7 +268,9 @@ public:
     std::string getName() const { return name_; }
 
 private:
-    // Echo the tail of the daemon's own log. The child redirects stdout/stderr
+    // Echo early startup errors as well as the tail: shutdown can otherwise
+    // push the original startup failure out of the last twenty lines.
+    // The child redirects stdout/stderr
     // into the datadir before exec'ing and stop() deletes that datadir, so
     // without this the daemon's account of its own failure is never seen.
     void dumpDaemonLogTail(size_t max_lines = 20) {
@@ -280,8 +282,15 @@ private:
             return;
         }
         std::vector<std::string> lines;
+        std::vector<std::string> startup_errors;
         std::string line;
         while (std::getline(log, line)) {
+            if (startup_errors.size() < 40 &&
+                (line.find("[ERROR]") != std::string::npos ||
+                 line.find("[FATAL]") != std::string::npos ||
+                 line.find("Failed to start") != std::string::npos ||
+                 line.find("Address already in use") != std::string::npos))
+                startup_errors.push_back(line.substr(0,4096));
             lines.push_back(line);
             if (lines.size() > max_lines) lines.erase(lines.begin());
         }
@@ -289,6 +298,10 @@ private:
             std::cerr << "  (daemon log empty — typically means execvp itself"
                          " failed)" << std::endl;
             return;
+        }
+        if (!startup_errors.empty()) {
+            std::cerr << "  --- first startup error diagnostics (bounded) ---" << std::endl;
+            for (const auto& error : startup_errors) std::cerr << "  " << error << std::endl;
         }
         std::cerr << "  --- last " << lines.size() << " line(s) of daemon.log ---"
                   << std::endl;
