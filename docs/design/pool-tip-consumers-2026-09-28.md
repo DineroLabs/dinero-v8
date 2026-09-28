@@ -1,0 +1,7 @@
+# Prepare the transparent pool and proof caches together
+
+The actual legacy connect/disconnect notification methods now prepare the pool block/stale policy, bridge transaction-proof cache invalidation and relay tip tracking as one scoped operation. Preparation takes locks in selected-chain, pool, bridge-cache, relay-refresh order; abandonment retains all previous states. Publication is nonthrowing and invokes no external callbacks. Only after every owner publishes and releases its lock does the operation issue bounded refresh requests. A failed or ambiguous request does not undo already-published state or claim delivery.
+
+Bridge and relay shared owners outlive their prepared children. The caller must keep the borrowed pool and its dependencies alive under the existing daemon service lifecycle. This change does not repair the service Stop/reset contract, own all callback dependencies or qualify arbitrary concurrent shutdown. Existing absent bridge/relay configurations remain absent; stale selection remains conditional on relay configuration.
+
+These legacy notification entry points still run after canonical durability and after some other consumers. This is atomic preparation of these three local consumers, not canonical rollback, nonfallible post-commit notification, all-consumer acknowledgment, durable readmission, a production Orchard RuntimeBlockNotifications provider or release readiness. Wallet, pool payouts, optional oracles, vaults and canonical provider preparation remain distinct work. Mainnet remains unset.

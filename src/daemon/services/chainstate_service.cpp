@@ -32,6 +32,7 @@
 #include "consensus/merkle_root.h"  // torn-body guard on replay reads
 #include "daemon/services/config_service.h"
 #include "daemon/config.h"
+#include "daemon/prepared_pool_tip.h"
 #include "daemon/services/p2p_service.h"  // Phase C.1 v2: For block broadcasting
 #include "daemon/services/mining_service.h"  // Phase 40: For ActivateBestChain service notifications
 #include "daemon/services/mempool_service.h"  // Phase 40: For ActivateBestChain service notifications
@@ -5450,41 +5451,17 @@ void ChainstateService::notifyBlockConnected(const Block& block, uint32_t height
         }
     }
 
-    // Utreexo proof staleness: evict conflicts, mark remaining TXs stale
+    // Prepare the complete local pool/cache update before publishing any of
+    // these consumers. This legacy notification entry is AFTER canonical
+    // durability; it does not itself move preparation before the chain commit.
     auto* ctx = DaemonContext::instance();
     if (ctx && ctx->mempool) {
-        if (bridge_node_) {
-            bridge_node_->InvalidateTxProofCache();
-        }
-
         std::vector<uint8_t> new_root;
-        if (consensus_utxo_set_) {
-            new_root = consensus_utxo_set_->SnapshotForestCommitment();
-        }
-        ctx->mempool->mempool().onBlockConnected(block, height, new_root);
-
-        // #6: Trigger bounded CSN proof refresh for stale mempool TXs.
-        // Policy is eviction-first under churn:
-        // - stale proof age cutoff
-        // - max refresh attempts per tx
-        // - overload guard bulk-evict
-        if (ctx->tx_relay) {
-            ctx->tx_relay->OnTipChanged();
-            constexpr uint32_t MAX_STALE_PROOF_AGE_BLOCKS = 2;
-            constexpr uint32_t MAX_REFRESH_ATTEMPTS = 1;
-            constexpr size_t STALE_OVERLOAD_THRESHOLD = 256;
-            constexpr size_t REFRESH_BATCH_SIZE = 20;
-            auto refresh_candidates = ctx->mempool->mempool().selectStaleForRefresh(
-                height,
-                REFRESH_BATCH_SIZE,
-                MAX_STALE_PROOF_AGE_BLOCKS,
-                MAX_REFRESH_ATTEMPTS,
-                STALE_OVERLOAD_THRESHOLD
-            );
-            if (!refresh_candidates.empty()) {
-                ctx->tx_relay->RequestProofRefresh(refresh_candidates, REFRESH_BATCH_SIZE);
-            }
-        }
+        if (consensus_utxo_set_) new_root=consensus_utxo_set_->SnapshotForestCommitment();
+        auto prepared=PreparedPoolTip::Connect(ctx->mempool->mempool(),bridge_node_,ctx->tx_relay,
+                                              block,height,new_root);
+        prepared->PublishAfterCommit();
+        prepared->RequestRefresh();
     }
 
     // Route wallet notifications through WalletWorker (thread-safe, async).
@@ -5511,32 +5488,11 @@ void ChainstateService::notifyBlockDisconnected(const Block& block, uint32_t hei
         chain_oracle_client_->sendBlockDisconnected(height, block_hash);
     }
 
-    // Utreexo proof staleness: mark all mempool TXs stale (root changed backward)
     auto* ctx = DaemonContext::instance();
     if (ctx && ctx->mempool) {
-        if (bridge_node_) {
-            bridge_node_->InvalidateTxProofCache();
-        }
-
-        ctx->mempool->mempool().onBlockDisconnected(block, height);
-        if (ctx->tx_relay) {
-            ctx->tx_relay->OnTipChanged();
-            constexpr uint32_t MAX_STALE_PROOF_AGE_BLOCKS = 2;
-            constexpr uint32_t MAX_REFRESH_ATTEMPTS = 1;
-            constexpr size_t STALE_OVERLOAD_THRESHOLD = 256;
-            constexpr size_t REFRESH_BATCH_SIZE = 20;
-            const uint32_t effective_height = (height > 0) ? (height - 1) : 0;
-            auto refresh_candidates = ctx->mempool->mempool().selectStaleForRefresh(
-                effective_height,
-                REFRESH_BATCH_SIZE,
-                MAX_STALE_PROOF_AGE_BLOCKS,
-                MAX_REFRESH_ATTEMPTS,
-                STALE_OVERLOAD_THRESHOLD
-            );
-            if (!refresh_candidates.empty()) {
-                ctx->tx_relay->RequestProofRefresh(refresh_candidates, REFRESH_BATCH_SIZE);
-            }
-        }
+        auto prepared=PreparedPoolTip::Disconnect(ctx->mempool->mempool(),bridge_node_,ctx->tx_relay,height);
+        prepared->PublishAfterCommit();
+        prepared->RequestRefresh();
     }
 
     // Route wallet disconnects through WalletWorker too, so persisted wallet
