@@ -16,6 +16,8 @@
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
+#include <type_traits>
+#include <utility>
 
 namespace dinero {
 namespace network {
@@ -522,11 +524,14 @@ BridgeNode::GenerateProofForUTXO(const uint256& txid, uint32_t vout) {
 std::optional<std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>>>
 BridgeNode::GenerateProofsForTransaction(const Transaction& tx) {
     const uint256 txid = tx.GetTxid().AsUint256();
+    std::shared_ptr<const TxCacheGeneration> generation;
+    { std::lock_guard<std::mutex> lock(cache_mutex_); generation = tx_cache_generation_; }
     const auto current_root = GetCurrentForestCommitment();
 
     // Check tx-proof cache first (valid only for current root).
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
+        if (generation != tx_cache_generation_) return std::nullopt;
         auto cache_it = tx_proof_cache_.find(txid);
         if (cache_it != tx_proof_cache_.end()) {
             if (!isTxCacheEntryExpired(cache_it->second) &&
@@ -566,6 +571,9 @@ BridgeNode::GenerateProofsForTransaction(const Transaction& tx) {
     // Cache successful proof generation for repeated utxotx requests at same tip/root.
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
+        // An invalidation may occur while UTXOs/proofs are being gathered.
+        // Discard the obsolete result instead of refilling a cleared cache.
+        if (generation != tx_cache_generation_) return std::nullopt;
         CachedTxProofEntry entry;
         entry.proofs = results;
         entry.root_at_generation = current_root;
@@ -1369,7 +1377,9 @@ bool BridgeNode::isCacheEntryExpired(const CachedProofEntry& entry) const {
 }
 
 void BridgeNode::ClearCache() {
+    auto next_generation = std::make_shared<const TxCacheGeneration>();
     std::lock_guard<std::mutex> lock(cache_mutex_);
+    tx_cache_generation_.swap(next_generation);
     cache_evictions_ += block_proof_cache_.size();
     cache_evictions_ += tx_proof_cache_.size();
     block_proof_cache_.clear();
@@ -1381,12 +1391,42 @@ void BridgeNode::ClearCache() {
     tx_cache_lru_lookup_.clear();
 }
 
+struct BridgeNode::PreparedTxCacheUpdate::Impl {
+    const std::thread::id thread = std::this_thread::get_id();
+    BridgeNode& bridge;
+    std::shared_ptr<const TxCacheGeneration> generation = std::make_shared<const TxCacheGeneration>();
+    std::unique_lock<std::mutex> lock;
+    decltype(tx_proof_cache_) entries;
+    decltype(tx_cache_lru_list_) lru;
+    decltype(tx_cache_lru_lookup_) lookup;
+    bool published = false;
+    explicit Impl(BridgeNode& owner) : bridge(owner), lock(owner.cache_mutex_) {}
+    ~Impl() noexcept { if (thread != std::this_thread::get_id()) std::terminate(); }
+};
+BridgeNode::PreparedTxCacheUpdate::PreparedTxCacheUpdate(std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+BridgeNode::PreparedTxCacheUpdate::~PreparedTxCacheUpdate() = default;
+void BridgeNode::PreparedTxCacheUpdate::PublishAfterCommit() noexcept {
+    if (impl_->thread != std::this_thread::get_id() || impl_->published) std::terminate();
+    static_assert(std::is_nothrow_swappable_v<decltype(impl_->entries)>);
+    static_assert(std::is_nothrow_swappable_v<decltype(impl_->lru)>);
+    static_assert(std::is_nothrow_swappable_v<decltype(impl_->lookup)>);
+    auto& bridge = impl_->bridge;
+    bridge.tx_proof_cache_.swap(impl_->entries);
+    bridge.tx_cache_lru_list_.swap(impl_->lru);
+    bridge.tx_cache_lru_lookup_.swap(impl_->lookup);
+    bridge.tx_cache_generation_.swap(impl_->generation);
+    bridge.cache_evictions_ += impl_->entries.size();
+    impl_->published = true;
+    impl_->lock.unlock();
+}
+std::unique_ptr<BridgeNode::PreparedTxCacheUpdate> BridgeNode::PrepareTxProofCacheInvalidation() {
+    auto impl = std::make_unique<PreparedTxCacheUpdate::Impl>(*this);
+    return std::unique_ptr<PreparedTxCacheUpdate>(new PreparedTxCacheUpdate(std::move(impl)));
+}
 void BridgeNode::InvalidateTxProofCache() {
-    std::lock_guard<std::mutex> lock(cache_mutex_);
-    cache_evictions_ += tx_proof_cache_.size();
-    tx_proof_cache_.clear();
-    tx_cache_lru_list_.clear();
-    tx_cache_lru_lookup_.clear();
+    auto prepared = PrepareTxProofCacheInvalidation();
+    prepared->PublishAfterCommit();
 }
 
 size_t BridgeNode::PruneStaleCacheEntries() {

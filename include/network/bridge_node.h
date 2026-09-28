@@ -292,6 +292,23 @@ public:
      */
     void InvalidateTxProofCache();
 
+    // Selected-chain ownership precedes cache ownership. Thread-affine; bridge
+    // outlives the prepared object. Do not reenter cache APIs while held.
+    // Abandon preserves the cache; publication swaps without external calls.
+    class PreparedTxCacheUpdate final {
+    public:
+        ~PreparedTxCacheUpdate();
+        PreparedTxCacheUpdate(const PreparedTxCacheUpdate&) = delete;
+        PreparedTxCacheUpdate& operator=(const PreparedTxCacheUpdate&) = delete;
+        void PublishAfterCommit() noexcept;
+    private:
+        friend class BridgeNode;
+        struct Impl;
+        explicit PreparedTxCacheUpdate(std::unique_ptr<Impl>);
+        std::unique_ptr<Impl> impl_;
+    };
+    [[nodiscard]] std::unique_ptr<PreparedTxCacheUpdate> PrepareTxProofCacheInvalidation();
+
     /**
      * @brief Remove cache entries that are no longer chain-fresh
      *
@@ -531,6 +548,11 @@ private:
         std::chrono::steady_clock::time_point cached_at;
         size_t access_count = 0;
     };
+    // Object identity prevents an in-flight generation from surviving a clear,
+    // including repeated invalidations at the same forest commitment.
+    struct TxCacheGeneration {};
+    std::shared_ptr<const TxCacheGeneration> tx_cache_generation_ =
+        std::make_shared<const TxCacheGeneration>();
     std::unordered_map<uint256, CachedTxProofEntry> tx_proof_cache_;
     std::list<uint256> tx_cache_lru_list_;
     std::unordered_map<uint256, std::list<uint256>::iterator> tx_cache_lru_lookup_;

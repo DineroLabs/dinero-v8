@@ -14038,6 +14038,38 @@ endif()
 add_test(NAME BridgeForestReadLock COMMAND test_bridge_forest_read_lock)
 set_tests_properties(BridgeForestReadLock PROPERTIES TIMEOUT 30)
 
+add_executable(test_bridge_cache_owner
+  tests/network/test_bridge_cache_owner.cpp
+  src/common/logger.cpp
+)
+target_include_directories(test_bridge_cache_owner PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src
+)
+target_link_libraries(test_bridge_cache_owner PRIVATE
+  GTest::gtest GTest::gtest_main
+  dinero_bridge
+  dinero_chainstate
+  dinero_consensus
+  dinero_shielded
+  dinero_crypto
+  jsoncpp_static
+  RocksDB::rocksdb
+  OpenSSL::Crypto
+  OpenSSL::SSL
+  pthread
+  sqlite3
+)
+link_zstd_if_needed(test_bridge_cache_owner)
+if(APPLE)
+  target_link_libraries(test_bridge_cache_owner PRIVATE
+    "-framework Security"
+    "-framework CoreFoundation"
+  )
+endif()
+add_test(NAME BridgeCacheOwner COMMAND test_bridge_cache_owner)
+set_tests_properties(BridgeCacheOwner PROPERTIES TIMEOUT 60)
+
 # ─── Forest lock concurrency stress (deadlock-freedom under contention) ─────
 # Drives the real ConsensusUTXOSet guarded accessors from many reader/writer
 # threads with a watchdog that hard-fails on a stall (deadlock). Short default
