@@ -1,4 +1,5 @@
 #include "wallet/selected_history.h"
+#include "wallet/unsigned_tx_builder.h"
 #include <climits>
 #include "wallet/wallet_manager.h"
 #include "consensus/coin_type.h"
@@ -3376,6 +3377,258 @@ std::optional<SigningKey> WalletManager::DatabaseLease::ResolveSigningKey(
     return SigningKey(std::move(*key),std::move(script),policy);
 }
 
+namespace {
+constexpr size_t kPaymentBytes=16*1024*1024;
+constexpr size_t kPaymentCount=4096;
+struct PaymentSecret {
+    std::string value;
+    ~PaymentSecret(){secureClearString(value);}
+};
+std::string PaymentKey(std::span<const uint8_t> seed) {
+    if(seed.size()!=64)throw std::runtime_error("Pending payment seed unavailable");
+    PaymentSecret material{"Dinero wallet pending payment owner v1"};
+    material.value.append(reinterpret_cast<const char*>(seed.data()),seed.size());
+    std::array<uint8_t,32> key{};
+    ::SHA256(reinterpret_cast<const uint8_t*>(material.value.data()),material.value.size(),key.data());
+    std::string out(reinterpret_cast<const char*>(key.data()),key.size());
+    OPENSSL_cleanse(key.data(),key.size());return out;
+}
+bool PaymentColumn(sqlite3* db) {
+    IssuedStatement q(db,"PRAGMA table_info(wallet_meta)");bool found=false;size_t rows=0;int rc;
+    while((rc=sqlite3_step(q.value.get()))==SQLITE_ROW) {
+        if(sqlite3_column_type(q.value.get(),1)!=SQLITE_TEXT)throw std::runtime_error("Payment schema unavailable");
+        const auto* p=static_cast<const char*>(sqlite3_column_blob(q.value.get(),1));
+        const int n=sqlite3_column_bytes(q.value.get(),1);
+        if(!p || n<=0)throw std::runtime_error("Payment schema malformed");
+        found|=std::string_view(p,n)=="pending_payment_owner";++rows;
+    }
+    IssuanceCheck(db,rc,SQLITE_DONE);
+    if(!rows)throw std::runtime_error("Payment wallet metadata missing");
+    return found;
+}
+std::string PaymentIdentity(sqlite3* db) {
+    IssuedStatement q(db,"SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+    IssuanceCheck(db,sqlite3_step(q.value.get()),SQLITE_ROW);
+    const auto* p=static_cast<const char*>(sqlite3_column_blob(q.value.get(),0));
+    if(sqlite3_column_type(q.value.get(),0)!=SQLITE_BLOB || sqlite3_column_bytes(q.value.get(),0)!=32 || !p)
+        throw std::runtime_error("Payment identity unavailable");
+    std::string id(p,32);q.Done();
+    if(std::all_of(id.begin(),id.end(),[](char c){return c==0;}))throw std::runtime_error("Payment identity invalid");
+    return id;
+}
+void PaymentU64(std::string& out,uint64_t n) {
+    for(int i=0;i<8;++i)out.push_back(char(n>>(8*i)));
+}
+void PaymentField(std::string& out,std::string_view bytes) {
+    if(bytes.size()>kPaymentBytes-8 || out.size()>kPaymentBytes-bytes.size()-8)
+        throw std::runtime_error("Pending payment capacity exceeded");
+    PaymentU64(out,bytes.size());out.append(bytes);
+}
+void PaymentBlob(std::string& out,const std::vector<uint8_t>& bytes) {
+    PaymentField(out,std::string_view(reinterpret_cast<const char*>(bytes.data()),bytes.size()));
+}
+struct PaymentReader {
+    std::string_view bytes;size_t pos=0;
+    uint64_t U64(){
+        if(bytes.size()-pos<8)throw std::runtime_error("Payment framing incomplete");
+        uint64_t n=0;for(int i=0;i<8;++i)n|=uint64_t(uint8_t(bytes[pos++]))<<(8*i);return n;
+    }
+    std::string Field(){
+        const auto n=U64();if(n>bytes.size()-pos)throw std::runtime_error("Payment field incomplete");
+        std::string out(bytes.substr(pos,size_t(n)));pos+=size_t(n);return out;
+    }
+    std::vector<uint8_t> Blob(){const auto s=Field();return {s.begin(),s.end()};}
+};
+uint64_t PaymentSum(uint64_t sum,uint64_t n) {
+    if(n>MAX_SUPPLY_UNA_CONST || sum>MAX_SUPPLY_UNA_CONST-n)
+        throw std::runtime_error("Payment amount range invalid");
+    return sum+n;
+}
+std::vector<uint8_t> PaymentScript(const std::string& address) {
+    // Use the shared address codec already linked by the wallet library.
+    // Preserve the recorded network prefix; this is not network selection.
+    for(const auto* hrp:{"din","tdin","rdin"}) {
+        const auto parsed=DecodeWitnessAddress(address,hrp);
+        if(parsed.is_valid && parsed.is_witness && !parsed.script_pubkey.empty())return parsed.script_pubkey;
+    }
+    throw std::runtime_error("Pending payment requires a valid witness address");
+}
+void ValidatePayment(const PendingPayment& p) {
+    Transaction tx;size_t consumed=0;
+    if(p.signed_body.empty() || p.signed_body.size()>kPaymentBytes ||
+       !TransactionSerializer::Deserialize(tx,p.signed_body,consumed) || consumed!=p.signed_body.size() ||
+       tx.Serialize(TxSerializationMode::WithWitness)!=p.signed_body ||
+       tx.GetTxid().AsUint256().GetHex()!=p.txid || p.inputs.empty() || p.inputs.size()!=tx.vin.size() ||
+       p.inputs.size()>kPaymentCount || p.created_at<=0 || p.intent.amount_una==0 ||
+       p.intent.address.empty() || p.intent.address.find('\0')!=std::string::npos || p.intent.label.find('\0')!=std::string::npos)
+        throw std::runtime_error("Pending payment body invalid");
+    const auto recipient=PaymentScript(p.intent.address);
+    std::set<std::string> seen;uint64_t input=0,output=0;bool matched=false;
+    for(size_t i=0;i<p.inputs.size();++i) {
+        const auto& coin=p.inputs[i];const auto& in=tx.vin[i];
+        if(coin.txid!=in.prevout.txid.AsUint256().GetHex() || coin.vout!=in.prevout.vout || coin.script.empty() ||
+           in.witness.empty() || !seen.insert(coin.txid+":"+std::to_string(coin.vout)).second)
+            throw std::runtime_error("Payment input binding invalid");
+        input=PaymentSum(input,coin.amount_una);
+    }
+    for(const auto& out:tx.vout) {
+        if(out.is_confidential)throw std::runtime_error("Confidential payment owner unsupported");
+        output=PaymentSum(output,out.value.GetUna());
+        matched|=out.scriptPubKey==recipient && out.value.GetUna()==p.intent.amount_una;
+    }
+    if(!matched || input<output || input-output!=p.fee_una)
+        throw std::runtime_error("Payment intent or fee mismatch");
+    (void)PaymentSum(p.intent.amount_una,p.fee_una);
+}
+std::string EncodePayments(const std::string& identity,const std::vector<PendingPayment>& records) {
+    if(records.empty() || records.size()>kPaymentCount)throw std::runtime_error("Payment count invalid");
+    std::string out="DNPP01";PaymentField(out,identity);PaymentU64(out,records.size());
+    std::set<std::string> txids,reservations;
+    for(const auto& p:records) {
+        ValidatePayment(p);
+        if(!txids.insert(p.txid).second)throw std::runtime_error("Duplicate payment body");
+        PaymentField(out,p.txid);PaymentBlob(out,p.signed_body);PaymentField(out,p.intent.address);
+        PaymentU64(out,p.intent.amount_una);PaymentField(out,p.intent.label);PaymentU64(out,p.fee_una);
+        PaymentU64(out,uint64_t(p.created_at));PaymentU64(out,p.inputs.size());
+        for(const auto& in:p.inputs) {
+            if(!reservations.insert(in.txid+":"+std::to_string(in.vout)).second)
+                throw std::runtime_error("Payment input already reserved");
+            PaymentField(out,in.txid);PaymentU64(out,in.vout);PaymentU64(out,in.amount_una);PaymentBlob(out,in.script);
+        }
+        if(out.size()>kPaymentBytes)throw std::runtime_error("Pending payment capacity exceeded");
+    }
+    return out;
+}
+std::vector<PendingPayment> DecodePayments(const std::string& plain,const std::string& identity) {
+    if(plain.size()>kPaymentBytes || plain.substr(0,6)!="DNPP01")throw std::runtime_error("Payment format invalid");
+    PaymentReader r{std::string_view(plain).substr(6)};
+    if(r.Field()!=identity)throw std::runtime_error("Payment belongs to another wallet");
+    const auto n=r.U64();if(!n || n>kPaymentCount)throw std::runtime_error("Payment count invalid");
+    std::vector<PendingPayment> result;
+    for(uint64_t i=0;i<n;++i) {
+        PendingPayment p;p.txid=r.Field();p.signed_body=r.Blob();p.intent.address=r.Field();
+        p.intent.amount_una=r.U64();p.intent.label=r.Field();p.fee_una=r.U64();
+        auto time=r.U64();if(time>INT64_MAX)throw std::runtime_error("Payment time invalid");p.created_at=int64_t(time);
+        const auto count=r.U64();if(!count || count>kPaymentCount)throw std::runtime_error("Payment inputs invalid");
+        for(uint64_t j=0;j<count;++j) {
+            PendingPaymentInput in;in.txid=r.Field();const auto index=r.U64();
+            if(index>UINT32_MAX)throw std::runtime_error("Payment output index invalid");in.vout=uint32_t(index);
+            in.amount_una=r.U64();in.script=r.Blob();p.inputs.push_back(std::move(in));
+        }
+        result.push_back(std::move(p));
+    }
+    if(r.pos!=r.bytes.size())throw std::runtime_error("Trailing payment data");
+    PaymentSecret canonical{EncodePayments(identity,result)};
+    if(canonical.value!=plain)throw std::runtime_error("Noncanonical payment owner");
+    return result;
+}
+} // namespace
+
+std::vector<PendingPayment> WalletManager::ReadPendingPaymentsOwned(std::span<const uint8_t> seed) const {
+    if(!db_ || sqlite3_get_autocommit(db_))throw std::logic_error("Payment read requires owned transaction");
+    if(!PaymentColumn(db_))return {};
+    IssuedStatement q(db_,"SELECT pending_payment_owner FROM wallet_meta WHERE id=1");
+    IssuanceCheck(db_,sqlite3_step(q.value.get()),SQLITE_ROW);
+    const auto* bytes=static_cast<const char*>(sqlite3_column_blob(q.value.get(),0));
+    const int size=sqlite3_column_bytes(q.value.get(),0);
+    if(sqlite3_column_type(q.value.get(),0)!=SQLITE_BLOB || !bytes || size<28 || size>int(kPaymentBytes+28))
+        throw std::runtime_error("Pending payment owner missing or malformed");
+    const std::string sealed(bytes,size);q.Done();
+    PaymentSecret key{PaymentKey(seed)},plain{decryptData(sealed,key.value)};
+    auto records=DecodePayments(plain.value,PaymentIdentity(db_));
+    for(const auto& p:records) {
+        IssuedStatement history(db_,"SELECT address,amount,category,label,time FROM transactions WHERE wallet_id=? AND txid=?");
+        history.Int(1,current_wallet_id_);history.Text(2,p.txid);
+        IssuanceCheck(db_,sqlite3_step(history.value.get()),SQLITE_ROW);
+        const auto text=[&](int col,const std::string& expected) {
+            const auto* bytes=static_cast<const char*>(sqlite3_column_blob(history.value.get(),col));
+            const int n=sqlite3_column_bytes(history.value.get(),col);
+            return sqlite3_column_type(history.value.get(),col)==SQLITE_TEXT && n==int(expected.size()) &&
+                (n==0 || (bytes && std::memcmp(bytes,expected.data(),size_t(n))==0));
+        };
+        if(!text(0,p.intent.address) || !text(2,"send") || !text(3,p.intent.label) ||
+           sqlite3_column_type(history.value.get(),1)!=SQLITE_FLOAT ||
+           sqlite3_column_double(history.value.get(),1)!=-static_cast<double>(PaymentSum(p.intent.amount_una,p.fee_una))/1e8 ||
+           sqlite3_column_type(history.value.get(),4)!=SQLITE_INTEGER || sqlite3_column_int64(history.value.get(),4)!=p.created_at)
+            throw std::runtime_error("Pending payment history differs from retained intent");
+        history.Done();
+    }
+    return records;
+}
+
+std::vector<PendingPayment> WalletManager::getPendingPayments() const {
+    auto& self=const_cast<WalletManager&>(*this);auto lease=self.AcquireDatabaseLease();
+    if(!db_)throw std::runtime_error("Wallet not loaded");
+    IssuedAddressTransaction transaction(db_);
+    if(!PaymentColumn(db_)){transaction.Commit();return {};}
+    auto pin=lease->CopyRecoverySeed(lease->Session());
+    auto records=ReadPendingPaymentsOwned(pin->Bytes());transaction.Commit();return records;
+}
+
+void WalletManager::DatabaseLease::StagePayment(const RecoverySeed& pin,const UnsignedTransaction& input,
+                                               const Transaction& signed_tx,const PendingPaymentIntent& intent) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
+       !db_ || db_!=owner_.db_ || session_!=owner_.database_session_ || owner_.recovery_seeds_!=1)
+        throw std::runtime_error("Payment owner does not match wallet lease");
+    if(input.tx.Serialize(TxSerializationMode::WithoutWitness)!=signed_tx.Serialize(TxSerializationMode::WithoutWitness) ||
+       input.selected_utxos.size()!=signed_tx.vin.size())throw std::runtime_error("Payment signing body changed");
+    // The payment API has one explicit recipient and at most one authenticated
+    // change output. Raw signing and multi-recipient replacement have separate contracts.
+    const auto recipient=PaymentScript(intent.address);std::vector<uint8_t> change;
+    if(input.change_amount) {
+        change=PaymentScript(input.change_address);
+        if(!ResolveSigningKey(util::hex(change),pin))
+            throw std::runtime_error("Payment change owner unavailable");
+    }
+    std::vector<std::pair<std::vector<uint8_t>,uint64_t>> expected{{recipient,intent.amount_una}},actual;
+    if(input.change_amount)expected.emplace_back(change,input.change_amount);
+    for(const auto& out:signed_tx.vout)actual.emplace_back(out.scriptPubKey,out.value.GetUna());
+    std::sort(expected.begin(),expected.end());std::sort(actual.begin(),actual.end());
+    if(expected!=actual)throw std::runtime_error("Payment outputs differ from authorized intent");
+    PendingPayment p;p.txid=signed_tx.GetTxid().AsUint256().GetHex();p.signed_body=signed_tx.Serialize(TxSerializationMode::WithWitness);
+    p.intent=intent;p.created_at=std::time(nullptr);uint64_t total=0,outputs=0;
+    for(const auto& c:input.selected_utxos) {
+        if(c.is_confidential)throw std::runtime_error("Confidential payment input unsupported");
+        p.inputs.push_back({c.GetTxIdHex(),c.vout,c.value.GetUna(),c.spk});total=PaymentSum(total,c.value.GetUna());
+    }
+    for(const auto& out:signed_tx.vout)outputs=PaymentSum(outputs,out.value.GetUna());
+    if(total<outputs)throw std::runtime_error("Payment outputs exceed inputs");p.fee_una=total-outputs;
+    if(p.fee_una!=input.fee)throw std::runtime_error("Payment fee differs from signed builder result");
+    ValidatePayment(p);
+    (void)EnsureDeliveryIdentity(); // Separate existing identity prerequisite, not a recovery certificate.
+    IssuedAddressTransaction transaction(db_);
+    const bool installed=PaymentColumn(db_);
+    auto records=owner_.ReadPendingPaymentsOwned(pin.Bytes());
+    for(const auto& c:p.inputs) {
+        if(owner_.locked_utxos_.count(c.txid+":"+std::to_string(c.vout)))throw std::runtime_error("Payment input manually locked");
+        IssuedStatement q(db_,"SELECT amount,script_pubkey,is_spent FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        q.Int(1,owner_.current_wallet_id_);q.Text(2,c.txid);q.Int(3,c.vout);
+        IssuanceCheck(db_,sqlite3_step(q.value.get()),SQLITE_ROW);
+        if(sqlite3_column_type(q.value.get(),0)!=SQLITE_INTEGER || sqlite3_column_int64(q.value.get(),0)<0 ||
+           uint64_t(sqlite3_column_int64(q.value.get(),0))!=c.amount_una || sqlite3_column_type(q.value.get(),1)!=SQLITE_TEXT ||
+           sqlite3_column_type(q.value.get(),2)!=SQLITE_INTEGER || sqlite3_column_int64(q.value.get(),2)!=0)
+            throw std::runtime_error("Payment selected coin no longer available");
+        const auto* text=static_cast<const char*>(sqlite3_column_blob(q.value.get(),1));const int size=sqlite3_column_bytes(q.value.get(),1);
+        std::vector<uint8_t> script;
+        if(!text || size<=0 || !util::unhex(std::string(text,size),script) || script!=c.script)
+            throw std::runtime_error("Payment selected coin script changed");
+        q.Done();
+    }
+    // Exact retries are observable through getPendingPayments; they do not
+    // silently sign another body or replace the retained operation's history.
+    records.push_back(p);
+    PaymentSecret plain{EncodePayments(PaymentIdentity(db_),records)},key{PaymentKey(pin.Bytes())};
+    const auto sealed=owner_.encryptData(plain.value,key.value);
+    if(!installed)IssuanceCheck(db_,sqlite3_exec(db_,"ALTER TABLE wallet_meta ADD COLUMN pending_payment_owner BLOB",nullptr,nullptr,nullptr),SQLITE_OK);
+    IssuedStatement save(db_,"UPDATE wallet_meta SET pending_payment_owner=? WHERE id=1");save.Blob(1,sealed.data(),int(sealed.size()));save.Done(true);
+    IssuedStatement history(db_,"INSERT INTO transactions(wallet_id,txid,address,amount,confirmations,category,label,time,is_coinbase,height) VALUES(?,?,?,?,0,'send',?,?,0,0)");
+    history.Int(1,owner_.current_wallet_id_);history.Text(2,p.txid);history.Text(3,p.intent.address);
+    const auto spent=PaymentSum(p.intent.amount_una,p.fee_una);
+    IssuanceCheck(db_,sqlite3_bind_double(history.value.get(),4,-static_cast<double>(spent)/1e8),SQLITE_OK);
+    history.Text(5,p.intent.label);history.Int(6,p.created_at);history.Done(true);
+    transaction.Commit();
+}
+
 WalletManager::DatabaseLease::~DatabaseLease() noexcept {
     if (thread_ != std::this_thread::get_id()) std::terminate();
     if (owner_.database_leases_ == 1 && owner_.recovery_seeds_) std::terminate();
@@ -3565,6 +3818,7 @@ void WalletManager::rewriteEncryptionPolicy(const std::string &old_passphrase,
     if (!loaded || loaded->size() != 64)
         throw std::runtime_error("Existing wallet seed unavailable");
     seed.value = std::move(*loaded);
+    (void)ReadPendingPaymentsOwned(seed.value);
     if (!master_seed_.empty() && !ConstantTimeEqual(seed.value, master_seed_))
         throw std::runtime_error("Existing wallet seed mismatch");
     const auto pq = setting("v7_pq_master_key_encrypted");
@@ -4271,6 +4525,7 @@ void WalletManager::unlockWallet(const std::string& passphrase, int timeoutSecon
     const auto now=std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();
     if (legacy) WLOG_WARN("Wallet uses legacy HMAC-SHA512 KDF; change password to upgrade");
+    (void)ReadPendingPaymentsOwned(seed.value);
     transaction.Commit();
     // All fallible validation and persistence precede publication. Swaps leave
     // prior plaintext in scoped buffers for cleansing without changing identity.
@@ -5321,12 +5576,16 @@ std::vector<WalletManager::WalletUTXO> WalletManager::getUTXOsForAddress(const s
 // ═══════════════════════════════════════════════════════════════
 
 bool WalletManager::lockUTXO(const std::string& txid, uint32_t vout) {
+    auto lease=AcquireDatabaseLease();
     std::string outpoint = txid + ":" + std::to_string(vout);
     locked_utxos_.insert(outpoint);
     return true;
 }
 
 bool WalletManager::unlockUTXO(const std::string& txid, uint32_t vout) {
+    auto lease=AcquireDatabaseLease();
+    for(const auto& p:getPendingPayments())for(const auto& in:p.inputs)
+        if(in.txid==txid && in.vout==vout)return false;
     std::string outpoint = txid + ":" + std::to_string(vout);
     auto it = locked_utxos_.find(outpoint);
     if (it != locked_utxos_.end()) {
@@ -5337,62 +5596,60 @@ bool WalletManager::unlockUTXO(const std::string& txid, uint32_t vout) {
 }
 
 bool WalletManager::isUTXOLocked(const std::string& txid, uint32_t vout) const {
-    std::string outpoint = txid + ":" + std::to_string(vout);
-    return locked_utxos_.find(outpoint) != locked_utxos_.end();
+    auto lease=const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    const auto records=getPendingPayments(); // Authenticate even if a manual lock matches.
+    for(const auto& p:records)for(const auto& in:p.inputs)
+        if(in.txid==txid && in.vout==vout)return true;
+    return locked_utxos_.count(txid+":"+std::to_string(vout))!=0;
 }
 
 std::vector<std::string> WalletManager::getLockedUTXOs() const {
-    return std::vector<std::string>(locked_utxos_.begin(), locked_utxos_.end());
+    auto lease=const_cast<WalletManager&>(*this).AcquireDatabaseLease();
+    auto result=locked_utxos_;
+    for(const auto& p:getPendingPayments())for(const auto& in:p.inputs)
+        result.insert(in.txid+":"+std::to_string(in.vout));
+    return {result.begin(),result.end()};
 }
 
 size_t WalletManager::unlockAllUTXOs() {
-    size_t count = locked_utxos_.size();
-    locked_utxos_.clear();
-    return count;
+    auto lease=AcquireDatabaseLease();
+    (void)getPendingPayments(); // Refuse unavailable ownership; never release payment reservations.
+    const auto count=locked_utxos_.size();locked_utxos_.clear();return count;
 }
 
 double WalletManager::getLockedBalance() const {
-    double locked_balance = 0.0;
-
-    if (!db_) {
-        return 0.0;
+    auto& self=const_cast<WalletManager&>(*this);auto lease=self.AcquireDatabaseLease();
+    if(!db_)return 0.0;
+    IssuedAddressTransaction transaction(db_);auto locks=locked_utxos_;
+    if(PaymentColumn(db_)) {
+        auto pin=lease->CopyRecoverySeed(lease->Session());
+        for(const auto& p:ReadPendingPaymentsOwned(pin->Bytes()))for(const auto& in:p.inputs)
+            locks.insert(in.txid+":"+std::to_string(in.vout));
     }
-
-    // Query all UTXOs and sum amounts for locked ones
-    for (const std::string& outpoint : locked_utxos_) {
-        // Parse txid:vout
-        size_t colon_pos = outpoint.find(':');
-        if (colon_pos == std::string::npos) {
-            continue;
-        }
-
-        std::string txid = outpoint.substr(0, colon_pos);
-        uint32_t vout = std::stoul(outpoint.substr(colon_pos + 1));
-
-        // Query UTXO amount
-        sqlite3_stmt* stmt;
-        const char* sql = "SELECT amount FROM utxos WHERE txid = ? AND vout = ? AND is_spent = 0";
-
-        if (!SqlLog::prepare(&stmt, db_, sql, "get-locked-utxo-amount")) {
-            continue;
-        }
-
-        sqlite3_bind_text(stmt, 1, txid.c_str(), -1, SQLITE_STATIC);
-        sqlite3_bind_int(stmt, 2, vout);
-
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            int64_t amount_una = sqlite3_column_int64(stmt, 0);
-            locked_balance += static_cast<double>(amount_una) / dinero::ConsensusSubsidy::UNA_PER_DIN;
-        }
-
-        sqlite3_finalize(stmt);
+    uint64_t amount=0;
+    for(const auto& outpoint:locks) {
+        const auto colon=outpoint.find(':');
+        if(colon==std::string::npos)throw std::runtime_error("Locked outpoint malformed");
+        const auto index=std::stoull(outpoint.substr(colon+1));
+        if(index>UINT32_MAX)throw std::runtime_error("Locked outpoint range invalid");
+        IssuedStatement q(db_,"SELECT amount,is_spent FROM utxos WHERE wallet_id=? AND txid=? AND vout=?");
+        q.Int(1,current_wallet_id_);q.Text(2,outpoint.substr(0,colon));q.Int(3,int64_t(index));
+        const int rc=sqlite3_step(q.value.get());if(rc==SQLITE_DONE)continue;
+        IssuanceCheck(db_,rc,SQLITE_ROW);
+        if(sqlite3_column_type(q.value.get(),0)!=SQLITE_INTEGER || sqlite3_column_int64(q.value.get(),0)<0 ||
+           sqlite3_column_type(q.value.get(),1)!=SQLITE_INTEGER ||
+           (sqlite3_column_int64(q.value.get(),1)!=0 && sqlite3_column_int64(q.value.get(),1)!=1))
+            throw std::runtime_error("Locked coin malformed");
+        if(sqlite3_column_int64(q.value.get(),1)==0)amount=PaymentSum(amount,uint64_t(sqlite3_column_int64(q.value.get(),0)));
+        q.Done();
     }
-
-    return locked_balance;
+    transaction.Commit();return static_cast<double>(amount)/1e8;
 }
 
 // Phase 35.4: Transaction Abandonment
 bool WalletManager::abandonTransaction(const std::string& txid) {
+    auto lease=AcquireDatabaseLease();
+    for(const auto& p:getPendingPayments())if(p.txid==txid)return false;
     if (!db_) {
         return false;
     }
@@ -5431,6 +5688,7 @@ bool WalletManager::isTransactionAbandoned(const std::string& txid) const {
 }
 
 WalletManager::AbandonmentInfo WalletManager::getAbandonmentInfo(const std::string& txid) const {
+    auto lease=const_cast<WalletManager&>(*this).AcquireDatabaseLease();
     AbandonmentInfo info;
     info.success = false;
     info.inputs_returned = 0;
@@ -5438,6 +5696,11 @@ WalletManager::AbandonmentInfo WalletManager::getAbandonmentInfo(const std::stri
 
     if (!db_) {
         info.error = "Wallet not loaded";
+        return info;
+    }
+
+    for(const auto& p:getPendingPayments())if(p.txid==txid) {
+        info.error="Payment retains durable input reservations; reconciliation is required";
         return info;
     }
 
@@ -7671,6 +7934,11 @@ bool WalletManager::storeMasterSeedOwned(const std::vector<uint8_t>& seed,
         }
         const bool replaces_wallet_identity =
             reset_address_state && !ConstantTimeEqual(seed, previous.value);
+        if(PaymentColumn(db_)) {
+            if(!ConstantTimeEqual(seed,previous.value))
+                throw std::runtime_error("Seed replacement would orphan retained payments");
+            (void)ReadPendingPaymentsOwned(previous.value);
+        }
 
         // ═══════════════════════════════════════════════════════════════════════
         // Optional address-state reset

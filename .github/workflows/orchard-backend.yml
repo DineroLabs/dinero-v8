@@ -618,6 +618,23 @@ jobs:
           if log.count('PASS RocksDBChecksum.ReferenceAndIncremental')!=1:
               raise SystemExit('RocksDB checksum reference case did not complete exactly once')
           PYTEST
+      - name: Require and execute durable wallet payment ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPendingPayment$' --show-only=json-v1 > orchard-pending-payment-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pending-payment-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletPendingPayment'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Pending payment owner test missing or disabled')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletPendingPayment$' --verbose --no-tests=error --output-log orchard-pending-payment-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-pending-payment-execution.log').read()
+          expected=['SignedOriginHistoryReservationsAndReopen','FailedWritesCommitAndStaleSelectionPublishNothing','CorruptOwnerReadFailureAndIntentRefuse']
+          if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Pending payment owner cases did not complete exactly once')
+          PYTEST
       - name: Require and execute selected-wallet owned transaction signing
         run: |
           ctest --test-dir build-orchard-root -R '^WalletOwnedSigning$' --show-only=json-v1 > orchard-owned-signing-inventory.json
@@ -1131,6 +1148,8 @@ jobs:
             orchard-pq-root-provider-execution.log
             orchard-historical-rpc-inventory.json
             orchard-historical-rpc-execution.log
+            orchard-pending-payment-inventory.json
+            orchard-pending-payment-execution.log
             orchard-owned-signing-inventory.json
             orchard-owned-signing-execution.log
             orchard-peer-header-progress-inventory.json

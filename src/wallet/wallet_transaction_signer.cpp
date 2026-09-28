@@ -15,8 +15,9 @@ WalletSigningIdentity CaptureWalletSigningIdentity(WalletManager& wallet,const s
         throw std::runtime_error("Selected wallet does not match signing request");
     return {lease->WalletName(),lease->Session()};
 }
-SignResult SignWalletTransaction(WalletManager& manager,const WalletSigningIdentity& identity,
-                                 const UnsignedTransaction& input) {
+namespace {
+SignResult SignWalletTransactionOwned(WalletManager& manager,const WalletSigningIdentity& identity,
+                                     const UnsignedTransaction& input,const PendingPaymentIntent* payment) {
     SignResult result;
     try {
         if(input.tx.vin.empty() || input.tx.vin.size()!=input.selected_utxos.size())
@@ -65,9 +66,19 @@ SignResult SignWalletTransaction(WalletManager& manager,const WalletSigningIdent
             result.error=std::move(signed_result.error);
             return result;
         }
+        if(payment)lease->StagePayment(*pin,transaction,signed_result.signed_tx.tx,*payment);
         return signed_result;
     } catch(const std::exception& e) {
         result.error=e.what();return result;
     }
+}
+} // namespace
+SignResult SignWalletTransaction(WalletManager& manager,const WalletSigningIdentity& identity,
+                                 const UnsignedTransaction& input) {
+    return SignWalletTransactionOwned(manager,identity,input,nullptr);
+}
+SignResult SignAndStageWalletPayment(WalletManager& manager,const WalletSigningIdentity& identity,
+                                     const UnsignedTransaction& input,const PendingPaymentIntent& payment) {
+    return SignWalletTransactionOwned(manager,identity,input,&payment);
 }
 }

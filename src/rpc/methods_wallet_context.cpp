@@ -31,6 +31,7 @@
 #include "wallet/wallet_manager.h"
 #include "wallet/hd_wallet.h"
 #include "wallet/wallet_transaction_signer.h"
+#include "util/hex.h"
 #include "wallet/transaction_builder.h"  // Phase 33: Transaction building
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include <iostream>  // For std::cerr debug logging
@@ -3104,14 +3105,17 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 return result;
             }
 
-            auto sign_result=dinero::SignWalletTransaction(
-                wallet_service->get(),signing_identity,build_result.unsigned_tx);
+            auto sign_result=dinero::SignAndStageWalletPayment(
+                wallet_service->get(),signing_identity,build_result.unsigned_tx,
+                dinero::PendingPaymentIntent{address,parsed_amount_una,""});
 
             if (!sign_result.success) {
                 result["error"] = "Failed to sign transaction: " + sign_result.error;
                 return result;
             }
 
+            result["txid"] = sign_result.signed_tx.tx.GetTxid().AsUint256().GetHex();
+            result["payment_retained"] = true;
             // Step 3: Submit to mempool
             if (!ctx.daemon->mempool) {
                 result["error"] = "Mempool service not available";
@@ -3166,20 +3170,10 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
                 result["selected_inputs"] = inputs_arr;
             }
 
-            // Record "send" entry in wallet transaction history
-            if (submit_result.accepted()) {
-                int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::system_clock::now().time_since_epoch()).count();
-                const bool history_recorded = wallet_service->get().addTransaction(
-                    sent_txid, address, -(amount_din + fee_din),
-                    "send", false, "", now, 0);
-                if (!history_recorded) {
-                    result["history_warning"] = "Transaction broadcast succeeded but wallet send history entry could not be recorded";
-                    if (ctx.logger) {
-                        ctx.logger->warning("[wallet.sendtoaddress] Broadcast succeeded but addTransaction(send) failed for tx " + sent_txid);
-                    }
-                }
-            }
+            // The signed body, explicit intent, history and reservations were
+            // committed before submit. Rejection/exception is not proof that
+            // publication did not happen, so this owner remains recoverable.
+            result["payment_retained"] = true;
 
             if (ctx.logger) {
                 ctx.logger->info("[wallet.sendtoaddress] TX " + sent_txid +
@@ -7887,7 +7881,32 @@ din::Json rpc_context_wallet_consolidate(const ExecutionContext& ctx, const din:
 
 extern RpcRegistry g_rpcRegistry;
 
+din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,const din::Json&) {
+    din::Json result;
+    try {
+        if(!ctx.daemon || !ctx.daemon->wallet)throw std::runtime_error("Wallet service unavailable");
+        auto service=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        if(!service)throw std::runtime_error("Wallet service unavailable");
+        auto& wallet=service->get();auto lease=wallet.AcquireDatabaseLease();
+        if(lease->WalletName().empty() || (!ctx.walletName.empty() && ctx.walletName!=lease->WalletName()))
+            throw std::runtime_error("Selected wallet does not match payment request");
+        const auto payments=wallet.getPendingPayments();
+        result["payments"]=din::arr();
+        for(const auto& p:payments) {
+            din::Json row;row["txid"]=p.txid;row["hex"]=util::hex(p.signed_body);row["address"]=p.intent.address;
+            row["amount_una"]=static_cast<din::Json::UInt64>(p.intent.amount_una);row["fee_una"]=static_cast<din::Json::UInt64>(p.fee_una);
+            row["label"]=p.intent.label;row["created_at"]=static_cast<din::Json::Int64>(p.created_at);row["state"]="retained";
+            row["inputs"]=din::arr();
+            for(const auto& in:p.inputs){din::Json coin;coin["txid"]=in.txid;coin["vout"]=in.vout;coin["amount_una"]=static_cast<din::Json::UInt64>(in.amount_una);row["inputs"].append(coin);}
+            result["payments"].append(row);
+        }
+        result["note"]="Retained wallet-created payments; not a mempool or confirmation report. Earlier untracked payments are not included.";
+    } catch(const std::exception& e){result=din::Json();result["error"]=e.what();}
+    return result;
+}
+
 void registerWalletMethodsContext() {
+    g_rpcRegistry.registerHandler("wallet.listpendingpayments",rpc_context_wallet_listpendingpayments,RegisterMode::Overwrite,"context-aware");
     // Core wallet methods (fully implemented)
     g_rpcRegistry.registerHandler("wallet.getbalance",
                                  rpc_context_wallet_getbalance,

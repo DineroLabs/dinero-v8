@@ -22,6 +22,7 @@
 #include <cstring>
 
 void registerV7PqWalletMethods();
+din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext&,const din::Json&);
 din::Json rpc_context_wallet_signrawtransaction(const ExecutionContext&,const din::Json&);
 namespace {
 class HistoricalRpc : public ::testing::Test {
@@ -199,6 +200,88 @@ TEST_F(WalletOwnedSigning, CompleteOutpointsBeforeKeyReadsAndNoFallback) {
     // a remembered HD label. Only synthetic fixture records are changed.
     sql(db,"UPDATE imported_keys SET private_key_enc='broken'");auto input=unsigned_tx({old,modern});input.selected_utxos[0].path=hd.path;
     const auto result=dinero::SignWalletTransaction(w,identity,input);EXPECT_FALSE(result.success);EXPECT_TRUE(result.signed_tx.tx.vin.empty());for(const auto& in:input.tx.vin)EXPECT_TRUE(in.witness.empty());
+}
+
+class WalletPendingPayment : public WalletOwnedSigning {
+protected:
+    void fund(const dinero::CanonicalWalletUTXO& c) {
+        sql(service->get().getCurrentDatabase(),"INSERT INTO utxos(wallet_id,txid,vout,address,amount,script_pubkey,height,is_coinbase,is_mature,is_spent) VALUES(1,'"+c.GetTxIdHex()+"',"+std::to_string(c.vout)+",'fixture',"+std::to_string(c.value.GetUna())+",'"+util::hex(c.spk)+"',1,0,1,0)");
+    }
+    dinero::UnsignedTransaction payment() {
+        auto result=unsigned_tx({old,modern});result.tx.vout[0].scriptPubKey=modern.spk;return result;
+    }
+    dinero::SignResult stage(const dinero::UnsignedTransaction& input) {
+        auto& w=service->get();return dinero::SignAndStageWalletPayment(w,dinero::CaptureWalletSigningIdentity(w,"owner"),input,{modern_address,199000,""});
+    }
+    static int count(sqlite3* db,const char* table) {
+        sqlite3_stmt* q=nullptr;const std::string text="SELECT count(*) FROM "+std::string(table);
+        if(sqlite3_prepare_v2(db,text.c_str(),-1,&q,nullptr)!=SQLITE_OK)throw std::runtime_error("count prepare");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> owned(q,sqlite3_finalize);
+        if(sqlite3_step(q)!=SQLITE_ROW)throw std::runtime_error("count read");const int n=sqlite3_column_int(q,0);
+        if(sqlite3_step(q)!=SQLITE_DONE)throw std::runtime_error("count EOF");return n;
+    }
+    static std::string envelope(sqlite3* db) {
+        sqlite3_stmt* q=nullptr;
+        if(sqlite3_prepare_v2(db,"SELECT hex(pending_payment_owner) FROM wallet_meta WHERE id=1",-1,&q,nullptr)!=SQLITE_OK)throw std::runtime_error("envelope prepare");
+        std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> owned(q,sqlite3_finalize);
+        if(sqlite3_step(q)!=SQLITE_ROW)throw std::runtime_error("envelope read");const auto* p=sqlite3_column_text(q,0);
+        std::string result(reinterpret_cast<const char*>(p),sqlite3_column_bytes(q,0));
+        if(sqlite3_step(q)!=SQLITE_DONE)throw std::runtime_error("envelope EOF");return result;
+    }
+};
+TEST_F(WalletPendingPayment, SignedOriginHistoryReservationsAndReopen) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();fund(old);fund(modern);
+    const auto input=payment();const auto result=stage(input);ASSERT_TRUE(result.success)<<result.error;verify(result.signed_tx.tx,{old,modern});
+    auto records=w.getPendingPayments();ASSERT_EQ(records.size(),1u);const auto p=records[0];
+    EXPECT_EQ(p.txid,result.signed_tx.tx.GetTxid().AsUint256().GetHex());EXPECT_EQ(p.signed_body,result.signed_tx.tx.Serialize(dinero::TxSerializationMode::WithWitness));
+    EXPECT_EQ(p.intent.address,modern_address);EXPECT_EQ(p.intent.amount_una,199000u);EXPECT_EQ(p.fee_una,1000u);EXPECT_EQ(p.inputs.size(),2u);
+    EXPECT_EQ(count(db,"transactions"),1);auto history=w.getTransactionHistory();ASSERT_EQ(history.size(),1u);EXPECT_EQ(history[0].category,"send");EXPECT_DOUBLE_EQ(history[0].amount,-0.002);
+    EXPECT_TRUE(w.isUTXOLocked(old.GetTxIdHex(),old.vout));EXPECT_TRUE(w.isUTXOLocked(modern.GetTxIdHex(),modern.vout));EXPECT_EQ(w.getLockedUTXOs().size(),2u);EXPECT_DOUBLE_EQ(w.getLockedBalance(),0.002);
+    EXPECT_FALSE(w.unlockUTXO(old.GetTxIdHex(),old.vout));EXPECT_EQ(w.unlockAllUTXOs(),0u);EXPECT_FALSE(w.abandonTransaction(p.txid));EXPECT_FALSE(w.getAbandonmentInfo(p.txid).success);
+    auto listed=rpc_context_wallet_listpendingpayments(ctx,din::Json());ASSERT_FALSE(listed.isMember("error"))<<listed.toStyledString();ASSERT_EQ(listed["payments"].size(),1u);EXPECT_EQ(listed["payments"][0]["hex"].asString(),util::hex(p.signed_body));
+    ctx.walletName="other";EXPECT_TRUE(rpc_context_wallet_listpendingpayments(ctx,din::Json()).isMember("error"));ctx.walletName="owner";
+    const auto stored=envelope(db);auto duplicate=stage(input);EXPECT_FALSE(duplicate.success);EXPECT_TRUE(duplicate.signed_tx.tx.vin.empty());EXPECT_EQ(envelope(db),stored);EXPECT_EQ(count(db,"transactions"),1);
+    // A stale selection for a distinct body still cannot obtain the same reservations.
+    auto conflicting=input;conflicting.tx.lockTime=17;auto refused=stage(conflicting);EXPECT_FALSE(refused.success);EXPECT_TRUE(refused.signed_tx.tx.vin.empty());EXPECT_EQ(envelope(db),stored);
+    w.lockWallet();EXPECT_THROW(w.getPendingPayments(),std::runtime_error);w.open("owner");w.unlockWallet("historical-rpc",0);
+    records=w.getPendingPayments();ASSERT_EQ(records.size(),1u);EXPECT_EQ(records[0].signed_body,p.signed_body);EXPECT_TRUE(w.isUTXOLocked(old.GetTxIdHex(),old.vout));
+    // Existing chain observations preserve the immutable origin; rollback leaves reservations intact.
+    ASSERT_TRUE(w.confirmTransaction(p.txid,2));EXPECT_EQ(envelope(w.getCurrentDatabase()),stored);EXPECT_EQ(w.getPendingPayments()[0].signed_body,p.signed_body);
+    auto second=input;second.selected_utxos[0].vout=7;second.selected_utxos[1].vout=8;
+    second.tx.vin[0].prevout.vout=7;second.tx.vin[1].prevout.vout=8;
+    fund(second.selected_utxos[0]);fund(second.selected_utxos[1]);auto next=stage(second);ASSERT_TRUE(next.success)<<next.error;
+    auto both=w.getPendingPayments();ASSERT_EQ(both.size(),2u);EXPECT_EQ(both[0].signed_body,p.signed_body);EXPECT_EQ(both[1].signed_body,next.signed_tx.tx.Serialize(dinero::TxSerializationMode::WithWitness));
+    w.open("owner");w.unlockWallet("historical-rpc",0);EXPECT_EQ(w.getPendingPayments().size(),2u);EXPECT_EQ(w.getLockedUTXOs().size(),4u);
+}
+TEST_F(WalletPendingPayment, FailedWritesCommitAndStaleSelectionPublishNothing) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();fund(old);fund(modern);const auto input=payment();
+    const auto failure=[&]{auto r=stage(input);EXPECT_FALSE(r.success);EXPECT_TRUE(r.signed_tx.tx.vin.empty());EXPECT_TRUE(w.getPendingPayments().empty());EXPECT_EQ(count(db,"transactions"),0);};
+    sql(db,"UPDATE utxos SET amount=amount-1 WHERE vout=1");failure();sql(db,"UPDATE utxos SET amount=amount+1 WHERE vout=1");
+    sql(db,"UPDATE utxos SET is_spent=1 WHERE vout=1");failure();sql(db,"UPDATE utxos SET is_spent=0 WHERE vout=1");
+    w.lockUTXO(old.GetTxIdHex(),old.vout);failure();w.unlockUTXO(old.GetTxIdHex(),old.vout);
+    sql(db,"CREATE TRIGGER payment_history_failure BEFORE INSERT ON transactions BEGIN SELECT RAISE(ABORT,'payment fixture'); END");failure();sql(db,"DROP TRIGGER payment_history_failure");
+    struct Hook {bool writing=false;int commits=0;static int trace(unsigned,void* p,void* q,void*) {auto& h=*static_cast<Hook*>(p);const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(q));if(s && std::strstr(s,"UPDATE wallet_meta SET pending_payment_owner"))h.writing=true;return 0;}static int commit(void* p){auto& h=*static_cast<Hook*>(p);if(h.writing){++h.commits;return 1;}return 0;}} hook;
+    sqlite3_trace_v2(db,SQLITE_TRACE_STMT,Hook::trace,&hook);sqlite3_commit_hook(db,Hook::commit,&hook);auto r=stage(input);sqlite3_commit_hook(db,nullptr,nullptr);sqlite3_trace_v2(db,0,nullptr,nullptr);
+    EXPECT_FALSE(r.success);EXPECT_TRUE(r.signed_tx.tx.vin.empty());EXPECT_EQ(hook.commits,1);EXPECT_TRUE(w.getPendingPayments().empty());EXPECT_EQ(count(db,"transactions"),0);
+    const auto identity=dinero::CaptureWalletSigningIdentity(w,"owner");
+    sql(db,"BEGIN");r=dinero::SignAndStageWalletPayment(w,identity,input,{modern_address,199000,""});EXPECT_FALSE(r.success);EXPECT_FALSE(sqlite3_get_autocommit(db));sql(db,"ROLLBACK");
+    r=stage(input);ASSERT_TRUE(r.success)<<r.error;EXPECT_EQ(count(db,"transactions"),1);
+}
+TEST_F(WalletPendingPayment, CorruptOwnerReadFailureAndIntentRefuse) {
+    auto& w=service->get();auto* db=w.getCurrentDatabase();fund(old);fund(modern);auto input=payment();
+    auto wrong=input;wrong.tx.vout[0].value=dinero::AmountUna::Una(198999);auto bad=stage(wrong);EXPECT_FALSE(bad.success);EXPECT_TRUE(bad.signed_tx.tx.vin.empty());EXPECT_TRUE(w.getPendingPayments().empty());
+    const auto result=stage(input);ASSERT_TRUE(result.success)<<result.error;const auto stored=envelope(db);
+    for(const auto& mutation:{std::string("NULL"),std::string("X'00'"),std::string("'wrong SQL type'"),std::string("X'")+(stored.substr(0,2)=="00"?"01":"00")+stored.substr(2)+"'"}) {
+        sql(db,"UPDATE wallet_meta SET pending_payment_owner="+mutation+" WHERE id=1");EXPECT_THROW(w.getPendingPayments(),std::runtime_error);
+        EXPECT_THROW(w.isUTXOLocked(old.GetTxIdHex(),old.vout),std::runtime_error);
+        w.lockWallet();EXPECT_THROW(w.unlockWallet("historical-rpc",0),std::runtime_error);EXPECT_TRUE(w.isWalletLocked());
+        sql(db,"UPDATE wallet_meta SET pending_payment_owner=X'"+stored+"' WHERE id=1");w.unlockWallet("historical-rpc",0);
+    }
+    sqlite3_set_authorizer(db,[](void*,int op,const char* table,const char* column,const char*,const char*){return op==SQLITE_READ && table && column && std::strcmp(table,"wallet_meta")==0 && std::strcmp(column,"pending_payment_owner")==0?SQLITE_DENY:SQLITE_OK;},nullptr);
+    EXPECT_THROW(w.getPendingPayments(),std::runtime_error);auto denied=stage(input);EXPECT_FALSE(denied.success);EXPECT_TRUE(denied.signed_tx.tx.vin.empty());sqlite3_set_authorizer(db,nullptr,nullptr);
+    EXPECT_EQ(envelope(db),stored);EXPECT_EQ(w.getPendingPayments().size(),1u);
+    struct Interrupt {sqlite3* db;bool fired=false;static int trace(unsigned type,void* p,void* stmt,void*){auto& h=*static_cast<Interrupt*>(p);const auto* s=sqlite3_sql(static_cast<sqlite3_stmt*>(stmt));if(type==SQLITE_TRACE_ROW && !h.fired && s && std::strstr(s,"SELECT pending_payment_owner")){h.fired=true;sqlite3_interrupt(h.db);}return 0;}} interrupted{db};
+    sqlite3_trace_v2(db,SQLITE_TRACE_ROW,Interrupt::trace,&interrupted);EXPECT_THROW(w.getPendingPayments(),std::runtime_error);sqlite3_trace_v2(db,0,nullptr,nullptr);EXPECT_TRUE(interrupted.fired);EXPECT_EQ(w.getPendingPayments().size(),1u);
 }
 
 }

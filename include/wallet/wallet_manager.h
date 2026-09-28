@@ -22,6 +22,7 @@
 #include "wallet/keystore.h"  // Week 1 Day 5: WalletKeyStore interface
 #include "wallet/key_identity.h"  // Week 1 Day 5: KeyID type
 #include "wallet/signing_key.h"
+#include "wallet/pending_payment.h"
 #include "wallet/key_origin.h"  // Week 1 Day 5: KeyOriginInfo
 
 struct sqlite3; // forward decl
@@ -43,6 +44,7 @@ namespace dinero {
 // must agree with the actual declaration.
 struct Block;
 struct Transaction;
+struct UnsignedTransaction;
 class WalletManager;
 class Mempool;
 class ILogger;  // Dependency injection for logging
@@ -302,6 +304,11 @@ public:
         // Resolve only under this exact lease and its already-authorized seed pin.
         [[nodiscard]] std::optional<SigningKey> ResolveSigningKey(
             const std::string& script_pubkey, const RecoverySeed& owner);
+        // Called only after exact-input signing under this lease and seed pin.
+        // Commits body, real payment intent, history and reservations together;
+        // no admission or chain callback is allowed while this owner is held.
+        void StagePayment(const RecoverySeed&, const UnsignedTransaction&,
+                          const Transaction&, const PendingPaymentIntent&);
     private:
         friend class WalletManager;
         explicit DatabaseLease(WalletManager&);
@@ -516,6 +523,10 @@ public:
      * @param vout Output index
      * @return true if locked
      */
+    // Requires unlock when a payment owner is installed. Authenticates the
+    // complete retained set; absence means this legacy wallet has no installed
+    // owner, never that historical pending transactions have been recovered.
+    std::vector<PendingPayment> getPendingPayments() const;
     bool isUTXOLocked(const std::string& txid, uint32_t vout) const;
 
     /**
@@ -993,6 +1004,7 @@ public:
                                 std::string* error_out = nullptr);
 
 private:
+    std::vector<PendingPayment> ReadPendingPaymentsOwned(std::span<const uint8_t> seed) const;
     std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKeyOwned(
         const std::string& script_pubkey, SigningKeyPolicy* policy, bool pinned_signing = false);
     void rewriteEncryptionPolicy(const std::string& old_passphrase,
