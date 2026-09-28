@@ -801,6 +801,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Owned ranked mempool RPC capture
+        run: |
+          cmake --build build-orchard-root --target test_mempool_ranked_rpc --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^MempoolRankedRpc$' --show-only=json-v1 > orchard-ranked-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-ranked-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['MempoolRankedRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^MempoolRankedRpc$' --verbose --no-tests=error --output-log orchard-ranked-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-ranked-rpc-execution.log').read_text()
+          for case in ['SignedRankedCaptureSurvivesRemoval','IndexedReadRefusesPartialResult','ClosedServiceRefusesCapture','CanonicalOrchardRankedReader']:
+              assert log.count('[       OK ] MempoolRankedRpc.'+case+' ')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Require and execute all-ancestor package bounds
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolPackageBounds$' --show-only=json-v1 > orchard-package-bounds-inventory.json
@@ -1838,6 +1857,8 @@ jobs:
             orchard-relay-reader-execution.log
             orchard-raw-rpc-inventory.json
             orchard-raw-rpc-execution.log
+            orchard-ranked-rpc-inventory.json
+            orchard-ranked-rpc-execution.log
             orchard-package-bounds-inventory.json
             orchard-package-bounds-execution.log
             orchard-replacement-policy-inventory.json

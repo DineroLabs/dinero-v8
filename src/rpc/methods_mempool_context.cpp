@@ -696,7 +696,7 @@ din::Json rpc_context_mempool_clear(const ExecutionContext& ctx, const din::Json
 }
 
 /**
- * mempool.getbyfee - Get transactions sorted by fee rate
+ * mempool.getbyfee - Get entries in the existing package-selection order
  *
  * NEW method - useful for block template creation and fee analysis
  */
@@ -720,33 +720,19 @@ din::Json rpc_context_mempool_getbyfee(const ExecutionContext& ctx, const din::J
             max_count = params[0].as<int>();
         }
 
-        auto& mempool = mempool_service->mempool();
-        auto txs = mempool.getTransactionsByFeeRate(max_count);
-
+        auto use = dinero::MempoolService::AcquirePoolUse(mempool_service);
+        const auto entries = use->Pool().CaptureEntriesByFeeRate(max_count);
         din::Json tx_array = din::arr();
-        for (const auto& tx : txs) {
-            // Phase M.0: Keep identity as uint256, convert to hex only for output
-            uint256 txid = tx.GetTxid().AsUint256();  // Phase M.4: Unwrap TxId
+        for (const auto& entry : entries) {
             din::Json tx_obj;
-            tx_obj["txid"] = txid.GetHex();  // Convert to hex at RPC boundary
-            tx_obj["size"] = static_cast<int>(tx.GetSize());
-
-            // Add fee information from mempool entry
-            auto fee_opt = mempool.getTransactionFee(txid);
-            auto fee_rate_opt = mempool.getTransactionFeeRate(txid);
-
-            if (fee_opt) {
-                tx_obj["fee"] = static_cast<double>(fee_opt.value()) / 100000000.0;  // Convert to DIN
-            }
-            if (fee_rate_opt) {
-                tx_obj["feerate"] = fee_rate_opt.value();  // una/byte
-            }
-
+            tx_obj["txid"] = entry.tx.GetTxid().AsUint256().GetHex();
+            tx_obj["size"] = static_cast<int>(entry.tx.GetSize());
+            tx_obj["fee"] = static_cast<double>(entry.fee) / 100000000.0;
+            tx_obj["feerate"] = entry.fee_rate;
             tx_array.append(tx_obj);
         }
-
         result["transactions"] = tx_array;
-        result["count"] = static_cast<int>(txs.size());
+        result["count"] = static_cast<int>(entries.size());
 
     } catch (const std::exception& e) {
         result["error"] = std::string("Failed to get transactions by fee: ") + e.what();

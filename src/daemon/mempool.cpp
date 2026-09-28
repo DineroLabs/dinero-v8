@@ -1854,23 +1854,30 @@ std::vector<Transaction> Mempool::getAllTransactions() const {
     return transactions;
 }
 
-std::vector<Transaction> Mempool::getTransactionsByFeeRate(size_t max_count) const {
+std::vector<MempoolEntry> Mempool::CaptureEntriesByFeeRate(size_t max_count) const {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
-    
-    std::vector<Transaction> transactions;
-    transactions.reserve(std::min(max_count, m_transactions.size()));
-    
-    // Iterate from highest fee rate to lowest
-    for (auto it = m_fee_index.rbegin(); 
-         it != m_fee_index.rend() && transactions.size() < max_count; 
-         ++it) {
-        
-        auto tx_it = m_transactions.find(it->second);
-        if (tx_it != m_transactions.end()) {
-            transactions.push_back(tx_it->second.tx.Historical());
+    std::vector<MempoolEntry> entries;
+    entries.reserve(std::min(max_count, m_transactions.size()));
+    std::unordered_set<uint256> captured;
+    // Preserve the actual package-selection index; its score is not fee_rate.
+    for (auto it = m_fee_index.rbegin();
+         it != m_fee_index.rend() && entries.size() < max_count; ++it) {
+        const auto entry = m_transactions.find(it->second);
+        if (entry == m_transactions.end() || !entry->second.tx.HasBody() ||
+            entry->second.tx.GetTxid().AsUint256() != it->second ||
+            !captured.insert(it->second).second) {
+            throw std::runtime_error("Mempool ranked entry unavailable");
         }
+        entries.push_back(entry->second);
     }
-    
+    return entries;
+}
+
+std::vector<Transaction> Mempool::getTransactionsByFeeRate(size_t max_count) const {
+    const auto entries = CaptureEntriesByFeeRate(max_count);
+    std::vector<Transaction> transactions;
+    transactions.reserve(entries.size());
+    for (const auto& entry : entries) transactions.push_back(entry.tx.Historical());
     return transactions;
 }
 

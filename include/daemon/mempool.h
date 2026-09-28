@@ -183,6 +183,7 @@ struct MempoolBlockSelection {
 
 class Mempool {
     friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
+    friend class MempoolRankedRpcTestPeer; // Isolated ranked reader fixture only.
     friend class MempoolTypedIngressTestPeer; // Isolated lookup-error fixture; no production view setter.
 public:
     struct RBFRuntimeConfig {
@@ -276,6 +277,11 @@ public:
 
     // Mempool queries (Phase M.0: Changed to uint256)
     std::vector<Transaction> getAllTransactions() const;
+    // Capture matching bodies and entry metadata in existing package-score order.
+    // This bounded snapshot grants neither reservation nor lasting membership.
+    // Any unavailable indexed entry in the requested prefix refuses the read.
+    std::vector<MempoolEntry> CaptureEntriesByFeeRate(size_t max_count = 1000) const;
+    // Historical compatibility: explicitly refuses unsupported body families.
     std::vector<Transaction> getTransactionsByFeeRate(size_t max_count = 1000) const;
     std::vector<uint256> getTransactionIds() const;
     std::vector<Transaction> getTransactionsForAddress(const std::string& address) const;
