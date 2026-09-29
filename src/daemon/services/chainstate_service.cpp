@@ -2743,7 +2743,40 @@ void ChainstateService::setValidationMode(consensus::ValidationMode mode) {
     }
 }
 
+ChainstateService::WalletIndexUse::WalletIndexUse(std::shared_ptr<ChainstateService> source)
+    :source_(std::move(source)) {
+    if (!source_) throw std::runtime_error("Wallet index source unavailable");
+    std::lock_guard<std::mutex> lock(source_->wallet_index_use_mutex_);
+    const auto owned=source_->wallet_index_uses_by_thread_.find(thread_);
+    if ((!source_->wallet_index_accepting_ && owned==source_->wallet_index_uses_by_thread_.end()) ||
+        !source_->utxo_index_) throw std::runtime_error("Wallet index unavailable");
+    ++source_->wallet_index_uses_by_thread_[thread_];++source_->wallet_index_uses_;
+    index_=source_->utxo_index_.get();
+}
+ChainstateService::WalletIndexUse::~WalletIndexUse() noexcept {
+    if (thread_!=std::this_thread::get_id()) std::terminate();
+    std::lock_guard<std::mutex> lock(source_->wallet_index_use_mutex_);
+    auto owned=source_->wallet_index_uses_by_thread_.find(thread_);
+    if (owned==source_->wallet_index_uses_by_thread_.end() || !owned->second || !source_->wallet_index_uses_)
+        std::terminate();
+    if (!--owned->second) source_->wallet_index_uses_by_thread_.erase(owned);
+    --source_->wallet_index_uses_;source_->wallet_index_use_changed_.notify_all();
+}
+UTXOIndex& ChainstateService::WalletIndexUse::Index() const {
+    if (thread_!=std::this_thread::get_id()) throw std::logic_error("Wallet index operation is thread-affine");
+    return *index_;
+}
+std::unique_ptr<ChainstateService::WalletIndexUse> ChainstateService::AcquireWalletIndexUse(
+        std::shared_ptr<ChainstateService> source) {
+    return std::unique_ptr<WalletIndexUse>(new WalletIndexUse(std::move(source)));
+}
+
 bool ChainstateService::Init(DaemonContext& ctx) {
+    // Init/Start are serialized startup operations. Never replace an existing
+    // index, including one retained after a partial startup or shutdown.
+    {std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
+     if (wallet_index_stopping_ || wallet_index_accepting_ || utxo_index_) return false;}
+
     // Store dependencies
     if (ctx.logger) {
         logger_ = std::dynamic_pointer_cast<LoggerService>(ctx.logger);
@@ -3086,6 +3119,7 @@ bool ChainstateService::Init(DaemonContext& ctx) {
     //   WalletWorker skips scanning when no UTXO pointer is available (null-guarded behavior).
 
     logger_->info("[ChainstateService] Initialized successfully (bridge removed)");
+    {std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);wallet_index_accepting_=true;}
     return true;
 }
 
@@ -5199,72 +5233,96 @@ bool ChainstateService::Start() {
 }
 
 void ChainstateService::Stop() {
-    if (!started_) {
-        return;
-    }
-
-    logger_->info("[ChainstateService] Shutting down chainstate...");
-
-    // Wake any RPC handlers parked in getblocktemplate longpoll. Without
-    // this, each in-flight longpoll holds its HTTP server thread for up
-    // to the longpoll timeout (~8s) past daemon stop, delaying shutdown
-    // proportional to the number of concurrent longpollers. shutdown()
-    // is idempotent and safe to call before the notifier has been used.
-    // See include/rpc/longpoll_notifier.h for the full protocol.
-    dinero::rpc::LongPollNotifier::instance().shutdown();
-
-    if (chain_db_) {
-        // Save final state
-        auto tip_result = chain_db_->getTip();
-        uint32_t final_height = (tip_result.status() == Status::Ok) ? tip_result.value().height : 0;
-        logger_->info("[ChainstateService] Final height: " + std::to_string(final_height));
-    }
-
-    // BRIDGE REMOVED (November 7, 2025): No longer setting/clearing globals
-
-    // Phase 44: Gracefully shutdown background validation thread
-    if (bg_validation_thread_ && bg_validation_thread_->joinable()) {
-        logger_->info("[ChainstateService] Stopping background validation thread...");
-        // #298: set stop under bg_validation_wait_mutex_ then notify so the
-        // worker's signalable rescan wait returns immediately (no lost wakeup,
-        // no 30s shutdown stall).
-        {
-            std::lock_guard<std::mutex> wlk(bg_validation_wait_mutex_);
-            bg_validation_should_stop_ = true;
-        }
-        bg_validation_cv_.notify_all();
-        bg_validation_thread_->join();
-        // #298: drop the wake callback so a late backfill store cannot fire the
-        // [this] capture after this service is torn down.
-        if (auto* ctx = DaemonContext::instance(); ctx && ctx->block_download) {
-            ctx->block_download->SetOnBackfillBodyStored(nullptr);
-        }
-        logger_->info("[ChainstateService] Background validation thread stopped");
-    }
-
-    // Lifecycle caches the raw UTXOIndex*; destroy it first (Task 8's RPC
-    // accessor must never observe a lifecycle with a dangling index).
-    // The bg validation worker is already joined above, so no concurrent
-    // access to assumeutxo_lifecycle_ is possible at this point.
+    // Draining while holding selected-chain ownership can prevent an existing
+    // wallet operation from finishing its source capture. Refuse before effects.
+    if (activation_mutex_.HeldByCurrentThread())
+        throw std::logic_error("Chainstate shutdown requires released selected-chain ownership");
     {
-        std::lock_guard<std::mutex> lifecycle_lock(assumeutxo_lifecycle_init_mutex_);
-        assumeutxo_lifecycle_.reset();
+        std::unique_lock<std::mutex> lock(wallet_index_use_mutex_);
+        if (wallet_index_uses_by_thread_.count(std::this_thread::get_id()))
+            throw std::logic_error("Cannot stop chainstate inside a wallet index operation");
+        while (wallet_index_stopping_) {
+            if (wallet_index_stopping_thread_==std::this_thread::get_id())
+                throw std::logic_error("Recursive chainstate shutdown unavailable");
+            wallet_index_use_changed_.wait(lock,[&]{return !wallet_index_stopping_;});
+        }
+        wallet_index_accepting_=false;wallet_index_stopping_=true;
+        wallet_index_stopping_thread_=std::this_thread::get_id();
+        wallet_index_use_changed_.wait(lock,[&]{return wallet_index_uses_==0;});
     }
+    const auto finished=[this] {
+        std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
+        wallet_index_stopping_=false;wallet_index_stopping_thread_={};
+        wallet_index_use_changed_.notify_all();
+    };
+    try {
+        if (started_) {
 
-    // Reset instances (ONE DB: chain_manager and chain_db owned globally, not here)
-    utxo_index_.reset();
+            logger_->info("[ChainstateService] Shutting down chainstate...");
 
-    // P2P and validation workers are stopped before this service. Relay,
-    // proof-provider and CSN callbacks retain chainstate, so release the
-    // reverse owning links after the final state flush and worker join.
-    p2p_service_.reset();
-    block_relay_manager_.reset();
-    proof_gossip_manager_.reset();
-    stateless_node_.reset();
+            // Wake any RPC handlers parked in getblocktemplate longpoll. Without
+            // this, each in-flight longpoll holds its HTTP server thread for up
+            // to the longpoll timeout (~8s) past daemon stop, delaying shutdown
+            // proportional to the number of concurrent longpollers. shutdown()
+            // is idempotent and safe to call before the notifier has been used.
+            // See include/rpc/longpoll_notifier.h for the full protocol.
+            dinero::rpc::LongPollNotifier::instance().shutdown();
 
-    logger_->info("[ChainstateService] Chainstate shutdown complete");
-    started_ = false;
-    started_flag_.store(false);
+            if (chain_db_) {
+                // Save final state
+                auto tip_result = chain_db_->getTip();
+                uint32_t final_height = (tip_result.status() == Status::Ok) ? tip_result.value().height : 0;
+                logger_->info("[ChainstateService] Final height: " + std::to_string(final_height));
+            }
+
+            // BRIDGE REMOVED (November 7, 2025): No longer setting/clearing globals
+
+            // Phase 44: Gracefully shutdown background validation thread
+            if (bg_validation_thread_ && bg_validation_thread_->joinable()) {
+                logger_->info("[ChainstateService] Stopping background validation thread...");
+                // #298: set stop under bg_validation_wait_mutex_ then notify so the
+                // worker's signalable rescan wait returns immediately (no lost wakeup,
+                // no 30s shutdown stall).
+                {
+                    std::lock_guard<std::mutex> wlk(bg_validation_wait_mutex_);
+                    bg_validation_should_stop_ = true;
+                }
+                bg_validation_cv_.notify_all();
+                bg_validation_thread_->join();
+                // #298: drop the wake callback so a late backfill store cannot fire the
+                // [this] capture after this service is torn down.
+                if (auto* ctx = DaemonContext::instance(); ctx && ctx->block_download) {
+                    ctx->block_download->SetOnBackfillBodyStored(nullptr);
+                }
+                logger_->info("[ChainstateService] Background validation thread stopped");
+            }
+
+            // Lifecycle caches the raw UTXOIndex*; destroy it first (Task 8's RPC
+            // accessor must never observe a lifecycle with a dangling index).
+            // The bg validation worker is already joined above, so no concurrent
+            // access to assumeutxo_lifecycle_ is possible at this point.
+            {
+                std::lock_guard<std::mutex> lifecycle_lock(assumeutxo_lifecycle_init_mutex_);
+                assumeutxo_lifecycle_.reset();
+            }
+
+            // Reset instances (ONE DB: chain_manager and chain_db owned globally, not here)
+            utxo_index_.reset();
+
+            // P2P and validation workers are stopped before this service. Relay,
+            // proof-provider and CSN callbacks retain chainstate, so release the
+            // reverse owning links after the final state flush and worker join.
+            p2p_service_.reset();
+            block_relay_manager_.reset();
+            proof_gossip_manager_.reset();
+            stateless_node_.reset();
+
+            logger_->info("[ChainstateService] Chainstate shutdown complete");
+            started_ = false;
+            started_flag_.store(false);
+        }
+    } catch (...) { finished();throw; }
+    finished();
 }
 
 bool ChainstateService::IsHealthy() const {

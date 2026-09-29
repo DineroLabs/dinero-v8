@@ -77,6 +77,9 @@ bool WalletService::Start() {
     try { use=BorrowWalletUse(); } catch (const std::exception&) {
         return false;
     }
+    std::unique_ptr<ChainstateService::WalletIndexUse> index_use;
+    try { if (chainstate_) index_use=ChainstateService::AcquireWalletIndexUse(chainstate_); }
+    catch (const std::exception&) { return false; }
     if (!wallet_mgr_) {
         logger_interface_->error("[WalletService] Cannot start - wallet manager not initialized");
         return false;
@@ -107,7 +110,7 @@ bool WalletService::Start() {
         // Get UTXO index from chainstate service if available
         UTXOIndex* utxo_index = nullptr;
         if (chainstate_) {
-            utxo_index = chainstate_->utxoIndex();
+            utxo_index = &index_use->Index();
             logger_interface_->info("[WalletService] Initializing wallet worker with UTXO index");
         } else {
             logger_interface_->warning("[WalletService] Chainstate not available - wallet worker will start without UTXO index");
@@ -410,6 +413,14 @@ bool WalletService::EnsureRuntimeWalletBindings() {
         return false;
     }
 
+    std::unique_ptr<ChainstateService::WalletIndexUse> index_use;
+    try {
+        if (chainstate_) {
+            index_use=ChainstateService::AcquireWalletIndexUse(chainstate_);
+            if (wallet_mgr_->getUTXOIndex()!=&index_use->Index()) return false;
+        }
+    } catch (const std::exception&) { return false; }
+
     try {
         wallet_mgr_->LoadAddressesIntoUTXOIndex();
     } catch (const std::exception& e) {
@@ -480,6 +491,15 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) 
         return false;
     }
 
+    std::unique_ptr<ChainstateService::WalletIndexUse> index_use;
+    try {
+        index_use=ChainstateService::AcquireWalletIndexUse(chainstate_);
+        if (wallet_mgr_->getUTXOIndex()!=&index_use->Index()) {
+            if (error) *error="wallet index binding does not match current source";
+            return false;
+        }
+    } catch (const std::exception& e) { if (error) *error=e.what();return false; }
+
     try {
         const uint32_t base_height = chainstate_->GetSnapshotWalletRecoveryBaseHeight();
         if (base_height == 0) {
@@ -546,11 +566,13 @@ void WalletService::Stop() {
         std::unique_lock<std::mutex> lock(operation_mutex_);
         if (operations_by_thread_.count(std::this_thread::get_id()))
             throw std::logic_error("Cannot stop wallet service inside an active operation");
-        if (stopping_) {
+        while (stopping_) {
             if (stopping_thread_==std::this_thread::get_id())
                 throw std::logic_error("Recursive wallet shutdown is not available");
-            operation_changed_.wait(lock,[&]{return !stopping_;});return;
+            operation_changed_.wait(lock,[&]{return !stopping_;});
         }
+        // A prior shutdown attempt may have retained the manager after a
+        // required prerequisite failed. Recheck it and finish the retry.
         if (!wallet_mgr_) return;
         accepting_=false;stopping_=true;stopping_thread_=std::this_thread::get_id();
         operation_changed_.notify_all();

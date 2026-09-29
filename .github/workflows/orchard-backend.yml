@@ -998,6 +998,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Owned chainstate wallet index lifetime and checked shutdown
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(ChainstateWalletIndexOwner)$' --show-only=json-v1 > chainstate-wallet-index-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('chainstate-wallet-index-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['ChainstateWalletIndexOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(ChainstateWalletIndexOwner)$' --verbose --no-tests=error --output-log chainstate-wallet-index-owner-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('chainstate-wallet-index-owner-execution.log').read_text()
+          for case in ['MissingAndStoppedSourcesRefuse','NestedOwnershipPreservesExactIndex','SelectedOwnershipRefusesShutdownBeforeEffects','WalletBindingRequiresCurrentOwnedIndex']:
+              assert log.count('[       OK ] ChainstateWalletIndexOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Check typed canonical block announcement handoff
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2565,10 +2584,12 @@ jobs:
             orchard-network-routing-inventory.json
             orchard-block-announcement-inventory.json
             orchard-reorg-readmission-inventory.json
+            chainstate-wallet-index-owner-inventory.json
             wallet-service-owner-inventory.json
             orchard-network-routing-execution.log
             orchard-block-announcement-execution.log
             orchard-reorg-readmission-execution.log
+            chainstate-wallet-index-owner-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log

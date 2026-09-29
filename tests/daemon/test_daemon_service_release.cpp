@@ -1,4 +1,5 @@
 #include "daemon/daemon_app.h"
+#include "daemon/services/chainstate_service.h"
 #include "daemon/config.h"
 #include "consensus/chainparams.h"
 #include "consensus/shielded/pedersen_generators.h"
@@ -58,7 +59,20 @@ int main(int argc, char** argv) try {
         watch("tx_relay", ctx.tx_relay);
         if (observed.size() < 20) throw std::runtime_error("daemon graph was not initialized");
         if (!app.Start()) throw std::runtime_error("daemon Start failed");
+        {
+            auto index=dinero::ChainstateService::AcquireWalletIndexUse(ctx.chainstate);
+            if (&index->Index()!=ctx.chainstate->utxoIndex())
+                throw std::runtime_error("wallet index owner changed instance");
+            bool refused=false;
+            try { ctx.chainstate->Stop(); } catch (const std::logic_error&) { refused=true; }
+            if (!refused) throw std::runtime_error("owned wallet index did not prevent same-thread shutdown");
+        }
         app.Stop();
+        bool stopped=false;
+        try { auto index=dinero::ChainstateService::AcquireWalletIndexUse(ctx.chainstate); }
+        catch (const std::runtime_error&) { stopped=true; }
+        if (!stopped) throw std::runtime_error("stopped chainstate still grants wallet index ownership");
+        std::cout << "PASS actual started wallet index ownership and shutdown refusal\n";
         app.Stop(); // Lifecycle remains idempotent.
     }
     bool retained = false;

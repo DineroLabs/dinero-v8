@@ -138,6 +138,25 @@ public:
     bool IsHealthy() const override;
     std::string GetMetrics() const override;
 
+    // Keeps this service's exact wallet index alive through a synchronous
+    // operation. This is lifetime ownership, not a selected-chain snapshot.
+    // Acquire before wallet database/index locks; Stop runs outside chain locks.
+    class WalletIndexUse final {
+    public:
+        ~WalletIndexUse() noexcept;
+        WalletIndexUse(const WalletIndexUse&)=delete;
+        WalletIndexUse& operator=(const WalletIndexUse&)=delete;
+        UTXOIndex& Index() const;
+    private:
+        friend class ChainstateService;
+        explicit WalletIndexUse(std::shared_ptr<ChainstateService>);
+        std::shared_ptr<ChainstateService> source_;
+        const std::thread::id thread_=std::this_thread::get_id();
+        UTXOIndex* index_=nullptr;
+    };
+    [[nodiscard]] static std::unique_ptr<WalletIndexUse> AcquireWalletIndexUse(
+        std::shared_ptr<ChainstateService> source);
+
     // Phase 39: ChainManager accessor (temporary - callers being migrated)
     ChainManager& chainManager();
     const ChainManager& chainManager() const;
@@ -1522,6 +1541,13 @@ private:
     // ❌ DELETED: std::unique_ptr<ChainManager> chain_manager_ (uses global g_chain_manager instead)
     // ❌ DELETED: std::unique_ptr<ChainDB> chain_db_ (violated ONE DB Definition)
     // ChainDB is owned by global g_chain_manager, constructed by DaemonApp
+    mutable std::mutex wallet_index_use_mutex_;
+    mutable std::condition_variable wallet_index_use_changed_;
+    std::map<std::thread::id,size_t> wallet_index_uses_by_thread_;
+    size_t wallet_index_uses_=0;
+    bool wallet_index_accepting_=false;
+    bool wallet_index_stopping_=false;
+    std::thread::id wallet_index_stopping_thread_;
     std::unique_ptr<UTXOIndex> utxo_index_;                    // UTXO set index (wallet-owned UTXOs only)
     std::unique_ptr<consensus::ConsensusUTXOSet> consensus_utxo_set_; // Phase 2: Pure in-memory UTXO set (owns forest)
     std::unique_ptr<indexing::UTXOPositionIndex> utxo_position_index_; // Phase 11a: UTXO → Utreexo position mapping (indexing layer)

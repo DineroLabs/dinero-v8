@@ -687,3 +687,5 @@ int main(int argc, char** argv) {
 #include "orchard_reorg_readmission_checks.h"
 
 #include "wallet_service_owner_checks.h"
+
+#include "chainstate_wallet_index_owner_checks.h"
