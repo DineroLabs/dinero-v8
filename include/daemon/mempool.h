@@ -28,6 +28,8 @@ namespace din::sp {
 }
 
 namespace dinero {
+class VerifiedUtreexoTransaction;
+
 
 namespace consensus {
 class IConsensusUTXOSet;
@@ -426,6 +428,11 @@ public:
      */
     bool refreshProof(const uint256& txid, const std::vector<uint8_t>& new_root,
                       uint32_t new_height);
+
+    // Caller retains selected-chain ownership from proof verification through
+    // this publication. Exact body and selected pool root/height must agree.
+    // Atomically publishes complete payload and freshness metadata; no admission.
+    bool publishProofPayload(const VerifiedUtreexoTransaction& verified);
 
     /** Store raw utxotx wire payload for CSN-to-CSN relay. */
     bool setCachedUtxoTxPayload(const uint256& txid, std::vector<uint8_t> payload);

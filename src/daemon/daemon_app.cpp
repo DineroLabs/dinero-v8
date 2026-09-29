@@ -1,3 +1,4 @@
+#include "daemon/utreexo_tx_reader.h"
 #include "daemon/utreexo_tx_payload.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
@@ -5304,229 +5305,76 @@ bool DaemonApp::Init(int argc, char** argv) {
                         auto tx_relay_for_utxotx = ctx_.tx_relay;
                         auto mempool_for_utxotx = std::dynamic_pointer_cast<MempoolService>(ctx_.mempool);
 
-                        p2p_service->OnUtxoTx = [stateless_node, tx_relay_for_utxotx, mempool_for_utxotx](
-                            const std::string& peer_addr,
-                            const ::P2PMessage& msg
-                        ) {
-                            const auto& payload = msg.payload;
-
-                            // ── Hardening: size bounds ──
-                            constexpr size_t MAX_UTXOTX_SIZE = 2 * 1024 * 1024;
-                            constexpr uint32_t MAX_TX_BYTES = 1 * 1024 * 1024;
-                            constexpr uint32_t MAX_PROOF_BYTES = 256 * 1024;
-                            constexpr uint32_t MAX_SCRIPT_BYTES = 10 * 1024;
-                            constexpr uint32_t MAX_PROOFS = 1000;
-
-                            if (payload.size() < 73) {
-                                g_logger.error("[CSN-TX] utxotx payload too small (" +
-                                              std::to_string(payload.size()) + " bytes)");
-                                return;
-                            }
-                            if (payload.size() > MAX_UTXOTX_SIZE) {
-                                g_logger.error("[CSN-TX] utxotx rejected: " +
-                                              std::to_string(payload.size()) + " bytes exceeds limit");
-                                return;
-                            }
-
-                            size_t pos = 0;
-
-                            // 1. Version
-                            uint8_t version = payload[pos++];
-                            if (version != 0x01 && version != 0x02) {
-                                g_logger.error("[CSN-TX] Unsupported utxotx version " + std::to_string(version));
-                                return;
-                            }
-
-                            // 2. Txid (32 bytes)
-                            if (32 > payload.size() - pos) return;
-                            uint256 txid;
-                            std::memcpy(txid.data, &payload[pos], 32);
-                            pos += 32;
-                            auto complete_refresh = [&]() {
-                                if (tx_relay_for_utxotx) {
-                                    tx_relay_for_utxotx->CompleteRefresh(txid);
-                                }
-                            };
-
-                            // 3. TX size + data
-                            if (4 > payload.size() - pos) return;
-                            uint32_t tx_size = 0;
-                            std::memcpy(&tx_size, &payload[pos], 4);
-                            pos += 4;
-
-                            if (tx_size == 0 || tx_size > MAX_TX_BYTES || tx_size > payload.size() - pos) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Invalid tx_size=" + std::to_string(tx_size));
-                                return;
-                            }
-
-                            Transaction tx;
-                            {
-                                std::vector<uint8_t> tx_bytes(payload.begin() + pos,
-                                                               payload.begin() + pos + tx_size);
-                                if (!dinero::TransactionSerializer::Deserialize(tx, tx_bytes)) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] TX deserialization failed");
-                                    return;
-                                }
-                            }
-                            pos += tx_size;
-
-                            // 4. Num proofs
-                            if (4 > payload.size() - pos) return;
-                            uint32_t num_proofs = 0;
-                            std::memcpy(&num_proofs, &payload[pos], 4);
-                            pos += 4;
-
-                            if (num_proofs > MAX_PROOFS) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Too many proofs: " + std::to_string(num_proofs));
-                                return;
-                            }
-
-                            // 5. Parse per-input proofs
-                            std::vector<std::pair<consensus::UtreexoProof, consensus::SpentOutputData>> input_proofs;
-                            input_proofs.reserve(num_proofs);
-
-                            for (uint32_t i = 0; i < num_proofs; i++) {
-                                if (4 > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Truncated proof header at index " + std::to_string(i));
-                                    return;
-                                }
-                                uint32_t proof_size = 0;
-                                std::memcpy(&proof_size, &payload[pos], 4);
-                                pos += 4;
-
-                                if (proof_size > MAX_PROOF_BYTES || proof_size > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Invalid proof_size=" + std::to_string(proof_size));
-                                    return;
-                                }
-
-                                consensus::UtreexoProof proof;
-                                try {
-                                    std::vector<uint8_t> proof_bytes(payload.begin() + pos,
-                                                                      payload.begin() + pos + proof_size);
-                                    proof = consensus::UtreexoProof::deserialize(proof_bytes);
-                                } catch (const std::exception& e) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Proof deserialization failed at index " + std::to_string(i));
-                                    return;
-                                }
-                                pos += proof_size;
-
-                                // Value (8 bytes LE)
-                                if (8 > payload.size() - pos) return;
-                                uint64_t value = 0;
-                                for (int b = 0; b < 8; b++)
-                                    value |= static_cast<uint64_t>(payload[pos + b]) << (b * 8);
-                                pos += 8;
-
-                                // Script size (4 bytes LE)
-                                if (4 > payload.size() - pos) return;
-                                uint32_t script_size = 0;
-                                std::memcpy(&script_size, &payload[pos], 4);
-                                pos += 4;
-
-                                if (script_size > MAX_SCRIPT_BYTES || script_size > payload.size() - pos) {
-                                    complete_refresh();
-                                    g_logger.error("[CSN-TX] Invalid script_size=" + std::to_string(script_size));
-                                    return;
-                                }
-
-                                std::vector<uint8_t> scriptPubKey(payload.begin() + pos,
-                                                                   payload.begin() + pos + script_size);
-                                pos += script_size;
-
-                                consensus::SpentOutputData spent;
-                                spent.value = value;
-                                spent.scriptPubKey = std::move(scriptPubKey);
-                                if (version >= 0x02) {
-                                    if (5 > payload.size() - pos) {
-                                        complete_refresh();
-                                        g_logger.error("[CSN-TX] Truncated maturity metadata at index " + std::to_string(i));
-                                        return;
+                        p2p_service->OnUtxoTx = [chainstate_service, tx_relay_for_utxotx, mempool_for_utxotx](
+                            const std::string& peer_addr, const ::P2PMessage& msg) {
+                            try {
+                                const auto decoded = UtreexoTransactionPayload::Decode(
+                                    msg.payload, RelayTransactionReadMode::AvailableFamilies);
+                                const auto txid = decoded.Body().GetTxid().AsUint256();
+                                std::unique_ptr<MempoolService::PoolUse> pool_use;
+                                bool existing = false;
+                                bool published = false;
+                                bool proof_valid = false;
+                                // Called only under selected-chain ownership. Avoid the
+                                // worker's mutable StatelessNode stump/height caches.
+                                auto verify_selected = [&]() -> std::optional<VerifiedUtreexoTransaction> {
+                                    const auto* tip = chainstate_service->GetActiveTip();
+                                    auto* coins = chainstate_service->GetConsensusUTXOSet();
+                                    auto* db = chainstate_service->GetChainDB();
+                                    if (!tip || !coins || !db) return std::nullopt;
+                                    const auto durable = db->getTip();
+                                    if (!durable.ok() || durable->height < 0 ||
+                                        durable->hash != tip->hash || uint32_t(durable->height) != tip->height ||
+                                        coins->GetBestBlock() != tip->hash || coins->GetHeight() != tip->height)
+                                        return std::nullopt;
+                                    auto forest_owner = coins->LockForestShared();
+                                    const auto stump = consensus::UtreexoStump::fromForest(coins->GetForest());
+                                    return decoded.VerifyInputs(stump,tip->height);
+                                };
+                                {
+                                    auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                    pool_use = MempoolService::AcquirePoolUse(mempool_for_utxotx);
+                                    const auto verified = verify_selected();
+                                    proof_valid = verified.has_value();
+                                    if (verified) {
+                                        existing = pool_use->Pool().getMempoolEntry(txid).has_value();
+                                        if (existing) published = pool_use->Pool().publishProofPayload(*verified);
                                     }
-                                    spent.created_height =
-                                        static_cast<uint32_t>(payload[pos]) |
-                                        (static_cast<uint32_t>(payload[pos + 1]) << 8) |
-                                        (static_cast<uint32_t>(payload[pos + 2]) << 16) |
-                                        (static_cast<uint32_t>(payload[pos + 3]) << 24);
-                                    pos += 4;
-                                    spent.is_coinbase = (payload[pos++] & 0x01) != 0;
                                 }
-
-                                input_proofs.emplace_back(std::move(proof), std::move(spent));
-                            }
-
-                            // 6. Accumulator root (32 bytes)
-                            if (32 > payload.size() - pos) {
-                                complete_refresh();
-                                g_logger.error("[CSN-TX] Missing accumulator root");
-                                return;
-                            }
-                            consensus::UtreexoHash acc_root;
-                            acc_root.assign(payload.begin() + pos, payload.begin() + pos + 32);
-                            pos += 32;
-
-                            // 7. Validate via StatelessNode
-                            const uint32_t validation_height = stateless_node->GetSyncHeight() + 1;
-                            if (!stateless_node->ValidateUtreexoTx(tx, input_proofs, acc_root, validation_height)) {
-                                complete_refresh();
-                                g_logger.warning("[CSN-TX] utxotx proof validation failed from " + peer_addr);
-                                return;
-                            }
-
-                            // 8. Accept into mempool or refresh existing proof
-                            if (mempool_for_utxotx) {
-                                // Retain the same service operation through admission, proof
-                                // metadata, payload caching and synchronous relay callbacks.
-                                auto pool_use = MempoolService::AcquirePoolUse(mempool_for_utxotx);
-                                bool already_in_mempool = mempool_for_utxotx->hasTransaction(txid);
-
-                                if (already_in_mempool) {
-                                    // REFRESH PATH (#6): TX already in mempool, update proof + cache
-                                    pool_use->Pool().refreshProof(
-                                        txid, acc_root, stateless_node->GetSyncHeight());
-                                    pool_use->Pool().setCachedUtxoTxPayload(
-                                        txid, std::vector<uint8_t>(payload.begin(), payload.end()));
-                                    if (tx_relay_for_utxotx) {
-                                        tx_relay_for_utxotx->CompleteRefresh(txid);
-                                        tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
-                                    }
-                                    g_logger.info("[CSN-TX] Refreshed proof for " + txid.GetHex().substr(0, 16) +
-                                                 "... from " + peer_addr);
-                                } else {
-                                    // NEW TX PATH: accept into mempool
-                                    bool accepted_new_tx = false;
-                                    auto submit_result = mempool_for_utxotx->Submit(tx, TxOrigin::P2P);
-                                    if (submit_result.accepted()) {
-                                        pool_use->Pool().refreshProof(
-                                            txid, acc_root, stateless_node->GetSyncHeight());
-                                        pool_use->Pool().setCachedUtxoTxPayload(
-                                            txid, std::vector<uint8_t>(payload.begin(), payload.end()));
-                                        accepted_new_tx = true;
+                                bool admitted = false;
+                                if (proof_valid && !existing) {
+                                    // Canonical admission owns signatures/policy and its
+                                    // callbacks. Orchard remains unavailable in SubmitBody.
+                                    const auto result = mempool_for_utxotx->SubmitBody(decoded.Body(),TxOrigin::P2P);
+                                    admitted = result.accepted();
+                                    if (admitted) {
+                                        // Admission may span a tip change. Revalidate the
+                                        // complete snapshot before attaching its proof cache.
+                                        auto selected = chainstate_service->AcquireBlockIngressActivationLock();
+                                        const auto verified = verify_selected();
+                                        if (verified) published = pool_use->Pool().publishProofPayload(*verified);
                                     } else {
-                                        g_logger.warning(
-                                            "[CSN-TX] Mempool rejection: " +
-                                            std::string(TxRejectCodeToString(submit_result.code)) +
-                                            ": " + submit_result.message);
-                                    }
-                                    if (tx_relay_for_utxotx) {
-                                        tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
-                                        if (accepted_new_tx) {
-                                            tx_relay_for_utxotx->AnnounceTx(txid);
-                                        } else {
-                                            tx_relay_for_utxotx->CompleteRefresh(txid);
-                                        }
-                                    }
-                                    if (accepted_new_tx) {
-                                        g_logger.info("[CSN-TX] Accepted utxotx " + txid.GetHex().substr(0, 16) +
-                                                     "... from " + peer_addr + " (" +
-                                                     std::to_string(num_proofs) + " proofs)");
+                                        g_logger.warning("[CSN-TX] Mempool rejection: " +
+                                            std::string(TxRejectCodeToString(result.code)) + ": " + result.message);
                                     }
                                 }
+                                // No selected-chain, forest or pool lock survives into
+                                // relay callbacks; the service operation remains pinned.
+                                if (published) {
+                                    tx_relay_for_utxotx->CompleteRefresh(txid);
+                                    tx_relay_for_utxotx->RecordBridgeResponse(peer_addr);
+                                    if (admitted) tx_relay_for_utxotx->AnnounceTx(txid);
+                                    g_logger.info("[CSN-TX] Published complete proof payload for " +
+                                        txid.GetHex().substr(0,16) + " from " + peer_addr);
+                                } else {
+                                    tx_relay_for_utxotx->CompleteRefresh(txid);
+                                    g_logger.warning("[CSN-TX] Proof payload was not published for " +
+                                        txid.GetHex().substr(0,16));
+                                }
+                            } catch (const std::exception& error) {
+                                // A post-publication callback failure does not undo an
+                                // admitted body or its already published proof payload.
+                                g_logger.warning(std::string("[CSN-TX] Receive operation refused or callback failed: ") + error.what());
                             }
                         };
 

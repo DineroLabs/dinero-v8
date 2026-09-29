@@ -1,3 +1,4 @@
+#include "daemon/utreexo_tx_reader.h"
 #include "consensus/contextual_locks.h"
 #include "consensus/coinbase_maturity.h"
 #include "consensus/block_index.h"
@@ -3261,6 +3262,29 @@ bool Mempool::refreshProof(const uint256& txid, const std::vector<uint8_t>& new_
     if (was_stale) {
         m_refresh_succeeded_total.fetch_add(1, std::memory_order_relaxed);
     }
+    return true;
+}
+
+bool Mempool::publishProofPayload(const VerifiedUtreexoTransaction& verified) {
+    // All potentially throwing preparation precedes live publication.
+    auto root = verified.Root();
+    auto payload = verified.Wire();
+    const auto body_bytes = verified.Body().Serialize();
+    const auto txid = verified.Body().GetTxid().AsUint256();
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    const auto entry = m_transactions.find(txid);
+    if (root.size() != 32 || payload.empty() || entry == m_transactions.end() ||
+        current_accumulator_root_ != root || current_block_height_ != verified.Height() ||
+        !entry->second.tx.HasBody() || entry->second.tx.Serialize() != body_bytes)
+        return false;
+    auto& target = entry->second;
+    const bool was_stale = target.is_proof_stale;
+    target.validated_at_root.swap(root);
+    target.cached_utxotx_payload.swap(payload);
+    target.validated_at_height = verified.Height();
+    target.proof_refresh_attempts = 0;
+    target.is_proof_stale = false;
+    if (was_stale) m_refresh_succeeded_total.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 

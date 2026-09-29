@@ -76,3 +76,5 @@ TEST_F(TypedBridgeProofOwner, OrchardCanonicalBytesAndInputProofsNeedNoHistorica
 }
 #endif
 }
+
+#include "typed_utreexo_receive_checks.h"
