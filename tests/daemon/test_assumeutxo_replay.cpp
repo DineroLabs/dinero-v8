@@ -667,3 +667,5 @@ int main(int argc, char** argv) {
 }
 
 #include "orchard_transaction_rpc_checks.h"
+
+#include "operator_status_owner_checks.h"

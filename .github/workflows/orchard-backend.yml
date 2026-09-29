@@ -960,6 +960,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Checked operator block-status decisions
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OperatorStatusOwner$' --show-only=json-v1 > operator-status-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('operator-status-owner-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OperatorStatusOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OperatorStatusOwner$' --verbose --no-tests=error --output-log operator-status-owner-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('operator-status-owner-execution.log').read_text()
+          for case in ['CheckedCounterAndStagedCommit','InvalidateRefusalAndDurableDecision','ReconsiderRefusalPreservesDecisionThenCommits','HeaderOnlyEnrollmentAndMissingBodyMetadataRefusal']:
+              assert log.count('[       OK ] OperatorStatusOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Owned indexed transaction RPC reads
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2370,6 +2389,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            operator-status-owner-inventory.json
+            operator-status-owner-execution.log
             orchard-transaction-rpc-inventory.json
             orchard-transaction-rpc-execution.log
             orchard-cycle-inventory.json

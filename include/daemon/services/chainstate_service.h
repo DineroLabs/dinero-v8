@@ -530,12 +530,12 @@ public:
      */
     consensus::GenerationRead ReadBlockStatusGeneration() const;
 
-    /// Bump and persist. Called by InvalidateBlock and ReconsiderBlock so a
-    /// relay in flight across either decision is detectably stale. `wb` folds
-    /// the write into a caller-owned batch so the bump and the flag change
-    /// commit atomically.
-    consensus::BlockStatusGeneration BumpBlockStatusGeneration(
-        const ChainWriteToken& token, rocksdb::WriteBatch* wb = nullptr);
+    /// Stage the next checked operator-decision generation in the caller's
+    /// batch. Requires the activation lock. An unreadable/saturated counter or
+    /// unavailable database refuses without staging a generation. The caller
+    /// must commit the batch with its status decision before publishing memory.
+    std::optional<consensus::BlockStatusGeneration> StageNextBlockStatusGeneration(
+        const ChainWriteToken& token, rocksdb::WriteBatch& batch);
     uint32_t GetAssumeUTXOBaseHeight() const { return assumeutxo_base_height_; }
     // Mirrors GetConfig().assumeutxo_forward_connect -- the same source the
     // deferral gate reads. Defined out-of-line so this header need not pull

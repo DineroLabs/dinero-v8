@@ -13255,61 +13255,31 @@ consensus::GenerationRead ChainstateService::ReadBlockStatusGeneration() const {
     if (raw.status() != Status::Ok) {
         return {GenerationReadState::Error, 0};
     }
-    // A stored value that will not parse is corruption, not a generation.
-    // ParseBlockStatusGeneration answers 0 for junk, and 0 is a legitimate
-    // generation, so the emptiness check has to happen here.
+    // Parse into the checked result directly: overflow is an unreadable
+    // generation, not a comparable zero returned by the legacy bare parser.
     const auto& text = raw.value();
     if (text.empty()) return {GenerationReadState::Error, 0};
+    consensus::BlockStatusGeneration value = 0;
+    constexpr auto maximum = std::numeric_limits<consensus::BlockStatusGeneration>::max();
     for (const char ch : text) {
         if (ch < '0' || ch > '9') return {GenerationReadState::Error, 0};
+        const auto digit = static_cast<unsigned>(ch - '0');
+        if (value > (maximum - digit) / 10) return {GenerationReadState::Error, 0};
+        value = value * 10 + digit;
     }
-    return {GenerationReadState::Present,
-            consensus::ParseBlockStatusGeneration(text)};
+    return {GenerationReadState::Present, value};
 }
 
-consensus::BlockStatusGeneration ChainstateService::BumpBlockStatusGeneration(
-    const ChainWriteToken& token, rocksdb::WriteBatch* wb) {
+std::optional<consensus::BlockStatusGeneration> ChainstateService::StageNextBlockStatusGeneration(
+    const ChainWriteToken& token, rocksdb::WriteBatch& batch) {
+    activation_mutex_.AssertHeld("stage operator status generation");
     const auto read = ReadBlockStatusGeneration();
-    if (!read.usable()) {
-        // Advancing from an unknown base could land on a value an in-flight
-        // capture already holds, which would make a genuinely stale result
-        // compare as current -- the one outcome this counter exists to
-        // prevent. Refuse, and let the operator retry.
-        if (logger_) {
-            logger_->error("[BlockStatusGeneration] counter unreadable — refusing "
-                           "to advance from an unknown base. The status "
-                           "transition has NOT been recorded; retry once the "
-                           "database is readable.");
-        }
-        return 0;
-    }
-    const auto current = read.value;
-    // Never wrap. Wrapping to 0 would make every in-flight result compare
-    // "stale" forever (0 never equals a real generation) and, worse, a later
-    // wrap could make a genuinely stale capture compare EQUAL to the current
-    // value. Saturate instead and refuse to advance; at one bump per operator
-    // invalidate/reconsider this is unreachable in practice, but a consensus
-    // counter must not have a defined-by-accident overflow.
-    const auto next_opt = consensus::NextGeneration(current);
-    if (!next_opt.has_value()) {
-        if (logger_) {
-            logger_->error("[BlockStatusGeneration] counter is saturated at "
-                           "UINT64_MAX — refusing to advance rather than wrap. "
-                           "Operator status transitions are blocked until this "
-                           "is investigated.");
-        }
-        return current;  // generation UNCHANGED, and no flag write follows
-    }
-    const auto next = *next_opt;
-    if (chain_db_) {
-        chain_db_->putUtreexoMeta(token, consensus::kBlockStatusGenerationKey,
-                                  consensus::FormatBlockStatusGeneration(next), wb);
-    }
-    if (logger_) {
-        logger_->info("[BlockStatusGeneration] advanced to " + std::to_string(next) +
-                      " — results captured before this are stale and may not "
-                      "assert or preserve failure flags");
-    }
+    if (!read.usable()) return std::nullopt;
+    const auto next = consensus::NextGeneration(read.value);
+    if (!next || !chain_db_) return std::nullopt;
+    if (chain_db_->putUtreexoMeta(token, consensus::kBlockStatusGenerationKey,
+            consensus::FormatBlockStatusGeneration(*next), &batch) != Status::Ok)
+        return std::nullopt;
     return next;
 }
 
@@ -13338,6 +13308,12 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
     // Already invalid?
     if (target->status & BLOCK_FAILED_VALID) {
         error = "Block is already marked invalid";
+        return false;
+    }
+
+    const auto generation = ReadBlockStatusGeneration();
+    if (!generation.usable() || !consensus::NextGeneration(generation.value)) {
+        error = "Operator status generation unavailable";
         return false;
     }
 
@@ -13446,36 +13422,36 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
         }
     }
 
-    // Step 2: Mark block and all descendants as invalid
+    // Commit the target decision and its generation together before publishing
+    // the target flag. Canonical disconnects above are separate durable steps;
+    // an error here reports that partial prefix and does not claim invalidation.
+    const auto stage_invalidity = [&](CBlockIndex* node, uint32_t bits,
+                                      rocksdb::WriteBatch& batch) {
+        ChainWriteToken token;
+        auto status = chain_db_->setHeaderStatusBits(token, node->hash, bits, &batch);
+        if (status == Status::NotFound &&
+            !(node->status & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) &&
+            node->data_size == 0 && node->undo_size == 0) {
+            CBlockIndex marked = *node;
+            marked.status |= bits;
+            status = chain_db_->updateBlockIndex(token, &marked, &batch);
+        }
+        return status == Status::Ok;
+    };
     {
+        ChainWriteToken token;
+        rocksdb::WriteBatch status_batch;
+        if (!stage_invalidity(target, BLOCK_FAILED_VALID, status_batch) ||
+            !StageNextBlockStatusGeneration(token, status_batch) ||
+            chain_db_->writeBatch(token, std::move(status_batch), true) != Status::Ok) {
+            error = "Failed to persist invalid target decision";
+            return false;
+        }
         std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
         target->status |= BLOCK_FAILED_VALID;
         InvalidateAncestryCache();
     }
     RemoveCandidate(target);
-
-    // Apr 14 2026 (Bug #6 / #38) — persist BLOCK_FAILED_VALID to ChainDB.
-    // Without this, the flag is in-memory only and reverts on restart, which
-    // means any historically invalid block (e.g. a pre-fix ring-covenant
-    // block with stale CT pool indices) gets reloaded as a candidate every
-    // startup, fails ConnectBlock, and crash-loops the daemon. The persisted
-    // flag is read back into block_index->status by
-    // ApplyPersistedMetadataToBlockIndex on the next boot, and AddCandidate's
-    // IsEligibleForCandidacy gate then permanently rejects it.
-    if (chain_db_) {
-        ChainWriteToken token;
-        auto persist_status =
-            chain_db_->setHeaderStatusBits(token, target->hash, BLOCK_FAILED_VALID);
-        if (persist_status != Status::Ok && logger_) {
-            logger_->warning("[InvalidateBlock] Failed to persist BLOCK_FAILED_VALID for "
-                             + target->hash.GetHex().substr(0, 16) + "... — flag is in-memory only");
-        }
-        activation_mutex_.AssertHeld("InvalidateBlock persist+bump");
-        // Advance the operator-decision generation alongside the invalidation,
-        // so an acceptance that began BEFORE this decision cannot commit a
-        // result that contradicts it either.
-        BumpBlockStatusGeneration(token);
-    }
 
     dinero::testing::MaybeAbortAt("after_invalid_target_before_descendants",
                                   dinero::Params().network_id == "regtest");
@@ -13488,19 +13464,21 @@ bool ChainstateService::InvalidateBlock(const uint256& hash, std::string& error)
         queue.pop_back();
         if (!child) continue;
 
-        child->status |= BLOCK_FAILED_CHILD;
-        RemoveCandidate(child);
-
-        // Persist the descendant's flag too — same rationale as the target.
-        if (chain_db_) {
-            ChainWriteToken token;
-            auto persist_status =
-                chain_db_->setHeaderStatusBits(token, child->hash, BLOCK_FAILED_CHILD);
-            if (persist_status != Status::Ok && logger_) {
-                logger_->warning("[InvalidateBlock] Failed to persist BLOCK_FAILED_CHILD for "
-                                 + child->hash.GetHex().substr(0, 16) + "...");
-            }
+        // Each descendant is a checked durable prefix. The target decision
+        // remains retained if a later descendant cannot be persisted; existing
+        // restart propagation can resume from that target.
+        ChainWriteToken token;
+        rocksdb::WriteBatch child_batch;
+        if (!stage_invalidity(child, BLOCK_FAILED_CHILD, child_batch) ||
+            chain_db_->writeBatch(token, std::move(child_batch), true) != Status::Ok) {
+            error = "Failed to persist invalid descendant decision";
+            return false;
         }
+        {
+            std::lock_guard<std::recursive_mutex> index_lock(g_block_index_mutex);
+            child->status |= BLOCK_FAILED_CHILD;
+        }
+        RemoveCandidate(child);
 
         queue.insert(queue.end(), child->children.begin(), child->children.end());
     }
@@ -13587,6 +13565,12 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
         return false;
     }
 
+    const auto generation = ReadBlockStatusGeneration();
+    if (!generation.usable() || !consensus::NextGeneration(generation.value)) {
+        error = "Operator status generation unavailable";
+        return false;
+    }
+
     if (logger_) {
         logger_->info("[ReconsiderBlock] Reconsidering block at height " +
                      std::to_string(target->height) + " hash=" +
@@ -13664,7 +13648,10 @@ bool ChainstateService::ReconsiderBlock(const uint256& hash, std::string& error)
         // is now stale and may not re-assert the flags we are clearing — which
         // is exactly what continuous re-relay was doing (650 re-assertions
         // observed after a reconsider, tip never recovered).
-        BumpBlockStatusGeneration(token, &status_batch);
+        if (!StageNextBlockStatusGeneration(token, status_batch)) {
+            error = "Failed to stage reconsidered decision generation";
+            return false;
+        }
 
         const auto write_status = chain_db_->writeBatch(token, std::move(status_batch), true);
         if (write_status != Status::Ok) {
