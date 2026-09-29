@@ -63,6 +63,7 @@ struct RuntimeOutboxCursor;
 struct RuntimeOutboxPage;
 struct RuntimeReorgReadmission;
 class RuntimeAccountReplay;
+struct RuntimeEnrolledWalletRecoveryResult;
 class WalletManager;
 class RuntimeWalletOriginProjection;
 struct FilePosition;  // #309: storage/block_storage.h
@@ -893,6 +894,13 @@ public:
     // Acquire before wallet ownership. Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Caller owns this service's exact WalletIndexUse and wallet lifetime, and
+    // holds no wallet lease or selected-chain lock. Null success means this
+    // source has no canonical wallet log to resume. A nonnull result reports
+    // an earned captured prefix, never lasting readiness or global inventory.
+    StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
+        resumeRuntimeWalletRecoveryIfNeeded(WalletManager&, UTXOIndex&, uint64_t expected_session = 0);
+
     // Reconcile one retained reorg intent with actual committed disconnects,
     // then revalidate its non-coinbase bodies through the current real pool.
     // Refuses outer selected ownership. No plan deletion, acknowledgment,

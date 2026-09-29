@@ -3,6 +3,7 @@
 #include "wallet/wallet_manager.h"
 #include "wallet/hd_wallet.h"
 #include <memory>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -95,7 +96,14 @@ public:
 
     // Recover the active wallet from an already-loaded AssumeUTXO snapshot.
     // Locked encrypted wallets are deliberately deferred until wallet.unlock.
-    bool RecoverActiveWalletFromSnapshotIfNeeded(std::string* error = nullptr);
+    bool RecoverActiveWalletFromSnapshotIfNeeded(std::string* error = nullptr, uint64_t expected_session = 0);
+
+    enum class CanonicalRecovery { NotRequired, AppliedPrefix, Deferred };
+    // Recovery of the current wallet's already enrolled stores only. Missing
+    // baselines/accounts remain deferred; no automatic enrollment or height
+    // reset. Called by startup and the existing unlock recovery path.
+    CanonicalRecovery RecoverActiveWalletFromCanonicalSource(std::string* error = nullptr, uint64_t expected_session = 0);
+
 
 private:
     std::unique_ptr<WalletUse> BorrowWalletUse() const;

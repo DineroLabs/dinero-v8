@@ -61,6 +61,8 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/runtime_index_delivery.h"
+#include "wallet/runtime_wallet_recovery.h"
+#include "wallet/orchard_account_delivery.h"
 #endif
 #include <sqlite3.h>
 #include <filesystem>
@@ -105,6 +107,8 @@ din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 
+din::Json rpc_context_wallet_unlock(const ExecutionContext&, const din::Json&);
+
 namespace dinero {
 
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
@@ -120,6 +124,31 @@ struct RuntimeOriginProjectionTestAccess {
 #endif
 
 struct ShieldedStateStartupTestAccess {
+#ifdef DINERO_TEST_ORCHARD_ORIGIN
+    // Populate the real Init-created owner without replacing the index or the
+    // consensus object referenced by its validator. No lifetime gate is faked.
+    static void PopulateInitializedParent(ChainstateService& service,CBlockIndex& tip,
+            const assumeutxo::AssumeUtxoReplayEngine& replay) {
+        if (!service.utxo_index_ || !service.consensus_utxo_set_ || !service.block_validator_)
+            throw std::runtime_error("actual initialized chainstate required");
+        service.active_tip_=&tip;
+        if (service.consensus_utxo_set_->GetSetSize()!=replay.ProvenUtxos().size())
+            throw std::runtime_error("fixture initialized parent inventory");
+        for (const auto& [point,coin]:replay.ProvenUtxos()) {
+            const auto* loaded=service.consensus_utxo_set_->GetCoin(point);
+            if (!loaded || loaded->value!=coin.value || loaded->scriptPubKey!=coin.scriptPubKey ||
+                loaded->height!=coin.height || loaded->isCoinbase!=coin.isCoinbase ||
+                loaded->is_confidential!=coin.is_confidential || loaded->commitment!=coin.commitment)
+                throw std::runtime_error("fixture initialized parent coin mismatch");
+        }
+        service.consensus_utxo_set_->ReplaceForestGuarded(*replay.Forest());
+        service.consensus_utxo_set_->SetBestBlock(tip.hash,tip.height);
+        service.shielded_tree_=*replay.ShieldedTree();
+        service.shielded_anchor_history_=*replay.ShieldedAnchors();
+        if (!service.shielded_nullifiers_.DeserializeContent(replay.ShieldedNullifiers()->SerializeContent()))
+            throw std::runtime_error("fixture proven parent nullifiers");
+    }
+#endif
     static void Select(ChainstateService& service, CBlockIndex& tip) {
         service.active_tip_ = &tip;
         service.consensus_utxo_set_ = std::make_unique<consensus::ConsensusUTXOSet>();
@@ -689,3 +718,5 @@ int main(int argc, char** argv) {
 #include "wallet_service_owner_checks.h"
 
 #include "chainstate_wallet_index_owner_checks.h"
+
+#include "wallet_canonical_recovery_checks.h"

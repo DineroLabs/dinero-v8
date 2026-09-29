@@ -282,7 +282,7 @@ jobs:
       - name: Build and execute real mempool runtime test consumers
         run: |
           mapfile -t targets < build-orchard-root/real-mempool-fixture-targets.txt
-          test "${#targets[@]}" -eq 20
+          test "${#targets[@]}" -eq 21
           cmake --build build-orchard-root --parallel 4 --target "${targets[@]}" -- -k 0
           ctest --test-dir build-orchard-root --show-only=json-v1 > orchard-real-mempool-all-inventory.json
           python3 - <<'PYTEST'
@@ -1034,6 +1034,25 @@ jobs:
           log=Path('chainstate-wallet-index-owner-execution.log').read_text()
           for case in ['MissingAndStoppedSourcesRefuse','NestedOwnershipPreservesExactIndex','SelectedOwnershipRefusesShutdownBeforeEffects','WalletBindingRequiresCurrentOwnedIndex']:
               assert log.count('[       OK ] ChainstateWalletIndexOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Recover enrolled canonical wallet stores on startup and unlock
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(WalletCanonicalRecovery)$' --show-only=json-v1 > wallet-canonical-recovery-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('wallet-canonical-recovery-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['WalletCanonicalRecovery']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(WalletCanonicalRecovery)$' --verbose --no-tests=error --output-log wallet-canonical-recovery-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('wallet-canonical-recovery-execution.log').read_text()
+          for case in ['MissingOwnersAndConfiguredUnavailableSourceDefer', 'UnsetProfileAndBorrowedLeasePreserveHistoricalWallet', 'EarnedPrefixAndEncryptedUnlockRestoreActualNote', 'ActualStartupResumesLaggingStoresWithoutHeightReset', 'MissingBaselineNeverEnrollsOrUsesLegacySnapshotPath', 'RequiredWriteFailureRetainsPrefixForRetry']:
+              assert log.count('[       OK ] WalletCanonicalRecovery.'+case+' (')==1
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
@@ -2607,11 +2626,13 @@ jobs:
             orchard-block-announcement-inventory.json
             orchard-reorg-readmission-inventory.json
             chainstate-wallet-index-owner-inventory.json
+            wallet-canonical-recovery-inventory.json
             wallet-service-owner-inventory.json
             orchard-network-routing-execution.log
             orchard-block-announcement-execution.log
             orchard-reorg-readmission-execution.log
             chainstate-wallet-index-owner-execution.log
+            wallet-canonical-recovery-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log

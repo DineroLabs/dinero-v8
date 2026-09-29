@@ -13,6 +13,7 @@
 #include "daemon/runtime_reorg_store.h"
 #include "daemon/runtime_block_outbox.h"
 #include "wallet/runtime_account_replay.h"
+#include "wallet/runtime_wallet_recovery.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "consensus/orchard_block_staging.h"
 #include "consensus/orchard_resources.h"
@@ -5971,6 +5972,57 @@ StatusOr<std::shared_ptr<const RuntimeReorgReadmission>> ChainstateService::read
 #else
     (void)after;(void)maximum_blocks;(void)maximum_bytes;return Status::Internal;
 #endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>>
+ChainstateService::resumeRuntimeWalletRecoveryIfNeeded(WalletManager& wallet, UTXOIndex& index, uint64_t expected_session) {
+    if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
+    try {
+        // Require the actual lifetime gate before touching the index. The
+        // caller retains it through replay; no selected lock is held here.
+        {
+            std::lock_guard<std::mutex> lock(wallet_index_use_mutex_);
+            if (!wallet_index_uses_by_thread_.count(std::this_thread::get_id()) ||
+                utxo_index_.get()!=&index) return Status::Invalid;
+        }
+        uint64_t session=0;
+        {
+            const auto lease=wallet.AcquireDatabaseLease();
+            if (wallet.database_leases_!=1 || !lease->Database() ||
+                wallet.getUTXOIndex()!=&index) return Status::Invalid;
+            session=lease->Session();
+            if (expected_session && session!=expected_session) return Status::Invalid;
+        }
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            if (safe_mode_active_ || !consensus::OrchardProfileConfigurationValid(Params()))
+                return Status::Invalid;
+            if (Params().orchard_activation_height==UINT32_MAX)
+                return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            const auto page=getRuntimeDeliveryPage({},1);
+            if (!page.ok()) return page.status();
+            if (!(*page)->head.sequence) {
+                // An active boundary without its canonical record is missing
+                // state, never permission to use a height-based recovery scan.
+                if (consensus::OrchardActiveForHeight(Params(),active_tip_->height))
+                    return Status::Corruption;
+                return std::shared_ptr<const RuntimeEnrolledWalletRecoveryResult>{};
+            }
+#else
+            return Status::Internal;
+#endif
+        }
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        // Account/source capture and proof verification run after every outer
+        // selected lock and the short session lease above have been released.
+        return std::make_shared<const RuntimeEnrolledWalletRecoveryResult>(
+            RuntimeWalletRecovery::ResumeEnrolledWalletStores(
+                *this,wallet,index,session));
+#else
+        return Status::Internal;
+#endif
+    } catch (...) { return Status::Internal; }
 }
 
 StatusOr<std::shared_ptr<const RuntimeAccountReplay>> ChainstateService::getRuntimeAccountReplay() const {

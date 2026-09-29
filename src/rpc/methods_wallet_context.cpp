@@ -2418,16 +2418,24 @@ din::Json rpc_context_wallet_unlock(const ExecutionContext& ctx, const din::Json
     }
 
     try {
+        auto wallet_use = dinero::WalletService::AcquireWalletUse(wallet_service);
         std::string passphrase = params[0].as<std::string>();
         int timeout = 0;
         if (params.size() >= 2 && params[1].is<int>()) {
             timeout = params[1].as<int>();
         }
 
-        wallet_service->get().unlockWallet(passphrase, timeout);
+        uint64_t unlocked_session = 0;
+        {
+            // Pin the selected wallet only for the actual unlock transaction.
+            // Release this lease before canonical source capture and replay.
+            auto lease = wallet_use->Wallet().AcquireDatabaseLease();
+            unlocked_session = lease->Session();
+            wallet_use->Wallet().unlockWallet(passphrase, timeout);
+        }
         result["success"] = true;
         std::string recovery_error;
-        if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error)) {
+        if (!wallet_service->RecoverActiveWalletFromSnapshotIfNeeded(&recovery_error, unlocked_session)) {
             result["recovery_warning"] = recovery_error;
         }
         if (ctx.logger) {

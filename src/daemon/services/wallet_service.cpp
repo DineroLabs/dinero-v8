@@ -100,6 +100,7 @@ bool WalletService::Start() {
         uint32_t actual_blockchain_height = 0;
         uint32_t wallet_scan_height = 0;
         bool needs_catchup_scan = false;
+        bool canonical_recovery_selected = false;
         if (chainstate_) {
             actual_blockchain_height = chainstate_->getBlockHeight();
             logger_interface_->info("[WalletService] Real blockchain height from chainstate: "
@@ -215,11 +216,19 @@ bool WalletService::Start() {
 
         if (wallet_mgr_->hasActiveWallet()) {
             EnsureRuntimeWalletBindings();
+            std::string canonical_error;
+            const auto canonical=RecoverActiveWalletFromCanonicalSource(&canonical_error);
+            canonical_recovery_selected=canonical!=CanonicalRecovery::NotRequired;
+            if (canonical==CanonicalRecovery::Deferred) {
+                logger_interface_->warning("[WalletService] " + canonical_error);
+            } else if (canonical==CanonicalRecovery::AppliedPrefix) {
+                logger_interface_->info("[WalletService] Current wallet recovered through a captured canonical prefix");
+            }
 
             // The active wallet database is bound now, so this reads the
             // durable per-wallet watermark rather than WalletManager's
             // pre-open default. Only genuinely missing heights are replayed.
-            try {
+            if (!canonical_recovery_selected) try {
                 wallet_mgr_->loadBlockchainHeight();
                 wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
                 logger_interface_->info("[WalletService] Wallet scan progress: "
@@ -279,7 +288,7 @@ bool WalletService::Start() {
         // sweep EVERY wallet: open each, rescan from the snapshot, then restore the
         // originally-active wallet. This surfaces every wallet's pre-snapshot coins
         // at once instead of only the auto-opened one.
-        const uint32_t snapshot_recovery_base = chainstate_
+        const uint32_t snapshot_recovery_base = chainstate_ && !canonical_recovery_selected
             ? chainstate_->GetSnapshotWalletRecoveryBaseHeight() : 0u;
         if (chainstate_ && snapshot_recovery_base > 0 && !wallets.empty()) {
             // Capture the wallet to restore as active afterward (open() below
@@ -311,21 +320,30 @@ bool WalletService::Start() {
             // may have been deliberately deferred, so never claim it reached
             // the chain tip merely because the multi-wallet sweep completed.
             if (wallet_mgr_->hasActiveWallet()) {
-                wallet_mgr_->loadBlockchainHeight();
-                wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
-                needs_catchup_scan = wallet_scan_height < actual_blockchain_height;
+                std::string canonical_error;
+                const auto canonical=RecoverActiveWalletFromCanonicalSource(&canonical_error);
+                canonical_recovery_selected=canonical!=CanonicalRecovery::NotRequired;
+                if (canonical_recovery_selected) {
+                    needs_catchup_scan=false;
+                    if (canonical==CanonicalRecovery::Deferred)
+                        logger_interface_->warning("[WalletService] " + canonical_error);
+                } else {
+                    wallet_mgr_->loadBlockchainHeight();
+                    wallet_scan_height = wallet_mgr_->getCurrentBlockchainHeight();
+                    needs_catchup_scan = wallet_scan_height < actual_blockchain_height;
+                }
             }
         }
 
         // Trigger catch-up scan if wallet is behind blockchain
         // This happens AFTER wallet is opened so rescan has an active wallet
         // We manually trigger WalletNotify for each missed block
-        if (needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_ &&
+        if (!canonical_recovery_selected && needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_ &&
             wallet_mgr_->isLocked()) {
             logger_interface_->warning(
                 "[WalletService] Wallet catch-up deferred: encrypted wallet is locked; "
                 "unlock it once to resume recovery");
-        } else if (needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_) {
+        } else if (!canonical_recovery_selected && needs_catchup_scan && wallet_mgr_->hasActiveWallet() && chainstate_) {
             logger_interface_->info("[WalletService] Triggering catch-up scan from height " 
                 + std::to_string(wallet_scan_height + 1) + " to " + std::to_string(actual_blockchain_height) + "...");
             
@@ -479,7 +497,24 @@ bool WalletService::EnsureRuntimeWalletBindings() {
     return wallet_mgr_->hasActiveWallet();
 }
 
-bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) {
+WalletService::CanonicalRecovery WalletService::RecoverActiveWalletFromCanonicalSource(std::string* error, uint64_t expected_session) {
+    if (error) error->clear();
+    try {
+        auto use=BorrowWalletUse();
+        if (!chainstate_ || !use->Wallet().hasActiveWallet())
+            throw std::runtime_error("wallet or chainstate unavailable");
+        auto index=ChainstateService::AcquireWalletIndexUse(chainstate_);
+        const auto recovered=chainstate_->resumeRuntimeWalletRecoveryIfNeeded(use->Wallet(),index->Index(),expected_session);
+        if (!recovered.ok())
+            throw std::runtime_error("canonical wallet recovery deferred: checked source, unlocked keys and authenticated store baselines are required");
+        return *recovered ? CanonicalRecovery::AppliedPrefix : CanonicalRecovery::NotRequired;
+    } catch (const std::exception& e) {
+        if (error) *error=e.what();
+        return CanonicalRecovery::Deferred;
+    }
+}
+
+bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error, uint64_t expected_session) {
     if (error) error->clear();
     std::unique_ptr<WalletUse> use;
     try { use=BorrowWalletUse(); } catch (const std::exception&) {
@@ -499,6 +534,10 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) 
             return false;
         }
     } catch (const std::exception& e) { if (error) *error=e.what();return false; }
+
+    const auto canonical=RecoverActiveWalletFromCanonicalSource(error,expected_session);
+    if (canonical==CanonicalRecovery::AppliedPrefix) return true;
+    if (canonical==CanonicalRecovery::Deferred) return false;
 
     try {
         const uint32_t base_height = chainstate_->GetSnapshotWalletRecoveryBaseHeight();
