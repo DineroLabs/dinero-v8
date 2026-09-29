@@ -938,6 +938,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Typed pool publication and replacement capability
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^TypedPoolPublication$' --show-only=json-v1 > orchard-typed-pool-publication-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-pool-publication-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['TypedPoolPublication']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^TypedPoolPublication$' --verbose --no-tests=error --output-log orchard-typed-pool-publication-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-pool-publication-execution.log').read_text()
+          for case in ['SignedPublicationKeepsExactOverlayAndAncestorOwners','PublicationFailureRestoresReplacementAndAllowsRetry','MixedConflictInventoryRefusesDirectAndDescendantFamilies','SignedReplacementPreservesUnrelatedTypedBody']:
+              assert log.count('[       OK ] TypedPoolPublication.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Checked pre-base lookup status
         run: |
           cmake --build build-orchard-root --target test_mining_chain_guard --parallel 4 -- -k 0
@@ -2135,6 +2154,8 @@ jobs:
             orchard-typed-utreexo-receive-execution.log
             orchard-pool-parent-root-execution.log
             orchard-typed-acceptance-owner-execution.log
+            orchard-typed-pool-publication-inventory.json
+            orchard-typed-pool-publication-execution.log
             orchard-prebase-lookup-status-inventory.json
             orchard-prebase-lookup-status-execution.log
             orchard-typed-pool-tip-inventory.json

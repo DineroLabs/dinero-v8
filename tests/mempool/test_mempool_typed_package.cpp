@@ -165,3 +165,5 @@ TEST_F(MempoolTypedPackage, MixedFamilyGraphKeepsOrdinaryByteProfile) {
 }
 
 #include "typed_acceptance_owner_checks.h"
+
+#include "typed_pool_publication_checks.h"

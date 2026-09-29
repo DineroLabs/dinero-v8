@@ -983,86 +983,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     entry.adjusted_fee_rate =
         static_cast<double>(entry.fee) / static_cast<double>(entry.vwu);
 
-    std::unordered_set<uint256> direct_parents;
-    for (const auto& input : tx.vin) {
-        TxId parent_txid = input.prevout.txid;
-        if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
-            direct_parents.insert(parent_txid.AsUint256());
-        }
-    }
-    entry.depends.assign(direct_parents.begin(), direct_parents.end());
-
-    for (const auto& parent_txid : entry.depends) {
-        m_children_index[parent_txid].insert(txid_u256);
-    }
-
-    entry.ancestor_fee = entry.fee;
-    entry.ancestor_size = entry.tx_size;
-    entry.ancestor_effective_vsize = GetEffectiveVirtualSize(entry);
-    entry.ancestor_vwu = entry.vwu;
-    for (const auto& ancestor_txid : visited_ancestors) {
-        auto ancestor_it = m_transactions.find(ancestor_txid);
-        if (ancestor_it == m_transactions.end()) {
-            continue;
-        }
-        entry.ancestor_fee += ancestor_it->second.fee;
-        entry.ancestor_size += ancestor_it->second.tx_size;
-        entry.ancestor_effective_vsize += GetEffectiveVirtualSize(ancestor_it->second);
-        entry.ancestor_vwu += ancestor_it->second.vwu;
-    }
-    entry.ancestor_feerate = entry.ancestor_size > 0
-        ? static_cast<double>(entry.ancestor_fee) / entry.ancestor_size
-        : 0.0;
-    // Phase 8 Commit 2: ancestor-adjusted feerate now uses VWU (economic
-    // truth) rather than BIP141-based effective_vsize (bandwidth-biased
-    // proxy). Consumers: Mempool::selectTransactionsForBlock sort;
-    // BlockAssembler inherits via the mempool; eviction via
-    // GetPackageSelectionScore → adjusted_fee_rate.
-    entry.ancestor_adjusted_feerate = entry.ancestor_vwu > 0
-        ? static_cast<double>(entry.ancestor_fee) / static_cast<double>(entry.ancestor_vwu)
-        : 0.0;
-
-    // Update spent outputs tracking
-    for (const auto& input : tx.vin) {
-        OutPoint outpoint{input.prevout.txid, input.prevout.vout};
-        m_spent_outputs[outpoint].insert(txid_u256);
-    }
-
-    // Add to main storage
-    m_transactions[txid_u256] = entry;
-
-    // v0.11.0: Update mempool UTXO overlay
-    // Spend inputs (mark as consumed by mempool)
-    for (const auto& input : tx.vin) {
-        // Phase M.0: Wallet boundary - convert TxOutPoint (string) to OutPoint (uint256)
-        OutPoint out{input.prevout.txid, input.prevout.vout};
-        coins_view_.spendCoin(out);
-    }
-
-    // Add outputs (created by mempool transaction)
-    for (size_t vout = 0; vout < tx.vout.size(); ++vout) {
-        OutPoint out{TxId(txid_u256), static_cast<uint32_t>(vout)};
-        Coin coin;
-        coin.amount = tx.vout[vout].value.GetUna();  // AmountUna → uint64_t
-        coin.script_pubkey = std::string(tx.vout[vout].scriptPubKey.begin(),
-                                         tx.vout[vout].scriptPubKey.end());
-        coin.height = static_cast<int>(current_height);
-        coin.coinbase = false;  // Mempool txs are never coinbase
-
-        // Convert Coin to UTXOEntry for CoinsViewMemPool
-        consensus::UTXOEntry utxo_entry;
-        utxo_entry.value = AmountUna::Una(coin.amount);  // uint64_t → AmountUna
-        utxo_entry.scriptPubKey.assign(coin.script_pubkey.begin(), coin.script_pubkey.end());
-        utxo_entry.height = static_cast<uint32_t>(coin.height);
-        utxo_entry.isCoinbase = coin.coinbase;
-        utxo_entry.is_confidential = tx.vout[vout].is_confidential;
-        utxo_entry.commitment = tx.vout[vout].commitment;
-        coins_view_.addCoin(out, utxo_entry);
-    }
-
-    // Add to indices
-    m_fee_index.insert({GetPackageSelectionScore(entry), txid_u256});
-    m_time_index.insert({entry.time, txid_u256});
+    insertAdmittedEntryLocked(std::move(entry), visited_ancestors);
 
     MPLOG_INFO("[" + source + "] Added transaction to mempool: " + txid_u256.GetHex() +
                  " (fee: " + std::to_string(fee) + " sats, " +
@@ -1103,6 +1024,78 @@ TxAcceptResult Mempool::submitTransactionInternal(
     if (broadcast_callback) broadcast_callback(txid_u256);
 
     return TxAcceptResult::Accepted(txid_u256);
+}
+
+void Mempool::insertAdmittedEntryLocked(
+    MempoolEntry entry, const std::unordered_set<uint256>& ancestors) {
+    // Private publication step: the caller holds selected-chain and pool
+    // ownership plus StateRollback until all admission maintenance finishes.
+    const auto txid_u256 = entry.tx.GetTxid().AsUint256();
+    std::unordered_set<uint256> direct_parents;
+    for (const auto& input : entry.tx.Inputs()) {
+        TxId parent_txid = input.txid;
+        if (m_transactions.find(parent_txid.AsUint256()) != m_transactions.end()) {
+            direct_parents.insert(parent_txid.AsUint256());
+        }
+    }
+    entry.depends.assign(direct_parents.begin(), direct_parents.end());
+
+    for (const auto& parent_txid : entry.depends) {
+        m_children_index[parent_txid].insert(txid_u256);
+    }
+
+    entry.ancestor_fee = entry.fee;
+    entry.ancestor_size = entry.tx_size;
+    entry.ancestor_effective_vsize = GetEffectiveVirtualSize(entry);
+    entry.ancestor_vwu = entry.vwu;
+    for (const auto& ancestor_txid : ancestors) {
+        auto ancestor_it = m_transactions.find(ancestor_txid);
+        if (ancestor_it == m_transactions.end()) {
+            continue;
+        }
+        entry.ancestor_fee += ancestor_it->second.fee;
+        entry.ancestor_size += ancestor_it->second.tx_size;
+        entry.ancestor_effective_vsize += GetEffectiveVirtualSize(ancestor_it->second);
+        entry.ancestor_vwu += ancestor_it->second.vwu;
+    }
+    entry.ancestor_feerate = entry.ancestor_size > 0
+        ? static_cast<double>(entry.ancestor_fee) / entry.ancestor_size
+        : 0.0;
+    // Phase 8 Commit 2: ancestor-adjusted feerate now uses VWU (economic
+    // truth) rather than BIP141-based effective_vsize (bandwidth-biased
+    // proxy). Consumers: Mempool::selectTransactionsForBlock sort;
+    // BlockAssembler inherits via the mempool; eviction via
+    // GetPackageSelectionScore → adjusted_fee_rate.
+    entry.ancestor_adjusted_feerate = entry.ancestor_vwu > 0
+        ? static_cast<double>(entry.ancestor_fee) / static_cast<double>(entry.ancestor_vwu)
+        : 0.0;
+
+    // Update spent outputs tracking
+    for (const auto& input : entry.tx.Inputs()) {
+        OutPoint outpoint{input.txid, input.vout};
+        m_spent_outputs[outpoint].insert(txid_u256);
+    }
+
+    // Add to main storage
+    m_transactions[txid_u256] = entry;
+
+    // v0.11.0: Update mempool UTXO overlay
+    // Spend inputs (mark as consumed by mempool)
+    for (const auto& input : entry.tx.Inputs()) {
+        // Phase M.0: Wallet boundary - convert TxOutPoint (string) to OutPoint (uint256)
+        OutPoint out{input.txid, input.vout};
+        coins_view_.spendCoin(out);
+    }
+
+    // Preserve the admitted family's exact output representation.
+    for (size_t vout = 0; vout < entry.tx.OutputCount(); ++vout) {
+        const OutPoint out{TxId(txid_u256), static_cast<uint32_t>(vout)};
+        coins_view_.addCoin(out, entry.tx.OutputCoin(vout, entry.height));
+    }
+
+    // Add to indices
+    m_fee_index.insert({GetPackageSelectionScore(entry), txid_u256});
+    m_time_index.insert({entry.time, txid_u256});
 }
 
 bool Mempool::removeTransaction(const uint256& txid) {

@@ -629,6 +629,9 @@ public:
 private:
     // Construct only while holding m_mutex; restores local pool state on failure.
     struct StateRollback;
+    // Caller owns StateRollback and the selected-chain/pool locks.
+    void insertAdmittedEntryLocked(MempoolEntry,
+        const std::unordered_set<uint256>& ancestors);
     std::vector<uint256> selectStaleForRefreshLocked(uint32_t, size_t, uint32_t, uint32_t, size_t);
     size_t applyBlockConnectedLocked(const ConnectedBlockEffects&, uint32_t, const std::vector<uint8_t>&);
     void applyBlockDisconnectedLocked(uint32_t);

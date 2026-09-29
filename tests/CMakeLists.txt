@@ -6667,6 +6667,10 @@ set_tests_properties(TypedBridgeProofOwner PROPERTIES
 add_test(NAME TypedAcceptanceOwner COMMAND test_mempool_typed_package --gtest_filter=TypedAcceptanceOwner.*)
 set_tests_properties(TypedAcceptanceOwner PROPERTIES
   LABELS "mempool;callback;body;mandatory" TIMEOUT 60)
+
+add_test(NAME TypedPoolPublication COMMAND test_mempool_typed_package --gtest_filter=TypedPoolPublication.*)
+set_tests_properties(TypedPoolPublication PROPERTIES
+  LABELS "mempool;replacement;body;mandatory" TIMEOUT 60)
 add_test(NAME PoolParentRoot COMMAND test_mempool_typed_package --gtest_filter=PoolParentRoot.*)
 set_tests_properties(PoolParentRoot PROPERTIES
   LABELS "mempool;bridge;proof;reorg;mandatory" TIMEOUT 60)
