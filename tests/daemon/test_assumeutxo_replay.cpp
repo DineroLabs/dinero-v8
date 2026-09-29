@@ -1,3 +1,6 @@
+#include "vault/vault_runtime.h"
+#include "vault/reorg_watcher.h"
+#include "vault/ledger.h"
 #include "daemon/tx_relay_manager.h"
 #include "daemon/utreexo_tx_payload.h"
 #include "daemon/utreexo_tx_reader.h"
@@ -720,3 +723,4 @@ int main(int argc, char** argv) {
 #include "chainstate_wallet_index_owner_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
+#include "vault_canonical_observation_checks.h"

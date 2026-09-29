@@ -87,7 +87,8 @@ class ReorgWatcher {
     }
 
    private:
-    ChainInclusion check(const TrackedDeposit& dep);
+    struct CheckedInclusion { ChainInclusion kind; std::array<uint8_t,32> block_hash; };
+    CheckedInclusion check(const TrackedDeposit& dep);
     UnaAmount unrecoverableLoss(const TrackedDeposit& dep);
 
     DepositFlowMachine* machine_{nullptr};

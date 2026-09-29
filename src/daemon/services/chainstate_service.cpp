@@ -5732,6 +5732,56 @@ StatusOr<ChainstateService::BlockRpcSnapshot> ChainstateService::getBlockRpcSnap
     return result;
 }
 
+StatusOr<uint256> ChainstateService::getCanonicalBlockHash(uint32_t height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    if (safe_mode_active_ || !chain_db_ || !active_tip_ || !consensus_utxo_set_ ||
+        !consensus::OrchardProfileConfigurationValid(Params())) return Status::Internal;
+    const auto tip=chain_db_->getTip();const auto validated=chain_db_->getValidatedTip();
+    if (!tip.ok()) return tip.status();
+    if (!validated.ok()) return validated.status();
+    if (tip->height<0 || tip->hash!=active_tip_->hash || uint32_t(tip->height)!=active_tip_->height ||
+        validated->hash!=tip->hash || validated->height!=tip->height ||
+        consensus_utxo_set_->GetBestBlock()!=tip->hash ||
+        consensus_utxo_set_->GetHeight()!=uint32_t(tip->height)) return Status::Corruption;
+    if (height>active_tip_->height || height>uint32_t(std::numeric_limits<int>::max())) return Status::NotFound;
+    const auto hash=chain_db_->getBlockHashByHeight(static_cast<int>(height));
+    if (!hash.ok()) return hash.status();
+    const auto recorded_height=chain_db_->getBlockHeight(*hash);
+    if (!recorded_height.ok()) return recorded_height.status();
+    if (*recorded_height<0 || uint32_t(*recorded_height)!=height) return Status::Corruption;
+    return *hash;
+}
+
+StatusOr<ChainstateService::CanonicalOutputInclusion>
+ChainstateService::getCanonicalOutputInclusion(const uint256& txid,uint32_t output,uint32_t height) const {
+    std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+    const auto hash=getCanonicalBlockHash(height);
+    if (!hash.ok()) return hash.status();
+    if (consensus::OrchardActiveForHeight(Params(),height)) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        const auto body=getRuntimeBlockByHash(*hash);
+        if (!body.ok()) return body.status();
+        if (!(*body)->IsOrchardProfile() || !(*body)->Context() ||
+            (*body)->Context()->height!=height || (*body)->Orchard().Header().GetHash()!=*hash)
+            return Status::Corruption;
+        for (const auto& tx:(*body)->Orchard().Transactions()) {
+            if (tx.GetTxid().AsUint256()!=txid) continue;
+            const size_t count=tx.IsOrchard()?tx.Orchard().Outputs().size():tx.Historical().vout.size();
+            return CanonicalOutputInclusion{*hash,output<count};
+        }
+#else
+        return Status::Internal;
+#endif
+    } else {
+        const auto body=getBlockByHash(*hash);
+        if (!body.ok()) return body.status();
+        if (body->header.GetHash()!=*hash) return Status::Corruption;
+        for (const auto& tx:body->vtx)
+            if (tx.GetTxid().AsUint256()==txid) return CanonicalOutputInclusion{*hash,output<tx.vout.size()};
+    }
+    return CanonicalOutputInclusion{*hash,false};
+}
+
 StatusOr<ChainstateService::OrchardAnnouncementSnapshot>
 ChainstateService::getOrchardAnnouncementSnapshot(const uint256& hash,uint32_t height) const {
     if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;

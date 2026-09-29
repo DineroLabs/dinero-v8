@@ -29,16 +29,15 @@ int ReorgWatcher::tipChanged(uint64_t /*tip_height*/) {
         }
     }
     for (const auto& [outpoint, dep] : candidates) {
-        ChainInclusion inclusion = check(dep);
-        switch (inclusion) {
+        const auto inclusion = check(dep);
+        switch (inclusion.kind) {
             case ChainInclusion::STILL_INCLUDED:
             case ChainInclusion::UNKNOWN:
                 continue;
             case ChainInclusion::RE_MINED_SAME_TXID: {
                 // Block at deposit's height changed but tx still
                 // present (just re-mined). Update recorded hash.
-                std::array<uint8_t, 32> new_hash = block_hash_at_height_(dep.deposit_height);
-                deposit_block_hashes_[outpoint] = new_hash;
+                deposit_block_hashes_[outpoint] = inclusion.block_hash;
                 continue;
             }
             case ChainInclusion::ORPHANED: {
@@ -56,7 +55,7 @@ int ReorgWatcher::tipChanged(uint64_t /*tip_height*/) {
     return reverts;
 }
 
-ChainInclusion ReorgWatcher::check(const TrackedDeposit& dep) {
+ReorgWatcher::CheckedInclusion ReorgWatcher::check(const TrackedDeposit& dep) {
     auto it = deposit_block_hashes_.find(dep.outpoint);
     if (it == deposit_block_hashes_.end()) {
         // Stage advanced to credited without a recorded block hash —
@@ -75,15 +74,15 @@ ChainInclusion ReorgWatcher::check(const TrackedDeposit& dep) {
         }
     }
     if (all_zero) {
-        return ChainInclusion::UNKNOWN;
+        return {ChainInclusion::UNKNOWN,current};
     }
     if (current == recorded) {
-        return ChainInclusion::STILL_INCLUDED;
+        return {ChainInclusion::STILL_INCLUDED,current};
     }
     if (tx_included_at_(dep.outpoint, dep.deposit_height, current)) {
-        return ChainInclusion::RE_MINED_SAME_TXID;
+        return {ChainInclusion::RE_MINED_SAME_TXID,current};
     }
-    return ChainInclusion::ORPHANED;
+    return {ChainInclusion::ORPHANED,current};
 }
 
 UnaAmount ReorgWatcher::unrecoverableLoss(const TrackedDeposit& dep) {

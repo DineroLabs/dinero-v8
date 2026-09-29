@@ -857,6 +857,13 @@ public:
         std::vector<uint256> transaction_ids;
     };
     StatusOr<BlockRpcSnapshot> getBlockRpcSnapshot(const uint256& hash) const;
+    // One selected canonical observation. Missing source/body is an error, not
+    // evidence of inclusion or absence. This is not an unspentness certificate.
+    struct CanonicalOutputInclusion { uint256 block_hash; bool included; };
+    StatusOr<uint256> getCanonicalBlockHash(uint32_t height) const;
+    StatusOr<CanonicalOutputInclusion> getCanonicalOutputInclusion(
+        const uint256& txid, uint32_t output, uint32_t height) const;
+
     struct OrchardAnnouncementSnapshot {
         uint256 hash;
         uint32_t height;

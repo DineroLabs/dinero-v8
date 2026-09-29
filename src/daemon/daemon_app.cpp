@@ -24,6 +24,7 @@
 #include "daemon/services/wallet_service.h"
 #include "wallet/hd_wallet.h"
 #include "wallet/wallet_worker.h"
+#include "vault/vault_runtime.h"
 #include "daemon/services/p2p_service.h"
 #include "daemon/services/rpc_service.h"
 #include "daemon/services/mining_service.h"
@@ -7580,6 +7581,16 @@ void DaemonApp::Stop() {
         }
     }
     LogShutdownPhase("workers_joined", shutdown_start, "all registered services stopped");
+
+    // RPC and notification producers have stopped. Release the vault's
+    // canonical-read callbacks before the daemon context is destroyed.
+    try {
+        vault::ShutdownVaultRuntime();
+    } catch (const std::exception& e) {
+        std::cerr << "[DaemonApp] Vault shutdown error: " << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[DaemonApp] Unknown vault shutdown error" << std::endl;
+    }
 
     // Clear singleton AFTER all services stopped (not before)
     // so service destructors can still access DaemonContext if needed.

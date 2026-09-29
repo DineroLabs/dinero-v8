@@ -61,9 +61,8 @@ struct VaultRuntimeConfig {
     /// Chain-query closures wired by the daemon.
     std::function<std::array<uint8_t, 32>(uint64_t)> block_hash_at_height;
     /// Caller looks up whether `(outpoint)` is included in the block
-    /// at `(height, block_hash)`. Daemon implementation walks the
-    /// block's tx list. Stage-0-friendly default: always-true so
-    /// `RE_MINED_SAME_TXID` is the conservative outcome.
+    /// at `(height, block_hash)`. The daemon reader preserves the typed
+    /// body and throws on unavailable or changed source state.
     std::function<bool(const std::array<uint8_t, 32>&, uint32_t, uint64_t,
                        const std::array<uint8_t, 32>&)>
         tx_included_at;
@@ -134,26 +133,17 @@ bool VerifyOperatorDeposit(const std::array<uint8_t, 32>& txid_raw,
                            std::array<uint8_t, 32>& out_block_hash_raw,
                            std::string& err);
 
-/// Build a `block_hash_at_height` closure backed by the live
-/// ChainDB on `ctx`. Returns the canonical hash of the active-chain
-/// block at `height`, or a 32-byte zero array as the "unknown"
-/// sentinel (block not yet on disk, ChainDB unavailable, etc.).
-/// The closure captures `&ctx` by reference; caller must guarantee
-/// `ctx` outlives the vault runtime (true for the daemon-static
-/// DaemonContext).
-std::function<std::array<uint8_t, 32>(uint64_t)>
+/// Capture the current chainstate service by strong ownership. Call after
+/// service wiring. The checked canonical hash reader returns zero when source
+/// state is unavailable; no body read or deposit acknowledgement is implied.
+std::function<std::array<uint8_t,32>(uint64_t)>
 MakeChainstateBlockHashClosure(::DaemonContext& ctx);
 
-/// Build a `tx_included_at` closure backed by the live ChainDB on
-/// `ctx`. Loads the block at `block_hash` and answers whether a
-/// transaction with txid `outpoint.txid_raw` (and ≥ `vout+1`
-/// outputs) is present. On any chain-query failure (block missing,
-/// deserialisation error, ChainDB unavailable) returns `true`
-/// conservatively — keeps the reorg watcher in RE_MINED_SAME_TXID
-/// rather than ORPHANED, avoiding a false compensating-debit cascade
-/// on transient block-fetch hiccups.
-std::function<bool(const std::array<uint8_t, 32>&, uint32_t, uint64_t,
-                   const std::array<uint8_t, 32>&)>
+/// Check one exact output in the selected canonical body, preserving historical
+/// and Orchard transaction families. Throws when unavailable or when the
+/// expected canonical hash changed; only a complete read returns true/false.
+/// The watcher must retain its prior observation if this call throws.
+std::function<bool(const std::array<uint8_t,32>&,uint32_t,uint64_t,const std::array<uint8_t,32>&)>
 MakeChainstateTxIncludedClosure(::DaemonContext& ctx);
 
 }  // namespace dinero::vault

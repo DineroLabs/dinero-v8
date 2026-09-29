@@ -275,20 +275,25 @@ void InitializeVaultRuntime(VaultRuntimeConfig config) {
 }
 
 void ShutdownVaultRuntime() {
-    std::lock_guard<std::mutex> lock(g_runtime_mu);
-    if (!g_initialized.load()) {
-        return;
+    std::unique_ptr<LedgerStore> store;
+    {
+        std::lock_guard<std::mutex> lock(g_runtime_mu);
+        if (!g_initialized.load()) {
+            return;
+        }
+        din::SetVaultService(nullptr);
+        g_service.reset();
+        store = std::move(g_store);
+        g_operator_script.clear();
+        g_operator_address_str.clear();
+        g_default_account = AccountId{};
+        g_initialized.store(false);
     }
-    din::SetVaultService(nullptr);
-    g_service.reset();
-    if (g_store) {
-        g_store->flush();
-        g_store.reset();
+    // A flush failure must not leave a published runtime or retain its
+    // chainstate callbacks. The detached store is also destroyed on failure.
+    if (store) {
+        store->flush();
     }
-    g_operator_script.clear();
-    g_operator_address_str.clear();
-    g_default_account = AccountId{};
-    g_initialized.store(false);
     dinero::g_logger.info("[Vault] runtime shut down");
 }
 
@@ -526,56 +531,27 @@ uint256 arrayToUint256(const std::array<uint8_t, 32>& a) {
 
 std::function<std::array<uint8_t, 32>(uint64_t)>
 MakeChainstateBlockHashClosure(::DaemonContext& ctx) {
-    return [ctx_ptr = &ctx](uint64_t height) -> std::array<uint8_t, 32> {
-        if (ctx_ptr == nullptr || !ctx_ptr->chainstate) {
-            return std::array<uint8_t, 32>{};
-        }
-        auto* chain_db = ctx_ptr->chainstate->GetChainDB();
-        if (chain_db == nullptr) {
-            return std::array<uint8_t, 32>{};
-        }
-        // ChainDB heights are int; clamp to a safe range. Values
-        // outside int range can't legally exist on this chain.
-        if (height > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
-            return std::array<uint8_t, 32>{};
-        }
-        auto result = chain_db->getBlockHashByHeight(static_cast<int>(height));
-        if (!result.ok()) {
-            return std::array<uint8_t, 32>{};
-        }
-        return uint256ToArray(result.value());
+    return [source=ctx.chainstate](uint64_t height) -> std::array<uint8_t,32> {
+        if (!source || height>uint64_t(std::numeric_limits<uint32_t>::max())) return {};
+        try {
+            const auto index=ChainstateService::AcquireWalletIndexUse(source);
+            const auto hash=source->getCanonicalBlockHash(static_cast<uint32_t>(height));
+            return hash.ok()?uint256ToArray(*hash):std::array<uint8_t,32>{};
+        } catch (...) { return {}; }
     };
 }
 
-std::function<bool(const std::array<uint8_t, 32>&, uint32_t, uint64_t,
-                   const std::array<uint8_t, 32>&)>
+std::function<bool(const std::array<uint8_t,32>&,uint32_t,uint64_t,const std::array<uint8_t,32>&)>
 MakeChainstateTxIncludedClosure(::DaemonContext& ctx) {
-    return [ctx_ptr = &ctx](const std::array<uint8_t, 32>& txid_raw, uint32_t vout,
-                            uint64_t /*height*/, const std::array<uint8_t, 32>& block_hash) -> bool {
-        if (ctx_ptr == nullptr || !ctx_ptr->chainstate) {
-            return true;  // conservative: keep deposits in RE_MINED_SAME_TXID
-        }
-        auto* chain_db = ctx_ptr->chainstate->GetChainDB();
-        if (chain_db == nullptr) {
-            return true;
-        }
-        uint256 hash = arrayToUint256(block_hash);
-        auto block_result = chain_db->getBlock(hash);
-        if (!block_result.ok()) {
-            // Block not on disk (pruned, never fetched, transient
-            // RocksDB error). Conservative path: claim included.
-            return true;
-        }
-        const Block& block = block_result.value();
-        for (const auto& tx : block.vtx) {
-            const uint256& tx_hash = tx.GetTxid().AsUint256();
-            // OutpointId stores raw 32-byte big-endian txid (the same
-            // byte layout as uint256 internally).
-            if (std::memcmp(tx_hash.begin(), txid_raw.data(), 32) == 0) {
-                return vout < tx.vout.size();
-            }
-        }
-        return false;
+    return [source=ctx.chainstate](const std::array<uint8_t,32>& txid,uint32_t output,
+                                  uint64_t height,const std::array<uint8_t,32>& expected_hash) -> bool {
+        if (!source || height>uint64_t(std::numeric_limits<uint32_t>::max()))
+            throw std::runtime_error("Vault canonical inclusion source unavailable");
+        const auto index=ChainstateService::AcquireWalletIndexUse(source);
+        const auto observed=source->getCanonicalOutputInclusion(arrayToUint256(txid),output,static_cast<uint32_t>(height));
+        if (!observed.ok() || observed->block_hash!=arrayToUint256(expected_hash))
+            throw std::runtime_error("Vault canonical inclusion observation unavailable or changed");
+        return observed->included;
     };
 }
 

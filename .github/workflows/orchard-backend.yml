@@ -282,7 +282,11 @@ jobs:
       - name: Build and execute real mempool runtime test consumers
         run: |
           mapfile -t targets < build-orchard-root/real-mempool-fixture-targets.txt
-          test "${#targets[@]}" -eq 21
+          if test "${#targets[@]}" -ne 21; then
+            printf 'Expected 21 real mempool fixture targets; found %s\n' "${#targets[@]}" >&2
+            printf '%s\n' "${targets[@]}" >&2
+            exit 1
+          fi
           cmake --build build-orchard-root --parallel 4 --target "${targets[@]}" -- -k 0
           ctest --test-dir build-orchard-root --show-only=json-v1 > orchard-real-mempool-all-inventory.json
           python3 - <<'PYTEST'
@@ -1054,6 +1058,26 @@ jobs:
           for case in ['MissingOwnersAndConfiguredUnavailableSourceDefer', 'UnsetProfileAndBorrowedLeasePreserveHistoricalWallet', 'EarnedPrefixAndEncryptedUnlockRestoreActualNote', 'ActualStartupResumesLaggingStoresWithoutHeightReset', 'MissingBaselineNeverEnrollsOrUsesLegacySnapshotPath', 'RequiredWriteFailureRetainsPrefixForRetry']:
               assert log.count('[       OK ] WalletCanonicalRecovery.'+case+' (')==1
           assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Read exact canonical vault output observations
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay test_vault_state_machines --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(VaultCanonicalObservation|VaultStateMachines)$' --show-only=json-v1 > vault-canonical-observation-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('vault-canonical-observation-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultCanonicalObservation','VaultStateMachines']
+          assert {t['name']:next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT') for t in tests}=={'VaultCanonicalObservation':120,'VaultStateMachines':30}
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(VaultCanonicalObservation|VaultStateMachines)$' --verbose --no-tests=error --output-log vault-canonical-observation-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('vault-canonical-observation-execution.log').read_text()
+          for case in ['UnavailableSourceNeverClaimsInclusion', 'WatcherRetainsCheckedHashAndRefusedObservation', 'HistoricalAndMixedCanonicalOutputIdentities', 'CapturedOwnerAndUnavailableStorePreserveObservation']:
+              assert log.count('[       OK ] VaultCanonicalObservation.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 2' in log
           PYTEST
 
       - name: Check typed canonical block announcement handoff
@@ -2536,6 +2560,7 @@ jobs:
           name: orchard-root-${{ github.sha }}
           path: |
             orchard-root-source.txt
+            build-orchard-root/real-mempool-fixture-targets.txt
             orchard-mnemonic-recovery-inventory.json
             orchard-mnemonic-recovery-execution.log
             orchard-height-one-inventory.json
@@ -2627,12 +2652,14 @@ jobs:
             orchard-reorg-readmission-inventory.json
             chainstate-wallet-index-owner-inventory.json
             wallet-canonical-recovery-inventory.json
+            vault-canonical-observation-inventory.json
             wallet-service-owner-inventory.json
             orchard-network-routing-execution.log
             orchard-block-announcement-execution.log
             orchard-reorg-readmission-execution.log
             chainstate-wallet-index-owner-execution.log
             wallet-canonical-recovery-execution.log
+            vault-canonical-observation-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log
