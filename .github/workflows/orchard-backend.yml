@@ -960,6 +960,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Selected Orchard admission from retained mempool file
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardDiskReadmission$' --show-only=json-v1 > orchard-disk-readmission-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-disk-readmission-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardDiskReadmission']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardDiskReadmission$' --verbose --no-tests=error --output-log orchard-disk-readmission-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-disk-readmission-execution.log').read_text()
+          for case in ['UnavailableFamilyOrOwnerPreservesOriginal','ValidMixedFileReopenAndIdempotentRetry','MissingSelectedOwnerAndChangedRetryRemainRetained','ConfirmedRefusalSurvivesUntilRealDisconnect']:
+              assert log.count('[       OK ] OrchardDiskReadmission.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Exact typed block serving
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2408,6 +2427,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-disk-readmission-inventory.json
+            orchard-disk-readmission-execution.log
             orchard-block-serving-inventory.json
             orchard-block-serving-execution.log
             operator-status-owner-inventory.json

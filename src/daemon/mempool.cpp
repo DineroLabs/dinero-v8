@@ -4196,13 +4196,12 @@ bool Mempool::loadFromDisk(const std::string& filepath) {
             std::vector<MempoolTransaction> retry;
             retry.reserve(pending.size());
             for (auto& body : pending) {
-                if (body.IsOrchard()) {
-                    // Actual family validator remains unavailable. Preserve
-                    // its original file, never cast into historical ingress.
-                    retry.push_back(std::move(body));
-                    continue;
-                }
-                const auto result = submitTransactionInternal(body.Historical(), "disk-load", false);
+                // Disk metadata never grants admission. Reuse the same selected
+                // owner, family validator and observer checks as live ingress,
+                // with relay disabled. No historical conversion of typed bytes.
+                const auto result = body.IsOrchard()
+                    ? submitBody(body, "disk-load", false)
+                    : submitTransactionInternal(body.Historical(), "disk-load", false);
                 if (result.accepted()) { ++resolved; continue; }
                 if (result.code == TxRejectCode::ALREADY_IN_MEMPOOL) {
                     const auto present = getMempoolEntry(body.GetTxid().AsUint256());
@@ -4211,8 +4210,11 @@ bool Mempool::loadFromDisk(const std::string& filepath) {
                         continue;
                     }
                     retry.push_back(std::move(body));
-                } else if (result.code == TxRejectCode::MISSING_INPUTS ||
+                } else if (body.IsOrchard() || result.code == TxRejectCode::MISSING_INPUTS ||
                            result.code == TxRejectCode::UNAVAILABLE) {
+                    // A typed rejection at this selected tip is not a durable
+                    // resolution across reorg. Keep every unresolved body and
+                    // the original file, including current policy refusals.
                     retry.push_back(std::move(body));
                 } else {
                     ++resolved; // Existing known policy rejection; not admitted.

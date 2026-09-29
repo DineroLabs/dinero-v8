@@ -671,3 +671,5 @@ int main(int argc, char** argv) {
 #include "operator_status_owner_checks.h"
 
 #include "orchard_block_serving_checks.h"
+
+#include "orchard_disk_readmission_checks.h"
