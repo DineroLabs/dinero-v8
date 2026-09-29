@@ -1,3 +1,4 @@
+#include "daemon/orchard_network_block.h"
 #include "daemon/block_acceptor.h"
 #include "mining/header_layout.h"  // 128-byte BlockHeader v1 constants
 #include "db_meta_utils.hpp"
@@ -137,7 +138,12 @@ BlockAcceptResult BlockAcceptor::AcceptBlockFromRPC(const std::string& blockHex,
 
         if (activation_chainstate) {
             const auto typed = activation_chainstate->TryAcceptOrchardBlockFromRPC(blockHex);
-            if (typed) return *typed;
+            if (typed) {
+                auto result=*typed;
+                activation_guard.unlock();
+                result.relayed=AnnounceAcceptedOrchardBlock(activation_chainstate,result);
+                return result;
+            }
         }
 
         // 1. Parse block from hex

@@ -5075,6 +5075,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     "${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures/candidate-envelope.bin"
     "${CMAKE_CURRENT_BINARY_DIR}/orchard-transaction-rpc-fixtures/candidate-envelope.bin" COPYONLY)
   target_compile_definitions(test_assumeutxo_replay PRIVATE
+    DINERO_TEST_REAL_VAULT_RUNTIME=1
     DINERO_WALLET_RAW_ORCHARD=$<TARGET_EXISTS:dinero_orchard_backend>
     DINERO_WALLET_RAW_FIXTURES="${CMAKE_CURRENT_BINARY_DIR}/orchard-transaction-rpc-fixtures")
   target_link_libraries(test_assumeutxo_replay PRIVATE
@@ -5124,6 +5125,16 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardReorgReadmission COMMAND test_assumeutxo_replay --gtest_filter=OrchardReorgReadmission.*)
+  set_tests_properties(OrchardReorgReadmission PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
+  add_test(NAME WalletServiceOwner COMMAND test_assumeutxo_replay --gtest_filter=WalletServiceOwner.*)
+  set_tests_properties(WalletServiceOwner PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;mandatory")
+  add_test(NAME OrchardBlockAnnouncement COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockAnnouncement.*)
+  set_tests_properties(OrchardBlockAnnouncement PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
+  add_test(NAME OrchardNetworkRouting COMMAND test_assumeutxo_replay --gtest_filter=OrchardNetworkRouting.*)
+  set_tests_properties(OrchardNetworkRouting PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
+  add_test(NAME OrchardBlockRelay COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockRelay.*)
+  set_tests_properties(OrchardBlockRelay PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
   add_test(NAME OrchardDownloadDrain COMMAND test_assumeutxo_replay --gtest_filter=OrchardDownloadDrain.*)
   set_tests_properties(OrchardDownloadDrain PROPERTIES TIMEOUT 120 LABELS "daemon;mandatory")
   add_test(NAME OrchardQueuedIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardQueuedIngress.*)
@@ -15643,15 +15654,19 @@ function(dinero_attach_real_mempool_fixture_runtime)
       target_sources(${_fixture} PRIVATE tests/stubs/vault_test_stubs.cpp)
     endif()
     target_include_directories(${_fixture} PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src)
+    set(_fixture_rpc_owner "")
+    if(_fixture STREQUAL "test_assumeutxo_replay")
+      set(_fixture_rpc_owner dinero_rpc_handlers)
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       target_link_libraries(${_fixture} PRIVATE
-        "-Wl,--start-group" dinero_core dinero_wallet dinero_chainstate
+        "-Wl,--start-group" ${_fixture_rpc_owner} dinero_core dinero_wallet dinero_chainstate
         dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
         dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
         dinero_crypto "-Wl,--end-group" secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
     else()
       target_link_libraries(${_fixture} PRIVATE
-        dinero_core dinero_wallet dinero_chainstate dinero_consensus dinero_shielded
+        ${_fixture_rpc_owner} dinero_core dinero_wallet dinero_chainstate dinero_consensus dinero_shielded
         dinero_bridge dinero_pool dinero_lightning_keys dinero_address_encoding dinero_bip32
         dinero_pq dinero_zk dinero_tx_primitives dinero_crypto secp256k1 RocksDB::rocksdb ${SQLITE3_LIBRARIES})
     endif()

@@ -56,6 +56,7 @@ namespace dinero {
 // Forward declarations
 class P2PManager;
 class ChainstateService;
+class BlockIngressService;
 class Mempool;  // Phase G.13
 class ILogger;
 class HeaderSyncManager;  // Phase G.8
@@ -220,6 +221,20 @@ public:
     // a strong owner until it has captured an immutable wire response.
     void SetFullBlockSource(const std::shared_ptr<ChainstateService>& source);
 
+    // Configure before dispatch. Both actual services are acquired strongly for
+    // each request; an expired owner refuses without historical fallback.
+    void SetOrchardBlockIngress(const std::shared_ptr<ChainstateService>& source,
+                               const std::shared_ptr<BlockIngressService>& ingress) {
+        orchard_block_source_ = source;
+        orchard_block_ingress_ = ingress;
+    }
+
+    // True means exact hash/height canonical acceptance was observed. Receipt,
+    // a previously seen hash, or stored bytes alone never acknowledge delivery.
+    bool HandleOrchardBlock(const std::string& peer_address,
+                            const std::vector<uint8_t>& bytes);
+
+
     void SetRetrieveBlockCallback(RetrieveBlockCallback callback) {
         retrieve_block_callback_ = callback;
     }
@@ -260,6 +275,11 @@ public:
      * @param block_hash Hash of successfully connected block
      */
     void AnnounceBlock(const uint256& block_hash);
+    // Checked current typed tip, inv/getdata only. True means this canonical
+    // cursor has been handed to transport in this process, not peer receipt.
+    // Missing owners, held selected locks and transport exceptions return false.
+    bool AnnounceOrchardBlock(const uint256& block_hash, uint32_t height) noexcept;
+
 
     /**
      * Callback type for getting the current best block hash
@@ -758,6 +778,14 @@ private:
     };
     std::function<std::optional<FullBlockResponse>(const uint256&)> full_block_source_;
     bool full_block_source_configured_ = false;
+    std::weak_ptr<ChainstateService> orchard_block_source_;
+    std::weak_ptr<BlockIngressService> orchard_block_ingress_;
+    std::mutex orchard_announcement_mutex_;
+    bool orchard_announcement_pending_ = false;
+    uint64_t orchard_announced_sequence_ = 0;
+    uint256 orchard_announced_digest_;
+    std::weak_ptr<ChainstateService> orchard_announced_source_;
+
     HasBlockCallback has_block_callback_;  // Phase G.7: Check if block exists
     GetBlockStatusCallback get_block_status_callback_;  // Phase P.2: Check block data status
     GetBestBlockHashCallback get_best_block_hash_callback_;  // Phase G.X: Tip announcement

@@ -20,6 +20,10 @@ WalletService::WalletService() = default;
 WalletService::~WalletService() = default;
 
 bool WalletService::Init(DaemonContext& ctx) {
+    // Init/Start remain serialized startup operations. Never replace a manager
+    // that already belongs to this service or one being drained.
+    { std::lock_guard<std::mutex> lock(operation_mutex_);
+      if (wallet_mgr_ || accepting_ || stopping_) return false; }
     // Wire dependencies from context
     logger_ = std::dynamic_pointer_cast<LoggerService>(ctx.logger);
     // Use dedicated wallet logger if available, fallback to shared logger
@@ -51,13 +55,15 @@ bool WalletService::Init(DaemonContext& ctx) {
     try {
         // Create WalletManager with data directory (it handles /wallets subdirectory internally)
         #ifdef FFI_WALLET_ONLY
-        wallet_mgr_ = std::make_unique<WalletManager>(datadir, logger_interface_, wallet_schema_path);
+        auto manager = std::make_unique<WalletManager>(datadir, logger_interface_, wallet_schema_path);
         #else
-        wallet_mgr_ = std::make_unique<WalletManager>(std::filesystem::path(datadir), logger_interface_, wallet_schema_path);
+        auto manager = std::make_unique<WalletManager>(std::filesystem::path(datadir), logger_interface_, wallet_schema_path);
         #endif
 
         // Week 5: Bridge pattern removed - all code now uses ctx.daemon->wallet->get()
         logger_interface_->info("[WalletService] WalletManager created successfully");
+        { std::lock_guard<std::mutex> lock(operation_mutex_);
+          wallet_mgr_=std::move(manager);accepting_=true; }
         return true;
 
     } catch (const std::exception& e) {
@@ -67,6 +73,10 @@ bool WalletService::Init(DaemonContext& ctx) {
 }
 
 bool WalletService::Start() {
+    std::unique_ptr<WalletUse> use;
+    try { use=BorrowWalletUse(); } catch (const std::exception&) {
+        return false;
+    }
     if (!wallet_mgr_) {
         logger_interface_->error("[WalletService] Cannot start - wallet manager not initialized");
         return false;
@@ -394,6 +404,8 @@ bool WalletService::Start() {
 }
 
 bool WalletService::EnsureRuntimeWalletBindings() {
+    std::unique_ptr<WalletUse> use;
+    try { use=BorrowWalletUse(); } catch (const std::exception&) { return false; }
     if (!wallet_mgr_ || !wallet_mgr_->hasActiveWallet()) {
         return false;
     }
@@ -458,6 +470,11 @@ bool WalletService::EnsureRuntimeWalletBindings() {
 
 bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) {
     if (error) error->clear();
+    std::unique_ptr<WalletUse> use;
+    try { use=BorrowWalletUse(); } catch (const std::exception&) {
+        if (error) *error="wallet service unavailable";
+        return false;
+    }
     if (!wallet_mgr_ || !wallet_mgr_->hasActiveWallet() || !chainstate_) {
         if (error) *error = "wallet or chainstate is unavailable";
         return false;
@@ -525,43 +542,49 @@ bool WalletService::RecoverActiveWalletFromSnapshotIfNeeded(std::string* error) 
 }
 
 void WalletService::Stop() {
-    if (!wallet_mgr_) {
-        logger_interface_->info("[WalletService] Already stopped");
-        return;
-    }
-
-    logger_interface_->info("[WalletService] Stopping wallet service...");
-
-    try {
-        // Shutdown wallet worker thread
-        logger_interface_->info("[WalletService] Shutting down wallet worker thread...");
-        WalletNotify::Shutdown();
-        logger_interface_->info("[WalletService] Wallet worker thread stopped");
-
-        // If a wallet is currently open, close it cleanly
-        if (wallet_mgr_->hasActiveWallet()) {
-            std::string current = wallet_mgr_->getCurrentWalletName();
-            logger_interface_->info("[WalletService] Closing active wallet: " + current);
-
-            // WalletManager destructor will handle cleanup
-            // No explicit close() method needed
+    {
+        std::unique_lock<std::mutex> lock(operation_mutex_);
+        if (operations_by_thread_.count(std::this_thread::get_id()))
+            throw std::logic_error("Cannot stop wallet service inside an active operation");
+        if (stopping_) {
+            if (stopping_thread_==std::this_thread::get_id())
+                throw std::logic_error("Recursive wallet shutdown is not available");
+            operation_changed_.wait(lock,[&]{return !stopping_;});return;
         }
-
-        // WalletManager only borrows the HDWallet pointer; release service ownership explicitly.
-        wallet_mgr_->setHDWallet(nullptr);
-        hd_wallet_.reset();
-
-        // Week 5: Bridge pattern removed - no longer clearing legacy global
-        // Reset the unique_ptr (calls WalletManager destructor)
-        wallet_mgr_.reset();
-
-        logger_interface_->info("[WalletService] Wallet service stopped cleanly");
-
-    } catch (const std::exception& e) {
-        logger_interface_->error("[WalletService] Error during shutdown: " + std::string(e.what()));
-        // Still reset to avoid dangling pointer
-        wallet_mgr_.reset();
+        if (!wallet_mgr_) return;
+        accepting_=false;stopping_=true;stopping_thread_=std::this_thread::get_id();
+        operation_changed_.notify_all();
+        operation_changed_.wait(lock,[&]{return active_operations_==0;});
     }
+    // No chain/database lock is acquired while waiting above. Existing daemon
+    // shutdown order stops incoming work before this service; old raw-reference
+    // callers do not gain a lifetime guarantee from this operation owner.
+    try { if (logger_interface_) logger_interface_->info("[WalletService] Stopping wallet service..."); }
+    catch (...) { /* Diagnostics cannot prevent drain and close. */ }
+    try {
+        WalletNotify::Shutdown();
+        wallet_mgr_->setHDWallet(nullptr);
+    } catch (...) {
+        // Keep the actual manager/helper owned if prerequisite shutdown did
+        // not finish. New operations stay refused; a later Stop may retry.
+        std::lock_guard<std::mutex> lock(operation_mutex_);
+        stopping_=false;stopping_thread_={};operation_changed_.notify_all();
+        throw;
+    }
+    std::unique_ptr<WalletManager> retired;
+    std::unique_ptr<HDWallet> retired_hd;
+    {
+        std::lock_guard<std::mutex> lock(operation_mutex_);
+        retired=std::move(wallet_mgr_);retired_hd=std::move(hd_wallet_);
+    }
+    // The manager is destroyed before the separately owned HD helper.
+    retired.reset();retired_hd.reset();
+    {
+        std::lock_guard<std::mutex> lock(operation_mutex_);
+        stopping_=false;stopping_thread_={};operation_changed_.notify_all();
+    }
+    try { if (logger_interface_) logger_interface_->info("[WalletService] Wallet service stopped cleanly"); }
+    catch (...) {}
 }
 
 } // namespace dinero

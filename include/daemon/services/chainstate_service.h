@@ -61,6 +61,7 @@ class BlockStorage;
 class RuntimeBlockBody;
 struct RuntimeOutboxCursor;
 struct RuntimeOutboxPage;
+struct RuntimeReorgReadmission;
 class RuntimeAccountReplay;
 class WalletManager;
 class RuntimeWalletOriginProjection;
@@ -836,6 +837,18 @@ public:
         std::vector<uint256> transaction_ids;
     };
     StatusOr<BlockRpcSnapshot> getBlockRpcSnapshot(const uint256& hash) const;
+    struct OrchardAnnouncementSnapshot {
+        uint256 hash;
+        uint32_t height;
+        uint64_t event_sequence;
+        uint256 event_digest;
+    };
+    // Owned current-tip capture, not a lasting canonicality certificate. Refuses
+    // when this thread already holds the selected lock: transport callers must
+    // release every outer acquisition before requesting an announcement.
+    StatusOr<OrchardAnnouncementSnapshot> getOrchardAnnouncementSnapshot(
+        const uint256& hash, uint32_t height) const;
+
     // Captures an indexed transaction from the selected canonical block under
     // the activation lock. Preserves its family and verifies ordinal and txid.
     StatusOr<MempoolTransaction> getTransactionBody(const uint256& txid) const;
@@ -861,6 +874,15 @@ public:
     // Acquire before wallet ownership. Explicit limits/missing origin material
     // refuse; this is not baseline certification or all-consumer readiness.
     StatusOr<std::shared_ptr<const RuntimeAccountReplay>> getRuntimeAccountReplay() const;
+    // Reconcile one retained reorg intent with actual committed disconnects,
+    // then revalidate its non-coinbase bodies through the current real pool.
+    // Refuses outer selected ownership. No plan deletion, acknowledgment,
+    // relay or promise of continuing pool membership. A partial pool prefix
+    // may remain after operational failure; retained source remains retryable.
+    StatusOr<std::shared_ptr<const RuntimeReorgReadmission>> readmitRuntimeReorg(
+        const RuntimeOutboxCursor& after, size_t maximum_blocks = 2048,
+        size_t maximum_bytes = 64 * 1024 * 1024) const;
+
     // Checked outbox-origin facts for the ordinary and optional index domains.
     // Captures wallet identity briefly, releases it before all chain reads,
     // independently replays one actual body at a time and rechecks both domains.

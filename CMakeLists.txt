@@ -1046,6 +1046,7 @@ add_library(dinero_core STATIC
   # Service wrappers (dependency injection containers)
   src/daemon/services/config_service.cpp
   src/daemon/services/wallet_service.cpp
+  src/daemon/services/wallet_service_owner.cpp # Lightweight manager lifetime owner
   src/daemon/services/chainstate_service.cpp
   src/nodecore/sync_profile_policy.cpp
   src/daemon/sync_stats_recorder.cpp  # Forest checkpoint delta campaign phase 0
@@ -1153,6 +1154,8 @@ add_library(dinero_core STATIC
   src/daemon/block_write_metrics.cpp
   src/daemon/block_relay_manager.cpp  # Phase G.2: Block propagation
   src/daemon/block_relay_source.cpp   # Selected chainstate adapter for exact wire serving
+  src/daemon/block_relay_ingress.cpp  # Canonical typed relay adapter
+  src/daemon/orchard_network_block.cpp # Typed network routing and completion
   src/daemon/tx_relay_manager.cpp  # Phase G.3: Mempool relay
   src/daemon/relay_transaction_reader.cpp
 

@@ -677,3 +677,13 @@ int main(int argc, char** argv) {
 #include "orchard_queued_ingress_checks.h"
 
 #include "orchard_download_drain_checks.h"
+
+#include "orchard_block_relay_checks.h"
+
+#include "orchard_network_routing_checks.h"
+
+#include "orchard_block_announcement_checks.h"
+
+#include "orchard_reorg_readmission_checks.h"
+
+#include "wallet_service_owner_checks.h"

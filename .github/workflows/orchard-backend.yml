@@ -960,6 +960,101 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Check retained canonical reorg readmission
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(OrchardReorgReadmission)$' --show-only=json-v1 > orchard-reorg-readmission-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-reorg-readmission-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['OrchardReorgReadmission']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardReorgReadmission)$' --verbose --no-tests=error --output-log orchard-reorg-readmission-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-reorg-readmission-execution.log').read_text()
+          for case in ['MissingOwnerAndUnavailableBackendRefuse','UncommittedIntentAndCheckedEndDoNotAdmit','CommittedPrefixReopenAndExactDuplicate','LaterCanonicalRefusalRetainsOriginalIntent','InterruptedTwoBlockPlanUsesOnlyCommittedPrefix','WrongOwnerBoundsAndCorruptIntentRefuseBeforeAdmission']:
+              assert log.count('[       OK ] OrchardReorgReadmission.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Owned wallet service lifetime and checked shutdown
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(WalletServiceOwner)$' --show-only=json-v1 > wallet-service-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('wallet-service-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['WalletServiceOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(WalletServiceOwner)$' --verbose --no-tests=error --output-log wallet-service-owner-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('wallet-service-owner-execution.log').read_text()
+          for case in ['MissingAndStoppedServiceRefuse','NestedOwnerRetainsExactManagerAndRefusesShutdown','ActualBindingFailureKeepsOwnerThroughDiagnostics','DiagnosticFailureStillClosesAndReopensOriginalWallet']:
+              assert log.count('[       OK ] WalletServiceOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Check typed canonical block announcement handoff
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(OrchardBlockAnnouncement)$' --show-only=json-v1 > orchard-block-announcement-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-block-announcement-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['OrchardBlockAnnouncement']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardBlockAnnouncement)$' --verbose --no-tests=error --output-log orchard-block-announcement-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-block-announcement-execution.log').read_text()
+          for case in ['MissingOwnerHasNoTransportHandoff','QueueHandoffAndExactGetData','TransportExceptionKeepsAcceptanceAndRetry','CaptureRequiresUnlockedCurrentCanonicalOwner','ReconnectSameHashHasNewCanonicalCursor','MiningSubmitReleasesOuterParentGuard']:
+              assert log.count('[       OK ] OrchardBlockAnnouncement.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Typed Orchard network block routing
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(OrchardNetworkRouting)$' --show-only=json-v1 > orchard-network-routing-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-network-routing-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['OrchardNetworkRouting']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardNetworkRouting)$' --verbose --no-tests=error --output-log orchard-network-routing-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-network-routing-execution.log').read_text()
+          for case in ['UnsetProfileAndMissingOwnerAreDistinct','DirectTypedRouteUsesActualCanonicalQueue','StoredBodyDoesNotCompleteParallelDownload','FamilyFramingAndStatelessRefuseBeforeCompletion','SyncPolicyAndExactDownloadOwnerRemainRequired']:
+              assert log.count('[       OK ] OrchardNetworkRouting.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Canonical Orchard block relay completion
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(OrchardBlockRelay)$' --show-only=json-v1 > orchard-block-relay-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-block-relay-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['OrchardBlockRelay']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardBlockRelay)$' --verbose --no-tests=error --output-log orchard-block-relay-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-block-relay-execution.log').read_text()
+          for case in ['MissingAndExpiredOwnersNeverAcknowledge','CanonicalResultCompletesRealDownload','SeenHashNeverBypassesCurrentOwner','HistoricalAndMalformedBodiesHaveNoCompletion']:
+              assert log.count('[       OK ] OrchardBlockRelay.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Exact stored Orchard download drain
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay test_block_download_scheduler test_block_download_scheduler_restart_bootstrap --parallel 4 -- -k 0
@@ -2467,6 +2562,16 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-network-routing-inventory.json
+            orchard-block-announcement-inventory.json
+            orchard-reorg-readmission-inventory.json
+            wallet-service-owner-inventory.json
+            orchard-network-routing-execution.log
+            orchard-block-announcement-execution.log
+            orchard-reorg-readmission-execution.log
+            wallet-service-owner-execution.log
+            orchard-block-relay-inventory.json
+            orchard-block-relay-execution.log
             orchard-download-drain-inventory.json
             orchard-download-drain-execution.log
             orchard-queued-ingress-inventory.json

@@ -1,4 +1,5 @@
 #pragma once
+#include "daemon/runtime_outbox_cursor.h"
 #include "consensus/orchard_state_transition.h"
 #include "daemon/runtime_block_notifications.h"
 #include <thread>
@@ -14,11 +15,7 @@ struct Block;
 // it does not certify notification delivery before that origin. Historical
 // transitions after that origin join the same log. Whole-reorg intents still
 // describe preparation, not committed delivery.
-struct RuntimeOutboxCursor {
-    uint64_t sequence = 0;
-    uint256 digest;
-    bool operator==(const RuntimeOutboxCursor&) const = default;
-};
+
 // Captured from the actual sealed canonical write, never a wallet's derived
 // scan. Local replay material, not independent historical consensus validation.
 // Retention allows old-branch recovery after active Orchard undo is removed.

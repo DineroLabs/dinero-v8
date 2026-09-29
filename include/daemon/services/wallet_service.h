@@ -5,6 +5,10 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <condition_variable>
+#include <map>
+#include <thread>
 
 namespace dinero {
 
@@ -58,17 +62,32 @@ public:
      */
     void Stop() override;
 
-    /**
-     * Get reference to wrapped WalletManager
-     * Use this to access wallet functionality
-     */
+    // A thread-affine lifetime owner. This pins the manager through Stop, but
+    // does not pin a selected wallet, database transaction, seed or chain view.
+    class WalletUse final {
+    public:
+        ~WalletUse() noexcept;
+        WalletUse(const WalletUse&)=delete;
+        WalletUse& operator=(const WalletUse&)=delete;
+        WalletManager& Wallet() const;
+    private:
+        friend class WalletService;
+        WalletUse(const WalletService&,std::shared_ptr<WalletService>);
+        const WalletService& service_;
+        std::shared_ptr<WalletService> retained_;
+        const std::thread::id thread_=std::this_thread::get_id();
+        WalletManager* wallet_=nullptr;
+    };
+    [[nodiscard]] static std::unique_ptr<WalletUse> AcquireWalletUse(
+        std::shared_ptr<WalletService> service);
+
+    // Legacy borrowed reference: callers still serialize shutdown themselves.
     WalletManager& get() { return *wallet_mgr_; }
     const WalletManager& get() const { return *wallet_mgr_; }
 
-    // Forward commonly used methods for convenience
-    bool hasActiveWallet() const { return wallet_mgr_->hasActiveWallet(); }
-    std::string getCurrentWalletName() const { return wallet_mgr_->getCurrentWalletName(); }
-    std::vector<std::string> listWallets() const { return wallet_mgr_->listWallets(); }
+    bool hasActiveWallet() const { auto use=BorrowWalletUse(); return use->Wallet().hasActiveWallet(); }
+    std::string getCurrentWalletName() const { auto use=BorrowWalletUse(); return use->Wallet().getCurrentWalletName(); }
+    std::vector<std::string> listWallets() const { auto use=BorrowWalletUse(); return use->Wallet().listWallets(); }
 
     // Ensure runtime helpers that depend on an active wallet are wired after
     // wallet.createhd / wallet.open / wallet.restore, not only at daemon start.
@@ -79,6 +98,14 @@ public:
     bool RecoverActiveWalletFromSnapshotIfNeeded(std::string* error = nullptr);
 
 private:
+    std::unique_ptr<WalletUse> BorrowWalletUse() const;
+    mutable std::mutex operation_mutex_;
+    mutable std::condition_variable operation_changed_;
+    mutable std::map<std::thread::id,size_t> operations_by_thread_;
+    mutable size_t active_operations_=0;
+    bool accepting_=false;
+    bool stopping_=false;
+    std::thread::id stopping_thread_;
     std::unique_ptr<WalletManager> wallet_mgr_;
 
     // Logger dependencies (dual pattern during migration):

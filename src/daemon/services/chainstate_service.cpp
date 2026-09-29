@@ -4,6 +4,7 @@
 #include "consensus/utreexo_maturity_leaf_activation.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
+#include "daemon/runtime_reorg_readmission.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
 #include "daemon/orchard_connected_block_effects.h"
 #include "wallet/runtime_origin_projection.h"
@@ -5672,6 +5673,29 @@ StatusOr<ChainstateService::BlockRpcSnapshot> ChainstateService::getBlockRpcSnap
     return result;
 }
 
+StatusOr<ChainstateService::OrchardAnnouncementSnapshot>
+ChainstateService::getOrchardAnnouncementSnapshot(const uint256& hash,uint32_t height) const {
+    if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (safe_mode_active_ || !active_tip_ || active_tip_->hash!=hash ||
+        active_tip_->height!=height || !consensus::OrchardProfileConfigurationValid(Params()) ||
+        !consensus::OrchardActiveForHeight(Params(),height)) return Status::Invalid;
+    // The delivery reader checks live/durable/validated/coin tip alignment and
+    // binds its head to the canonical tip, including a reconnect of this hash.
+    const auto page=getRuntimeDeliveryPage({},1);
+    if (!page.ok()) return page.status();
+    if (!(*page)->head.sequence || (*page)->head.digest.IsNull()) return Status::Corruption;
+    const auto body=getBlockRpcSnapshot(hash);
+    if (!body.ok()) return body.status();
+    if (body->height!=height || body->header.GetHash()!=hash || body->bytes.empty())
+        return Status::Corruption;
+    return OrchardAnnouncementSnapshot{hash,height,(*page)->head.sequence,(*page)->head.digest};
+#else
+    (void)hash;(void)height;return Status::Internal;
+#endif
+}
+
 StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256& txid) const {
     std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
     if (!chain_db_ || !consensus::OrchardProfileConfigurationValid(Params())) return Status::Internal;
@@ -5768,6 +5792,126 @@ StatusOr<std::shared_ptr<const RuntimeOutboxPage>> ChainstateService::getRuntime
       catch (...) { return Status::Internal; }
 #else
     return Status::Internal;
+#endif
+}
+
+StatusOr<std::shared_ptr<const RuntimeReorgReadmission>> ChainstateService::readmitRuntimeReorg(
+        const RuntimeOutboxCursor& after,size_t maximum_blocks,size_t maximum_bytes) const {
+    if (activation_mutex_.HeldByCurrentThread()) return Status::Invalid;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (!maximum_blocks || maximum_blocks>2048 || !maximum_bytes || maximum_bytes>64*1024*1024)
+        return Status::Invalid;
+    // The retained-plan budget is separate from the checked reader's
+    // per-page ceiling; never request a page beyond that reader contract.
+    const auto page_bytes=std::min<size_t>(maximum_bytes,16*1024*1024);
+    try {
+        auto report=std::make_shared<RuntimeReorgReadmission>();
+        std::shared_ptr<ChainstateService> source;
+        std::shared_ptr<MempoolService> service;
+        std::unique_ptr<MempoolService::PoolUse> pool;
+        {
+            std::lock_guard<AnnotatedRecursiveMutex> selected(activation_mutex_);
+            const auto* context=DaemonContext::instance();
+            if (safe_mode_active_ || !context || context->chainstate.get()!=this || !context->mempool)
+                return Status::Internal;
+            source=context->chainstate;service=context->mempool;
+            // This checks the selected live, durable, validated and coin tips,
+            // and the actual delivery head. No callback count is authoritative.
+            const auto origin=getRuntimeDeliveryPage({},1,page_bytes);
+            if (!origin.ok()) return origin.status();
+            report->observed_head=(*origin)->head;
+            const auto intent=ReadRuntimeReorgIntentUnderLock(*chain_db_,after);
+            if (!intent) return std::shared_ptr<const RuntimeReorgReadmission>(report);
+            report->intent=intent->cursor;
+            // Validate the preparation cursor even for a plan without any
+            // disconnects; an empty proposal cannot hide a missing origin.
+            const auto prepared_at=getRuntimeDeliveryPage(intent->outbox_origin,1,page_bytes);
+            if (!prepared_at.ok()) return prepared_at.status();
+            if ((*prepared_at)->head!=report->observed_head) return Status::Corruption;
+            const auto& plan=*intent->plan;
+            if (plan.disconnect.size()>maximum_blocks || plan.connect.size()>maximum_blocks-plan.disconnect.size())
+                return Status::Invalid;
+            size_t charged=0;
+            for (const auto* blocks:{&plan.disconnect,&plan.connect}) for (const auto& block:*blocks) {
+                const auto bytes=block.body.Serialize();
+                if (bytes.size()>maximum_bytes-charged) return Status::Invalid;
+                charged+=bytes.size();
+            }
+            report->planned_disconnects=plan.disconnect.size();
+            auto cursor=intent->outbox_origin;
+            bool end=false;
+            // Only the actual contiguous disconnect prefix immediately after
+            // preparation qualifies. An abandoned or interrupted plan grants
+            // no authority for its uncommitted suffix or a later unrelated event.
+            while (report->matched_disconnects<plan.disconnect.size() && !end) {
+                const auto page=getRuntimeDeliveryPage(cursor,
+                    std::min<size_t>(128,plan.disconnect.size()-report->matched_disconnects),page_bytes);
+                if (!page.ok()) return page.status();
+                if ((*page)->head!=report->observed_head) return Status::Corruption;
+                if ((*page)->events.empty()) break;
+                for (const auto& event:(*page)->events) {
+                    const auto& expected=plan.disconnect[report->matched_disconnects];
+                    if (event.direction!=RuntimeBlockDirection::Disconnect || event.context.block_hash!=expected.hash) {
+                        end=true;break;
+                    }
+                    if (event.context.height!=expected.height || event.body!=expected.body.Serialize())
+                        return Status::Corruption;
+                    ++report->matched_disconnects;cursor=event.cursor;
+                    if (report->matched_disconnects==plan.disconnect.size()) break;
+                }
+            }
+            auto append=[&](const MempoolTransaction& body) {
+                if (report->entries.size()==100000) throw std::length_error("Readmission transaction bound");
+                report->entries.push_back({body,TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,
+                    "Readmission not attempted",body.GetTxid().AsUint256()),false});
+            };
+            for (size_t i=report->matched_disconnects;i>0;--i) {
+                const auto& body=plan.disconnect[i-1].body;
+                if (body.IsOrchardProfile()) {
+                    const auto& txs=body.Orchard().Transactions();
+                    if (txs.empty() || txs.front().IsOrchard() || !txs.front().Historical().IsCoinbase())
+                        return Status::Corruption;
+                    for (size_t j=1;j<txs.size();++j) {
+                        if (!txs[j].IsOrchard() && txs[j].Historical().IsCoinbase()) return Status::Corruption;
+                        append(txs[j].IsOrchard()
+                            ? MempoolTransaction::FromOrchard(txs[j].Orchard())
+                            : MempoolTransaction(txs[j].Historical()));
+                    }
+                } else {
+                    const auto& txs=body.Historical().vtx;
+                    if (txs.empty() || !txs.front().IsCoinbase()) return Status::Corruption;
+                    for (size_t j=1;j<txs.size();++j) {
+                        if (txs[j].IsCoinbase()) return Status::Corruption;
+                        append(MempoolTransaction(txs[j]));
+                    }
+                }
+            }
+            pool=MempoolService::AcquirePoolUse(service);
+            if (!pool) return Status::Internal;
+        }
+        // Complete immutable capture precedes any admission. Each ordinary
+        // Submit rechecks its own current selected state; no outer chain lock
+        // spans this loop or notification callbacks. Original intent/outbox
+        // bytes remain retained regardless of rejection, duplicates or failure.
+        for (auto& entry:report->entries) {
+            const auto* context=DaemonContext::instance();
+            if (!context || context->chainstate!=source || context->mempool!=service) break;
+            try {
+                entry.result=pool->Pool().submitBody(entry.body,"reorg-readmission",false);
+                if (entry.result.accepted() || entry.result.code==TxRejectCode::ALREADY_IN_MEMPOOL) {
+                    const auto present=pool->Pool().getMempoolEntry(entry.body.GetTxid().AsUint256());
+                    entry.present_after_attempt=present && present->tx.Serialize()==entry.body.Serialize();
+                }
+            } catch (...) {
+                entry.result=TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,
+                    "Readmission interrupted; retained source unchanged",entry.body.GetTxid().AsUint256());
+            }
+        }
+        return std::shared_ptr<const RuntimeReorgReadmission>(report);
+    } catch (const consensus::OrchardStateLookupError& e) { return e.SourceStatus(); }
+      catch (...) { return Status::Internal; }
+#else
+    (void)after;(void)maximum_blocks;(void)maximum_bytes;return Status::Internal;
 #endif
 }
 

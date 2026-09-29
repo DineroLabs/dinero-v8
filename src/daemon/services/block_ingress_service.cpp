@@ -1,3 +1,4 @@
+#include "daemon/orchard_network_block.h"
 #include "daemon/services/block_ingress_service.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/chainstate_service.h"
@@ -182,8 +183,10 @@ BlockAcceptResult BlockIngressService::SubmitHex(const std::string& hex_block, B
             std::vector<uint8_t> wire;
             if (!util::unhex(hex_block,wire))
                 return BlockAcceptResult::Rejected(BlockRejectCode::PARSE_ERROR, "Invalid queued Orchard block encoding", header->GetHash(), height);
-            return queue->submitAndWait(std::make_shared<QueuedOrchardBlock>(
-                std::move(chainstate),std::move(wire),header->GetHash(),height));
+            auto result=queue->submitAndWait(std::make_shared<QueuedOrchardBlock>(
+                chainstate,std::move(wire),header->GetHash(),height));
+            result.relayed=AnnounceAcceptedOrchardBlock(chainstate,result);
+            return result;
         }
     }
     // Existing historical/RPC handling is unchanged.

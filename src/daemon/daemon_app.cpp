@@ -1,4 +1,5 @@
 #include "util/hex.h"
+#include "daemon/orchard_network_block.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "daemon/utreexo_tx_payload.h"
 #include "consensus/csn_replay_data.h"
@@ -5674,6 +5675,20 @@ bool DaemonApp::Init(int argc, char** argv) {
                         std::cout << "[P2P-DEBUG] >>> OnNewBlock ENTRY from " << peer_addr
                                   << " payload=" << msg.payload.size() << " bytes" << std::endl;
 
+                        // Select the family from a checked parent/header height before
+                        // the historical decoder can consume a typed envelope.
+                        const auto family=ClassifyNetworkBlock(msg.payload);
+                        if (family.family==NetworkBlockFamily::Unavailable) return;
+                        if (family.family==NetworkBlockFamily::Orchard) {
+                            const auto result=ReceiveOrchardNetworkBlock(peer_addr,msg.payload,GetConfig().utreexo_stateless);
+                            if (result!=OrchardNetworkDisposition::Refused)
+                                record_block_header(peer_addr,family.header);
+                            if (result==OrchardNetworkDisposition::Connected && prune_service) {
+                                try { prune_service->triggerPruneIfNeeded(); } catch (...) {}
+                            }
+                            return;
+                        }
+
                         // Deserialize block from P2P message
                         Block block = DeserializeBlockFromP2PMessage(msg);
 
@@ -6122,6 +6137,12 @@ bool DaemonApp::Init(int argc, char** argv) {
                     // mixed-body bytes. The legacy callback below remains for
                     // historical compact-block reconstruction only.
                     block_relay->SetFullBlockSource(chainstate);
+                    for (const auto& service : services_) {
+                        auto ingress = std::dynamic_pointer_cast<BlockIngressService>(service);
+                        if (ingress && ingress.get() == ctx_.block_ingress)
+                            block_relay->SetOrchardBlockIngress(chainstate, ingress);
+                    }
+
 
                     // Wire BlockRelayManager retrieve callback (BlockRelay → ChainDB)
                     block_relay->SetRetrieveBlockCallback([chainstate](
@@ -6696,15 +6717,15 @@ bool DaemonApp::Init(int argc, char** argv) {
                     if (ingress && ingress.get() == ctx_.block_ingress) typed_ingress_owner = ingress;
                 }
                 block_download->SetConnectBlockBytesCallback(
-                    [typed_ingress_owner, prune_for_drain](const std::vector<uint8_t>& bytes,
+                    [typed_ingress_owner, chainstate_for_drain, parallel=ctx_.parallel_block_download, prune_for_drain](const std::vector<uint8_t>& bytes,
                         const uint256& hash, uint32_t height, const std::string&) {
                         using Result = dinero::consensus::ConnectBlockResult;
                         auto ingress=typed_ingress_owner.lock();
-                        if (!ingress) return Result::TEMPORARY_FAIL;
-                        const auto result=ingress->SubmitHex(util::hex(bytes),BlockOrigin::P2P);
-                        if (!result.accepted() || !result.connected || result.block_hash!=hash || result.height!=height)
+                        if (!AcceptDownloadedOrchardBlock(chainstate_for_drain,ingress,parallel,bytes,hash,height))
                             return Result::TEMPORARY_FAIL;
-                        if (prune_for_drain) prune_for_drain->triggerPruneIfNeeded();
+                        if (prune_for_drain) {
+                            try { prune_for_drain->triggerPruneIfNeeded(); } catch (...) {}
+                        }
                         return Result::CONNECTED;
                     });
 
@@ -6824,6 +6845,10 @@ bool DaemonApp::Init(int argc, char** argv) {
                         existing_on_block(peer_addr, msg);
                     }
 
+                    // Typed completion belongs to exact canonical queue acceptance.
+                    // Never decode typed/refused bytes as a historical Block or
+                    // clear a parallel flight merely because storage succeeded.
+                    if (ClassifyNetworkBlock(msg.payload).family!=NetworkBlockFamily::Historical) return;
                     // Notify parallel scheduler
                     if (parallel_download) {
                         try {

@@ -1,3 +1,4 @@
+#include "daemon/orchard_network_block.h"
 /**
  * v0.14.0.4: Mining RPC Interface (getblocktemplate, submitblock)
  *
@@ -1178,8 +1179,13 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
         return result;
     }
 
-    // Success — remove used job
+    // Keep the parent owner through canonical acceptance and job consumption.
+    // BlockAcceptor's nested unlock cannot release this outer mining guard.
     g_job_store.remove(job_id);
+    if (job->orchard) {
+        typed_chain_guard.unlock();
+        accept_result.relayed=::dinero::AnnounceAcceptedOrchardBlock(typed_owner,accept_result);
+    }
 
     ::dinero::g_logger.info("[mining.submit] ACCEPTED height=" +
         std::to_string(job->height) + " job=" + job_id +

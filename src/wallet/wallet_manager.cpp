@@ -4162,7 +4162,7 @@ void WalletManager::derivePrimaryAddresses() {
         try {
             // Try: index 0 address from addresses table
             sqlite3_stmt* stmt = nullptr;
-            const char* sql = "SELECT address FROM addresses WHERE account_index = 0 AND address_index = 0 AND change = 0 LIMIT 1";
+            const char* sql = "SELECT address FROM addresses WHERE account = 0 AND idx = 0 AND change = 0 LIMIT 1";
             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                 if (sqlite3_step(stmt) == SQLITE_ROW) {
                     const char* val = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
