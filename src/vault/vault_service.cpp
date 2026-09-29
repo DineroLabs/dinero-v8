@@ -13,8 +13,49 @@
 #include "vault/withdrawal_queue.h"
 
 #include <utility>
+#include <type_traits>
+#include <stdexcept>
 
 namespace dinero::vault {
+
+// These copies own only candidate in-memory state. They neither persist nor
+// invoke signing. Every internal pointer is rebound before candidate mutation.
+struct VaultService::PreparedState {
+    Ledger ledger;
+    DepositFlowMachine deposits;
+    ReorgWatcher watcher;
+    WithdrawalQueue withdrawals;
+
+    explicit PreparedState(VaultService& owner)
+        : ledger(owner.ledger_), deposits(owner.deposit_flow_),
+          watcher(&deposits,
+              [&owner](uint64_t h) { return owner.reorg_watcher_.block_hash_at_height_(h); },
+              [&owner](const OutpointId& op, uint64_t h, const std::array<uint8_t, 32>& hash) {
+                  return owner.reorg_watcher_.tx_included_at_(op, h, hash);
+              }), withdrawals(owner.withdrawals_) {
+        deposits.ledger_ = &ledger;
+        watcher.deposit_block_hashes_ = owner.reorg_watcher_.deposit_block_hashes_;
+        withdrawals.ledger_ = &ledger;
+    }
+    PreparedState(const PreparedState&) = delete;
+    PreparedState& operator=(const PreparedState&) = delete;
+};
+
+void VaultService::publish(PreparedState& state) noexcept {
+    static_assert(std::is_nothrow_swappable_v<Ledger>);
+    static_assert(noexcept(deposit_flow_.tracked_.swap(state.deposits.tracked_)));
+    static_assert(noexcept(reorg_watcher_.deposit_block_hashes_.swap(state.watcher.deposit_block_hashes_)));
+    static_assert(noexcept(withdrawals_.requests_.swap(state.withdrawals.requests_)));
+    static_assert(noexcept(withdrawals_.states_.swap(state.withdrawals.states_)));
+    // Swap values only: the live machines retain pointers to this service's
+    // ledger/deposit members, while candidate pointers never escape.
+    using std::swap;
+    swap(ledger_, state.ledger);
+    deposit_flow_.tracked_.swap(state.deposits.tracked_);
+    reorg_watcher_.deposit_block_hashes_.swap(state.watcher.deposit_block_hashes_);
+    withdrawals_.requests_.swap(state.withdrawals.requests_);
+    withdrawals_.states_.swap(state.withdrawals.states_);
+}
 
 VaultService::VaultService(std::unique_ptr<SigningBackend> backend, VaultServiceConfig config,
                            BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at)
@@ -31,35 +72,40 @@ void VaultService::recordDeposit(const std::array<uint8_t, 32>& txid, uint32_t v
     OutpointId op;
     op.txid_raw = txid;
     op.vout = vout;
-    deposit_flow_.observe(op, account, amount, height);
-    reorg_watcher_.recordObservation(op, block_hash);
+    const auto existing = deposit_flow_.tracked().find(op);
+    if (existing != deposit_flow_.tracked().end()) {
+        const auto hash = reorg_watcher_.depositBlockHashes().find(op);
+        const auto& prior = existing->second;
+        if (prior.account != account || prior.amount != amount || prior.deposit_height != height ||
+            hash == reorg_watcher_.depositBlockHashes().end() || hash->second != block_hash) {
+            throw std::runtime_error("deposit observation conflicts with its existing owner");
+        }
+        return;
+    }
+    PreparedState state(*this);
+    state.deposits.observe(op, account, amount, height);
+    state.watcher.recordObservation(op, block_hash);
+    publish(state);
 }
 
 void VaultService::tipChanged(uint64_t height) {
     std::lock_guard<std::mutex> lock(mu_);
-    // Phase 1: deposit-flow advancement. Cap pressure / lifecycle
-    // errors are wrapped in DepositFlowError; we let those propagate
-    // so the caller sees them, but log + continue with phase 2.
-    try {
-        deposit_flow_.tipChanged(height);
-    } catch (const DepositFlowError&) {
-        // Continue; per-deposit errors don't poison phases 2-3.
-    }
-    // Phase 2: reorg detection. UNRECORDED_OBSERVATION means the
-    // wiring is broken; let it propagate.
-    reorg_watcher_.tipChanged(height);
-    // Phase 3: withdrawal settlement.
-    try {
-        withdrawals_.tipChanged(height);
-    } catch (const WithdrawalQueueError&) {
-        // Continue.
-    }
+    PreparedState state(*this);
+    // Reconcile before opening or settling credits. Any unavailable/throwing
+    // observation leaves the live ledger, hashes and all queue states intact.
+    state.watcher.reconcileTracked();
+    state.deposits.tipChanged(height);
+    state.withdrawals.tipChanged(height);
+    publish(state);
 }
 
 WithdrawalId VaultService::enqueueWithdrawal(const AccountId& account, UnaAmount amount,
                                              const std::vector<uint8_t>& destination_script_pub_key) {
     std::lock_guard<std::mutex> lock(mu_);
-    return withdrawals_.enqueue(account, amount, destination_script_pub_key);
+    PreparedState state(*this);
+    const auto id = state.withdrawals.enqueue(account, amount, destination_script_pub_key);
+    publish(state);
+    return id;
 }
 
 std::optional<WithdrawalId> VaultService::processNextWithdrawal() {
@@ -69,7 +115,23 @@ std::optional<WithdrawalId> VaultService::processNextWithdrawal() {
 
 void VaultService::markWithdrawalIncluded(const WithdrawalId& id, uint64_t height) {
     std::lock_guard<std::mutex> lock(mu_);
-    withdrawals_.markBroadcastIncluded(id, height);
+    PreparedState state(*this);
+    state.withdrawals.markBroadcastIncluded(id, height);
+    publish(state);
+}
+
+VaultAccountMetrics VaultService::accountMetrics(const AccountId& account) {
+    std::lock_guard<std::mutex> lock(mu_);
+    const auto found = ledger_.accounts().find(account);
+    if (found == ledger_.accounts().end()) return {};
+    const auto& state = found->second;
+    return {state.spendable(), state.confirmed(), state.pending(), state.locked(), state.operatorLoss()};
+}
+
+VaultMetrics VaultService::metrics() {
+    std::lock_guard<std::mutex> lock(mu_);
+    return {ledger_.totalOpenCredits(), ledger_.totalOperatorLoss(), ledger_.nextSeq(),
+            ledger_.accounts().size(), withdrawals_.outstandingDepth()};
 }
 
 UnaAmount VaultService::accountSpendable(const AccountId& account) {

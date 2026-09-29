@@ -1100,6 +1100,26 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 2' in log
           PYTEST
 
+      - name: Retain vault staged states and verify canonical deposits
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay test_vault_state_machines test_vault_service --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(VaultService|VaultStagedState|VaultStateMachines)$' --show-only=json-v1 > vault-staged-state-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('vault-staged-state-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultService','VaultStagedState','VaultStateMachines']
+          assert {t['name']:next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT') for t in tests}=={'VaultService':30,'VaultStagedState':120,'VaultStateMachines':30}
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(VaultService|VaultStagedState|VaultStateMachines)$' --verbose --no-tests=error --output-log vault-staged-state-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('vault-staged-state-execution.log').read_text()
+          for case in ['UnknownAndLateReadFailureKeepWholeTipUnpublished', 'LaterOrphanFailureRetainsEarlierDeposit', 'WithdrawalSettlementWaitsForCompleteTip', 'ConflictingObservationAndCapFailurePreserveOwner', 'ActualCanonicalStoreRefusalAndRetryPreserveLedger']:
+              assert log.count('[       OK ] VaultStagedState.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 3' in log
+          PYTEST
+
       - name: Check typed canonical block announcement handoff
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2674,6 +2694,7 @@ jobs:
             wallet-canonical-recovery-inventory.json
             vault-canonical-observation-inventory.json
             vault-runtime-owner-inventory.json
+            vault-staged-state-inventory.json
             wallet-service-owner-inventory.json
             orchard-network-routing-execution.log
             orchard-block-announcement-execution.log
@@ -2682,6 +2703,7 @@ jobs:
             wallet-canonical-recovery-execution.log
             vault-canonical-observation-execution.log
             vault-runtime-owner-execution.log
+            vault-staged-state-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log

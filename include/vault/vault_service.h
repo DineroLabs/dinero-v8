@@ -48,6 +48,20 @@ struct VaultServiceConfig {
     bool shadow_mode{false};
 };
 
+/// Immutable metrics captured under one service lock. These describe one
+/// in-memory state; they do not acknowledge chain delivery or durable storage.
+struct VaultAccountMetrics {
+    UnaAmount spendable{0}, confirmed{0}, pending{0}, locked{0}, operator_loss{0};
+    bool operator==(const VaultAccountMetrics&) const = default;
+};
+struct VaultMetrics {
+    UnaAmount total_open_credits{0}, total_operator_loss{0};
+    LedgerSeq ledger_next_seq{0};
+    size_t account_count{0};
+    int withdrawal_queue_depth{0};
+    bool operator==(const VaultMetrics&) const = default;
+};
+
 /// Single-actor orchestrator. The vault service serializes through
 /// one mutex for thread-safety. Every public verb is idempotent on
 /// its natural identity (outpoint for deposits, request_id for
@@ -69,9 +83,12 @@ class VaultService {
                        const std::array<uint8_t, 32>& block_hash);
 
     /// Chainstate-side: a new block was connected. Drives:
-    ///   1. deposit-flow lifecycle advancement
-    ///   2. reorg-watcher checks (cheap when no reorg)
+    ///   1. checked inclusion/reorg reconciliation for every tracked deposit
+    ///   2. deposit-flow lifecycle advancement
     ///   3. withdrawal-queue settlement at K confirmations
+    /// Publishes all in-memory state only when these phases complete.
+    /// Unknown chain observations and lifecycle/cap errors propagate without
+    /// changing the prior state.
     void tipChanged(uint64_t height);
 
     /// RPC-side: enqueue a withdrawal for `account`. Returns the
@@ -91,6 +108,9 @@ class VaultService {
     void markWithdrawalIncluded(const WithdrawalId& id, uint64_t height);
 
     // ----- introspection (used by RPC handlers) -----
+
+    [[nodiscard]] VaultAccountMetrics accountMetrics(const AccountId& account);
+    [[nodiscard]] VaultMetrics metrics();
 
     [[nodiscard]] UnaAmount accountSpendable(const AccountId& account);
     [[nodiscard]] UnaAmount accountConfirmed(const AccountId& account);
@@ -113,6 +133,8 @@ class VaultService {
     [[nodiscard]] HealthReport backendHealth();
 
    private:
+    struct PreparedState;
+    void publish(PreparedState& state) noexcept;
     std::mutex mu_;
     std::unique_ptr<SigningBackend> backend_;
     Ledger ledger_;

@@ -44,6 +44,7 @@ class ReorgError : public std::runtime_error {
     enum class Kind : uint8_t {
         DEPOSIT_FLOW,
         UNRECORDED_OBSERVATION,
+        SOURCE_UNAVAILABLE,
     };
     ReorgError(Kind kind, const std::string& message)
         : std::runtime_error(message), kind_{kind} {}
@@ -58,8 +59,8 @@ class ReorgError : public std::runtime_error {
 ///
 /// `block_hash_at_height` and `tx_included_at` are dependency-injected
 /// closures so this class has zero coupling to chainstate types. Real
-/// daemon wiring passes closures pointing at `chainstate->blockAtHeight`
-/// and a tx-inclusion check against the live UTXO set.
+/// daemon wiring passes checked canonical-height and output-inclusion
+/// readers over the selected historical or typed block body.
 class ReorgWatcher {
    public:
     using BlockHashAtHeightFn = std::function<std::array<uint8_t, 32>(uint64_t)>;
@@ -87,8 +88,11 @@ class ReorgWatcher {
     }
 
    private:
+    friend class VaultService;
     struct CheckedInclusion { ChainInclusion kind; std::array<uint8_t,32> block_hash; };
-    CheckedInclusion check(const TrackedDeposit& dep);
+    CheckedInclusion check(const TrackedDeposit& dep, bool verify_recorded = false);
+    // Service-only: reconcile every non-reverted deposit before advancement.
+    void reconcileTracked();
     UnaAmount unrecoverableLoss(const TrackedDeposit& dep);
 
     DepositFlowMachine* machine_{nullptr};

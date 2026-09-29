@@ -136,12 +136,13 @@ Json rpc_vault_account_metrics(const ExecutionContext& /*ctx*/, const Json& para
         return errorObj("missing required parameter: account_id");
     }
     dinero::vault::AccountId account{params[0].asString()};
+    const auto metrics = svc->accountMetrics(account);
     result["account_id"] = account.raw;
-    result["spendable_una"] = static_cast<Json::UInt64>(svc->accountSpendable(account));
-    result["confirmed_una"] = static_cast<Json::UInt64>(svc->accountConfirmed(account));
-    result["pending_una"] = static_cast<Json::UInt64>(svc->accountPending(account));
-    result["locked_una"] = static_cast<Json::UInt64>(svc->accountLocked(account));
-    result["operator_loss_una"] = static_cast<Json::UInt64>(svc->accountOperatorLoss(account));
+    result["spendable_una"] = static_cast<Json::UInt64>(metrics.spendable);
+    result["confirmed_una"] = static_cast<Json::UInt64>(metrics.confirmed);
+    result["pending_una"] = static_cast<Json::UInt64>(metrics.pending);
+    result["locked_una"] = static_cast<Json::UInt64>(metrics.locked);
+    result["operator_loss_una"] = static_cast<Json::UInt64>(metrics.operator_loss);
     return result;
 }
 
@@ -325,11 +326,12 @@ Json rpc_vault_metrics(const ExecutionContext& /*ctx*/, const Json& /*params*/) 
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }
-    result["total_open_credits_una"] = static_cast<Json::UInt64>(svc->totalOpenCredits());
-    result["total_operator_loss_una"] = static_cast<Json::UInt64>(svc->totalOperatorLoss());
-    result["account_count"] = static_cast<Json::UInt64>(svc->accountCount());
-    result["ledger_next_seq"] = static_cast<Json::UInt64>(svc->ledgerNextSeq());
-    result["withdrawal_queue_depth"] = svc->withdrawalQueueDepth();
+    const auto metrics = svc->metrics();
+    result["total_open_credits_una"] = static_cast<Json::UInt64>(metrics.total_open_credits);
+    result["total_operator_loss_una"] = static_cast<Json::UInt64>(metrics.total_operator_loss);
+    result["account_count"] = static_cast<Json::UInt64>(metrics.account_count);
+    result["ledger_next_seq"] = static_cast<Json::UInt64>(metrics.ledger_next_seq);
+    result["withdrawal_queue_depth"] = metrics.withdrawal_queue_depth;
     return result;
 }
 

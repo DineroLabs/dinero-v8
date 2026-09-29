@@ -55,7 +55,27 @@ int ReorgWatcher::tipChanged(uint64_t /*tip_height*/) {
     return reverts;
 }
 
-ReorgWatcher::CheckedInclusion ReorgWatcher::check(const TrackedDeposit& dep) {
+void ReorgWatcher::reconcileTracked() {
+    for (const auto& [outpoint, dep] : machine_->tracked()) {
+        if (dep.stage == DepositStage::REVERTED) continue;
+        const auto inclusion = check(dep, true);
+        if (inclusion.kind == ChainInclusion::UNKNOWN) {
+            throw ReorgError(ReorgError::Kind::SOURCE_UNAVAILABLE,
+                             "canonical deposit observation unavailable");
+        }
+        if (inclusion.kind == ChainInclusion::RE_MINED_SAME_TXID) {
+            deposit_block_hashes_.at(outpoint) = inclusion.block_hash;
+        } else if (inclusion.kind == ChainInclusion::ORPHANED) {
+            try {
+                machine_->revert(outpoint, unrecoverableLoss(dep));
+            } catch (const DepositFlowError& e) {
+                throw ReorgError(ReorgError::Kind::DEPOSIT_FLOW, e.what());
+            }
+        }
+    }
+}
+
+ReorgWatcher::CheckedInclusion ReorgWatcher::check(const TrackedDeposit& dep, bool verify_recorded) {
     auto it = deposit_block_hashes_.find(dep.outpoint);
     if (it == deposit_block_hashes_.end()) {
         // Stage advanced to credited without a recorded block hash —
@@ -76,11 +96,11 @@ ReorgWatcher::CheckedInclusion ReorgWatcher::check(const TrackedDeposit& dep) {
     if (all_zero) {
         return {ChainInclusion::UNKNOWN,current};
     }
-    if (current == recorded) {
+    if (current == recorded && !verify_recorded) {
         return {ChainInclusion::STILL_INCLUDED,current};
     }
     if (tx_included_at_(dep.outpoint, dep.deposit_height, current)) {
-        return {ChainInclusion::RE_MINED_SAME_TXID,current};
+        return {current == recorded ? ChainInclusion::STILL_INCLUDED : ChainInclusion::RE_MINED_SAME_TXID,current};
     }
     return {ChainInclusion::ORPHANED,current};
 }

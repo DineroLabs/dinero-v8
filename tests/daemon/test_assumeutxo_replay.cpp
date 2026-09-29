@@ -730,3 +730,4 @@ int main(int argc, char** argv) {
 #include "vault_canonical_observation_checks.h"
 
 #include "vault_runtime_owner_checks.h"
+#include "vault_staged_state_checks.h"

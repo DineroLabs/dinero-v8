@@ -181,6 +181,7 @@ class WithdrawalQueue {
     [[nodiscard]] UnaAmount currentOutstanding(const AccountId& account) const;
 
    private:
+    friend class VaultService;
     [[nodiscard]] bool isOutstanding(const WithdrawalState& s) const;
     [[nodiscard]] static LedgerTimestamp now();
 

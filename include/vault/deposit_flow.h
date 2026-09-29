@@ -111,6 +111,7 @@ class DepositFlowMachine {
     void revert(const OutpointId& outpoint, UnaAmount operator_loss = 0);
 
    private:
+    friend class VaultService;
     int advance(TrackedDeposit& dep, uint64_t confs);
     LedgerTimestamp now();
 
