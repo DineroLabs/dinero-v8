@@ -37,6 +37,7 @@
 #include "mining/miner.h"  // v0.14.0.4: For DineroPoW::BitsToTargetHex
 #include "consensus/adapters/wallet_utxo_adapter.h"  // v2.2.0: UTXO adapter
 #include "consensus/utreexo_activation.h"  // Activation height source of truth
+#include "consensus/orchard_profile.h"
 #include "consensus/chainparams.h"  // For network-aware template safety defaults
 #include "daemon/block_acceptor.h"
 #include "common/logger.h"
@@ -699,7 +700,12 @@ static std::string to_hex(const std::string& binary) {
 // ---------------------------------------------------------------------------
 struct MiningJob {
     std::string job_id;
-    dinero::Block block;                       // Complete immutable block (Block object, not bytes)
+    dinero::Block block;                       // Historical body only
+    std::shared_ptr<const dinero::OrchardMiningTemplate> orchard;
+    std::weak_ptr<dinero::ChainstateService> orchard_owner;
+    const dinero::BlockHeader& Header() const noexcept {
+        return orchard ? orchard->Header() : block.header;
+    }
     uint256 tip_hash_at_creation;              // block.header.prev_block_hash
     uint32_t height = 0;
     uint32_t bits = 0;
@@ -880,59 +886,81 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     ::dinero::BlockAssembler assembler(chain_db);
     assembler.setMempool(&pool_use->Pool());
 
-    auto* utreexo_forest = chainstate->utreexoForest();
-    auto* utxo_index = chainstate->utxoIndex();
-    auto* consensus_utxo_set = chainstate->GetConsensusUTXOSet();
-    if (utreexo_forest && consensus_utxo_set) {
-        if (!::GetConfig().utreexo_stateless) {
-            // Full-node templates consume selected chain coins, including inputs
-            // unrelated to the local wallet. The outer activation guard retains
-            // the selected view through construction; chainstate owns the set.
-            std::shared_ptr<dinero::consensus::IUTXOProvider> provider(
-                static_cast<dinero::consensus::IUTXOProvider*>(consensus_utxo_set),
-                [](dinero::consensus::IUTXOProvider*) {});
-            assembler.SetConsensusUTXOSet(consensus_utxo_set);
-            assembler.SetUTXOProvider(std::move(provider));
-        } else if (utxo_index) {
-            // Preserve the existing stateless path. Frozen/pre-base resolution
-            // and the Utreexo oracle require separate qualification.
-            assembler.SetConsensusUTXOSet(consensus_utxo_set);
-            assembler.SetUTXOProvider(
-                std::make_shared<dinero::consensus::WalletUTXOAdapter>(utxo_index));
-        }
-    }
-
-    // Wire BlockValidator for Utreexo root computation (single source of truth)
-    auto* block_validator = chainstate->GetBlockValidator();
-    if (!block_validator) {
-        result["error"] = "Block validator unavailable (Utreexo oracle not wired)";
-        ::dinero::g_logger.error("[mining.getjob] BlockValidator missing; refusing job generation");
+    const auto selected_tip = chain_db->getTip();
+    if (!selected_tip.ok() || selected_tip->height < 0 || selected_tip->height >= INT32_MAX ||
+        !::dinero::consensus::OrchardProfileConfigurationValid(::dinero::Params())) {
+        result["error"] = "Selected mining parent unavailable";
         return result;
     }
-    assembler.SetBlockValidator(block_validator);
-
-    auto block_ptr = assembler.CreateNewBlock(mining_address);
-    if (!block_ptr) {
-        const std::string& detail = assembler.getLastTemplateError();
-        result["error"] = detail.empty() ? "Failed to create block template"
-                                         : "Failed to create block template: " + detail;
-        return result;
-    }
-    auto stats = assembler.getBlockTemplateStats();
-
-    // --- Populate MiningJob from the Block object (structured fields only) ---
     MiningJob job;
-    job.block = *block_ptr;
-    job.tip_hash_at_creation = block_ptr->header.prev_block_hash;
+    if (::dinero::consensus::OrchardActiveForHeight(::dinero::Params(), uint32_t(selected_tip->height) + 1)) {
+        assembler.SetChainstateReadGuardFactory([chainstate] {
+            return ::dinero::ChainstateService::AcquireMiningReadGuard(chainstate);
+        });
+        try {
+            job.orchard = assembler.CreateOrchardBlock(mining_address);
+        } catch (const std::exception&) {
+            result["error"] = "Selected Orchard mining construction unavailable";
+            return result;
+        }
+        if (!job.orchard) {
+            result["error"] = "Selected Orchard mining construction unavailable";
+            return result;
+        }
+        job.orchard_owner = chainstate;
+        job.coinbase_txid_hex = job.orchard->Transactions().front().GetTxid().AsUint256().GetHex();
+    } else {
+        auto* utreexo_forest = chainstate->utreexoForest();
+        auto* utxo_index = chainstate->utxoIndex();
+        auto* consensus_utxo_set = chainstate->GetConsensusUTXOSet();
+        if (utreexo_forest && consensus_utxo_set) {
+            if (!::GetConfig().utreexo_stateless) {
+                // Full-node templates consume selected chain coins, including inputs
+                // unrelated to the local wallet. The outer activation guard retains
+                // the selected view through construction; chainstate owns the set.
+                std::shared_ptr<dinero::consensus::IUTXOProvider> provider(
+                    static_cast<dinero::consensus::IUTXOProvider*>(consensus_utxo_set),
+                    [](dinero::consensus::IUTXOProvider*) {});
+                assembler.SetConsensusUTXOSet(consensus_utxo_set);
+                assembler.SetUTXOProvider(std::move(provider));
+            } else if (utxo_index) {
+                // Preserve the existing stateless path. Frozen/pre-base resolution
+                // and the Utreexo oracle require separate qualification.
+                assembler.SetConsensusUTXOSet(consensus_utxo_set);
+                assembler.SetUTXOProvider(
+                    std::make_shared<dinero::consensus::WalletUTXOAdapter>(utxo_index));
+            }
+        }
+
+        // Wire BlockValidator for Utreexo root computation (single source of truth)
+        auto* block_validator = chainstate->GetBlockValidator();
+        if (!block_validator) {
+            result["error"] = "Block validator unavailable (Utreexo oracle not wired)";
+            ::dinero::g_logger.error("[mining.getjob] BlockValidator missing; refusing job generation");
+            return result;
+        }
+        assembler.SetBlockValidator(block_validator);
+
+        auto block_ptr = assembler.CreateNewBlock(mining_address);
+        if (!block_ptr) {
+            const std::string& detail = assembler.getLastTemplateError();
+            result["error"] = detail.empty() ? "Failed to create block template"
+                                             : "Failed to create block template: " + detail;
+            return result;
+        }
+
+        job.block = *block_ptr;
+        if (!block_ptr->vtx.empty()) job.coinbase_txid_hex = block_ptr->vtx[0].GetTxid().AsUint256().GetHex();
+    }
+    const auto stats = assembler.getBlockTemplateStats();
+    const auto header = job.Header();
+    job.tip_hash_at_creation = header.prev_block_hash;
     job.height = stats.height;
-    job.bits = block_ptr->header.difficulty;
-    job.template_time = block_ptr->header.timestamp;
+    job.bits = header.difficulty;
+    job.template_time = header.timestamp;
     job.max_time = job.template_time + 7200;
     job.target_hex = ::dinero::DineroPoW::BitsToTargetHex(job.bits);
-    job.utreexo_root_hex = block_ptr->header.utreexo_root.GetHex();
-    if (!block_ptr->vtx.empty()) {
-        job.coinbase_txid_hex = block_ptr->vtx[0].GetTxid().AsUint256().GetHex();
-    }
+    job.utreexo_root_hex = header.utreexo_root.GetHex();
     job.created_at = std::chrono::steady_clock::now();
 
     // Save for logging (job will be moved)
@@ -944,25 +972,25 @@ din::Json rpc_mining_getjob(const ExecutionContext& ctx, const din::Json& params
     std::string job_id = g_job_store.store(std::move(job));
 
     // --- Build response: header + metadata ---
-    auto header_bytes = block_ptr->header.SerializeForHash();
+    auto header_bytes = header.SerializeForHash();
 
     result["job_id"] = job_id;
     result["header_hex"] = to_hex(header_bytes.data(), header_bytes.size());
-    result["target"] = ::dinero::DineroPoW::BitsToTargetHex(block_ptr->header.difficulty);
+    result["target"] = ::dinero::DineroPoW::BitsToTargetHex(header.difficulty);
     result["height"] = static_cast<int>(stats.height);
 
     std::ostringstream bits_hex;
-    bits_hex << std::hex << std::setfill('0') << std::setw(8) << block_ptr->header.difficulty;
+    bits_hex << std::hex << std::setfill('0') << std::setw(8) << header.difficulty;
     result["bits"] = bits_hex.str();
-    result["prev_hash"] = block_ptr->header.prev_block_hash.GetHex();
+    result["prev_hash"] = header.prev_block_hash.GetHex();
 
     // Header field offsets from struct (no magic numbers)
     result["nonce_offset"] = static_cast<int>(offsetof(dinero::BlockHeader, nonce));
     result["nonce_size"]   = static_cast<int>(sizeof(dinero::BlockHeader::nonce));
     result["ntime_offset"] = static_cast<int>(offsetof(dinero::BlockHeader, timestamp));
     result["ntime_size"]   = static_cast<int>(sizeof(dinero::BlockHeader::timestamp));
-    result["min_time"]     = static_cast<int64_t>(block_ptr->header.timestamp);
-    result["max_time"]     = static_cast<int64_t>(block_ptr->header.timestamp + 7200);
+    result["min_time"]     = static_cast<int64_t>(header.timestamp);
+    result["max_time"]     = static_cast<int64_t>(header.timestamp + 7200);
 
     ::dinero::g_logger.info("[mining.getjob] job=" + job_id +
         " height=" + std::to_string(stats.height) +
@@ -1035,6 +1063,30 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
         return result;
     }
 
+    std::shared_ptr<::dinero::ChainstateService> typed_owner;
+    std::unique_lock<::dinero::AnnotatedRecursiveMutex> typed_chain_guard;
+    if (job->orchard) {
+        typed_owner = job->orchard_owner.lock();
+        auto* actual_context = DaemonContext::instance();
+        if (!typed_owner || !ctx.daemon || ctx.daemon->chainstate != typed_owner ||
+            !actual_context || actual_context->chainstate != typed_owner) {
+            result["code"] = "stale-job";
+            result["error"] = "Orchard mining job owner unavailable";
+            return result;
+        }
+        typed_chain_guard = typed_owner->AcquireBlockIngressActivationLock();
+        const auto parent = typed_owner->GetChainDB() ? typed_owner->GetChainDB()->getTip()
+            : dinero::StatusOr<dinero::TipInfo>(dinero::Status::NotFound);
+        const auto* active = typed_owner->GetActiveTip();
+        if (!parent.ok() || !active || active->hash != job->tip_hash_at_creation ||
+            parent->hash != active->hash || parent->height != int32_t(active->height) ||
+            uint64_t(active->height) + 1 != job->height) {
+            result["code"] = "stale-job";
+            result["error"] = "Orchard mining parent changed";
+            return result;
+        }
+    }
+
     // --- 3. Stale-job: tip changed since job creation ---
     if (ctx.daemon) {
         auto cs = std::dynamic_pointer_cast<::dinero::ChainstateService>(ctx.daemon->chainstate);
@@ -1067,7 +1119,7 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
     }
 
     // --- 5. Build candidate header via struct field access (no byte offsets) ---
-    dinero::BlockHeader header = job->block.header;  // trivial copy (128 bytes)
+    dinero::BlockHeader header = job->Header();  // immutable family-specific owner
     header.nonce = nonce;
     if (has_ntime) {
         header.timestamp = ntime;
@@ -1093,11 +1145,22 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
     }
 
     // --- 8. Build full block with solved header, serialize, submit ---
-    dinero::Block candidate = job->block;   // deep copy (one-time cost for valid solution)
-    candidate.header = header;              // apply solved nonce/ntime
-
-    std::string block_binary = candidate.Serialize();
-    std::string block_hex = to_hex(block_binary);
+    std::string block_hex;
+    if (job->orchard) {
+        auto bytes = job->orchard->WireBytes();
+        const auto prefix = header.SerializeForHash();
+        if (bytes.size() < prefix.size()) {
+            result["code"] = "block-rejected";
+            result["error"] = "Stored Orchard mining frame unavailable";
+            return result;
+        }
+        std::copy(prefix.begin(), prefix.end(), bytes.begin());
+        block_hex = to_hex(bytes.data(), bytes.size());
+    } else {
+        dinero::Block candidate = job->block;
+        candidate.header = header;
+        block_hex = to_hex(candidate.Serialize());
+    }
 
     ::dinero::g_logger.info("[mining.submit] Submitting job=" + job_id +
         " nonce=" + std::to_string(nonce) +
@@ -1107,7 +1170,8 @@ din::Json rpc_mining_submit(const ExecutionContext& ctx, const din::Json& params
 
     auto accept_result = ::dinero::BlockAcceptor::AcceptBlockFromRPC(block_hex, "mining_submit");
 
-    if (accept_result.rejected()) {
+    if (accept_result.rejected() || (job->orchard && (!accept_result.connected ||
+        accept_result.block_hash != hash || accept_result.height != job->height))) {
         result["code"] = "block-rejected";
         result["error"] = accept_result.reason;
         ::dinero::g_logger.error("[mining.submit] REJECTED: " + accept_result.reason);

@@ -5055,6 +5055,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_executable(test_assumeutxo_replay
     tests/daemon/test_assumeutxo_replay.cpp
+    src/rpc/methods_mining_v14.cpp
     src/daemon/services/assumeutxo_replay.cpp
     src/consensus/utxo_set_digest.cpp
     src/daemon/config.cpp  # GetConfig() referenced by consensus_write_batch.obj
@@ -5106,6 +5107,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardMiningRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningRpc.*)
+  set_tests_properties(OrchardMiningRpc PROPERTIES TIMEOUT 120 LABELS "orchard;mining;rpc")
   add_test(NAME OrchardRawIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardRawIngress.*)
   set_tests_properties(OrchardRawIngress PROPERTIES LABELS "daemon;orchard;ingress;mandatory" TIMEOUT 120)
   message(STATUS "✅ AssumeUTXO replay engine test enabled")
