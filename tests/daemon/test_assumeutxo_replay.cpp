@@ -5,6 +5,7 @@
 din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_getblock(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_getblockheader(const ExecutionContext&, const din::Json&);
 #include "daemon/block_acceptor.h"
 #include "consensus/filter_commitment.h"
 // ============================================================================
@@ -647,6 +648,8 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #include "orchard_mining_rpc_checks.h"
 #include "orchard_canonical_pool_checks.h"
 #include "orchard_block_rpc_checks.h"
+#include "orchard_cycle_checks.h"
+#include "orchard_header_rpc_checks.h"
 
 }  // namespace dinero
 

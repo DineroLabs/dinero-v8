@@ -960,6 +960,44 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Actual Orchard shield transfer and unshield cycle
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardCycle$' --show-only=json-v1 > orchard-cycle-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-cycle-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardCycle']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardCycle$' --verbose --no-tests=error --output-log orchard-cycle-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-cycle-execution.log').read_text()
+          for case in ['RealProofsMineTransferUnshieldAndReopenUndo']:
+              assert log.count('[       OK ] OrchardCycle.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Owned Orchard header RPC reads
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardHeaderRpc$' --show-only=json-v1 > orchard-header-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-header-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardHeaderRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardHeaderRpc$' --verbose --no-tests=error --output-log orchard-header-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-header-rpc-execution.log').read_text()
+          for case in ['TypedHeaderWorkFlagsAndReopen','HistoricalArchiveAndInputRefusals','TypedStorageAndProfileRefusals']:
+              assert log.count('[       OK ] OrchardHeaderRpc.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Owned Orchard block RPC reads
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2313,6 +2351,10 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-cycle-inventory.json
+            orchard-cycle-execution.log
+            orchard-header-rpc-inventory.json
+            orchard-header-rpc-execution.log
             orchard-block-rpc-inventory.json
             orchard-block-rpc-execution.log
             orchard-canonical-pool-inventory.json

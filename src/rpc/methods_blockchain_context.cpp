@@ -1474,72 +1474,50 @@ din::Json rpc_context_getdifficulty(const ExecutionContext& ctx, const din::Json
  */
 din::Json rpc_context_getblockheader(const ExecutionContext& ctx, const din::Json& params) {
     din::Json result;
-
     if (params.empty() || !params[0].is<std::string>()) {
         result["error"] = "Usage: getblockheader <hash>";
         return result;
     }
-
+    const auto text = params[0].as<std::string>();
+    if (text.size() != 64 || !std::all_of(text.begin(), text.end(), [](unsigned char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        })) {
+        result["error"] = "Invalid block hash";
+        return result;
+    }
     if (!ctx.daemon || !ctx.daemon->chainstate) {
         result["error"] = "Chainstate service not available";
         return result;
     }
-
-    auto chainstate = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate) {
-        result["error"] = "Failed to cast chainstate service";
+    const auto service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+    if (!service) {
+        result["error"] = "Chainstate service not available";
         return result;
     }
-
-    // Phase 39: Get chain database via ChainstateService (ChainManager deleted)
-    auto* chain_db = chainstate->GetChainDB();
-    if (!chain_db) {
-        result["error"] = "Chain database not available";
+    const auto hash = uint256::FromHexUnsafe(text);
+    const auto captured = service->getBlockHeaderRpcSnapshot(hash);
+    if (!captured.ok()) {
+        result["error"] = captured.status() == dinero::Status::NotFound ? "Block not found" : "Block data unavailable";
         return result;
     }
-
-    std::string block_hash = params[0].as<std::string>();
-    uint256 block_hash_uint256 = uint256::FromHexUnsafe(block_hash);  // Phase M.0: Convert hex to uint256
-
-    auto block_result = chainstate->getBlockByHash(block_hash_uint256);
-    if (block_result.status() != dinero::Status::Ok) {
-        result["error"] = "Block not found";
-        return result;
-    }
-
-    const dinero::Block& block = block_result.value();
-    auto height_result = chain_db->getBlockHeight(block_hash_uint256);
-    uint32_t height = (height_result.status() == dinero::Status::Ok) ? height_result.value() : 0;
-
-    result["hash"] = block_hash;
-    result["height"] = static_cast<int>(height);
-    result["version"] = static_cast<int>(block.header.version);
-    result["previousblockhash"] = block.header.prev_block_hash.GetHex();  // Consensus→RPC
-    result["merkleroot"] = block.header.merkle_root.GetHex();  // Consensus→RPC
-    result["time"] = static_cast<Json::UInt64>(block.header.timestamp);
-    result["bits"] = static_cast<Json::UInt64>(block.header.difficulty);
-    result["nonce"] = static_cast<Json::UInt64>(block.header.nonce);
-
-    // Backward-compat field: display-order uint256 hex.
-    // Always include even if null - light clients need to verify field exists.
-    result["utreexo_root"] = block.header.utreexo_root.GetHex();
-    // Explicit raw byte order matching header bytes 68..99, proof bundles,
-    // and blockchain.getutreexocommitment.
-    result["utreexo_root_raw"] = UtreexoRootRawHex(block.header.utreexo_root);
-
-    // Chainwork (cumulative proof-of-work at this block)
-    auto work_result = chain_db->getBlockWork(block_hash_uint256);
-    if (work_result.status() == dinero::Status::Ok) {
-        result["chainwork"] = "0x" + work_result.value().GetHex();
-    }
-
-    if (auto* block_index = chainstate->FindBlockIndex(block_hash_uint256)) {
-        const uint32_t status = block_index->status;
+    const auto& header = captured->header;
+    result["hash"] = hash.GetHex();
+    result["height"] = static_cast<Json::UInt64>(captured->height);
+    result["version"] = static_cast<int>(header.version);
+    result["previousblockhash"] = header.prev_block_hash.GetHex();
+    result["merkleroot"] = header.merkle_root.GetHex();
+    result["time"] = static_cast<Json::UInt64>(header.timestamp);
+    result["bits"] = static_cast<Json::UInt64>(header.difficulty);
+    result["nonce"] = static_cast<Json::UInt64>(header.nonce);
+    result["utreexo_root"] = header.utreexo_root.GetHex();
+    result["utreexo_root_raw"] = UtreexoRootRawHex(header.utreexo_root);
+    result["chainwork"] = "0x" + captured->chainwork.GetHex();
+    if (captured->index_status) {
+        const auto status = *captured->index_status;
         result["status_flags"] = static_cast<Json::UInt64>(status);
         result["failed_valid"] = (status & dinero::BLOCK_FAILED_VALID) != 0;
         result["failed_child"] = (status & dinero::BLOCK_FAILED_CHILD) != 0;
     }
-
     return result;
 }
 

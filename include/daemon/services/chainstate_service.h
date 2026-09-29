@@ -835,6 +835,13 @@ public:
         std::vector<uint256> transaction_ids;
     };
     StatusOr<BlockRpcSnapshot> getBlockRpcSnapshot(const uint256& hash) const;
+    struct BlockHeaderRpcSnapshot {
+        BlockHeader header;
+        uint32_t height;
+        arith_uint256 chainwork;
+        std::optional<uint32_t> index_status;
+    };
+    StatusOr<BlockHeaderRpcSnapshot> getBlockHeaderRpcSnapshot(const uint256& hash) const;
     // Selected-height typed read, under the service activation lock. Optional
     // Orchard builds expose a mixed body without fabricating legacy transactions.
     // Default builds return Internal (reader unavailable). Not admission.

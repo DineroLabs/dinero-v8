@@ -5672,6 +5672,22 @@ StatusOr<ChainstateService::BlockRpcSnapshot> ChainstateService::getBlockRpcSnap
     return result;
 }
 
+StatusOr<ChainstateService::BlockHeaderRpcSnapshot> ChainstateService::getBlockHeaderRpcSnapshot(
+        const uint256& hash) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    const auto block = getBlockRpcSnapshot(hash);
+    if (!block.ok()) return block.status();
+    const auto work = chain_db_->getBlockWork(hash);
+    if (!work.ok()) return work.status();
+    BlockHeaderRpcSnapshot result{block->header, block->height, *work, std::nullopt};
+    {
+        // Preserve activation -> global index lock order while copying status.
+        std::lock_guard<std::recursive_mutex> index_guard(dinero::g_block_index_mutex);
+        if (const auto* index = dinero::FindBlockIndex(hash)) result.index_status = index->status;
+    }
+    return result;
+}
+
 StatusOr<std::shared_ptr<const RuntimeBlockBody>> ChainstateService::getRuntimeBlockByHash(
         const uint256& hash) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
