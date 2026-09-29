@@ -3,6 +3,7 @@
 #include "consensus/outpoint.h"  // Phase M.0: Canonical OutPoint
 #include "daemon/connected_block_effects.h"
 #include "daemon/mempool_transaction.h"
+#include "daemon/mempool_acceptance_observer.h"
 #include "primitives/uint256.h"  // Phase M.0: uint256 type
 #include "daemon/interfaces/ingress_types.h"  // Step 5: Canonical ingress types
 #include <unordered_map>
@@ -558,12 +559,19 @@ public:
         // Release the old callback's captures outside the pool lock.
     }
 
-    // Transaction accepted callback (wallet notifier path)
-    // Called after a tx is accepted into the mempool, with the full Transaction object.
-    // Used by NodeCore to notify watched-script wallets of mempool events.
-    using TxAcceptedCallback = std::function<void(const Transaction& tx)>;
+    // Capture immutable body and observer capability before admission effects.
+    // Legacy configured consumers support Historical bodies only. Neither
+    // callback is a durable pending owner or continued-membership guarantee.
+    using TxAcceptedCallback = MempoolAcceptanceObserver::HistoricalCallback;
+    using TxBodyAcceptedCallback = MempoolAcceptanceObserver::BodyCallback;
     void setTxAcceptedCallback(TxAcceptedCallback callback) {
-        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_accepted_callback.swap(callback); }
+        auto observer=MempoolAcceptanceObserver::ForHistorical(std::move(callback));
+        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_accepted_observer.Swap(observer); }
+        // Destroy replaced captures after releasing the pool lock.
+    }
+    void setTxBodyAcceptedCallback(TxBodyAcceptedCallback callback) {
+        auto observer=MempoolAcceptanceObserver::ForBody(std::move(callback));
+        { std::unique_lock<std::shared_mutex> lock(m_mutex); m_tx_accepted_observer.Swap(observer); }
     }
 
     // Logger dependency injection
@@ -721,7 +729,7 @@ private:
     std::unique_ptr<consensus::ChainStateView> chain_state_view_;  // Adapter: ChainDB -> ChainStateView interface (Phase M.1)
     CoinsViewMemPool coins_view_;  // v0.11.0: In-memory UTXO overlay for policy validation
     TxBroadcastCallback m_tx_broadcast_callback;
-    TxAcceptedCallback m_tx_accepted_callback;
+    MempoolAcceptanceObserver m_tx_accepted_observer;
     ILogger* m_logger;  // Logger dependency injection
 
     // Helper macros for cleaner DI logging

@@ -783,7 +783,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     std::unique_lock<std::shared_mutex> lock(m_mutex);
     // Own the selected callback captures before admission publication. Setters
     // may replace later callbacks without invalidating this notification.
-    const auto accepted_callback = m_tx_accepted_callback;
+    const auto accepted_notification = m_tx_accepted_observer.Prepare(transaction);
     const auto broadcast_callback = relay ? m_tx_broadcast_callback : TxBroadcastCallback{};
 
 
@@ -1099,7 +1099,7 @@ TxAcceptResult Mempool::submitTransactionInternal(
     // These are observations of admission, not a promise of continued pool
     // membership. Callback errors propagate after publication; a wallet's
     // durable pending owner must retain an ambiguous submission outcome.
-    if (accepted_callback) accepted_callback(tx);
+    if (accepted_notification) accepted_notification();
     if (broadcast_callback) broadcast_callback(txid_u256);
 
     return TxAcceptResult::Accepted(txid_u256);

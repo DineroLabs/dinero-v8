@@ -919,6 +919,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Typed acceptance observer ownership
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^TypedAcceptanceOwner$' --show-only=json-v1 > orchard-typed-acceptance-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-typed-acceptance-owner-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['TypedAcceptanceOwner']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^TypedAcceptanceOwner$' --verbose --no-tests=error --output-log orchard-typed-acceptance-owner-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-typed-acceptance-owner-execution.log').read_text()
+          for case in ['SignedAdmissionRetainsTypedBodyAfterLocksAndReplacement','PreflightAndObserverFailureKeepActualAdmissionOutcome','CaptureFailureAndLegacyCompatibilityPreserveBoundary','OrchardCapabilityRefusesLegacyAndRetainsExactRepresentation']:
+              assert log.count('[       OK ] TypedAcceptanceOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Checked pre-base lookup status
         run: |
           cmake --build build-orchard-root --target test_mining_chain_guard --parallel 4 -- -k 0
@@ -2112,8 +2131,10 @@ jobs:
             orchard-typed-bridge-proof-owner-execution.log
             orchard-typed-utreexo-receive-inventory.json
             orchard-pool-parent-root-inventory.json
+            orchard-typed-acceptance-owner-inventory.json
             orchard-typed-utreexo-receive-execution.log
             orchard-pool-parent-root-execution.log
+            orchard-typed-acceptance-owner-execution.log
             orchard-prebase-lookup-status-inventory.json
             orchard-prebase-lookup-status-execution.log
             orchard-typed-pool-tip-inventory.json
