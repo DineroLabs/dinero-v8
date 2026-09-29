@@ -591,6 +591,8 @@ public:
     using PreBaseCoinResolver =
         std::function<std::optional<consensus::UTXOEntry>(const OutPoint&)>;
     using PreBaseCoinPredicate = std::function<bool(const OutPoint&)>;
+    using PreBaseCoinStatusResolver =
+        std::function<StatusOr<consensus::UTXOEntry>(const OutPoint&)>;
     // Production selection reads chainstate through the pre-base callbacks.
     // Acquire this lifetime guard BEFORE m_mutex, matching block connection's
     // chainstate -> mempool lock order. Set only during service initialization.
@@ -601,6 +603,11 @@ public:
     }
     void setPreBaseCoinResolver(PreBaseCoinResolver resolver) {
         prebase_coin_resolver_ = std::move(resolver);
+    }
+    // Optional-only compatibility resolvers cannot certify absence. Production
+    // admission installs the checked resolver during service initialization.
+    void setPreBaseCoinStatusResolver(PreBaseCoinStatusResolver resolver) {
+        prebase_coin_status_resolver_ = std::move(resolver);
     }
     void setPreBaseCoinPredicate(PreBaseCoinPredicate predicate) {
         prebase_coin_predicate_ = std::move(predicate);
@@ -648,6 +655,7 @@ private:
     std::optional<consensus::UTXOEntry> recoverConflictedInputUTXO(
         const OutPoint& outpoint, Status* lookup_status = nullptr) const;
     PreBaseCoinResolver prebase_coin_resolver_;
+    PreBaseCoinStatusResolver prebase_coin_status_resolver_;
     PreBaseCoinPredicate prebase_coin_predicate_;
     ChainstateReadGuardFactory chainstate_read_guard_factory_;
     void updateDependencies(const uint256& txid);

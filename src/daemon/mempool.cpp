@@ -3390,6 +3390,23 @@ bool Mempool::validateTransaction(
     // v0.11.0: Use MempoolUTXOView to see both confirmed + mempool UTXOs
     MempoolUTXOView utxo_view(&coins_view_, chain_db_, &m_transactions);
 
+    auto read_prebase = [&](const OutPoint& point,
+                            std::optional<consensus::UTXOEntry>& captured) {
+        if (prebase_coin_status_resolver_) {
+            const auto result = prebase_coin_status_resolver_(point);
+            if (result.ok()) { captured = result.value(); return true; }
+            const bool missing = result.status() == Status::NotFound;
+            if (failure) *failure = missing ? TxRejectCode::MISSING_INPUTS : TxRejectCode::UNAVAILABLE;
+            error = std::string(missing ? "Input UTXO not found: " : "Live pre-base input unavailable: ") + point.ToString();
+            return false;
+        }
+        if (prebase_coin_resolver_) captured = prebase_coin_resolver_(point);
+        if (captured) return true;
+        if (failure) *failure = TxRejectCode::UNAVAILABLE;
+        error = "Live pre-base input unavailable: " + point.ToString();
+        return false;
+    };
+
     for (size_t i = 0; i < tx.vin.size(); i++) {
         const auto& input = tx.vin[i];
 
@@ -3408,12 +3425,7 @@ bool Mempool::validateTransaction(
             prebase_coin_predicate_ && prebase_coin_predicate_(outpoint);
         std::optional<consensus::UTXOEntry> captured;
         if (is_frozen_prebase) {
-            if (prebase_coin_resolver_) captured = prebase_coin_resolver_(outpoint);
-            if (!captured) {
-                if (failure) *failure = TxRejectCode::UNAVAILABLE;
-                error = "Live pre-base input unavailable: " + outpoint.ToString();
-                return false;
-            }
+            if (!read_prebase(outpoint,captured)) return false;
         } else {
             bool invalid_parent_output = false;
             const auto found = utxo_view.CaptureCoin(utxo.txid, utxo.vout, &invalid_parent_output);
@@ -3427,13 +3439,8 @@ bool Mempool::validateTransaction(
                     error = "Conflicted input lookup unavailable: " + outpoint.ToString();
                     return false;
                 }
-                if (!captured && prebase_coin_resolver_) {
-                    captured = prebase_coin_resolver_(outpoint);
-                    if (!captured) {
-                        if (failure) *failure = TxRejectCode::UNAVAILABLE;
-                        error = "Live pre-base input unavailable: " + outpoint.ToString();
-                        return false;
-                    }
+                if (!captured && (prebase_coin_status_resolver_ || prebase_coin_resolver_)) {
+                    if (!read_prebase(outpoint,captured)) return false;
                 }
                 if (!captured) {
                     if (failure) *failure = TxRejectCode::MISSING_INPUTS;

@@ -10610,14 +10610,22 @@ std::optional<consensus::UTXOEntry> ChainstateService::GetActiveUTXO(
 
 std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
     const OutPoint& outpoint) const {
+    const auto result = ResolveLivePreBaseCoinChecked(outpoint);
+    return result.ok() ? std::optional<consensus::UTXOEntry>(result.value()) : std::nullopt;
+}
+
+StatusOr<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoinChecked(
+    const OutPoint& outpoint) const {
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
     if (!chain_db_ || !consensus_utxo_set_) {
-        return std::nullopt;
+        return Status::Internal;
     }
 
     const auto marker = chain_db_->getPreBaseCoinSetBase();
     if (!marker.ok()) {
-        return std::nullopt;
+        if (marker.status() == Status::NotFound &&
+            (assumeutxo_active_ || promoted_base_height_ > 0)) return Status::Corruption;
+        return marker.status();
     }
 
     // The frozen store remains necessary after background validation promotes
@@ -10635,23 +10643,25 @@ std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
         marker.value().second == promoted_base_height_) {
         const auto canonical =
             chain_db_->getBlockHashByHeight(promoted_base_height_);
-        promoted_base_matches =
-            canonical.ok() && canonical.value() == marker.value().first;
+        if (!canonical.ok())
+            return canonical.status() == Status::NotFound ? Status::Corruption : canonical.status();
+        promoted_base_matches = canonical.value() == marker.value().first;
     }
     if (!active_base_matches && !promoted_base_matches) {
-        return std::nullopt;
+        return Status::Corruption;
     }
 
     const auto stored = chain_db_->getPreBaseCoin(
         outpoint.txid.AsUint256(), outpoint.vout);
-    if (!stored.ok() || stored.value().height < 0 ||
-        static_cast<uint32_t>(stored.value().height) > assumeutxo_base_height_) {
-        return std::nullopt;
+    if (!stored.ok()) return stored.status();
+    if (stored.value().height < 0 ||
+        static_cast<uint32_t>(stored.value().height) > marker.value().second) {
+        return Status::Corruption;
     }
 
     std::vector<unsigned char> script;
     if (!util::unhex(stored.value().script_pubkey, script)) {
-        return std::nullopt;
+        return Status::Corruption;
     }
     const auto leaf = consensus::HashUTXOForCreationHeight(
         outpoint.txid.AsUint256(), outpoint.vout, stored.value().amount,
@@ -10660,7 +10670,7 @@ std::optional<consensus::UTXOEntry> ChainstateService::ResolveLivePreBaseCoin(
     {
         auto forest_lock = consensus_utxo_set_->LockForestShared();
         if (!consensus_utxo_set_->GetForest().findLeafPosition(leaf).has_value()) {
-            return std::nullopt;
+            return Status::NotFound;
         }
     }
 

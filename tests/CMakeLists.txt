@@ -7285,6 +7285,8 @@ if(APPLE)
   target_link_libraries(test_mining_chain_guard PRIVATE
     "-framework Security" "-framework CoreFoundation")
 endif()
+add_test(NAME PreBaseLookupStatus COMMAND test_mining_chain_guard --gtest_filter=PreBaseLookupStatus.*)
+set_tests_properties(PreBaseLookupStatus PROPERTIES LABELS "mempool;chain;mandatory" TIMEOUT 60)
 add_test(NAME MiningChainGuard COMMAND test_mining_chain_guard)
 set_tests_properties(MiningChainGuard PROPERTIES
   LABELS "mempool;mining;chain" TIMEOUT 60)

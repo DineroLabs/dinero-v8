@@ -900,6 +900,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Checked pre-base lookup status
+        run: |
+          cmake --build build-orchard-root --target test_mining_chain_guard --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^PreBaseLookupStatus$' --show-only=json-v1 > orchard-prebase-lookup-status-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-prebase-lookup-status-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['PreBaseLookupStatus']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^PreBaseLookupStatus$' --verbose --no-tests=error --output-log orchard-prebase-lookup-status-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-prebase-lookup-status-execution.log').read_text()
+          for case in ['AbsentAndUnavailableAreDistinct','LiveFrozenAndPromotedBasePreserveScope','CanonicalAdmissionKeepsMissingAndUnavailableDistinct']:
+              assert log.count('[       OK ] PreBaseLookupStatus.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Typed pool tip cache publication
         run: |
           cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
@@ -2074,6 +2093,8 @@ jobs:
             orchard-typed-bridge-proof-owner-execution.log
             orchard-typed-utreexo-receive-inventory.json
             orchard-typed-utreexo-receive-execution.log
+            orchard-prebase-lookup-status-inventory.json
+            orchard-prebase-lookup-status-execution.log
             orchard-typed-pool-tip-inventory.json
             orchard-typed-pool-tip-execution.log
             orchard-pool-conflicts-inventory.json

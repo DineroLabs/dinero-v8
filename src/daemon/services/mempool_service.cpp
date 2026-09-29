@@ -115,6 +115,12 @@ bool MempoolService::Init(DaemonContext& ctx) {
                     ? chainstate->ResolveLivePreBaseCoin(outpoint)
                     : std::nullopt;
             });
+        mempool_->setPreBaseCoinStatusResolver(
+            [weak_chainstate](const OutPoint& outpoint) -> StatusOr<consensus::UTXOEntry> {
+                const auto chainstate = weak_chainstate.lock();
+                return chainstate ? chainstate->ResolveLivePreBaseCoinChecked(outpoint)
+                                  : StatusOr<consensus::UTXOEntry>(Status::Internal);
+            });
         mempool_->setPreBaseCoinPredicate(
             [weak_chainstate](const OutPoint& outpoint) {
                 const auto chainstate = weak_chainstate.lock();

@@ -170,6 +170,10 @@ public:
     // leaves are never returned.
     std::optional<consensus::UTXOEntry> ResolveLivePreBaseCoin(
         const OutPoint& outpoint) const;
+    // Checked counterpart for admission: NotFound is established absence or
+    // an absent live leaf; storage/lifecycle failures retain an error status.
+    StatusOr<consensus::UTXOEntry> ResolveLivePreBaseCoinChecked(
+        const OutPoint& outpoint) const;
     // Block undo already has consensus authorization from the block being
     // connected and may run after that block removed the leaf. It therefore
     // requires exact active/promoted-base scoping, but deliberately not
@@ -1167,6 +1171,7 @@ private:
     friend struct ActivationRetryTestAccess;
     // Component payment tests install a real isolated index without starting P2P.
     friend struct WalletBatchPaymentTestAccess;
+    friend struct PreBaseLookupTestAccess;
     struct ShieldedStateSnapshot {
         uint256 root;
         uint64_t tree_size{0};

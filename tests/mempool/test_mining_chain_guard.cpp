@@ -113,3 +113,5 @@ TEST_F(MiningChainGuard, ExplicitParentMustEqualCurrentDurableTip) {
     EXPECT_EQ(held,0U);EXPECT_EQ(acquired,2U);EXPECT_EQ(db.getTip()->hash,selected);
 }
 }
+
+#include "prebase_lookup_status_checks.h"
