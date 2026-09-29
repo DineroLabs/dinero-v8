@@ -938,6 +938,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Selected-chain Orchard admission
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardSelectedAdmission$' --show-only=json-v1 > orchard-selected-admission-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-selected-admission-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardSelectedAdmission']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardSelectedAdmission$' --verbose --no-tests=error --output-log orchard-selected-admission-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-selected-admission-execution.log').read_text()
+          for case in ['RealShieldPreflightPublicationAndDuplicate','MissingOwnerAndInvalidInputRefuseThenRetry','PublicationRollbackAndPostCommitObserverOutcome','MatureInputsPendingConflictsAndSelectedDomain']:
+              assert log.count('[       OK ] OrchardSelectedAdmission.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Typed pool publication and replacement capability
         run: |
           cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
@@ -2154,6 +2173,8 @@ jobs:
             orchard-typed-utreexo-receive-execution.log
             orchard-pool-parent-root-execution.log
             orchard-typed-acceptance-owner-execution.log
+            orchard-selected-admission-inventory.json
+            orchard-selected-admission-execution.log
             orchard-typed-pool-publication-inventory.json
             orchard-typed-pool-publication-execution.log
             orchard-prebase-lookup-status-inventory.json

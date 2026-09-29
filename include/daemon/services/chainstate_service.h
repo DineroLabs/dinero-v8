@@ -48,6 +48,9 @@ namespace dinero {
 
 // Phase 39 Step 2: Forward declaration (header deleted)
 class ChainManager;
+class MempoolChainstateReadGuard;
+class MempoolTransaction;
+struct MempoolOrchardValidation;
 class BlockStorage;
 class RuntimeBlockBody;
 struct RuntimeOutboxCursor;
@@ -1162,7 +1165,13 @@ public:
         return std::unique_lock<AnnotatedRecursiveMutex>(activation_mutex_);
     }
 
+    static std::unique_ptr<MempoolChainstateReadGuard> AcquireMempoolChainstateRead(
+        std::shared_ptr<ChainstateService>);
+
 private:
+    struct MempoolReadGuard;
+    MempoolOrchardValidation ValidateOrchardPoolUnderLock(
+        const MempoolTransaction&, const std::vector<MempoolTransaction>&);
     // Storage-layout startup regression exercises the actual loader without
     // booting network/wallet services. No public runtime mutation API is added.
     friend struct ShieldedStateStartupTestAccess;

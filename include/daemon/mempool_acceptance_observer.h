@@ -26,6 +26,9 @@ public:
         historical_.swap(other.historical_);
         body_.swap(other.body_);
     }
+    bool Supports(const MempoolTransaction& body) const noexcept {
+        return body.HasBody() && (!body.IsOrchard() || !historical_);
+    }
     Notification Prepare(const MempoolTransaction& body) const {
         if (!body.HasBody()) throw std::invalid_argument("Acceptance observer body unavailable");
         if (historical_) {

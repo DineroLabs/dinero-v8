@@ -97,15 +97,7 @@ bool MempoolService::Init(DaemonContext& ctx) {
             -> std::unique_ptr<Mempool::ChainstateReadGuard> {
             const auto chainstate = weak_chainstate.lock();
             if (!chainstate) return nullptr;
-            struct Guard final : Mempool::ChainstateReadGuard {
-                // Own the service for precisely the lock's lifetime. The
-                // stored factory stays weak, avoiding a service-owner cycle.
-                std::shared_ptr<ChainstateService> owner;
-                std::unique_lock<AnnotatedRecursiveMutex> lock;
-                explicit Guard(std::shared_ptr<ChainstateService> service)
-                    : owner(std::move(service)), lock(owner->AcquireBlockIngressActivationLock()) {}
-            };
-            return std::make_unique<Guard>(chainstate);
+            return ChainstateService::AcquireMempoolChainstateRead(chainstate);
         });
         mempool_->setPreBaseCoinResolver(
             [weak_chainstate](const OutPoint& outpoint)

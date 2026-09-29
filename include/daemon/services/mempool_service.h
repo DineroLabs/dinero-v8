@@ -117,6 +117,12 @@ public:
         return use->Pool().submitTransaction(tx, source, relay);
     }
 
+    TxAcceptResult SubmitBody(const MempoolTransaction& body, TxOrigin origin) override {
+        auto use=BorrowPoolUse();
+        return use->Pool().submitBody(body, TxOriginToString(origin),
+            origin!=TxOrigin::INTERNAL && origin!=TxOrigin::P2P);
+    }
+
     // Policy preflight has no admission or relay effects; Submit revalidates.
     std::optional<TxAcceptResult> Test(const Transaction& tx, TxOrigin origin) override {
         std::unique_ptr<PoolUse> use;

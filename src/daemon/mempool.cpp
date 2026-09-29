@@ -767,6 +767,64 @@ TxAcceptResult Mempool::checkAdmissionPackageLocked(
     return TxAcceptResult::Accepted(txid_u256);
 }
 
+TxAcceptResult Mempool::submitBody(const MempoolTransaction& incoming,
+    const std::string& source,bool relay,bool test_only) {
+    if(!incoming.HasBody())return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Transaction body unavailable");
+    const MempoolTransaction body=incoming;
+    if(!body.IsOrchard())return submitTransactionInternal(body.Historical(),source,relay,test_only);
+    auto chain=chainstate_read_guard_factory_?chainstate_read_guard_factory_():nullptr;
+    if(!chain)return TxAcceptResult::Rejected(TxRejectCode::UNAVAILABLE,"Selected Orchard owner unavailable");
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    const auto id=body.GetTxid().AsUint256();
+    const auto fail=[&](TxRejectCode code,const char* text){return TxAcceptResult::Rejected(code,text,id);};
+    if(!m_tx_accepted_observer.Supports(body))return fail(TxRejectCode::UNAVAILABLE,"Orchard acceptance observer unavailable");
+    auto scanner=m_sp_scanner_manager?m_sp_scanner_manager->acquireEmptyRegistry():nullptr;
+    if(m_sp_scanner_manager && !scanner)return fail(TxRejectCode::UNAVAILABLE,"Configured scanner cannot consume Orchard body");
+    const auto notification=m_tx_accepted_observer.Prepare(body);
+    const auto broadcast=relay?m_tx_broadcast_callback:TxBroadcastCallback{};
+    if(m_transactions.contains(id))return fail(TxRejectCode::ALREADY_IN_MEMPOOL,"Transaction already in mempool");
+    for(const auto& input:body.Inputs()) {
+        if(!getInputSpendersLocked(input).empty())return fail(TxRejectCode::DOUBLE_SPEND_NO_RBF,"Orchard replacement unavailable");
+        if(m_transactions.contains(input.txid.AsUint256()))return fail(TxRejectCode::UNAVAILABLE,"Orchard pending parent policy unavailable");
+    }
+    std::unordered_set<uint256> ancestors;
+    const auto package=checkAdmissionPackageLocked(body,{},false,ancestors);
+    if(!package.accepted())return package;
+    std::set<std::array<uint8_t,32>> nullifiers(body.OrchardNullifiers().begin(),body.OrchardNullifiers().end());
+    if(nullifiers.size()!=body.OrchardNullifiers().size())return fail(TxRejectCode::INVALID_TX,"Duplicate Orchard nullifier");
+    std::vector<MempoolTransaction> pending;
+    for(const auto& [other,entry]:m_transactions) {
+        if(!entry.tx.IsOrchard())continue;
+        for(const auto& nf:entry.tx.OrchardNullifiers())
+            if(nullifiers.contains(nf))return fail(TxRejectCode::DOUBLE_SPEND_NO_RBF,"Conflicting Orchard nullifier");
+        pending.push_back(entry.tx);
+    }
+    const auto checked=chain->ValidateOrchard(body,pending);
+    if(!checked.result.accepted())return checked.result;
+    const auto vsize=body.GetVirtualSize();
+    if(!vsize || body.ExplicitFee()!=std::optional<uint64_t>(checked.fee))
+        return fail(TxRejectCode::UNAVAILABLE,"Orchard checked fee unavailable");
+    const double rate=static_cast<double>(checked.fee)/vsize;
+    if(rate<m_min_fee_rate)return fail(TxRejectCode::INSUFFICIENT_FEE,"Orchard fee rate below minimum");
+    if(test_only)return TxAcceptResult::Accepted(id);
+    StateRollback rollback(*this);
+    MempoolEntry entry(body,checked.fee,checked.parent_height);
+    // Native transparent witnesses have no P2MR surcharge. Existing VWU's
+    // non-P2MR baseline charges all stripped and witness bytes once.
+    entry.vwu=std::max<uint64_t>(body.GetSize(),1);
+    entry.adjusted_fee_rate=static_cast<double>(entry.fee)/entry.vwu;
+    insertAdmittedEntryLocked(std::move(entry),ancestors);
+    MPLOG_INFO("["+source+"] Added Orchard transaction to mempool: "+id.GetHex());
+    m_total_tx_added.fetch_add(1);
+    if(getTotalSizeLocked()>m_max_size)evictTransactionsLocked();
+    rollback.committed=true;
+    if(fee_estimator_)fee_estimator_->recordTxEntry(id,rate,checked.parent_height);
+    scanner.reset();lock.unlock();chain.reset();
+    if(notification)notification();
+    if(broadcast)broadcast(id);
+    return TxAcceptResult::Accepted(id);
+}
+
 TxAcceptResult Mempool::submitTransactionInternal(
     const Transaction& incoming_tx,
     const std::string& source,

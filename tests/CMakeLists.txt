@@ -5100,6 +5100,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     --gtest_filter=OrchardFirstBoundary.*)
   set_tests_properties(OrchardFirstBoundary PROPERTIES
     LABELS "daemon;orchard;boundary;mandatory" TIMEOUT 60)
+  add_test(NAME OrchardSelectedAdmission COMMAND test_assumeutxo_replay --gtest_filter=OrchardSelectedAdmission.*)
+  set_tests_properties(OrchardSelectedAdmission PROPERTIES LABELS "daemon;orchard;admission;mandatory" TIMEOUT 120)
   message(STATUS "✅ AssumeUTXO replay engine test enabled")
 endif()
 

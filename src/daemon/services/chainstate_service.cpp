@@ -12,6 +12,7 @@
 #include "wallet/runtime_account_replay.h"
 #include "daemon/orchard_chainstate_write.h"
 #include "consensus/orchard_block_staging.h"
+#include "consensus/orchard_resources.h"
 #endif
 #include "consensus/orchard_profile.h"
 #include <tuple>
@@ -15269,6 +15270,178 @@ ChainstateService::DeriveOrchardBoundaryFromSelectedHistoryUnderLock() {
     }
 #else
     return std::nullopt;
+#endif
+}
+
+struct ChainstateService::MempoolReadGuard final : MempoolChainstateReadGuard {
+    std::shared_ptr<ChainstateService> owner;
+    std::unique_lock<AnnotatedRecursiveMutex> lock;
+    const std::thread::id thread=std::this_thread::get_id();
+    explicit MempoolReadGuard(std::shared_ptr<ChainstateService> service)
+        :owner(std::move(service)),lock(owner->AcquireBlockIngressActivationLock()) {}
+    ~MempoolReadGuard() override { if(thread!=std::this_thread::get_id())std::terminate(); }
+    MempoolOrchardValidation ValidateOrchard(const MempoolTransaction& body,
+        std::span<const MempoolTransaction> pending) override {
+        if(thread!=std::this_thread::get_id())throw std::logic_error("Selected pool owner is thread-affine");
+        return owner->ValidateOrchardPoolUnderLock(body,{pending.begin(),pending.end()});
+    }
+};
+std::unique_ptr<MempoolChainstateReadGuard> ChainstateService::AcquireMempoolChainstateRead(
+    std::shared_ptr<ChainstateService> owner) {
+    if(!owner)return {};
+    return std::make_unique<MempoolReadGuard>(std::move(owner));
+}
+
+MempoolOrchardValidation ChainstateService::ValidateOrchardPoolUnderLock(
+    const MempoolTransaction& body,const std::vector<MempoolTransaction>& pending) {
+    MempoolOrchardValidation result;
+    const auto fail=[&](const char* message,TxRejectCode code=TxRejectCode::UNAVAILABLE) {
+        result.result=TxAcceptResult::Rejected(code,message);return result;
+    };
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if(!body.IsOrchard() || !chain_db_ || !active_tip_ || !consensus_utxo_set_ ||
+       !header_chain_selector_ || !runtime_block_notifications_ || safe_mode_active_ ||
+       GetConfig().utreexo_stateless || active_tip_->height>=uint32_t(INT32_MAX) ||
+       !consensus::OrchardActiveForHeight(Params(),active_tip_->height+1))
+        return fail("Orchard selected service unavailable");
+    try {
+        const auto parent_hash=active_tip_->hash;const auto parent_height=active_tip_->height;
+        const auto tip=chain_db_->getTip();const auto validated=chain_db_->getValidatedTip();
+        const auto parent_header=chain_db_->getHeader(parent_hash);
+        const auto parent_work=chain_db_->getBlockWork(parent_hash);
+        const auto headers=header_chain_selector_;
+        const auto indexed=headers->GetHeaderValue(parent_hash);
+        if(!tip.ok() || !validated.ok() || !parent_header.ok() || !parent_work.ok() || !indexed ||
+           tip->height<0 || uint32_t(tip->height)!=parent_height || tip->hash!=parent_hash ||
+           validated->hash!=parent_hash || validated->height!=tip->height ||
+           consensus_utxo_set_->GetBestBlock()!=parent_hash || consensus_utxo_set_->GetHeight()!=parent_height ||
+           indexed->height!=parent_height || indexed->chainwork!=*parent_work ||
+           parent_header->GetHash()!=parent_hash ||
+           parent_header->prev_block_hash!=active_tip_->prev_hash || parent_header->version!=active_tip_->version ||
+           parent_header->merkle_root!=active_tip_->merkle_root || parent_header->timestamp!=active_tip_->timestamp ||
+           parent_header->difficulty!=active_tip_->bits || parent_header->nonce!=active_tip_->nonce ||
+           indexed->header.SerializeForHash()!=parent_header->SerializeForHash() ||
+           ChainworkFromHex(active_tip_->chainwork)!=*parent_work ||
+           active_tip_->status&(BLOCK_FAILED_VALID|BLOCK_FAILED_CHILD))
+            return fail("Orchard selected parent identity unavailable");
+        if(!VerifyConsensusJournalAtActiveTip())return fail("Orchard selected parent audit failed");
+        consensus::OrchardTransactionContext context;
+        context.height=parent_height+1;context.parent_hash=parent_hash;
+        context.activation_height=Params().orchard_activation_height;
+        context.domain.network_code=Params().name=="mainnet"?0:Params().name=="testnet"?1:2;
+        context.domain.branch_id=Params().orchard_branch_id;
+        uint256 genesis;
+        if(!uint256::FromHex(Params().genesis_hash,genesis) || genesis.IsNull())
+            return fail("Orchard selected genesis unavailable");
+        std::copy(genesis.begin(),genesis.end(),context.domain.genesis_wire.begin());
+        std::optional<storage::OrchardStoredState> parent;
+        const auto stored=chain_db_->getOrchardState();
+        if(context.height==context.activation_height) {
+            if(stored.status()!=Status::NotFound || !DeriveOrchardBoundaryFromSelectedHistoryUnderLock())
+                return fail("Orchard selected boundary history unavailable");
+        } else {
+            if(!stored.ok() || stored->height!=parent_height || stored->block_hash!=parent_hash)
+                return fail("Orchard selected parent state unavailable");
+            parent=*stored;
+            const auto refs=chain_db_->getOrchardAnchorReferences(parent->anchor);
+            if(!refs.ok() || *refs==0)return fail("Orchard selected parent anchor unavailable");
+        }
+        struct SelectedCoins final:consensus::ChainStateView {
+            const ChainDB& db;const consensus::ConsensusUTXOSet& live;
+            SelectedCoins(const ChainDB& d,const consensus::ConsensusUTXOSet& l):db(d),live(l){}
+            StatusOr<consensus::UTXOEntry> getCoin(const OutPoint& point)const override {
+                const auto stored=db.getCoin(point.txid.AsUint256(),point.vout);
+                const auto* coin=live.GetCoin(point);
+                if(!stored.ok())return stored.status()==Status::NotFound && coin?Status::Corruption:stored.status();
+                if(!coin || stored->height<0 || uint32_t(stored->height)>live.GetHeight() ||
+                   uint32_t(stored->height)!=coin->height || stored->amount!=coin->value.GetUna() ||
+                   stored->coinbase!=coin->isCoinbase || stored->is_confidential!=coin->is_confidential ||
+                   stored->commitment!=coin->commitment)return Status::Corruption;
+                if(!std::all_of(stored->script_pubkey.begin(),stored->script_pubkey.end(),[](unsigned char c) {
+                    return (c>='0'&&c<='9') || (c>='a'&&c<='f') || (c>='A'&&c<='F');
+                }))return Status::Corruption;
+                std::vector<uint8_t> script;
+                if(!util::unhex(stored->script_pubkey,script) || script!=coin->scriptPubKey)return Status::Corruption;
+                return *coin;
+            }
+            bool hasCoin(const OutPoint& p)const override {
+                const auto coin=getCoin(p);
+                if(!coin.ok() && coin.status()!=Status::NotFound)throw consensus::OrchardCoinLookupError(coin.status());
+                return coin.ok();
+            }
+            uint32_t getHeight()const override{return live.GetHeight();}
+        } coins(*chain_db_,*consensus_utxo_set_);
+        consensus::OrchardBranchMtpLookup mtp=[headers,parent_hash,parent_height](uint32_t h)->std::optional<uint64_t> {
+            uint256 ancestor;uint32_t selected=0,found=0,time=0;
+            if(h>parent_height || !headers->GetAncestorHashByHash(parent_hash,h,ancestor,selected) ||
+               selected!=parent_height || !headers->GetMedianTimePastByHash(ancestor,time,found) || found!=h)return {};
+            return time;
+        };
+        consensus::OrchardStateLookups lookups{
+            [&](const uint256& a)->StatusOr<bool>{const auto v=chain_db_->getOrchardAnchorReferences(a);
+                if(v.status()==Status::NotFound)return false;if(!v.ok())return v.status();return *v>0;},
+            [&](const uint256& n)->StatusOr<bool>{const auto v=chain_db_->getOrchardNullifierOwner(n);
+                if(v.status()==Status::NotFound)return false;if(!v.ok())return v.status();return true;}};
+        const uint64_t balance=parent?parent->pool_balance:0;
+        uint64_t deposits=0,withdrawals=0;
+        std::set<std::array<uint8_t,32>> nullifiers;
+        std::set<OutPoint> inputs;
+        const auto check=[&](const MempoolTransaction& transaction) {
+            if(!transaction.IsOrchard())throw std::invalid_argument("Non-Orchard pending body");
+            for(const auto& p:transaction.Inputs())if(!inputs.insert(p).second)
+                throw std::invalid_argument("Conflicting pending Orchard input");
+            for(const auto& n:transaction.OrchardNullifiers())if(!nullifiers.insert(n).second)
+                throw std::invalid_argument("Conflicting pending Orchard nullifier");
+            const auto parsed=ParsedTransaction::DecodeExact(transaction.Serialize(),TransactionReadMode::StagedOrchard);
+            consensus::OrchardResourceUsage usage;
+            consensus::AccumulateOrchardTransactionResources(parsed,usage);
+            const auto snapshot=consensus::OrchardCoinSnapshot::ResolveUnderChainstateLock(transaction.Orchard(),coins);
+            consensus::AccumulateOrchardInputResources(parsed,snapshot.Coins(),usage);
+            const auto verified=consensus::VerifyOrchardAuthorizations(snapshot,context.domain,context.height,mtp);
+            const auto checked=consensus::CheckOrchardTransactions(context,parent,{&verified,1},lookups);
+            const auto& flow=checked.Flows().at(0);
+            // Each independent reservation must fit the selected parent in
+            // every selection order; pending deposits cannot fund withdrawals.
+            if(flow.transparent_outputs>orchard::kMaxMoneyUna || flow.fee>orchard::kMaxMoneyUna-flow.transparent_outputs)
+                throw std::invalid_argument("Orchard pending value range");
+            const uint64_t out=flow.transparent_outputs+flow.fee;
+            if(flow.transparent_inputs>=out) {
+                const uint64_t deposit=flow.transparent_inputs-out;
+                if(balance>orchard::kMaxMoneyUna || deposits>orchard::kMaxMoneyUna-balance ||
+                   deposit>orchard::kMaxMoneyUna-balance-deposits)throw std::invalid_argument("Orchard pending deposit capacity");
+                deposits+=deposit;
+            } else {
+                const uint64_t withdrawal=out-flow.transparent_inputs;
+                if(withdrawals>balance || withdrawal>balance-withdrawals)throw std::invalid_argument("Orchard pending withdrawal capacity");
+                withdrawals+=withdrawal;
+            }
+            return flow.fee;
+        };
+        // Existing entries need real readmission on a changed parent. Refuse
+        // this operation without discarding them or asserting they remain ready.
+        try {for(const auto& transaction:pending)(void)check(transaction);}
+        catch(const std::exception&){return fail("Existing Orchard pool requires readmission");}
+        result.fee=check(body);result.parent_height=parent_height;
+        result.result=TxAcceptResult::Accepted(body.GetTxid().AsUint256());return result;
+    } catch(const consensus::OrchardCoinLookupError& e) {
+        return fail("Orchard confirmed input unavailable",e.SourceStatus()==Status::NotFound?TxRejectCode::MISSING_INPUTS:TxRejectCode::UNAVAILABLE);
+    } catch(const consensus::OrchardStateLookupError&) {
+        return fail("Orchard selected state lookup unavailable");
+    } catch(const consensus::OrchardTransparentError& e) {
+        return fail("Orchard transparent authorization refused",e.Code()==consensus::OrchardTransparentErrorCode::MissingMedianTime?
+            TxRejectCode::UNAVAILABLE:TxRejectCode::SCRIPT_VERIFY_FAILED);
+    } catch(const orchard::BackendError& e) {
+        return fail("Orchard authorization refused",e.Status()==DINERO_ORCHARD_PANIC?TxRejectCode::UNAVAILABLE:TxRejectCode::INVALID_TX);
+    } catch(const consensus::OrchardStateError& e) {
+        return fail("Orchard selected transaction state refused",e.Code()==consensus::OrchardStateErrorCode::ParentState ||
+            e.Code()==consensus::OrchardStateErrorCode::Context?TxRejectCode::UNAVAILABLE:TxRejectCode::INVALID_TX);
+    } catch(const consensus::OrchardResourceError&) {
+        return fail("Orchard resource policy refused",TxRejectCode::INVALID_TX);
+    } catch(const std::bad_alloc&) {throw;}
+      catch(const std::exception&) {return fail("Orchard transaction checks unavailable");}
+#else
+    (void)body;(void)pending;
+    return fail("Orchard backend unavailable");
 #endif
 }
 

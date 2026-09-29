@@ -39,6 +39,11 @@
 
 #include <gtest/gtest.h>
 #include "daemon/services/chainstate_service.h"
+#include "daemon/services/mempool_service.h"
+#include "daemon/services/config_service.h"
+#include "mining/block_assembler.h"
+#include "daemon/daemon_context.h"
+#include "common/ilogger.h"
 #include "storage/chain_db.h"
 #include "wallet/wallet_manager.h"
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
@@ -61,6 +66,10 @@
 #include "../storage/shielded_store_fixture.h"
 #undef CHECK
 #ifdef DINERO_TEST_ORCHARD_ORIGIN
+#include "orchard_wallet.h"
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
+#include <secp256k1_schnorrsig.h>
 #include "consensus/orchard_block_coins.h"
 #include "consensus/orchard_block_filter.h"
 #include "consensus/orchard_forest_transition.h"
@@ -621,6 +630,7 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 
 #include "selected_parent_history_checks.h"
 #include "orchard_first_boundary_checks.h"
+#include "orchard_selected_admission_checks.h"
 
 }  // namespace dinero
 

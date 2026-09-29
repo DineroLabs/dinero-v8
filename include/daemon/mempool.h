@@ -4,6 +4,7 @@
 #include "daemon/connected_block_effects.h"
 #include "daemon/mempool_transaction.h"
 #include "daemon/mempool_acceptance_observer.h"
+#include "daemon/mempool_chainstate_guard.h"
 #include "primitives/uint256.h"  // Phase M.0: uint256 type
 #include "daemon/interfaces/ingress_types.h"  // Step 5: Canonical ingress types
 #include <unordered_map>
@@ -231,6 +232,8 @@ public:
      * @return        Structured result with rejection code and message
      */
     TxAcceptResult submitTransaction(const Transaction& tx, const std::string& source, bool relay = true);
+    TxAcceptResult submitBody(const MempoolTransaction&, const std::string& source,
+        bool relay = true, bool test_only = false);
 
     // Core mempool operations (Phase M.0: Changed to uint256)
     bool removeTransaction(const uint256& txid);
@@ -609,7 +612,7 @@ public:
     // Production selection reads chainstate through the pre-base callbacks.
     // Acquire this lifetime guard BEFORE m_mutex, matching block connection's
     // chainstate -> mempool lock order. Set only during service initialization.
-    struct ChainstateReadGuard { virtual ~ChainstateReadGuard() = default; };
+    using ChainstateReadGuard = MempoolChainstateReadGuard;
     using ChainstateReadGuardFactory = std::function<std::unique_ptr<ChainstateReadGuard>()>;
     void setChainstateReadGuardFactory(ChainstateReadGuardFactory factory) {
         chainstate_read_guard_factory_ = std::move(factory);
