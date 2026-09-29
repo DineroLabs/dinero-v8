@@ -25,8 +25,6 @@ extern RpcRegistry g_rpcRegistry;
 namespace din {
 namespace {
 
-dinero::vault::VaultService* g_vault_service = nullptr;
-
 std::string bytesToHex(const std::vector<uint8_t>& bytes) {
     std::ostringstream oss;
     for (uint8_t byte : bytes) {
@@ -105,18 +103,17 @@ Json errorObj(const std::string& msg, int code = -1) {
     return result;
 }
 
-dinero::vault::VaultService* requireService() {
-    return g_vault_service;
+std::shared_ptr<dinero::vault::VaultService> requireService() {
+    return dinero::vault::GetVaultRuntimeService();
 }
 
 }  // namespace
 
-dinero::vault::VaultService* GetVaultService() { return g_vault_service; }
-void SetVaultService(dinero::vault::VaultService* service) { g_vault_service = service; }
+std::shared_ptr<dinero::vault::VaultService> GetVaultService() { return requireService(); }
 
 Json rpc_vault_account_spendable(const ExecutionContext& /*ctx*/, const Json& params) {
     Json result;
-    auto* svc = requireService();
+    auto svc = requireService();
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }
@@ -131,7 +128,7 @@ Json rpc_vault_account_spendable(const ExecutionContext& /*ctx*/, const Json& pa
 
 Json rpc_vault_account_metrics(const ExecutionContext& /*ctx*/, const Json& params) {
     Json result;
-    auto* svc = requireService();
+    auto svc = requireService();
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }
@@ -150,7 +147,7 @@ Json rpc_vault_account_metrics(const ExecutionContext& /*ctx*/, const Json& para
 
 Json rpc_vault_observe(const ExecutionContext& /*ctx*/, const Json& params) {
     Json result;
-    auto* svc = requireService();
+    auto svc = requireService();
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }
@@ -182,7 +179,7 @@ Json rpc_vault_observe(const ExecutionContext& /*ctx*/, const Json& params) {
     uint64_t height = 0;
     std::array<uint8_t, 32> block_hash{};
     std::string verr;
-    if (!dinero::vault::VerifyOperatorDeposit(txid_raw, vout, amount, height, block_hash, verr)) {
+    if (!dinero::vault::VerifyOperatorDeposit(svc, txid_raw, vout, amount, height, block_hash, verr)) {
         return errorObj(std::string("deposit verification failed: ") + verr);
     }
 
@@ -194,7 +191,7 @@ Json rpc_vault_observe(const ExecutionContext& /*ctx*/, const Json& params) {
 
 Json rpc_vault_withdraw(const ExecutionContext& /*ctx*/, const Json& params) {
     Json result;
-    auto* svc = requireService();
+    auto svc = requireService();
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }
@@ -235,7 +232,7 @@ Json rpc_vault_withdraw(const ExecutionContext& /*ctx*/, const Json& params) {
 
 Json rpc_vault_processnext(const ExecutionContext& /*ctx*/, const Json& /*params*/) {
     Json result;
-    auto* svc = requireService();
+    auto svc = requireService();
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }
@@ -255,7 +252,7 @@ Json rpc_vault_processnext(const ExecutionContext& /*ctx*/, const Json& /*params
 
 Json rpc_vault_withdrawal_status(const ExecutionContext& /*ctx*/, const Json& params) {
     Json result;
-    auto* svc = requireService();
+    auto svc = requireService();
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }
@@ -324,7 +321,7 @@ Json rpc_vault_getoperator(const ExecutionContext& /*ctx*/, const Json& /*params
 
 Json rpc_vault_metrics(const ExecutionContext& /*ctx*/, const Json& /*params*/) {
     Json result;
-    auto* svc = requireService();
+    auto svc = requireService();
     if (svc == nullptr) {
         return errorObj("vault service not initialized");
     }

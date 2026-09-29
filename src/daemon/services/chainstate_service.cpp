@@ -5766,8 +5766,17 @@ ChainstateService::getCanonicalOutputInclusion(const uint256& txid,uint32_t outp
             return Status::Corruption;
         for (const auto& tx:(*body)->Orchard().Transactions()) {
             if (tx.GetTxid().AsUint256()!=txid) continue;
-            const size_t count=tx.IsOrchard()?tx.Orchard().Outputs().size():tx.Historical().vout.size();
-            return CanonicalOutputInclusion{*hash,output<count};
+            if (tx.IsOrchard()) {
+                const auto& outputs=tx.Orchard().Outputs();
+                if (output>=outputs.size()) return CanonicalOutputInclusion{*hash,false,{},{}};
+                const auto& coin=outputs[output];
+                return CanonicalOutputInclusion{*hash,true,coin.amount_una,coin.script_pub_key};
+            }
+            const auto& outputs=tx.Historical().vout;
+            if (output>=outputs.size()) return CanonicalOutputInclusion{*hash,false,{},{}};
+            const auto& coin=outputs[output];
+            return CanonicalOutputInclusion{*hash,true,
+                coin.is_confidential?std::nullopt:std::optional<uint64_t>{coin.value.GetUna()},coin.scriptPubKey};
         }
 #else
         return Status::Internal;
@@ -5776,10 +5785,15 @@ ChainstateService::getCanonicalOutputInclusion(const uint256& txid,uint32_t outp
         const auto body=getBlockByHash(*hash);
         if (!body.ok()) return body.status();
         if (body->header.GetHash()!=*hash) return Status::Corruption;
-        for (const auto& tx:body->vtx)
-            if (tx.GetTxid().AsUint256()==txid) return CanonicalOutputInclusion{*hash,output<tx.vout.size()};
+        for (const auto& tx:body->vtx) {
+            if (tx.GetTxid().AsUint256()!=txid) continue;
+            if (output>=tx.vout.size()) return CanonicalOutputInclusion{*hash,false,{},{}};
+            const auto& coin=tx.vout[output];
+            return CanonicalOutputInclusion{*hash,true,
+                coin.is_confidential?std::nullopt:std::optional<uint64_t>{coin.value.GetUna()},coin.scriptPubKey};
+        }
     }
-    return CanonicalOutputInclusion{*hash,false};
+    return CanonicalOutputInclusion{*hash,false,{},{}};
 }
 
 StatusOr<ChainstateService::OrchardAnnouncementSnapshot>

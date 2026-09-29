@@ -859,7 +859,18 @@ public:
     StatusOr<BlockRpcSnapshot> getBlockRpcSnapshot(const uint256& hash) const;
     // One selected canonical observation. Missing source/body is an error, not
     // evidence of inclusion or absence. This is not an unspentness certificate.
-    struct CanonicalOutputInclusion { uint256 block_hash; bool included; };
+    struct CanonicalOutputInclusion {
+        uint256 block_hash;
+        bool included;
+        // Exact body fields from the same selected observation. Confidential
+        // historical outputs have no transparent amount; absence has neither.
+        std::optional<uint64_t> transparent_amount;
+        std::vector<uint8_t> script_pub_key;
+        bool MatchesTransparent(uint64_t amount, const std::vector<uint8_t>& script) const {
+            return included && transparent_amount && *transparent_amount == amount &&
+                   script_pub_key == script;
+        }
+    };
     StatusOr<uint256> getCanonicalBlockHash(uint32_t height) const;
     StatusOr<CanonicalOutputInclusion> getCanonicalOutputInclusion(
         const uint256& txid, uint32_t output, uint32_t height) const;

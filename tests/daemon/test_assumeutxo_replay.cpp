@@ -1,3 +1,7 @@
+#include "rpc/methods_vault.h"
+#include "vault/vault_service.h"
+#include "address/addr_codec.h"
+#include "external/bech32/bech32.hpp"
 #include "vault/vault_runtime.h"
 #include "vault/reorg_watcher.h"
 #include "vault/ledger.h"
@@ -724,3 +728,5 @@ int main(int argc, char** argv) {
 
 #include "wallet_canonical_recovery_checks.h"
 #include "vault_canonical_observation_checks.h"
+
+#include "vault_runtime_owner_checks.h"

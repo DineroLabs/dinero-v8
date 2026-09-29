@@ -21,6 +21,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -84,9 +85,10 @@ void NotifyVaultTipConnected(uint64_t height);
 /// ConnectBlock's hash mismatch; reserved for richer signaling.
 void NotifyVaultTipDisconnected(uint64_t height);
 
-/// Get the live service pointer (or nullptr if not initialised).
-/// Internal helper for RPC handlers.
-VaultService* GetVaultRuntimeService();
+/// Capture the current service under runtime ownership, or an empty owner.
+/// Retain it through the complete call; shutdown detaches future acquisitions.
+/// A retained service is not a readiness or durable-completion certificate.
+std::shared_ptr<VaultService> GetVaultRuntimeService();
 
 /// Update the operator address ↔ account binding at runtime. Decodes
 /// the address (must be a Taproot din1p…) and atomically replaces
@@ -126,7 +128,8 @@ void ObserveWalletOutput(const std::array<uint8_t, 32>& txid_raw,
 /// REAL on-chain value/height/consensus-order block-hash via the out-params and
 /// `true`; on any mismatch sets `err` and returns `false`. Callers MUST use the
 /// returned values and never trust caller-supplied amount/height/block_hash.
-bool VerifyOperatorDeposit(const std::array<uint8_t, 32>& txid_raw,
+bool VerifyOperatorDeposit(const std::shared_ptr<VaultService>& expected_service,
+                           const std::array<uint8_t, 32>& txid_raw,
                            uint32_t vout,
                            uint64_t& out_amount,
                            uint64_t& out_height,

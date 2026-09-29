@@ -1080,6 +1080,26 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 2' in log
           PYTEST
 
+      - name: Retain vault runtime owners and verify canonical deposits
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay test_vault_state_machines --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(VaultRuntimeOwner|VaultStateMachines)$' --show-only=json-v1 > vault-runtime-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('vault-runtime-owner-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultRuntimeOwner','VaultStateMachines']
+          assert {t['name']:next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT') for t in tests}=={'VaultRuntimeOwner':120,'VaultStateMachines':30}
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(VaultRuntimeOwner|VaultStateMachines)$' --verbose --no-tests=error --output-log vault-runtime-owner-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('vault-runtime-owner-execution.log').read_text()
+          for case in ['RetainedServiceAndRpcAcquisitionSurviveDetach', 'OperatorBindingRejectsInvalidReplacement', 'CanonicalHistoricalCoinAndActualRpcObservation', 'UnavailableSourceAndChangedOwnerPreserveOutputs']:
+              assert log.count('[       OK ] VaultRuntimeOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 2' in log
+          PYTEST
+
       - name: Check typed canonical block announcement handoff
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2653,6 +2673,7 @@ jobs:
             chainstate-wallet-index-owner-inventory.json
             wallet-canonical-recovery-inventory.json
             vault-canonical-observation-inventory.json
+            vault-runtime-owner-inventory.json
             wallet-service-owner-inventory.json
             orchard-network-routing-execution.log
             orchard-block-announcement-execution.log
@@ -2660,6 +2681,7 @@ jobs:
             chainstate-wallet-index-owner-execution.log
             wallet-canonical-recovery-execution.log
             vault-canonical-observation-execution.log
+            vault-runtime-owner-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log

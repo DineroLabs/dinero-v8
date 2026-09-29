@@ -23,8 +23,7 @@ class VaultService;
 
 namespace din {
 
-dinero::vault::VaultService* GetVaultService();
-void SetVaultService(dinero::vault::VaultService* service);
+std::shared_ptr<dinero::vault::VaultService> GetVaultService();
 
 Json rpc_vault_account_spendable(const ExecutionContext& ctx, const Json& params);
 Json rpc_vault_account_metrics(const ExecutionContext& ctx, const Json& params);
