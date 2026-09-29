@@ -675,3 +675,5 @@ int main(int argc, char** argv) {
 #include "orchard_disk_readmission_checks.h"
 
 #include "orchard_queued_ingress_checks.h"
+
+#include "orchard_download_drain_checks.h"

@@ -1,3 +1,4 @@
+#include "util/hex.h"
 #include "daemon/utreexo_tx_reader.h"
 #include "daemon/utreexo_tx_payload.h"
 #include "consensus/csn_replay_data.h"
@@ -6686,6 +6687,26 @@ bool DaemonApp::Init(int argc, char** argv) {
                         return result;
                     }
                 );
+
+                // Exact typed bytes use the same bounded canonical ingress queue.
+                // The scheduler releases its mutex before invoking this callback.
+                std::weak_ptr<BlockIngressService> typed_ingress_owner;
+                for (const auto& service : services_) {
+                    auto ingress = std::dynamic_pointer_cast<BlockIngressService>(service);
+                    if (ingress && ingress.get() == ctx_.block_ingress) typed_ingress_owner = ingress;
+                }
+                block_download->SetConnectBlockBytesCallback(
+                    [typed_ingress_owner, prune_for_drain](const std::vector<uint8_t>& bytes,
+                        const uint256& hash, uint32_t height, const std::string&) {
+                        using Result = dinero::consensus::ConnectBlockResult;
+                        auto ingress=typed_ingress_owner.lock();
+                        if (!ingress) return Result::TEMPORARY_FAIL;
+                        const auto result=ingress->SubmitHex(util::hex(bytes),BlockOrigin::P2P);
+                        if (!result.accepted() || !result.connected || result.block_hash!=hash || result.height!=height)
+                            return Result::TEMPORARY_FAIL;
+                        if (prune_for_drain) prune_for_drain->triggerPruneIfNeeded();
+                        return Result::CONNECTED;
+                    });
 
                 // BlockDownloadScheduler → GetTipHeight (queries actual chainstate tip for drain ordering)
                 block_download->SetGetTipHeightCallback(

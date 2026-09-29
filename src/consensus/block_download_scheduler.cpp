@@ -4,6 +4,10 @@
 
 #include "consensus/block_download_scheduler.h"
 #include "consensus/header_chain.h"
+#include "consensus/orchard_profile.h"
+#ifdef DINERO_HAS_ORCHARD_DOWNLOAD_READER
+#include "primitives/orchard_block_reader.h"
+#endif
 #include "storage/block_storage.h"
 #include "common/logger.h"
 #include "daemon/block_write_metrics.h"  // g_durable_body_writes
@@ -475,10 +479,61 @@ bool BlockDownloadScheduler::OnBlockReceived(const Block& block, FilePosition* s
     return true;
 }
 
+bool BlockDownloadScheduler::OnOrchardBlockReceived(std::span<const uint8_t> bytes) {
+#ifdef DINERO_HAS_ORCHARD_DOWNLOAD_READER
+    if (bytes.size() < 128 || bytes.size() > OrchardBlockCandidate::MaxWireSize()) return false;
+    try {
+        const auto wire_header=BlockHeader::Deserialize(std::vector<uint8_t>(bytes.begin(),bytes.begin()+128));
+        if (!wire_header) return false;
+        const auto hash=wire_header->GetHash();
+        std::unique_lock<std::mutex> lock(mutex_);
+        HeaderIndexEntry header;
+        if (stateless_mode_ || !block_storage_ || !header_chain_ ||
+            backfill_expected_.count(hash) || !OrchardProfileConfigurationValid(Params()) ||
+            !header_chain_->GetHeaderCopy(hash, header) ||
+            !OrchardActiveForHeight(Params(), header.height) || header.hash != hash)
+            return false;
+        auto fetch = std::find_if(missing_blocks_.begin(), missing_blocks_.end(),
+            [&](const BlockFetchState& v) { return v.block_hash == hash && v.height == header.height; });
+        if (fetch == missing_blocks_.end() || fetch->status == FetchStatus::INVALID ||
+            fetch->status == FetchStatus::CONNECTED || fetch->status == FetchStatus::CONNECTING)
+            return false;
+        const auto body=OrchardBlockCandidate::DecodeExact(bytes);
+        std::string error;
+        const bool witness = Params().enforce_witness_commitment &&
+            header.height >= Params().witness_commitment_enforcement_height;
+        if (body.Header().GetHash()!=hash || !body.Header().IsReservedValid() || !body.CheckSizeLimits(error) ||
+            !body.CheckCoinbaseHeight(header.height,error) || !body.CheckIdentityCommitments(witness,error))
+            return false;
+        const std::string raw(reinterpret_cast<const char*>(bytes.data()),bytes.size());
+        const auto stored = block_storage_->writeBlockBytes(hash,raw);
+        if (!stored.ok()) return false;
+        ++dinero::daemon::g_durable_body_writes;
+        if (fetch->status != FetchStatus::RECEIVED)
+            fetch->received_time = std::chrono::steady_clock::now();
+        fetch->status = FetchStatus::RECEIVED;
+        fetch->stored_pos = *stored;
+        received_blocks_.insert(hash);
+        in_flight_blocks_.erase(hash);
+        expected_blocks_.erase(hash);
+        announcing_peers_.erase(hash);
+        auto persist = persist_body_position_callback_;
+        lock.unlock();
+        if (persist) persist(hash,*stored);
+        return true;
+    } catch (...) {
+        return false;
+    }
+#else
+    (void)bytes;
+    return false;
+#endif
+}
+
 void BlockDownloadScheduler::Tick() {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        TickLocked();
+        std::unique_lock<std::mutex> lock(mutex_);
+        TickLocked(lock);
     }
     // issue #241/#214: getdata sends staged by TickLocked() go out here, after
     // mutex_ release. A peer socket that stops draining (blocking send) can
@@ -567,7 +622,7 @@ void BlockDownloadScheduler::MaybeRunStallWatchdogLocked(
     watchdog_last_progress_time_ = now;  // give recovery a full window before re-firing
 }
 
-void BlockDownloadScheduler::TickLocked() {
+void BlockDownloadScheduler::TickLocked(std::unique_lock<std::mutex>& lock) {
     // FIX 2 (issue #186): central deferral. While a snapshot bootstrap is
     // pending, request no new blocks regardless of which call site invoked
     // Tick() — this keeps the UTXO set empty so the snapshot can load. The
@@ -991,7 +1046,7 @@ void BlockDownloadScheduler::TickLocked() {
     // This is the primary block connection mechanism during IBD —
     // blocks are stored out-of-order by the scheduler, then connected
     // sequentially here as contiguous runs become available.
-    TryConnectStoredBlocksLocked();
+    TryConnectStoredBlocksLocked(lock);
 
     // Backfill runs on a reserved window share (half when tip sync is busy,
     // full when idle — see ServiceBackfillLocked). Its sends are staged into
@@ -2094,8 +2149,8 @@ bool BlockDownloadScheduler::StoreBlock(const Block& block, FilePosition& out_po
 // Block Connection Drainer
 // ============================================================================
 
-size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
-    if (!connect_block_callback_ || !block_storage_) {
+size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(std::unique_lock<std::mutex>& lock, size_t max_blocks) {
+    if (canonical_drain_active_ || (!connect_block_callback_ && !connect_block_bytes_callback_) || !block_storage_) {
         return 0;
     }
 
@@ -2226,7 +2281,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             break;
         }
 
-        auto& fetch_state = *want_it;
+        auto* fetch_state = &*want_it;
 
         // Concurrent-in-flight backoff: this height lost a race recently and
         // the winner has not resolved yet. Stop the drain pass rather than
@@ -2263,7 +2318,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             break;
         }
 
-        if (fetch_state.status == FetchStatus::CONNECTED) {
+        if (fetch_state->status == FetchStatus::CONNECTED) {
             // Only trust CONNECTED when the active chain actually has this
             // hash at this height. Older queue state can be polluted by
             // blocks that were accepted into the block index but never
@@ -2272,7 +2327,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             if (get_block_hash_at_height_callback_ && want > 0) {
                 uint256 chain_hash;
                 if (get_block_hash_at_height_callback_(want, chain_hash) &&
-                    chain_hash == fetch_state.block_hash) {
+                    chain_hash == fetch_state->block_hash) {
                     active_chain_matches = true;
                 }
             }
@@ -2282,25 +2337,25 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             } else {
                 g_logger.warning("[BlockDownloadScheduler] CONNECTED state mismatch at height " +
                                 std::to_string(want) + " hash=" +
-                                fetch_state.block_hash.GetHex().substr(0, 16) +
+                                fetch_state->block_hash.GetHex().substr(0, 16) +
                                 "... — downgrading to RECEIVED until active chain catches up");
-                fetch_state.status = FetchStatus::RECEIVED;
+                fetch_state->status = FetchStatus::RECEIVED;
             }
             break;
         }
 
-        if (fetch_state.status == FetchStatus::INVALID) {
+        if (fetch_state->status == FetchStatus::INVALID) {
             g_logger.error("[BlockDownloadScheduler] Drain halted at invalid block height " +
-                          std::to_string(fetch_state.height) + " hash=" +
-                          fetch_state.block_hash.GetHex().substr(0, 16) + "...");
+                          std::to_string(fetch_state->height) + " hash=" +
+                          fetch_state->block_hash.GetHex().substr(0, 16) + "...");
             break;
         }
 
-        bool have_stored = (fetch_state.status == FetchStatus::RECEIVED ||
-                            fetch_state.status == FetchStatus::CONNECTING);
+        bool have_stored = (fetch_state->status == FetchStatus::RECEIVED ||
+                            fetch_state->status == FetchStatus::CONNECTING);
         g_logger.info("[BlockDownloadScheduler] Drain want_height=" +
                      std::to_string(want) +
-                     " status=" + std::to_string(static_cast<int>(fetch_state.status)) +
+                     " status=" + std::to_string(static_cast<int>(fetch_state->status)) +
                      " have_stored=" + std::to_string(have_stored));
 
         // Block must be downloaded before it can be connected.
@@ -2321,27 +2376,70 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
             break;
         }
 
-        // Read block back from flat file storage
-        auto read_result = block_storage_->readBlock(fetch_state.stored_pos);
-        if (!read_result.ok()) {
-            g_logger.error("[BlockDownloadScheduler] Failed to read stored block at height " +
-                          std::to_string(fetch_state.height) + ": " +
-                          fetch_state.block_hash.GetHex().substr(0, 16) + "... (status=" +
-                          std::to_string(static_cast<int>(read_result.status())) +
-                          "), resetting to MISSING for re-request");
-
-            // Avoid persistent drain spin on bad stored positions: force re-download.
-            fetch_state.status = FetchStatus::MISSING;
-            fetch_state.stored_pos = FilePosition();
-            received_blocks_.erase(fetch_state.block_hash);
+        // Capture the complete read/callback identity before releasing mutex_.
+        // No iterator/reference survives external canonical validation.
+        const uint256 offered_hash = fetch_state->block_hash;
+        const uint32_t offered_height = fetch_state->height;
+        const FilePosition offered_pos = fetch_state->stored_pos;
+        const bool orchard = OrchardActiveForHeight(Params(),offered_height);
+        if (!OrchardProfileConfigurationValid(Params()) ||
+            (orchard ? !connect_block_bytes_callback_ : !connect_block_callback_)) break;
+        std::optional<Block> historical;
+        std::vector<uint8_t> wire;
+        uint256 parent_hash;
+        bool readable = false;
+        if (orchard) {
+#ifdef DINERO_HAS_ORCHARD_DOWNLOAD_READER
+            const auto raw = block_storage_->readBlockBytes(offered_pos);
+            if (raw.ok()) {
+                try {
+                    const auto body = OrchardBlockCandidate::DecodeExact(std::span(
+                        reinterpret_cast<const uint8_t*>(raw->data()),raw->size()));
+                    std::string error;
+                    const bool witness = Params().enforce_witness_commitment &&
+                        offered_height >= Params().witness_commitment_enforcement_height;
+                    readable = body.Header().GetHash() == offered_hash && body.Header().IsReservedValid() &&
+                        body.CheckSizeLimits(error) && body.CheckCoinbaseHeight(offered_height,error) &&
+                        body.CheckIdentityCommitments(witness,error);
+                    if (readable) { wire=body.WireBytes();parent_hash=body.Header().prev_block_hash; }
+                } catch (...) { readable=false; }
+            }
+#else
+            break; // Backend absent: retain the pending body without acknowledgment.
+#endif
+        } else {
+            auto raw = block_storage_->readBlock(offered_pos);
+            if (raw.ok() && raw->GetHash() == offered_hash) {
+                historical=std::move(*raw);parent_hash=historical->header.prev_block_hash;readable=true;
+            }
+        }
+        if (!readable) {
+            fetch_state->status=FetchStatus::MISSING;
+            fetch_state->stored_pos=FilePosition();
+            received_blocks_.erase(offered_hash);
             break;
         }
-
-        Block block = std::move(read_result.value());
-
-        // Try to connect to chainstate
-        fetch_state.status = FetchStatus::CONNECTING;
-        ConnectBlockResult connect_result = connect_block_callback_(block, "scheduler-drain");
+        auto typed_apply=connect_block_bytes_callback_;
+        auto old_apply=connect_block_callback_;
+        fetch_state->status=FetchStatus::CONNECTING;
+        canonical_drain_active_=true;
+        fetch_state=nullptr;
+        lock.unlock();
+        ConnectBlockResult connect_result=ConnectBlockResult::TEMPORARY_FAIL;
+        try {
+            connect_result=orchard ? typed_apply(wire,offered_hash,offered_height,"scheduler-drain")
+                                   : old_apply(*historical,"scheduler-drain");
+        } catch (...) { /* Retain the body for a later current-state retry. */ }
+        lock.lock();
+        canonical_drain_active_=false;
+        want_it=std::find_if(missing_blocks_.begin(),missing_blocks_.end(),
+            [&](const BlockFetchState& v) {
+                return v.block_hash==offered_hash && v.height==offered_height &&
+                    v.status==FetchStatus::CONNECTING && v.stored_pos.file_number==offered_pos.file_number &&
+                    v.stored_pos.offset==offered_pos.offset && v.stored_pos.size==offered_pos.size;
+            });
+        if (want_it==missing_blocks_.end()) break; // Changed inventory is not this callback's acknowledgement.
+        fetch_state=&*want_it;
         // DELIBERATELY no `default:` label. Every enumerator is handled
         // explicitly, so adding a new ConnectBlockResult without deciding what
         // the drain does with it is a -Wswitch warning rather than a silent
@@ -2350,7 +2448,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
         switch (connect_result) {
             case ConnectBlockResult::CONNECTED:
             case ConnectBlockResult::DUPLICATE: {
-                fetch_state.status = FetchStatus::CONNECTED;
+                fetch_state->status = FetchStatus::CONNECTED;
                 // Only advance local_tip if this extends the chain (not a fork
                 // block stored as side-chain below the current active tip).
                 if (want > local_tip_height_) {
@@ -2361,8 +2459,8 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 drain_failure_streak_.RecordProgress();  // #371
 
                 g_logger.info("[BlockDownloadScheduler] Connected block at height " +
-                             std::to_string(fetch_state.height) + ": " +
-                             fetch_state.block_hash.GetHex().substr(0, 16) + "...");
+                             std::to_string(fetch_state->height) + ": " +
+                             fetch_state->block_hash.GetHex().substr(0, 16) + "...");
                 break;
             }
             case ConnectBlockResult::ACCEPTED_NOT_ACTIVE:
@@ -2370,16 +2468,15 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 // this height yet. Keep it in RECEIVED so the drainer does not
                 // advance its local tip or skip earlier heights, and remember
                 // that the chainstate has it so it is not offered again.
-                fetch_state.status = FetchStatus::RECEIVED;
-                fetch_state.side_accepted = true;
+                fetch_state->status = FetchStatus::RECEIVED;
+                fetch_state->side_accepted = true;
                 drain_failure_streak_.RecordProgress();
                 g_logger.info("[BlockDownloadScheduler] Stored block accepted but not active at height " +
                              std::to_string(want) + ": " +
-                             fetch_state.block_hash.GetHex().substr(0, 16) + "...");
+                             fetch_state->block_hash.GetHex().substr(0, 16) + "...");
                 return connected;
             case ConnectBlockResult::MISSING_PARENT: {
-                fetch_state.status = FetchStatus::RECEIVED;
-                uint256 parent_hash = block.header.prev_block_hash;
+                fetch_state->status = FetchStatus::RECEIVED;
                 uint256 expected_parent;
                 if (want > 0 && GetExpectedHashAtHeight(want - 1, expected_parent)) {
                     parent_hash = expected_parent;
@@ -2421,7 +2518,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 return connected;
             }
             case ConnectBlockResult::WAITING_PARENT:
-                fetch_state.status = FetchStatus::RECEIVED;
+                fetch_state->status = FetchStatus::RECEIVED;
                 g_logger.debug("[BlockDownloadScheduler] Drain waiting on parent for height " +
                               std::to_string(want));
                 return connected;
@@ -2429,19 +2526,19 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 // Chainstate's second read failed after the scheduler's own
                 // read succeeded. Recover in this lock domain instead of
                 // re-entering ReRequestBlock from the connect callback (which
-                // runs while mutex_ is held and would self-deadlock).
-                fetch_state.status = FetchStatus::MISSING;
-                fetch_state.stored_pos = FilePosition();
-                received_blocks_.erase(fetch_state.block_hash);
-                in_flight_blocks_.erase(fetch_state.block_hash);
-                expected_blocks_.erase(fetch_state.block_hash);
+                // may have changed the captured inventory while unlocked).
+                fetch_state->status = FetchStatus::MISSING;
+                fetch_state->stored_pos = FilePosition();
+                received_blocks_.erase(fetch_state->block_hash);
+                in_flight_blocks_.erase(fetch_state->block_hash);
+                expected_blocks_.erase(fetch_state->block_hash);
                 g_logger.error("[BlockDownloadScheduler] Chainstate could not read stored body at height " +
                                std::to_string(want) + ": " +
-                               fetch_state.block_hash.GetHex().substr(0, 16) +
+                               fetch_state->block_hash.GetHex().substr(0, 16) +
                                "... reset to MISSING for re-download");
                 return connected;
             case ConnectBlockResult::TEMPORARY_FAIL:
-                fetch_state.status = FetchStatus::RECEIVED;
+                fetch_state->status = FetchStatus::RECEIVED;
                 // #371: a "temporary" failure that never clears is how a
                 // latched storage error zombies the node (EU1 2026-07-04:
                 // 17,979+ silent retries). Escalate once per stuck height.
@@ -2471,7 +2568,7 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 // either: no progress occurred. The old DUPLICATE-as-success
                 // path did call it, which is part of why the generic breaker
                 // could not see a drain that was looping without advancing.
-                fetch_state.status = FetchStatus::RECEIVED;
+                fetch_state->status = FetchStatus::RECEIVED;
 
                 auto& bo = concurrent_backoff_[want];
                 bo.attempts = std::min<uint32_t>(bo.attempts + 1, 24);
@@ -2495,12 +2592,12 @@ size_t BlockDownloadScheduler::TryConnectStoredBlocksLocked(size_t max_blocks) {
                 return connected;
             }
             case ConnectBlockResult::INVALID:
-                fetch_state.status = FetchStatus::INVALID;
-                in_flight_blocks_.erase(fetch_state.block_hash);
-                expected_blocks_.erase(fetch_state.block_hash);
+                fetch_state->status = FetchStatus::INVALID;
+                in_flight_blocks_.erase(fetch_state->block_hash);
+                expected_blocks_.erase(fetch_state->block_hash);
                 g_logger.error("[BlockDownloadScheduler] Drain marked invalid at height " +
                               std::to_string(want) + " hash=" +
-                              fetch_state.block_hash.GetHex().substr(0, 16) + "...");
+                              fetch_state->block_hash.GetHex().substr(0, 16) + "...");
                 return connected;
         }
     }

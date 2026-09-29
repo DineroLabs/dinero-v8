@@ -110,6 +110,16 @@ if(TARGET dinero_chainstate)
   add_library(dinero_orchard_block_reader STATIC
     "${ORCHARD_HOST_ROOT}/src/primitives/orchard_block_reader.cpp")
   target_link_libraries(dinero_orchard_block_reader PUBLIC dinero_transaction_reader dinero_consensus)
+  # The real scheduler compiles typed readers only with their actual library.
+  # Standalone scheduler fixtures use the same source and need the same edge.
+  set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/consensus/block_download_scheduler.cpp"
+    DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_DOWNLOAD_READER=1)
+  foreach(scheduler_target test_block_download_scheduler test_block_download_scheduler_restart_bootstrap)
+    if(TARGET ${scheduler_target})
+      target_link_libraries(${scheduler_target} PRIVATE dinero_orchard_block_reader)
+    endif()
+  endforeach()
+
   add_library(dinero_orchard_operation_queue STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_operation_queue.cpp")
   target_link_libraries(dinero_orchard_operation_queue PUBLIC dinero_orchard_transparent dinero_orchard_wallet_storage)
   add_library(dinero_orchard_proof_jobs STATIC "${ORCHARD_HOST_ROOT}/src/wallet/orchard_proof_jobs.cpp")

@@ -960,6 +960,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Exact stored Orchard download drain
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay test_block_download_scheduler test_block_download_scheduler_restart_bootstrap --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(OrchardDownloadDrain|BlockDownloadScheduler|BlockDownloadSchedulerRestartBootstrap)$' --show-only=json-v1 > orchard-download-drain-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-download-drain-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['BlockDownloadScheduler','BlockDownloadSchedulerRestartBootstrap','OrchardDownloadDrain']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(OrchardDownloadDrain|BlockDownloadScheduler|BlockDownloadSchedulerRestartBootstrap)$' --verbose --no-tests=error --output-log orchard-download-drain-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-download-drain-execution.log').read_text()
+          for case in ['MissingOwnerNeverAcknowledgesStorage','ActualStoredBodyQueueRetryAndReopen','ChangedInventoryCannotAcknowledgeCapturedOffer','ExactFramingAndTypedCallbackRequired']:
+              assert log.count('[       OK ] OrchardDownloadDrain.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 3' in log
+          PYTEST
+
       - name: Bounded queued Orchard canonical ingress
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay test_validation_queue_handoff --parallel 4 -- -k 0
@@ -2448,6 +2467,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-download-drain-inventory.json
+            orchard-download-drain-execution.log
             orchard-queued-ingress-inventory.json
             orchard-queued-ingress-execution.log
             orchard-disk-readmission-inventory.json

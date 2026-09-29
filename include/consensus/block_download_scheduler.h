@@ -43,6 +43,7 @@
 #include <string>
 #include <thread>
 #include <cstdint>
+#include <span>
 
 namespace dinero {
 
@@ -197,6 +198,11 @@ public:
      * @return true if block is valid and stored
      */
     bool OnBlockReceived(const Block& block, FilePosition* stored_pos_out = nullptr);
+
+    // Header-selected Orchard body storage only: exact framing/identity/size
+    // checks, never proof or canonical acceptance. Requires an expected tip
+    // download and real storage; stateless/backfill routing remains separate.
+    bool OnOrchardBlockReceived(std::span<const uint8_t> bytes);
 
     /**
      * #375: consume a block ONLY if it is an expected AssumeUTXO backfill
@@ -416,10 +422,17 @@ public:
      */
     using ConnectBlockCallback = std::function<ConnectBlockResult(const Block& block, const std::string& source)>;
 
-    /**
-     * Callback type for querying the actual chainstate tip height.
-     * Used by TryConnectStoredBlocksLocked to enforce strict tip+1 ordering.
-     */
+    // Exact mixed bodies have no implicit historical Block conversion.
+    using ConnectBlockBytesCallback = std::function<ConnectBlockResult(
+        const std::vector<uint8_t>&, const uint256&, uint32_t, const std::string&)>;
+
+    // Set before dispatch begins. Called outside the scheduler mutex with
+    // owned exact bytes and the captured header-selected identity.
+    void SetConnectBlockBytesCallback(ConnectBlockBytesCallback callback) {
+        connect_block_bytes_callback_ = std::move(callback);
+    }
+
+    /** Callback for the actual chainstate tip, used for tip+1 ordering. */
     using GetTipHeightCallback = std::function<uint32_t()>;
 
     /**
@@ -798,6 +811,8 @@ private:
     std::function<void(const uint256&, const FilePosition&)> persist_body_position_callback_;
     DisconnectPeerCallback disconnect_peer_callback_;
     ConnectBlockCallback connect_block_callback_;
+    ConnectBlockBytesCallback connect_block_bytes_callback_;
+    bool canonical_drain_active_ = false; // guarded by mutex_, includes unlocked callback
     GetTipHeightCallback get_tip_height_callback_;
     GetBlockHashAtHeightCallback get_block_hash_at_height_callback_;
     ExternalBackpressureCallback external_backpressure_callback_;
@@ -922,7 +937,7 @@ private:
     // On connection failure (missing parent), requests the PARENT hash
     // via SendGetData — never re-requests the same child block.
     // Caller MUST hold mutex_.
-    size_t TryConnectStoredBlocksLocked(size_t max_blocks = 32);
+    size_t TryConnectStoredBlocksLocked(std::unique_lock<std::mutex>& lock, size_t max_blocks = 32);
 
     // Stage a getdata for block_hash/block_height into deferred_sends_ with
     // its skip-set snapshot (from the per-queue *_peer_lacks_body_at_or_below_
@@ -940,7 +955,7 @@ private:
 
     // Tick() body. Caller MUST hold mutex_. Network sends are staged via
     // StageGetdataLocked and dispatched by Tick() after the lock is released.
-    void TickLocked();
+    void TickLocked(std::unique_lock<std::mutex>& lock);
 
     // Stall watchdog, run at the top of TickLocked(). Tracks tip progress and,
     // on no-progress-with-work-queued for stall_watchdog_seconds_, force-recovers
