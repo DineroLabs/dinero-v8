@@ -1,0 +1,11 @@
+# Exact stored block serving
+
+Locally qualified. Production BlockRelayManager full getdata dispatch uses the existing checked ChainstateService snapshot reader, preserving exact historical or mixed Orchard wire bytes. The request retains a strong service owner through capture; the network callback runs after the selected-chain read lock is released. Peer height uses the same captured height. Successful-return sends increment the existing serve counter. Missing/expired configured owner, missing/corrupt body or unsupported profile sends the existing notfound response and never falls back to historical decoding.
+
+Daemon setup installs this source before dispatch. Historical compact-block callbacks remain separate. This change covers outgoing full block serving only: it does not add typed incoming block validation, typed compact reconstruction, block admission, production notification provider or whole-node qualification. Reading a retained disconnected body does not certify canonicality. Three patched-path cases cover exact real mined mixed bytes, storage reopen/refusal, owned response during a callback that changes storage availability, historical flatfiles, retained disconnected bodies, and missing/expired owner without fallback. Fresh ON/OFF full builds and selected regressions/project sanitizer qualification required. No original/race/exploit controls. Mainnet unset; release incomplete.
+
+The checked source adapter is a separate translation unit; the transport object carries only an owned-response callback. This preserves the existing lightweight historical relay link boundary while the actual full-source fixture and daemon link the real chainstate adapter.
+
+## Backend-OFF fixture-data build repair
+
+The full Linux default-graph guard on 7dfa refused the literal Rust fixture path in a test-data macro. CMake now copies the exact candidate-envelope.bin into this target’s binary fixture directory and points that macro to the copy. The OFF decoder still consumes and refuses the same real Orchard fixture. The guard, assertions, registrations and deadlines remain unchanged; this does not add a backend dependency. Initial serving ON qualification preceded this CMake refinement; final ON qualification must be repeated, and the fresh OFF build must use the repaired definition.

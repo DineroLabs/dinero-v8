@@ -289,7 +289,7 @@ void BlockRelayManager::HandleGetData(const std::string& peer_address, const uin
     }
 
     // Check if retrieve callback is set
-    if (!retrieve_block_callback_) {
+    if (!full_block_source_configured_ && !retrieve_block_callback_) {
         std::cout << "[BlockRelayManager::HandleGetData] ERROR: retrieve_block_callback_ not set!" << std::endl;
         if (logger_) {
             logger_->warning("[BlockRelayManager] Cannot retrieve block: retrieve callback not set");
@@ -302,6 +302,30 @@ void BlockRelayManager::HandleGetData(const std::string& peer_address, const uin
         std::cout << "[BlockRelayManager::HandleGetData] ERROR: send_message_callback_ not set!" << std::endl;
         if (logger_) {
             logger_->warning("[BlockRelayManager] Cannot send block: send callback not set");
+        }
+        return;
+    }
+
+    if (full_block_source_configured_) {
+        // Capture exact bytes under the service's selected-chain lock, then
+        // release that lock before invoking the network callback. Historical
+        // decoding must never be used to transport an Orchard mixed body.
+        std::optional<FullBlockResponse> captured;
+        try {
+            if (full_block_source_) captured = full_block_source_(block_hash);
+        } catch (...) {
+            // Storage/owner unavailability is not permission to use another
+            // representation or send a partial response.
+        }
+        if (!captured || captured->bytes.empty() || captured->header.GetHash() != block_hash) {
+            send_message_callback_(peer_address, "notfound", SerializeNotFound(block_hash));
+            return;
+        }
+        send_message_callback_(peer_address, "block", captured->bytes);
+        blocks_served_24h_.Add(1);
+        if (auto* ctx = DaemonContext::instance()) {
+            if (const auto p2p = std::dynamic_pointer_cast<P2PService>(ctx->p2p))
+                p2p->get().update_peer_synced_blocks(peer_address, captured->height);
         }
         return;
     }

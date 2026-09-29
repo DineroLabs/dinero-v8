@@ -6117,6 +6117,11 @@ bool DaemonApp::Init(int argc, char** argv) {
                         }
                     });
 
+                    // Full getdata serving retains the selected reader and exact
+                    // mixed-body bytes. The legacy callback below remains for
+                    // historical compact-block reconstruction only.
+                    block_relay->SetFullBlockSource(chainstate);
+
                     // Wire BlockRelayManager retrieve callback (BlockRelay → ChainDB)
                     block_relay->SetRetrieveBlockCallback([chainstate](
                         const uint256& block_hash,

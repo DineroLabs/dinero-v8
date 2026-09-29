@@ -5068,9 +5068,15 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault
   )
   add_dependencies(test_assumeutxo_replay gtest)
+  # Test data remains available in backend-OFF builds without introducing a
+  # backend path into the compilation graph. Preserve the exact fixture bytes.
+  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/orchard-transaction-rpc-fixtures")
+  configure_file(
+    "${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures/candidate-envelope.bin"
+    "${CMAKE_CURRENT_BINARY_DIR}/orchard-transaction-rpc-fixtures/candidate-envelope.bin" COPYONLY)
   target_compile_definitions(test_assumeutxo_replay PRIVATE
     DINERO_WALLET_RAW_ORCHARD=$<TARGET_EXISTS:dinero_orchard_backend>
-    DINERO_WALLET_RAW_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
+    DINERO_WALLET_RAW_FIXTURES="${CMAKE_CURRENT_BINARY_DIR}/orchard-transaction-rpc-fixtures")
   target_link_libraries(test_assumeutxo_replay PRIVATE
     dinero_core
     dinero_consensus
@@ -5118,6 +5124,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardBlockServing COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockServing.*)
+  set_tests_properties(OrchardBlockServing PROPERTIES TIMEOUT 120 LABELS "daemon;p2p;mandatory")
   add_test(NAME OperatorStatusOwner COMMAND test_assumeutxo_replay --gtest_filter=OperatorStatusOwner.*)
   set_tests_properties(OperatorStatusOwner PROPERTIES TIMEOUT 60 LABELS "daemon;consensus;storage;mandatory")
   add_test(NAME OrchardTransactionRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardTransactionRpc.*)

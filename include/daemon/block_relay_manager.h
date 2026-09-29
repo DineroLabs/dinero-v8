@@ -214,6 +214,12 @@ public:
     /**
      * Set callback for block retrieval from ChainDB
      */
+    // Configure before starting relay dispatch. Full block requests use this
+    // checked source for every family; an unavailable configured owner refuses
+    // without falling back to the historical-only callback. The request retains
+    // a strong owner until it has captured an immutable wire response.
+    void SetFullBlockSource(const std::shared_ptr<ChainstateService>& source);
+
     void SetRetrieveBlockCallback(RetrieveBlockCallback callback) {
         retrieve_block_callback_ = callback;
     }
@@ -745,6 +751,13 @@ private:
     SendMessageCallback send_message_callback_;
     ValidateBlockCallback validate_block_callback_;
     RetrieveBlockCallback retrieve_block_callback_;
+    struct FullBlockResponse {
+        BlockHeader header;
+        uint32_t height;
+        std::vector<uint8_t> bytes;
+    };
+    std::function<std::optional<FullBlockResponse>(const uint256&)> full_block_source_;
+    bool full_block_source_configured_ = false;
     HasBlockCallback has_block_callback_;  // Phase G.7: Check if block exists
     GetBlockStatusCallback get_block_status_callback_;  // Phase P.2: Check block data status
     GetBestBlockHashCallback get_best_block_hash_callback_;  // Phase G.X: Tip announcement

@@ -1152,6 +1152,7 @@ add_library(dinero_core STATIC
   src/daemon/assumeutxo_precheck.cpp
   src/daemon/block_write_metrics.cpp
   src/daemon/block_relay_manager.cpp  # Phase G.2: Block propagation
+  src/daemon/block_relay_source.cpp   # Selected chainstate adapter for exact wire serving
   src/daemon/tx_relay_manager.cpp  # Phase G.3: Mempool relay
   src/daemon/relay_transaction_reader.cpp
 

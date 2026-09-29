@@ -960,6 +960,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Exact typed block serving
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardBlockServing$' --show-only=json-v1 > orchard-block-serving-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-block-serving-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardBlockServing']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardBlockServing$' --verbose --no-tests=error --output-log orchard-block-serving-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-block-serving-execution.log').read_text()
+          for case in ['MissingAndExpiredOwnerNeverUseHistoricalFallback','ExactTypedWireReopenAndUnavailableStorage','HistoricalFlatfileAndRetainedDisconnectedBody']:
+              assert log.count('[       OK ] OrchardBlockServing.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Checked operator block-status decisions
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2389,6 +2408,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-block-serving-inventory.json
+            orchard-block-serving-execution.log
             operator-status-owner-inventory.json
             operator-status-owner-execution.log
             orchard-transaction-rpc-inventory.json
