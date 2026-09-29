@@ -938,6 +938,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Selected Orchard raw block ingress
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardRawIngress$' --show-only=json-v1 > orchard-raw-ingress-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-raw-ingress-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardRawIngress']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardRawIngress$' --verbose --no-tests=error --output-log orchard-raw-ingress-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-raw-ingress-execution.log').read_text()
+          for case in ['ActualRpcRouterConnectsExactShieldBody','MissingOwnerRefusesBeforePersistenceThenRetry','StrictIncomingHeaderAndExactFramingRefuse','DisconnectDatabaseReopenAndRetainedBodyReconnect']:
+              assert log.count('[       OK ] OrchardRawIngress.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Owned Orchard block template construction
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2213,6 +2232,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-raw-ingress-inventory.json
+            orchard-raw-ingress-execution.log
             orchard-mining-template-inventory.json
             orchard-typed-selection-inventory.json
             orchard-mining-template-execution.log

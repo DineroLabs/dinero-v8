@@ -1,5 +1,6 @@
 #pragma once
 #include <span>
+#include "daemon/interfaces/ingress_types.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/replay_metadata_recovery.h"
 #include "daemon/iservice.h"
@@ -1169,12 +1170,18 @@ public:
         return std::unique_lock<AnnotatedRecursiveMutex>(activation_mutex_);
     }
 
+    // nullopt preserves the historical route below the configured activation.
+    // Typed admission currently owns selected-tip extensions and exact current
+    // tip retries; other parent states refuse without using active-tip coins.
+    std::optional<BlockAcceptResult> TryAcceptOrchardBlockFromRPC(const std::string& hex);
+
     static std::unique_ptr<MempoolChainstateReadGuard> AcquireMempoolChainstateRead(
         std::shared_ptr<ChainstateService>);
     static std::unique_ptr<MiningChainstateReadGuard> AcquireMiningReadGuard(
         std::shared_ptr<ChainstateService> owner);
 
 private:
+    bool AuditSelectedOrchardTipUnderLock(std::string* reason) const;
     struct MempoolReadGuard;
     struct MiningReadGuard;
     std::shared_ptr<const OrchardMiningTemplate> BuildOrchardMiningTemplateUnderLock(

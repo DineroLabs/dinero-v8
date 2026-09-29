@@ -1988,52 +1988,16 @@ std::optional<uint256> ChainstateService::PredictPostBlockShieldedRootForTemplat
     return predicted;
 }
 
-bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
-    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
-    // Orchard's commit record is mandatory. Never route its state through the
-    // optional legacy journal or let a failed check consume the startup gate.
-    const auto fail_orchard = [&](const char* reason) {
-        EnterSafeMode(std::string("orchard-startup-state: ") + reason);
+bool ChainstateService::AuditSelectedOrchardTipUnderLock(std::string* reason) const {
+    AssertActivationLockHeld("Orchard selected-tip alignment");
+    const auto fail_orchard = [&](const char* message) {
+        if (reason) *reason = message;
         return false;
     };
-    if (!consensus::OrchardProfileConfigurationValid(Params()))
-        return fail_orchard("invalid selected profile");
-    // Retained delivery history remains mandatory below activation too. Probe
-    // the origin as well as the head so a missing head cannot hide the log.
-    if (chain_db_) {
-        std::string delivery;
-        const auto head_status=chain_db_->getRaw("runtime_orchard_outbox:v1:head",delivery);
-        const auto origin_status=chain_db_->getRaw("runtime_orchard_outbox:v1:event:0000000000000001",delivery);
-        if ((head_status!=Status::Ok && head_status!=Status::NotFound) ||
-            (origin_status!=Status::Ok && origin_status!=Status::NotFound))
-            return fail_orchard("cannot read delivery origin");
-        if (head_status==Status::Ok || origin_status==Status::Ok) {
-#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
-            // This bounded check covers origin/head and current service state;
-            // consumers still validate every page from their applied cursor.
-            if (!getRuntimeDeliveryPage({},1).ok())
-                return fail_orchard("delivery source disagrees with restored chainstate");
-#else
-            return fail_orchard("delivery source support unavailable");
-#endif
-        }
-    }
     const bool selected_orchard = active_tip_ &&
         consensus::OrchardActiveForHeight(Params(), active_tip_->height);
     const auto orchard_state = chain_db_ ? chain_db_->getOrchardState() :
         StatusOr<storage::OrchardStoredState>(Status::NotFound);
-    if (!orchard_state.ok() && orchard_state.status() != Status::NotFound &&
-        !(chain_db_ && orchard_state.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
-        return fail_orchard("cannot read stored Orchard state");
-    const auto retired = chain_db_ ? chain_db_->getLegacyRetirementState() :
-        StatusOr<storage::LegacyRetirementState>(Status::NotFound);
-    if (!retired.ok() && retired.status() != Status::NotFound &&
-        !(chain_db_ && retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
-        return fail_orchard("cannot read stored retirement state");
-    const auto persisted_tip = chain_db_ ? chain_db_->getTip() : StatusOr<TipInfo>(Status::NotFound);
-    const bool persisted_orchard = persisted_tip.ok() && persisted_tip->height >= 0 &&
-        consensus::OrchardActiveForHeight(Params(), uint32_t(persisted_tip->height));
-    if (selected_orchard || persisted_orchard || orchard_state.ok() || retired.ok()) {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
         if (!selected_orchard || !orchard_state.ok() || !chain_db_ || !block_storage_ ||
             !consensus_utxo_set_ || GetConfig().utreexo_stateless)
@@ -2083,6 +2047,57 @@ bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
 #else
         return fail_orchard("binary has no Orchard runtime support");
 #endif
+}
+
+bool ChainstateService::VerifyConsensusJournalAtActiveTip() {
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
+    // Orchard's commit record is mandatory. Never route its state through the
+    // optional legacy journal or let a failed check consume the startup gate.
+    const auto fail_orchard = [&](const char* reason) {
+        EnterSafeMode(std::string("orchard-startup-state: ") + reason);
+        return false;
+    };
+    if (!consensus::OrchardProfileConfigurationValid(Params()))
+        return fail_orchard("invalid selected profile");
+    // Retained delivery history remains mandatory below activation too. Probe
+    // the origin as well as the head so a missing head cannot hide the log.
+    if (chain_db_) {
+        std::string delivery;
+        const auto head_status=chain_db_->getRaw("runtime_orchard_outbox:v1:head",delivery);
+        const auto origin_status=chain_db_->getRaw("runtime_orchard_outbox:v1:event:0000000000000001",delivery);
+        if ((head_status!=Status::Ok && head_status!=Status::NotFound) ||
+            (origin_status!=Status::Ok && origin_status!=Status::NotFound))
+            return fail_orchard("cannot read delivery origin");
+        if (head_status==Status::Ok || origin_status==Status::Ok) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+            // This bounded check covers origin/head and current service state;
+            // consumers still validate every page from their applied cursor.
+            if (!getRuntimeDeliveryPage({},1).ok())
+                return fail_orchard("delivery source disagrees with restored chainstate");
+#else
+            return fail_orchard("delivery source support unavailable");
+#endif
+        }
+    }
+    const bool selected_orchard = active_tip_ &&
+        consensus::OrchardActiveForHeight(Params(), active_tip_->height);
+    const auto orchard_state = chain_db_ ? chain_db_->getOrchardState() :
+        StatusOr<storage::OrchardStoredState>(Status::NotFound);
+    if (!orchard_state.ok() && orchard_state.status() != Status::NotFound &&
+        !(chain_db_ && orchard_state.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return fail_orchard("cannot read stored Orchard state");
+    const auto retired = chain_db_ ? chain_db_->getLegacyRetirementState() :
+        StatusOr<storage::LegacyRetirementState>(Status::NotFound);
+    if (!retired.ok() && retired.status() != Status::NotFound &&
+        !(chain_db_ && retired.status() == Status::Invalid && !chain_db_->hasSeparatedShieldedState()))
+        return fail_orchard("cannot read stored retirement state");
+    const auto persisted_tip = chain_db_ ? chain_db_->getTip() : StatusOr<TipInfo>(Status::NotFound);
+    const bool persisted_orchard = persisted_tip.ok() && persisted_tip->height >= 0 &&
+        consensus::OrchardActiveForHeight(Params(), uint32_t(persisted_tip->height));
+    if (selected_orchard || persisted_orchard || orchard_state.ok() || retired.ok()) {
+        std::string reason;
+        if (!AuditSelectedOrchardTipUnderLock(&reason)) return fail_orchard(reason.c_str());
+        return true;
     }
     // Phase 3b step 3 part 2 — startup verification of the journal
     // row written by ConsensusWriteBatch::Commit() (commit 85eacb55d).
@@ -13677,6 +13692,7 @@ bool ChainstateService::ReloadConsensusUTXOFromDB(std::string& error) {
 }
 
 bool ChainstateService::IsCanonicalStateAligned(std::string* reason) const {
+    std::lock_guard<AnnotatedRecursiveMutex> activation_lock(activation_mutex_);
     auto fail = [&](const std::string& msg) {
         if (reason) {
             *reason = msg;
@@ -13732,6 +13748,15 @@ bool ChainstateService::IsCanonicalStateAligned(std::string* reason) const {
         return fail("chaindb-tip-conflict-at-active-height: chaindb=" +
                     tip.hash.GetHex().substr(0, 16) + "... active=" +
                     active_tip_->hash.GetHex().substr(0, 16) + "...");
+    }
+
+    // Retirement freezes legacy contents while the composite batch advances
+    // their selected-tip marker. Audit that binding together with the current
+    // Orchard commit/body/undo/forest; alignment never repairs durable state.
+    if (consensus::OrchardActiveForHeight(Params(), active_tip_->height)) {
+        if (tip.height < 0 || uint32_t(tip.height) != active_tip_->height || tip.hash != active_tip_->hash)
+            return fail("orchard-durable-tip-disagreement");
+        return AuditSelectedOrchardTipUnderLock(reason);
     }
 
     const auto shielded_marker_result = chain_db_->getShieldedTipMarker();
@@ -15703,6 +15728,187 @@ std::shared_ptr<const OrchardMiningTemplate> ChainstateService::BuildOrchardMini
 #else
     (void)requested; (void)requested_coinbase; (void)bodies; (void)height;
     return {};
+#endif
+}
+
+std::optional<BlockAcceptResult> ChainstateService::TryAcceptOrchardBlockFromRPC(
+    const std::string& hex) {
+    std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);
+    using namespace consensus;
+    if (Params().orchard_activation_height == UINT32_MAX) return std::nullopt;
+    const auto reject = [](BlockRejectCode code, const char* reason,
+                           const uint256& hash = uint256{}, uint32_t height = 0) {
+        return BlockAcceptResult::Rejected(code, reason, hash, height);
+    };
+    if (!OrchardProfileConfigurationValid(Params()) || !chain_db_)
+        return reject(BlockRejectCode::CONNECT_FAILED, "Orchard ingress configuration unavailable");
+    // Route by the authenticated parent's stored height, before attempting a
+    // historical transaction decoder. The payload never selects its profile.
+    if (hex.size() < 256) return reject(BlockRejectCode::PARSE_ERROR, "Truncated block header");
+    std::vector<uint8_t> prefix;
+    if (!util::unhex(hex.substr(0, 256), prefix))
+        return reject(BlockRejectCode::PARSE_ERROR, "Invalid block header encoding");
+    const auto header = BlockHeader::Deserialize(prefix);
+    if (!header) return reject(BlockRejectCode::PARSE_ERROR, "Invalid block header");
+    const auto hash = header->GetHash();
+    const auto parent_height = chain_db_->getBlockHeight(header->prev_block_hash);
+    if (!parent_height.ok())
+        return reject(parent_height.status() == Status::NotFound ? BlockRejectCode::MISSING_PARENT
+            : BlockRejectCode::CONNECT_FAILED, "Block parent unavailable", hash);
+    if (*parent_height < 0 || *parent_height >= INT32_MAX)
+        return reject(BlockRejectCode::CONNECT_FAILED, "Block parent height unavailable", hash);
+    const auto height = uint32_t(*parent_height) + 1;
+    if (!OrchardActiveForHeight(Params(), height)) return std::nullopt;
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    if (hex.size() % 2 || hex.size() / 2 > OrchardBlockCandidate::MaxWireSize())
+        return reject(BlockRejectCode::PARSE_ERROR, "Orchard block frame exceeds bounds", hash, height);
+    if (!block_storage_ || !active_tip_ || !consensus_utxo_set_ || !header_chain_selector_ ||
+        !runtime_block_notifications_ || GetConfig().utreexo_stateless || safe_mode_active_)
+        return reject(BlockRejectCode::CONNECT_FAILED, "Orchard ingress owner unavailable", hash, height);
+    try {
+        std::vector<uint8_t> wire;
+        if (!util::unhex(hex, wire))
+            return reject(BlockRejectCode::PARSE_ERROR, "Invalid Orchard block encoding", hash, height);
+        const auto body = OrchardBlockCandidate::DecodeExact(wire);
+        std::string error;
+        if (!body.CheckSizeLimits(error) || !body.CheckCoinbaseHeight(height, error) ||
+            !body.CheckIdentityCommitments(Params().enforce_witness_commitment &&
+                height >= Params().witness_commitment_enforcement_height, error))
+            return reject(BlockRejectCode::INVALID_TRANSACTION, "Orchard block framing or commitments rejected", hash, height);
+        // A repeated canonical submission must retain its exact stored body;
+        // its inputs have already been consumed, so it is not re-admitted
+        // against the current child UTXO view.
+        if (active_tip_->hash == hash && active_tip_->height == height) {
+            const auto stored = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, height);
+            if (!stored.ok() || !stored->IsOrchardProfile() ||
+                stored->Orchard().WireBytes() != wire || !VerifyConsensusJournalAtActiveTip())
+                return reject(BlockRejectCode::CONNECT_FAILED, "Canonical Orchard body unavailable", hash, height);
+            return BlockAcceptResult{BlockRejectCode::OK, "Block already canonical", hash, height, true, false};
+        }
+        // This entry point initially owns selected-tip extensions. A fork
+        // needs its own parent state; never validate it with active-tip coins.
+        if (active_tip_->hash != header->prev_block_hash || active_tip_->height + uint64_t(1) != height)
+            return reject(BlockRejectCode::STALE_TIP_CHANGED, "Orchard parent is not the selected tip", hash, height);
+        auto selected = CaptureSelectedOrchardPoolContextUnderLock();
+        if (!selected || selected->context.parent_hash != header->prev_block_hash ||
+            selected->context.height != height || dinero::FindBlockIndex(active_tip_->hash) != active_tip_)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard selected index owner unavailable", hash, height);
+        const auto parent = chain_db_->getHeader(header->prev_block_hash);
+        const auto parent_work = chain_db_->getBlockWork(header->prev_block_hash);
+        const auto context = SelectedOrchardBlockContext(body.Header(), height);
+        if (!parent.ok() || !parent_work.ok() || !context)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard selected header unavailable", hash, height);
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        // Incoming blocks always use the work-enforcing gate.
+        CheckOrchardHeaderUnderChainstateLock(body.Header(), *parent, *context,
+            *selected->headers, now > 0 ? uint64_t(now) : 0);
+        const auto retirement = [&]() -> std::optional<storage::LegacyRetirementRecord> {
+            if (height == context->activation_height) return DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+            const auto stored = chain_db_->getLegacyRetirementState();
+            if (!stored.ok()) return {};
+            return stored->record;
+        }();
+        if (!retirement)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard retirement owner unavailable", hash, height);
+        const auto forest = [&] {
+            const auto guard = consensus_utxo_set_->LockForestShared();
+            return consensus_utxo_set_->GetForest();
+        }();
+        const bool witness = Params().enforce_witness_commitment &&
+            height >= Params().witness_commitment_enforcement_height;
+        const auto coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+            body, *context, selected->coins, selected->Mtp(), witness);
+        (void)CheckOrchardBlockFilter(body, coins);
+        const auto state = PrepareOrchardStateTransition(*context, selected->parent,
+            coins.Authorizations(), selected->Lookups());
+        const auto sets = chain_db_->previewOrchardCommitmentSets(state.Parent(), state.Next(), state.Nullifiers());
+        if (!sets.ok()) throw OrchardStateLookupError(sets.status());
+        const auto commitment = FindStateCommitment(body.Transactions().front().Historical(), StateCommitmentEncoding::Orchard);
+        const auto& c = selected->context;
+        if (commitment.status != StateCommitmentStatus::Ok || commitment.root != ComputeOrchardStateRoot(
+            {c.domain, c.activation_height, height, c.parent_hash}, *retirement, state.Next(), *sets))
+            return reject(BlockRejectCode::INVALID_TRANSACTION, "Orchard state commitment rejected", hash, height);
+        if (!PrepareOrchardForestTransition(coins, *parent, forest).MatchesHeader(body.Header()))
+            return reject(BlockRejectCode::INVALID_UTREEXO_ROOT, "Orchard forest commitment rejected", hash, height);
+        CheckOrchardBlockUtreexoProof(body, coins, *parent, forest);
+        const auto work = *parent_work + GetBlockProof(body.Header().difficulty);
+        const auto old_header = chain_db_->getHeader(hash);
+        const auto old_height = chain_db_->getBlockHeight(hash);
+        const auto old_work = chain_db_->getBlockWork(hash);
+        if (old_header.ok() != old_height.ok() || old_header.ok() != old_work.ok() ||
+            (old_header.ok() && old_header->SerializeForHash() != body.Header().SerializeForHash()) ||
+            (old_height.ok() && *old_height != int32_t(height)) || (old_work.ok() && *old_work != work) ||
+            (!old_header.ok() && old_header.status() != Status::NotFound) ||
+            (!old_height.ok() && old_height.status() != Status::NotFound) ||
+            (!old_work.ok() && old_work.status() != Status::NotFound))
+            return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard header disagreement", hash, height);
+        const auto old = chain_db_->getHeaderMetadata(hash);
+        ChainDB::PersistedHeaderMetadata metadata;
+        if (old.ok()) {
+            if (!old_header.ok())
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard header missing", hash, height);
+            metadata = *old;
+            if (metadata.height != int32_t(height) || metadata.parent_hash != header->prev_block_hash ||
+                metadata.chainwork != work || metadata.status_flags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard index disagreement", hash, height);
+        } else if (old.status() != Status::NotFound) {
+            return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard index unavailable", hash, height);
+        }
+        if (const auto* indexed = dinero::FindBlockIndex(hash)) {
+            if (indexed->height != height || indexed->prev_hash != header->prev_block_hash ||
+                indexed->pprev != active_tip_ || ChainworkFromHex(indexed->chainwork) != work ||
+                indexed->version != header->version || indexed->merkle_root != header->merkle_root ||
+                indexed->timestamp != header->timestamp || indexed->bits != header->difficulty ||
+                indexed->nonce != header->nonce || indexed->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard graph disagreement", hash, height);
+        }
+        if (metadata.status_flags & BLOCK_HAVE_DATA) {
+            const auto stored = ReadRuntimeBlockUnderLock(*chain_db_, block_storage_.get(), hash, height);
+            if (!stored.ok() || !stored->IsOrchardProfile() || stored->Orchard().WireBytes() != wire)
+                return reject(BlockRejectCode::CONNECT_FAILED, "Retained Orchard body disagreement", hash, height);
+        } else {
+            const auto position = block_storage_->writeBlockBytes(hash, {wire.begin(), wire.end()});
+            if (!position.ok()) return reject(BlockRejectCode::CONNECT_FAILED, "Orchard body persistence failed", hash, height);
+            metadata.file_number = position->file_number;
+            metadata.data_pos = position->offset;
+            metadata.data_size = position->size;
+        }
+        metadata.height = int32_t(height); metadata.parent_hash = header->prev_block_hash;
+        metadata.chainwork = work; metadata.status_flags |= BLOCK_VALID_HEADER | BLOCK_HAVE_DATA;
+        ChainWriteToken token;
+        rocksdb::WriteBatch batch;
+        if (chain_db_->putHeader(token, hash, body.Header(), height, work, &batch) != Status::Ok ||
+            chain_db_->putHeaderMetadata(token, hash, metadata, &batch) != Status::Ok ||
+            chain_db_->writeBatch(token, std::move(batch), true) != Status::Ok)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard index persistence failed", hash, height);
+        if (!selected->headers->AddHeader(body.Header()))
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard header index unavailable", hash, height);
+        auto* index = dinero::AddBlockIndex(body.Header(), height);
+        if (!index || index->pprev != active_tip_ || index->height != height ||
+            ChainworkFromHex(index->chainwork) != work || index->status & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD))
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard block index unavailable", hash, height);
+        {
+            std::lock_guard<std::recursive_mutex> graph(dinero::g_block_index_mutex);
+            index->status |= metadata.status_flags;
+            index->file_number = metadata.file_number; index->data_pos = metadata.data_pos; index->data_size = metadata.data_size;
+            index->undo_file = metadata.undo_file; index->undo_pos = metadata.undo_pos; index->undo_size = metadata.undo_size;
+        }
+        AddCandidate(index);
+        ActivateBestChain();
+        if (active_tip_ != index)
+            return reject(BlockRejectCode::CONNECT_FAILED, "Orchard block retained for canonical retry", hash, height);
+        return BlockAcceptResult{BlockRejectCode::OK, "Orchard block connected", hash, height, true, false};
+    } catch (const OrchardHeaderError& e) {
+        const bool temporary = e.Code() == OrchardHeaderErrorCode::Context || e.Code() == OrchardHeaderErrorCode::TimeTooNew;
+        return reject(temporary ? BlockRejectCode::CONNECT_FAILED : BlockRejectCode::INVALID_HEADER,
+            "Orchard incoming header rejected", hash, height);
+    } catch (const std::exception&) {
+        // An unavailable local lookup must never become permanent peer blame.
+        return reject(BlockRejectCode::CONNECT_FAILED, "Orchard block validation or storage unavailable", hash, height);
+    }
+#else
+    return reject(BlockRejectCode::CONNECT_FAILED, "Orchard backend unavailable", hash, height);
 #endif
 }
 
