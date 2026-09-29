@@ -6664,6 +6664,9 @@ add_test(NAME OrchardTypedPoolTip COMMAND test_mempool_typed_package --gtest_fil
 add_test(NAME TypedBridgeProofOwner COMMAND test_mempool_typed_package --gtest_filter=TypedBridgeProofOwner.*)
 set_tests_properties(TypedBridgeProofOwner PROPERTIES
   LABELS "mempool;orchard;bridge;proof;mandatory" TIMEOUT 60)
+add_test(NAME PoolParentRoot COMMAND test_mempool_typed_package --gtest_filter=PoolParentRoot.*)
+set_tests_properties(PoolParentRoot PROPERTIES
+  LABELS "mempool;bridge;proof;reorg;mandatory" TIMEOUT 60)
 add_test(NAME TypedUtreexoReceive COMMAND test_mempool_typed_package --gtest_filter=TypedUtreexoReceive.*)
 set_tests_properties(TypedUtreexoReceive PROPERTIES
   LABELS "mempool;orchard;bridge;proof;mandatory" TIMEOUT 60)

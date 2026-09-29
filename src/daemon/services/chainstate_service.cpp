@@ -5492,7 +5492,25 @@ void ChainstateService::notifyBlockDisconnected(const Block& block, uint32_t hei
     auto* ctx = DaemonContext::instance();
     if (ctx && ctx->mempool) {
         auto pool_use=MempoolService::AcquirePoolUse(ctx->mempool);
-        auto prepared=PreparedPoolTip::Disconnect(pool_use->Pool(),bridge_node_,ctx->tx_relay,height);
+        // CSN rewinds its forest separately for the whole transition. It may
+        // already represent the fork rather than this per-block parent.
+        std::unique_ptr<PreparedPoolTip> prepared;
+        if (GetConfig().utreexo_stateless) {
+            prepared=PreparedPoolTip::Disconnect(pool_use->Pool(),bridge_node_,ctx->tx_relay,height);
+        } else {
+            AssertActivationLockHeld("notifyBlockDisconnected parent proof context");
+            if (height == 0 || !active_tip_ || !chain_db_ || !consensus_utxo_set_ ||
+                active_tip_->height != height - 1 || active_tip_->hash != block.header.prev_block_hash)
+                throw std::runtime_error("Pool disconnect parent context unavailable");
+            const auto durable=chain_db_->getTip();
+            if (!durable.ok() || durable->height < 0 || uint32_t(durable->height) != height - 1 ||
+                durable->hash != active_tip_->hash || consensus_utxo_set_->GetBestBlock() != active_tip_->hash ||
+                consensus_utxo_set_->GetHeight() != height - 1)
+                throw std::runtime_error("Pool disconnect parent context inconsistent");
+            // Snapshot releases the forest guard before the pool/cache locks.
+            const auto parent_root=consensus_utxo_set_->SnapshotForestCommitment();
+            prepared=PreparedPoolTip::DisconnectToParent(pool_use->Pool(),bridge_node_,ctx->tx_relay,height,parent_root);
+        }
         prepared->PublishAfterCommit();
         prepared->RequestRefresh();
     }

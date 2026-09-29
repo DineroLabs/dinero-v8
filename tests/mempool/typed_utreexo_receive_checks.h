@@ -87,3 +87,5 @@ TEST_F(TypedUtreexoReceive, OrchardInputProofReceiptPreservesFamilyWithoutAdmiss
 }
 #endif
 }
+
+#include "pool_parent_root_checks.h"

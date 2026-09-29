@@ -47,6 +47,15 @@ public:
         result->PrepareCaches();
         return result;
     }
+    static std::unique_ptr<PreparedPoolTip> DisconnectToParent(
+        Mempool& pool, std::shared_ptr<network::BridgeNode> bridge,
+        std::shared_ptr<TxRelayManager> relay, uint32_t height,
+        const std::vector<uint8_t>& parent_root) {
+        auto result=std::unique_ptr<PreparedPoolTip>(new PreparedPoolTip(std::move(bridge),std::move(relay)));
+        result->pool_=pool.prepareBlockDisconnectedToParent(height,parent_root,result->Policy());
+        result->PrepareCaches();
+        return result;
+    }
     ~PreparedPoolTip()=default;
     PreparedPoolTip(const PreparedPoolTip&)=delete;
     PreparedPoolTip& operator=(const PreparedPoolTip&)=delete;

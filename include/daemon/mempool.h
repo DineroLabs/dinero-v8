@@ -385,6 +385,11 @@ public:
         std::optional<ProofRefreshPolicy> refresh = std::nullopt);
     [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockDisconnected(
         uint32_t height, std::optional<ProofRefreshPolicy> refresh = std::nullopt);
+    // Caller owns the selected, committed parent and its guarded forest root.
+    // Stages parent root/height with all stale proof/cache state in one owner.
+    [[nodiscard]] std::unique_ptr<PreparedBlockUpdate> prepareBlockDisconnectedToParent(
+        uint32_t disconnected_height, const std::vector<uint8_t>& parent_root,
+        std::optional<ProofRefreshPolicy> refresh = std::nullopt);
 
     // Caller must derive these effects from the exact validated block body.
     // Reconciles transparent and Orchard nullifier conflicts in present entries.

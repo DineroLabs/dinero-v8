@@ -3034,6 +3034,23 @@ std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockDisconnected(
     auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), 0, std::move(candidates));
     return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
 }
+std::unique_ptr<Mempool::PreparedBlockUpdate> Mempool::prepareBlockDisconnectedToParent(
+    uint32_t height, const std::vector<uint8_t>& parent_root,
+    std::optional<ProofRefreshPolicy> refresh) {
+    if (height == 0 || parent_root.size() != 32)
+        throw std::invalid_argument("Invalid pool parent proof context");
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    auto staged = std::make_unique<StateRollback>(*this);
+    current_accumulator_root_ = parent_root;
+    current_block_height_ = height - 1;
+    applyBlockDisconnectedLocked(height);
+    auto candidates = refresh ? selectStaleForRefreshLocked(height - 1, refresh->batch_size,
+        refresh->max_age_blocks, refresh->max_attempts, refresh->overload_threshold) : std::vector<uint256>{};
+    staged->Swap();
+    staged->committed = true;
+    auto impl = std::make_unique<PreparedBlockUpdate::Impl>(std::move(lock), std::move(staged), 0, std::move(candidates));
+    return std::unique_ptr<PreparedBlockUpdate>(new PreparedBlockUpdate(std::move(impl)));
+}
 size_t Mempool::onBlockConnected(const ConnectedBlockEffects& effects, uint32_t height,
                                const std::vector<uint8_t>& new_root) {
     auto prepared = prepareBlockConnected(effects, height, new_root);
@@ -3153,9 +3170,10 @@ void Mempool::onBlockDisconnected(const Block&, uint32_t height) {
 
 void Mempool::applyBlockDisconnectedLocked(uint32_t height) {
 
-    // All mempool TXs become stale — the accumulator root changed backward
+    // Invalidate cached wire bytes even if an older cache-only writer did not
+    // record a validated root. Neither representation survives a rollback.
     for (auto& [txid, entry] : m_transactions) {
-        if (!entry.validated_at_root.empty()) {
+        if (!entry.validated_at_root.empty() || !entry.cached_utxotx_payload.empty()) {
             entry.is_proof_stale = true;
             entry.cached_utxotx_payload.clear();
             entry.cached_utxotx_payload.shrink_to_fit();

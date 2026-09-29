@@ -840,7 +840,7 @@ if [[ "$PREBASE_MEMPOOL_MODE" == "1" ]]; then
     info "consumer crossed to tip $NET_TIP — forest now reflects the post-base spend"
 
     # Unsigned transactions must both be refused. The live coin reaches script
-    # checking; the spent frozen coin refuses at live pre-base authorization.
+    # checking; checked absence of the spent frozen coin is missing-inputs.
     # Preserve structured replies and decoded identities, then check membership.
     DST="$(rpc "$CON_RPC" "$CON_DIR" wallet.getnewaddress '[]' | jq -r '.result.address // .result // empty')"
     [[ -n "$DST" ]] || fail "consumer wallet.getnewaddress failed"
@@ -882,12 +882,12 @@ if [[ "$PREBASE_MEMPOOL_MODE" == "1" ]]; then
         else
             ck_fail "A (RESOLVE): expected script-stage refusal for the live coin; got: $A_ERR"
         fi
-        if jq -e --arg expected "transaction-validation-unavailable: Transaction validation failed: Live pre-base input unavailable: ${SPB_TXID}:${SPB_VOUT}" \
+        if jq -e --arg expected "missing-inputs: Transaction validation failed: Input UTXO not found: ${SPB_TXID}:${SPB_VOUT}" \
             '(.error // .result.error) as $e | $e.code == -26 and $e.message == $expected' \
             "$WORK/prebase-B-response.json" >/dev/null; then
-            ck_pass "B (AUTHORIZE): spent-post-base coin refused at live pre-base authorization"
+            ck_pass "B (MISSING): spent-post-base coin refused as checked missing input"
         else
-            ck_fail "B (AUTHORIZE): expected exact pre-base authorization refusal; got: $B_ERR"
+            ck_fail "B (MISSING): expected exact missing-input refusal; got: $B_ERR"
         fi
         rpc "$CON_RPC" "$CON_DIR" mempool.getrawmempool '[false]' > "$WORK/prebase-pool-after.json" \
             || fail "could not inspect pool after refusals"

@@ -900,6 +900,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Selected parent pool proof context
+        run: |
+          cmake --build build-orchard-root --target test_mempool_typed_package --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^PoolParentRoot$' --show-only=json-v1 > orchard-pool-parent-root-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-pool-parent-root-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['PoolParentRoot']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^PoolParentRoot$' --verbose --no-tests=error --output-log orchard-pool-parent-root-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-pool-parent-root-execution.log').read_text()
+          for case in ['AbandonAndPublishKeepExactParentProofContext','InvalidContextAndCacheOnlyEntryPreserveOwnerRules','TypedFamilyAndRefreshFailureRetainPublishedParent']:
+              assert log.count('[       OK ] PoolParentRoot.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Checked pre-base lookup status
         run: |
           cmake --build build-orchard-root --target test_mining_chain_guard --parallel 4 -- -k 0
@@ -2092,7 +2111,9 @@ jobs:
             orchard-typed-bridge-proof-owner-inventory.json
             orchard-typed-bridge-proof-owner-execution.log
             orchard-typed-utreexo-receive-inventory.json
+            orchard-pool-parent-root-inventory.json
             orchard-typed-utreexo-receive-execution.log
+            orchard-pool-parent-root-execution.log
             orchard-prebase-lookup-status-inventory.json
             orchard-prebase-lookup-status-execution.log
             orchard-typed-pool-tip-inventory.json
