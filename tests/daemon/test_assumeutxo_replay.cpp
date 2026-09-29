@@ -71,6 +71,7 @@
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_schnorrsig.h>
 #include "consensus/orchard_block_coins.h"
+#include "consensus/script_verify.h"
 #include "consensus/orchard_block_filter.h"
 #include "consensus/orchard_forest_transition.h"
 #include "consensus/orchard_header.h"
@@ -631,6 +632,7 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #include "selected_parent_history_checks.h"
 #include "orchard_first_boundary_checks.h"
 #include "orchard_selected_admission_checks.h"
+#include "orchard_typed_selection_checks.h"
 
 }  // namespace dinero
 

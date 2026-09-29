@@ -2136,12 +2136,39 @@ std::vector<Transaction> Mempool::selectTransactionsForBlock(
 }
 
 MempoolBlockSelection Mempool::CaptureBlockSelection(
+    size_t max_block_size, uint64_t max_block_weight, uint32_t next_block_height) const {
+    auto typed = CaptureBlockSelectionImpl(max_block_size, max_block_weight,
+                                           next_block_height, false);
+    MempoolBlockSelection result;
+    result.available = typed.available;
+    result.pool_size = typed.pool_size;
+    result.pool_bytes = typed.pool_bytes;
+    result.metadata = std::move(typed.metadata);
+    result.transactions.reserve(typed.transactions.size());
+    for (const auto& body : typed.transactions) result.transactions.push_back(body.Historical());
+    return result;
+}
+
+MempoolTypedBlockSelection Mempool::CaptureTypedBlockSelection(
+    size_t max_block_size, uint64_t max_block_weight, uint32_t next_block_height) const {
+    return CaptureBlockSelectionImpl(max_block_size, max_block_weight, next_block_height, true);
+}
+
+MempoolTypedBlockSelection Mempool::CaptureBlockSelectionImpl(
     size_t max_block_size, uint64_t max_block_weight,
-    uint32_t next_block_height) const {
+    uint32_t next_block_height, bool typed) const {
 
     auto chainstate_guard = chainstate_read_guard_factory_ ? chainstate_read_guard_factory_() : nullptr;
     if (chainstate_read_guard_factory_ && !chainstate_guard) return {};
     std::shared_lock<std::shared_mutex> lock(m_mutex);
+    MempoolSelectionValidation parent;
+    if (typed) {
+        if (!chainstate_guard) return {};
+        parent = chainstate_guard->ValidateBlockSelection({}, next_block_height);
+        if (!parent.result.accepted() || parent.parent_hash.IsNull() ||
+            uint64_t(parent.parent_height) + 1 != next_block_height) return {};
+    }
+
 
     // Re-validate height-gated proof rules at template-selection time.
     // A shielded tx admitted before an activation boundary may no longer be
@@ -2164,8 +2191,11 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
         }
 
         std::string local_reason;
-        const bool selectable =
-            isSelectableAtHeightLocked(entry, next_block_height, &local_reason);
+        const bool selectable = typed ? entry.tx.HasBody() :
+            (!entry.tx.IsOrchard() &&
+             isSelectableAtHeightLocked(entry, next_block_height, &local_reason));
+        if (!typed && entry.tx.IsOrchard())
+            local_reason = "Orchard body requires typed block selection";
         selectable_cache.emplace(txid, selectable);
         if (!selectable) {
             selectable_reason_cache.emplace(txid, local_reason);
@@ -2261,8 +2291,8 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
         std::vector<uint256> to_visit;
 
         // Start with direct parents
-        for (const auto& input : entry.tx.Historical().vin) {
-            TxId parent_txid = input.prevout.txid;
+        for (const auto& input : entry.tx.Inputs()) {
+            TxId parent_txid = input.txid;
 
             if (isTemplateExcludedLocked(parent_txid.AsUint256(), now, nullptr)) {
                 excluded_ancestor = true;
@@ -2316,8 +2346,8 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
                                       : static_cast<uint64_t>(ancestor_entry.tx_size);
 
             // Add this ancestor's parents to visit list
-            for (const auto& input : ancestor_entry.tx.Historical().vin) {
-                TxId grandparent_txid = input.prevout.txid;
+            for (const auto& input : ancestor_entry.tx.Inputs()) {
+                TxId grandparent_txid = input.txid;
                 if (isTemplateExcludedLocked(grandparent_txid.AsUint256(), now, nullptr)) {
                     excluded_ancestor = true;
                     break;
@@ -2426,7 +2456,7 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
     // Phase 3: Select transactions with ancestors
     // ───────────────────────────────────────────────────────────────────────────
 
-    std::vector<Transaction> selected;
+    std::vector<MempoolTransaction> selected;
     std::unordered_set<uint256> included;  // Phase M.0: uint256
     size_t current_size = 0;
     uint64_t current_weight = 0;
@@ -2481,10 +2511,9 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
             }
         }
 
-        // Include only packages that fit the block's independently bounded
-        // proof work. Track the running count rather than repeatedly copying
-        // and decoding every transaction already selected (quadratic on a
-        // transparent-heavy block).
+        // Historical selection retains its incremental Auth budget. The
+        // active Orchard profile checks each proposed ordered mixed prefix
+        // below, including resolved input work and exact validated fees.
         auto candidate_auth_resources = current_auth_resources;
         bool auth_resources_ok = true;
         auto add_auth_resources = [&](const Transaction& candidate) {
@@ -2497,20 +2526,22 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
                 auth_resources_ok = false;
             }
         };
-        for (const auto& ancestor : score.ancestors) {
-            if (!included.count(ancestor)) {
-                auto it = m_transactions.find(ancestor);
-                if (it != m_transactions.end()) add_auth_resources(it->second.tx.Historical());
+        if (!typed) {
+            for (const auto& ancestor : score.ancestors) {
+                if (!included.count(ancestor)) {
+                    auto it = m_transactions.find(ancestor);
+                    if (it != m_transactions.end()) add_auth_resources(it->second.tx.Historical());
+                }
             }
+            add_auth_resources(score.entry->tx.Historical());
+            if (!auth_resources_ok) continue;
         }
-        add_auth_resources(score.entry->tx.Historical());
-        if (!auth_resources_ok) continue;
 
-        uint64_t package_weight = score.entry->tx.Historical().GetWeight();
+        uint64_t package_weight = score.entry->tx.GetWeight();
         for (const auto& ancestor : score.ancestors) {
             if (!included.count(ancestor)) {
                 auto it = m_transactions.find(ancestor);
-                if (it != m_transactions.end()) package_weight += it->second.tx.Historical().GetWeight();
+                if (it != m_transactions.end()) package_weight += it->second.tx.GetWeight();
             }
         }
 
@@ -2520,23 +2551,45 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
             continue;  // Skip this package - doesn't fit
         }
 
+        if (typed) {
+            auto proposed = selected;
+            for (const auto& ancestor : score.ancestors) {
+                if (!included.count(ancestor)) proposed.push_back(m_transactions.at(ancestor).tx);
+            }
+            proposed.push_back(score.entry->tx);
+            const auto checked = chainstate_guard->ValidateBlockSelection(proposed, next_block_height);
+            if (!checked.result.accepted() || checked.parent_hash != parent.parent_hash ||
+                checked.parent_height != parent.parent_height || checked.fees.size() != proposed.size())
+                continue;
+            bool exact_fees = true;
+            for (const auto& body : proposed) {
+                const auto id = body.GetTxid().AsUint256();
+                const auto fee = checked.fees.find(id);
+                if (fee == checked.fees.end() || fee->second != m_transactions.at(id).fee) {
+                    exact_fees = false;
+                    break;
+                }
+            }
+            if (!exact_fees) continue;
+        }
+
         // Include all ancestors first (in correct order)
         for (const auto& ancestor_txid : score.ancestors) {
             if (!included.count(ancestor_txid)) {
                 auto ancestor_it = m_transactions.find(ancestor_txid);
                 if (ancestor_it != m_transactions.end()) {
-                    selected.push_back(ancestor_it->second.tx.Historical());
+                    selected.push_back(ancestor_it->second.tx);
                     included.insert(ancestor_txid);
                     current_size += ancestor_it->second.tx_size;
-                    current_weight += ancestor_it->second.tx.Historical().GetWeight();
+                    current_weight += ancestor_it->second.tx.GetWeight();
                 }
             }
         }
         // Include the transaction itself
-        selected.push_back(score.entry->tx.Historical());
+        selected.push_back(score.entry->tx);
         included.insert(score.txid);
         current_size += score.entry->tx_size;
-        current_weight += score.entry->tx.Historical().GetWeight();
+        current_weight += score.entry->tx.GetWeight();
         current_auth_resources = candidate_auth_resources;
 
         MPLOG_DEBUG("CPFP: Selected " + score.txid.GetHex() + " with " +
@@ -2551,7 +2604,11 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
                  std::to_string(excluded_descendants) + ", height_rule_excluded=" +
                  std::to_string(height_rule_excluded) + ")");
 
-    MempoolBlockSelection capture;
+    MempoolTypedBlockSelection capture;
+    if (typed) {
+        capture.parent_hash = parent.parent_hash;
+        capture.parent_height = parent.parent_height;
+    }
     capture.available = true;
     capture.pool_size = m_transactions.size();
     capture.pool_bytes = getTotalSizeLocked();
@@ -2559,7 +2616,8 @@ MempoolBlockSelection Mempool::CaptureBlockSelection(
     for (const auto& tx : selected) {
         const auto id = tx.GetTxid().AsUint256();
         const auto& entry = m_transactions.at(id);
-        const auto vwu = entry.vwu != 0 ? entry.vwu : computeVWUForTx(tx);
+        const auto vwu = entry.vwu != 0 ? entry.vwu :
+            (tx.IsOrchard() ? std::max<size_t>(tx.GetSize(), 1) : computeVWUForTx(tx.Historical()));
         capture.metadata.emplace(id, MempoolTemplateMetadata{entry.fee, vwu, entry.time});
     }
     capture.transactions = std::move(selected);

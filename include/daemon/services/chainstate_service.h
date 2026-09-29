@@ -1,4 +1,5 @@
 #pragma once
+#include <span>
 #include "consensus/csn_replay_data.h"
 #include "daemon/replay_metadata_recovery.h"
 #include "daemon/iservice.h"
@@ -51,6 +52,7 @@ class ChainManager;
 class MempoolChainstateReadGuard;
 class MempoolTransaction;
 struct MempoolOrchardValidation;
+struct MempoolSelectionValidation;
 class BlockStorage;
 class RuntimeBlockBody;
 struct RuntimeOutboxCursor;
@@ -1170,6 +1172,10 @@ public:
 
 private:
     struct MempoolReadGuard;
+    struct SelectedOrchardPoolContext;
+    std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock();
+    MempoolSelectionValidation ValidateOrchardSelectionUnderLock(
+        std::span<const MempoolTransaction>, uint32_t);
     MempoolOrchardValidation ValidateOrchardPoolUnderLock(
         const MempoolTransaction&, const std::vector<MempoolTransaction>&);
     // Storage-layout startup regression exercises the actual loader without

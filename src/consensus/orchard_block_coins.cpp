@@ -80,32 +80,32 @@ std::vector<UTXOEntry> Resolve(const Transaction& tx, const OrderedView& view, u
     }
     return coins;
 }
-} // namespace
-
-PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
-    const OrchardBlockCandidate& block, const OrchardBlockContext& context,
-    const ChainStateView& parent, const OrchardBranchMtpLookup& mtp, bool require_witness_commitment) {
+struct CheckedSequence {
+    std::vector<OrchardTransactionCoins> transactions;
+    std::vector<OrchardCoinChange> changes;
+    std::vector<VerifiedOrchardAuthorizations> authorizations;
+    uint64_t fees;
+    OrchardResourceUsage resources;
+};
+CheckedSequence CheckSequence(std::span<const ParsedTransaction> transactions,
+    const OrchardTransactionContext& context, const ChainStateView& parent,
+    const OrchardBranchMtpLookup& mtp, bool with_coinbase) {
     if (context.activation_height == UINT32_MAX || context.activation_height == 0 ||
         context.height < context.activation_height || context.height == 0 ||
-        context.height > INT32_MAX || parent.getHeight() != context.height - 1 ||
-        block.Header().GetHash() != context.block_hash || block.Header().prev_block_hash != context.parent_hash)
+        context.height > INT32_MAX || parent.getHeight() != context.height - 1)
         Reject(Error::Context);
     std::string error;
-    if (!block.Header().IsReservedValid() || !block.CheckSizeLimits(error) ||
-        !block.CheckIdentityCommitments(require_witness_commitment, error) ||
-        !block.CheckCoinbaseHeight(context.height, error))
-        Reject(Error::Body);
     OrchardResourceUsage resources;
-    for (const auto& parsed : block.Transactions())
+    for (const auto& parsed : transactions)
         AccumulateOrchardTransactionResources(parsed, resources);
     OrderedView view(parent);
     std::set<TxId> ids;
     std::vector<OrchardTransactionCoins> records;
     std::vector<VerifiedOrchardAuthorizations> authorizations;
     uint64_t total_fees = 0;
-    for (size_t index = 0; index < block.Transactions().size(); ++index) {
-        const auto& parsed = block.Transactions()[index];
-        OrchardTransactionCoins record; record.txid = parsed.GetTxid(); record.coinbase = index == 0;
+    for (size_t index = 0; index < transactions.size(); ++index) {
+        const auto& parsed = transactions[index];
+        OrchardTransactionCoins record; record.txid = parsed.GetTxid(); record.coinbase = with_coinbase && index == 0;
         if (!ids.insert(record.txid).second) Reject(Error::DuplicateTransaction);
         if (parsed.IsOrchard()) {
             try {
@@ -165,10 +165,43 @@ PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
         for (const auto& [point, coin] : record.created) view.Create(point, coin);
         records.push_back(std::move(record));
     }
-    if (!reward_detail::CheckCoinbaseReward(block.Transactions().front().Historical(), context.height, total_fees, error))
+    if (parent.getHeight() != context.height - 1)
+        throw OrchardCoinLookupError(Status::Internal);
+    return {std::move(records), view.Changes(), std::move(authorizations),
+            total_fees, resources};
+}
+} // namespace
+
+CheckedOrchardTransactionCoins CheckOrchardTransactionCoinsUnderChainstateLock(
+    std::span<const ParsedTransaction> transactions, const OrchardTransactionContext& context,
+    const ChainStateView& parent, const OrchardBranchMtpLookup& mtp) {
+    auto checked = CheckSequence(transactions, context, parent, mtp, false);
+    return CheckedOrchardTransactionCoins(std::move(checked.transactions),
+        std::move(checked.changes), std::move(checked.authorizations),
+        checked.fees, checked.resources);
+}
+
+PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
+    const OrchardBlockCandidate& block, const OrchardBlockContext& context,
+    const ChainStateView& parent, const OrchardBranchMtpLookup& mtp, bool require_witness_commitment) {
+    if (context.activation_height == UINT32_MAX || context.activation_height == 0 ||
+        context.height < context.activation_height || context.height == 0 ||
+        context.height > INT32_MAX || parent.getHeight() != context.height - 1 ||
+        block.Header().GetHash() != context.block_hash || block.Header().prev_block_hash != context.parent_hash)
+        Reject(Error::Context);
+    std::string error;
+    if (!block.Header().IsReservedValid() || !block.CheckSizeLimits(error) ||
+        !block.CheckIdentityCommitments(require_witness_commitment, error) ||
+        !block.CheckCoinbaseHeight(context.height, error))
+        Reject(Error::Body);
+    const OrchardTransactionContext transaction_context{
+        context.height, context.parent_hash, context.activation_height, context.domain};
+    auto checked = CheckSequence(block.Transactions(), transaction_context, parent, mtp, true);
+    if (!reward_detail::CheckCoinbaseReward(block.Transactions().front().Historical(),
+                                            context.height, checked.fees, error))
         Reject(Error::Reward);
-    if (parent.getHeight() != context.height - 1) throw OrchardCoinLookupError(Status::Internal);
-    return PreparedOrchardBlockCoins(context.block_hash, context.parent_hash, context.height, std::move(records), view.Changes(),
-                                    std::move(authorizations), total_fees, resources);
+    return PreparedOrchardBlockCoins(context.block_hash, context.parent_hash, context.height,
+        std::move(checked.transactions), std::move(checked.changes),
+        std::move(checked.authorizations), checked.fees, checked.resources);
 }
 } // namespace dinero::consensus

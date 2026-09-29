@@ -185,6 +185,18 @@ struct MempoolBlockSelection {
     size_t pool_bytes = 0;
 };
 
+// Immutable mixed-family selection for the active Orchard profile. This is an
+// as-of selected-parent check, not a candidate block or continued readiness.
+struct MempoolTypedBlockSelection {
+    bool available = false;
+    uint256 parent_hash;
+    uint32_t parent_height = 0;
+    std::vector<MempoolTransaction> transactions;
+    std::unordered_map<uint256, MempoolTemplateMetadata> metadata;
+    size_t pool_size = 0;
+    size_t pool_bytes = 0;
+};
+
 class Mempool {
     friend class MempoolRawRpcTestPeer; // Isolated reader fixture; no production insertion API.
     friend class MempoolOrchardConflictTestPeer; // Isolated structural conflict fixture only.
@@ -319,6 +331,11 @@ public:
         uint32_t next_block_height = 0
     ) const;
 
+    // Requires the real selected Orchard validator. Historical-only consumers
+    // retain CaptureBlockSelection and never receive an Orchard conversion.
+    MempoolTypedBlockSelection CaptureTypedBlockSelection(
+        size_t max_block_size, uint64_t max_block_weight,
+        uint32_t next_block_height) const;
     MempoolBlockSelection CaptureBlockSelection(
         size_t max_block_size, uint64_t max_block_weight,
         uint32_t next_block_height) const;
@@ -687,6 +704,9 @@ private:
     void releaseInputSpenderLocked(const OutPoint& outpoint, const uint256& txid);
     uint64_t getTotalFeesLocked() const;
     size_t getTotalSizeLocked() const;
+    MempoolTypedBlockSelection CaptureBlockSelectionImpl(
+        size_t max_block_size, uint64_t max_block_weight,
+        uint32_t next_block_height, bool typed) const;
     bool isSelectableAtHeightLocked(const MempoolEntry& entry,
                                     uint32_t next_block_height,
                                     std::string* reason = nullptr) const;

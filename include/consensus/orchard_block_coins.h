@@ -28,6 +28,38 @@ struct OrchardCoinChange {
     std::optional<UTXOEntry> before;
     std::optional<UTXOEntry> after;
 };
+// The same ordered mixed-family coin rules used by real block preparation,
+// without a coinbase or a fabricated candidate block identity. The caller must
+// hold the selected parent and complete Orchard state/anchor/nullifier checks.
+class CheckedOrchardTransactionCoins;
+[[nodiscard]] CheckedOrchardTransactionCoins CheckOrchardTransactionCoinsUnderChainstateLock(
+    std::span<const ParsedTransaction>, const OrchardTransactionContext&,
+    const ChainStateView&, const OrchardBranchMtpLookup&);
+
+class CheckedOrchardTransactionCoins {
+public:
+    const auto& Transactions() const noexcept { return transactions_; }
+    const auto& Changes() const noexcept { return changes_; }
+    const auto& Authorizations() const noexcept { return authorizations_; }
+    uint64_t TotalFees() const noexcept { return fees_; }
+    const OrchardResourceUsage& Resources() const noexcept { return resources_; }
+private:
+    friend CheckedOrchardTransactionCoins CheckOrchardTransactionCoinsUnderChainstateLock(
+        std::span<const ParsedTransaction>, const OrchardTransactionContext&,
+        const ChainStateView&, const OrchardBranchMtpLookup&);
+    CheckedOrchardTransactionCoins(std::vector<OrchardTransactionCoins> transactions,
+        std::vector<OrchardCoinChange> changes,
+        std::vector<VerifiedOrchardAuthorizations> authorizations,
+        uint64_t fees, OrchardResourceUsage resources)
+        : transactions_(std::move(transactions)), changes_(std::move(changes)),
+          authorizations_(std::move(authorizations)), fees_(fees), resources_(resources) {}
+    const std::vector<OrchardTransactionCoins> transactions_;
+    const std::vector<OrchardCoinChange> changes_;
+    const std::vector<VerifiedOrchardAuthorizations> authorizations_;
+    const uint64_t fees_;
+    const OrchardResourceUsage resources_;
+};
+
 class PreparedOrchardBlockCoins;
 [[nodiscard]] PreparedOrchardBlockCoins PrepareOrchardBlockCoinsUnderChainstateLock(
     const OrchardBlockCandidate&, const OrchardBlockContext&, const ChainStateView&,
