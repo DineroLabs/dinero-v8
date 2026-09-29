@@ -112,6 +112,7 @@ using CfUPtr = std::unique_ptr<rocksdb::ColumnFamilyHandle, CfDeleter>;
  * launches for major projects. Do not weaken these guarantees.
  */
 class ChainDB {
+    friend class ChainDBTransactionReadTestPeer;
 public:
     ChainDB() = default;
     ~ChainDB() { close(); }

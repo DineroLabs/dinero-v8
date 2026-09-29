@@ -1339,16 +1339,16 @@ StatusOr<std::pair<uint256, uint32_t>> ChainDB::getTxLocation(const uint256& txi
         return convertRocksDBStatus(status);
     }
 
-    // Parse block_hash (first 64 hex chars) + offset (last 4 bytes)
-    if (value.size() < sizeof(uint32_t)) {
-        return Status::Internal; // Invalid data
-    }
-
-    std::string block_hash_str = value.substr(0, value.size() - sizeof(uint32_t));
+    // The established encoding is exactly 64 hexadecimal characters followed
+    // by the original host-endian uint32 ordinal. Reject partial/extra rows.
+    if (value.size() != 64 + sizeof(uint32_t)) return Status::Corruption;
+    const std::string block_hash_str = value.substr(0, 64);
+    uint256 block_hash;
+    if (block_hash_str.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos ||
+        !uint256::FromHex(block_hash_str, block_hash)) return Status::Corruption;
     uint32_t offset;
-    std::memcpy(&offset, value.data() + value.size() - sizeof(uint32_t), sizeof(uint32_t));
-
-    return std::make_pair(uint256::FromHexUnsafe(block_hash_str), offset);
+    std::memcpy(&offset, value.data() + 64, sizeof(offset));
+    return std::make_pair(block_hash, offset);
 }
 
 Status ChainDB::deleteTxIndex(const ChainWriteToken& token, const uint256& txid, rocksdb::WriteBatch* wb) {

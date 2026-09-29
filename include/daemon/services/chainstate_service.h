@@ -1,5 +1,6 @@
 #pragma once
 #include <span>
+#include "daemon/mempool_transaction.h"
 #include "daemon/interfaces/ingress_types.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/replay_metadata_recovery.h"
@@ -835,6 +836,9 @@ public:
         std::vector<uint256> transaction_ids;
     };
     StatusOr<BlockRpcSnapshot> getBlockRpcSnapshot(const uint256& hash) const;
+    // Captures an indexed transaction from the selected canonical block under
+    // the activation lock. Preserves its family and verifies ordinal and txid.
+    StatusOr<MempoolTransaction> getTransactionBody(const uint256& txid) const;
     struct BlockHeaderRpcSnapshot {
         BlockHeader header;
         uint32_t height;

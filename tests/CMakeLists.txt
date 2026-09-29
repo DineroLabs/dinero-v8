@@ -5055,6 +5055,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_executable(test_assumeutxo_replay
     tests/daemon/test_assumeutxo_replay.cpp
+    src/rpc/wallet_raw_transaction_rpc.cpp
     src/rpc/methods_blockchain_context.cpp
     src/rpc/methods_utxoset.cpp
     src/rpc/methods_address_index.cpp
@@ -5067,6 +5068,9 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     tests/stubs/daemon_test_stubs.cpp   # Mempool extras + vault
   )
   add_dependencies(test_assumeutxo_replay gtest)
+  target_compile_definitions(test_assumeutxo_replay PRIVATE
+    DINERO_WALLET_RAW_ORCHARD=$<TARGET_EXISTS:dinero_orchard_backend>
+    DINERO_WALLET_RAW_FIXTURES="${CMAKE_SOURCE_DIR}/rust/orchard_backend/tests/fixtures")
   target_link_libraries(test_assumeutxo_replay PRIVATE
     dinero_core
     dinero_consensus
@@ -5114,6 +5118,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardTransactionRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardTransactionRpc.*)
+  set_tests_properties(OrchardTransactionRpc PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;rpc;mandatory")
   add_test(NAME OrchardHeaderRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardHeaderRpc.*)
   set_tests_properties(OrchardHeaderRpc PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;rpc;mandatory")
   add_test(NAME OrchardCycle COMMAND test_assumeutxo_replay --gtest_filter=OrchardCycle.*)

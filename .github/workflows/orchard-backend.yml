@@ -960,6 +960,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Owned indexed transaction RPC reads
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardTransactionRpc$' --show-only=json-v1 > orchard-transaction-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-transaction-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardTransactionRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardTransactionRpc$' --verbose --no-tests=error --output-log orchard-transaction-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-transaction-rpc-execution.log').read_text()
+          for case in ['TypedPoolMinedReopenAndDisconnect','IndexIdentityOrdinalAndUnavailableOwnersRefuse','HistoricalArchiveAndExactDecoder','MalformedLocationRowsRefuseWithoutPublication']:
+              assert log.count('[       OK ] OrchardTransactionRpc.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Actual Orchard shield transfer and unshield cycle
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2351,6 +2370,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-transaction-rpc-inventory.json
+            orchard-transaction-rpc-execution.log
             orchard-cycle-inventory.json
             orchard-cycle-execution.log
             orchard-header-rpc-inventory.json

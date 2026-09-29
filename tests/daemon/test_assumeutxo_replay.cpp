@@ -6,6 +6,8 @@ din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_getblock(const ExecutionContext&, const din::Json&);
 din::Json rpc_context_getblockheader(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_getrawtransaction(const ExecutionContext&, const din::Json&);
+din::Json rpc_context_wallet_decoderawtransaction(const ExecutionContext&, const din::Json&);
 #include "daemon/block_acceptor.h"
 #include "consensus/filter_commitment.h"
 // ============================================================================
@@ -663,3 +665,5 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+#include "orchard_transaction_rpc_checks.h"

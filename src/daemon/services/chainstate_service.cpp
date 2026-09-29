@@ -5672,6 +5672,46 @@ StatusOr<ChainstateService::BlockRpcSnapshot> ChainstateService::getBlockRpcSnap
     return result;
 }
 
+StatusOr<MempoolTransaction> ChainstateService::getTransactionBody(const uint256& txid) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (!chain_db_ || !consensus::OrchardProfileConfigurationValid(Params())) return Status::Internal;
+    const auto location = chain_db_->getTxLocation(txid);
+    if (!location.ok()) return location.status();
+    const auto& [hash, ordinal] = *location;
+    const auto height = chain_db_->getBlockHeight(hash);
+    if (!height.ok()) return height.status()==Status::NotFound ? Status::Corruption : height.status();
+    if (*height < 0) return Status::Corruption;
+    const auto tip = chain_db_->getTip();
+    if (!tip.ok()) return tip.status()==Status::NotFound ? Status::Corruption : tip.status();
+    if (tip->height < 0 || *height > tip->height) return Status::Corruption;
+    if (!active_tip_ || active_tip_->hash != tip->hash || active_tip_->height != static_cast<uint32_t>(tip->height))
+        return Status::Internal;
+    const auto canonical = chain_db_->getBlockHashByHeight(*height);
+    if (!canonical.ok()) return canonical.status()==Status::NotFound ? Status::Corruption : canonical.status();
+    if (*canonical != hash) return Status::Corruption;
+    if (consensus::OrchardActiveForHeight(Params(), static_cast<uint32_t>(*height))) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        const auto block = getRuntimeBlockByHash(hash);
+        if (!block.ok()) return block.status()==Status::NotFound ? Status::Corruption : block.status();
+        if (!(*block)->IsOrchardProfile() || !(*block)->Context() ||
+            (*block)->Context()->height != static_cast<uint32_t>(*height)) return Status::Corruption;
+        const auto& transactions = (*block)->Orchard().Transactions();
+        if (ordinal >= transactions.size()) return Status::Corruption;
+        const auto& transaction = transactions[ordinal];
+        if (transaction.GetTxid().AsUint256() != txid) return Status::Corruption;
+        return transaction.IsOrchard() ? MempoolTransaction::FromOrchard(transaction.Orchard())
+                                       : MempoolTransaction(transaction.Historical());
+#else
+        return Status::Internal;
+#endif
+    }
+    const auto block = getBlockByHash(hash);
+    if (!block.ok()) return block.status()==Status::NotFound ? Status::Corruption : block.status();
+    if (block->GetHash() != hash || ordinal >= block->vtx.size() ||
+        block->vtx[ordinal].GetTxid().AsUint256() != txid) return Status::Corruption;
+    return MempoolTransaction(block->vtx[ordinal]);
+}
+
 StatusOr<ChainstateService::BlockHeaderRpcSnapshot> ChainstateService::getBlockHeaderRpcSnapshot(
         const uint256& hash) const {
     std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);

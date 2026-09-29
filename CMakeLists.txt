@@ -773,6 +773,7 @@ add_library(dinero_rpc_handlers STATIC
   src/rpc/methods_address_index.cpp
   src/core/rpc/blockchain_rpc_metadata.cpp  # RPC metadata registration
   src/rpc/methods_wallet_context.cpp
+  src/rpc/wallet_raw_transaction_rpc.cpp
   src/rpc/amount_parser.cpp  # Exact DIN/una RPC boundary conversion
   src/rpc/methods_wallet_covenant_profile.cpp  # Regtest-only profile-v1 construction/recovery RPC
   src/rpc/wallet_sync_rpc_handlers.cpp  # Phase W.2.6: Wallet sync UX RPC methods
@@ -867,6 +868,7 @@ target_link_libraries(dinero_rpc_handlers PRIVATE
   # RocksDB::rocksdb removed - was only needed for payroll_db.cpp (now disabled)
 )
 target_compile_definitions(dinero_rpc_handlers PRIVATE
+  DINERO_WALLET_RAW_ORCHARD=$<TARGET_EXISTS:dinero_orchard_backend>
   DINERO_CLI_GIT_SHA=${GIT_HASH}
   DINERO_GIT_COMMIT_FULL="${GIT_HASH_FULL}"
 )
