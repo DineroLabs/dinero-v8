@@ -163,29 +163,65 @@ bool ParseContentLengthValue(const std::string& raw_value, size_t& out_value) {
     return true;
 }
 
-bool TryParseContentLength(const std::string& request, size_t& content_length) {
-    auto cl_pos = request.find("Content-Length:");
-    if (cl_pos == std::string::npos) {
-        cl_pos = request.find("content-length:");
+// Only a completed header block defines the body length. This server handles
+// one Content-Length framed request per connection; transfer coding is unsupported.
+bool TryParseContentLength(const std::string& request, size_t header_end,
+                           size_t& content_length) {
+    content_length = 0;
+    const auto first_end = request.find("\r\n");
+    if (first_end == std::string::npos || first_end > header_end) return false;
+    bool found = false;
+    for (size_t pos = first_end + 2; pos < header_end;) {
+        const auto end = request.find("\r\n", pos);
+        if (end == std::string::npos || end > header_end) return false;
+        const auto colon = request.find(':', pos);
+        if (colon == std::string::npos || colon == pos || colon >= end) return false;
+        std::string name = request.substr(pos, colon - pos);
+        for (char& c : name) {
+            const auto u = static_cast<unsigned char>(c);
+            const bool token = (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') ||
+                (u >= '0' && u <= '9') || std::string("!#$%&'*+-.^_`|~").find(c) != std::string::npos;
+            if (!token) return false;
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        }
+        if (name == "transfer-encoding") return false;
+        if (name == "content-length") {
+            if (found) return false;
+            found = true;
+            size_t begin = colon + 1, finish = end;
+            while (begin < finish && (request[begin] == ' ' || request[begin] == '\t')) ++begin;
+            while (finish > begin && (request[finish - 1] == ' ' || request[finish - 1] == '\t')) --finish;
+            if (!ParseContentLengthValue(request.substr(begin, finish - begin), content_length)) return false;
+        }
+        pos = end + 2;
     }
-    if (cl_pos == std::string::npos) {
-        content_length = 0;
-        return true;
-    }
+    return true;
+}
 
-    size_t cl_val_start = cl_pos + 15;  // strlen("Content-Length:")
-    while (cl_val_start < request.size() &&
-           (request[cl_val_start] == ' ' || request[cl_val_start] == '\t')) {
-        ++cl_val_start;
+// Socket shutdown still interrupts the current read. A segmented request cannot
+// renew the original connection-read budget for each chunk.
+int ReadBeforeDeadline(int socket_fd, char* bytes, size_t capacity,
+                       std::chrono::steady_clock::time_point deadline) {
+    for (;;) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) return -1;
+        const auto remaining = std::max<int64_t>(1,
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count());
+#ifdef _WIN32
+        const DWORD timeout = static_cast<DWORD>(remaining);
+        if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO,
+                       reinterpret_cast<const char*>(&timeout), sizeof(timeout)) != 0) return -1;
+        const int count = recv(socket_fd, bytes, static_cast<int>(capacity), 0);
+        if (count < 0 && WSAGetLastError() == WSAEINTR) continue;
+#else
+        const timeval timeout{static_cast<time_t>(remaining / 1000),
+                              static_cast<suseconds_t>((remaining % 1000) * 1000)};
+        if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) != 0) return -1;
+        const int count = static_cast<int>(recv(socket_fd, bytes, capacity, 0));
+        if (count < 0 && errno == EINTR) continue;
+#endif
+        return count;
     }
-
-    const auto cl_val_end = request.find("\r\n", cl_val_start);
-    if (cl_val_end == std::string::npos || cl_val_end == cl_val_start) {
-        return false;
-    }
-
-    const std::string raw_value = request.substr(cl_val_start, cl_val_end - cl_val_start);
-    return ParseContentLengthValue(raw_value, content_length);
 }
 
 bool SendAll(int socket_fd, const char* data, size_t length) {
@@ -412,25 +448,12 @@ void HttpRpcServer::server_loop(int server_socket) {
                     continue;
                 }
 
-                // RPC rate limiting: per-IP token bucket (50 req/sec default)
-                {
-                    char rate_ip[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &client_addr.sin_addr, rate_ip, sizeof(rate_ip));
-                    if (!checkRpcRate(std::string(rate_ip))) {
-                        // Well-formed JSON-RPC error (error is an OBJECT). The old
-                        // reply was a bare-string error with a hand-counted
-                        // Content-Length, which made strict clients (incl.
-                        // dinero-cli) abort instead of surfacing the limit.
-                        const std::string response = build_http_response(
-                            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,"
-                            "\"message\":\"Rate limit exceeded. Try again shortly.\"}}",
-                            "application/json",
-                            429);
-                        SendAll(client_socket, response.c_str(), response.size());
-                        close_socket(client_socket);
-                        continue;
-                    }
-                }
+                // Capture the existing admission decision once. Even a refused
+                // request uses a tracked connection to read its bounded frame
+                // before returning 429; it never reaches RPC dispatch.
+                char rate_ip[INET_ADDRSTRLEN]{};
+                const bool rate_allowed = inet_ntop(AF_INET, &client_addr.sin_addr,
+                    rate_ip, sizeof(rate_ip)) && checkRpcRate(std::string(rate_ip));
 
                 try {
                     {
@@ -438,11 +461,11 @@ void HttpRpcServer::server_loop(int server_socket) {
                         client_sockets_.insert(client_socket);
                         active_connections_.fetch_add(1, std::memory_order_relaxed);
                     }
-                    std::thread([this, client_socket]() {
+                    std::thread([this, client_socket, rate_allowed]() {
                         const auto* previous = rpc_connection_owner;
                         rpc_connection_owner = this;
                         try {
-                            handle_connection(client_socket);
+                            handle_connection(client_socket, rate_allowed);
                         } catch (const std::exception& e) {
                             try { std::cerr << "Unhandled RPC connection error: " << e.what() << std::endl; } catch (...) {}
                         } catch (...) {
@@ -474,59 +497,54 @@ void HttpRpcServer::finish_connection(int client_socket) noexcept {
     connections_drained_.notify_all();
 }
 
-void HttpRpcServer::handle_connection(int client_socket) {
-    // Read headers first (up to 8KB should be plenty for HTTP headers)
-    char header_buf[8192];
-    int bytes_received = recv(client_socket, header_buf, sizeof(header_buf) - 1, 0);
-
-    if (bytes_received <= 0) return;
-
-    header_buf[bytes_received] = '\0';
-    std::string request(header_buf, bytes_received);
-
-    // Check if we need to read more body data based on Content-Length
-    auto header_end = request.find("\r\n\r\n");
-    if (header_end != std::string::npos) {
-        constexpr size_t kMaxTotalRead = 2 * 1024 * 1024;
-        size_t content_length = 0;
-        if (!TryParseContentLength(request, content_length)) {
-            const std::string response = build_http_response(
-                "{\"error\":\"Invalid Content-Length header\"}",
-                "application/json",
-                400);
-            SendAll(client_socket, response.c_str(), response.length());
-            return;
+void HttpRpcServer::handle_connection(int client_socket, bool rate_allowed) {
+    constexpr size_t kMaxHeaderBytes = 8191;
+    constexpr size_t kMaxBodyBytes = 2 * 1024 * 1024;
+    const auto deadline = std::chrono::steady_clock::now() + kClientSocketTimeout;
+    auto reply = [&](const std::string& response) {
+        if (SendAll(client_socket, response.data(), response.size())) ShutdownSend(client_socket);
+    };
+    auto refuse = [&](int status, const char* message) {
+        reply(build_http_response(message, "application/json", status));
+    };
+    std::string request;
+    size_t header_end = std::string::npos;
+    while ((header_end = request.find("\r\n\r\n")) == std::string::npos) {
+        if (request.size() >= kMaxHeaderBytes) {
+            refuse(400, "{\"error\":\"Request headers too large\"}"); return;
         }
-
-        if (content_length > kMaxTotalRead) {
-            const std::string response = build_http_response(
-                "{\"error\":\"Request body too large\"}",
-                "application/json",
-                413);
-            SendAll(client_socket, response.c_str(), response.length());
-            return;
-        }
-
-        // How much body we already have vs how much we need
-        size_t body_start = header_end + 4;
-        size_t body_received = request.size() - body_start;
-        size_t body_remaining = (content_length > body_received) ? content_length - body_received : 0;
-
-        // Read remaining body in a loop
-        while (body_remaining > 0) {
-            char chunk[8192];
-            size_t to_read = std::min(body_remaining, sizeof(chunk));
-            int n = recv(client_socket, chunk, to_read, 0);
-            if (n <= 0) break;
-            request.append(chunk, n);
-            body_remaining -= n;
-        }
+        char bytes[8192];
+        const int count = ReadBeforeDeadline(client_socket, bytes,
+            std::min(sizeof(bytes), kMaxHeaderBytes - request.size()), deadline);
+        if (count <= 0) return;
+        request.append(bytes, static_cast<size_t>(count));
     }
-
-    std::string response = process_http_request(request);
-    if (SendAll(client_socket, response.c_str(), response.length())) {
-        ShutdownSend(client_socket);
+    size_t content_length = 0;
+    if (!TryParseContentLength(request, header_end, content_length)) {
+        refuse(400, "{\"error\":\"Invalid request framing\"}"); return;
     }
+    if (content_length > kMaxBodyBytes) {
+        refuse(413, "{\"error\":\"Request body too large\"}"); return;
+    }
+    const size_t frame_size = header_end + 4 + content_length;
+    if (request.size() > frame_size) {
+        refuse(400, "{\"error\":\"Unexpected bytes after request body\"}"); return;
+    }
+    while (request.size() < frame_size) {
+        char bytes[8192];
+        const int count = ReadBeforeDeadline(client_socket, bytes,
+            std::min(sizeof(bytes), frame_size - request.size()), deadline);
+        if (count <= 0) return;
+        request.append(bytes, static_cast<size_t>(count));
+    }
+    if (!rate_allowed) {
+        reply(build_http_response(
+            "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32000,"
+            "\"message\":\"Rate limit exceeded. Try again shortly.\"}}",
+            "application/json", 429));
+        return;
+    }
+    reply(process_http_request(request));
 }
 
 std::string HttpRpcServer::process_http_request(const std::string& request) {
@@ -807,9 +825,15 @@ Json::Value HttpRpcServer::process_rpc_call(const Json::Value& request) {
                     ctx.mempool_v2 = nullptr;
                 }
 
-                // Phase 3A: Inject wallet_manager from WalletService
-                ctx.wallet_manager = (daemon_context_ && daemon_context_->wallet) ?
-                    &daemon_context_->wallet->get() : nullptr;
+                // Retain this exact manager through unified handler execution
+                // and response construction. This lifetime owner takes no wallet
+                // SQL/session or selected-chain lock and does not select a wallet.
+                std::unique_ptr<dinero::WalletService::WalletUse> wallet_use;
+                ctx.wallet_manager = nullptr;
+                if (daemon_context_ && daemon_context_->wallet) {
+                    wallet_use = dinero::WalletService::AcquireWalletUse(daemon_context_->wallet);
+                    ctx.wallet_manager = &wallet_use->Wallet();
+                }
 
                 // Issue #538 — these four lines fired on EVERY RPC, unconditionally,
                 // in every daemon.  At ~4 lines per call they drown daemon.log: a
@@ -969,44 +993,33 @@ std::string HttpRpcServer::extract_http_body(const std::string& request) {
 }
 
 std::string HttpRpcServer::extract_authorization_header(const std::string& request) {
-    // Find Authorization header (case-insensitive)
-    std::string request_lower = request;
-    std::transform(request_lower.begin(), request_lower.end(), request_lower.begin(), ::tolower);
-    
-    size_t auth_pos = request_lower.find("\nauthorization:");
-    if (auth_pos == std::string::npos) {
-        auth_pos = request_lower.find("\r\nauthorization:");
-        if (auth_pos == std::string::npos) {
-            return "";
+    // Credentials belong to the completed header block. Never search or fold
+    // the message body while selecting authentication metadata.
+    const auto headers_end = request.find("\r\n\r\n");
+    const auto first_end = request.find("\r\n");
+    if (headers_end == std::string::npos || first_end == std::string::npos ||
+        first_end > headers_end) return {};
+    std::string authorization;
+    bool found = false;
+    for (size_t pos = first_end + 2; pos < headers_end;) {
+        const auto end = request.find("\r\n", pos);
+        if (end == std::string::npos || end > headers_end) return {};
+        const auto colon = request.find(':', pos);
+        if (colon == std::string::npos || colon == pos || colon >= end) return {};
+        std::string name = request.substr(pos, colon - pos);
+        for (char& c : name)
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+        if (name == "authorization") {
+            if (found) return {}; // Ambiguous credentials fail authentication.
+            found = true;
+            size_t begin = colon + 1, finish = end;
+            while (begin < finish && (request[begin] == ' ' || request[begin] == '\t')) ++begin;
+            while (finish > begin && (request[finish - 1] == ' ' || request[finish - 1] == '\t')) --finish;
+            authorization.assign(request, begin, finish - begin);
         }
-        auth_pos += 2; // Skip \r\n
-    } else {
-        auth_pos += 1; // Skip \n
+        pos = end + 2;
     }
-    
-    // Find the end of the header line
-    size_t line_end = request.find("\r\n", auth_pos);
-    if (line_end == std::string::npos) {
-        line_end = request.find("\n", auth_pos);
-        if (line_end == std::string::npos) {
-            return "";
-        }
-    }
-    
-    // Extract the header value
-    std::string header_line = request.substr(auth_pos, line_end - auth_pos);
-    size_t colon_pos = header_line.find(':');
-    if (colon_pos == std::string::npos) {
-        return "";
-    }
-    
-    std::string value = header_line.substr(colon_pos + 1);
-
-    // Trim ALL whitespace (including \r\n)
-    value.erase(0, value.find_first_not_of(" \t\r\n"));
-    value.erase(value.find_last_not_of(" \t\r\n") + 1);
-
-    return value;
+    return authorization;
 }
 
 std::string HttpRpcServer::extract_client_ip(int client_socket) {

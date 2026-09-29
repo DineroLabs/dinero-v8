@@ -415,6 +415,26 @@ jobs:
           cases=['ChainPrecedesPoolAndOutlivesPoolRelease','CapturedFactorySurvivesReplacementAndUnavailableRefusesEarly','ExplicitParentMustEqualCurrentDurableTip']
           assert sorted(re.findall(r'\[       OK \] MiningChainGuard\.(\w+)',log))==sorted(cases)
           PYSNAPSHOT
+      - name: Complete bounded HTTP RPC requests before dispatch
+        run: |
+          cmake --build build-orchard-root --target test_rpc_request_framing -j2
+          ctest --test-dir build-orchard-root -R '^RpcRequestFraming$' --show-only=json-v1 > orchard-rpc-request-framing-inventory.json
+          python3 - <<'PYFRAME'
+          import json
+          tests=json.load(open('orchard-rpc-request-framing-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='RpcRequestFraming'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==90
+          PYFRAME
+          ctest --test-dir build-orchard-root -R '^RpcRequestFraming$' --verbose --no-tests=error --output-log orchard-rpc-request-framing-execution.log
+          python3 - <<'PYFRAME'
+          from pathlib import Path
+          import re
+          log=Path('orchard-rpc-request-framing-execution.log').read_text()
+          expected=['SegmentedHeadersAndBodyReachHandlerExactlyOnce','CapturedRateRefusalConsumesOneFrameWithoutDispatch','AuthenticationStillGatesCompleteRequests','UnifiedHandlerRetainsWalletAndAlias','ReturnedAndThrownFailuresReleaseWallet','ClosedWalletRefusesBeforeUnifiedHandler']
+          assert sorted(re.findall(r'\[       OK \] RpcRequestFraming\.(\w+)',log))==sorted(expected)
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYFRAME
       - name: HTTP RPC pool operation ownership
         run: |
           cmake --build build-orchard-root --target test_rpc_pool_owner test_rpc_handler_drain -j2
@@ -2517,6 +2537,8 @@ jobs:
             orchard-mining-chain-guard-execution.log
             orchard-mining-template-result-inventory.json
             orchard-mining-template-result-execution.log
+            orchard-rpc-request-framing-inventory.json
+            orchard-rpc-request-framing-execution.log
             orchard-rpc-pool-owner-inventory.json
             orchard-rpc-pool-owner-execution.log
             orchard-mining-chain-provider-inventory.json

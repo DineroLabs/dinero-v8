@@ -15567,6 +15567,33 @@ if(UNIX)
 endif()
 
 if(UNIX)
+  add_executable(test_rpc_request_framing
+    tests/daemon/test_rpc_request_framing.cpp
+    src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp
+    src/daemon/legacy_globals_stub.cpp
+    tests/stubs/mempool_test_stubs.cpp tests/stubs/daemon_test_stubs.cpp)
+  target_compile_definitions(test_rpc_request_framing PRIVATE DINERO_TEST_REAL_VAULT_RUNTIME=1
+    DINERO_CLI_VERSION="${DINERO_RELEASE_TAG}")
+  target_include_directories(test_rpc_request_framing PRIVATE include src src/daemon ${CMAKE_BINARY_DIR})
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(test_rpc_request_framing PRIVATE
+      "-Wl,--start-group" dinero_rpc_handlers dinero_core dinero_wallet dinero_chainstate
+      dinero_consensus dinero_shielded dinero_bridge dinero_pool dinero_lightning_keys
+      dinero_address_encoding dinero_bip32 dinero_pq dinero_zk dinero_tx_primitives
+      dinero_crypto "-Wl,--end-group" sqlite3 gtest gtest_main pthread)
+  else()
+    target_link_libraries(test_rpc_request_framing PRIVATE dinero_rpc_handlers dinero_core
+      dinero_wallet dinero_chainstate dinero_consensus dinero_crypto sqlite3 gtest gtest_main pthread)
+  endif()
+  link_zstd_if_needed(test_rpc_request_framing)
+  if(APPLE)
+    target_link_libraries(test_rpc_request_framing PRIVATE "-framework Security")
+  endif()
+  add_test(NAME RpcRequestFraming COMMAND test_rpc_request_framing)
+  set_tests_properties(RpcRequestFraming PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE LABELS "rpc;framing;ownership")
+endif()
+
+if(UNIX)
   add_executable(test_rpc_pool_owner
     tests/daemon/test_rpc_pool_owner.cpp
     src/daemon/http_rpc_server.cpp src/daemon/rpc_auth.cpp src/daemon/config.cpp
@@ -15635,6 +15662,7 @@ function(dinero_attach_real_mempool_fixture_runtime)
     test_realign_shielded_after_heal
     test_reconstruct_spent_coins
     test_rpc_handler_drain
+    test_rpc_request_framing
     test_rpc_pool_owner
     test_shielded_state_startup
     test_utreexo_ephemeral
