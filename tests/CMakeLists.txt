@@ -5084,7 +5084,10 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/src
   )
-  add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay)
+  # Additional suites in this binary have separate bounded CTest registrations.
+  # Keep the original replay/history/projection cases here without duplicating them.
+  add_test(NAME AssumeUtxoReplay COMMAND test_assumeutxo_replay
+    --gtest_filter=AssumeUtxoReplay.*:SelectedWalletHistory.*:RuntimeOriginProjection.*)
   set_tests_properties(AssumeUtxoReplay PROPERTIES
     LABELS "daemon;assumeutxo;replay"
     TIMEOUT 120
@@ -5107,6 +5110,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardCanonicalPool COMMAND test_assumeutxo_replay --gtest_filter=OrchardCanonicalPool.*)
+  set_tests_properties(OrchardCanonicalPool PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
   add_test(NAME OrchardMiningRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningRpc.*)
   set_tests_properties(OrchardMiningRpc PROPERTIES TIMEOUT 120 LABELS "orchard;mining;rpc")
   add_test(NAME OrchardRawIngress COMMAND test_assumeutxo_replay --gtest_filter=OrchardRawIngress.*)

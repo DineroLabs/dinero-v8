@@ -59,6 +59,9 @@ enum class RuntimeBlockDirection { Connect, Disconnect };
 // chainstate write. Preparation may allocate or refuse; it must not mutate
 // canonical state or publish any event. The returned object owns everything
 // required to notify/reconcile all consumers after durability and tip publication.
+// ChainstateService owns its configured local pool/bridge/relay tip update; this
+// provider must not prepare or publish that same update a second time. It still
+// owns all remaining configured consumers and durable reorg/readmission plans.
 // No historical Block/Transaction conversion is permitted for a mixed body.
 class PreparedRuntimeBlockNotifications {
 public:

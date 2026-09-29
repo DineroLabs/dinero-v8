@@ -1,3 +1,6 @@
+#include "daemon/tx_relay_manager.h"
+#include "daemon/utreexo_tx_payload.h"
+#include "daemon/utreexo_tx_reader.h"
 #include "rpc/rpc_registry.h"
 din::Json rpc_mining_getjob(const ExecutionContext&, const din::Json&);
 din::Json rpc_mining_submit(const ExecutionContext&, const din::Json&);
@@ -641,6 +644,7 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #include "orchard_mining_template_checks.h"
 #include "orchard_raw_ingress_checks.h"
 #include "orchard_mining_rpc_checks.h"
+#include "orchard_canonical_pool_checks.h"
 
 }  // namespace dinero
 

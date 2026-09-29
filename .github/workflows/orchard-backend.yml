@@ -294,6 +294,26 @@ jobs:
               raise SystemExit('Real mempool test consumers missing or disabled')
           json.dump({'tests':tests},open('orchard-real-mempool-inventory.json','w'),indent=2)
           pathlib.Path('orchard-real-mempool-regex.txt').write_text('^('+'|'.join(re.escape(t['name']) for t in tests)+')$')
+          # Every compiled replay-binary case must have exactly one enabled CTest owner.
+          import fnmatch,subprocess
+          replay=[t for t in tests if pathlib.Path(t['command'][0]).name=='test_assumeutxo_replay']
+          assert replay
+          listing=subprocess.check_output([replay[0]['command'][0],'--gtest_list_tests'],text=True)
+          pathlib.Path('orchard-replay-case-list.txt').write_text(listing)
+          cases=[];suite=None
+          for line in listing.splitlines():
+              if line and not line[0].isspace() and line.endswith('.'):suite=line.strip()
+              elif line.startswith('  ') and suite:cases.append(suite+line.strip().split(' #',1)[0])
+          assert cases and len(cases)==len(set(cases))
+          owners={case:[] for case in cases}
+          for test in replay:
+              filters=[v.split('=',1)[1] for v in test['command'][1:] if v.startswith('--gtest_filter=')]
+              assert len(filters)==1 and '-' not in filters[0]
+              matched=[case for case in cases if any(fnmatch.fnmatchcase(case,p) for p in filters[0].split(':'))]
+              assert matched,(test['name'],'empty filter')
+              for case in matched:owners[case].append(test['name'])
+          assert all(len(v)==1 for v in owners.values()),owners
+          json.dump(owners,open('orchard-replay-case-owners.json','w'),indent=2)
           PYTEST
           ctest --test-dir build-orchard-root -R "$(cat orchard-real-mempool-regex.txt)" --verbose --no-tests=error --output-log orchard-real-mempool-execution.log
           python3 - <<'PYTEST'
@@ -302,6 +322,8 @@ jobs:
           log=open('orchard-real-mempool-execution.log').read()
           if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(names):
               raise SystemExit('Real mempool test consumer executions incomplete')
+          for case in json.load(open('orchard-replay-case-owners.json')):
+              assert log.count('[       OK ] '+case+' (')==1,case
           PYTEST
       - name: Consistent mining selection and fee snapshot
         run: |
@@ -935,6 +957,25 @@ jobs:
           log=Path('orchard-typed-acceptance-owner-execution.log').read_text()
           for case in ['SignedAdmissionRetainsTypedBodyAfterLocksAndReplacement','PreflightAndObserverFailureKeepActualAdmissionOutcome','CaptureFailureAndLegacyCompatibilityPreserveBoundary','OrchardCapabilityRefusesLegacyAndRetainsExactRepresentation']:
               assert log.count('[       OK ] TypedAcceptanceOwner.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
+      - name: Canonical Orchard pool publication
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardCanonicalPool$' --show-only=json-v1 > orchard-canonical-pool-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-canonical-pool-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardCanonicalPool']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardCanonicalPool$' --verbose --no-tests=error --output-log orchard-canonical-pool-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-canonical-pool-execution.log').read_text()
+          for case in ['ConfirmedShieldLeavesPoolBeforeNextBlock','PreparationRefusalPreservesPoolAndCanonicalParent','WrongContextAndMissingProviderPreservePool','DisconnectReopenAndExplicitReadmissionKeepSelectedHeight']:
+              assert log.count('[       OK ] OrchardCanonicalPool.'+case+' (')==1
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
@@ -2209,6 +2250,8 @@ jobs:
             orchard-real-mempool-inventory.json
             orchard-real-mempool-regex.txt
             orchard-real-mempool-execution.log
+            orchard-replay-case-list.txt
+            orchard-replay-case-owners.json
             orchard-daemon-mempool-jobs-inventory.json
             orchard-daemon-mempool-jobs-execution.log
             orchard-mempool-service-owner-inventory.json
@@ -2251,6 +2294,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-canonical-pool-inventory.json
+            orchard-canonical-pool-execution.log
             orchard-mining-rpc-inventory.json
             orchard-mining-rpc-execution.log
             orchard-raw-ingress-inventory.json

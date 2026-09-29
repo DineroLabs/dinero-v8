@@ -5,6 +5,7 @@
 #include "consensus/csn_replay_data.h"
 #include "daemon/services/chainstate_service.h"
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+#include "daemon/orchard_connected_block_effects.h"
 #include "wallet/runtime_origin_projection.h"
 #include "wallet/runtime_index_delivery.h"
 #include "daemon/runtime_block_reader.h"
@@ -14278,8 +14279,19 @@ bool ChainstateService::DisconnectOrchardTip(CBlockIndex* tip) {
         auto write=PreparedOrchardChainstateWrite::DisconnectIndexed(activation_mutex_,*chain_db_,token,
             *block_storage_,*tip,*consensus_utxo_set_,*body->Context(),body->Orchard(),*parent,forest,witness);
         const auto consumers=runtime_block_notifications_;
+        auto* context=DaemonContext::instance();
+        if (context && context->chainstate.get()!=this) return false;
+        const auto pool_service=context?context->mempool:nullptr;
+        const auto relay=context?context->tx_relay:nullptr;
+        auto pool_use=pool_service?MempoolService::AcquirePoolUse(pool_service):nullptr;
+        if (!pool_use && (bridge_node_ || relay)) return false;
         auto notifications=consumers->Prepare(*body,tip->height,RuntimeBlockDirection::Disconnect);
         if (!notifications) return false;
+        std::unique_ptr<PreparedPoolTip> pool_tip;
+        if (pool_use) pool_tip=PreparedPoolTip::DisconnectToParent(pool_use->Pool(),bridge_node_,relay,
+            tip->height,{parent->utreexo_root.begin(),parent->utreexo_root.end()});
+        if (context && (DaemonContext::instance()!=context || context->chainstate.get()!=this ||
+            context->mempool!=pool_service || context->tx_relay!=relay)) return false;
         // Prepare is trusted read-only consumer work. Recheck the selected
         // service pointers as well as the owner's index/memory readiness before
         // durability. No fallible consumer preparation is allowed afterwards.
@@ -14293,7 +14305,12 @@ bool ChainstateService::DisconnectOrchardTip(CBlockIndex* tip) {
         };
         invalidate_positions();
         PublishActiveTipLocked(parent_index,TipPublishReason::kRollback);
+        if (pool_tip) pool_tip->PublishAfterCommit();
         notifications->PublishAfterCommit();
+        if (pool_tip) try { pool_tip->RequestRefresh(); } catch (...) {
+            try { if (logger_) logger_->warning("[OrchardDisconnect] proof refresh delivery unavailable after commit"); }
+            catch (...) {}
+        }
         return true;
     } catch (const std::exception& e) {
         // Commit itself fail-stops after storage writing starts, and both
@@ -15959,6 +15976,14 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
             if (!boundary) return fail("orchard-connect-boundary-history-unavailable");
         }
         const auto consumers=runtime_block_notifications_;
+        auto* context=DaemonContext::instance();
+        if (context && context->chainstate.get()!=this)
+            return fail("orchard-connect-pool-context-unavailable");
+        const auto pool_service=context?context->mempool:nullptr;
+        const auto relay=context?context->tx_relay:nullptr;
+        auto pool_use=pool_service?MempoolService::AcquirePoolUse(pool_service):nullptr;
+        if (!pool_use && (bridge_node_ || relay))
+            return fail("orchard-connect-pool-owner-unavailable");
         auto notifications=consumers->Prepare(*body,tip->height,RuntimeBlockDirection::Connect);
         if (!notifications) return fail("orchard-connect-consumers-not-ready");
         const auto parent_hash=parent_index->hash;
@@ -15981,6 +16006,15 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
         auto write=PreparedOrchardChainstateWrite::ConnectIndexed(activation_mutex_,*chain_db_,token,
             *block_storage_,*tip,*consensus_utxo_set_,*body->Context(),body->Orchard(),*parent,forest,mtp,
             witness,tip->height%interval==0,boundary,true);
+        // Full canonical preparation has validated the exact mixed body. Keep
+        // its configured pool and proof caches reversible until this write commits.
+        std::unique_ptr<PreparedPoolTip> pool_tip;
+        if (pool_use) pool_tip=PreparedPoolTip::ConnectEffects(pool_use->Pool(),bridge_node_,relay,
+            BuildOrchardConnectedBlockEffects(body->Orchard()),tip->height,
+            {body->Orchard().Header().utreexo_root.begin(),body->Orchard().Header().utreexo_root.end()});
+        if (context && (DaemonContext::instance()!=context || context->chainstate.get()!=this ||
+            context->mempool!=pool_service || context->tx_relay!=relay))
+            return fail("orchard-connect-pool-owner-changed");
         if (active_tip_!=parent_index || tip->pprev!=parent_index ||
             runtime_block_notifications_!=consumers || header_chain_selector_!=headers)
             return fail("orchard-connect-selected-view-changed");
@@ -15990,7 +16024,14 @@ bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, 
         };
         invalidate_positions();
         PublishActiveTipLocked(tip,TipPublishReason::kAdvancement);
+        if (pool_tip) pool_tip->PublishAfterCommit();
         notifications->PublishAfterCommit();
+        // Outbound refresh cannot undo the committed chain/pool state or turn
+        // canonical success into a retryable prewrite failure.
+        if (pool_tip) try { pool_tip->RequestRefresh(); } catch (...) {
+            try { if (logger_) logger_->warning("[OrchardConnect] proof refresh delivery unavailable after commit"); }
+            catch (...) {}
+        }
         return true;
     } catch (const consensus::OrchardHeaderError& e) {
         // Local context disagreement and future time remain retryable. All
