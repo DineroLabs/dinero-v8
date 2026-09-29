@@ -39,4 +39,9 @@ public:
 void CheckOrchardHeaderUnderChainstateLock(
     const BlockHeader&, const BlockHeader& selected_parent,
     const OrchardBlockContext&, const HeaderChainSelector&, uint64_t now_seconds);
+// The same selected ancestry/time/difficulty rules for an unmined template.
+// This deliberately does not establish proof of work or incoming-block validity.
+void CheckOrchardMiningHeaderUnderChainstateLock(
+    const BlockHeader&, const BlockHeader&, const OrchardBlockContext&,
+    const HeaderChainSelector&, uint64_t now_seconds);
 } // namespace dinero::consensus

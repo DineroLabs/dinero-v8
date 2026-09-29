@@ -1,3 +1,4 @@
+#include "consensus/filter_commitment.h"
 // ============================================================================
 // AssumeUTXO Replay Engine unit tests (plan Task 6)
 // ============================================================================
@@ -633,6 +634,7 @@ TEST(RuntimeOriginProjection, UnavailableWithoutBackend) {
 #include "orchard_first_boundary_checks.h"
 #include "orchard_selected_admission_checks.h"
 #include "orchard_typed_selection_checks.h"
+#include "orchard_mining_template_checks.h"
 
 }  // namespace dinero
 

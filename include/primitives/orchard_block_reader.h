@@ -9,6 +9,8 @@ namespace dinero {
 // Parsing authenticates neither PoW, scripts, proofs, nor state transitions.
 class OrchardBlockCandidate {
 public:
+    // The codec wire bound, shared with callers before allocating a frame.
+    static size_t MaxWireSize() noexcept;
     [[nodiscard]] static OrchardBlockCandidate DecodeExact(std::span<const uint8_t>);
     const BlockHeader& Header() const noexcept { return header_; }
     const auto& Transactions() const noexcept { return transactions_; }

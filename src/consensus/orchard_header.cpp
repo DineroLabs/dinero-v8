@@ -34,10 +34,11 @@ std::optional<OrchardBlockContext> SelectedOrchardBlockContext(
     std::copy(genesis.begin(), genesis.end(), context.domain.genesis_wire.begin());
     return context;
 }
-void CheckOrchardHeaderUnderChainstateLock(
+namespace {
+void CheckHeader(
     const BlockHeader& header, const BlockHeader& parent,
     const OrchardBlockContext& context, const HeaderChainSelector& headers,
-    uint64_t now_seconds) {
+    uint64_t now_seconds, bool require_work) {
     const auto& params = Params();
     const uint8_t network = params.name == "mainnet" ? 0 :
         params.name == "testnet" ? 1 : params.name == "regtest" ? 2 : 0xff;
@@ -102,6 +103,15 @@ void CheckOrchardHeaderUnderChainstateLock(
     if (expected == 0) throw OrchardHeaderLookupError("Orchard ASERT result unavailable");
     if (header.difficulty != expected) Reject(Error::Difficulty);
     // Exact ASERT bits, not the historical minimum-difficulty policy floor.
-    if (!CheckProofOfWork(header, false)) Reject(Error::ProofOfWork);
+    if (require_work && !CheckProofOfWork(header, false)) Reject(Error::ProofOfWork);
+}
+} // namespace
+void CheckOrchardHeaderUnderChainstateLock(const BlockHeader& header, const BlockHeader& parent,
+    const OrchardBlockContext& context, const HeaderChainSelector& headers, uint64_t now) {
+    CheckHeader(header, parent, context, headers, now, true);
+}
+void CheckOrchardMiningHeaderUnderChainstateLock(const BlockHeader& header, const BlockHeader& parent,
+    const OrchardBlockContext& context, const HeaderChainSelector& headers, uint64_t now) {
+    CheckHeader(header, parent, context, headers, now, false);
 }
 } // namespace dinero::consensus

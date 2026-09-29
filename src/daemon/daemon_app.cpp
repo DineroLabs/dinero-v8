@@ -6983,15 +6983,7 @@ bool DaemonApp::Start() {
         std::weak_ptr<ChainstateService> weak_chain = ctx_.chainstate;
         ctx_.block_assembler->SetChainstateReadGuardFactory([weak_chain]()
             -> std::unique_ptr<BlockAssembler::ChainstateReadGuard> {
-            auto chainstate = weak_chain.lock();
-            if (!chainstate) return nullptr;
-            struct Guard final : BlockAssembler::ChainstateReadGuard {
-                std::shared_ptr<ChainstateService> owner;
-                std::unique_lock<AnnotatedRecursiveMutex> lock;
-                explicit Guard(std::shared_ptr<ChainstateService> value)
-                    : owner(std::move(value)), lock(owner->AcquireBlockIngressActivationLock()) {}
-            };
-            return std::make_unique<Guard>(std::move(chainstate));
+            return ChainstateService::AcquireMiningReadGuard(weak_chain.lock());
         });
         std::weak_ptr<MempoolService> weak_pool = ctx_.mempool;
         ctx_.block_assembler->SetMempoolAccessFactory([weak_pool]() -> std::unique_ptr<MempoolAccess> {

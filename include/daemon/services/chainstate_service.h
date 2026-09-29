@@ -50,6 +50,8 @@ namespace dinero {
 // Phase 39 Step 2: Forward declaration (header deleted)
 class ChainManager;
 class MempoolChainstateReadGuard;
+class MiningChainstateReadGuard;
+class OrchardMiningTemplate;
 class MempoolTransaction;
 struct MempoolOrchardValidation;
 struct MempoolSelectionValidation;
@@ -1169,9 +1171,14 @@ public:
 
     static std::unique_ptr<MempoolChainstateReadGuard> AcquireMempoolChainstateRead(
         std::shared_ptr<ChainstateService>);
+    static std::unique_ptr<MiningChainstateReadGuard> AcquireMiningReadGuard(
+        std::shared_ptr<ChainstateService> owner);
 
 private:
     struct MempoolReadGuard;
+    struct MiningReadGuard;
+    std::shared_ptr<const OrchardMiningTemplate> BuildOrchardMiningTemplateUnderLock(
+        const BlockHeader&, const Transaction&, std::span<const MempoolTransaction>, uint32_t);
     struct SelectedOrchardPoolContext;
     std::unique_ptr<SelectedOrchardPoolContext> CaptureSelectedOrchardPoolContextUnderLock();
     MempoolSelectionValidation ValidateOrchardSelectionUnderLock(

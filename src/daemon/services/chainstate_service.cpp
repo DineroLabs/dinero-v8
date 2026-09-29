@@ -1,3 +1,4 @@
+#include "mining/orchard_mining_template.h"
 #include "wallet/selected_history.h"
 #include <sqlite3.h>
 #include "consensus/utreexo_maturity_leaf_activation.h"
@@ -13,6 +14,12 @@
 #include "daemon/orchard_chainstate_write.h"
 #include "consensus/orchard_block_staging.h"
 #include "consensus/orchard_resources.h"
+#include "consensus/orchard_header.h"
+#include "consensus/orchard_block_filter.h"
+#include "consensus/orchard_forest_transition.h"
+#include "consensus/orchard_state_root.h"
+#include "consensus/merkle_root.h"
+#include "consensus/witness_commitment.h"
 #endif
 #include "consensus/orchard_profile.h"
 #include <tuple>
@@ -15524,6 +15531,180 @@ MempoolSelectionValidation ChainstateService::ValidateOrchardSelectionUnderLock(
 #endif
 }
 
+
+struct ChainstateService::MiningReadGuard final : MiningChainstateReadGuard {
+    std::shared_ptr<ChainstateService> owner;
+    std::unique_lock<AnnotatedRecursiveMutex> lock;
+    const std::thread::id thread = std::this_thread::get_id();
+    explicit MiningReadGuard(std::shared_ptr<ChainstateService> service)
+        : owner(std::move(service)), lock(owner->AcquireBlockIngressActivationLock()) {}
+    ~MiningReadGuard() override { if (thread != std::this_thread::get_id()) std::terminate(); }
+    std::shared_ptr<const OrchardMiningTemplate> BuildOrchardTemplate(
+        const BlockHeader& header, const Transaction& coinbase,
+        std::span<const MempoolTransaction> bodies, uint32_t height) override {
+        if (thread != std::this_thread::get_id())
+            throw std::logic_error("Selected mining owner is thread-affine");
+        return owner->BuildOrchardMiningTemplateUnderLock(header, coinbase, bodies, height);
+    }
+};
+std::unique_ptr<MiningChainstateReadGuard> ChainstateService::AcquireMiningReadGuard(
+    std::shared_ptr<ChainstateService> owner) {
+    if (!owner) return {};
+    return std::make_unique<MiningReadGuard>(std::move(owner));
+}
+
+std::shared_ptr<const OrchardMiningTemplate> ChainstateService::BuildOrchardMiningTemplateUnderLock(
+    const BlockHeader& requested, const Transaction& requested_coinbase,
+    std::span<const MempoolTransaction> bodies, uint32_t height) {
+    AssertActivationLockHeld("Orchard mining construction");
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+    using namespace consensus;
+    auto selected = CaptureSelectedOrchardPoolContextUnderLock();
+    if (!selected || height != selected->context.height ||
+        requested.prev_block_hash != selected->context.parent_hash ||
+        !requested_coinbase.IsCoinbase()) return {};
+    const auto parent = chain_db_->getHeader(selected->context.parent_hash);
+    if (!parent.ok()) return {};
+    const auto retirement = [&]() -> std::optional<storage::LegacyRetirementRecord> {
+        if (height == selected->context.activation_height)
+            return DeriveOrchardBoundaryFromSelectedHistoryUnderLock();
+        const auto stored = chain_db_->getLegacyRetirementState();
+        if (!stored.ok()) return {};
+        return stored->record;
+    }();
+    if (!retirement) return {};
+    const auto forest = [&] {
+        const auto lock = consensus_utxo_set_->LockForestShared();
+        return consensus_utxo_set_->GetForest();
+    }();
+    const auto mtp = selected->Mtp();
+    const auto lookups = selected->Lookups();
+    BlockHeader header = requested;
+    Transaction coinbase = requested_coinbase;
+    // The caller supplies a payout coinbase only. Never preserve a stale or
+    // caller-chosen consensus commitment through a new selected-state build.
+    for (const auto& output : coinbase.vout)
+        if (!output.scriptPubKey.empty() && output.scriptPubKey.front() == 0x6a)
+            throw std::invalid_argument("Mining payout contains a commitment output");
+    std::vector<WTxId> witness_ids{WTxId(uint256{})};
+    for (const auto& body : bodies) {
+        if (!body.HasBody()) return {};
+        witness_ids.push_back(body.GetWtxid());
+    }
+    bool mutated = false;
+    const auto witness_root = ComputeWitnessMerkleRootFromIds(witness_ids, &mutated);
+    if (mutated) return {};
+    coinbase.vout.emplace_back(AmountUna::Zero(), BuildWitnessCommitmentFromRoot(witness_root));
+    std::optional<BlockUtreexoData> proof;
+    const auto encode = [&]() {
+        std::vector<TxId> ids{coinbase.GetTxid()};
+        for (const auto& body : bodies) ids.push_back(body.GetTxid());
+        bool duplicate = false;
+        header.merkle_root = ComputeTransactionMerkleRoot(ids, &duplicate);
+        if (duplicate) throw std::invalid_argument("Duplicate mining body identity");
+        const auto prefix = header.SerializeForHash();
+        std::vector<uint8_t> wire(prefix.begin(), prefix.end());
+        const uint64_t count = uint64_t(bodies.size()) + 1;
+        const auto number = [&](uint64_t value, size_t width) {
+            for (size_t i = 0; i < width; ++i) wire.push_back(uint8_t(value >> (8 * i)));
+        };
+        if (count < 253) wire.push_back(uint8_t(count));
+        else if (count <= UINT16_MAX) { wire.push_back(253); number(count, 2); }
+        else if (count <= UINT32_MAX) { wire.push_back(254); number(count, 4); }
+        else { wire.push_back(255); number(count, 8); }
+        const auto append = [&](const std::vector<uint8_t>& bytes) {
+            if (bytes.size() > OrchardBlockCandidate::MaxWireSize() || wire.size() > OrchardBlockCandidate::MaxWireSize() - bytes.size())
+                throw MiningTemplateSizeError();
+            wire.insert(wire.end(), bytes.begin(), bytes.end());
+        };
+        append(coinbase.Serialize(TxSerializationMode::WithWitness));
+        for (const auto& body : bodies) append(body.Serialize());
+        wire.push_back(proof ? 1 : 0);
+        if (proof) append(proof->serialize());
+        if (wire.size() > OrchardBlockCandidate::MaxWireSize()) throw MiningTemplateSizeError();
+        auto candidate = OrchardBlockCandidate::DecodeExact(wire);
+        std::string error;
+        if (!candidate.CheckSizeLimits(error)) throw MiningTemplateSizeError();
+        return candidate;
+    };
+    const auto context_for = [&](const OrchardBlockCandidate& body) {
+        const auto context = SelectedOrchardBlockContext(body.Header(), height);
+        if (!context) throw std::runtime_error("Mining activation context unavailable");
+        return *context;
+    };
+    const auto initial = encode();
+    const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    CheckOrchardMiningHeaderUnderChainstateLock(initial.Header(), *parent,
+        context_for(initial), *selected->headers, now > 0 ? uint64_t(now) : 0);
+    const auto initial_coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+        initial, context_for(initial), selected->coins, mtp, true);
+    const auto filter = BuildOrchardBlockFilter(initial_coins);
+    // Unlike the historical helper, the typed profile commits an empty
+    // filter as an explicit zero hash rather than omitting its output.
+    std::vector<uint8_t> filter_script{0x6a, FilterCommitment::SIZE, 0x44, 0x4e, 0x52, 0x46, FilterCommitment::VERSION};
+    const auto filter_hash = filter.GetHash();
+    filter_script.insert(filter_script.end(), filter_hash.begin(), filter_hash.end());
+    coinbase.vout.emplace_back(AmountUna::Zero(), std::move(filter_script));
+    const auto filtered = encode();
+    const auto state = PrepareOrchardStateTransition(context_for(filtered), selected->parent,
+        initial_coins.Authorizations(), lookups);
+    const auto sets = chain_db_->previewOrchardCommitmentSets(state.Parent(), state.Next(), state.Nullifiers());
+    if (!sets.ok()) throw OrchardStateLookupError(sets.status());
+    const auto& c = selected->context;
+    const auto root = ComputeOrchardStateRoot(
+        {c.domain, c.activation_height, height, c.parent_hash}, *retirement, state.Next(), *sets);
+    coinbase.vout.emplace_back(AmountUna::Zero(), BuildStateCommitmentScript(root, StateCommitmentEncoding::Orchard));
+    const auto state_draft = encode();
+    const auto coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+        state_draft, context_for(state_draft), selected->coins, mtp, true);
+    const auto post_forest = PrepareOrchardForestTransition(coins, *parent, forest);
+    header.utreexo_root = post_forest.Root();
+    BlockUtreexoData payload;
+    payload.accumulator_root_before = forest.getCommitment();
+    std::set<OutPoint> created;
+    for (const auto& tx : coins.Transactions())
+        for (const auto& [point, coin] : tx.created) created.insert(point);
+    std::vector<UtreexoHash> external;
+    for (const auto& tx : coins.Transactions()) for (const auto& [point, coin] : tx.spent) {
+        payload.spent_outputs.emplace_back(coin.value.GetUna(), coin.scriptPubKey,
+            coin.height, coin.isCoinbase, coin.is_confidential, coin.commitment);
+        if (!created.contains(point)) external.push_back(HashUTXOForCreationHeight(
+            point.txid.AsUint256(), point.vout, coin.value.GetUna(), coin.scriptPubKey,
+            coin.height, coin.isCoinbase));
+    }
+    payload.spend_proof = forest.generateBlockProof(external, GetUtreexoProofFormatVersion(height));
+    proof = std::move(payload);
+    const auto final = encode();
+    const auto final_context = context_for(final);
+    CheckOrchardMiningHeaderUnderChainstateLock(final.Header(), *parent, final_context,
+        *selected->headers, now > 0 ? uint64_t(now) : 0);
+    const auto final_coins = PrepareOrchardBlockCoinsUnderChainstateLock(
+        final, final_context, selected->coins, mtp, true);
+    (void)CheckOrchardBlockFilter(final, final_coins);
+    const auto final_state = PrepareOrchardStateTransition(final_context, selected->parent,
+        final_coins.Authorizations(), lookups);
+    const auto final_sets = chain_db_->previewOrchardCommitmentSets(
+        final_state.Parent(), final_state.Next(), final_state.Nullifiers());
+    if (!final_sets.ok()) throw OrchardStateLookupError(final_sets.status());
+    const auto found = FindStateCommitment(coinbase, StateCommitmentEncoding::Orchard);
+    if (found.status != StateCommitmentStatus::Ok || found.root != ComputeOrchardStateRoot(
+        {c.domain, c.activation_height, height, c.parent_hash}, *retirement, final_state.Next(), *final_sets))
+        throw std::runtime_error("Mining state commitment mismatch");
+    const auto final_forest = PrepareOrchardForestTransition(final_coins, *parent, forest);
+    if (!final_forest.MatchesHeader(final.Header()))
+        throw std::runtime_error("Mining forest commitment mismatch");
+    CheckOrchardBlockUtreexoProof(final, final_coins, *parent, forest);
+    std::vector<MempoolTransaction> transactions{MempoolTransaction(coinbase)};
+    transactions.insert(transactions.end(), bodies.begin(), bodies.end());
+    return std::shared_ptr<const OrchardMiningTemplate>(new OrchardMiningTemplate(
+        final.Header(), std::move(transactions), final.WireBytes(), height,
+        final_coins.TotalFees(), final.BaseSize()));
+#else
+    (void)requested; (void)requested_coinbase; (void)bodies; (void)height;
+    return {};
+#endif
+}
 
 bool ChainstateService::ConnectOrchardTip(CBlockIndex* tip, std::string* error, bool* invalid) {
     std::lock_guard<AnnotatedRecursiveMutex> lock(activation_mutex_);

@@ -22,8 +22,9 @@ uint64_t Count(std::span<const uint8_t> bytes, size_t& offset) {
     return value;
 }
 } // namespace
+size_t OrchardBlockCandidate::MaxWireSize() noexcept { return consensus::MAX_BLOCK_WEIGHT; }
 OrchardBlockCandidate OrchardBlockCandidate::DecodeExact(std::span<const uint8_t> bytes) {
-    if (bytes.size() < 130 || bytes.size() > consensus::MAX_BLOCK_WEIGHT) Invalid();
+    if (bytes.size() < 130 || bytes.size() > MaxWireSize()) Invalid();
     const auto header = BlockHeader::Deserialize(bytes.data(), 128);
     if (!header) Invalid();
     size_t offset = 128;

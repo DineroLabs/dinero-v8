@@ -5104,6 +5104,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardSelectedAdmission PROPERTIES LABELS "daemon;orchard;admission;mandatory" TIMEOUT 120)
   add_test(NAME OrchardTypedSelection COMMAND test_assumeutxo_replay --gtest_filter=OrchardTypedSelection.*)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
+  set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   message(STATUS "✅ AssumeUTXO replay engine test enabled")
 endif()
 

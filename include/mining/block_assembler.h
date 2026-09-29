@@ -1,5 +1,6 @@
 #pragma once
 #include "daemon/interfaces/mempool_access.h"
+#include "mining/orchard_mining_template.h"
 #include <mutex>
 
 #include <vector>
@@ -425,9 +426,11 @@ public:
 
     // Hold selected-chain exclusion before pool acquisition through construction.
     // Unconfigured callers retain their existing external serialization contract.
-    struct ChainstateReadGuard { virtual ~ChainstateReadGuard() = default; };
+    using ChainstateReadGuard = MiningChainstateReadGuard;
     using ChainstateReadGuardFactory = std::function<std::unique_ptr<ChainstateReadGuard>()>;
     void SetChainstateReadGuardFactory(ChainstateReadGuardFactory factory);
+    std::shared_ptr<const OrchardMiningTemplate> CreateOrchardBlock(
+        const std::string& coinbase_address);
 
     // ========================================================================
     // Phase M.0: Merkle tree calculation (public for golden testing)

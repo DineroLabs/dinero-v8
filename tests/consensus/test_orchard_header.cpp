@@ -112,6 +112,26 @@ int main() {
 
         auto wrong = Solve(child, false);
         Rejected(OrchardHeaderErrorCode::ProofOfWork, [&] { check(wrong, parent->header, height, child.timestamp); });
+        // Mining-draft gate: only the unsolved work check is omitted.
+        CheckOrchardMiningHeaderUnderChainstateLock(wrong, parent->header,
+            Context(wrong, height), headers, child.timestamp);
+        const auto draft_check = [&](const BlockHeader& draft, uint64_t now) {
+            CheckOrchardMiningHeaderUnderChainstateLock(draft, parent->header,
+                Context(draft, height), headers, now);
+        };
+        auto bad_draft = child;
+        bad_draft.difficulty = child.difficulty == 0x207fffff ? 0x203fffff : 0x207fffff;
+        Rejected(OrchardHeaderErrorCode::Difficulty, [&] { draft_check(bad_draft, child.timestamp); });
+        bad_draft = child; bad_draft.timestamp = parent->GetMedianTimePast();
+        Rejected(OrchardHeaderErrorCode::TimeTooOld, [&] { draft_check(bad_draft, child.timestamp); });
+        bad_draft = child; bad_draft.reserved[11] = 1;
+        Rejected(OrchardHeaderErrorCode::Shape, [&] { draft_check(bad_draft, child.timestamp); });
+        Rejected(OrchardHeaderErrorCode::TimeTooNew, [&] { draft_check(child, child.timestamp - 7201); });
+        HeaderChainSelector missing_draft_ancestry;
+        LookupFailure([&] { CheckOrchardMiningHeaderUnderChainstateLock(child, parent->header,
+            Context(child, height), missing_draft_ancestry, child.timestamp); });
+        CHECK(headers.GetBestHeaderValue()->hash == parent->hash);
+        // End mining-draft gate checks; all existing incoming-header cases follow.
         wrong = child; wrong.difficulty = child.difficulty == 0x207fffff ? 0x203fffff : 0x207fffff;
         Rejected(OrchardHeaderErrorCode::Difficulty, [&] { check(wrong, parent->header, height, child.timestamp); });
         wrong = child; wrong.timestamp = parent->GetMedianTimePast();

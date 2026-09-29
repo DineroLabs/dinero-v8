@@ -938,6 +938,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Owned Orchard block template construction
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardMiningTemplate$' --show-only=json-v1 > orchard-mining-template-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-mining-template-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardMiningTemplate']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardMiningTemplate$' --verbose --no-tests=error --output-log orchard-mining-template-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-mining-template-execution.log').read_text()
+          for case in ['MixedBodiesFeesCommitmentsAndProof','CompleteFrameBudgetAndOwnerRefusal','EmptyFilterIsExplicitlyCommitted','RealShieldConnectDisconnectAndReopen']:
+              assert log.count('[       OK ] OrchardMiningTemplate.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Selected mixed-family mining inventory
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2194,7 +2213,9 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-mining-template-inventory.json
             orchard-typed-selection-inventory.json
+            orchard-mining-template-execution.log
             orchard-typed-selection-execution.log
             orchard-typed-pool-publication-inventory.json
             orchard-typed-pool-publication-execution.log

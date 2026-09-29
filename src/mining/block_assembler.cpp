@@ -1,3 +1,4 @@
+#include "consensus/orchard_profile.h"
 #include "mining/block_assembler.h"
 #include "daemon/mempool.h"  // Week 7: Mempool for transaction selection (full definition)
 #include "consensus/difficulty.h"
@@ -1330,6 +1331,84 @@ void BlockAssembler::UpdateAlgoState() {
 // ============================================================================
 // v0.14.0.1: Bitcoin Core Compatible RPC Mining Interface
 // ============================================================================
+
+std::shared_ptr<const OrchardMiningTemplate> BlockAssembler::CreateOrchardBlock(
+    const std::string& coinbase_address) {
+    auto chain_guard = AcquireChainstateReadGuard();
+    if (!chain_guard) throw std::runtime_error("Typed mining requires a selected-chain owner");
+    auto pool_use = AcquireMempoolAccess();
+    if (!chain_db_ || !pool_use.pool)
+        throw std::runtime_error("Typed mining chain or pool unavailable");
+    const auto tip = chain_db_->getTip();
+    if (!tip.ok() || tip->height < 0 || tip->height >= INT32_MAX)
+        throw std::runtime_error("Typed mining parent unavailable");
+    const uint32_t height = uint32_t(tip->height) + 1;
+    if (!consensus::OrchardActiveForHeight(Params(), height))
+        throw std::runtime_error("Typed mining profile inactive");
+    BlockHeader header;
+    header.version = 1;
+    header.prev_block_hash = tip->hash;
+    const auto now = std::time(nullptr);
+    if (now <= 0) throw std::runtime_error("Mining clock unavailable");
+    header.timestamp = std::max(uint64_t(now), uint64_t(GetMedianTimePast()) + 1);
+    header.difficulty = GetNextWorkRequiredWithChainDB(static_cast<int32_t>(height),
+        static_cast<int64_t>(header.timestamp), GetConsensusForCurrentNetwork(), chain_db_);
+    header.ZeroReserved();
+    const auto capture = pool_use.pool->CaptureTypedBlockSelection(
+        max_block_weight_ / 4, max_block_weight_, height);
+    if (!capture.available || capture.parent_hash != tip->hash ||
+        capture.parent_height != uint32_t(tip->height))
+        throw std::runtime_error("Typed mining selection owner unavailable");
+    auto bodies = capture.transactions;
+    const auto subsidy = ConsensusSubsidy::GetBlockSubsidy(
+        height, Params().sixty_second_activation_height).GetUna();
+    std::shared_ptr<const OrchardMiningTemplate> result;
+    while (true) {
+        uint64_t fees = 0;
+        for (const auto& body : bodies) {
+            const auto next = CheckedAddUna(fees, capture.metadata.at(body.GetTxid().AsUint256()).fee);
+            if (!next) throw std::runtime_error("Typed mining fees overflow");
+            fees = *next;
+        }
+        auto coinbase = createCoinbaseTransaction(height, coinbase_address, subsidy, fees);
+        if (coinbase.vin.empty()) throw std::runtime_error("Typed mining payout invalid");
+        consensus::Script height_script;
+        height_script.pushInt64(height);
+        coinbase.vin.front().scriptSig = height_script.data();
+        if (coinbase.vin.front().scriptSig.size() < 2) coinbase.vin.front().scriptSig.push_back(0);
+        try {
+            result = chain_guard->BuildOrchardTemplate(header, coinbase, bodies, height);
+            if (!result) throw std::runtime_error("Typed mining template owner unavailable");
+            if (result->Height() != height || result->Header().prev_block_hash != tip->hash ||
+                result->TotalFees() != fees || result->Transactions().size() != bodies.size() + 1)
+                throw std::runtime_error("Typed mining template identity mismatch");
+            for (size_t i = 0; i < bodies.size(); ++i)
+                if (result->Transactions()[i + 1].Serialize() != bodies[i].Serialize())
+                    throw std::runtime_error("Typed mining template body mismatch");
+            if (result->Weight() > max_block_weight_) throw MiningTemplateSizeError();
+            break;
+        } catch (const MiningTemplateSizeError&) {
+            // Complete framing includes the coinbase and actual proof payload.
+            // Remove only an ordered suffix, preserving every retained parent.
+            // This is request-local; no pool entry is quarantined or evicted.
+            if (bodies.empty()) throw;
+            bodies.pop_back();
+        }
+    }
+    block_template_stats_.total_txs = result->Transactions().size();
+    block_template_stats_.total_fees = result->TotalFees();
+    block_template_stats_.block_weight = result->Weight();
+    block_template_stats_.block_size = result->WireBytes().size();
+    block_template_stats_.mempool_size = capture.pool_size;
+    block_template_stats_.rejected_txs = capture.pool_size - bodies.size();
+    block_template_stats_.height = height;
+    block_template_stats_.prev_block = tip->hash.GetHex();
+    block_template_stats_.determinism_hash = result->Header().GetHash();
+    block_template_stats_.witness_nonce_offset = 0;
+    block_template_stats_.witness_nonce_size = 0;
+    last_template_error_.clear();
+    return result;
+}
 
 std::unique_ptr<Block> BlockAssembler::CreateNewBlock(
     const std::string& coinbase_address,
