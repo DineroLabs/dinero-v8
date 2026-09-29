@@ -673,3 +673,5 @@ int main(int argc, char** argv) {
 #include "orchard_block_serving_checks.h"
 
 #include "orchard_disk_readmission_checks.h"
+
+#include "orchard_queued_ingress_checks.h"

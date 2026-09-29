@@ -4,10 +4,43 @@
 #include "consensus/validation_queue.h"
 #include "dinero/daemon/block_acceptor.h"  // BlockAcceptor static methods
 #include "common/ilogger.h"
+#include "consensus/orchard_profile.h"
+#include "util/hex.h"
+#include <limits>
 #include <iostream>
 #include <sstream>
 
 namespace dinero {
+
+namespace {
+// This concrete task is constructed only after parent-height/profile capture.
+// Its service and exact bytes remain owned until the queue returns a result.
+class QueuedOrchardBlock final : public consensus::CanonicalBlockTask {
+public:
+    QueuedOrchardBlock(std::shared_ptr<ChainstateService> source,
+                       std::vector<uint8_t> wire, uint256 hash, uint64_t height)
+        : source_(std::move(source)), wire_(std::move(wire)), hash_(hash), height_(height) {}
+    const uint256& Hash() const noexcept override { return hash_; }
+    uint64_t Height() const noexcept override { return height_; }
+    size_t WireBytes() const noexcept override { return wire_.size(); }
+    BlockAcceptResult ValidateAndApply() const override {
+        auto* context = DaemonContext::instance();
+        if (!context || context->chainstate != source_)
+            return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+                "Queued Orchard selected owner changed", hash_, height_);
+        const auto result = source_->TryAcceptOrchardBlockFromRPC(util::hex(wire_));
+        if (!result)
+            return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED,
+                "Queued Orchard profile unavailable", hash_, height_);
+        return *result;
+    }
+private:
+    const std::shared_ptr<ChainstateService> source_;
+    const std::vector<uint8_t> wire_;
+    const uint256 hash_;
+    const uint64_t height_;
+};
+}
 
 bool BlockIngressService::Init(DaemonContext& ctx) {
     // Store logger dependency
@@ -111,7 +144,49 @@ BlockAcceptResult BlockIngressService::SubmitHex(const std::string& hex_block, B
         logger_->info("[BlockIngressService] Submitting hex block from " + std::string(source));
     }
 
-    // Hex blocks are typically from RPC
+    if (origin == BlockOrigin::P2P && Params().orchard_activation_height != UINT32_MAX) {
+        // Classification is captured under the selected lock and never inferred
+        // from a transaction version. Release that lock BEFORE queue waiting.
+        if (!ctx_ || hex_block.size() < 256 || hex_block.size() % 2 ||
+            hex_block.size() / 2 > 64 * 1024 * 1024)
+            return BlockAcceptResult::Rejected(BlockRejectCode::PARSE_ERROR, "Invalid queued block frame");
+        auto chainstate = std::dynamic_pointer_cast<ChainstateService>(ctx_->chainstate);
+        if (!chainstate)
+            return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED, "Queued block owner unavailable");
+        std::vector<uint8_t> prefix;
+        if (!util::unhex(hex_block.substr(0,256),prefix))
+            return BlockAcceptResult::Rejected(BlockRejectCode::PARSE_ERROR, "Invalid queued block header");
+        const auto header = BlockHeader::Deserialize(prefix);
+        if (!header)
+            return BlockAcceptResult::Rejected(BlockRejectCode::PARSE_ERROR, "Invalid queued block header");
+        uint64_t height = 0;
+        bool orchard = false;
+        {
+            auto selected = chainstate->AcquireBlockIngressActivationLock();
+            auto* db = chainstate->GetChainDB();
+            if (!db || !consensus::OrchardProfileConfigurationValid(Params()))
+                return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED, "Queued block profile unavailable", header->GetHash());
+            const auto parent = db->getBlockHeight(header->prev_block_hash);
+            if (!parent.ok())
+                return BlockAcceptResult::Rejected(parent.status() == Status::NotFound ? BlockRejectCode::MISSING_PARENT : BlockRejectCode::CONNECT_FAILED,
+                    "Queued block parent unavailable", header->GetHash());
+            if (*parent < 0 || *parent >= INT32_MAX)
+                return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED, "Queued block parent height unavailable", header->GetHash());
+            height = uint64_t(*parent) + 1;
+            orchard = consensus::OrchardActiveForHeight(Params(), static_cast<uint32_t>(height));
+        }
+        if (orchard) {
+            const auto queue = ctx_->validation_queue;
+            if (!queue || !queue->isRunning())
+                return BlockAcceptResult::Rejected(BlockRejectCode::CONNECT_FAILED, "Orchard validation queue unavailable", header->GetHash(), height);
+            std::vector<uint8_t> wire;
+            if (!util::unhex(hex_block,wire))
+                return BlockAcceptResult::Rejected(BlockRejectCode::PARSE_ERROR, "Invalid queued Orchard block encoding", header->GetHash(), height);
+            return queue->submitAndWait(std::make_shared<QueuedOrchardBlock>(
+                std::move(chainstate),std::move(wire),header->GetHash(),height));
+        }
+    }
+    // Existing historical/RPC handling is unchanged.
     return BlockAcceptor::AcceptBlockFromRPC(hex_block, source);
 }
 

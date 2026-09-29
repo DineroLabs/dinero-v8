@@ -53,6 +53,18 @@ namespace consensus {
 class IConsensusUTXOSet;
 class ChainstateGuard;
 class BlockValidator;
+// Trusted in-process canonical validators own their exact wire bytes and the
+// selected service. This is queued work, not a validation certificate. Execute
+// must perform complete current-state validation and canonical acceptance.
+class CanonicalBlockTask {
+public:
+    virtual ~CanonicalBlockTask() = default;
+    virtual const uint256& Hash() const noexcept = 0;
+    virtual uint64_t Height() const noexcept = 0;
+    virtual size_t WireBytes() const noexcept = 0;
+    virtual BlockAcceptResult ValidateAndApply() const = 0;
+};
+
 /**
  * BlockValidationJob - Represents a block undergoing validation
  */
@@ -115,6 +127,7 @@ public:
         size_t max_queued_blocks = 128;      // Max blocks waiting
         bool enable_pipelining = true;       // Allow overlapping validation
         bool enable_priority = true;          // Prioritize by height (IBD)
+        size_t max_canonical_wire_bytes = 64 * 1024 * 1024; // Queued + active wire, not resident memory
         size_t worker_pool_threads = 0;      // 0 = auto (from ValidationWorkerPool)
 
         static Config forIBD();
@@ -142,6 +155,10 @@ public:
     // Block submission (from network/RPC) - Phase M.0: uint256 identity
     bool submit(const Block& block, uint64_t height, const uint256& prev_hash);
     BlockAcceptResult submitAndWait(const Block& block, uint64_t height, const uint256& prev_hash);
+
+    // The same applier thread executes these tasks. No historical Block is
+    // fabricated and no validated/connected metric advances before real apply.
+    BlockAcceptResult submitAndWait(std::shared_ptr<const CanonicalBlockTask> task);
 
     // Callbacks
     void setBlockConnectedCallback(BlockConnectedCallback cb) { on_block_connected_ = cb; }
@@ -195,6 +212,22 @@ private:
     std::shared_ptr<BlockValidationJob> popNextJob();
     std::shared_ptr<BlockValidationJob> popNextValidatedJob();
     bool enqueueJob(const std::shared_ptr<BlockValidationJob>& job);
+
+    struct CanonicalJob {
+        std::shared_ptr<const CanonicalBlockTask> task;
+        uint256 hash;
+        uint64_t height = 0;
+        size_t wire_bytes = 0;
+        std::promise<BlockAcceptResult> completion;
+    };
+    std::shared_ptr<CanonicalJob> popCanonicalJob();
+    void applyCanonicalJob(const std::shared_ptr<CanonicalJob>& job);
+    // All except the active metric use validated_mutex_. Reservations include
+    // the active task until its final result has been computed.
+    std::deque<std::shared_ptr<CanonicalJob>> canonical_queue_;
+    size_t canonical_reserved_bytes_ = 0;
+    size_t canonical_outstanding_ = 0;
+    std::atomic<size_t> canonical_active_{0};
 
     Config config_;
     Metrics metrics_;
