@@ -826,6 +826,15 @@ public:
     void PersistStoredBodyPosition(const uint256& hash, const FilePosition& pos);
     bool hasFlatfileBlockByHash(const uint256& hash) const;
     StatusOr<Block> getBlockByHash(const uint256& hash) const;
+    // Owned presentation data captured under the selected service lock. Reading
+    // a stored body does not grant admission or certify current canonicality.
+    struct BlockRpcSnapshot {
+        BlockHeader header;
+        uint32_t height;
+        std::vector<uint8_t> bytes;
+        std::vector<uint256> transaction_ids;
+    };
+    StatusOr<BlockRpcSnapshot> getBlockRpcSnapshot(const uint256& hash) const;
     // Selected-height typed read, under the service activation lock. Optional
     // Orchard builds expose a mixed body without fabricating legacy transactions.
     // Default builds return Internal (reader unavailable). Not admission.

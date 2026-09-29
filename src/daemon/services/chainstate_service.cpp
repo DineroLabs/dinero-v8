@@ -5639,6 +5639,39 @@ StatusOr<Block> ChainstateService::getBlockByHash(const uint256& hash) const {
     return ReadStoredBlock(hash);
 }
 
+StatusOr<ChainstateService::BlockRpcSnapshot> ChainstateService::getBlockRpcSnapshot(
+        const uint256& hash) const {
+    std::lock_guard<AnnotatedRecursiveMutex> guard(activation_mutex_);
+    if (!chain_db_ || !consensus::OrchardProfileConfigurationValid(Params())) return Status::Internal;
+    const auto height=chain_db_->getBlockHeight(hash);
+    if (!height.ok()) return height.status();
+    if (*height<0) return Status::Corruption;
+    BlockRpcSnapshot result{};result.height=static_cast<uint32_t>(*height);
+    if (consensus::OrchardActiveForHeight(Params(),result.height)) {
+#ifdef DINERO_HAS_ORCHARD_RUNTIME_READER
+        const auto body=getRuntimeBlockByHash(hash);
+        if (!body.ok()) return body.status();
+        if (!(*body)->IsOrchardProfile() || !(*body)->Context() ||
+            (*body)->Context()->height!=result.height) return Status::Corruption;
+        const auto& typed=(*body)->Orchard();
+        result.header=typed.Header();result.bytes=typed.WireBytes();
+        result.transaction_ids.reserve(typed.Transactions().size());
+        for (const auto& tx:typed.Transactions()) result.transaction_ids.push_back(tx.GetTxid().AsUint256());
+#else
+        return Status::Internal;
+#endif
+    } else {
+        const auto body=getBlockByHash(hash);
+        if (!body.ok()) return body.status();
+        result.header=body->header;
+        const auto bytes=body->Serialize();result.bytes.assign(bytes.begin(),bytes.end());
+        result.transaction_ids.reserve(body->vtx.size());
+        for (const auto& tx:body->vtx) result.transaction_ids.push_back(tx.GetTxid().AsUint256());
+    }
+    if (result.header.GetHash()!=hash) return Status::Corruption;
+    return result;
+}
+
 StatusOr<std::shared_ptr<const RuntimeBlockBody>> ChainstateService::getRuntimeBlockByHash(
         const uint256& hash) const {
 #ifdef DINERO_HAS_ORCHARD_RUNTIME_READER

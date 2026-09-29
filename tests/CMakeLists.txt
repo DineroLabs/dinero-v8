@@ -5055,6 +5055,10 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_executable(test_assumeutxo_replay
     tests/daemon/test_assumeutxo_replay.cpp
+    src/rpc/methods_blockchain_context.cpp
+    src/rpc/methods_utxoset.cpp
+    src/rpc/methods_address_index.cpp
+    src/rpc/methods_utreexo.cpp
     src/rpc/methods_mining_v14.cpp
     src/daemon/services/assumeutxo_replay.cpp
     src/consensus/utxo_set_digest.cpp
@@ -5110,6 +5114,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME OrchardBlockRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardBlockRpc.*)
+  set_tests_properties(OrchardBlockRpc PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;rpc;mandatory")
   add_test(NAME OrchardCanonicalPool COMMAND test_assumeutxo_replay --gtest_filter=OrchardCanonicalPool.*)
   set_tests_properties(OrchardCanonicalPool PROPERTIES TIMEOUT 120 LABELS "daemon;orchard;mempool;mandatory")
   add_test(NAME OrchardMiningRpc COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningRpc.*)

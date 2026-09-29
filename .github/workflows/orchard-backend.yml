@@ -960,6 +960,25 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYTEST
 
+      - name: Owned Orchard block RPC reads
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^OrchardBlockRpc$' --show-only=json-v1 > orchard-block-rpc-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-block-rpc-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['OrchardBlockRpc']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^OrchardBlockRpc$' --verbose --no-tests=error --output-log orchard-block-rpc-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('orchard-block-rpc-execution.log').read_text()
+          for case in ['ExactTypedRawAndVerboseReopen','MissingAndInconsistentTypedStorageRefuse','HistoricalBytesAndInputRefusals']:
+              assert log.count('[       OK ] OrchardBlockRpc.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYTEST
+
       - name: Canonical Orchard pool publication
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2294,6 +2313,8 @@ jobs:
             orchard-typed-acceptance-owner-execution.log
             orchard-selected-admission-inventory.json
             orchard-selected-admission-execution.log
+            orchard-block-rpc-inventory.json
+            orchard-block-rpc-execution.log
             orchard-canonical-pool-inventory.json
             orchard-canonical-pool-execution.log
             orchard-mining-rpc-inventory.json
