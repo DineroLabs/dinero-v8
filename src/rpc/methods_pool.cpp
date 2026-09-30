@@ -16,6 +16,8 @@
 #include <cmath>
 #include <stdexcept>
 #include "pool/payout_calculator.h"
+#include "pool/canonical_block.h"
+#include "daemon/daemon_context.h"
 #include "common/logger.h"
 #include <algorithm>
 #include <cctype>
@@ -364,7 +366,7 @@ void registerPoolMethods() {
         .param("block_height", "number", "Found block height (required if is_block=true)", false)
         .param("block_reward", "number", "Found block reward in una (required if is_block=true)", false)
         .result("object", "Share submission result")
-        .handler([](const ExecutionContext&, const din::Json& params) {
+        .handler([](const ExecutionContext& ctx, const din::Json& params) {
             din::Json result = din::obj();
             std::shared_ptr<dinero::pool::PoolManager> pool_manager;
             if (!resolvePoolManager(pool_manager, result)) {
@@ -477,7 +479,19 @@ void registerPoolMethods() {
                 return makePoolError(-32602, "Invalid parameter: share_uid too long");
             }
 
-            const auto submit = pool_manager->onShareSubmit(worker_id,
+            const auto submit = [&]() {
+                if(is_block && is_valid && !is_stale) {
+                    try {
+                        const auto source=ctx.daemon?ctx.daemon->chainstate:nullptr;
+                        return dinero::pool::RecordCanonicalPoolShare(source,*pool_manager,
+                            {worker_id,job_id,block_hash,share_uid,difficulty,block_height,block_reward});
+                    } catch(const std::exception& e) {
+                        return dinero::pool::PoolManager::ShareSubmitResult{
+                            dinero::pool::PoolManager::ShareSubmitCode::REJECTED,
+                            dinero::pool::ShareStatus::INVALID,e.what()};
+                    }
+                }
+                return pool_manager->onShareSubmit(worker_id,
                                                             job_id,
                                                             difficulty,
                                                             is_valid,
@@ -487,6 +501,7 @@ void registerPoolMethods() {
                                                             block_height,
                                                             block_reward,
                                                             share_uid);
+            }();
 
             switch (submit.code) {
                 case dinero::pool::PoolManager::ShareSubmitCode::RATE_LIMITED:

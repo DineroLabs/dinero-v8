@@ -6,6 +6,7 @@
  */
 
 #include "pool/pool_manager.h"
+#include "primitives/amount.h"
 #include "common/logger.h"
 #include "consensus/subsidy.h"
 #include "storage/chain_db.h"
@@ -123,13 +124,19 @@ PoolManager::ShareSubmitResult PoolManager::onShareSubmit(const std::string& wor
         };
     }
 
-    if (difficulty <= 0.0 || !std::isfinite(difficulty)) {
+    // Preserve fractional difficulty while bounding the legacy uint32_t field.
+    if (difficulty <= 0.0 || !std::isfinite(difficulty) || difficulty >= 4294967296.0) {
         registerInvalidSubmission(submit_state, now, "invalid-difficulty");
         return ShareSubmitResult{
             ShareSubmitCode::REJECTED,
             ShareStatus::INVALID,
             "Invalid difficulty"
         };
+    }
+
+    if (is_block && (block_reward == 0 || block_reward > MAX_SUPPLY_UNA_CONST)) {
+        registerInvalidSubmission(submit_state, now, "invalid-block-reward");
+        return ShareSubmitResult{ShareSubmitCode::REJECTED,ShareStatus::INVALID,"Invalid block reward"};
     }
 
     if (!is_valid && is_block) {

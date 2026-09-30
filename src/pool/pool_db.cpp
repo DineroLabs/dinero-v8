@@ -571,11 +571,11 @@ bool PoolDB::insertShare(const Share& share) {
         sqlite3_bind_text(stmt, 1, share.worker_id.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 2, share.wallet_address.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 3, share.job_id.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 4, share.difficulty);
+        sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(share.difficulty));
         sqlite3_bind_double(stmt, 5, share.difficulty_real);
         sqlite3_bind_int(stmt, 6, static_cast<int>(share.status));
         sqlite3_bind_text(stmt, 7, share.block_hash.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_int(stmt, 8, share.block_height);
+        sqlite3_bind_int64(stmt, 8, static_cast<sqlite3_int64>(share.block_height));
         sqlite3_bind_int64(stmt, 9, share.block_reward);
         sqlite3_bind_int64(stmt, 10, share.submitted_at);
     });
@@ -701,44 +701,15 @@ std::vector<Share> PoolDB::getLastNShares(uint64_t n) {
 std::vector<Share> PoolDB::getWorkerShares(const std::string& worker_id,
                                            uint32_t limit) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<Share> shares;
-
-    const char* sql = R"(
-        SELECT share_id, worker_id, wallet_address, job_id, difficulty,
-               difficulty_real, status, block_hash, block_height,
-               block_reward, submitted_at
-        FROM shares
-        WHERE worker_id = ?
-        ORDER BY submitted_at DESC
-        LIMIT ?;
-    )";
-
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return shares;
-    }
-
-    sqlite3_bind_text(stmt, 1, worker_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, static_cast<int>(limit));
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Share s;
-        s.share_id = sqlite3_column_int64(stmt, 0);
-        s.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        s.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        s.job_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        s.difficulty = sqlite3_column_int(stmt, 4);
-        s.difficulty_real = sqlite3_column_double(stmt, 5);
-        s.status = static_cast<ShareStatus>(sqlite3_column_int(stmt, 6));
-        const char* bh = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
-        if (bh) s.block_hash = bh;
-        s.block_height = sqlite3_column_int(stmt, 8);
-        s.block_reward = sqlite3_column_int64(stmt, 9);
-        s.submitted_at = sqlite3_column_int64(stmt, 10);
-        shares.push_back(s);
-    }
-
-    sqlite3_finalize(stmt);
+    if (!db_) throw std::runtime_error("pool worker shares unavailable");
+    OrphanStatement rows(db_,
+        "SELECT share_id,worker_id,wallet_address,job_id,difficulty,difficulty_real,status,"
+        "block_hash,block_height,block_reward,submitted_at FROM shares "
+        "WHERE worker_id=? ORDER BY submitted_at DESC LIMIT ?");
+    rows.text(1,worker_id);rows.integer(2,static_cast<sqlite3_int64>(limit));
+    std::vector<Share> shares;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) shares.push_back(ReadCalculationShare(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool worker shares incomplete");
     return shares;
 }
 
