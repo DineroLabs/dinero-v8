@@ -113,20 +113,8 @@ jobs:
 
       - name: Verify Orchard backend is absent from the default graph
         run: |
-          python3 - <<'PYCODE'
-          import json
-          from pathlib import Path
-          cache = Path('build-tests/CMakeCache.txt').read_text()
-          assert 'DINERO_BUILD_ORCHARD_BACKEND:BOOL=OFF' in cache
-          commands = json.loads(Path('build-tests/compile_commands.json').read_text())
-          for suffix in ['/src/daemon/services/chainstate_service.cpp', '/tests/daemon/test_assumeutxo_replay.cpp']:
-              entries = [e for e in commands if e['file'].endswith(suffix)]
-              assert entries, suffix
-              for entry in entries:
-                  assert 'DINERO_HAS_ORCHARD_RUNTIME_READER' not in entry['command'], suffix
-                  assert 'DINERO_TEST_ORCHARD_ORIGIN' not in entry['command'], suffix
-                  assert '/rust/orchard_backend' not in entry['command'], suffix
-          PYCODE
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/ci/tests/test_check_orchard_backend_off.py
+          python3 scripts/ci/check_orchard_backend_off.py build-tests
 
       - name: Full default build
         id: build
