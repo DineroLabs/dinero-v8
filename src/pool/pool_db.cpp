@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <sstream>
 #include <ctime>
+#include <limits>
+#include <stdexcept>
 
 namespace dinero {
 namespace pool {
@@ -61,6 +63,102 @@ bool EnsureColumn(sqlite3* db, const std::string& table, const std::string& colu
     return true;
 }
 
+// Local checked statements for orphan accounting. Older general getters retain
+// their existing narrower contracts; this transition does not use them.
+class OrphanStatement {
+public:
+    OrphanStatement(sqlite3* db, const char* sql) {
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt_, nullptr) != SQLITE_OK) {
+            sqlite3_finalize(stmt_); stmt_=nullptr;
+            throw std::runtime_error("pool orphan statement unavailable");
+        }
+    }
+    ~OrphanStatement() { sqlite3_finalize(stmt_); }
+    OrphanStatement(const OrphanStatement&)=delete;
+    sqlite3_stmt* get() const { return stmt_; }
+    void integer(int index, sqlite3_int64 value) {
+        if (sqlite3_bind_int64(stmt_,index,value)!=SQLITE_OK)
+            throw std::runtime_error("pool orphan integer bind failed");
+    }
+    void text(int index, const std::string& value) {
+        if (value.size()>static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            sqlite3_bind_text(stmt_,index,value.data(),static_cast<int>(value.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+            throw std::runtime_error("pool orphan text bind failed");
+    }
+    sqlite3_int64 nonnegative(int column) const {
+        if (sqlite3_column_type(stmt_,column)!=SQLITE_INTEGER || sqlite3_column_int64(stmt_,column)<0)
+            throw std::runtime_error("invalid pool orphan integer");
+        return sqlite3_column_int64(stmt_,column);
+    }
+    std::string textColumn(int column) const {
+        if (sqlite3_column_type(stmt_,column)!=SQLITE_TEXT)
+            throw std::runtime_error("invalid pool orphan text type");
+        const auto* value=sqlite3_column_text(stmt_,column);
+        const int size=sqlite3_column_bytes(stmt_,column);
+        if (!value || size<=0) throw std::runtime_error("empty pool orphan owner");
+        std::string result(reinterpret_cast<const char*>(value),static_cast<size_t>(size));
+        if (result.find('\0')!=std::string::npos) throw std::runtime_error("invalid pool orphan owner bytes");
+        return result;
+    }
+    void done() {
+        if (sqlite3_step(stmt_)!=SQLITE_DONE) throw std::runtime_error("incomplete pool orphan statement");
+    }
+    void changedOne(sqlite3* db) {
+        done();
+        if (sqlite3_changes(db)!=1) throw std::runtime_error("missing pool orphan write owner");
+    }
+private:
+    sqlite3_stmt* stmt_=nullptr;
+};
+
+class OrphanTransaction {
+public:
+    explicit OrphanTransaction(sqlite3* db):db_(db) {
+        // Caller checks autocommit before construction, so no pragma or rollback
+        // can affect a borrowed transaction.
+        original_sync_=readSync();
+        if (original_sync_<2) {
+            if (sqlite3_exec(db_,"PRAGMA synchronous=FULL",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                throw std::runtime_error("pool orphan FULL unavailable");
+            restore_sync_=true;
+        }
+        try {
+            if (readSync()<2 || sqlite3_exec(db_,"BEGIN IMMEDIATE",nullptr,nullptr,nullptr)!=SQLITE_OK)
+                throw std::runtime_error("pool orphan transaction unavailable");
+            active_=true;
+        } catch (...) { restoreSync(); throw; }
+    }
+    ~OrphanTransaction() {
+        if (active_ && !sqlite3_get_autocommit(db_))
+            sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr);
+        restoreSync();
+    }
+    void commit() {
+        if (sqlite3_exec(db_,"COMMIT",nullptr,nullptr,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("pool orphan commit refused");
+        active_=false;
+    }
+private:
+    int readSync() {
+        OrphanStatement s(db_,"PRAGMA synchronous");
+        if (sqlite3_step(s.get())!=SQLITE_ROW) throw std::runtime_error("pool orphan sync unreadable");
+        auto value=s.nonnegative(0);s.done();
+        if (value>3) throw std::runtime_error("invalid pool orphan sync mode");
+        return static_cast<int>(value);
+    }
+    void restoreSync() noexcept {
+        if (!restore_sync_) return;
+        // On a restore refusal retain the stronger mode. COMMIT already defines
+        // success; never report a committed transition as rolled back.
+        sqlite3_exec(db_,original_sync_==0?"PRAGMA synchronous=OFF":"PRAGMA synchronous=NORMAL",nullptr,nullptr,nullptr);
+        restore_sync_=false;
+    }
+    sqlite3* db_;
+    int original_sync_=2;
+    bool restore_sync_=false;
+    bool active_=false;
+};
+
 } // namespace
 
 // ============================================================================
@@ -72,6 +170,7 @@ PoolDB::PoolDB(const std::string& db_path)
 }
 
 PoolDB::~PoolDB() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (db_) {
         sqlite3_close(db_);
         db_ = nullptr;
@@ -83,6 +182,7 @@ PoolDB::~PoolDB() {
 // ============================================================================
 
 bool PoolDB::initialize() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int rc = sqlite3_open(db_path_.c_str(), &db_);
     if (rc != SQLITE_OK) {
         g_logger.error("[PoolDB] Failed to open database: " + db_path_);
@@ -119,6 +219,7 @@ bool PoolDB::initialize() {
 }
 
 bool PoolDB::createTables() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Shares table
     const char* shares_sql = R"(
         CREATE TABLE IF NOT EXISTS shares (
@@ -260,6 +361,7 @@ bool PoolDB::createTables() {
 }
 
 bool PoolDB::createIndexes() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Shares indexes
     executeSQL("CREATE INDEX IF NOT EXISTS idx_shares_worker ON shares(worker_id);");
     executeSQL("CREATE INDEX IF NOT EXISTS idx_shares_time ON shares(submitted_at);");
@@ -290,6 +392,7 @@ bool PoolDB::createIndexes() {
 // ============================================================================
 
 bool PoolDB::executeSQL(const std::string& sql) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     char* err_msg = nullptr;
     int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg);
     if (rc != SQLITE_OK) {
@@ -301,6 +404,7 @@ bool PoolDB::executeSQL(const std::string& sql) {
 }
 
 bool PoolDB::executeSQL(const std::string& sql, std::function<void(sqlite3_stmt*)> bind_fn) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     sqlite3_stmt* stmt;
     int rc = sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
@@ -321,6 +425,7 @@ bool PoolDB::executeSQL(const std::string& sql, std::function<void(sqlite3_stmt*
 // ============================================================================
 
 bool PoolDB::insertShare(const Share& share) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         INSERT INTO shares (worker_id, wallet_address, job_id, difficulty,
                            difficulty_real, status, block_hash, block_height,
@@ -343,6 +448,7 @@ bool PoolDB::insertShare(const Share& share) {
 }
 
 bool PoolDB::runInTransaction(const std::function<bool()>& fn) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_) {
         g_logger.error("[PoolDB] Cannot start transaction: database is not open");
         return false;
@@ -386,6 +492,7 @@ bool PoolDB::runInTransaction(const std::function<bool()>& fn) {
 PoolDB::ShareSubmissionReservationResult PoolDB::reserveShareSubmissionKey(const std::string& dedupe_key,
                                                                            const std::string& worker_id,
                                                                            int64_t submitted_at) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (dedupe_key.empty()) {
         g_logger.error("[PoolDB] Cannot reserve empty share dedupe key");
         return ShareSubmissionReservationResult::Error;
@@ -425,6 +532,7 @@ PoolDB::ShareSubmissionReservationResult PoolDB::reserveShareSubmissionKey(const
 }
 
 uint64_t PoolDB::pruneShareSubmissionKeysOlderThan(int64_t cutoff_timestamp) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "DELETE FROM share_dedupe WHERE submitted_at < ?";
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -443,6 +551,7 @@ uint64_t PoolDB::pruneShareSubmissionKeysOlderThan(int64_t cutoff_timestamp) {
 }
 
 std::vector<Share> PoolDB::getLastNShares(uint64_t n) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<Share> shares;
 
     const char* sql = R"(
@@ -485,6 +594,7 @@ std::vector<Share> PoolDB::getLastNShares(uint64_t n) {
 
 std::vector<Share> PoolDB::getWorkerShares(const std::string& worker_id,
                                            uint32_t limit) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<Share> shares;
 
     const char* sql = R"(
@@ -528,6 +638,7 @@ std::vector<Share> PoolDB::getWorkerShares(const std::string& worker_id,
 
 double PoolDB::getWorkerDifficultyInRange(const std::string& worker_id,
                                            int64_t start_time, int64_t end_time) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COALESCE(SUM(difficulty_real), 0.0)
         FROM shares
@@ -559,6 +670,7 @@ double PoolDB::getWorkerDifficultyInRange(const std::string& worker_id,
 
 WorkerStats PoolDB::getOrCreateWorker(const std::string& worker_id,
                                        const std::string& wallet_address) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Try to get existing
     auto existing = getWorker(worker_id);
     if (existing) {
@@ -588,6 +700,7 @@ WorkerStats PoolDB::getOrCreateWorker(const std::string& worker_id,
 }
 
 std::optional<WorkerStats> PoolDB::getWorker(const std::string& worker_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT worker_id, wallet_address, shares_valid, shares_stale,
                shares_invalid, blocks_found, current_difficulty, total_difficulty,
@@ -633,6 +746,7 @@ std::optional<WorkerStats> PoolDB::getWorker(const std::string& worker_id) {
 }
 
 std::vector<WorkerStats> PoolDB::getWorkersByAddress(const std::string& wallet_address) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<WorkerStats> workers;
 
     const char* sql = R"(
@@ -680,6 +794,7 @@ std::vector<WorkerStats> PoolDB::getWorkersByAddress(const std::string& wallet_a
 }
 
 bool PoolDB::updateWorkerStats(const WorkerStats& stats) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE workers SET
             shares_valid = ?, shares_stale = ?, shares_invalid = ?,
@@ -711,6 +826,7 @@ bool PoolDB::updateWorkerStats(const WorkerStats& stats) {
 }
 
 std::vector<WorkerStats> PoolDB::getActiveWorkers(int64_t seconds) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<WorkerStats> workers;
     int64_t cutoff = std::time(nullptr) - seconds;
 
@@ -759,6 +875,7 @@ std::vector<WorkerStats> PoolDB::getActiveWorkers(int64_t seconds) {
 }
 
 bool PoolDB::addWorkerPending(const std::string& worker_id, uint64_t amount) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE workers SET
             pending_payout = pending_payout + ?,
@@ -778,6 +895,7 @@ bool PoolDB::addWorkerPending(const std::string& worker_id, uint64_t amount) {
 // ============================================================================
 
 bool PoolDB::insertBlock(PoolBlock& block) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         INSERT INTO blocks (block_hash, height, finder_worker, finder_address,
                            reward, fees, total_reward, pool_fee_percent,
@@ -815,6 +933,7 @@ bool PoolDB::insertBlock(PoolBlock& block) {
 }
 
 std::vector<PoolBlock> PoolDB::getPendingBlocks() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<PoolBlock> blocks;
 
     const char* sql = R"(
@@ -867,6 +986,7 @@ std::vector<PoolBlock> PoolDB::getPendingBlocks() {
 // ============================================================================
 
 bool PoolDB::insertPayout(const Payout& payout) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         INSERT INTO payouts (block_id, worker_id, wallet_address, amount,
                             share_percent, share_count, difficulty_sum,
@@ -892,6 +1012,7 @@ bool PoolDB::insertPayout(const Payout& payout) {
 // ============================================================================
 
 uint64_t PoolDB::startNewRound() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int64_t now = std::time(nullptr);
     const char* sql = "INSERT INTO rounds (started_at) VALUES (?);";
 
@@ -903,6 +1024,7 @@ uint64_t PoolDB::startNewRound() {
 }
 
 bool PoolDB::endRound(uint64_t round_id, uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int64_t now = std::time(nullptr);
     const char* sql = R"(
         UPDATE rounds SET block_id = ?, ended_at = ?
@@ -919,6 +1041,7 @@ bool PoolDB::endRound(uint64_t round_id, uint64_t block_id) {
 bool PoolDB::addWorkerDifficultyToRound(uint64_t round_id,
                                          const std::string& worker_id,
                                          double difficulty) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Upsert: insert or update if exists
     const char* sql = R"(
         INSERT INTO round_shares (round_id, worker_id, difficulty_sum, share_count)
@@ -954,6 +1077,7 @@ bool PoolDB::addWorkerDifficultyToRound(uint64_t round_id,
 
 uint64_t PoolDB::countWorkerSharesInRound(const std::string& worker_id,
                                           uint64_t round_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COALESCE(share_count, 0)
         FROM round_shares
@@ -977,6 +1101,7 @@ uint64_t PoolDB::countWorkerSharesInRound(const std::string& worker_id,
 }
 
 std::optional<MiningRound> PoolDB::getCurrentRound() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT round_id, block_id, total_shares, total_difficulty, started_at, ended_at
         FROM rounds
@@ -1011,6 +1136,7 @@ std::optional<MiningRound> PoolDB::getCurrentRound() {
 // ============================================================================
 
 PoolStats PoolDB::getPoolStats() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     PoolStats stats;
     const int64_t now = std::time(nullptr);
 
@@ -1140,6 +1266,7 @@ PoolStats PoolDB::getPoolStats() {
 }
 
 uint64_t PoolDB::getTotalSharesInPeriod(int64_t start_time, int64_t end_time) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COUNT(*)
         FROM shares
@@ -1162,6 +1289,7 @@ uint64_t PoolDB::getTotalSharesInPeriod(int64_t start_time, int64_t end_time) {
 }
 
 double PoolDB::getTotalDifficultyInPeriod(int64_t start_time, int64_t end_time) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         SELECT COALESCE(SUM(difficulty_real), 0.0)
         FROM shares
@@ -1185,6 +1313,7 @@ double PoolDB::getTotalDifficultyInPeriod(int64_t start_time, int64_t end_time) 
 }
 
 double PoolDB::calculateLuck(int64_t period_seconds) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (period_seconds <= 0) {
         return 0.0;
     }
@@ -1262,6 +1391,7 @@ double PoolDB::calculateLuck(int64_t period_seconds) {
 // ============================================================================
 
 PoolConfig PoolDB::getConfig() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     PoolConfig config;
 
     const char* sql = "SELECT key, value FROM config;";
@@ -1294,6 +1424,7 @@ PoolConfig PoolDB::getConfig() {
 }
 
 bool PoolDB::updateConfig(const PoolConfig& config) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     // Simple key-value upserts
     auto upsert = [this](const std::string& key, const std::string& value) {
         const char* sql = R"(
@@ -1326,6 +1457,7 @@ bool PoolDB::updateConfig(const PoolConfig& config) {
 // ============================================================================
 
 uint64_t PoolDB::pruneOldShares(int64_t days) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     int64_t cutoff = std::time(nullptr) - (days * 86400);
 
     const char* sql = "DELETE FROM shares WHERE submitted_at < ? AND status != 4;"; // Keep block shares
@@ -1343,10 +1475,12 @@ uint64_t PoolDB::pruneOldShares(int64_t days) {
 }
 
 bool PoolDB::vacuum() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     return executeSQL("VACUUM;");
 }
 
 uint64_t PoolDB::getDatabaseSize() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size();";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1366,6 +1500,7 @@ uint64_t PoolDB::getDatabaseSize() {
 // ============================================================================
 
 bool PoolDB::updateBlock(const PoolBlock& block) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE blocks SET
             confirmations = ?,
@@ -1394,6 +1529,7 @@ bool PoolDB::updateBlock(const PoolBlock& block) {
 }
 
 bool PoolDB::addWorkerPaid(const std::string& worker_id, uint64_t amount) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "UPDATE workers SET total_paid = total_paid + ? WHERE worker_id = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1407,6 +1543,7 @@ bool PoolDB::addWorkerPaid(const std::string& worker_id, uint64_t amount) {
 }
 
 bool PoolDB::subtractWorkerPending(const std::string& worker_id, uint64_t amount) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE workers
         SET pending_payout = CASE
@@ -1428,6 +1565,7 @@ bool PoolDB::subtractWorkerPending(const std::string& worker_id, uint64_t amount
 }
 
 std::optional<PoolBlock> PoolDB::getBlockByHash(const std::string& block_hash) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "SELECT * FROM blocks WHERE block_hash = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1465,6 +1603,7 @@ std::optional<PoolBlock> PoolDB::getBlockByHash(const std::string& block_hash) {
 }
 
 std::optional<PoolBlock> PoolDB::getBlock(uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "SELECT * FROM blocks WHERE block_id = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1502,6 +1641,7 @@ std::optional<PoolBlock> PoolDB::getBlock(uint64_t block_id) {
 }
 
 std::vector<PoolBlock> PoolDB::getRecentBlocks(uint32_t limit) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<PoolBlock> blocks;
     const char* sql = "SELECT * FROM blocks ORDER BY found_at DESC LIMIT ?";
     sqlite3_stmt* stmt;
@@ -1539,6 +1679,7 @@ std::vector<PoolBlock> PoolDB::getRecentBlocks(uint32_t limit) {
 }
 
 std::vector<Share> PoolDB::getSharesInRange(int64_t start_time, int64_t end_time) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<Share> shares;
     const char* sql = "SELECT * FROM shares WHERE submitted_at >= ? AND submitted_at <= ? ORDER BY submitted_at DESC";
     sqlite3_stmt* stmt;
@@ -1570,6 +1711,7 @@ std::vector<Share> PoolDB::getSharesInRange(int64_t start_time, int64_t end_time
 }
 
 std::vector<Payout> PoolDB::getPendingPayouts() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<Payout> payouts;
     const char* sql = "SELECT * FROM payouts WHERE status IN (0, 3) ORDER BY calculated_at ASC";
     sqlite3_stmt* stmt;
@@ -1607,6 +1749,7 @@ std::vector<Payout> PoolDB::getPendingPayouts() {
 
 std::vector<Payout> PoolDB::getWorkerPayouts(const std::string& worker_id,
                                              uint32_t limit) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<Payout> payouts;
     const char* sql = R"(
         SELECT * FROM payouts
@@ -1650,6 +1793,7 @@ std::vector<Payout> PoolDB::getWorkerPayouts(const std::string& worker_id,
 }
 
 std::vector<Payout> PoolDB::getPayoutsForBlock(uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<Payout> payouts;
     const char* sql = R"(
         SELECT * FROM payouts
@@ -1691,6 +1835,7 @@ std::vector<Payout> PoolDB::getPayoutsForBlock(uint64_t block_id) {
 }
 
 std::vector<Payout> PoolDB::getPayoutsReadyToSend() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<Payout> payouts;
     // Get payouts where block is confirmed (status = CONFIRMED = 1)
     const char* sql = "SELECT * FROM payouts WHERE status = 1 ORDER BY calculated_at ASC";
@@ -1727,7 +1872,76 @@ std::vector<Payout> PoolDB::getPayoutsReadyToSend() {
     return payouts;
 }
 
+bool PoolDB::reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    if (!db_ || !sqlite3_get_autocommit(db_) || block_hash.empty() ||
+        block_hash.find('\0')!=std::string::npos) return false;
+    try {
+        OrphanTransaction transaction(db_);
+        OrphanResult prepared;
+        sqlite3_int64 block_id=0;
+        {
+            OrphanStatement block(db_,"SELECT block_id,orphaned FROM blocks WHERE block_hash=?");
+            block.text(1,block_hash);
+            const int rc=sqlite3_step(block.get());
+            if (rc==SQLITE_ROW) {
+                block_id=block.nonnegative(0);
+                if (!block_id || block.nonnegative(1)>1) throw std::runtime_error("invalid pool block owner");
+                block.done();prepared.found=true;
+            } else if (rc!=SQLITE_DONE) throw std::runtime_error("pool block lookup incomplete");
+        }
+        if (prepared.found) {
+            struct Pending { sqlite3_int64 id,amount; std::string worker; };
+            std::vector<Pending> pending;
+            {
+                OrphanStatement payouts(db_,
+                    "SELECT p.payout_id,p.worker_id,p.amount,p.status,w.pending_payout "
+                    "FROM payouts p LEFT JOIN workers w ON w.worker_id=p.worker_id "
+                    "WHERE p.block_id=? ORDER BY p.amount DESC,p.payout_id ASC");
+                payouts.integer(1,block_id);
+                int rc;
+                while ((rc=sqlite3_step(payouts.get()))==SQLITE_ROW) {
+                    auto id=payouts.nonnegative(0);auto worker=payouts.textColumn(1);
+                    auto amount=payouts.nonnegative(2);auto status=payouts.nonnegative(3);
+                    if (!id || status>static_cast<int>(PayoutStatus::FAILED))
+                        throw std::runtime_error("invalid pool payout owner");
+                    if (status==static_cast<int>(PayoutStatus::PAID)) {++prepared.already_paid;continue;}
+                    if (status==static_cast<int>(PayoutStatus::FAILED)) continue;
+                    // Missing/malformed active worker cannot certify zero balance.
+                    (void)payouts.nonnegative(4);
+                    pending.push_back({id,amount,std::move(worker)});
+                }
+                if (rc!=SQLITE_DONE) throw std::runtime_error("pool payout inventory incomplete");
+            }
+            // Inventory is complete before the first write. Preserve the existing
+            // saturating subtraction and PAID/FAILED policies, without fabrication.
+            for (const auto& payout:pending) {
+                OrphanStatement worker(db_,
+                    "UPDATE workers SET pending_payout=CASE WHEN pending_payout>=? "
+                    "THEN pending_payout-? ELSE 0 END WHERE worker_id=? "
+                    "AND typeof(pending_payout)='integer' AND pending_payout>=0");
+                worker.integer(1,payout.amount);worker.integer(2,payout.amount);worker.text(3,payout.worker);
+                worker.changedOne(db_);
+                OrphanStatement failure(db_,
+                    "UPDATE payouts SET status=3,txid='',error_message='orphaned block',paid_at=0 "
+                    "WHERE payout_id=? AND block_id=? AND status IN (0,1)");
+                failure.integer(1,payout.id);failure.integer(2,block_id);failure.changedOne(db_);
+                ++prepared.pending_reversed;
+            }
+            OrphanStatement orphan(db_,"UPDATE blocks SET orphaned=1 WHERE block_id=?");
+            orphan.integer(1,block_id);orphan.changedOne(db_);
+        }
+        transaction.commit();
+        result=prepared;
+        return true;
+    } catch (const std::exception&) {
+        g_logger.error("[PoolDB] Orphan accounting transition refused; no success published");
+        return false;
+    }
+}
+
 bool PoolDB::markBlockOrphaned(uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "UPDATE blocks SET orphaned = 1 WHERE block_id = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -1741,6 +1955,7 @@ bool PoolDB::markBlockOrphaned(uint64_t block_id) {
 
 bool PoolDB::updatePayoutStatus(uint64_t payout_id, PayoutStatus status,
                                 const std::string& txid, const std::string& error) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE payouts SET
             status = ?,
@@ -1767,6 +1982,7 @@ bool PoolDB::updatePayoutStatus(uint64_t payout_id, PayoutStatus status,
 }
 
 bool PoolDB::incrementPayoutRetry(uint64_t payout_id, int64_t retry_time, const std::string& error) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = R"(
         UPDATE payouts SET
             retry_count = retry_count + 1,
@@ -1794,6 +2010,7 @@ bool PoolDB::incrementPayoutRetry(uint64_t payout_id, int64_t retry_time, const 
 }
 
 std::vector<PoolBlock> PoolDB::getBlocksReadyForPayout() {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<PoolBlock> blocks;
     const char* sql = R"(
         SELECT * FROM blocks
@@ -1836,6 +2053,7 @@ std::vector<PoolBlock> PoolDB::getBlocksReadyForPayout() {
 }
 
 std::vector<WorkerStats> PoolDB::getWorkersWithPendingBalance(uint64_t min_balance) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     std::vector<WorkerStats> workers;
     const char* sql = "SELECT * FROM workers WHERE pending_payout >= ? ORDER BY pending_payout DESC";
     sqlite3_stmt* stmt;
@@ -1871,6 +2089,7 @@ std::vector<WorkerStats> PoolDB::getWorkersWithPendingBalance(uint64_t min_balan
 }
 
 std::optional<MiningRound> PoolDB::getRound(uint64_t round_id) {
+    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     const char* sql = "SELECT * FROM rounds WHERE round_id = ?";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {

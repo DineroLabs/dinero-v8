@@ -749,3 +749,5 @@ int main(int argc, char** argv) {
 
 #include "vault_explicit_creation_checks.h"
 #include "vault_creation_anchor_checks.h"
+
+#include "pool_orphan_accounting_checks.h"

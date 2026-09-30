@@ -141,7 +141,7 @@ public:
      * Mark block as orphaned
      * Reverses any pending payouts
      */
-    void markBlockOrphaned(const std::string& block_hash);
+    bool markBlockOrphaned(const std::string& block_hash);
 
     // ========================================================================
     // PAYOUT PROCESSING

@@ -421,40 +421,18 @@ void PoolManager::updateBlockConfirmations(const std::string& block_hash, uint32
     db_->updateBlock(b);
 }
 
-void PoolManager::markBlockOrphaned(const std::string& block_hash) {
+bool PoolManager::markBlockOrphaned(const std::string& block_hash) {
     std::lock_guard<std::mutex> lock(mutex_);
-
-    auto block = db_->getBlockByHash(block_hash);
-    if (!block) return;
-
-    auto payouts = db_->getPayoutsForBlock(block->block_id);
-    uint32_t pending_reversed = 0;
-    uint32_t already_paid = 0;
-    for (const auto& payout : payouts) {
-        if (payout.status == PayoutStatus::PAID) {
-            ++already_paid;
-            continue;
-        }
-        if (payout.status == PayoutStatus::FAILED) {
-            continue;
-        }
-
-        db_->subtractWorkerPending(payout.worker_id, payout.amount);
-        db_->updatePayoutStatus(
-            payout.payout_id,
-            PayoutStatus::FAILED,
-            "",
-            "orphaned block");
-        ++pending_reversed;
-    }
-
-    db_->markBlockOrphaned(block->block_id);
+    PoolDB::OrphanResult result;
+    if (!db_->reconcileOrphanedBlock(block_hash,result)) return false;
+    if (!result.found) return true;
     g_logger.warning("Block " + block_hash.substr(0, 16) + " orphaned!");
-    if (pending_reversed > 0 || already_paid > 0) {
+    if (result.pending_reversed > 0 || result.already_paid > 0) {
         g_logger.warning("Pool payout rollback for orphan block " + block_hash.substr(0, 16) +
-                         ": reversed_pending=" + std::to_string(pending_reversed) +
-                         ", already_paid=" + std::to_string(already_paid));
+                         ": reversed_pending=" + std::to_string(result.pending_reversed) +
+                         ", already_paid=" + std::to_string(result.already_paid));
     }
+    return true;
 }
 
 // ============================================================================

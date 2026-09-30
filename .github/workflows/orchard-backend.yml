@@ -1357,6 +1357,23 @@ jobs:
           for suite,cases in {'VaultStateSnapshot': ['ActualServiceCaptureAndLedgerReplay', 'ExactFormatAllVariantsAndCanonicalInventory', 'IncompleteDuplicateAndTerminalInputRefuse', 'SavedLifecycleAndEveryLedgerBindingRequired', 'ObservedAndDetectedReversionKeepExistingLedgerShape'], 'VaultStateStore': ['ExplicitCreationAndAuthenticatedServiceReopen', 'RequiredWriteAndCommitRefusalPreserveLiveAndDurableState', 'MissingCorruptAndForeignDomainsNeverCreateReplacement', 'DeniedReadsAndBorrowedTransactionRetainCallerAndOwner']}.items():
               for case in cases: assert log.count('[       OK ] '+suite+'.'+case+' (')==1
           PYCODE
+      - name: Require atomic pool orphan accounting
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolOrphanAccounting$' --show-only=json-v1 > pool-orphan-accounting-inventory.json
+          python3 - <<'PYPOOL'
+          import json
+          tests=json.load(open('pool-orphan-accounting-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolOrphanAccounting'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOL
+          ctest --test-dir build-orchard-root -R '^PoolOrphanAccounting$' --verbose --no-tests=error --output-log pool-orphan-accounting-execution.log
+          python3 - <<'PYPOOL'
+          from pathlib import Path
+          log=Path('pool-orphan-accounting-execution.log').read_text()
+          for case in ['AtomicPolicyAndReopen','RequiredWritesAndCommitRollback','CompleteTypedInventoryAndReadRefusal','BorrowedTransactionAndDurabilityOwner']:
+              assert log.count('[       OK ] PoolOrphanAccounting.'+case+' (')==1
+          PYPOOL
+
       - name: Prepare all declared runtime notifications before canonical commit
         shell: bash
         run: |
@@ -3211,6 +3228,8 @@ jobs:
             vault-retained-withdrawal-execution.log
             vault-state-store-inventory.json
             vault-state-store-execution.log
+            pool-orphan-accounting-inventory.json
+            pool-orphan-accounting-execution.log
             runtime-notification-composition-inventory.json
             runtime-notification-composition-execution.log
             runtime-delivery-worker-inventory.json

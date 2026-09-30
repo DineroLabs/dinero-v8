@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <functional>
+#include <mutex>
 
 struct sqlite3;
 struct sqlite3_stmt;
@@ -37,7 +38,9 @@ public:
 
     // Initialize database and create tables
     bool initialize();
-    bool isOpen() const { return db_ != nullptr; }
+    bool isOpen() const { std::lock_guard<std::recursive_mutex> owner(connection_mutex_); return db_ != nullptr; }
+    PoolDB(const PoolDB&) = delete;
+    PoolDB& operator=(const PoolDB&) = delete;
 
     // ========================================================================
     // SHARE OPERATIONS
@@ -46,7 +49,9 @@ public:
     // Record a new share
     bool insertShare(const Share& share);
 
-    // Execute a series of DB operations atomically.
+    // Execute DB-only operations atomically. Callers acquire any PoolManager
+    // owner first; callbacks must not acquire manager/selected-chain owners.
+    // The connection owner also serializes direct public PoolDB callers.
     bool runInTransaction(const std::function<bool()>& fn);
 
     // Reserve a dedupe key for a share submission.
@@ -127,6 +132,16 @@ public:
 
     // Get recent blocks
     std::vector<PoolBlock> getRecentBlocks(uint32_t limit = 50);
+
+    struct OrphanResult {
+        bool found = false;
+        uint64_t pending_reversed = 0;
+        uint64_t already_paid = 0;
+    };
+    // Checked FULL transaction for the existing unpaid-payout reversal policy.
+    // False means unavailable/invalid/failed, never an empty successful read.
+    // The result is assigned only after COMMIT. Missing block is found=false.
+    bool reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result);
 
     // Mark block as orphaned
     bool markBlockOrphaned(uint64_t block_id);
@@ -218,6 +233,11 @@ public:
     uint64_t getDatabaseSize();
 
 private:
+    friend struct PoolOrphanAccountingTestAccess;
+    // All use of the SQLite handle is serialized, including whole transactions.
+    // Recursive only for existing DB-to-DB calls and DB-only transaction bodies.
+    // This does not extend the lifetime of PoolDB beyond its owning manager.
+    mutable std::recursive_mutex connection_mutex_;
     std::string db_path_;
     sqlite3* db_;
 
