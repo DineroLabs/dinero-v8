@@ -78,6 +78,7 @@ public:
 
 private:
     friend struct RuntimeDeliveryStartupTestAccess;
+    void ClosePoolRuntime() noexcept;
     DaemonContext ctx_;
     std::vector<std::shared_ptr<IService>> services_;
     bool started_ = false;

@@ -582,7 +582,8 @@ jobs:
           from pathlib import Path
           text=Path('orchard-daemon-mempool-jobs-execution.log').read_text()
           for marker in ['PASS actual daemon initial durable scan without fabricated progress',
-                         'PASS actual daemon delivery worker drained before dependency release']:
+                         'PASS actual daemon delivery worker drained before dependency release',
+                         'PASS actual daemon pool callback lifetime closed']:
               assert text.count(marker)==2, (marker,text.count(marker))
           PYDELIVERY
       - name: Require and execute mempool service operation ownership
@@ -2543,6 +2544,22 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require pool payment callback lifetime ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolPaymentLifetime$' --show-only=json-v1 > orchard-pool-payment-lifetime-inventory.json
+          python3 - <<'PYROUND'
+          import json
+          tests=json.load(open('orchard-pool-payment-lifetime-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolPaymentLifetime'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYROUND
+          ctest --test-dir build-orchard-root -R '^PoolPaymentLifetime$' --verbose --no-tests=error --output-log orchard-pool-payment-lifetime-execution.log
+          python3 - <<'PYROUND'
+          from pathlib import Path
+          log=Path('orchard-pool-payment-lifetime-execution.log').read_text()
+          for case in ['ProcessorRetainsDatabaseAndReleasesCallbackOnClose','ManagerInstallationAndPermanentClosePreserveRows','CallbackExceptionReleasesOperationWithoutAccountingWrites','CloseDrainsOneHealthyControlledOperation']:
+              assert log.count('[       OK ] PoolPaymentLifetime.'+case+' (')==1
+          PYROUND
       - name: Require bounded pool payout calculation arithmetic
         run: |
           ctest --test-dir build-orchard-root -R '^PoolCalculationArithmetic$' --show-only=json-v1 > orchard-pool-calculation-arithmetic-inventory.json
@@ -3435,10 +3452,12 @@ jobs:
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
+            orchard-pool-payment-lifetime-inventory.json
             orchard-pool-calculation-arithmetic-inventory.json
             orchard-pool-calculation-inputs-inventory.json
             orchard-pool-allocation-inventory.json
             orchard-pool-round-inventory.json
+            orchard-pool-payment-lifetime-execution.log
             orchard-pool-calculation-arithmetic-execution.log
             orchard-pool-calculation-inputs-execution.log
             orchard-pool-allocation-execution.log

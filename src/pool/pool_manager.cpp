@@ -15,6 +15,7 @@
 #include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 
 namespace dinero {
 namespace pool {
@@ -29,13 +30,14 @@ constexpr int64_t kShareDedupeRetentionSeconds = 6 * 60 * 60;
 } // namespace
 
 PoolManager::PoolManager(const std::string& db_path)
-    : db_(std::make_unique<PoolDB>(db_path))
+    : db_(std::make_shared<PoolDB>(db_path))
     , current_round_id_(0)
     , running_(false)
     , maintenance_running_(false)
 {}
 
 PoolManager::~PoolManager() {
+    try {ClosePayments();} catch (...) {std::terminate();}
     stopMaintenanceThread();
 }
 
@@ -447,24 +449,46 @@ uint32_t PoolManager::processConfirmedBlocks() {
 }
 
 uint32_t PoolManager::sendPendingPayouts() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (!processor_) return 0;
-    return processor_->processPendingPayouts();
+    std::shared_ptr<PayoutProcessor> processor;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (payments_closed_) throw std::runtime_error("pool payments closed");
+        processor=processor_;
+    }
+    return processor ? processor->processPendingPayouts() : 0;
 }
 
 uint32_t PoolManager::retryFailedPayouts(uint32_t max_retries) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    if (!processor_) return 0;
-    return processor_->retryFailedPayouts(max_retries);
+    std::shared_ptr<PayoutProcessor> processor;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (payments_closed_) throw std::runtime_error("pool payments closed");
+        processor=processor_;
+    }
+    return processor ? processor->retryFailedPayouts(max_retries) : 0;
 }
 
 void PoolManager::setPaymentCallback(PaymentCallback callback) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    // Callback capture construction/destruction can execute arbitrary code;
+    // keep both outside the manager owner, including refusal paths.
+    auto candidate=std::make_shared<PayoutProcessor>(db_,std::move(callback));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (payments_closed_ || processor_)
+            throw std::logic_error("pool payment callback already installed or closed");
+        processor_.swap(candidate);
+    }
+}
 
-    payment_callback_ = callback;
-    processor_ = std::make_unique<PayoutProcessor>(*db_, callback);
+void PoolManager::ClosePayments() {
+    std::shared_ptr<PayoutProcessor> processor;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        processor=processor_;
+        if (!processor) {payments_closed_=true;return;}
+    }
+    processor->Close(); // No manager/SQLite/chain/wallet owner while draining.
+    std::lock_guard<std::mutex> lock(mutex_);payments_closed_=true;
 }
 
 // ============================================================================
@@ -556,14 +580,21 @@ void PoolManager::runMaintenance() {
         // Check block confirmations
         checkBlockConfirmations();
 
-        // Send pending payouts (if payment callback is set)
-        if (payment_callback_) {
+        // Capture configuration under the manager owner; callback execution is
+        // outside it and the processor keeps its database/context alive.
+        bool payments_available;uint32_t max_retries;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            payments_available=processor_ && !payments_closed_;
+            max_retries=config_.max_payout_retries;
+        }
+        if (payments_available) {
             uint32_t payouts_sent = sendPendingPayouts();
             if (payouts_sent > 0) {
                 g_logger.info("Sent " + std::to_string(payouts_sent) + " payouts");
             }
 
-            uint32_t retries_sent = retryFailedPayouts(config_.max_payout_retries);
+            uint32_t retries_sent = retryFailedPayouts(max_retries);
             if (retries_sent > 0) {
                 g_logger.info("Retried " + std::to_string(retries_sent) + " failed payouts");
             }

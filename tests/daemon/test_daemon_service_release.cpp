@@ -1,5 +1,6 @@
 #include "daemon/daemon_app.h"
 #include "daemon/runtime_delivery_worker.h"
+#include "pool/pool_manager.h"
 #include <chrono>
 #include <thread>
 #include "daemon/services/chainstate_service.h"
@@ -16,6 +17,7 @@ namespace dinero {
 // Narrow inspection only; lifecycle is exercised exclusively through DaemonApp.
 struct RuntimeDeliveryStartupTestAccess {
     static RuntimeDeliveryWorker* Worker(DaemonApp& app) {return app.runtime_delivery_worker_.get();}
+    static std::shared_ptr<pool::PoolManager> Pool(DaemonApp& app) {return app.pool_manager_runtime_;}
 };
 }
 
@@ -29,10 +31,16 @@ int main(int argc, char** argv) try {
     if (!dinero::consensus::shielded::CheckPedersenGeneratorsStartupPrecondition(&crypto_error))
         throw std::runtime_error(crypto_error);
     std::vector<std::pair<std::string, std::weak_ptr<void>>> observed;
+    std::shared_ptr<dinero::pool::PoolManager> retained_pool;
     {
         dinero::DaemonApp app;
         if (!app.Init(argc, argv)) throw std::runtime_error("daemon Init failed");
         auto& ctx = app.GetContext();
+        retained_pool=dinero::RuntimeDeliveryStartupTestAccess::Pool(app);
+        if (static_cast<bool>(retained_pool)!=::GetConfig().allow_pool_mining)
+            throw std::runtime_error("pool accounting did not follow explicit test configuration/profile");
+        if (retained_pool && retained_pool->sendPendingPayouts()!=0)
+            throw std::runtime_error("fresh pool unexpectedly dispatched payments");
         // Match main(): the process selects the socket server port after Init.
         for (int i = 1; i < argc; ++i) {
             const std::string arg(argv[i]);
@@ -93,6 +101,18 @@ int main(int argc, char** argv) try {
             if (!refused) throw std::runtime_error("owned wallet index did not prevent same-thread shutdown");
         }
         app.Stop();
+        if (retained_pool) {
+            bool refused=false;
+            try {(void)retained_pool->sendPendingPayouts();}catch(const std::runtime_error&){refused=true;}
+            if (!refused) throw std::runtime_error("stopped daemon left pool callbacks available");
+            refused=false;
+            try {retained_pool->setPaymentCallback([](const std::string&,uint64_t,std::string&){return false;});}
+            catch(const std::logic_error&){refused=true;}
+            if (!refused) throw std::runtime_error("stopped pool callback owner reopened");
+        }
+        if (dinero::RuntimeDeliveryStartupTestAccess::Pool(app))
+            throw std::runtime_error("daemon retained its pool owner after Stop");
+        std::cout << "PASS actual daemon pool callback lifetime closed\n";
         if (dinero::RuntimeDeliveryStartupTestAccess::Worker(app) || wake.Running())
             throw std::runtime_error("daemon retained running delivery worker after Stop");
         wake.RequestReplay(); // A retained mailbox cannot restart a stopped worker.
@@ -104,6 +124,11 @@ int main(int argc, char** argv) try {
         if (!stopped) throw std::runtime_error("stopped chainstate still grants wallet index ownership");
         std::cout << "PASS actual started wallet index ownership and shutdown refusal\n";
         app.Stop(); // Lifecycle remains idempotent.
+    }
+    if (retained_pool) {
+        bool refused=false;
+        try {(void)retained_pool->retryFailedPayouts(3);}catch(const std::runtime_error&){refused=true;}
+        if (!refused) throw std::runtime_error("retained pool manager reopened after daemon destruction");
     }
     bool retained = false;
     for (const auto& [name, owner] : observed) {

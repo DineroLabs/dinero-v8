@@ -414,10 +414,54 @@ std::map<std::string, uint64_t> PayoutCalculator::aggregatePendingByAddress() {
 // PAYOUT PROCESSOR
 // ============================================================================
 
-PayoutProcessor::PayoutProcessor(PoolDB& db, PaymentCallback payment_fn)
-    : db_(db), payment_fn_(payment_fn) {}
+namespace {
+PoolDB& RequiredPoolDatabase(const std::shared_ptr<PoolDB>& db) {
+    if (!db) throw std::invalid_argument("pool payment database owner missing");
+    return *db;
+}
+} // namespace
+struct PayoutProcessor::Use {
+    PayoutProcessor& processor;
+    explicit Use(PayoutProcessor& value):processor(value) {
+        std::lock_guard lock(processor.gate_mutex_);
+        if (processor.closed_) throw std::runtime_error("pool payment processor closed");
+        if (processor.active_) throw std::runtime_error("pool payment processor busy");
+        processor.active_=true;processor.active_thread_=std::this_thread::get_id();
+    }
+    Use(const Use&)=delete;
+    Use& operator=(const Use&)=delete;
+    ~Use() {
+        std::lock_guard lock(processor.gate_mutex_);
+        if (!processor.active_ || processor.active_thread_!=std::this_thread::get_id())
+            std::terminate();
+        processor.active_=false;processor.active_thread_={};processor.drained_.notify_all();
+    }
+};
+PayoutProcessor::PayoutProcessor(std::shared_ptr<PoolDB> db, PaymentCallback payment_fn)
+    : database_owner_(std::move(db)), db_(RequiredPoolDatabase(database_owner_)),
+      payment_fn_(std::move(payment_fn)) {
+    if (!payment_fn_) throw std::invalid_argument("pool payment callback missing");
+}
+PayoutProcessor::~PayoutProcessor() {
+    try {Close();} catch (...) {std::terminate();}
+}
+void PayoutProcessor::Close() {
+    PaymentCallback retired;
+    {
+        std::unique_lock lock(gate_mutex_);
+        if (active_ && active_thread_==std::this_thread::get_id())
+            throw std::logic_error("cannot close pool payment processor from active operation");
+        closed_=true;drained_.wait(lock,[this]{return !active_;});
+        retired.swap(payment_fn_);
+    }
+    // Destroy arbitrary callback captures only after releasing the gate mutex.
+}
+bool PayoutProcessor::IsClosed() const {
+    std::lock_guard lock(gate_mutex_);return closed_;
+}
 
 uint32_t PayoutProcessor::processPendingPayouts() {
+    const Use use(*this);
     uint32_t processed = 0;
 
     auto payouts = db_.getPayoutsReadyToSend();
@@ -464,6 +508,11 @@ uint32_t PayoutProcessor::processPendingPayouts() {
 }
 
 bool PayoutProcessor::processPayout(Payout& payout) {
+    const Use use(*this);
+    return processPayoutOwned(payout);
+}
+
+bool PayoutProcessor::processPayoutOwned(Payout& payout) {
     std::string txid;
     bool success = payment_fn_(payout.wallet_address, payout.amount, txid);
 
@@ -484,6 +533,7 @@ bool PayoutProcessor::processPayout(Payout& payout) {
 }
 
 uint32_t PayoutProcessor::retryFailedPayouts(uint32_t max_retries) {
+    const Use use(*this);
     uint32_t processed = 0;
 
     auto pending = db_.getPendingPayouts();
@@ -500,7 +550,7 @@ uint32_t PayoutProcessor::retryFailedPayouts(uint32_t max_retries) {
                 std::time(nullptr),
                 "Retry attempt " + std::to_string(attempt));
 
-            if (processPayout(payout)) {
+            if (processPayoutOwned(payout)) {
                 processed++;
             } else if (attempt >= max_retries) {
                 db_.updatePayoutStatus(

@@ -558,7 +558,17 @@ std::string GetPeerAddress(uint64_t peer_id) {
 DaemonApp::DaemonApp() = default;
 
 // Destructor implementation (must be in .cpp to allow unique_ptr with forward-declared types)
+void DaemonApp::ClosePoolRuntime() noexcept {
+    const auto owner=pool_manager_runtime_;
+    if (!owner) return;
+    try {owner->ClosePayments();owner->stopMaintenanceThread();}
+    catch (...) {std::terminate();}
+    pool_manager_runtime_.reset();
+}
+
 DaemonApp::~DaemonApp() {
+    // Also covers initialized-but-never-started and failed-start lifetimes.
+    ClosePoolRuntime();
     try {
         Stop();
     } catch (...) {
@@ -577,6 +587,7 @@ DaemonApp::~DaemonApp() {
 bool DaemonApp::Init(int argc, char** argv) {
     std::cout << "[DaemonApp] Initializing services..." << std::endl;
 
+    ClosePoolRuntime();
     // Defensive reset for repeated Init() on the same DaemonApp instance.
     // Drop any retained service pointers/DB handles from prior attempts.
     auto request_shutdown = std::move(ctx_.request_shutdown);
@@ -595,6 +606,7 @@ bool DaemonApp::Init(int argc, char** argv) {
             }
             // Init() failed before Start(); aggressively clear partial state so a
             // subsequent in-process retry does not inherit stale singletons/handles.
+            self->ClosePoolRuntime();
             auto request_shutdown = std::move(self->ctx_.request_shutdown);
             DaemonContext::setInstance(nullptr);
             self->ctx_ = DaemonContext{};
@@ -7430,6 +7442,11 @@ void DaemonApp::Stop() {
         runtime_delivery_worker_.reset();
         LogShutdownPhase("runtime_delivery_stopped", shutdown_start, "durable delivery worker joined");
     }
+
+    // Drain pool callbacks and maintenance while their raw daemon dependencies
+    // are alive; retained RPC/chain manager handles cannot reopen payment calls.
+    ClosePoolRuntime();
+    LogShutdownPhase("pool_payments_closed", shutdown_start, "pool callbacks drained");
 
     // Close/drain raw-context vault dispatch while every daemon dependency is
     // still alive. No wallet/chain/service owner is held here. A reentrant

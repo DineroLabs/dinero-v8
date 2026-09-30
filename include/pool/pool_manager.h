@@ -173,7 +173,11 @@ public:
      * Set payment callback
      * Called when payouts need to be sent
      */
+    // Install once for this manager lifetime; replacing a live context refuses.
     void setPaymentCallback(PaymentCallback callback);
+    // Permanent payment shutdown. Call outside wallet/chain/SQLite owners.
+    // Existing synchronous operation drains without holding the manager mutex.
+    void ClosePayments();
 
     // ========================================================================
     // ROUND MANAGEMENT (PROP MODE)
@@ -242,9 +246,10 @@ public:
     void runMaintenance();
 
 private:
-    std::unique_ptr<PoolDB> db_;
+    std::shared_ptr<PoolDB> db_;
     std::unique_ptr<PayoutCalculator> calculator_;
-    std::unique_ptr<PayoutProcessor> processor_;
+    std::shared_ptr<PayoutProcessor> processor_;
+    bool payments_closed_{false};
 
     PoolConfig config_;
     uint64_t current_round_id_;
@@ -256,8 +261,6 @@ private:
     std::thread maintenance_thread_;
     std::atomic<bool> maintenance_running_;
 
-    // Callbacks
-    PaymentCallback payment_callback_;
 
     // Internal helpers
     std::string buildShareDedupeKey(const std::string& worker_id,
