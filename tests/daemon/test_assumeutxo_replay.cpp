@@ -769,3 +769,5 @@ int main(int argc, char** argv) {
 #include "pool_allocation_origin_checks.h"
 
 #include "pool_payment_funding_checks.h"
+
+#include "pool_payment_settlement_checks.h"

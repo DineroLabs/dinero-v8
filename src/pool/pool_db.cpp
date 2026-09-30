@@ -343,6 +343,10 @@ bool PoolDB::initialize() {
         "block_id INTEGER NOT NULL,worker TEXT NOT NULL,amount INTEGER NOT NULL,"
         "FOREIGN KEY(attempt) REFERENCES pool_payment_attempts(id))")) return false;
 
+    if (!executeSQL("CREATE TABLE IF NOT EXISTS pool_payment_settlements("
+        "attempt BLOB PRIMARY KEY NOT NULL,block_hash BLOB NOT NULL,height INTEGER NOT NULL,"
+        "block_time INTEGER NOT NULL,FOREIGN KEY(attempt) REFERENCES pool_payment_attempts(id))")) return false;
+
     g_logger.info("[PoolDB] Database initialized: " + db_path_);
     return true;
 }
@@ -1876,6 +1880,10 @@ void ValidatePaymentBinding(const PoolPaymentWalletBinding& b) {
     PoolConfig c;c.payment_funding=b.funding;ValidatePoolSettings(c);
     PaymentCheck(b.network<=2 && PaymentNonzero(b.wallet) && PaymentNonzero(b.genesis));
 }
+std::string PaymentTxid(const PoolPaymentRetained& retained) {
+    static constexpr char hex[]="0123456789abcdef";std::string result;result.reserve(64);
+    for(auto it=retained.txid.rbegin();it!=retained.txid.rend();++it){result+=hex[*it>>4];result+=hex[*it&15];}return result;
+}
 void ValidatePaymentAttempt(const PoolPaymentAttempt& a) {
     ValidatePaymentBinding(a.binding);PaymentCheck(PaymentNonzero(a.id) && !a.address.empty() && a.address.size()<=256 &&
         a.address.find('\0')==std::string::npos && a.amount && a.amount<=MAX_SUPPLY_UNA_CONST && !a.members.empty() && a.members.size()<=256);
@@ -1887,6 +1895,7 @@ void ValidatePaymentAttempt(const PoolPaymentAttempt& a) {
     }
     PaymentCheck(total==a.amount);
     if(a.retained)PaymentCheck(PaymentNonzero(a.retained->txid) && PaymentNonzero(a.retained->body_sha256) && a.retained->fee_una<=a.binding.funding.maximum_fee_una);
+    if(a.settlement)PaymentCheck(a.retained && PaymentNonzero(a.settlement->block) && a.settlement->block_time && a.settlement->block_time<=INT64_MAX);
 }
 }
 std::vector<PoolPaymentAttempt> PoolDB::readPaymentAttemptsOwned() {
@@ -1910,6 +1919,17 @@ std::vector<PoolPaymentAttempt> PoolDB::readPaymentAttemptsOwned() {
         PaymentCheck(rc==SQLITE_DONE);
     }
     {
+        OrphanStatement rows(db_,"SELECT attempt,block_hash,height,block_time FROM pool_payment_settlements ORDER BY attempt");
+        int rc;size_t count=0;
+        while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+            PaymentCheck(++count<=4096);const auto owner=positions.find(PaymentBlob<16>(rows.get(),0));
+            PaymentCheck(owner!=positions.end());auto& attempt=result[owner->second];
+            const auto height=rows.nonnegative(2),time=rows.nonnegative(3);PaymentCheck(height<=UINT32_MAX && time>0 && !attempt.settlement);
+            attempt.settlement=PoolPaymentSettlement{PaymentBlob<32>(rows.get(),1),static_cast<uint32_t>(height),static_cast<uint64_t>(time)};
+        }
+        PaymentCheck(rc==SQLITE_DONE);
+    }
+    {
         OrphanStatement rows(db_,"SELECT m.origin,m.payout_id,m.attempt,m.block_id,m.worker,m.amount,p.block_id,p.worker_id,p.wallet_address,p.amount,p.status,p.allocation_origin,p.txid,p.paid_at FROM pool_payment_members m LEFT JOIN payouts p ON p.payout_id=m.payout_id ORDER BY m.origin");
         int rc;size_t count=0;std::set<uint64_t> payouts;std::set<std::array<uint8_t,32>> origins;
         while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
@@ -1917,8 +1937,12 @@ std::vector<PoolPaymentAttempt> PoolDB::readPaymentAttemptsOwned() {
             m.payout_id=rows.nonnegative(1);const auto owner=positions.find(PaymentBlob<16>(rows.get(),2));PaymentCheck(owner!=positions.end());
             auto& a=result[owner->second];m.block_id=rows.nonnegative(3);m.worker=rows.textColumn(4);m.amount=rows.nonnegative(5);
             PaymentCheck(m.block_id==static_cast<uint64_t>(rows.nonnegative(6)) && m.worker==rows.textColumn(7) && a.address==rows.textColumn(8) &&
-                m.amount==static_cast<uint64_t>(rows.nonnegative(9)) && rows.nonnegative(10)==static_cast<int>(PayoutStatus::CONFIRMED) &&
-                m.origin==PaymentBlob<32>(rows.get(),11) && CalculationText(rows,12).empty() && rows.nonnegative(13)==0 && payouts.insert(m.payout_id).second && origins.insert(m.origin).second);
+                m.amount==static_cast<uint64_t>(rows.nonnegative(9)) &&
+                rows.nonnegative(10)==static_cast<int>(a.settlement?PayoutStatus::PAID:PayoutStatus::CONFIRMED) &&
+                m.origin==PaymentBlob<32>(rows.get(),11) &&
+                (a.settlement ? (a.retained && CalculationText(rows,12)==PaymentTxid(*a.retained) && static_cast<uint64_t>(rows.nonnegative(13))==a.settlement->block_time)
+                              : (CalculationText(rows,12).empty() && rows.nonnegative(13)==0)) &&
+                payouts.insert(m.payout_id).second && origins.insert(m.origin).second);
             PaymentCheck(a.members.size()<256);a.members.push_back(std::move(m));
         }
         PaymentCheck(rc==SQLITE_DONE);
@@ -1981,6 +2005,47 @@ void PoolDB::retainPaymentAttempt(const PoolPaymentAttempt& expected,const PoolP
     // Payout status and worker credits are deliberately unchanged. A retained
     // signed transaction does not certify chain inclusion or canonical settlement.
     transaction.commit();
+}
+
+bool PoolDB::reconcilePaymentSettlement(const PoolPaymentAttempt& expected,const std::optional<PoolPaymentSettlement>& settlement) {
+    std::lock_guard<std::recursive_mutex> owner(connection_mutex_);
+    PaymentCheck(db_ && sqlite3_get_autocommit(db_) && expected.retained);
+    auto next=expected;next.settlement=settlement;ValidatePaymentAttempt(next);
+    OrphanTransaction transaction(db_);const auto attempts=readPaymentAttemptsOwned();
+    const auto found=std::find_if(attempts.begin(),attempts.end(),[&](const auto& a){return a.id==expected.id;});
+    PaymentCheck(found!=attempts.end() && *found==expected);
+    if(expected.settlement==settlement){transaction.commit();return false;}
+    std::map<std::string,uint64_t> credits;
+    for(const auto& m:expected.members){PaymentCheck(m.amount<=INT64_MAX-credits[m.worker]);credits[m.worker]+=m.amount;}
+    // Resolve the complete counter replacement before performing any write.
+    struct Balance {std::string worker;uint64_t pending,paid;};std::vector<Balance> balances;
+    if(bool(expected.settlement)!=bool(settlement))for(const auto& [worker,amount]:credits) {
+        OrphanStatement row(db_,"SELECT pending_payout,total_paid FROM workers WHERE worker_id=?");row.text(1,worker);
+        PaymentCheck(sqlite3_step(row.get())==SQLITE_ROW);uint64_t pending=row.nonnegative(0),paid=row.nonnegative(1);row.done();
+        if(settlement){PaymentCheck(pending>=amount && amount<=INT64_MAX-paid);pending-=amount;paid+=amount;}
+        else {PaymentCheck(paid>=amount && amount<=INT64_MAX-pending);paid-=amount;pending+=amount;}
+        balances.push_back({worker,pending,paid});
+    }
+    for(const auto& b:balances) {
+        OrphanStatement row(db_,"UPDATE workers SET pending_payout=?,total_paid=? WHERE worker_id=?");
+        row.integer(1,b.pending);row.integer(2,b.paid);row.text(3,b.worker);row.changedOne(db_);
+    }
+    for(const auto& member:expected.members) {
+        OrphanStatement row(db_,"UPDATE payouts SET status=?,txid=?,paid_at=? WHERE payout_id=? AND allocation_origin=?");
+        row.integer(1,static_cast<int>(settlement?PayoutStatus::PAID:PayoutStatus::CONFIRMED));
+        row.text(2,settlement?PaymentTxid(*expected.retained):std::string{});row.integer(3,settlement?settlement->block_time:0);
+        row.integer(4,member.payout_id);row.blob(5,member.origin);row.changedOne(db_);
+    }
+    if(expected.settlement) {
+        OrphanStatement row(db_,"DELETE FROM pool_payment_settlements WHERE attempt=?");row.blob(1,expected.id);row.changedOne(db_);
+    }
+    if(settlement) {
+        OrphanStatement row(db_,"INSERT INTO pool_payment_settlements(attempt,block_hash,height,block_time) VALUES(?,?,?,?)");
+        row.blob(1,expected.id);row.blob(2,settlement->block);row.integer(3,settlement->height);row.integer(4,settlement->block_time);row.changedOne(db_);
+    }
+    // Immutable attempt/members and the retained wallet origin survive undo.
+    // No receipt here authorizes creating or submitting another transaction.
+    transaction.commit();return true;
 }
 
 bool PoolDB::reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result) {

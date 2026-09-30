@@ -3,6 +3,7 @@
 #include <memory>
 namespace dinero::pool {
 class PayoutProcessor;
+class PoolDB;
 struct PoolPaymentWalletBinding {
     PoolPaymentFunding funding;
     std::array<uint8_t,32> wallet{};
@@ -23,6 +24,13 @@ struct PoolPaymentRetained {
     uint32_t vout{0};
     bool operator==(const PoolPaymentRetained&) const = default;
 };
+// An as-of canonical inclusion, reversible when its exact block disconnects.
+struct PoolPaymentSettlement {
+    std::array<uint8_t,32> block{};
+    uint32_t height{0};
+    uint64_t block_time{0};
+    bool operator==(const PoolPaymentSettlement&) const = default;
+};
 struct PoolPaymentAttempt {
     std::array<uint8_t,16> id{};
     PoolPaymentWalletBinding binding;
@@ -30,6 +38,7 @@ struct PoolPaymentAttempt {
     uint64_t amount{0};
     std::vector<PoolPaymentMember> members; // strictly ordered by origin
     std::optional<PoolPaymentRetained> retained;
+    std::optional<PoolPaymentSettlement> settlement;
     bool operator==(const PoolPaymentAttempt&) const = default;
 };
 // Only an active processor can call the bound wallet adapter. The processor
@@ -44,6 +53,7 @@ private:
     virtual const PoolPaymentWalletBinding& Binding() const=0;
     virtual std::optional<PoolPaymentRetained> DispatchNew(const PoolPaymentAttempt&)=0;
     virtual std::optional<PoolPaymentRetained> Resolve(const PoolPaymentAttempt&)=0;
+    virtual bool Reconcile(PoolDB&,const PoolPaymentAttempt&)=0;
 };
 class PoolPaymentBackend {
 public:

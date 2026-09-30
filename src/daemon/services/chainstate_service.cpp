@@ -322,13 +322,13 @@ void SyncPoolLifecycleState(pool::PoolManager* pool_manager,
     if (confirmations_updated > 0) {
         payouts_processed = pool_manager->processConfirmedBlocks();
     }
-    const uint32_t payouts_sent = pool_manager->sendPendingPayouts();
-
-    if (logger && (confirmations_updated > 0 || payouts_processed > 0 || payouts_sent > 0)) {
+    // This notifier executes under selected-chain ownership. Wallet signing,
+    // submission and settlement run from the existing pool maintenance/RPC
+    // owner after that ownership is released; never invoke them here.
+    if (logger && (confirmations_updated > 0 || payouts_processed > 0)) {
         logger->info("[ChainstateService] Pool lifecycle sync: confirmations=" +
                      std::to_string(confirmations_updated) +
-                     ", payouts_processed=" + std::to_string(payouts_processed) +
-                     ", payouts_sent=" + std::to_string(payouts_sent));
+                     ", payouts_processed=" + std::to_string(payouts_processed));
     } else if (orphaned > 0 && logger) {
         logger->warning("[ChainstateService] Pool lifecycle sync: orphaned=" +
                         std::to_string(orphaned));
@@ -2746,11 +2746,11 @@ void ChainstateService::setValidationMode(consensus::ValidationMode mode) {
 
 ChainstateService::WalletIndexUse::WalletIndexUse(std::shared_ptr<ChainstateService> source)
     :source_(std::move(source)) {
-    if (!source_) throw std::runtime_error("Wallet index source unavailable");
+    if (!source_) throw WalletIndexUnavailable("Wallet index source unavailable");
     std::lock_guard<std::mutex> lock(source_->wallet_index_use_mutex_);
     const auto owned=source_->wallet_index_uses_by_thread_.find(thread_);
     if ((!source_->wallet_index_accepting_ && owned==source_->wallet_index_uses_by_thread_.end()) ||
-        !source_->utxo_index_) throw std::runtime_error("Wallet index unavailable");
+        !source_->utxo_index_) throw WalletIndexUnavailable("Wallet index unavailable");
     ++source_->wallet_index_uses_by_thread_[thread_];++source_->wallet_index_uses_;
     index_=source_->utxo_index_.get();
 }

@@ -259,6 +259,9 @@ public:
 private:
     friend class PayoutProcessor;
     friend struct PoolPaymentAttemptTestAccess;
+    friend class PoolPaymentCanonicalOwner;
+    friend struct PoolPaymentSettlementTestAccess;
+    bool reconcilePaymentSettlement(const PoolPaymentAttempt&,const std::optional<PoolPaymentSettlement>&);
     PoolPaymentAttempt beginPaymentAttempt(const PoolPaymentWalletBinding&,
                                            const std::vector<uint64_t>& payout_ids);
     void retainPaymentAttempt(const PoolPaymentAttempt&,const PoolPaymentRetained&);

@@ -1,5 +1,6 @@
 #pragma once
 #include <span>
+#include <stdexcept>
 #include "daemon/mempool_transaction.h"
 #include "daemon/interfaces/ingress_types.h"
 #include "consensus/csn_replay_data.h"
@@ -142,6 +143,12 @@ public:
     // Keeps this service's exact wallet index alive through a synchronous
     // operation. This is lifetime ownership, not a selected-chain snapshot.
     // Acquire before wallet database/index locks; Stop runs outside chain locks.
+    // A closed or not-yet-created owner is distinct from a failed canonical
+    // read or accounting commit. Deferred consumers may handle only this case.
+    class WalletIndexUnavailable final : public std::runtime_error {
+    public:
+        using std::runtime_error::runtime_error;
+    };
     class WalletIndexUse final {
     public:
         ~WalletIndexUse() noexcept;

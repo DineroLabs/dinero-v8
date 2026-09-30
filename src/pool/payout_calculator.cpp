@@ -473,7 +473,7 @@ uint32_t PayoutProcessor::processOwnedPayments() {
     // processor Use keeps the daemon callback context alive through this call.
     const auto attempts=db_.getPaymentAttempts();std::set<uint64_t> claimed;
     uint32_t newly_retained=0;
-    for(const auto& attempt:attempts) {
+    for(auto attempt:attempts) {
         auto dispatcher=backend_->Bind(attempt.binding.funding);
         if(!dispatcher || dispatcher->Binding()!=attempt.binding)
             throw std::runtime_error("pool attempt funding owner changed");
@@ -483,7 +483,9 @@ uint32_t PayoutProcessor::processOwnedPayments() {
         if(retained && !attempt.retained) {
             db_.retainPaymentAttempt(attempt,*retained);
             newly_retained+=static_cast<uint32_t>(attempt.members.size());
+            attempt.retained=*retained;
         }
+        if(attempt.retained)(void)dispatcher->Reconcile(db_,attempt);
         for(const auto& member:attempt.members)claimed.insert(member.payout_id);
     }
     const auto config=db_.getConfig();if(!config.payment_funding)return newly_retained;
@@ -508,6 +510,8 @@ uint32_t PayoutProcessor::processOwnedPayments() {
         if(retained) {
             db_.retainPaymentAttempt(attempt,*retained);
             newly_retained+=static_cast<uint32_t>(attempt.members.size());
+            attempt.retained=*retained;
+            (void)dispatcher->Reconcile(db_,attempt);
         }
     }
     return newly_retained; // retained allocation count, never settled/paid count

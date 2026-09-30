@@ -2560,6 +2560,22 @@ jobs:
           for case in ['ExplicitPolicyRoundTripAndClearWithoutDefaults', 'PartialMalformedAndIncompleteSettingsRefuse', 'RequiredWritesCommitAndInvalidValuesPreservePolicy', 'ActualRpcSetClearAndStrictPolicyFields', 'ActualRpcCommitRefusalAndStaleUpdatePreserveLiveState', 'ActualRpcMalformedOtherSettingsHaveNoEffects']:
               assert log.count('[       OK ] PoolPaymentFunding.'+case+' (')==1
           PYROUND
+      - name: Require exact canonical pool payment accounting and reversible inclusion
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolPaymentSettlement$' --show-only=json-v1 > orchard-pool-payment-settlement-inventory.json
+          python3 - <<'PYROUND'
+          import json
+          tests=json.load(open('orchard-pool-payment-settlement-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolPaymentSettlement'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYROUND
+          ctest --test-dir build-orchard-root -R '^PoolPaymentSettlement$' --verbose --no-tests=error --output-log orchard-pool-payment-settlement-execution.log
+          python3 - <<'PYROUND'
+          from pathlib import Path
+          log=Path('orchard-pool-payment-settlement-execution.log').read_text()
+          for case in ['MissingSourcePreservesRetainedAttemptWithoutPayment', 'ActualCanonicalBodyReopenDisconnectAndReconnect', 'RequiredWritesAndCommitRollbackCompleteAccounting', 'WrongBodyUnavailableSourceAndBorrowedTransactionPreserveState', 'CompleteSettlementInventoryAndCounterBoundsRefuse']:
+              assert log.count('[       OK ] PoolPaymentSettlement.'+case+' (')==1
+          PYROUND
       - name: Require atomic fresh pool allocation references
         run: |
           ctest --test-dir build-orchard-root -R '^PoolAllocationOrigins$' --show-only=json-v1 > orchard-pool-allocation-origins-inventory.json
@@ -3564,6 +3580,8 @@ jobs:
             orchard-pool-allocation-origins-execution.log
             orchard-pool-payment-funding-inventory.json
             orchard-pool-payment-funding-execution.log
+            orchard-pool-payment-settlement-inventory.json
+            orchard-pool-payment-settlement-execution.log
             orchard-pool-payout-inventory-execution.log
             orchard-pool-payment-lifetime-execution.log
             orchard-pool-calculation-arithmetic-execution.log

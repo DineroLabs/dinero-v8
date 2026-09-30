@@ -1,5 +1,7 @@
 #include "pool/wallet_payment_backend.h"
+#include "pool/canonical_payment.h"
 #include "daemon/daemon_context.h"
+#include "daemon/services/chainstate_service.h"
 #include "daemon/services/wallet_service.h"
 #include "wallet/wallet_manager.h"
 #include "wallet/wallet_transaction_signer.h"
@@ -31,6 +33,7 @@ PoolPaymentWalletBinding CaptureBinding(WalletManager& manager,const WalletSigni
     const auto& text=Params().genesis_hash;RequirePoolWallet(text.size()==64 && std::all_of(text.begin(),text.end(),[](unsigned char c){return (c>='0' && c<='9') || (c>='a' && c<='f') || (c>='A' && c<='F');}));
     uint256 genesis;RequirePoolWallet(uint256::FromHex(text,genesis));std::copy(genesis.begin(),genesis.end(),out.genesis.begin());RequirePoolWallet(NonzeroPoolWallet(out.genesis));return out;
 }
+} // namespace
 class WalletPoolDispatcher final : public PoolPaymentDispatcher {
 public:
     WalletPoolDispatcher(DaemonContext& context,const PoolPaymentFunding& funding):ctx_(context) {
@@ -75,6 +78,18 @@ private:
         out.fee_una=retained->fee_una;out.vout=*output;return out;
     }
     std::optional<PoolPaymentRetained> Resolve(const PoolPaymentAttempt& a) override {return Read(a);}
+    bool Reconcile(PoolDB& db,const PoolPaymentAttempt& a) override {
+        RequirePoolWallet(a.retained && Read(a)==a.retained);
+        // All wallet/seed owners are released before selected chain -> pool DB.
+        try {return PoolPaymentCanonicalOwner::Reconcile(ctx_.chainstate,db,a);}
+        catch(const ChainstateService::WalletIndexUnavailable&) {
+            // Retention already succeeded. A source that has not started or
+            // has stopped defers settlement; it is not proof of absence, PAID
+            // status or permission to dispatch another body. Canonical read,
+            // binding and SQLite failures still propagate to the caller.
+            return false;
+        }
+    }
     std::optional<PoolPaymentRetained> DispatchNew(const PoolPaymentAttempt& a) override {
         if(auto retained=Read(a))return retained;
         const auto intent=Intent(a);din::Json params,recipients(Json::arrayValue),recipient,request;
@@ -89,6 +104,7 @@ private:
     }
     DaemonContext& ctx_;std::shared_ptr<WalletService> wallet_;WalletSigningIdentity selected_;PoolPaymentWalletBinding binding_;
 };
+namespace {
 class WalletPoolBackend final : public PoolPaymentBackend {
 public: explicit WalletPoolBackend(DaemonContext& ctx):ctx_(ctx) {}
 private:
