@@ -19,6 +19,8 @@
 #pragma once
 
 #include "vault/vault_service.h"
+#include "vault/state_store.h"
+#include "wallet/wallet_transaction_signer.h"
 
 #include <array>
 #include <cstdint>
@@ -28,6 +30,7 @@
 #include <vector>
 
 struct DaemonContext;
+struct ExecutionContext;
 
 namespace dinero::vault {
 
@@ -82,6 +85,20 @@ struct VaultRuntimeConfig {
 /// state and must never be silently replaced by an empty runtime. This legacy
 /// initializer is not the authenticated wallet-state recovery attachment.
 bool InitializeVaultRuntime(VaultRuntimeConfig config);
+
+// Explicit attachment of an EXISTING authenticated wallet vault. Requires the
+// selected unlocked wallet/session and the immutable saved operator binding.
+// No missing owner creates a new vault; no legacy singleton is replaced.
+// Configuration supplies canonical readers only. Historical routing/policies
+// are never inferred from startup defaults. No callback runs while holding the
+// global runtime mutex. Caller keeps the daemon context alive through shutdown.
+void OpenExistingVaultRuntime(VaultRuntimeConfig, const ExecutionContext&,
+    std::shared_ptr<WalletService>, const WalletSigningIdentity&, const VaultIdentity&);
+
+// Stop new runtime acquisitions and close/drain wallet dispatch BEFORE stopping
+// daemon services. Must be called without wallet/chain/service owners held.
+// Refuses reentrant close on an active dispatch callback's own thread.
+void CloseVaultRuntimeDispatch();
 
 /// Tear down the singleton (daemon shutdown).
 void ShutdownVaultRuntime();

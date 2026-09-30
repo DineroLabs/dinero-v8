@@ -8,6 +8,9 @@
 #include "common/logger.h"
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
+#include "daemon/daemon_context.h"
+#include "daemon/services/wallet_service.h"
+#include "wallet/wallet_transaction_signer.h"
 #include "vault/ledger_entry.h"
 #include "vault/vault_runtime.h"
 #include "vault/vault_service.h"
@@ -104,6 +107,35 @@ std::shared_ptr<dinero::vault::VaultService> requireService() {
 }  // namespace
 
 std::shared_ptr<dinero::vault::VaultService> GetVaultService() { return requireService(); }
+
+Json rpc_vault_open(const ExecutionContext& ctx,const Json& params) {
+    if(!oneObject(params) || params[0].size()!=1 || !params[0]["vault_id"].isString())
+        return errorObj("expected [{vault_id: existing 64-character hex identity}]");
+    dinero::vault::VaultIdentity identity{};
+    if(!hexToBytes32(params[0]["vault_id"].asString(),identity) ||
+       std::all_of(identity.begin(),identity.end(),[](uint8_t v){return v==0;}))
+        return errorObj("invalid vault identity");
+    if(!ctx.daemon)return errorObj("daemon context unavailable");
+    try {
+        auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        dinero::WalletSigningIdentity selected;
+        {
+            auto use=dinero::WalletService::AcquireWalletUse(wallet);
+            selected=dinero::CaptureWalletSigningIdentity(use->Wallet(),ctx.walletName);
+        }
+        auto bound_context=ctx;bound_context.walletName=selected.name;
+        dinero::vault::VaultRuntimeConfig config;config.enabled=true;
+        config.block_hash_at_height=dinero::vault::MakeChainstateBlockHashClosure(*ctx.daemon);
+        config.tx_included_at=dinero::vault::MakeChainstateTxIncludedClosure(*ctx.daemon);
+        config.capture_tip=dinero::vault::MakeChainstateVaultSnapshotClosure(*ctx.daemon);
+        // Prepare response fields before publication. HTTP response delivery
+        // remains separate from successful local attachment.
+        Json result;result["attached"]=true;result["vault_id"]=arrayToHex(identity);
+        result["wallet"]=selected.name;
+        dinero::vault::OpenExistingVaultRuntime(std::move(config),bound_context,wallet,selected,identity);
+        return result;
+    } catch(const std::exception& e) {return errorObj(e.what());}
+}
 
 Json rpc_vault_account_spendable(const ExecutionContext& /*ctx*/, const Json& params) {
     Json result;
@@ -356,6 +388,7 @@ Json rpc_vault_metrics(const ExecutionContext& /*ctx*/, const Json& /*params*/) 
 
 void RegisterVaultRPC() {
     dinero::g_logger.info("  Registering Liquidity Vault RPC methods...");
+    g_rpcRegistry.registerHandler("vault.open", din::rpc_vault_open);
     g_rpcRegistry.registerHandler("vault.account.spendable", din::rpc_vault_account_spendable);
     g_rpcRegistry.registerHandler("vault.account.metrics", din::rpc_vault_account_metrics);
     g_rpcRegistry.registerHandler("vault.observe", din::rpc_vault_observe);
@@ -365,5 +398,5 @@ void RegisterVaultRPC() {
     g_rpcRegistry.registerHandler("vault.metrics", din::rpc_vault_metrics);
     g_rpcRegistry.registerHandler("vault.setoperator", din::rpc_vault_setoperator);
     g_rpcRegistry.registerHandler("vault.getoperator", din::rpc_vault_getoperator);
-    dinero::g_logger.info("  Registered 9 Liquidity Vault RPC methods");
+    dinero::g_logger.info("  Registered 10 Liquidity Vault RPC methods");
 }

@@ -742,3 +742,5 @@ int main(int argc, char** argv) {
 
 #include "vault_state_snapshot_checks.h"
 #include "vault_state_store_checks.h"
+#include "vault_operator_binding_checks.h"
+#include "vault_runtime_attachment_checks.h"

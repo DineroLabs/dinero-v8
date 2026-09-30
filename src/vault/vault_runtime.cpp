@@ -27,6 +27,8 @@
 #include "vault/vault_types.h"
 #include "vault/wallet_signing_backend.h"
 #include "vault/withdrawal_queue.h"
+#include "vault/wallet_withdrawal_dispatch.h"
+#include "consensus/chainparams.h"
 
 #include <atomic>
 #include <algorithm>
@@ -47,6 +49,50 @@ std::mutex g_runtime_mu;
 std::shared_ptr<VaultService> g_service;
 std::unique_ptr<LedgerStore> g_store;
 std::atomic<bool> g_initialized{false};
+std::shared_ptr<WalletWithdrawalDispatchOwner> g_dispatch_owner;
+bool g_closing{false};
+uint64_t g_runtime_generation{0};
+
+// This backend identifies the retained wallet-payment path. Legacy broadcast
+// is forbidden: real signing/admission happens through the bound dispatcher.
+// No independently certified liquidity float exists at this boundary yet.
+class RetainedWalletBackend final : public SigningBackend {
+    BackendId id_{"wallet-retained"};
+public:
+    const BackendId& backendId() const noexcept override {return id_;}
+    UnaAmount availableFloat() override {
+        throw SigningBackendError(SigningBackendError::Kind::UNAVAILABLE,
+            "vault liquidity float is not independently qualified");
+    }
+    std::array<uint8_t,32> signAndBroadcast(const UnsignedTx&) override {
+        throw SigningBackendError(SigningBackendError::Kind::UNAVAILABLE,
+            "durable vault requires retained wallet-payment dispatch");
+    }
+    HealthReport healthcheck() override {
+        return {id_,BackendDegraded{"liquidity float is not independently qualified"},0,0};
+    }
+};
+
+struct ClosingRuntime {
+    std::shared_ptr<VaultService> service;
+    std::shared_ptr<WalletWithdrawalDispatchOwner> dispatch;
+};
+ClosingRuntime PrepareRuntimeClose() {
+    ClosingRuntime current;
+    {
+        std::lock_guard lock(g_runtime_mu);
+        g_closing=true;
+        if(g_runtime_generation!=UINT64_MAX)++g_runtime_generation;
+        current={g_service,g_dispatch_owner};
+    }
+    try {if(current.dispatch)current.dispatch->Close();}
+    catch(...) {
+        std::lock_guard lock(g_runtime_mu);
+        if(g_service==current.service && g_dispatch_owner==current.dispatch)g_closing=false;
+        throw;
+    }
+    return current;
+}
 
 // Decoded operator scriptPubKey — the auto-observer's match key.
 // Empty means no auto-observer; deposits flow only via vault.observe.
@@ -85,6 +131,8 @@ std::string scriptToAddress(const std::vector<uint8_t>& spk) {
 
 bool InitializeVaultRuntime(VaultRuntimeConfig config) {
     std::lock_guard<std::mutex> lock(g_runtime_mu);
+    if (g_closing || g_runtime_generation==UINT64_MAX)
+        throw std::runtime_error("vault runtime is closing or exhausted");
     if (g_initialized.load()) {
         return true;
     }
@@ -255,29 +303,66 @@ bool InitializeVaultRuntime(VaultRuntimeConfig config) {
     return true;
 }
 
+void OpenExistingVaultRuntime(VaultRuntimeConfig config,const ExecutionContext& context,
+    std::shared_ptr<WalletService> wallet,const WalletSigningIdentity& selected,const VaultIdentity& identity) {
+    uint64_t generation;
+    {
+        std::lock_guard lock(g_runtime_mu);
+        if(g_initialized.load() || g_closing || g_runtime_generation==UINT64_MAX)
+            throw std::runtime_error("vault runtime is already attached or unavailable");
+        generation=g_runtime_generation;
+    }
+    if(!config.enabled || !config.block_hash_at_height || !config.tx_included_at ||
+       !config.capture_tip || !config.persistence_path.empty())
+        throw std::runtime_error("existing vault attachment requires canonical readers and wallet storage");
+    VaultStateDomain domain;domain.network=static_cast<uint8_t>(GetActiveChain());
+    uint256 genesis;
+    if(!uint256::FromHex(Params().genesis_hash,genesis))
+        throw std::runtime_error("vault chain domain unavailable");
+    std::copy(genesis.begin(),genesis.end(),domain.genesis.begin());
+    auto dispatch=std::make_shared<WalletWithdrawalDispatchOwner>(context,wallet,selected,domain);
+    auto tx_included=std::move(config.tx_included_at);
+    auto bound=WalletVaultStateOwner::OpenExistingService(wallet,selected.session,domain,identity,
+        std::make_unique<RetainedWalletBackend>(),std::move(config.block_hash_at_height),
+        [tx_included](const OutpointId& out,uint64_t height,const std::array<uint8_t,32>& hash) {
+            return tx_included(out.txid_raw,out.vout,height,hash);
+        },std::move(config.capture_tip),dispatch->Factory());
+    const auto binding=bound.service->operatorBinding();
+    if(!binding)throw std::runtime_error("historical vault has no authenticated operator binding");
+    ValidateVaultOperatorBinding(*binding);
+    auto script=binding->script_pub_key;
+    auto address=scriptToAddress(script);auto account=binding->account;
+    if(address.empty() || (!config.operator_address.empty() && config.operator_address!=address) ||
+       (!config.default_account.empty() && config.default_account!=account))
+        throw std::runtime_error("vault configuration differs from the authenticated operator binding");
+    // All wallet/SQLite/seed owners have been released. Shutdown invalidates
+    // this preparation by generation; it never waits while holding those owners.
+    // Only nonthrowing swaps follow the final publication check.
+    std::lock_guard lock(g_runtime_mu);
+    if(g_initialized.load() || g_closing || generation!=g_runtime_generation)
+        throw std::runtime_error("vault runtime changed during attachment");
+    g_operator_script.swap(script);g_operator_address_str.swap(address);g_default_account.raw.swap(account);
+    g_dispatch_owner.swap(dispatch);g_service.swap(bound.service);g_initialized.store(true);
+}
+
+void CloseVaultRuntimeDispatch() {(void)PrepareRuntimeClose();}
+
 void ShutdownVaultRuntime() {
+    const auto closing=PrepareRuntimeClose();
     std::shared_ptr<VaultService> service;
+    std::shared_ptr<WalletWithdrawalDispatchOwner> dispatch;
     std::unique_ptr<LedgerStore> store;
     {
-        std::lock_guard<std::mutex> lock(g_runtime_mu);
-        if (!g_initialized.load()) {
-            return;
-        }
-        service = std::move(g_service);
-        store = std::move(g_store);
-        g_operator_script.clear();
-        g_operator_address_str.clear();
-        g_default_account = AccountId{};
-        g_initialized.store(false);
+        std::lock_guard lock(g_runtime_mu);
+        // A second close must never detach a replacement published after the
+        // first close completed. Each retained dispatcher is closed separately.
+        if(g_service!=closing.service || g_dispatch_owner!=closing.dispatch)return;
+        service=std::move(g_service);dispatch=std::move(g_dispatch_owner);store=std::move(g_store);
+        g_operator_script.clear();g_operator_address_str.clear();g_default_account=AccountId{};
+        g_initialized.store(false);g_closing=false;
     }
-    // Destroy detached callbacks outside the runtime mutex. Other holders
-    // may still finish on their retained instance.
-    service.reset();
-    // A flush failure must not leave a published runtime or retain its
-    // chainstate callbacks. The detached store is also destroyed on failure.
-    if (store) {
-        store->flush();
-    }
+    service.reset();dispatch.reset();
+    if(store)store->flush();
     dinero::g_logger.info("[Vault] runtime shut down");
 }
 
@@ -303,16 +388,21 @@ void NotifyVaultTipDisconnected(uint64_t /*height*/) {
 
 std::shared_ptr<VaultService> GetVaultRuntimeService() {
     std::lock_guard<std::mutex> lock(g_runtime_mu);
-    return g_initialized.load()?g_service:std::shared_ptr<VaultService>{};
+    return g_initialized.load() && !g_closing?g_service:std::shared_ptr<VaultService>{};
 }
 
 bool SetVaultOperator(const std::string& address, const std::string& account,
                       std::string* error_out) {
     std::lock_guard<std::mutex> lock(g_runtime_mu);
-    if (!g_initialized.load()) {
+    if (!g_initialized.load() || g_closing) {
         if (error_out != nullptr) {
             *error_out = "vault runtime not initialised";
         }
+        return false;
+    }
+
+    if(g_dispatch_owner) {
+        if(error_out)*error_out="authenticated vault operator binding is immutable";
         return false;
     }
 
@@ -350,6 +440,7 @@ bool SetVaultOperator(const std::string& address, const std::string& account,
 OperatorBinding GetVaultOperator() {
     std::lock_guard<std::mutex> lock(g_runtime_mu);
     OperatorBinding out;
+    if(g_closing)return out;
     out.address = g_operator_address_str;
     out.account = g_default_account.raw;
     return out;
@@ -362,7 +453,7 @@ bool VerifyOperatorDeposit(const std::shared_ptr<VaultService>& expected_service
     std::vector<uint8_t> script;
     {
         std::lock_guard<std::mutex> lock(g_runtime_mu);
-        if (!g_initialized.load() || !expected_service || g_service!=expected_service) {
+        if (!g_initialized.load() || g_closing || !expected_service || g_service!=expected_service) {
             err="vault runtime owner changed or unavailable";return false;
         }
         script=g_operator_script;
@@ -410,7 +501,7 @@ VaultWalletOutputObserver CaptureVaultWalletOutputObserver() {
     AccountId account;
     {
         std::lock_guard<std::mutex> lock(g_runtime_mu);
-        if (!g_initialized.load() || !g_service || g_operator_script.empty()) return {};
+        if (!g_initialized.load() || g_closing || !g_service || g_operator_script.empty()) return {};
         service=g_service;script=g_operator_script;account=g_default_account;
     }
     auto* daemon=::DaemonContext::instance();

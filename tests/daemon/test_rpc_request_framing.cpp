@@ -218,3 +218,5 @@ TEST(RpcRequestFraming, ClosedWalletRefusesBeforeUnifiedHandler) {
     server.stop();EXPECT_EQ(calls.load(),0U);
 }
 } // namespace
+
+#include "vault_runtime_readonly_checks.h"

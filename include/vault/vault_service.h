@@ -36,6 +36,16 @@
 
 namespace dinero::vault {
 
+// Authenticated routing metadata for an explicitly created durable vault.
+// This binds the exact operator output script and default credit account; it
+// does not certify possession of a signing key or historical completeness.
+struct VaultOperatorBinding {
+    std::vector<uint8_t> script_pub_key;
+    std::string account;
+    bool operator==(const VaultOperatorBinding&) const = default;
+};
+void ValidateVaultOperatorBinding(const VaultOperatorBinding&);
+
 /// Settings the service accepts at construction. All fields have
 /// safe defaults so a deployment can spin up an instance without
 /// pre-configuring anything except the signing backend.
@@ -48,6 +58,7 @@ struct VaultServiceConfig {
     /// depositObserved but never opens credits). Default false (real
     /// production behaviour). Stage 0 deployments override.
     bool shadow_mode{false};
+    std::optional<VaultOperatorBinding> operator_binding;
 };
 
 /// Immutable metrics captured under one service lock. These describe one
@@ -172,6 +183,9 @@ class VaultService {
     // are not authenticated ownership, deletion completeness or readiness.
     // No chain, wallet, SQL or signing callback is invoked while capturing.
     [[nodiscard]] VaultStateSnapshot captureState();
+    // Immutable for the lifetime of this service. Historical states without a
+    // binding remain explicitly unbound; runtime configuration cannot add one.
+    [[nodiscard]] std::optional<VaultOperatorBinding> operatorBinding() const;
 
     /// Backend healthcheck pass-through.
     [[nodiscard]] HealthReport backendHealth();
@@ -196,6 +210,7 @@ class VaultService {
     // before mu_. Ordinary injected services retain their in-memory behavior.
     std::shared_ptr<const VaultStateOwner> state_owner_;
     std::shared_ptr<VaultWithdrawalDispatcher> withdrawal_dispatcher_;
+    const std::optional<VaultOperatorBinding> operator_binding_;
     std::mutex mu_;
     uint64_t revision_{0};
     VaultTipSnapshotFn capture_tip_;

@@ -3,6 +3,7 @@
 // Liquidity Vault RPC method declarations.
 //
 // Daemon-side vault RPC surface:
+//   vault.open                 — attach an existing authenticated wallet vault
 //   vault.account.spendable    — single account spendable balance
 //   vault.account.metrics      — full per-account snapshot
 //   vault.observe              — explicit deposit registration (rare)
@@ -27,6 +28,8 @@ class VaultService;
 namespace din {
 
 std::shared_ptr<dinero::vault::VaultService> GetVaultService();
+
+Json rpc_vault_open(const ExecutionContext& ctx, const Json& params);
 
 Json rpc_vault_account_spendable(const ExecutionContext& ctx, const Json& params);
 Json rpc_vault_account_metrics(const ExecutionContext& ctx, const Json& params);

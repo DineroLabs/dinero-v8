@@ -92,6 +92,7 @@ static const std::unordered_set<std::string> ADMIN_METHODS = {
     "pool.processpayouts",
     // Vault (liquidity custody) — mutating methods move funds / credit the ledger.
     // Must NOT be callable by read-only RPC clients (security fix 2026-05-29, F-CRIT-03).
+    "vault.open",
     "vault.observe",
     "vault.withdraw",
     "vault.processnext",

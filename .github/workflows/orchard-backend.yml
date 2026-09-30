@@ -435,7 +435,7 @@ jobs:
           from pathlib import Path
           import re
           log=Path('orchard-rpc-request-framing-execution.log').read_text()
-          expected=['SegmentedHeadersAndBodyReachHandlerExactlyOnce','CapturedRateRefusalConsumesOneFrameWithoutDispatch','AuthenticationStillGatesCompleteRequests','UnifiedHandlerRetainsWalletAndAlias','ReturnedAndThrownFailuresReleaseWallet','ClosedWalletRefusesBeforeUnifiedHandler']
+          expected=['SegmentedHeadersAndBodyReachHandlerExactlyOnce','CapturedRateRefusalConsumesOneFrameWithoutDispatch','AuthenticationStillGatesCompleteRequests','UnifiedHandlerRetainsWalletAndAlias','ReturnedAndThrownFailuresReleaseWallet','ClosedWalletRefusesBeforeUnifiedHandler','VaultAttachmentRequiresAdminAccess']
           assert sorted(re.findall(r'\[       OK \] RpcRequestFraming\.(\w+)',log))==sorted(expected)
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYFRAME
@@ -1317,6 +1317,42 @@ jobs:
           log=Path('vault-state-store-execution.log').read_text()
           for suite,cases in {'VaultStateSnapshot': ['ActualServiceCaptureAndLedgerReplay', 'ExactFormatAllVariantsAndCanonicalInventory', 'IncompleteDuplicateAndTerminalInputRefuse', 'SavedLifecycleAndEveryLedgerBindingRequired', 'ObservedAndDetectedReversionKeepExistingLedgerShape'], 'VaultStateStore': ['ExplicitCreationAndAuthenticatedServiceReopen', 'RequiredWriteAndCommitRefusalPreserveLiveAndDurableState', 'MissingCorruptAndForeignDomainsNeverCreateReplacement', 'DeniedReadsAndBorrowedTransactionRetainCallerAndOwner']}.items():
               for case in cases: assert log.count('[       OK ] '+suite+'.'+case+' (')==1
+          PYCODE
+      - name: Attach existing wallet vault state and close dispatch before shutdown
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultRuntimeAttachment$' --show-only=json-v1 > vault-runtime-attachment-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-runtime-attachment-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultRuntimeAttachment'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultRuntimeAttachment$' --verbose --no-tests=error --output-log vault-runtime-attachment-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-runtime-attachment-execution.log').read_text()
+          for case in ['AuthenticatesExistingBindingBeforeRuntimePublication', 'MissingHistoricalAndMismatchedOwnersRefuse', 'CloseDetachesAcquisitionAndClosesRetainedDispatch', 'ActualOpenRpcSelectsExistingWalletWithoutCreatingOrReplacing']:
+              assert log.count('[       OK ] VaultRuntimeAttachment.'+case+' (')==1
+          PYCODE
+      - name: Authenticate immutable vault operator routing metadata
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultOperatorBinding$' --show-only=json-v1 > vault-operator-binding-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-operator-binding-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultOperatorBinding'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultOperatorBinding$' --verbose --no-tests=error --output-log vault-operator-binding-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-operator-binding-execution.log').read_text()
+          for case in ['PersistedBindingSurvivesMutationsAndReopen', 'SuccessorsCannotAddRemoveOrRelabelAuthority', 'MalformedAndIncompleteBindingRefuse', 'RequiredReadAndCommitRefusalPreserveBinding']:
+              assert log.count('[       OK ] VaultOperatorBinding.'+case+' (')==1
           PYCODE
       - name: Refuse incomplete legacy vault recovery before runtime publication
         shell: bash
@@ -3032,6 +3068,10 @@ jobs:
             vault-retained-withdrawal-execution.log
             vault-state-store-inventory.json
             vault-state-store-execution.log
+            vault-runtime-attachment-inventory.json
+            vault-runtime-attachment-execution.log
+            vault-operator-binding-inventory.json
+            vault-operator-binding-execution.log
             vault-runtime-restore-guard-inventory.json
             vault-runtime-restore-guard-execution.log
             vault-wallet-observation-inventory.json

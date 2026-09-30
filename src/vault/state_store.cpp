@@ -178,6 +178,9 @@ const StoredVaultState& VaultStateTransaction::Current() const noexcept {return 
 void VaultStateTransaction::Stage(const VaultStateSnapshot& successor) {
     auto& p=*impl_;Check(!p.created && !p.committed && !p.next && p.owns && !sqlite3_get_autocommit(p.db));
     Check(p.current.state.revision<INT64_MAX && successor.revision==p.current.state.revision+1);
+    // Ordinary state updates cannot add, remove or relabel routing authority.
+    // In particular an older unbound snapshot is not permission to infer it.
+    Check(successor.config.operator_binding==p.current.state.config.operator_binding);
     (void)ReplayVaultStateLedger(successor);p.ValidateRetainedPayments(successor);
     StoredVaultState prepared;prepared.identity=p.current.identity;prepared.predecessor=p.current.digest;prepared.state=successor;
     Sensitive plain;plain.bytes=EncodeVaultState(successor);auto aad=Associated(p.domain,p.wallet,prepared.identity,successor.revision,prepared.predecessor);auto sealed=Seal(p.key,aad,plain.bytes);prepared.digest=Hash(sealed);

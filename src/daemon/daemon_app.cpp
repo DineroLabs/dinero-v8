@@ -7405,6 +7405,12 @@ void DaemonApp::Stop() {
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
 
+    // Close/drain raw-context vault dispatch while every daemon dependency is
+    // still alive. No wallet/chain/service owner is held here. A reentrant
+    // teardown contract violation cannot proceed into dangling callbacks.
+    try {vault::CloseVaultRuntimeDispatch();}
+    catch (...) {std::terminate();}
+
     // Join before P2P/chainstate callbacks can be torn down.
     if (ctx_.block_download) {
         ctx_.block_download->StopConvergenceDriver();
