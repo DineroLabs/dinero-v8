@@ -14,6 +14,7 @@
 #include <exception>
 #include "common/logger.h"
 #include <sqlite3.h>
+#include <openssl/rand.h>
 #include <algorithm>
 #include <ctime>
 #include <limits>
@@ -102,6 +103,10 @@ public:
         if (value.size()>static_cast<size_t>(std::numeric_limits<int>::max()) ||
             sqlite3_bind_text(stmt_,index,value.data(),static_cast<int>(value.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
             throw std::runtime_error("pool orphan text bind failed");
+    }
+    void blob(int index, const std::array<uint8_t,32>& value) {
+        if(sqlite3_bind_blob(stmt_,index,value.data(),static_cast<int>(value.size()),SQLITE_TRANSIENT)!=SQLITE_OK)
+            throw std::runtime_error("pool allocation reference bind failed");
     }
     sqlite3_int64 nonnegative(int column) const {
         if (sqlite3_column_type(stmt_,column)!=SQLITE_INTEGER || sqlite3_column_int64(stmt_,column)<0)
@@ -196,6 +201,17 @@ Payout ReadPayout(OrphanStatement& row) {
     const auto retry=row.nonnegative(13);
     if (retry>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool payout retry range");
     p.retry_count=static_cast<uint32_t>(retry);p.last_retry_at=row.nonnegative(14);
+    if(sqlite3_column_type(row.get(),15)!=SQLITE_NULL) {
+        if(sqlite3_column_type(row.get(),15)!=SQLITE_BLOB || sqlite3_column_bytes(row.get(),15)!=32)
+            throw std::runtime_error("invalid pool allocation reference framing");
+        const auto* bytes=static_cast<const uint8_t*>(sqlite3_column_blob(row.get(),15));
+        std::array<uint8_t,32> origin{};
+        if(!bytes)throw std::runtime_error("pool allocation reference unavailable");
+        std::copy(bytes,bytes+origin.size(),origin.begin());
+        if(std::none_of(origin.begin(),origin.end(),[](uint8_t b){return b!=0;}))
+            throw std::runtime_error("zero pool allocation reference");
+        p.allocation_origin=origin;
+    }
     return p;
 }
 std::vector<Payout> CompletePayoutRead(OrphanStatement& rows) {
@@ -309,6 +325,11 @@ bool PoolDB::initialize() {
         return false;
     }
 
+    // No backfill: old payouts cannot be certified as fresh allocations.
+    if (!EnsureColumn(db_, "payouts", "allocation_origin",
+                      "ALTER TABLE payouts ADD COLUMN allocation_origin BLOB;")) return false;
+    if (!executeSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_payouts_allocation_origin ON payouts(allocation_origin) WHERE allocation_origin IS NOT NULL;")) return false;
+
     g_logger.info("[PoolDB] Database initialized: " + db_path_);
     return true;
 }
@@ -409,6 +430,7 @@ bool PoolDB::createTables() {
             paid_at INTEGER DEFAULT 0,
             retry_count INTEGER DEFAULT 0,
             last_retry_at INTEGER DEFAULT 0,
+            allocation_origin BLOB,
             FOREIGN KEY (block_id) REFERENCES blocks(block_id)
         );
     )";
@@ -1054,6 +1076,8 @@ std::vector<PoolBlock> PoolDB::getPendingBlocks() {
 
 bool PoolDB::insertPayout(const Payout& payout) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
+    // The compatibility insertion API does not enroll caller-supplied origins.
+    if(payout.allocation_origin) return false;
     const char* sql = R"(
         INSERT INTO payouts (block_id, worker_id, wallet_address, amount,
                             share_percent, share_count, difficulty_sum,
@@ -1772,7 +1796,7 @@ std::vector<Share> PoolDB::getSharesInRange(int64_t start_time, int64_t end_time
 std::vector<Payout> PoolDB::getPendingPayouts() {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_) throw std::runtime_error("pool payout database unavailable");
-    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE status IN (0, 3) ORDER BY calculated_at ASC");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE status IN (0, 3) ORDER BY calculated_at ASC");
     return CompletePayoutRead(rows);
 }
 
@@ -1781,7 +1805,7 @@ std::vector<Payout> PoolDB::getWorkerPayouts(const std::string& worker_id,
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_) throw std::runtime_error("pool payout database unavailable");
     if (worker_id.empty() || worker_id.find('\0')!=std::string::npos) throw std::runtime_error("invalid pool payout worker");
-    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE worker_id=? ORDER BY calculated_at DESC LIMIT ?");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE worker_id=? ORDER BY calculated_at DESC LIMIT ?");
     rows.text(1,worker_id);rows.integer(2,limit);
     return CompletePayoutRead(rows);
 }
@@ -1790,7 +1814,7 @@ std::vector<Payout> PoolDB::getPayoutsForBlock(uint64_t block_id) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_) throw std::runtime_error("pool payout database unavailable");
     if (block_id>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max())) throw std::runtime_error("invalid pool payout block");
-    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE block_id=? ORDER BY amount DESC, payout_id ASC");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE block_id=? ORDER BY amount DESC, payout_id ASC");
     rows.integer(1,static_cast<sqlite3_int64>(block_id));
     return CompletePayoutRead(rows);
 }
@@ -1798,7 +1822,7 @@ std::vector<Payout> PoolDB::getPayoutsForBlock(uint64_t block_id) {
 std::vector<Payout> PoolDB::getPayoutsReadyToSend() {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if (!db_) throw std::runtime_error("pool payout database unavailable");
-    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE status=1 ORDER BY calculated_at ASC");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin FROM payouts WHERE status=1 ORDER BY calculated_at ASC");
     return CompletePayoutRead(rows);
 }
 
@@ -1991,7 +2015,7 @@ uint32_t PoolDB::allocateConfirmedBlockPayouts(PayoutCalculator& calculator) {
         if (block.payouts_sent) throw std::runtime_error("unallocated block already marked sent");
         std::set<std::string> workers;uint64_t total=0;
         for (const auto& payout:payouts) {
-            if (payout.payout_id || payout.block_id!=block.block_id ||
+            if (payout.payout_id || payout.allocation_origin || payout.block_id!=block.block_id ||
                 !ownerText(payout.worker_id) || !ownerText(payout.wallet_address) ||
                 !workers.insert(payout.worker_id).second || !payout.amount || payout.amount>max ||
                 payout.share_count>max || !std::isfinite(payout.share_percent) || payout.share_percent<0 ||
@@ -2010,13 +2034,19 @@ uint32_t PoolDB::allocateConfirmedBlockPayouts(PayoutCalculator& calculator) {
                 pending=worker.nonnegative(1);worker.done();
                 if (payout.amount>max-static_cast<uint64_t>(pending)) throw std::runtime_error("pool pending balance overflow");
             }
+            // Only this transaction creates a fresh allocation reference. It
+            // commits with the payout, matching credit and block allocation flag.
+            std::array<uint8_t,32> origin{};
+            if(RAND_bytes(origin.data(),static_cast<int>(origin.size()))!=1 ||
+               std::none_of(origin.begin(),origin.end(),[](uint8_t b){return b!=0;}))
+                throw std::runtime_error("pool allocation reference generation failed");
             OrphanStatement insert(db_,
                 "INSERT INTO payouts(block_id,worker_id,wallet_address,amount,share_percent,share_count,"
-                "difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at) "
-                "VALUES(?,?,?,?,?,?,?,1,'','',?,0,0,0)");
+                "difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at,allocation_origin) "
+                "VALUES(?,?,?,?,?,?,?,1,'','',?,0,0,0,?)");
             insert.integer(1,block.block_id);insert.text(2,payout.worker_id);insert.text(3,payout.wallet_address);
             insert.integer(4,payout.amount);insert.real(5,payout.share_percent);insert.integer(6,payout.share_count);
-            insert.real(7,payout.difficulty_sum);insert.integer(8,payout.calculated_at);insert.changedOne(db_);
+            insert.real(7,payout.difficulty_sum);insert.integer(8,payout.calculated_at);insert.blob(9,origin);insert.changedOne(db_);
             OrphanStatement credit(db_,"UPDATE workers SET pending_payout=? WHERE worker_id=? AND pending_payout=?");
             credit.integer(1,pending+static_cast<sqlite3_int64>(payout.amount));credit.text(2,payout.worker_id);credit.integer(3,pending);credit.changedOne(db_);
         }

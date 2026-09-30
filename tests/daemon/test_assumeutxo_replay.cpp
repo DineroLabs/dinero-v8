@@ -765,3 +765,5 @@ int main(int argc, char** argv) {
 #include "pool_payout_inventory_checks.h"
 
 #include "pool_config_owner_checks.h"
+
+#include "pool_allocation_origin_checks.h"

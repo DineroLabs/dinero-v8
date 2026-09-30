@@ -4,6 +4,8 @@
 #include <vector>
 #include <cstdint>
 #include <map>
+#include <array>
+#include <optional>
 
 namespace dinero {
 namespace pool {
@@ -177,6 +179,10 @@ struct PoolBlock {
  */
 struct Payout {
     uint64_t payout_id;         // Auto-increment ID
+    // Created only by the checked new-allocation transaction. Historical and
+    // generic inserted rows remain explicitly unowned; absence is not repaired.
+    // This durable identifier alone is not an authenticated allocation catalog.
+    std::optional<std::array<uint8_t,32>> allocation_origin;
     uint64_t block_id;          // Which block this payout is for (0 for PPS)
 
     // Worker info
