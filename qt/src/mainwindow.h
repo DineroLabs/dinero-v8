@@ -4,6 +4,8 @@
 
 #include "daemonstartuppolicy.h"
 #include "chaintiming.h"
+#include "upgradepolicy.h"
+#include <optional>
 #include <QMap>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -181,6 +183,8 @@ private:
   void updateStatus(const QJsonObject& info);
   void updateEconomics(const QJsonObject& economics);
   void refreshTimingText();
+  void startUpdateChecks();
+  void evaluateUpgradeBanner();
   void updateWallet(const QString& address);
   void updateExplorer(const QJsonValue& block);
   void displayAddressResult(const QJsonObject& result);
@@ -392,6 +396,12 @@ private:
   class QSpinBox* spnTimelockDuration_ = nullptr;
   class QComboBox* cmbTimelockUnit_ = nullptr;
   ChainTiming chainTiming_;
+  class UpgradeBanner* upgradeBanner_ = nullptr;
+  class UpdateChecker* updateChecker_ = nullptr;
+  QString latestReleaseTag_;
+  UpgradePolicy::Notice upgradeNotice_;
+  std::optional<quint32> nodeReleaseHeight_;
+  qint64 zeroPeersSinceMs_ = 0;
   QTableWidget* tblPayrollRecipients_ = nullptr;
   QLabel* lblPayrollTotal_ = nullptr;
   QLineEdit* edtCustomScript_ = nullptr;

@@ -529,6 +529,8 @@ endif()
 set(GUI_SOURCES
   src/chaintiming.cpp
   src/upgradepolicy.cpp
+  src/upgradebanner.cpp
+  src/updatechecker.cpp
   src/privatecovenantwidget.cpp
   src/privatecovenantwidget.h
   src/main.cpp
@@ -1392,6 +1394,20 @@ if(BUILD_TESTING)
     UPGRADE_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/network_upgrade_policy_v1.json")
   add_test(NAME UpgradePolicy COMMAND test_upgrade_policy)
   set_tests_properties(UpgradePolicy PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_upgrade_banner tests/test_upgrade_banner.cpp src/upgradebanner.cpp src/upgradepolicy.cpp)
+  target_include_directories(test_upgrade_banner PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_upgrade_banner PRIVATE Qt6::Widgets Qt6::Test)
+  target_compile_definitions(test_upgrade_banner PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME UpgradeBanner COMMAND test_upgrade_banner)
+  set_tests_properties(UpgradeBanner PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_update_checker tests/test_update_checker.cpp src/updatechecker.cpp)
+  target_include_directories(test_update_checker PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_update_checker PRIVATE Qt6::Network Qt6::Test)
+  target_compile_definitions(test_update_checker PRIVATE QT_NO_KEYWORDS)
+  add_test(NAME UpdateChecker COMMAND test_update_checker)
+  set_tests_properties(UpdateChecker PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp

@@ -1,5 +1,8 @@
 #include "privatecovenantwidget.h"
 #include "covenantformpolicy.h"
+#include "build_identity.h"
+#include "updatechecker.h"
+#include "upgradebanner.h"
 #include "mainwindow.h"
 #include "miningsessionstatus.h"
 #include "peerheightsemantics.h"
@@ -2484,7 +2487,10 @@ void MainWindow::setupUI() {
   });
   contentLayout->addWidget(cmdKPanel_);
 
+  upgradeBanner_ = new UpgradeBanner(central);
+  mainLayout->addWidget(upgradeBanner_);
   mainLayout->addWidget(contentArea, 1);
+  startUpdateChecks();
 
   // AI Status Strip: parked with the AI assistant surface. The dashboard
   // remains available through Ctrl+K.
@@ -5431,6 +5437,21 @@ void MainWindow::setupUI() {
     note->setStyleSheet(backupPanelStyle());
     layout->addWidget(note);
 
+    auto *updatesGroup = new QGroupBox("Updates");
+    auto *updatesLayout = new QVBoxLayout(updatesGroup);
+    auto *chkCheckUpdates = new QCheckBox("Check for updates and network upgrades");
+    chkCheckUpdates->setChecked(QSettings().value("updates/check_enabled", true).toBool());
+    connect(chkCheckUpdates, &QCheckBox::toggled, this, [this](bool on) {
+      QSettings().setValue("updates/check_enabled", on);
+      if (on && updateChecker_) updateChecker_->checkNow();
+    });
+    updatesLayout->addWidget(chkCheckUpdates);
+    auto *lblUpdatesNote = new QLabel("Asks GitHub for the latest Dinero release and any scheduled network upgrade. Nothing about you or your wallet is sent.");
+    lblUpdatesNote->setWordWrap(true);
+    lblUpdatesNote->setStyleSheet(mutedLabelStyle());
+    updatesLayout->addWidget(lblUpdatesNote);
+    layout->addWidget(updatesGroup);
+
     layout->addStretch();
     tabs->addTab(makeScrollableTab(settings), navigationIcon(NavigationGlyph::Settings), "Settings");
   }
@@ -5477,6 +5498,7 @@ void MainWindow::refresh() {
   }
   rpc_->call("getpeerinfo", QJsonArray());        // Get connection count
   rpc_->call("economics.getinfo", QJsonArray());       // Get phase & reward
+  rpc_->call("getconsensusinfo", QJsonArray());        // Scheduled network upgrade (newer nodes only)
   rpc_->call("economics.getsupply", QJsonArray());          // Get total supply
   rpc_->call("mempool.getinfo", QJsonArray());     // Get mempool stats
   rpc_->call("mempool.getrawmempool", QJsonArray{true}); // Visible pending rows + change detection
@@ -6084,12 +6106,20 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
       }
     }
   }
+  else if (method == "getconsensusinfo") {
+    const QJsonValue h = result.toObject().value("release_activation_height");
+    nodeReleaseHeight_.reset();
+    if (h.isDouble() && h.toDouble() >= 1 && h.toDouble() <= 4294967295.0)
+      nodeReleaseHeight_ = quint32(h.toDouble());
+    evaluateUpgradeBanner();
+  }
   else if (method == "blockchain.getinfo") {
     if (result.isObject()) {
       auto obj = result.toObject();
       updateStatus(obj);
       cachedHeight_ = obj["blocks"].toInt();
       cachedHeaders_ = obj["headers"].toInt();
+      evaluateUpgradeBanner();
       overviewNodeSynced_ = cachedHeaders_ > 0 && cachedHeight_ >= cachedHeaders_;
       refreshAiStatusStrip();
 
@@ -7959,6 +7989,9 @@ void MainWindow::onRpcError(const QString& method, int code, const QString& mess
     sendSubmissionPending_ = false;
   if (!rpc_) return;  // Guard: shutting down
 
+  // Older nodes (v8.1.12 and earlier) do not have this method; that is not an error.
+  if (method == "getconsensusinfo") return;
+
   if (method == "wallet.listunspent") {
     utxoRequestPending_ = false;
   }
@@ -8401,6 +8434,50 @@ void MainWindow::updateStatus(const QJsonObject& info) {
       lblExplorerSupply_->setText(explorerDinString(supply) + " DIN");
     }
   }
+}
+
+void MainWindow::startUpdateChecks() {
+  QUrl noticeUrl = UpdateChecker::defaultNoticeUrl();
+#ifndef NDEBUG
+  // Development only: point at a local notice file to exercise the banner.
+  const QByteArray overrideUrl = qgetenv("DINERO_UPDATE_NOTICE_URL");
+  if (!overrideUrl.isEmpty()) noticeUrl = QUrl::fromUserInput(QString::fromUtf8(overrideUrl));
+#endif
+  updateChecker_ = new UpdateChecker(new QNetworkAccessManager(this), UpdateChecker::defaultReleaseUrl(),
+                                     noticeUrl, this);
+  connect(updateChecker_, &UpdateChecker::resultReady, this,
+          [this](const QString& tag, const QJsonObject& notice) {
+            latestReleaseTag_ = tag;
+            upgradeNotice_ = UpgradePolicy::parseNotice(notice, QStringLiteral("dinero-qt"));
+            evaluateUpgradeBanner();
+          });
+  auto runCheck = [this]() {
+    if (QSettings().value("updates/check_enabled", true).toBool()) updateChecker_->checkNow();
+  };
+  auto *timer = new QTimer(this);
+  timer->setInterval(6 * 60 * 60 * 1000);
+  connect(timer, &QTimer::timeout, this, runCheck);
+  timer->start();
+  QTimer::singleShot(5000, this, runCheck);
+}
+
+void MainWindow::evaluateUpgradeBanner() {
+  if (!upgradeBanner_) return;
+  const quint32 tip = quint32(qMax(0, cachedHeight_));
+  auto r = UpgradePolicy::evaluate(QStringLiteral(DINERO_QT_VERSION), latestReleaseTag_, upgradeNotice_, tip,
+                                   nodeReleaseHeight_);
+  // If peers have been gone for 10 minutes while an upgrade is required, the
+  // network has most likely moved on without this version.
+  const bool peersGone = zeroPeersSinceMs_ > 0 &&
+                         QDateTime::currentMSecsSinceEpoch() - zeroPeersSinceMs_ >= 10LL * 60 * 1000;
+  if (r.state == UpgradePolicy::State::UpdateRequired && peersGone) r = {UpgradePolicy::State::RequiredOverdue, 0};
+  quint32 activation = upgradeNotice_.present ? upgradeNotice_.activationHeight
+                                              : (nodeReleaseHeight_ ? *nodeReleaseHeight_ : 0);
+  if (r.state == UpgradePolicy::State::ScheduledReady && nodeReleaseHeight_) activation = *nodeReleaseHeight_;
+  upgradeBanner_->setActivationHeight(activation);
+  QString release = r.state == UpgradePolicy::State::UpdateAvailable ? latestReleaseTag_ : upgradeNotice_.minVersion;
+  if (release.startsWith('v')) release.remove(0, 1);
+  upgradeBanner_->present(r, release, chainTiming_.approxDuration(qMax<qint64>(0, r.blocksLeft)));
 }
 
 void MainWindow::refreshTimingText() {
@@ -16007,6 +16084,8 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   cachedNetworkInfo_ = networkInfo;
 
   const int connections = networkInfo["connections"].toInt(0);
+  if (connections > 0) zeroPeersSinceMs_ = 0;
+  else if (zeroPeersSinceMs_ == 0) zeroPeersSinceMs_ = QDateTime::currentMSecsSinceEpoch();
   const int inbound = networkInfo["connections_in"].toInt(0);
   const int outbound = networkInfo["connections_out"].toInt(0);
   const bool networkActive = networkInfo["networkactive"].toBool(false);
