@@ -735,3 +735,4 @@ int main(int argc, char** argv) {
 #include "vault_withdrawal_identity_checks.h"
 #include "vault_rpc_input_checks.h"
 #include "vault_ledger_read_checks.h"
+#include "vault_ledger_append_checks.h"

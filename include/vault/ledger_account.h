@@ -98,6 +98,9 @@ class LedgerAccount {
     }
 
     // State transitions (called by the Ledger coordinator on replay).
+    // Additions and the combined pending/confirmed balance reject numeric
+    // overflow before publishing the affected account values. Ledger owns
+    // whole-append exception atomicity across accounts, counters and entries.
 
     void applyDepositObserved(const OutpointId& deposit, UnaAmount amount);
     void applyCreditOpened(const OutpointId& deposit, UnaAmount amount);

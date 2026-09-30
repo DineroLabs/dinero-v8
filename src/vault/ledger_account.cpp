@@ -6,9 +6,19 @@
 #include "vault/ledger_account.h"
 
 #include <algorithm>
+#include <limits>
+#include <stdexcept>
 #include <variant>
 
 namespace dinero::vault {
+
+namespace {
+UnaAmount CheckedAccountSum(UnaAmount current, UnaAmount addition) {
+    if (addition > std::numeric_limits<UnaAmount>::max() - current)
+        throw std::overflow_error("vault account amount overflow");
+    return current + addition;
+}
+}
 
 void LedgerAccount::applyDepositObserved(const OutpointId& deposit, UnaAmount amount) {
     // Idempotent: same outpoint re-observed is a no-op.
@@ -18,8 +28,10 @@ void LedgerAccount::applyDepositObserved(const OutpointId& deposit, UnaAmount am
 }
 
 void LedgerAccount::applyCreditOpened(const OutpointId& deposit, UnaAmount amount) {
+    const auto pending = CheckedAccountSum(pending_, amount);
+    (void)CheckedAccountSum(pending, confirmed_);
     deposits_[deposit] = DepositCreditedState{amount};
-    pending_ += amount;
+    pending_ = pending;
 }
 
 void LedgerAccount::applyCreditSettled(const OutpointId& deposit) {
@@ -32,9 +44,12 @@ void LedgerAccount::applyCreditSettled(const OutpointId& deposit) {
         return;
     }
     UnaAmount amount = credited->amount;
+    const auto confirmed = CheckedAccountSum(confirmed_, amount);
+    const auto pending = pending_ >= amount ? pending_ - amount : 0;
+    (void)CheckedAccountSum(pending, confirmed);
     it->second = DepositSettledState{amount};
-    pending_ = pending_ >= amount ? pending_ - amount : 0;
-    confirmed_ += amount;
+    pending_ = pending;
+    confirmed_ = confirmed;
 }
 
 void LedgerAccount::applyCreditReverted(const OutpointId& deposit) {
@@ -62,8 +77,9 @@ void LedgerAccount::applyCreditReverted(const OutpointId& deposit) {
 
 void LedgerAccount::applyWithdrawalInitiated(const OutpointId& request, UnaAmount amount, const BackendId& backend) {
     if (withdrawals_.find(request) == withdrawals_.end()) {
+        const auto locked = CheckedAccountSum(locked_, amount);
         withdrawals_[request] = WithdrawalInitiatedState{amount, backend};
-        locked_ += amount;
+        locked_ = locked;
     }
 }
 
@@ -112,7 +128,8 @@ void LedgerAccount::applyCompensatingDebit(const OutpointId& deposit, UnaAmount 
     // from the user's absorptive capacity at revert time). Touching
     // pending / confirmed here would double-debit the user. Keep
     // balances intact, just bump the per-account operator loss.
-    operatorLoss_ += operator_loss;
+    const auto loss = CheckedAccountSum(operatorLoss_, operator_loss);
+    operatorLoss_ = loss;
 
     auto it = deposits_.find(deposit);
     if (it != deposits_.end()) {
@@ -124,14 +141,18 @@ void LedgerAccount::applyCompensatingDebit(const OutpointId& deposit, UnaAmount 
 
 void LedgerAccount::applyPolicyAdjustment(int64_t delta_user_balance) {
     if (delta_user_balance >= 0) {
-        confirmed_ += static_cast<UnaAmount>(delta_user_balance);
+        const auto confirmed = CheckedAccountSum(confirmed_, static_cast<UnaAmount>(delta_user_balance));
+        (void)CheckedAccountSum(pending_, confirmed);
+        confirmed_ = confirmed;
         return;
     }
-    auto magnitude = static_cast<UnaAmount>(-delta_user_balance);
-    UnaAmount from_confirmed = std::min(confirmed_, magnitude);
+    // Negate after adding one so INT64_MIN has a defined unsigned magnitude.
+    const auto magnitude = static_cast<UnaAmount>(-(delta_user_balance + 1)) + 1;
+    const UnaAmount from_confirmed = std::min(confirmed_, magnitude);
+    const UnaAmount uncovered = magnitude - from_confirmed;
+    const auto loss = CheckedAccountSum(operatorLoss_, uncovered);
     confirmed_ -= from_confirmed;
-    UnaAmount uncovered = magnitude - from_confirmed;
-    operatorLoss_ += uncovered;
+    operatorLoss_ = loss;
 }
 
 }  // namespace dinero::vault

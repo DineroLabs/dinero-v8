@@ -40,6 +40,8 @@ class LedgerError : public std::runtime_error {
         LIFECYCLE_INCONSISTENT,
         PER_USER_CAP_EXCEEDED,
         DEPOSIT_LIFECYCLE_CLOSED,
+        SEQUENCE_EXHAUSTED,
+        ARITHMETIC_OVERFLOW,
     };
 
     LedgerError(Kind kind, const std::string& message)
@@ -55,8 +57,10 @@ class Ledger {
    public:
     explicit Ledger(LedgerCaps caps = LedgerCaps::unbounded()) : caps_{caps} {}
 
-    /// Append one entry, validating invariants. On error, ledger
-    /// state is unchanged (validation runs before any mutation).
+    /// Prepare the derived account/counter state before appending an entry.
+    /// Errors preserve entries, accounts, counters and sequence. Successful
+    /// publication after the entry append uses only nonthrowing swaps.
+    /// This is in-memory atomicity, not a durable storage transaction.
     void append(LedgerEntry entry);
 
     /// Replay a sequence of entries onto an empty ledger. Used at
@@ -96,7 +100,8 @@ class Ledger {
     UnaAmount totalOperatorLoss_{0};
     LedgerCaps caps_;
     /// Strict-monotonic sequence head. Next entry must have
-    /// `seq >= nextSeq_`. When `nextSeq_ == 0`, no entries written.
+    /// `seq >= nextSeq_`. Zero is valid initially; UINT64_MAX is an
+    /// exhausted next value and cannot be used for another append.
     LedgerSeq nextSeq_{0};
 };
 

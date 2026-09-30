@@ -1200,6 +1200,26 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 4' in log
           PYTEST
 
+      - name: Require complete in-memory vault ledger appends
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay test_vault_ledger test_vault_ledger_store test_vault_state_machines test_vault_service --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(VaultLedger|VaultLedgerAppend|VaultLedgerStore|VaultService|VaultStateMachines)$' --show-only=json-v1 > vault-ledger-append-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('vault-ledger-append-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultLedger','VaultLedgerAppend','VaultLedgerStore','VaultService','VaultStateMachines']
+          assert {t['name']:next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT') for t in tests}=={'VaultLedger':30,'VaultLedgerAppend':120,'VaultLedgerStore':30,'VaultService':30,'VaultStateMachines':30}
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(VaultLedger|VaultLedgerAppend|VaultLedgerStore|VaultService|VaultStateMachines)$' --verbose --no-tests=error --output-log vault-ledger-append-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('vault-ledger-append-execution.log').read_text()
+          for case in ['InitialZeroGapsExhaustionAndReplay', 'AccountAndGlobalCapsPreserveOwner', 'BalanceAndLossBoundariesPreserveOwner', 'LifecycleFailureAndSuccessfulRetryPreserveHistory']:
+              assert log.count('[       OK ] VaultLedgerAppend.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 5' in log
+          PYTEST
+
       - name: Check typed canonical block announcement handoff
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2868,6 +2888,8 @@ jobs:
             vault-rpc-input-execution.log
             vault-ledger-read-inventory.json
             vault-ledger-read-execution.log
+            vault-ledger-append-inventory.json
+            vault-ledger-append-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log

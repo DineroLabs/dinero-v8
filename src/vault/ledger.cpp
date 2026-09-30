@@ -6,6 +6,8 @@
 #include "vault/ledger.h"
 
 #include <sstream>
+#include <limits>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -20,9 +22,33 @@ void Ledger::append(LedgerEntry entry) {
         throw LedgerError(LedgerError::Kind::SEQUENCE_NOT_MONOTONIC, oss.str());
     }
 
+    if (seq == std::numeric_limits<LedgerSeq>::max()) {
+        throw LedgerError(LedgerError::Kind::SEQUENCE_EXHAUSTED,
+                          "ledger sequence capacity exhausted");
+    }
     validate(entry);
-    applyToAccounts(entry);
+    // Copy the current derived state, but not the entire entry history. A
+    // failed account operation or allocation cannot publish a partial append.
+    Ledger prepared{caps_};
+    prepared.accounts_ = accounts_;
+    prepared.openCreditsByAccount_ = openCreditsByAccount_;
+    prepared.totalOpenCredits_ = totalOpenCredits_;
+    prepared.totalOperatorLoss_ = totalOperatorLoss_;
+    try {
+        prepared.applyToAccounts(entry);
+    } catch (const std::overflow_error& error) {
+        throw LedgerError(LedgerError::Kind::ARITHMETIC_OVERFLOW, error.what());
+    }
+    static_assert(std::is_nothrow_move_constructible_v<LedgerEntry>);
+    static_assert(noexcept(accounts_.swap(prepared.accounts_)));
+    static_assert(noexcept(openCreditsByAccount_.swap(prepared.openCreditsByAccount_)));
+    // vector::push_back provides the strong guarantee with this nothrow-move
+    // entry type. Everything after it is nonthrowing publication.
     entries_.push_back(std::move(entry));
+    accounts_.swap(prepared.accounts_);
+    openCreditsByAccount_.swap(prepared.openCreditsByAccount_);
+    totalOpenCredits_ = prepared.totalOpenCredits_;
+    totalOperatorLoss_ = prepared.totalOperatorLoss_;
     nextSeq_ = seq + 1;
 }
 
@@ -73,16 +99,16 @@ void Ledger::validate(const LedgerEntry& entry) {
         UnaAmount per_account = openCreditsByAccount_.count(opened->account) != 0U
                                     ? openCreditsByAccount_.at(opened->account)
                                     : 0;
-        per_account += opened->amount;
-        if (per_account > caps_.per_user) {
+        if (per_account > caps_.per_user || opened->amount > caps_.per_user - per_account) {
             std::ostringstream oss;
-            oss << "per-user cap exceeded: " << per_account << " > " << caps_.per_user;
+            oss << "per-user cap exceeded: current " << per_account << ", addition "
+                << opened->amount << ", cap " << caps_.per_user;
             throw LedgerError(LedgerError::Kind::PER_USER_CAP_EXCEEDED, oss.str());
         }
-        UnaAmount global = totalOpenCredits_ + opened->amount;
-        if (global > caps_.global) {
+        if (totalOpenCredits_ > caps_.global || opened->amount > caps_.global - totalOpenCredits_) {
             std::ostringstream oss;
-            oss << "global cap exceeded: " << global << " > " << caps_.global;
+            oss << "global cap exceeded: current " << totalOpenCredits_ << ", addition "
+                << opened->amount << ", cap " << caps_.global;
             throw LedgerError(LedgerError::Kind::OPEN_CREDITS_EXCEED_CAP, oss.str());
         }
         return;
@@ -254,7 +280,10 @@ void Ledger::applyToAccounts(const LedgerEntry& entry) {
         ensureAccount(compensating->account)
             .applyCompensatingDebit(compensating->deposit, compensating->amount, compensating->operatorLoss);
         UnaAmount loss_after = accounts_.at(compensating->account).operatorLoss();
-        totalOperatorLoss_ += (loss_after - loss_before);
+        const UnaAmount increase = loss_after - loss_before;
+        if (increase > std::numeric_limits<UnaAmount>::max() - totalOperatorLoss_)
+            throw std::overflow_error("vault total operator loss overflow");
+        totalOperatorLoss_ += increase;
         return;
     }
 
