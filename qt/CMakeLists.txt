@@ -528,6 +528,7 @@ endif()
 
 set(GUI_SOURCES
   src/chaintiming.cpp
+  src/upgradepolicy.cpp
   src/privatecovenantwidget.cpp
   src/privatecovenantwidget.h
   src/main.cpp
@@ -1383,6 +1384,14 @@ if(BUILD_TESTING)
   target_compile_definitions(test_chain_timing PRIVATE QT_NO_KEYWORDS)
   add_test(NAME ChainTiming COMMAND test_chain_timing)
   set_tests_properties(ChainTiming PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+  add_executable(test_upgrade_policy tests/test_upgrade_policy.cpp src/upgradepolicy.cpp)
+  target_include_directories(test_upgrade_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_upgrade_policy PRIVATE Qt6::Core Qt6::Test)
+  target_compile_definitions(test_upgrade_policy PRIVATE QT_NO_KEYWORDS
+    UPGRADE_VECTORS="${CMAKE_CURRENT_SOURCE_DIR}/tests/vectors/network_upgrade_policy_v1.json")
+  add_test(NAME UpgradePolicy COMMAND test_upgrade_policy)
+  set_tests_properties(UpgradePolicy PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
   add_executable(test_peer_height_semantics
     tests/test_peer_height_semantics.cpp
