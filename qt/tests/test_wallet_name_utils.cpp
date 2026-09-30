@@ -9,6 +9,9 @@ private Q_SLOTS:
   void normalizeCollapsesWhitespaceAndInvalidChars();
   void normalizeAvoidsWindowsReservedNames();
   void validateRejectsEmptyOrTooLongNames();
+  void restoreNameUnique();
+  void restoreNameIsValid();
+  void restoreErrorClassify();
 };
 
 void WalletNameUtilsTest::normalizeCollapsesWhitespaceAndInvalidChars() {
@@ -36,6 +39,31 @@ void WalletNameUtilsTest::validateRejectsEmptyOrTooLongNames() {
 
   QVERIFY(validateWalletNameInput(QStringLiteral("wallet 01"), &normalized).isEmpty());
   QCOMPARE(normalized, QStringLiteral("wallet 01"));
+}
+
+void WalletNameUtilsTest::restoreNameUnique() {
+  QCOMPARE(uniqueRestoreName(QStringLiteral("Main"), {}), QStringLiteral("Main"));
+  QCOMPARE(uniqueRestoreName(QStringLiteral("Main"), {QStringLiteral("main")}), QStringLiteral("Main restored"));
+  QCOMPARE(uniqueRestoreName(QStringLiteral("Main"), {QStringLiteral("Main"), QStringLiteral("Main restored")}),
+           QStringLiteral("Main restored 2"));
+  QCOMPARE(uniqueRestoreName(QStringLiteral("  Main  "), {QStringLiteral("Main")}), QStringLiteral("Main restored"));
+}
+
+void WalletNameUtilsTest::restoreNameIsValid() {
+  const QString suggested = uniqueRestoreName(QStringLiteral("Savings"), {QStringLiteral("Savings")});
+  QString normalized;
+  QVERIFY(validateWalletNameInput(suggested, &normalized).isEmpty());
+  QCOMPARE(normalized, suggested);
+  const QString longBase(64, QChar('a'));
+  const QString suggestedLong = uniqueRestoreName(longBase, {longBase});
+  QVERIFY(validateWalletNameInput(suggestedLong).isEmpty());
+}
+
+void WalletNameUtilsTest::restoreErrorClassify() {
+  QCOMPARE(classifyRestoreError(QStringLiteral("Wallet already exists: Main. Restore under a new wallet name; existing wallets cannot be overwritten.")),
+           RestoreErrorKind::NameExists);
+  QCOMPARE(classifyRestoreError(QStringLiteral("Invalid BIP39 mnemonic (checksum failed)")), RestoreErrorKind::Other);
+  QCOMPARE(classifyRestoreError(QString()), RestoreErrorKind::None);
 }
 
 QTEST_GUILESS_MAIN(WalletNameUtilsTest)
