@@ -566,3 +566,5 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "wallet_pool_request_checks.h"
 
 #include "wallet_pool_origin_checks.h"
+
+#include "pool_payment_attempt_checks.h"

@@ -166,6 +166,7 @@ public:
     // Own the database through every synchronous operation. One operation may
     // be active at a time; concurrent/nested operations refuse rather than wait.
     PayoutProcessor(std::shared_ptr<PoolDB> db, PaymentCallback payment_fn);
+    PayoutProcessor(std::shared_ptr<PoolDB>,std::unique_ptr<PoolPaymentBackend>);
     ~PayoutProcessor();
     PayoutProcessor(const PayoutProcessor&)=delete;
     PayoutProcessor& operator=(const PayoutProcessor&)=delete;
@@ -196,6 +197,8 @@ public:
 private:
     struct Use;
     bool processPayoutOwned(Payout& payout);
+    uint32_t processOwnedPayments();
+    std::unique_ptr<PoolPaymentBackend> backend_;
     std::shared_ptr<PoolDB> database_owner_;
     PoolDB& db_;
     PaymentCallback payment_fn_;

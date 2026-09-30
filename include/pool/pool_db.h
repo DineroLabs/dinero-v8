@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pool/pool_types.h"
+#include "pool/payment_attempt.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -178,6 +179,11 @@ public:
     // Get pending payouts
     std::vector<Payout> getPendingPayouts();
 
+    // Complete present attempt/member capture in one checked FULL transaction.
+    // Missing/corrupt storage refuses. Durable metadata is not a signed catalog
+    // or proof against deletion, backup rollback or canonical eligibility.
+    std::vector<PoolPaymentAttempt> getPaymentAttempts();
+
     // Get payouts ready to send (confirmed blocks)
     std::vector<Payout> getPayoutsReadyToSend();
 
@@ -251,6 +257,13 @@ public:
     uint64_t getDatabaseSize();
 
 private:
+    friend class PayoutProcessor;
+    friend struct PoolPaymentAttemptTestAccess;
+    PoolPaymentAttempt beginPaymentAttempt(const PoolPaymentWalletBinding&,
+                                           const std::vector<uint64_t>& payout_ids);
+    void retainPaymentAttempt(const PoolPaymentAttempt&,const PoolPaymentRetained&);
+    std::vector<PoolPaymentAttempt> readPaymentAttemptsOwned();
+
     friend class PayoutCalculator;
     // Actual DB-only calculator dispatch, never an external payment callback.
     // Owns the full pending allocation batch; returns only after checked COMMIT.

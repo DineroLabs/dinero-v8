@@ -5,6 +5,9 @@
  */
 
 #include "pool/payout_calculator.h"
+#include "primitives/amount.h"
+
+#include <set>
 #include <ctime>
 #include <algorithm>
 #include <numeric>
@@ -442,17 +445,22 @@ PayoutProcessor::PayoutProcessor(std::shared_ptr<PoolDB> db, PaymentCallback pay
       payment_fn_(std::move(payment_fn)) {
     if (!payment_fn_) throw std::invalid_argument("pool payment callback missing");
 }
+PayoutProcessor::PayoutProcessor(std::shared_ptr<PoolDB> db,std::unique_ptr<PoolPaymentBackend> backend)
+    : backend_(std::move(backend)),database_owner_(std::move(db)),db_(RequiredPoolDatabase(database_owner_)) {
+    if(!backend_)throw std::invalid_argument("pool payment backend missing");
+}
 PayoutProcessor::~PayoutProcessor() {
     try {Close();} catch (...) {std::terminate();}
 }
 void PayoutProcessor::Close() {
     PaymentCallback retired;
+    std::unique_ptr<PoolPaymentBackend> retired_backend;
     {
         std::unique_lock lock(gate_mutex_);
         if (active_ && active_thread_==std::this_thread::get_id())
             throw std::logic_error("cannot close pool payment processor from active operation");
         closed_=true;drained_.wait(lock,[this]{return !active_;});
-        retired.swap(payment_fn_);
+        retired.swap(payment_fn_);retired_backend.swap(backend_);
     }
     // Destroy arbitrary callback captures only after releasing the gate mutex.
 }
@@ -460,8 +468,54 @@ bool PayoutProcessor::IsClosed() const {
     std::lock_guard lock(gate_mutex_);return closed_;
 }
 
+uint32_t PayoutProcessor::processOwnedPayments() {
+    // No pool SQLite/manager owner spans Bind, Resolve or DispatchNew. The
+    // processor Use keeps the daemon callback context alive through this call.
+    const auto attempts=db_.getPaymentAttempts();std::set<uint64_t> claimed;
+    uint32_t newly_retained=0;
+    for(const auto& attempt:attempts) {
+        auto dispatcher=backend_->Bind(attempt.binding.funding);
+        if(!dispatcher || dispatcher->Binding()!=attempt.binding)
+            throw std::runtime_error("pool attempt funding owner changed");
+        const auto retained=dispatcher->Resolve(attempt);
+        if(attempt.retained && (!retained || *retained!=*attempt.retained))
+            throw std::runtime_error("pool retained wallet body unavailable");
+        if(retained && !attempt.retained) {
+            db_.retainPaymentAttempt(attempt,*retained);
+            newly_retained+=static_cast<uint32_t>(attempt.members.size());
+        }
+        for(const auto& member:attempt.members)claimed.insert(member.payout_id);
+    }
+    const auto config=db_.getConfig();if(!config.payment_funding)return newly_retained;
+    const auto payouts=db_.getPayoutsReadyToSend();
+    std::map<std::string,std::vector<uint64_t>> groups;std::map<std::string,uint64_t> totals;
+    for(const auto& payout:payouts) {
+        if(claimed.contains(payout.payout_id))continue;
+        if(!payout.allocation_origin || !payout.amount || payout.amount>MAX_SUPPLY_UNA_CONST-totals[payout.wallet_address])
+            throw std::runtime_error("pool payment requires complete new allocation ownership");
+        totals[payout.wallet_address]+=payout.amount;groups[payout.wallet_address].push_back(payout.payout_id);
+        if(groups[payout.wallet_address].size()>256)throw std::runtime_error("pool payment membership capacity exceeded");
+    }
+    for(const auto& [address,ids]:groups) {
+        if(totals.at(address)<config.min_auto_payout)continue;
+        auto dispatcher=backend_->Bind(*config.payment_funding);
+        if(!dispatcher || dispatcher->Binding().funding!=*config.payment_funding)
+            throw std::runtime_error("pool funding policy unavailable");
+        // A successful commit in THIS call is the sole permission to invoke
+        // DispatchNew. Exceptions after it leave a resolve-only durable attempt.
+        auto attempt=db_.beginPaymentAttempt(dispatcher->Binding(),ids);
+        const auto retained=dispatcher->DispatchNew(attempt);
+        if(retained) {
+            db_.retainPaymentAttempt(attempt,*retained);
+            newly_retained+=static_cast<uint32_t>(attempt.members.size());
+        }
+    }
+    return newly_retained; // retained allocation count, never settled/paid count
+}
+
 uint32_t PayoutProcessor::processPendingPayouts() {
     const Use use(*this);
+    if(backend_)return processOwnedPayments();
     uint32_t processed = 0;
 
     auto payouts = db_.getPayoutsReadyToSend();
@@ -521,6 +575,7 @@ uint32_t PayoutProcessor::processPendingPayouts() {
 
 bool PayoutProcessor::processPayout(Payout& payout) {
     const Use use(*this);
+    if(backend_)throw std::logic_error("owned payments require durable batch membership");
     return processPayoutOwned(payout);
 }
 
@@ -546,6 +601,7 @@ bool PayoutProcessor::processPayoutOwned(Payout& payout) {
 
 uint32_t PayoutProcessor::retryFailedPayouts(uint32_t max_retries) {
     const Use use(*this);
+    if(backend_)return processOwnedPayments(); // existing attempts resolve only
     uint32_t processed = 0;
 
     auto pending = db_.getPendingPayouts();

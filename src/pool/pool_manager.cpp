@@ -482,6 +482,15 @@ void PoolManager::setPaymentCallback(PaymentCallback callback) {
     }
 }
 
+void PoolManager::setPaymentBackend(std::unique_ptr<PoolPaymentBackend> backend) {
+    auto candidate=std::make_shared<PayoutProcessor>(db_,std::move(backend));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(payments_closed_ || processor_)throw std::logic_error("pool payment backend already installed or closed");
+        processor_.swap(candidate);
+    }
+}
+
 void PoolManager::ClosePayments() {
     std::shared_ptr<PayoutProcessor> processor;
     {

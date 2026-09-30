@@ -2688,6 +2688,24 @@ jobs:
           for case in ['RecordedRoundWinsOverUnrelatedMatchingBlockNumber','MissingForeignAndDuplicateRoundRefuseBeforeAllocationWrites','CompleteTypedContributionsAndReadErrors','CallerTransactionAndCommitRefusalPreserveOwners']:
               assert log.count('[       OK ] PoolRoundOwner.'+case+' (')==1
           PYROUND
+      - name: Require durable pool attempts and actual bound wallet dispatch
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolPaymentAttempt$' --show-only=json-v1 > orchard-pool-payment-attempt-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-pool-payment-attempt-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolPaymentAttempt'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^PoolPaymentAttempt$' --verbose --no-tests=error --output-log orchard-pool-payment-attempt-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-pool-payment-attempt-execution.log').read_text()
+          for case in ['PoolPaymentAttempt.ActualUnknownSubmissionRetainsAndReopensWithoutPayingOrResending', 'PoolPaymentAttempt.UnavailablePreflightAttemptNeverRegeneratesAfterRetryOrReopen', 'PoolPaymentAttempt.RequiredMembershipWriteAndCommitRefuseBeforeWalletEffects', 'PoolPaymentAttempt.RetentionWriteFailureResolvesCommittedWalletBodyWithoutResubmission', 'PoolPaymentAttempt.ExplicitWalletPolicyAndAllocationOwnershipRequiredBeforeEffects', 'PoolPaymentAttempt.CompleteAttemptReadsAndClosedOwnerRefuseWithoutAnotherDispatch']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
       - name: Require retained pool allocation references
         run: |
           ctest --test-dir build-orchard-root -R '^WalletPoolOrigins$' --show-only=json-v1 > orchard-pool-origins-inventory.json
@@ -3556,6 +3574,8 @@ jobs:
             orchard-pool-request-execution.log
             orchard-pool-origins-inventory.json
             orchard-pool-origins-execution.log
+            orchard-pool-payment-attempt-inventory.json
+            orchard-pool-payment-attempt-execution.log
             orchard-request-owner-inventory.json
             orchard-request-owner-execution.log
             orchard-request-dispatch-inventory.json

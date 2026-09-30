@@ -175,6 +175,8 @@ public:
      */
     // Install once for this manager lifetime; replacing a live context refuses.
     void setPaymentCallback(PaymentCallback callback);
+    // Production payments use this exclusive owned backend. ClosePayments drains it.
+    void setPaymentBackend(std::unique_ptr<PoolPaymentBackend>);
     // Permanent payment shutdown. Call outside wallet/chain/SQLite owners.
     // Existing synchronous operation drains without holding the manager mutex.
     void ClosePayments();

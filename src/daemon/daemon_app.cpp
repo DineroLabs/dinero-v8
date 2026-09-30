@@ -1,3 +1,4 @@
+#include "pool/wallet_payment_backend.h"
 #include "util/hex.h"
 #include "daemon/orchard_network_block.h"
 #include "daemon/utreexo_tx_reader.h"
@@ -979,69 +980,7 @@ bool DaemonApp::Init(int argc, char** argv) {
     ConfigurePoolAccountingRuntime();
 
     if (pool_manager_runtime_) {
-        pool_manager_runtime_->setPaymentCallback([this](const std::string& address,
-                                                         uint64_t amount,
-                                                         std::string& txid_out) -> bool {
-            if (amount == 0 || address.empty()) {
-                g_logger.error("[Pool] payout callback rejected empty address or zero amount");
-                return false;
-            }
-
-            if (!ctx_.wallet || !ctx_.tx_ingress) {
-                g_logger.error("[Pool] payout callback unavailable: wallet or tx ingress not ready");
-                return false;
-            }
-
-            auto wallet_service = std::dynamic_pointer_cast<WalletService>(ctx_.wallet);
-            if (!wallet_service) {
-                g_logger.error("[Pool] payout callback unavailable: wallet service cast failed");
-                return false;
-            }
-
-            WalletManager& wallet_mgr = wallet_service->get();
-            if (!wallet_mgr.hasActiveWallet()) {
-                g_logger.error("[Pool] payout callback failed: no active wallet");
-                return false;
-            }
-            if (wallet_mgr.isWalletLocked()) {
-                g_logger.error("[Pool] payout callback failed: active wallet is locked");
-                return false;
-            }
-
-            HDWallet* hd_wallet = wallet_mgr.getHDWallet();
-            if (!hd_wallet) {
-                g_logger.error("[Pool] payout callback failed: HD wallet is unavailable");
-                return false;
-            }
-
-            std::vector<HDWallet::TxOutput> outputs;
-            outputs.push_back(HDWallet::TxOutput{address, amount});
-
-            std::string tx_hex;
-            std::string create_error;
-            constexpr uint64_t kPoolPayoutFeeRate = 2;
-            if (!hd_wallet->CreateTransaction(outputs, kPoolPayoutFeeRate, tx_hex, create_error)) {
-                g_logger.error("[Pool] payout callback failed to create transaction: " + create_error);
-                return false;
-            }
-
-            Transaction payout_tx;
-            if (!TransactionSerializer::Deserialize(payout_tx, tx_hex)) {
-                g_logger.error("[Pool] payout callback failed to deserialize tx hex");
-                return false;
-            }
-
-            auto submit = ctx_.tx_ingress->Submit(payout_tx, TxOrigin::WALLET);
-            if (submit.rejected()) {
-                g_logger.error("[Pool] payout callback rejected by mempool: " + submit.message);
-                return false;
-            }
-
-            txid_out = payout_tx.GetTxid().AsUint256().GetHex();
-            g_logger.info("[Pool] payout transaction submitted: " + txid_out.substr(0, 16) +
-                          "... amount=" + std::to_string(amount));
-            return true;
-        });
+        pool_manager_runtime_->setPaymentBackend(pool::MakeWalletPoolPaymentBackend(ctx_));
     }
 
     // Phase 2: Data layer (depends on logger + config)
