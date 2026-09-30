@@ -5,13 +5,16 @@
  */
 
 #include "pool/pool_db.h"
+#include <charconv>
+#include <iomanip>
+#include <locale>
+#include <sstream>
 #include "pool/payout_calculator.h"
 #include <set>
 #include <exception>
 #include "common/logger.h"
 #include <sqlite3.h>
 #include <algorithm>
-#include <sstream>
 #include <ctime>
 #include <limits>
 #include <cmath>
@@ -1454,66 +1457,101 @@ double PoolDB::calculateLuck(int64_t period_seconds) {
 // CONFIG
 // ============================================================================
 
+namespace {
+void ValidatePoolSettings(const PoolConfig& config) {
+    switch(config.payout_mode) {
+        case PayoutMode::PROP: case PayoutMode::PPLNS: case PayoutMode::PPS: case PayoutMode::SOLO: break;
+        default: throw std::runtime_error("invalid pool configuration mode");
+    }
+    if (!std::isfinite(config.pool_fee_percent) || config.pool_fee_percent<0 || config.pool_fee_percent>100 ||
+        !std::isfinite(config.pps_rate) || config.pps_rate<0)
+        throw std::runtime_error("invalid pool configuration rate");
+    const auto max=static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    if(config.pplns_window>max || config.min_payout>max || config.min_auto_payout>max ||
+       config.pool_fee_address.find('\0')!=std::string::npos)
+        throw std::runtime_error("invalid pool configuration field");
+}
+uint64_t SettingsInteger(const std::string& value,uint64_t maximum) {
+    uint64_t parsed=0;
+    const auto result=std::from_chars(value.data(),value.data()+value.size(),parsed);
+    if(value.empty() || result.ec!=std::errc{} || result.ptr!=value.data()+value.size() || parsed>maximum)
+        throw std::runtime_error("invalid pool configuration integer");
+    return parsed;
+}
+double SettingsReal(const std::string& value) {
+    std::istringstream input(value);input.imbue(std::locale::classic());double parsed=0;
+    input>>std::noskipws>>parsed;
+    if(!input || input.peek()!=std::char_traits<char>::eof() || !std::isfinite(parsed) || parsed<0)
+        throw std::runtime_error("invalid pool configuration number");
+    return parsed;
+}
+std::string SettingsRealText(double value) {
+    std::ostringstream output;output.imbue(std::locale::classic());
+    output<<std::setprecision(std::numeric_limits<double>::max_digits10)<<value;
+    if(!output)throw std::runtime_error("pool configuration formatting failed");
+    const auto text=output.str();
+    if(SettingsReal(text)!=value)throw std::runtime_error("pool configuration number cannot round trip");
+    return text;
+}
+} // namespace
+
 PoolConfig PoolDB::getConfig() {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    PoolConfig config;
-
-    const char* sql = "SELECT key, value FROM config;";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return config;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        std::string key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-        std::string value = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-
-        if (key == "payout_mode") config.payout_mode = StringToPayoutMode(value);
-        else if (key == "pplns_window") config.pplns_window = std::stoull(value);
-        else if (key == "pps_rate") config.pps_rate = std::stod(value);
-        else if (key == "pool_fee_percent") config.pool_fee_percent = std::stod(value);
-        else if (key == "pool_fee_address") config.pool_fee_address = value;
-        else if (key == "min_payout") config.min_payout = std::stoull(value);
-        else if (key == "min_auto_payout") config.min_auto_payout = std::stoull(value);
-        else if (key == "max_payout_retries") config.max_payout_retries = std::stoul(value);
-        else if (key == "required_confirmations") config.required_confirmations = std::stoul(value);
-        else if (key == "new_round_on_block") {
-            config.new_round_on_block =
-                (value == "1" || value == "true" || value == "TRUE");
+    if(!db_)throw std::runtime_error("pool configuration database unavailable");
+    PoolConfig config;OrphanStatement rows(db_,"SELECT key,value FROM config ORDER BY key");
+    const auto max=static_cast<uint64_t>(std::numeric_limits<int64_t>::max());int rc;
+    while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
+        const auto key=rows.textColumn(0);const auto value=CalculationText(rows,1);
+        if(key=="payout_mode") {
+            if(value!="PROP" && value!="PPLNS" && value!="PPS" && value!="SOLO")
+                throw std::runtime_error("unknown pool configuration mode");
+            config.payout_mode=StringToPayoutMode(value);
+        } else if(key=="pplns_window")config.pplns_window=SettingsInteger(value,max);
+        else if(key=="pps_rate")config.pps_rate=SettingsReal(value);
+        else if(key=="pool_fee_percent")config.pool_fee_percent=SettingsReal(value);
+        else if(key=="pool_fee_address")config.pool_fee_address=value;
+        else if(key=="min_payout")config.min_payout=SettingsInteger(value,max);
+        else if(key=="min_auto_payout")config.min_auto_payout=SettingsInteger(value,max);
+        else if(key=="max_payout_retries")config.max_payout_retries=static_cast<uint32_t>(SettingsInteger(value,UINT32_MAX));
+        else if(key=="required_confirmations")config.required_confirmations=static_cast<uint32_t>(SettingsInteger(value,UINT32_MAX));
+        else if(key=="new_round_on_block") {
+            if(value=="1" || value=="true" || value=="TRUE")config.new_round_on_block=true;
+            else if(value=="0" || value=="false" || value=="FALSE")config.new_round_on_block=false;
+            else throw std::runtime_error("invalid pool configuration flag");
         }
     }
-
-    sqlite3_finalize(stmt);
-    return config;
+    if(rc!=SQLITE_DONE)throw std::runtime_error("pool configuration capture incomplete");
+    ValidatePoolSettings(config);return config;
 }
 
 bool PoolDB::updateConfig(const PoolConfig& config) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    // Simple key-value upserts
-    auto upsert = [this](const std::string& key, const std::string& value) {
-        const char* sql = R"(
-            INSERT INTO config (key, value) VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-        )";
-        return executeSQL(sql, [&](sqlite3_stmt* stmt) {
-            sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 2, value.c_str(), -1, SQLITE_TRANSIENT);
-        });
-    };
-
-    bool ok = true;
-    ok = upsert("payout_mode", PayoutModeToString(config.payout_mode)) && ok;
-    ok = upsert("pplns_window", std::to_string(config.pplns_window)) && ok;
-    ok = upsert("pps_rate", std::to_string(config.pps_rate)) && ok;
-    ok = upsert("pool_fee_percent", std::to_string(config.pool_fee_percent)) && ok;
-    ok = upsert("pool_fee_address", config.pool_fee_address) && ok;
-    ok = upsert("min_payout", std::to_string(config.min_payout)) && ok;
-    ok = upsert("min_auto_payout", std::to_string(config.min_auto_payout)) && ok;
-    ok = upsert("max_payout_retries", std::to_string(config.max_payout_retries)) && ok;
-    ok = upsert("required_confirmations", std::to_string(config.required_confirmations)) && ok;
-    ok = upsert("new_round_on_block", config.new_round_on_block ? "1" : "0") && ok;
-
-    return ok;
+    if(!db_ || !sqlite3_get_autocommit(db_))return false;
+    try {
+        ValidatePoolSettings(config);
+        // Prepare all strings before the transaction. Round-trip doubles exactly;
+        // std::to_string previously discarded precision before reopen.
+        const std::vector<std::pair<std::string,std::string>> values={
+            {"payout_mode",PayoutModeToString(config.payout_mode)},
+            {"pplns_window",std::to_string(config.pplns_window)},
+            {"pps_rate",SettingsRealText(config.pps_rate)},
+            {"pool_fee_percent",SettingsRealText(config.pool_fee_percent)},
+            {"pool_fee_address",config.pool_fee_address},
+            {"min_payout",std::to_string(config.min_payout)},
+            {"min_auto_payout",std::to_string(config.min_auto_payout)},
+            {"max_payout_retries",std::to_string(config.max_payout_retries)},
+            {"required_confirmations",std::to_string(config.required_confirmations)},
+            {"new_round_on_block",config.new_round_on_block?"1":"0"}
+        };
+        OrphanTransaction transaction(db_);
+        for(const auto& [key,value]:values) {
+            OrphanStatement row(db_,"INSERT INTO config(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+            row.text(1,key);row.text(2,value);row.changedOne(db_);
+        }
+        transaction.commit();return true;
+    } catch(const std::exception&) {
+        g_logger.error("[PoolDB] Configuration update refused; prior settings retained");return false;
+    }
 }
 
 // ============================================================================

@@ -15,6 +15,8 @@
 #include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <type_traits>
+#include <utility>
 #include <stdexcept>
 
 namespace dinero {
@@ -523,16 +525,17 @@ PoolConfig PoolManager::getConfig() {
 
 bool PoolManager::setConfig(const PoolConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
-
-    if (db_->updateConfig(config)) {
-        config_ = config;
-
-        // Recreate calculator with new config
-        calculator_ = std::make_unique<PayoutCalculator>(*db_, config_);
-
+    try {
+        PoolConfig prepared=config;
+        auto calculator=std::make_unique<PayoutCalculator>(*db_,prepared);
+        if(!db_->updateConfig(prepared))return false;
+        // All fallible preparation precedes COMMIT. Publication cannot throw.
+        static_assert(std::is_nothrow_swappable_v<PoolConfig>);
+        using std::swap;swap(config_,prepared);calculator_.swap(calculator);
         return true;
+    } catch(const std::exception&) {
+        g_logger.error("[Pool] Configuration preparation refused");return false;
     }
-    return false;
 }
 
 std::optional<WorkerStats> PoolManager::getWorkerStats(const std::string& worker_id) {

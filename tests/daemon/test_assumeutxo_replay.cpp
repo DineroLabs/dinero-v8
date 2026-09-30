@@ -763,3 +763,5 @@ int main(int argc, char** argv) {
 #include "pool_payment_lifetime_checks.h"
 
 #include "pool_payout_inventory_checks.h"
+
+#include "pool_config_owner_checks.h"

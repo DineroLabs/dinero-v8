@@ -229,9 +229,12 @@ public:
     // ========================================================================
 
     // Get pool config
+    // Complete typed settings read or throw; missing keys retain documented defaults.
     PoolConfig getConfig();
 
     // Update pool config
+    // Validate and persist all settings in one checked FULL transaction.
+    // Refuse borrowed transactions and leave prior settings intact on failure.
     bool updateConfig(const PoolConfig& config);
 
     // ========================================================================
