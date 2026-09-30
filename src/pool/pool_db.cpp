@@ -126,6 +126,57 @@ private:
     sqlite3_stmt* stmt_=nullptr;
 };
 
+PoolBlock ReadCalculationBlock(OrphanStatement& rows) {
+    auto narrow=[&](int col) {
+        auto v=rows.nonnegative(col);
+        if (v>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool block integer range");
+        return static_cast<uint32_t>(v);
+    };
+    auto flag=[&](int col) {
+        const auto v=rows.nonnegative(col);
+        if (v>1) throw std::runtime_error("invalid pool block flag");
+        return v!=0;
+    };
+    PoolBlock b;b.block_id=rows.nonnegative(0);b.block_hash=rows.textColumn(1);
+    if (!b.block_id) throw std::runtime_error("missing pool block identity");
+    b.height=narrow(2);b.finder_worker=rows.textColumn(3);b.finder_address=rows.textColumn(4);
+    b.reward=rows.nonnegative(5);b.fees=rows.nonnegative(6);b.total_reward=rows.nonnegative(7);
+    b.pool_fee_percent=rows.realColumn(8);b.pool_fee_amount=rows.nonnegative(9);b.distributable=rows.nonnegative(10);
+    b.round_shares=rows.nonnegative(11);b.round_difficulty=rows.realColumn(12);
+    b.confirmations=narrow(13);b.required_confirmations=narrow(14);b.orphaned=flag(15);
+    b.payouts_calculated=flag(16);b.payouts_sent=flag(17);b.found_at=rows.nonnegative(18);b.confirmed_at=rows.nonnegative(19);
+    return b;
+}
+
+// Empty recorded wallet/job text is retained; the existing calculator may use
+// its checked worker-address fallback. Only block_hash may be SQL NULL.
+std::string CalculationText(OrphanStatement& row,int column,bool nullable=false) {
+    const auto type=sqlite3_column_type(row.get(),column);
+    if (type==SQLITE_NULL && nullable) return {};
+    if (type!=SQLITE_TEXT) throw std::runtime_error("invalid pool share text type");
+    const auto* bytes=sqlite3_column_text(row.get(),column);const auto size=sqlite3_column_bytes(row.get(),column);
+    if (!bytes || size<0) throw std::runtime_error("unavailable pool share text");
+    std::string value(reinterpret_cast<const char*>(bytes),static_cast<size_t>(size));
+    if (value.find('\0')!=std::string::npos) throw std::runtime_error("invalid pool share text bytes");
+    return value;
+}
+Share ReadCalculationShare(OrphanStatement& row) {
+    auto narrow=[&](int col) {
+        auto v=row.nonnegative(col);
+        if (v>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool share integer range");
+        return static_cast<uint32_t>(v);
+    };
+    Share s;s.share_id=row.nonnegative(0);
+    if (!s.share_id) throw std::runtime_error("missing pool share identity");
+    s.worker_id=row.textColumn(1);s.wallet_address=CalculationText(row,2);s.job_id=CalculationText(row,3);
+    s.difficulty=narrow(4);s.difficulty_real=row.realColumn(5);
+    const auto status=row.nonnegative(6);
+    if (status>static_cast<int>(ShareStatus::BLOCK)) throw std::runtime_error("invalid pool share status");
+    s.status=static_cast<ShareStatus>(status);s.block_hash=CalculationText(row,7,true);
+    s.block_height=narrow(8);s.block_reward=row.nonnegative(9);s.submitted_at=row.nonnegative(10);
+    return s;
+}
+
 class OrphanTransaction {
 public:
     explicit OrphanTransaction(sqlite3* db):db_(db) {
@@ -568,43 +619,15 @@ uint64_t PoolDB::pruneShareSubmissionKeysOlderThan(int64_t cutoff_timestamp) {
 
 std::vector<Share> PoolDB::getLastNShares(uint64_t n) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<Share> shares;
-
-    const char* sql = R"(
-        SELECT share_id, worker_id, wallet_address, job_id, difficulty,
-               difficulty_real, status, block_hash, block_height,
-               block_reward, submitted_at
-        FROM shares
-        WHERE status = 0
-        ORDER BY share_id DESC
-        LIMIT ?;
-    )";
-
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return shares;
-    }
-
-    sqlite3_bind_int64(stmt, 1, n);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Share s;
-        s.share_id = sqlite3_column_int64(stmt, 0);
-        s.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        s.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        s.job_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        s.difficulty = sqlite3_column_int(stmt, 4);
-        s.difficulty_real = sqlite3_column_double(stmt, 5);
-        s.status = static_cast<ShareStatus>(sqlite3_column_int(stmt, 6));
-        const char* bh = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
-        if (bh) s.block_hash = bh;
-        s.block_height = sqlite3_column_int(stmt, 8);
-        s.block_reward = sqlite3_column_int64(stmt, 9);
-        s.submitted_at = sqlite3_column_int64(stmt, 10);
-        shares.push_back(s);
-    }
-
-    sqlite3_finalize(stmt);
+    if (!db_ || n>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max()))
+        throw std::runtime_error("pool share window unavailable");
+    OrphanStatement rows(db_,
+        "SELECT share_id,worker_id,wallet_address,job_id,difficulty,difficulty_real,status,"
+        "block_hash,block_height,block_reward,submitted_at FROM shares "
+        "WHERE status=0 ORDER BY share_id DESC LIMIT ?");
+    rows.integer(1,static_cast<sqlite3_int64>(n));std::vector<Share> shares;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) shares.push_back(ReadCalculationShare(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool share window incomplete");
     return shares;
 }
 
@@ -1658,71 +1681,28 @@ std::optional<PoolBlock> PoolDB::getBlock(uint64_t block_id) {
 
 std::vector<PoolBlock> PoolDB::getRecentBlocks(uint32_t limit) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<PoolBlock> blocks;
-    const char* sql = "SELECT * FROM blocks ORDER BY found_at DESC LIMIT ?";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return blocks;
-    }
-    sqlite3_bind_int(stmt, 1, limit);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        PoolBlock block;
-        block.block_id = sqlite3_column_int64(stmt, 0);
-        block.block_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        block.height = sqlite3_column_int(stmt, 2);
-        block.finder_worker = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        block.finder_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        block.reward = sqlite3_column_int64(stmt, 5);
-        block.fees = sqlite3_column_int64(stmt, 6);
-        block.total_reward = sqlite3_column_int64(stmt, 7);
-        block.pool_fee_percent = sqlite3_column_double(stmt, 8);
-        block.pool_fee_amount = sqlite3_column_int64(stmt, 9);
-        block.distributable = sqlite3_column_int64(stmt, 10);
-        block.round_shares = sqlite3_column_int64(stmt, 11);
-        block.round_difficulty = sqlite3_column_double(stmt, 12);
-        block.confirmations = sqlite3_column_int(stmt, 13);
-        block.required_confirmations = sqlite3_column_int(stmt, 14);
-        block.orphaned = sqlite3_column_int(stmt, 15) != 0;
-        block.payouts_calculated = sqlite3_column_int(stmt, 16) != 0;
-        block.payouts_sent = sqlite3_column_int(stmt, 17) != 0;
-        block.found_at = sqlite3_column_int64(stmt, 18);
-        block.confirmed_at = sqlite3_column_int64(stmt, 19);
-        blocks.push_back(block);
-    }
-    sqlite3_finalize(stmt);
+    if (!db_) throw std::runtime_error("pool recent blocks unavailable");
+    OrphanStatement rows(db_,
+        "SELECT block_id,block_hash,height,finder_worker,finder_address,reward,fees,total_reward,"
+        "pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,"
+        "confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,"
+        "found_at,confirmed_at FROM blocks ORDER BY found_at DESC LIMIT ?");
+    rows.integer(1,limit);std::vector<PoolBlock> blocks;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) blocks.push_back(ReadCalculationBlock(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool recent block capture incomplete");
     return blocks;
 }
 
 std::vector<Share> PoolDB::getSharesInRange(int64_t start_time, int64_t end_time) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<Share> shares;
-    const char* sql = "SELECT * FROM shares WHERE submitted_at >= ? AND submitted_at <= ? ORDER BY submitted_at DESC";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return shares;
-    }
-    sqlite3_bind_int64(stmt, 1, start_time);
-    sqlite3_bind_int64(stmt, 2, end_time);
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        Share share;
-        share.share_id = sqlite3_column_int64(stmt, 0);
-        share.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        share.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        share.job_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        share.difficulty = sqlite3_column_int(stmt, 4);
-        share.difficulty_real = sqlite3_column_double(stmt, 5);
-        share.status = static_cast<ShareStatus>(sqlite3_column_int(stmt, 6));
-        if (sqlite3_column_text(stmt, 7)) {
-            share.block_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
-        }
-        share.block_height = sqlite3_column_int(stmt, 8);
-        share.block_reward = sqlite3_column_int64(stmt, 9);
-        share.submitted_at = sqlite3_column_int64(stmt, 10);
-        shares.push_back(share);
-    }
-    sqlite3_finalize(stmt);
+    if (!db_ || start_time<0 || end_time<start_time) throw std::runtime_error("invalid pool share time range");
+    OrphanStatement rows(db_,
+        "SELECT share_id,worker_id,wallet_address,job_id,difficulty,difficulty_real,status,"
+        "block_hash,block_height,block_reward,submitted_at FROM shares "
+        "WHERE submitted_at>=? AND submitted_at<=? ORDER BY submitted_at DESC");
+    rows.integer(1,start_time);rows.integer(2,end_time);std::vector<Share> shares;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) shares.push_back(ReadCalculationShare(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool share time-range capture incomplete");
     return shares;
 }
 
@@ -2035,26 +2015,9 @@ std::vector<PoolBlock> PoolDB::getBlocksReadyForPayout() {
         "pool_fee_percent,pool_fee_amount,distributable,round_shares,round_difficulty,"
         "confirmations,required_confirmations,orphaned,payouts_calculated,payouts_sent,"
         "found_at,confirmed_at FROM blocks ORDER BY found_at,block_id");
-    auto narrow=[&](int col) {
-        auto v=rows.nonnegative(col);
-        if (v>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool block integer range");
-        return static_cast<uint32_t>(v);
-    };
-    auto flag=[&](int col) {
-        const auto v=rows.nonnegative(col);
-        if (v>1) throw std::runtime_error("invalid pool block flag");
-        return v!=0;
-    };
     std::vector<PoolBlock> blocks;int rc;
     while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
-        PoolBlock b;b.block_id=rows.nonnegative(0);b.block_hash=rows.textColumn(1);
-        if (!b.block_id) throw std::runtime_error("missing pool block identity");
-        b.height=narrow(2);b.finder_worker=rows.textColumn(3);b.finder_address=rows.textColumn(4);
-        b.reward=rows.nonnegative(5);b.fees=rows.nonnegative(6);b.total_reward=rows.nonnegative(7);
-        b.pool_fee_percent=rows.realColumn(8);b.pool_fee_amount=rows.nonnegative(9);b.distributable=rows.nonnegative(10);
-        b.round_shares=rows.nonnegative(11);b.round_difficulty=rows.realColumn(12);
-        b.confirmations=narrow(13);b.required_confirmations=narrow(14);b.orphaned=flag(15);
-        b.payouts_calculated=flag(16);b.payouts_sent=flag(17);b.found_at=rows.nonnegative(18);b.confirmed_at=rows.nonnegative(19);
+        auto b=ReadCalculationBlock(rows);
         if (!b.orphaned && !b.payouts_calculated && b.confirmations>=b.required_confirmations) blocks.push_back(std::move(b));
     }
     if (rc!=SQLITE_DONE) throw std::runtime_error("pool block allocation inventory incomplete");

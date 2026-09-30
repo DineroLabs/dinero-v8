@@ -755,3 +755,5 @@ int main(int argc, char** argv) {
 #include "pool_round_owner_checks.h"
 
 #include "pool_allocation_owner_checks.h"
+
+#include "pool_calculation_inputs_checks.h"

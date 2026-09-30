@@ -67,9 +67,13 @@ public:
     std::vector<Share> getWorkerShares(const std::string& worker_id,
                                         uint32_t limit = 100);
 
+    // Complete typed inclusive time-range capture. Read/row/EOF errors throw;
+    // borrowed transactions remain caller-owned. No historical completeness claim.
     // Get shares in time range
     std::vector<Share> getSharesInRange(int64_t start_time, int64_t end_time);
 
+    // Complete typed selected VALID-only window, preserving the existing filter.
+    // Read/row/EOF errors and unrepresentable limits throw, never return a prefix.
     // Get last N shares (for PPLNS)
     std::vector<Share> getLastNShares(uint64_t n);
 
@@ -131,6 +135,7 @@ public:
     // Get blocks ready for payout (confirmed but not paid)
     std::vector<PoolBlock> getBlocksReadyForPayout();
 
+    // Complete typed selected recent-block window; failures throw.
     // Get recent blocks
     std::vector<PoolBlock> getRecentBlocks(uint32_t limit = 50);
 

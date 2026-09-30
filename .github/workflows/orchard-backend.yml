@@ -2543,6 +2543,22 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require complete pool calculation input reads
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolCalculationInputs$' --show-only=json-v1 > orchard-pool-calculation-inputs-inventory.json
+          python3 - <<'PYROUND'
+          import json
+          tests=json.load(open('orchard-pool-calculation-inputs-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolCalculationInputs'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYROUND
+          ctest --test-dir build-orchard-root -R '^PoolCalculationInputs$' --verbose --no-tests=error --output-log orchard-pool-calculation-inputs-execution.log
+          python3 - <<'PYROUND'
+          from pathlib import Path
+          log=Path('orchard-pool-calculation-inputs-execution.log').read_text()
+          for case in ['ExactSelectionAndActualCalculatorsPreserveRows','MalformedLaterInputsRefuseBeforeAllocation','ReadRefusalAndTerminalCompletionNeverReturnPrefix','BorrowedReadAndPpsInputFailurePreserveAllocationOwner']:
+              assert log.count('[       OK ] PoolCalculationInputs.'+case+' (')==1
+          PYROUND
       - name: Require and execute atomic pool payout allocation
         run: |
           ctest --test-dir build-orchard-root -R '^PoolAllocationOwner$' --show-only=json-v1 > orchard-pool-allocation-inventory.json
@@ -3403,8 +3419,10 @@ jobs:
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
+            orchard-pool-calculation-inputs-inventory.json
             orchard-pool-allocation-inventory.json
             orchard-pool-round-inventory.json
+            orchard-pool-calculation-inputs-execution.log
             orchard-pool-allocation-execution.log
             orchard-pool-round-execution.log
             orchard-pool-request-inventory.json
