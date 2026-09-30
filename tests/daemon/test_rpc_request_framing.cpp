@@ -220,3 +220,5 @@ TEST(RpcRequestFraming, ClosedWalletRefusesBeforeUnifiedHandler) {
 } // namespace
 
 #include "vault_runtime_readonly_checks.h"
+
+#include "vault_explicit_readonly_checks.h"

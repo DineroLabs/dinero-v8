@@ -5,7 +5,6 @@
 #include "daemon/daemon_context.h"
 #include "daemon/rpc/wallet_gui_handlers.h"  // For RpcCreateHDWallet
 #include "common/ilogger.h"           // For ILogger interface dependency injection
-#include "vault/vault_runtime.h"
 #include "wallet/wallet_worker.h"
 #include "wallet/hd_wallet.h"         // Phase F.5: For BIP32 view key derivation
 #include "consensus/coin_type.h"      // DINERO_COIN_TYPE
@@ -460,39 +459,9 @@ bool WalletService::EnsureRuntimeWalletBindings() {
         logger_interface_->warning("[WalletService] Runtime wallet binding incomplete: " + std::string(e.what()));
     }
 
-    try {
-        if (dinero::vault::GetVaultRuntimeService() != nullptr) {
-            const auto bound = dinero::vault::GetVaultOperator();
-            if (bound.address.empty()) {
-                std::string primary = wallet_mgr_->getPrimaryAddress();
-                if (primary.empty()) {
-                    primary = wallet_mgr_->getNewAddress("", "taproot");
-                    if (!primary.empty()) {
-                        logger_interface_->info(
-                            "[WalletService] Derived first wallet address for Liquidity Vault auto-bind: " +
-                            primary);
-                    }
-                }
-                if (!primary.empty()) {
-                    std::string err;
-                    if (dinero::vault::SetVaultOperator(primary, "wallet", &err)) {
-                        logger_interface_->info(
-                            "[WalletService] Auto-bound Liquidity Vault to wallet primary address: " +
-                            primary);
-                    } else if (!err.empty()) {
-                        logger_interface_->warning(
-                            "[WalletService] Liquidity Vault auto-bind failed: " + err);
-                    }
-                } else {
-                    logger_interface_->warning(
-                        "[WalletService] Liquidity Vault auto-bind skipped: wallet has no primary address");
-                }
-            }
-        }
-    } catch (const std::exception& e) {
-        logger_interface_->warning(
-            "[WalletService] Liquidity Vault auto-bind failed: " + std::string(e.what()));
-    }
+    // Wallet selection/reload does not issue an operator address or relabel
+    // an attached vault. That immutable routing owner is authenticated by the
+    // explicit vault.create/open operations, independent of wallet binding.
 
     return wallet_mgr_->hasActiveWallet();
 }

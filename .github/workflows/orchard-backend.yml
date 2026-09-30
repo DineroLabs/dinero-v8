@@ -435,7 +435,7 @@ jobs:
           from pathlib import Path
           import re
           log=Path('orchard-rpc-request-framing-execution.log').read_text()
-          expected=['SegmentedHeadersAndBodyReachHandlerExactlyOnce','CapturedRateRefusalConsumesOneFrameWithoutDispatch','AuthenticationStillGatesCompleteRequests','UnifiedHandlerRetainsWalletAndAlias','ReturnedAndThrownFailuresReleaseWallet','ClosedWalletRefusesBeforeUnifiedHandler','VaultAttachmentRequiresAdminAccess']
+          expected=['SegmentedHeadersAndBodyReachHandlerExactlyOnce','CapturedRateRefusalConsumesOneFrameWithoutDispatch','AuthenticationStillGatesCompleteRequests','UnifiedHandlerRetainsWalletAndAlias','ReturnedAndThrownFailuresReleaseWallet','ClosedWalletRefusesBeforeUnifiedHandler','VaultAttachmentRequiresAdminAccess','VaultCreationRequiresAdminAccess']
           assert sorted(re.findall(r'\[       OK \] RpcRequestFraming\.(\w+)',log))==sorted(expected)
           assert '100% tests passed, 0 tests failed out of 1' in log
           PYFRAME
@@ -1318,6 +1318,24 @@ jobs:
           for suite,cases in {'VaultStateSnapshot': ['ActualServiceCaptureAndLedgerReplay', 'ExactFormatAllVariantsAndCanonicalInventory', 'IncompleteDuplicateAndTerminalInputRefuse', 'SavedLifecycleAndEveryLedgerBindingRequired', 'ObservedAndDetectedReversionKeepExistingLedgerShape'], 'VaultStateStore': ['ExplicitCreationAndAuthenticatedServiceReopen', 'RequiredWriteAndCommitRefusalPreserveLiveAndDurableState', 'MissingCorruptAndForeignDomainsNeverCreateReplacement', 'DeniedReadsAndBorrowedTransactionRetainCallerAndOwner']}.items():
               for case in cases: assert log.count('[       OK ] '+suite+'.'+case+' (')==1
           PYCODE
+      - name: Explicitly create and authenticate present wallet vault inventory
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultExplicitCreation$' --show-only=json-v1 > vault-explicit-creation-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-explicit-creation-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultExplicitCreation'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultExplicitCreation$' --verbose --no-tests=error --output-log vault-explicit-creation-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-explicit-creation-execution.log').read_text()
+          for case in ['OwnedCreationListsAndReopensExactPresentState', 'ExactOperatorKeyReadUsesCallerTransactionWithoutPublication', 'UnknownKeyAndCommitRefusalPreservePriorOwners', 'LateMalformedAndInterruptedInventoriesReturnNoPrefix', 'MissingIdentityDeniedReadAndCallerTransactionNeverEnroll', 'ActualCreateAndListRpcKeepRuntimeAndExistingOwnersSeparate']:
+              assert log.count('[       OK ] VaultExplicitCreation.'+case+' (')==1
+          PYCODE
       - name: Attach existing wallet vault state and close dispatch before shutdown
         shell: bash
         run: |
@@ -2005,6 +2023,25 @@ jobs:
           if sorted(re.findall(r'PASS (\w+)',log))!=sorted(expected):
               raise SystemExit('Orchard transaction context cases did not complete exactly once')
           PYTEST
+      - name: Require and execute explicit vault startup HTTP lifecycle
+        env:
+          DINERO_KEEP_VAULT_STARTUP_EVIDENCE: '1'
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultExplicitStartup$' --show-only=json-v1 > orchard-vault-explicit-startup-inventory.json
+          python3 - <<'PYCHECK'
+          import json
+          tests=json.load(open('orchard-vault-explicit-startup-inventory.json'))['tests']
+          assert [t['name'] for t in tests]==['VaultExplicitStartup']
+          props={p['name']:p['value'] for p in tests[0]['properties']}
+          assert not props.get('DISABLED') and props['TIMEOUT']==600 and props['RUN_SERIAL']
+          PYCHECK
+          ctest --test-dir build-orchard-root -R '^VaultExplicitStartup$' --verbose --no-tests=error --output-log orchard-vault-explicit-startup-execution.log
+          python3 - <<'PYCHECK'
+          from pathlib import Path
+          log=Path('orchard-vault-explicit-startup-execution.log').read_text()
+          expected=['PASS default daemon startup leaves vault detached', 'PASS encrypted wallet explicitly creates lists and attaches authenticated vault', 'PASS new owner never replaces attached or existing vaults', 'PASS restart requires explicit attachment and preserves exact owner rows', 'PASS legacy enable settings and files cannot initialize or overwrite a vault', 'PASS explicit vault startup HTTP lifecycle and clean shutdown', 'PASS wallet creation requires new name and preserves every existing owner row']
+          assert all(log.count(marker)==1 for marker in expected)
+          PYCHECK
       - name: Require and execute all root Orchard lanes
         run: |
           ctest --test-dir build-orchard-root -R '^(OrchardAccountDelivery|OrchardAuthorization|OrchardBackend(Cpp|Rust)|OrchardTransactionReader|OrchardCoinSnapshot|OrchardTransparent|OrchardStateStorage|OrchardStateTransition|OrchardForestTransition|OrchardBlockCoins|OrchardHeader|OrchardBlockReader|OrchardBlockStaging|OrchardAtomicCrash|OrchardMemoryPublication|OrchardStateCommitment|OrchardStateRoot|OrchardLegacyAccounting|OrchardRuntimeReader|OrchardRuntimeOutbox|OrchardCommitOwner|OrchardIndexDelivery|OrchardIndexedCommit|OrchardWalletKeys|OrchardWalletShield|OrchardWalletSpend|OrchardWalletStorage|OrchardWalletAccount|OrchardChainRestore|OrchardOperationArchive|OrchardWalletOperations|OrchardProofJobs|OrchardResources|OrchardServiceReorgPlan|OrchardServiceForkPoint|OrchardServiceConnect|OrchardServiceDeliverySource|OrchardServiceDisconnect|OrchardServicePersistence|OrchardServiceStartup|OrchardServiceUndoCoverage|OrchardBlockFilter|OrchardWalletScan|OrchardLegacyBoundary|OrchardLegacyRetirement)$' --show-only=json-v1 > orchard-root-inventory.json
@@ -2901,6 +2938,19 @@ jobs:
                   raise SystemExit('Disabled legacy DNRS compatibility test')
           PYCODE
           ctest --test-dir build-orchard-root -R '^StateCommitment(Canonical|Encoding|ExternalVectors|Transitions)$' --output-on-failure --no-tests=error --output-log orchard-dnrs-legacy-execution.log
+      - name: Collect explicit vault startup daemon logs
+        if: always()
+        run: |
+          python3 - <<'PYCOPY'
+          from pathlib import Path
+          import shutil
+          dest=Path('build-orchard-root/Testing/vault-explicit-startup')
+          for root in Path('/tmp').glob('dinero-vault-explicit-startup-*'):
+              for source in root.glob('*.log'):
+                  target=dest/root.name/source.name
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  shutil.copyfile(source,target)
+          PYCOPY
       - name: Collect churn-gate failure logs
         if: always()
         run: |
@@ -3068,6 +3118,8 @@ jobs:
             vault-retained-withdrawal-execution.log
             vault-state-store-inventory.json
             vault-state-store-execution.log
+            vault-explicit-creation-inventory.json
+            vault-explicit-creation-execution.log
             vault-runtime-attachment-inventory.json
             vault-runtime-attachment-execution.log
             vault-operator-binding-inventory.json
@@ -3150,6 +3202,9 @@ jobs:
             orchard-history-replay-execution.log
             orchard-rpc-startup-inventory.json
             orchard-rpc-startup-execution.log
+            orchard-vault-explicit-startup-inventory.json
+            orchard-vault-explicit-startup-execution.log
+            build-orchard-root/Testing/vault-explicit-startup
             orchard-wallet-undo-inventory.json
             orchard-wallet-undo-execution.log
             orchard-wallet-keys-inventory.json

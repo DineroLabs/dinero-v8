@@ -291,7 +291,6 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         std::string bip39_passphrase = "";
         std::string encryption_password = "";
         std::string policy = "bip86";  // Default to BIP86 Taproot
-        bool replace_existing = false;
         bool wallet_created = false;
 
         if (params.isArray()) {
@@ -311,20 +310,12 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
             if (params.size() > 4 && params[4].isString()) {
                 policy = params[4].asString();
             }
-            if (params.size() > 5) {
-                if (params[5].isBool()) {
-                    replace_existing = params[5].asBool();
-                } else if (params[5].isString() && params[5].asString() == "true") {
-                    replace_existing = true;
-                }
-            }
         } else if (params.isObject()) {
             if (params.isMember("name")) wallet_name = params["name"].asString();
             if (params.isMember("word_count")) word_count = params["word_count"].asInt();
             if (params.isMember("passphrase")) bip39_passphrase = params["passphrase"].asString();
             if (params.isMember("password")) encryption_password = params["password"].asString();
             if (params.isMember("policy")) policy = params["policy"].asString();
-            if (params.isMember("replace_existing")) replace_existing = params["replace_existing"].asBool();
         }
         
         // Validate word count (12, 15, 18, 21, or 24)
@@ -336,6 +327,14 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         // Mainnet hardening: Taproot-only wallet policy from genesis.
         if (policy != "bip86") {
             result["error"] = "Invalid policy. Dinero mainnet only supports 'bip86' (Taproot from genesis)";
+            return result;
+        }
+
+        // Creation establishes a new identity. An old override cannot authorize
+        // replacement of a selected or inactive wallet and its durable owners.
+        // Refuse before generating a new identity or changing wallet selection.
+        if (wallet_manager->exists(wallet_name)) {
+            result["error"] = "Wallet already exists; choose a new wallet name: " + wallet_name;
             return result;
         }
 
@@ -363,23 +362,11 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         std::string fingerprint(fingerprint_hex);
         std::string first_address = preflight_first_address.value();
 
-        // Create (if needed) and open target wallet before any DB writes.
-        const bool wallet_exists = wallet_manager->exists(wallet_name);
-        if (wallet_exists && !replace_existing) {
-            result["error"] = "Wallet already exists: " + wallet_name;
-            return result;
-        }
-
-        if (!wallet_exists) {
-            // The first seed and recovery record are persisted before registry
-            // publication. A crash can therefore never leave a registered
-            // user-facing wallet whose identity began as an unrelated raw seed.
-            wallet_manager->createFromGeneratedBip39(
-                wallet_name, std::move(generated_identity), bip39_passphrase);
-            wallet_created = true;
-        } else {
-            wallet_manager->open(wallet_name);
-        }
+        // The creation owner also refuses existing unregistered files. The
+        // first seed and recovery record precede registry publication.
+        wallet_manager->createFromGeneratedBip39(
+            wallet_name, std::move(generated_identity), bip39_passphrase);
+        wallet_created = true;
 
         // Persist wallet_policy atomically on the active wallet DB.
         std::string policy_error;
@@ -407,7 +394,7 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
         }
 
         // Encrypt wallet if password provided
-        if (wallet_created && !encryption_password.empty()) {
+        if (!encryption_password.empty()) {
             // The generated identity is already the durable seed. Encrypt that
             // same owner through the checked wallet transition, including live
             // policy, instead of writing a separate metadata-only envelope.
@@ -423,92 +410,6 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                 throw;
             }
             result["encrypted"] = true;
-        } else if (!encryption_password.empty()) {
-            try {
-                // === STEP 1: Generate random salt and nonce ===
-                std::vector<uint8_t> salt(16);
-                std::vector<uint8_t> nonce(12);
-
-                if (RAND_bytes(salt.data(), salt.size()) != 1) {
-                    if (wallet_created) {
-                        TryRollbackWalletCreate(wallet_manager, wallet_name);
-                    }
-                    result["error"] = "Failed to generate random salt";
-                    return result;
-                }
-
-                if (RAND_bytes(nonce.data(), nonce.size()) != 1) {
-                    if (wallet_created) {
-                        TryRollbackWalletCreate(wallet_manager, wallet_name);
-                    }
-                    result["error"] = "Failed to generate random nonce";
-                    return result;
-                }
-
-                // === STEP 2: Derive encryption key from password using Argon2id ===
-                // Parameters: OWASP 2023 recommendations
-                // - Memory: 64 MB (65536 KB)
-                // - Iterations: 3
-                // - Parallelism: 1
-                std::array<uint8_t, 32> encryption_key;
-                if (!dinero::crypto::deriveKeyArgon2id(
-                    encryption_password,
-                    salt,
-                    3,      // iterations
-                    65536,  // 64 MB
-                    1,      // parallelism
-                    encryption_key
-                )) {
-                    if (wallet_created) {
-                        TryRollbackWalletCreate(wallet_manager, wallet_name);
-                    }
-                    result["error"] = "Failed to derive encryption key from password";
-                    return result;
-                }
-
-                // === STEP 3: Encrypt the master seed using AES-256-GCM ===
-                std::vector<uint8_t> encrypted_seed_with_tag =
-                    dinero::crypto::encryptAesGcm(seed, encryption_key, nonce);
-
-                // === STEP 4: Secure memory cleanup ===
-                OPENSSL_cleanse(encryption_key.data(), encryption_key.size());
-                OPENSSL_cleanse(seed.data(), seed.size());
-
-                // === STEP 5: Store encryption metadata in wallet database ===
-                // Call WalletManager to store:
-                // - encrypted_seed_with_tag (ciphertext + 16-byte GCM tag)
-                // - salt (16 bytes)
-                // - nonce (12 bytes)
-                // - KDF parameters (iterations, memory, parallelism)
-                // - master_fingerprint
-
-                if (!wallet_manager->storeEncryptedWallet(
-                    wallet_name,
-                    encrypted_seed_with_tag,
-                    salt,
-                    nonce,
-                    3,      // argon2_iterations
-                    65536,  // argon2_memory_kb
-                    1,      // argon2_parallelism
-                    master_fingerprint
-                )) {
-                    if (wallet_created) {
-                        TryRollbackWalletCreate(wallet_manager, wallet_name);
-                    }
-                    result["error"] = "Failed to store encrypted wallet metadata";
-                    return result;
-                }
-
-                dinero::g_logger.info("✅ Wallet encrypted successfully: " + wallet_name);
-                result["encrypted"] = true;
-
-            } catch (const std::exception& e) {
-                if (wallet_created) {
-                    TryRollbackWalletCreate(wallet_manager, wallet_name);
-                }
-                result["error"] = std::string("Wallet encryption failed: ") + e.what();
-                return result;
-            }
         } else {
             // Unencrypted wallet - still store metadata but mark as unencrypted
             if (!wallet_manager->storeUnencryptedWallet(
@@ -524,12 +425,6 @@ din::Json RpcCreateHDWallet(const din::Json& params, dinero::WalletManager* wall
                 return result;
             }
             result["encrypted"] = false;
-        }
-
-        // Existing-wallet replacement reloads the stored seed. A newly created
-        // BIP39 wallet is already open with the same seed and recovery binding.
-        if (!wallet_created) {
-            wallet_manager->open(wallet_name);
         }
 
         // Persist canonical index-0 address via WalletManager so derivation metadata

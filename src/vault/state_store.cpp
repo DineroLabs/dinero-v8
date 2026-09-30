@@ -2,6 +2,7 @@
 #include "wallet/wallet_manager.h"
 #include "daemon/services/wallet_service.h"
 #include "primitives/transaction.h"
+#include "util/hex.h"
 #include "external/bech32/bech32.hpp"
 #include <map>
 #include <sqlite3.h>
@@ -44,11 +45,6 @@ std::vector<uint8_t> BlobColumn(sqlite3_stmt* p,int column,size_t min,size_t max
 std::array<uint8_t,32> Hash(std::span<const uint8_t> v) {std::array<uint8_t,32> out{};Check(SHA256(v.data(),v.size(),out.data())!=nullptr);return out;}
 void Append(std::vector<uint8_t>& out,std::span<const uint8_t> v) {out.insert(out.end(),v.begin(),v.end());}
 void U64(std::vector<uint8_t>& out,uint64_t v) {for(unsigned i=0;i<8;++i)out.push_back(static_cast<uint8_t>(v>>(8*i)));}
-std::array<uint8_t,32> WalletId(const std::string& text) {
-    Check(text.size()==71 && text.substr(0,7)=="DNWI01:");std::array<uint8_t,32> out{};
-    auto digit=[](char c)->int {if(c>='0'&&c<='9')return c-'0';if(c>='a'&&c<='f')return c-'a'+10;throw std::runtime_error("vault wallet identity encoding invalid");};
-    for(size_t i=0;i<out.size();++i)out[i]=static_cast<uint8_t>((digit(text[7+2*i])<<4)|digit(text[8+2*i]));Check(Nonzero(out));return out;
-}
 std::vector<uint8_t> Associated(const VaultStateDomain& domain,const std::array<uint8_t,32>& wallet,const VaultIdentity& vault,uint64_t revision,const std::array<uint8_t,32>& previous) {
     const std::string label="Dinero vault snapshot owner v1";std::vector<uint8_t> out(label.begin(),label.end());out.push_back(domain.network);Append(out,domain.genesis);Append(out,wallet);Append(out,vault);U64(out,revision);Append(out,previous);return out;
 }
@@ -86,19 +82,38 @@ struct VaultStateTransaction::Impl {
     std::vector<uint8_t> current_sealed;
     bool owns=false,committed=false,created=false;
 
-    Impl(WalletManager& manager,uint64_t session,const VaultStateDomain& d,const VaultIdentity& identity)
+    Impl(WalletManager& manager,uint64_t session,const VaultStateDomain& d)
         :lease(manager.AcquireDatabaseLease()),domain(d) {
         Check(session!=0 && lease->Session()==session && lease->Database());db=lease->Database();
-        Check(domain.network<=2 && Nonzero(domain.genesis) && Nonzero(identity));
+        Check(domain.network<=2 && Nonzero(domain.genesis));
         seed=lease->CopyRecoverySeed(session);Check(seed->Bytes().size()==64);
-        wallet=WalletId(lease->EnsureDeliveryIdentity());current.identity=identity;
-        Sensitive material;const std::string label="Dinero vault snapshot key v1";material.bytes.assign(label.begin(),label.end());Append(material.bytes,seed->Bytes());material.bytes.push_back(domain.network);Append(material.bytes,domain.genesis);Append(material.bytes,wallet);Append(material.bytes,identity);key.bytes=Hash(material.bytes);
         Check(sqlite3_get_autocommit(db));Exec(db,"PRAGMA synchronous=FULL");
         {Statement p(db,"PRAGMA synchronous");Check(sqlite3_step(p.p.get())==SQLITE_ROW);Check(sqlite3_column_type(p.p.get(),0)==SQLITE_INTEGER && sqlite3_column_int64(p.p.get(),0)==2);p.Done();}
         Exec(db,"BEGIN IMMEDIATE");owns=true;
+        try {
+            // Existing wallet identity is part of this same snapshot. Missing
+            // metadata must not generate a replacement identity during reads
+            // or turn a historical vault into a newly owned empty vault.
+            Statement q(db,"SELECT runtime_delivery_id FROM wallet_meta WHERE id=1");
+            Check(sqlite3_step(q.p.get())==SQLITE_ROW);
+            const auto id=BlobColumn(q.p.get(),0,32,32);q.Done();
+            std::copy(id.begin(),id.end(),wallet.begin());Check(Nonzero(wallet));
+        } catch(...) {
+            if(!sqlite3_get_autocommit(db) && sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK &&
+               !sqlite3_get_autocommit(db))std::terminate();
+            owns=false;throw;
+        }
     }
     ~Impl() {
         if(owns && !sqlite3_get_autocommit(db) && sqlite3_exec(db,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db))std::terminate();
+    }
+    void SelectIdentity(const VaultIdentity& identity) {
+        Check(Nonzero(identity));current=StoredVaultState{};current.identity=identity;
+        current_sealed.clear();OPENSSL_cleanse(key.bytes.data(),key.bytes.size());
+        Sensitive material;const std::string label="Dinero vault snapshot key v1";
+        material.bytes.assign(label.begin(),label.end());Append(material.bytes,seed->Bytes());
+        material.bytes.push_back(domain.network);Append(material.bytes,domain.genesis);
+        Append(material.bytes,wallet);Append(material.bytes,identity);key.bytes=Hash(material.bytes);
     }
     void ValidateRetainedPayments(const VaultStateSnapshot& state) const {
         const bool needed=std::any_of(state.withdrawals.begin(),state.withdrawals.end(),[](const auto& row) {
@@ -163,8 +178,21 @@ struct VaultStateTransaction::Impl {
 VaultStateTransaction::VaultStateTransaction(std::unique_ptr<Impl> p):impl_(std::move(p)){}
 VaultStateTransaction::~VaultStateTransaction()=default;
 std::unique_ptr<VaultStateTransaction> VaultStateTransaction::CreateNew(WalletManager& wallet,uint64_t session,const VaultStateDomain& domain,const VaultServiceConfig& config) {
+    return CreateNewImpl(wallet,session,domain,config,false);
+}
+std::unique_ptr<VaultStateTransaction> VaultStateTransaction::CreateNewOwned(WalletManager& wallet,uint64_t session,const VaultStateDomain& domain,const VaultServiceConfig& config) {
+    return CreateNewImpl(wallet,session,domain,config,true);
+}
+std::unique_ptr<VaultStateTransaction> VaultStateTransaction::CreateNewImpl(WalletManager& wallet,uint64_t session,const VaultStateDomain& domain,const VaultServiceConfig& config,bool require_operator) {
     VaultIdentity identity{};Check(RAND_bytes(identity.data(),static_cast<int>(identity.size()))==1 && Nonzero(identity));
-    auto p=std::make_unique<Impl>(wallet,session,domain,identity);p->current.state.config=config;p->created=true;
+    auto p=std::make_unique<Impl>(wallet,session,domain);p->SelectIdentity(identity);
+    p->current.state.config=config;p->created=true;
+    if(require_operator) {
+        Check(config.operator_binding.has_value());ValidateVaultOperatorBinding(*config.operator_binding);
+        auto key=p->lease->ResolveSigningKeyInTransaction(util::hex(config.operator_binding->script_pub_key),*p->seed);
+        Check(key && key->secret.size()==32 && key->script==config.operator_binding->script_pub_key &&
+              (key->policy==SigningKeyPolicy::TaprootCanonical || key->policy==SigningKeyPolicy::TaprootHistoricalImport));
+    }
     (void)ReplayVaultStateLedger(p->current.state);
     Exec(p->db,"CREATE TABLE IF NOT EXISTS wallet_vault_states(vault_id BLOB PRIMARY KEY NOT NULL,revision INTEGER NOT NULL,predecessor BLOB NOT NULL,sealed BLOB NOT NULL)");
     Sensitive plain;plain.bytes=EncodeVaultState(p->current.state);auto aad=Associated(domain,p->wallet,identity,0,p->current.predecessor);p->current_sealed=Seal(p->key,aad,plain.bytes);p->current.digest=Hash(p->current_sealed);
@@ -172,7 +200,34 @@ std::unique_ptr<VaultStateTransaction> VaultStateTransaction::CreateNew(WalletMa
     return std::unique_ptr<VaultStateTransaction>(new VaultStateTransaction(std::move(p)));
 }
 std::unique_ptr<VaultStateTransaction> VaultStateTransaction::OpenExisting(WalletManager& wallet,uint64_t session,const VaultStateDomain& domain,const VaultIdentity& identity) {
-    auto p=std::make_unique<Impl>(wallet,session,domain,identity);p->Read();return std::unique_ptr<VaultStateTransaction>(new VaultStateTransaction(std::move(p)));
+    auto p=std::make_unique<Impl>(wallet,session,domain);p->SelectIdentity(identity);p->Read();return std::unique_ptr<VaultStateTransaction>(new VaultStateTransaction(std::move(p)));
+}
+std::vector<VaultStateSummary> VaultStateTransaction::ListExisting(
+    WalletManager& wallet,uint64_t session,const VaultStateDomain& domain) {
+    auto p=std::make_unique<Impl>(wallet,session,domain);
+    std::vector<VaultIdentity> identities;size_t bytes=0;
+    {
+        Statement q(p->db,"SELECT vault_id,length(sealed) FROM wallet_vault_states ORDER BY vault_id");
+        int rc;
+        while((rc=sqlite3_step(q.p.get()))==SQLITE_ROW) {
+            Check(identities.size()<4096);auto raw=BlobColumn(q.p.get(),0,32,32);
+            VaultIdentity id{};std::copy(raw.begin(),raw.end(),id.begin());Check(Nonzero(id));
+            Check(identities.empty() || identities.back()<id);
+            Check(sqlite3_column_type(q.p.get(),1)==SQLITE_INTEGER);
+            const auto length=sqlite3_column_int64(q.p.get(),1);
+            Check(length>28 && static_cast<uint64_t>(length)<=MaxState+28 &&
+                  static_cast<uint64_t>(length)<=MaxState-bytes);
+            bytes+=static_cast<size_t>(length);identities.push_back(id);
+        }
+        Check(rc==SQLITE_DONE);
+    }
+    std::vector<VaultStateSummary> result;result.reserve(identities.size());
+    for(const auto& id:identities) {
+        p->SelectIdentity(id);p->Read();
+        result.push_back({id,p->current.state.revision,p->current.state.config.operator_binding});
+    }
+    // No prefix is returned for a late row failure or unsuccessful commit.
+    Exec(p->db,"COMMIT");p->owns=false;p->committed=true;return result;
 }
 const StoredVaultState& VaultStateTransaction::Current() const noexcept {return impl_->current;}
 void VaultStateTransaction::Stage(const VaultStateSnapshot& successor) {

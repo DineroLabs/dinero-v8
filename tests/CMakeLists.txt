@@ -71,6 +71,13 @@ if(NOT WIN32)
       set_property(TARGET test_daemon_service_release PROPERTY ${_property} "${_release_property}")
     endif()
   endforeach()
+  add_test(NAME VaultExplicitStartup COMMAND python3
+    ${CMAKE_SOURCE_DIR}/tests/integration/test_vault_explicit_startup.py
+    $<TARGET_FILE:dinerod>)
+  set_tests_properties(VaultExplicitStartup PROPERTIES
+    LABELS "integration;e2e-daemon;vault;mandatory" TIMEOUT 600 RUN_SERIAL TRUE
+    ENVIRONMENT "DINERO_KEEP_VAULT_STARTUP_EVIDENCE=1")
+
   add_test(NAME RPCListenerStartup COMMAND python3
     ${CMAKE_SOURCE_DIR}/tests/integration/test_rpc_listener_startup.py
     $<TARGET_FILE:dinerod>)
@@ -5151,6 +5158,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(VaultStateStore PROPERTIES TIMEOUT 120 LABELS "daemon;vault;storage;mandatory")
   add_test(NAME VaultWalletObservation COMMAND test_assumeutxo_replay --gtest_filter=VaultWalletObservation.*)
   set_tests_properties(VaultWalletObservation PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;vault;mandatory")
+  add_test(NAME VaultExplicitCreation COMMAND test_assumeutxo_replay --gtest_filter=VaultExplicitCreation.*)
+  set_tests_properties(VaultExplicitCreation PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;vault;mandatory")
   add_test(NAME VaultRuntimeAttachment COMMAND test_assumeutxo_replay --gtest_filter=VaultRuntimeAttachment.*)
   set_tests_properties(VaultRuntimeAttachment PROPERTIES TIMEOUT 120 LABELS "daemon;wallet;vault;mandatory")
   add_test(NAME VaultOperatorBinding COMMAND test_assumeutxo_replay --gtest_filter=VaultOperatorBinding.*)

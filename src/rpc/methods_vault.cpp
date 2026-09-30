@@ -5,6 +5,8 @@
 #include "rpc/methods_vault.h"
 
 #include "address/addr_codec.h"
+#include "consensus/chainparams.h"
+#include "primitives/uint256.h"
 #include "common/logger.h"
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
@@ -100,6 +102,14 @@ Json errorObj(const std::string& msg, int code = -1) {
     return result;
 }
 
+dinero::vault::VaultStateDomain selectedVaultDomain() {
+    dinero::vault::VaultStateDomain domain;
+    domain.network=static_cast<uint8_t>(dinero::GetActiveChain());dinero::uint256 genesis;
+    if(!dinero::uint256::FromHex(dinero::Params().genesis_hash,genesis))
+        throw std::runtime_error("vault chain domain unavailable");
+    std::copy(genesis.begin(),genesis.end(),domain.genesis.begin());return domain;
+}
+
 std::shared_ptr<dinero::vault::VaultService> requireService() {
     return dinero::vault::GetVaultRuntimeService();
 }
@@ -107,6 +117,76 @@ std::shared_ptr<dinero::vault::VaultService> requireService() {
 }  // namespace
 
 std::shared_ptr<dinero::vault::VaultService> GetVaultService() { return requireService(); }
+
+Json rpc_vault_create(const ExecutionContext& ctx,const Json& params) {
+    if(!oneObject(params) || params[0].size()!=13)
+        return errorObj("creation requires operator_address, account_id, shadow_mode, confirmation policy and all capacity limits");
+    if(!ctx.daemon)return errorObj("daemon context unavailable");
+    try {
+        const auto& obj=params[0];
+        if(!obj["operator_address"].isString() || !accountString(obj["account_id"]) ||
+           obj["account_id"].asString().size()>1024 || !obj["shadow_mode"].isBool())
+            return errorObj("invalid operator, account or shadow policy");
+        const auto amount=[&](const char* name) {
+            uint64_t value=0;if(!unsignedInteger(obj[name],value) || value==0)
+                throw std::runtime_error(std::string(name)+" must be a positive integer");
+            return value;
+        };
+        dinero::vault::VaultServiceConfig config;
+        config.shadow_mode=obj["shadow_mode"].asBool();
+        config.operator_binding=dinero::vault::VaultOperatorBinding{
+            dinero::CreateP2TRScriptPubKey(dinero::DecodeTaprootWitnessProgram(obj["operator_address"].asString())),
+            obj["account_id"].asString()};
+        auto& confirmations=config.confirmation_policy;
+        confirmations.k_observe=amount("k_observe");confirmations.k_credit=amount("k_credit");
+        confirmations.k_settle=amount("k_settle");
+        config.withdrawal_policy.k_settle=amount("withdrawal_k_settle");
+        if(confirmations.k_observe>confirmations.k_credit || confirmations.k_credit>confirmations.k_settle)
+            return errorObj("confirmation thresholds must satisfy observe <= credit <= settle");
+        config.ledger_caps={amount("per_deposit_cap_una"),amount("per_account_cap_una"),amount("global_cap_una")};
+        config.withdrawal_caps.per_request=amount("per_withdrawal_cap_una");
+        config.withdrawal_caps.per_account_outstanding=amount("per_account_outstanding_cap_una");
+        const auto depth=amount("max_queue_depth");
+        if(depth>static_cast<uint64_t>(std::numeric_limits<int>::max()))return errorObj("max_queue_depth is out of range");
+        config.withdrawal_caps.global_queue_depth=static_cast<int>(depth);
+        if(config.ledger_caps.per_deposit>config.ledger_caps.per_user || config.ledger_caps.per_user>config.ledger_caps.global ||
+           config.withdrawal_caps.per_request>config.withdrawal_caps.per_account_outstanding)
+            return errorObj("capacity limits are inconsistent");
+        auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        auto use=dinero::WalletService::AcquireWalletUse(wallet);
+        const auto selected=dinero::CaptureWalletSigningIdentity(use->Wallet(),ctx.walletName);
+        auto transaction=dinero::vault::VaultStateTransaction::CreateNewOwned(
+            use->Wallet(),selected.session,selectedVaultDomain(),config);
+        // Allocate the reply before checked commit. No runtime attachment,
+        // source observation, coin selection, signing or submission occurs.
+        Json result;result["created"]=true;result["attached"]=false;
+        result["vault_id"]=arrayToHex(transaction->Current().identity);result["wallet"]=selected.name;
+        transaction->Commit();return result;
+    } catch(const std::exception& e) {return errorObj(e.what());}
+}
+
+Json rpc_vault_list(const ExecutionContext& ctx,const Json& params) {
+    if(!params.isArray() || !params.empty())return errorObj("vault.list takes no parameters");
+    if(!ctx.daemon)return errorObj("daemon context unavailable");
+    try {
+        auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
+        auto use=dinero::WalletService::AcquireWalletUse(wallet);
+        const auto selected=dinero::CaptureWalletSigningIdentity(use->Wallet(),ctx.walletName);
+        const auto summaries=dinero::vault::VaultStateTransaction::ListExisting(use->Wallet(),selected.session,selectedVaultDomain());
+        Json result;result["wallet"]=selected.name;result["vaults"]=Json(::Json::arrayValue);
+        result["historical_completeness_verified"]=false;
+        for(const auto& summary:summaries) {
+            Json row;row["vault_id"]=arrayToHex(summary.identity);row["revision"]=static_cast<Json::UInt64>(summary.revision);
+            row["operator_bound"]=summary.operator_binding.has_value();
+            if(summary.operator_binding) {
+                row["operator_script_pub_key"]=bytesToHex(summary.operator_binding->script_pub_key);
+                row["account_id"]=summary.operator_binding->account;
+            }
+            result["vaults"].append(std::move(row));
+        }
+        return result;
+    } catch(const std::exception& e) {return errorObj(e.what());}
+}
 
 Json rpc_vault_open(const ExecutionContext& ctx,const Json& params) {
     if(!oneObject(params) || params[0].size()!=1 || !params[0]["vault_id"].isString())
@@ -388,6 +468,8 @@ Json rpc_vault_metrics(const ExecutionContext& /*ctx*/, const Json& /*params*/) 
 
 void RegisterVaultRPC() {
     dinero::g_logger.info("  Registering Liquidity Vault RPC methods...");
+    g_rpcRegistry.registerHandler("vault.create", din::rpc_vault_create);
+    g_rpcRegistry.registerHandler("vault.list", din::rpc_vault_list);
     g_rpcRegistry.registerHandler("vault.open", din::rpc_vault_open);
     g_rpcRegistry.registerHandler("vault.account.spendable", din::rpc_vault_account_spendable);
     g_rpcRegistry.registerHandler("vault.account.metrics", din::rpc_vault_account_metrics);
@@ -398,5 +480,5 @@ void RegisterVaultRPC() {
     g_rpcRegistry.registerHandler("vault.metrics", din::rpc_vault_metrics);
     g_rpcRegistry.registerHandler("vault.setoperator", din::rpc_vault_setoperator);
     g_rpcRegistry.registerHandler("vault.getoperator", din::rpc_vault_getoperator);
-    dinero::g_logger.info("  Registered 10 Liquidity Vault RPC methods");
+    dinero::g_logger.info("  Registered 12 Liquidity Vault RPC methods");
 }

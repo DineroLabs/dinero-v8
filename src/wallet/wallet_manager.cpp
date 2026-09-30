@@ -3377,6 +3377,22 @@ std::optional<SigningKey> WalletManager::DatabaseLease::ResolveSigningKey(
     return SigningKey(std::move(*key),std::move(script),policy);
 }
 
+std::optional<SigningKey> WalletManager::DatabaseLease::ResolveSigningKeyInTransaction(
+    const std::string& script_pubkey,const RecoverySeed& pin) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ ||
+       &pin.owner_!=&owner_ || !db_ || db_!=owner_.db_ ||
+       session_!=owner_.database_session_ || owner_.recovery_seeds_!=1 ||
+       sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Signing key requires this wallet's active transaction and seed owner");
+    std::vector<uint8_t> script;
+    if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
+    auto policy=script.size()==34 && script[0]==0x51 && script[1]==0x20
+        ?SigningKeyPolicy::TaprootCanonical:SigningKeyPolicy::Untweaked;
+    auto key=owner_.deriveKeyForScriptPubKeyOwned(script_pubkey,&policy,true,true);
+    if(!key)return std::nullopt;
+    return SigningKey(std::move(*key),std::move(script),policy);
+}
+
 namespace {
 constexpr size_t kPaymentBytes=16*1024*1024;
 constexpr size_t kPaymentCount=4096;
@@ -7553,7 +7569,7 @@ std::optional<SigningKey> WalletManager::resolveSigningKeyForScriptPubKey(const 
 }
 
 std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned(
-    const std::string& script_pubkey,SigningKeyPolicy* policy,bool pinned_signing) {
+    const std::string& script_pubkey,SigningKeyPolicy* policy,bool pinned_signing,bool owned_transaction) {
     std::lock_guard<std::recursive_mutex> key_ownership(database_lifecycle_mutex_);
     // ⚠️ OWNERSHIP LOGIC - Uses scriptPubKey (consensus data), NOT address (display string)
     // Check if wallet is active and unlocked
@@ -7574,12 +7590,13 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned
         imported_script[0]==0x51 && imported_script[1]==0x20) {
         try {
             auto lease=AcquireDatabaseLease();
-            if (!db_ || !sqlite3_get_autocommit(db_) || (recovery_seeds_ && !pinned_signing)) return std::nullopt;
+            if (!db_ || (owned_transaction ? sqlite3_get_autocommit(db_) : !sqlite3_get_autocommit(db_)) || (recovery_seeds_ && !pinned_signing)) return std::nullopt;
             if(!pinned_signing)checkUnlockTimeout();
             if (wallet_locked_) return std::nullopt;
             // The existing transaction owner also gives all tuple/policy reads
             // one SQLite snapshot. It changes no wallet rows or receipts here.
-            IssuedAddressTransaction read(db_);
+            std::optional<IssuedAddressTransaction> read;
+        if(!owned_transaction)read.emplace(db_);
             const auto text_matches=[](sqlite3_stmt* q,int col,const std::string& expected) {
                 if(sqlite3_column_type(q,col)!=SQLITE_TEXT)return false;
                 const auto* value=sqlite3_column_text(q,col);
@@ -7656,7 +7673,7 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned
                    !secp256k1_xonly_pubkey_from_pubkey(context.get(),&result,nullptr,&tweaked) ||
                    !secp256k1_xonly_pubkey_serialize(context.get(),derived_output.data(),&result) ||
                    derived_output!=output)return std::nullopt;
-                read.Commit();
+                if(read)read->Commit();
                 if(policy)*policy=SigningKeyPolicy::TaprootHistoricalImport;
                 // The compatibility API still returns the INTERNAL scalar.
                 // Typed callers receive the separately carried tweak policy.
@@ -7713,12 +7730,12 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned
                 std::array<uint8_t,32> derived{},tweaked{};int parity=0;
                 if(!TaprootKeys::DeriveXOnlyPubkey(secret.value,derived,parity) || derived!=internal ||
                    !TaprootKeys::ComputeTweakedPubkey(derived,tweaked) || tweaked!=output)return std::nullopt;
-                read.Commit();
+                if(read)read->Commit();
                 // Do not cache imported plaintext: every lookup must recheck the
                 // persistent key, public bindings and current encryption owner.
                 return std::vector<uint8_t>(secret.value.begin(),secret.value.end());
             }
-            read.Commit();
+            if(read)read->Commit();
         } catch(const std::exception&) {
             WLOG_ERR("Imported Taproot signing key lookup refused");
             return std::nullopt;
@@ -7730,12 +7747,13 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned
     // never a substitute for a recorded owner. No lookup repairs wallet rows.
     try {
         auto lease=AcquireDatabaseLease();
-        if(!db_ || !sqlite3_get_autocommit(db_) || (recovery_seeds_ && !pinned_signing))return std::nullopt;
+        if(!db_ || (owned_transaction ? sqlite3_get_autocommit(db_) : !sqlite3_get_autocommit(db_)) || (recovery_seeds_ && !pinned_signing))return std::nullopt;
         if(!pinned_signing)checkUnlockTimeout();
         if(wallet_locked_ || master_seed_.size()!=64)return std::nullopt;
         std::vector<uint8_t> script;
         if(!util::unhex(script_pubkey,script) || script.empty())return std::nullopt;
-        IssuedAddressTransaction read(db_);
+        std::optional<IssuedAddressTransaction> read;
+        if(!owned_transaction)read.emplace(db_);
         const auto path=AuthenticateHdInventory(db_,master_seed_,&script);
         if(!path)return std::nullopt;
         BIP32Deriver deriver(master_seed_.data(),master_seed_.size());
@@ -7744,7 +7762,7 @@ std::optional<std::vector<uint8_t>> WalletManager::deriveKeyForScriptPubKeyOwned
         struct Scalar {std::array<uint8_t,32> value;~Scalar(){OPENSSL_cleanse(value.data(),value.size());}} scalar{deriver.getPrivateKey()};
         struct Secret {std::vector<uint8_t> value;~Secret(){secureClearBytes(value);}} secret;
         secret.value.assign(scalar.value.begin(),scalar.value.end());
-        read.Commit();
+        if(read)read->Commit();
         return std::move(secret.value);
     } catch(const std::exception&) {
         WLOG_ERR("HD signing key lookup refused");return std::nullopt;

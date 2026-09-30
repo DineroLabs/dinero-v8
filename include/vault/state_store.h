@@ -16,6 +16,15 @@ struct StoredVaultState {
     VaultStateSnapshot state;
 };
 
+// Authenticated summaries of all PRESENT rows in one wallet transaction.
+// Missing storage is an error. This is not an authenticated catalog or proof
+// against deletion/whole-backup rollback; it never authorizes recreation.
+struct VaultStateSummary {
+    VaultIdentity identity{};
+    uint64_t revision{0};
+    std::optional<VaultOperatorBinding> operator_binding;
+};
+
 // One wallet-bound FULL SQLite transaction with the selected session and
 // recovery seed pinned for its entire lifetime. Acquire before the vault
 // mutex; acquire selected-chain observations before this owner. Never call
@@ -30,6 +39,14 @@ public:
     static std::unique_ptr<VaultStateTransaction> CreateNew(
         WalletManager&,uint64_t expected_session,const VaultStateDomain&,
         const VaultServiceConfig& initial_config);
+    // Explicit new creation requires a presently resolvable exact operator
+    // signing key under the same pinned wallet/SQLite owner, before insertion.
+    // Existing CreateNew remains the narrow component factory; no old record
+    // is silently enrolled or relabelled by either path.
+    static std::unique_ptr<VaultStateTransaction> CreateNewOwned(
+        WalletManager&,uint64_t,const VaultStateDomain&,const VaultServiceConfig&);
+    static std::vector<VaultStateSummary> ListExisting(
+        WalletManager&,uint64_t,const VaultStateDomain&);
     static std::unique_ptr<VaultStateTransaction> OpenExisting(
         WalletManager&,uint64_t expected_session,const VaultStateDomain&,const VaultIdentity&);
     ~VaultStateTransaction();
@@ -42,6 +59,8 @@ public:
     void Commit();
     const StoredVaultState& Committed() const;
 private:
+    static std::unique_ptr<VaultStateTransaction> CreateNewImpl(
+        WalletManager&,uint64_t,const VaultStateDomain&,const VaultServiceConfig&,bool);
     struct Impl;
     std::unique_ptr<Impl> impl_;
     explicit VaultStateTransaction(std::unique_ptr<Impl>);

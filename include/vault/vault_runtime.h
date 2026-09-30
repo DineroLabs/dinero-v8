@@ -4,17 +4,16 @@
 // keeps alive the singleton VaultService for the dinerod process,
 // and registers it with the RPC layer.
 //
-// Wiring contract:
-//   - call InitializeVaultRuntime() once at daemon startup, AFTER
-//     chain services exist but BEFORE RegisterAllRPCMethods().
-//   - call NotifyVaultTipConnected(height) on every ConnectBlock
-//     success.
-//   - call NotifyVaultTipDisconnected(height) on every block-disconnect.
-//   - call ShutdownVaultRuntime() at daemon shutdown.
-//
-// All four are no-ops when the vault is disabled (operator hasn't
-// flipped the feature flag yet); the daemon stays correct without
-// vault.
+// Production lifecycle:
+//   - daemon startup registers RPCs with the runtime detached;
+//   - vault.open attaches one explicitly selected authenticated wallet owner;
+//   - typed wallet observations retain that owner through each operation;
+//   - CloseVaultRuntimeDispatch drains dispatch before daemon services stop;
+//   - ShutdownVaultRuntime releases the detached runtime at shutdown.
+// Every process requires explicit attachment. Legacy enable/address settings
+// cannot initialize an owner or authorize recovery of old ledger files.
+// InitializeVaultRuntime remains a narrower legacy component initializer;
+// production daemon startup does not call it.
 
 #pragma once
 
@@ -38,17 +37,17 @@ class VaultService;
 class LedgerStore;
 
 struct VaultRuntimeConfig {
-    /// `true` to start the vault. When false, all wiring hooks
-    /// no-op and the RPC methods return "vault service not
-    /// initialized".
+    /// Explicit attachment/legacy component input. Daemon startup does not
+    /// use this flag to create or attach a vault. RPC methods refuse while
+    /// no authenticated owner is attached.
     bool enabled{false};
     /// `true` to keep the deposit-flow machine in shadow mode
     /// (writes deposit_observed but never opens credits). Stage 0
     /// rollouts.
     bool shadow_mode{false};
-    /// Legacy ledger-file path. The current runtime opens/reads this store,
-    /// but its rows do not restore complete service state and live service
-    /// transitions are not durably appended here. This is not a recovery owner.
+    /// Legacy component ledger-file path. Explicit wallet attachment refuses
+    /// this path. Legacy rows cannot restore a complete authenticated owner;
+    /// daemon startup leaves these files untouched.
     std::string persistence_path;
     /// Bech32m operator address (e.g. "din1p..."). Decoded once at
     /// init; the resulting scriptPubKey is the observer's match
@@ -78,7 +77,7 @@ struct VaultRuntimeConfig {
         tx_included_at;
 };
 
-/// Initialise the singleton VaultService + register it with RPC.
+/// Narrow legacy component initializer; not called by daemon startup.
 /// Returns false only when disabled; an already published runtime returns true.
 /// Enabled initialization failures throw before publication. Nonempty legacy
 /// ledger/idempotency files refuse: those files cannot restore complete vault

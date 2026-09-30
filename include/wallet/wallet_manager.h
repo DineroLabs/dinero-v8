@@ -304,6 +304,10 @@ public:
         // Resolve only under this exact lease and its already-authorized seed pin.
         [[nodiscard]] std::optional<SigningKey> ResolveSigningKey(
             const std::string& script_pubkey, const RecoverySeed& owner);
+        // Exact key lookup in this lease's already-active transaction and seed
+        // pin. Reads only; never begins/commits/rolls back the caller transaction.
+        [[nodiscard]] std::optional<SigningKey> ResolveSigningKeyInTransaction(
+            const std::string& script_pubkey, const RecoverySeed& owner);
         // Called only after exact-input signing under this lease and seed pin.
         // Commits body, real payment intent, history and reservations together;
         // no admission or chain callback is allowed while this owner is held.
@@ -1033,7 +1037,7 @@ public:
 private:
     std::vector<PendingPayment> ReadPendingPaymentsOwned(std::span<const uint8_t> seed) const;
     std::optional<std::vector<uint8_t>> deriveKeyForScriptPubKeyOwned(
-        const std::string& script_pubkey, SigningKeyPolicy* policy, bool pinned_signing = false);
+        const std::string& script_pubkey, SigningKeyPolicy* policy, bool pinned_signing = false, bool owned_transaction = false);
     void rewriteEncryptionPolicy(const std::string& old_passphrase,
         const std::string& new_passphrase, bool encrypted);
 

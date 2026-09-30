@@ -70,11 +70,12 @@ ensure_openssl_source() {
     if [[ ! -f "$tarball" ]]; then
         echo -e "${BLUE}Downloading OpenSSL ${OPENSSL_VERSION} source...${NC}"
         # GitHub can return an error page instead of the release asset. Fail on
-        # HTTP errors, retry transient failures, and never cache a partial file.
+        # HTTP errors. Retry receive failures too, with bounded attempts/time,
+        # and never cache a partial file. The pinned checksum remains mandatory.
         local download
         download="$(mktemp "${tarball}.download.XXXXXX")"
-        if ! curl --fail --location --retry 3 --connect-timeout 30 \
-            --max-time 600 "$url" --output "$download"; then
+        if ! curl --fail --location --retry 3 --retry-all-errors --retry-max-time 1800 \
+            --connect-timeout 30 --max-time 600 "$url" --output "$download"; then
             rm -f "$download"
             echo -e "${RED}Error: OpenSSL source download failed${NC}" >&2
             exit 1
