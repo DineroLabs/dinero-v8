@@ -2543,6 +2543,23 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require retained pool payment request domain
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPoolRequest$' --show-only=json-v1 > orchard-pool-request-inventory.json
+          python3 - <<'PYPOOLREQUEST'
+          import json
+          tests=json.load(open('orchard-pool-request-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='WalletPoolRequest'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREQUEST
+          ctest --test-dir build-orchard-root -R '^WalletPoolRequest$' --verbose --no-tests=error --output-log orchard-pool-request-execution.log
+          python3 - <<'PYPOOLREQUEST'
+          from pathlib import Path
+          log=Path('orchard-pool-request-execution.log').read_text()
+          for case in ['WalletPoolRequestOwner.DomainSeparationAndExactReopen','WalletPoolRequestOwner.ConflictingPoolPayloadAndUnknownDomainsRefuse','WalletPoolRequestDispatch.BoundUnknownOutcomeResolvesWithoutAnotherSubmission','WalletPoolRequestVault.VaultBindingKeepsDistinctRequestNamespaces']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREQUEST
+
       - name: Require and execute explicit retained wallet request ownership
         run: |
           ctest --test-dir build-orchard-root -R '^WalletRequestOwner$' --show-only=json-v1 > orchard-request-owner-inventory.json
@@ -3354,6 +3371,8 @@ jobs:
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
+            orchard-pool-request-inventory.json
+            orchard-pool-request-execution.log
             orchard-request-owner-inventory.json
             orchard-request-owner-execution.log
             orchard-request-dispatch-inventory.json

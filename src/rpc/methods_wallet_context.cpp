@@ -3292,10 +3292,14 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             fields(params,{"recipients","request"});
             const auto& binding=params["request"];
             fields(binding,{"domain","owner","id","fee_rate_hint","maximum_fee_una","audit_context"});
-            if(!binding["domain"].isString() || binding["domain"].asString()!="vault_withdrawal" ||
+            if(!binding["domain"].isString() ||
+               (binding["domain"].asString()!="vault_withdrawal" && binding["domain"].asString()!="pool_payout") ||
                !binding["owner"].isString() || !binding["id"].isString() || !binding["audit_context"].isString())
                 throw std::runtime_error("Payment request domain or identity type invalid");
             dinero::PendingPaymentRequest request;
+            request.domain=binding["domain"].asString()=="pool_payout"
+                ? dinero::PendingPaymentRequestDomain::PoolPayout
+                : dinero::PendingPaymentRequestDomain::VaultWithdrawal;
             std::vector<uint8_t> owner,id;
             const auto owner_hex=binding["owner"].asString(),id_hex=binding["id"].asString();
             if(owner_hex.size()!=64 || id_hex.size()!=32 || !util::unhex(owner_hex,owner) || !util::unhex(id_hex,id) || owner.size()!=32 || id.size()!=16)
@@ -7881,10 +7885,16 @@ din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,con
             row["total_amount_una"] = static_cast<din::Json::UInt64>(total);
             if (p.intent.request) {
                 // getPendingPayments authenticated the full request and body.
-                // This is retained intent, not vault authorization or delivery.
+                // This is retained intent, not vault/pool authorization or delivery.
                 const auto& request = *p.intent.request;
                 din::Json binding;
-                binding["domain"] = "vault_withdrawal";
+                switch (request.domain) {
+                    case dinero::PendingPaymentRequestDomain::VaultWithdrawal:
+                        binding["domain"]="vault_withdrawal";break;
+                    case dinero::PendingPaymentRequestDomain::PoolPayout:
+                        binding["domain"]="pool_payout";break;
+                    default:throw std::runtime_error("Retained payment request domain invalid");
+                }
                 binding["owner"] = util::hex(std::vector<uint8_t>(request.owner.begin(), request.owner.end()));
                 binding["id"] = util::hex(std::vector<uint8_t>(request.id.begin(), request.id.end()));
                 binding["fee_rate_hint"] = static_cast<din::Json::UInt64>(request.fee_rate_hint);

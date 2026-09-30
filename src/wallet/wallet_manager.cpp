@@ -3491,7 +3491,8 @@ void ValidatePaymentRequest(const PendingPaymentIntent& intent) {
     const auto nonzero = [](const auto& bytes) {
         return std::any_of(bytes.begin(), bytes.end(), [](uint8_t b) { return b != 0; });
     };
-    if (request.domain != PendingPaymentRequestDomain::VaultWithdrawal ||
+    if ((request.domain != PendingPaymentRequestDomain::VaultWithdrawal &&
+         request.domain != PendingPaymentRequestDomain::PoolPayout) ||
         !nonzero(request.owner) || !nonzero(request.id) ||
         request.fee_rate_hint > MAX_SUPPLY_UNA_CONST ||
         request.maximum_fee_una > MAX_SUPPLY_UNA_CONST ||

@@ -6,10 +6,10 @@
 #include <vector>
 namespace dinero {
 // Explicit external operation identity retained inside the authenticated wallet
-// payment owner. Supplying these bytes does not establish a vault's existence,
+// payment owner. Supplying these bytes does not establish a vault or pool's existence,
 // authorization or durable initialization; those remain the caller's contract.
 // No free-form payment label is interpreted as a request identity.
-enum class PendingPaymentRequestDomain : uint64_t { VaultWithdrawal = 1 };
+enum class PendingPaymentRequestDomain : uint64_t { VaultWithdrawal = 1, PoolPayout = 2 };
 struct PendingPaymentRequest {
     PendingPaymentRequestDomain domain{PendingPaymentRequestDomain::VaultWithdrawal};
     std::array<uint8_t,32> owner{};

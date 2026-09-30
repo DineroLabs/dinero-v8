@@ -126,8 +126,12 @@ struct VaultStateTransaction::Impl {
         const auto payments=lease->ReadPendingPaymentsInTransaction(*seed);
         std::map<WithdrawalId,const PendingPayment*> by_request;
         for(const auto& payment:payments) {
-            if(!payment.intent.request || payment.intent.request->owner!=current.identity)continue;
-            Check(payment.intent.request->domain==PendingPaymentRequestDomain::VaultWithdrawal);
+            // The full envelope is authenticated above. Only vault-domain
+            // requests can bind this vault's retained withdrawals; another
+            // domain may legitimately use the same owner and request bytes.
+            if(!payment.intent.request ||
+               payment.intent.request->domain!=PendingPaymentRequestDomain::VaultWithdrawal ||
+               payment.intent.request->owner!=current.identity)continue;
             Check(by_request.emplace(payment.intent.request->id,&payment).second);
         }
         static constexpr const char* hrps[]={"din","tdin","rdin"};
