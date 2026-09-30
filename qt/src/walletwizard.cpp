@@ -882,6 +882,11 @@ void CreateSeedPage::onGenerateSeed() {
         const QString errorText = !payloadError.isEmpty()
           ? payloadError
           : QStringLiteral("Wallet creation failed.");
+        // The node answered with an error, so it created nothing: never delete a
+        // wallet of this name (it may be the user's existing wallet). Rollback
+        // still reopens the previously loaded wallet.
+        if (wizard() && !keepRollbackCandidateAfterRpc(/*daemonResponded=*/true, /*success=*/false))
+          wizard()->setProperty("walletRollbackCandidateName", QString());
         QString rollbackError;
         rollbackProvisionedWallet(wizard(), &rollbackError);
         lblSeed_->setText("❌ Error generating seed: " + errorText +
@@ -1011,6 +1016,10 @@ void CreateSeedPage::onGenerateSeed() {
       // Stop timeout timer
       rpcTimeout_->stop();
 
+      // A name collision means the node created nothing under this name: keep
+      // the existing wallet. Transport failures keep the name for cleanup.
+      if (wizard() && classifyRestoreError(error) == RestoreErrorKind::NameExists)
+        wizard()->setProperty("walletRollbackCandidateName", QString());
       QString rollbackError;
       rollbackProvisionedWallet(wizard(), &rollbackError);
       lblSeed_->setText("❌ Error generating seed: " + error + "\n\nPlease ensure daemon is running."
@@ -1404,6 +1413,12 @@ bool RestoreSeedPage::validatePage() {
     // Wait for RPC to complete (with timeout)
     QTimer::singleShot(10000, &loop, &QEventLoop::quit);
     loop.exec();
+
+    if (walletWizard && !keepRollbackCandidateAfterRpc(responded, success)) {
+      // The node refused (e.g. the name belongs to an existing wallet), so there
+      // is nothing of ours to delete if the user cancels now.
+      walletWizard->setProperty("walletRollbackCandidateName", QString());
+    }
 
     if (!responded) {
       lblStatus_->setText("⏳ The node is still working on the restore. Check the wallet list in a moment "

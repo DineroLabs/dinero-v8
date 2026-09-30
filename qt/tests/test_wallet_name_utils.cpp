@@ -12,6 +12,7 @@ private Q_SLOTS:
   void restoreNameUnique();
   void restoreNameIsValid();
   void restoreErrorClassify();
+  void rollbackOnlyWhatMightExist();
 };
 
 void WalletNameUtilsTest::normalizeCollapsesWhitespaceAndInvalidChars() {
@@ -68,6 +69,16 @@ void WalletNameUtilsTest::restoreErrorClassify() {
   // case-insensitive disks and surfaces as a file error.
   QCOMPARE(classifyRestoreError(QStringLiteral("Wallet restoration failed: Wallet database file already exists: /data/wallets/wallet_PROBE.db")),
            RestoreErrorKind::NameExists);
+}
+
+void WalletNameUtilsTest::rollbackOnlyWhatMightExist() {
+  // The node answered with an error: it created nothing, so cancelling must not
+  // delete a wallet of that name (it may be the user's existing wallet).
+  QVERIFY(!keepRollbackCandidateAfterRpc(/*daemonResponded=*/true, /*success=*/false));
+  // No answer (timeout): the wallet may exist now, so keep it for cleanup.
+  QVERIFY(keepRollbackCandidateAfterRpc(false, false));
+  // Success: the provisional wallet is ours to roll back on cancel.
+  QVERIFY(keepRollbackCandidateAfterRpc(true, true));
 }
 
 QTEST_GUILESS_MAIN(WalletNameUtilsTest)
