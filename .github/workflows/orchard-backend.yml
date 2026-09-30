@@ -2146,6 +2146,25 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require and execute explicit retained wallet request ownership
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletRequestOwner$' --show-only=json-v1 > orchard-request-owner-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-request-owner-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletRequestOwner'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Pending payment owner test missing or disabled')
+          if next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT') != 120:
+              raise SystemExit('Request owner deadline changed')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletRequestOwner$' --verbose --no-tests=error --output-log orchard-request-owner-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-request-owner-execution.log').read()
+          expected=['MixedOriginsResolveExactBodyAndReopen', 'ExactPayloadMismatchPreservesRetainedRequest', 'CheckedWriteCommitAndReadRefusalsPreserveOwner', 'InvalidIdentityFeeAndStaleSessionRefuse']
+          if sorted(re.findall(r'\[       OK \] WalletRequestOwner\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Pending payment owner cases did not complete exactly once')
+          PYTEST
       - name: Require and execute selected-wallet owned transaction signing
         run: |
           ctest --test-dir build-orchard-root -R '^WalletOwnedSigning$' --show-only=json-v1 > orchard-owned-signing-inventory.json
@@ -2613,6 +2632,43 @@ jobs:
                   raise SystemExit('Disabled legacy DNRS compatibility test')
           PYCODE
           ctest --test-dir build-orchard-root -R '^StateCommitment(Canonical|Encoding|ExternalVectors|Transitions)$' --output-on-failure --no-tests=error --output-log orchard-dnrs-legacy-execution.log
+      - name: Collect churn-gate failure logs
+        if: always()
+        run: |
+          dest=build-orchard-root/Testing/churn-gate-logs
+          mkdir -p "$dest"
+          found=0
+          for root in /tmp/dinero_restart_churn_gate_* \
+                      /tmp/dinero_bridge_churn_* /tmp/dinero_csn_churn_*; do
+            [ -d "$root" ] || continue
+            found=1
+            name=$(basename "$root")
+            mkdir -p "$dest/$name"
+            # The CSN soak keeps cycle logs one directory down, while its
+            # failed nodes live in separate /tmp directories. Preserve both:
+            # the harness's final 40-line tail cannot diagnose the first stall.
+            # Include the nested mining cycle transcript as well as preserved node logs.
+            # Only logs/receipts are copied, never wallets or database files.
+            for f in "$root"/*.log "$root"/csn/*.log "$root"/csn/summary.tsv \
+                     "$root"/mining/*.log "$root"/*/stress-failure-logs-*/*.log; do
+              [ -f "$f" ] || continue
+              rel=$(echo "${f#$root/}" | tr '/' '_')
+              # last 20 MB only: enough for the failure tail, bounded artifact
+              tail -c 20971520 "$f" > "$dest/$name/$rel"
+            done
+          done
+          if [ "$found" = "0" ]; then
+            echo "no churn-gate artifact roots present (gate did not run, or left none)"
+          else
+            python3 - "$dest" <<'PY'
+          import pathlib, sys
+          files = sorted((p.stat().st_size, str(p)) for p in pathlib.Path(sys.argv[1]).rglob('*') if p.is_file())
+          print('collected:')
+          for size, path in reversed(files[-20:]):
+              print(f'  {size}\t{path}')
+          PY
+          fi
+
       - name: Retain root integration evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -2621,6 +2677,7 @@ jobs:
           path: |
             orchard-root-source.txt
             build-orchard-root/real-mempool-fixture-targets.txt
+            build-orchard-root/Testing/churn-gate-logs
             orchard-mnemonic-recovery-inventory.json
             orchard-mnemonic-recovery-execution.log
             orchard-height-one-inventory.json
@@ -2826,6 +2883,8 @@ jobs:
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
+            orchard-request-owner-inventory.json
+            orchard-request-owner-execution.log
             orchard-owned-signing-inventory.json
             orchard-owned-signing-execution.log
             orchard-peer-header-progress-inventory.json

@@ -1,12 +1,29 @@
 #pragma once
 #include <cstdint>
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 namespace dinero {
+// Explicit external operation identity retained inside the authenticated wallet
+// payment owner. Supplying these bytes does not establish a vault's existence,
+// authorization or durable initialization; those remain the caller's contract.
+// No free-form payment label is interpreted as a request identity.
+enum class PendingPaymentRequestDomain : uint64_t { VaultWithdrawal = 1 };
+struct PendingPaymentRequest {
+    PendingPaymentRequestDomain domain{PendingPaymentRequestDomain::VaultWithdrawal};
+    std::array<uint8_t,32> owner{};
+    std::array<uint8_t,16> id{};
+    uint64_t fee_rate_hint = 0;
+    uint64_t maximum_fee_una = 0;
+    std::string audit_context;
+    bool operator==(const PendingPaymentRequest&) const = default;
+};
 // Intent supplied by a wallet-created payment RPC, not arbitrary raw signing.
 struct PendingPaymentRecipient {
     std::string address;
     uint64_t amount_una = 0;
+    bool operator==(const PendingPaymentRecipient&) const = default;
 };
 struct PendingPaymentIntent {
     std::string address;
@@ -15,6 +32,8 @@ struct PendingPaymentIntent {
     // The primary recipient above retains the original single-payment API.
     // Additional recipients are explicit request data, never inferred change.
     std::vector<PendingPaymentRecipient> additional_recipients;
+    std::optional<PendingPaymentRequest> request;
+    bool operator==(const PendingPaymentIntent&) const = default;
 };
 struct PendingPaymentInput {
     std::string txid;

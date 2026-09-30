@@ -7784,6 +7784,19 @@ din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,con
                 row["recipients"].append(item);total += recipient.amount_una;
             }
             row["total_amount_una"] = static_cast<din::Json::UInt64>(total);
+            if (p.intent.request) {
+                // getPendingPayments authenticated the full request and body.
+                // This is retained intent, not vault authorization or delivery.
+                const auto& request = *p.intent.request;
+                din::Json binding;
+                binding["domain"] = "vault_withdrawal";
+                binding["owner"] = util::hex(std::vector<uint8_t>(request.owner.begin(), request.owner.end()));
+                binding["id"] = util::hex(std::vector<uint8_t>(request.id.begin(), request.id.end()));
+                binding["fee_rate_hint"] = static_cast<din::Json::UInt64>(request.fee_rate_hint);
+                binding["maximum_fee_una"] = static_cast<din::Json::UInt64>(request.maximum_fee_una);
+                binding["audit_context"] = request.audit_context;
+                row["request"] = std::move(binding);
+            }
             row["label"]=p.intent.label;row["created_at"]=static_cast<din::Json::Int64>(p.created_at);row["state"]="retained";
             row["inputs"]=din::arr();
             for(const auto& in:p.inputs){din::Json coin;coin["txid"]=in.txid;coin["vout"]=in.vout;coin["amount_una"]=static_cast<din::Json::UInt64>(in.amount_una);row["inputs"].append(coin);}

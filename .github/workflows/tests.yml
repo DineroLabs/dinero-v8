@@ -628,9 +628,10 @@ jobs:
             # The CSN soak keeps cycle logs one directory down, while its
             # failed nodes live in separate /tmp directories. Preserve both:
             # the harness's final 40-line tail cannot diagnose the first stall.
+            # Include the nested mining cycle transcript as well as preserved node logs.
             # Only logs/receipts are copied, never wallets or database files.
             for f in "$root"/*.log "$root"/csn/*.log "$root"/csn/summary.tsv \
-                     "$root"/*/stress-failure-logs-*/*.log; do
+                     "$root"/mining/*.log "$root"/*/stress-failure-logs-*/*.log; do
               [ -f "$f" ] || continue
               rel=$(echo "${f#$root/}" | tr '/' '_')
               # last 20 MB only: enough for the failure tail, bounded artifact

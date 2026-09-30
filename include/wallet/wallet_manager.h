@@ -309,6 +309,11 @@ public:
         // no admission or chain callback is allowed while this owner is held.
         void StagePayment(const RecoverySeed&, const UnsignedTransaction&,
                           const Transaction&, const PendingPaymentIntent&);
+        // Authenticate the full retained owner and exact request payload in a
+        // checked transaction. No signing, coin selection, writes or submission.
+        // Missing returns nullopt; malformed/unavailable/conflicting data throws.
+        [[nodiscard]] std::optional<PendingPayment> FindPaymentRequest(
+            const RecoverySeed&, const PendingPaymentIntent&);
     private:
         friend class WalletManager;
         explicit DatabaseLease(WalletManager&);

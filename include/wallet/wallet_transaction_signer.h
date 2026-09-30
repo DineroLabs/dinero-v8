@@ -11,6 +11,12 @@ WalletSigningIdentity CaptureWalletSigningIdentity(WalletManager&,const std::str
 // Caller resolves chain/index data before entry. No admission, broadcast or
 // chain callbacks occur while the selected wallet/key owner is held here.
 SignResult SignWalletTransaction(WalletManager&,const WalletSigningIdentity&,const UnsignedTransaction&);
+// Resolve before selecting new coins. A returned body is a retained origin,
+// never an acknowledgment of admission/confirmation or permission to rebroadcast.
+// Exact request identity with different payload, unavailable storage or a stale
+// selected-wallet session throws. This API never generates another transaction.
+std::optional<PendingPayment> FindRetainedWalletPayment(
+    WalletManager&, const WalletSigningIdentity&, const PendingPaymentIntent&);
 // A successful return requires the signed body and payment reservations to have
 // committed under the same signing owner, before any external submission.
 SignResult SignAndStageWalletPayment(WalletManager&,const WalletSigningIdentity&,

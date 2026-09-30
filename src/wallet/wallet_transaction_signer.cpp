@@ -34,6 +34,8 @@ SignResult SignWalletTransactionOwned(WalletManager& manager,const WalletSigning
            lease->WalletName()!=identity.name || lease->Session()!=identity.session)
             throw std::runtime_error("Selected wallet signing session changed");
         auto pin=lease->CopyRecoverySeed(identity.session);
+        if (payment && payment->request && lease->FindPaymentRequest(*pin, *payment))
+            throw std::runtime_error("Payment request already retained; resolve its existing body");
         auto transaction=input;
         wallet::WalletKeyProvider::Config config;
         struct ClearConfig {wallet::WalletKeyProvider::Config& c;~ClearConfig(){OPENSSL_cleanse(c.master_key.data(),c.master_key.size());}} clear_config{config};
@@ -76,6 +78,15 @@ SignResult SignWalletTransactionOwned(WalletManager& manager,const WalletSigning
 SignResult SignWalletTransaction(WalletManager& manager,const WalletSigningIdentity& identity,
                                  const UnsignedTransaction& input) {
     return SignWalletTransactionOwned(manager,identity,input,nullptr);
+}
+std::optional<PendingPayment> FindRetainedWalletPayment(
+    WalletManager& manager, const WalletSigningIdentity& identity, const PendingPaymentIntent& intent) {
+    auto lease = manager.AcquireDatabaseLease();
+    if (!lease->Database() || identity.name.empty() || identity.session == 0 ||
+        lease->WalletName() != identity.name || lease->Session() != identity.session)
+        throw std::runtime_error("Selected wallet payment request session changed");
+    auto pin = lease->CopyRecoverySeed(identity.session);
+    return lease->FindPaymentRequest(*pin, intent);
 }
 SignResult SignAndStageWalletPayment(WalletManager& manager,const WalletSigningIdentity& identity,
                                      const UnsignedTransaction& input,const PendingPaymentIntent& payment) {
