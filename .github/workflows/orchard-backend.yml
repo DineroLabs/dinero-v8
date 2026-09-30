@@ -1220,6 +1220,140 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 5' in log
           PYTEST
 
+      - name: Authenticate retained vault payment references in the owning transaction
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultPaymentBinding$' --show-only=json-v1 > vault-payment-binding-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-payment-binding-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultPaymentBinding'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultPaymentBinding$' --verbose --no-tests=error --output-log vault-payment-binding-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-payment-binding-execution.log').read_text()
+          for case in ['ReopenBindsSameWalletBodyAndHistoryWithoutWrites', 'MissingMalformedAndDeniedPaymentOwnerRefusePublication', 'SuccessorCannotRelabelRetainedBodyFeeOrTerms', 'CallerTransactionAndSeedRemainOwnedThroughRead']:
+              assert log.count('[       OK ] VaultPaymentBinding.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Vault pending reservation balance queries
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultReservationMetrics$' --show-only=json-v1 > vault-reservation-metrics-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-reservation-metrics-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultReservationMetrics'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultReservationMetrics$' --verbose --no-tests=error --output-log vault-reservation-metrics-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-reservation-metrics-execution.log').read_text()
+          for case in ['PendingReservationsReduceSpendableAndSurviveReopen', 'SigningWithoutBodyRemainsReserved', 'RetainedBodyTransfersReservationWithoutDoubleCounting', 'RefusedEnqueuePreservesMetricsAndReadDoesNotWrite']:
+              assert log.count('[       OK ] VaultReservationMetrics.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Close vault wallet dispatch callbacks before context destruction
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultDispatchLifetime$' --show-only=json-v1 > vault-dispatch-lifetime-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-dispatch-lifetime-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultDispatchLifetime'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultDispatchLifetime$' --verbose --no-tests=error --output-log vault-dispatch-lifetime-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-dispatch-lifetime-execution.log').read_text()
+          for case in ['ClosedOwnerRefusesBeforeWalletDispatch', 'CallbackCloseRefusesAndRetainedCommitCompletes', 'DestructionClosesRetainedFactoryAndService', 'FailedDispatchReleasesOwnerForClose']:
+              assert log.count('[       OK ] VaultDispatchLifetime.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Retain wallet-bound vault withdrawal payments before acknowledgment
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultRetainedWithdrawal$' --show-only=json-v1 > vault-retained-withdrawal-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-retained-withdrawal-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultRetainedWithdrawal'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultRetainedWithdrawal$' --verbose --no-tests=error --output-log vault-retained-withdrawal-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-retained-withdrawal-execution.log').read_text()
+          for case in ['AcceptedPaymentRetainsExactBodyAndTermsAcrossReopen', 'RejectedSubmissionIsRetainedWithoutBroadcastClaim', 'WalletCommitSurvivesVaultWriteRefusalAndResolvesOnce', 'MissingBodyKeepsSigningAcrossReopenWithoutRegeneration', 'ExplicitTermsAndCollectiveReservationsRefuseBeforeEffects', 'BoundWalletSessionAndServiceCannotRetargetDispatch', 'RetainedRecipientAtNonzeroOutputNeverUsesAssumedZero', 'HistoricalSnapshotAndMissingTermsRemainExplicitlyUnspecified']:
+              assert log.count('[       OK ] VaultRetainedWithdrawal.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 1' in log
+          PYCODE
+
+      - name: Authenticate and commit complete present vault state
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^(VaultStateSnapshot|VaultStateStore)$' --show-only=json-v1 > vault-state-store-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-state-store-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultStateSnapshot','VaultStateStore']
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          assert all(next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT')==120 for t in tests)
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^(VaultStateSnapshot|VaultStateStore)$' --verbose --no-tests=error --output-log vault-state-store-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-state-store-execution.log').read_text()
+          for suite,cases in {'VaultStateSnapshot': ['ActualServiceCaptureAndLedgerReplay', 'ExactFormatAllVariantsAndCanonicalInventory', 'IncompleteDuplicateAndTerminalInputRefuse', 'SavedLifecycleAndEveryLedgerBindingRequired', 'ObservedAndDetectedReversionKeepExistingLedgerShape'], 'VaultStateStore': ['ExplicitCreationAndAuthenticatedServiceReopen', 'RequiredWriteAndCommitRefusalPreserveLiveAndDurableState', 'MissingCorruptAndForeignDomainsNeverCreateReplacement', 'DeniedReadsAndBorrowedTransactionRetainCallerAndOwner']}.items():
+              for case in cases: assert log.count('[       OK ] '+suite+'.'+case+' (')==1
+          PYCODE
+      - name: Refuse incomplete legacy vault recovery before runtime publication
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultRuntimeRestoreGuard$' --show-only=json-v1 > vault-runtime-restore-guard-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-runtime-restore-guard-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultRuntimeRestoreGuard'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultRuntimeRestoreGuard$' --verbose --no-tests=error --output-log vault-runtime-restore-guard-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-runtime-restore-guard-execution.log').read_text()
+          for case in ['DisabledAndMissingReadersNeverPublish', 'RecordedLedgerNeverBecomesEmptyRuntime', 'HistoricalSidecarAndMalformedStorageRefuse', 'FailedPreparationPreservesNoBindingAndAllowsExplicitRetry']:
+              assert log.count('[       OK ] VaultRuntimeRestoreGuard.'+case+' (')==1
+          PYCODE
+      - name: Wallet observations release committed wallet ownership before vault callbacks
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultWalletObservation$' --show-only=json-v1 > vault-wallet-observation-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-wallet-observation-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultWalletObservation'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultWalletObservation$' --verbose --no-tests=error --output-log vault-wallet-observation-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-wallet-observation-execution.log').read_text()
+          for case in ['ActualWorkerCommitsHeightAndReleasesLeaseBeforeCallback', 'CapturedServiceAndBindingDoNotRetargetAfterDetach', 'InvalidHashesAndUnmatchedScriptsHaveNoEffects', 'FailedWalletWriteDoesNotInvokeObserverAndRetrySucceeds']:
+              assert log.count('[       OK ] VaultWalletObservation.'+case+' (')==1
+          PYCODE
       - name: Check typed canonical block announcement handoff
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2888,6 +3022,20 @@ jobs:
             vault-rpc-input-execution.log
             vault-ledger-read-inventory.json
             vault-ledger-read-execution.log
+            vault-reservation-metrics-inventory.json
+            vault-reservation-metrics-execution.log
+            vault-payment-binding-inventory.json
+            vault-payment-binding-execution.log
+            vault-dispatch-lifetime-inventory.json
+            vault-dispatch-lifetime-execution.log
+            vault-retained-withdrawal-inventory.json
+            vault-retained-withdrawal-execution.log
+            vault-state-store-inventory.json
+            vault-state-store-execution.log
+            vault-runtime-restore-guard-inventory.json
+            vault-runtime-restore-guard-execution.log
+            vault-wallet-observation-inventory.json
+            vault-wallet-observation-execution.log
             vault-ledger-append-inventory.json
             vault-ledger-append-execution.log
             wallet-service-owner-execution.log

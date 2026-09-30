@@ -1,3 +1,7 @@
+#include "vault/wallet_withdrawal_dispatch.h"
+#include "vault/state_snapshot.h"
+#include "rpc/wallet_request_dispatch.h"
+#include "consensus/chainparams.h"
 #include "crypto/wallet_crypto.h"
 #include <openssl/crypto.h>
 #include <gtest/gtest.h>
@@ -552,5 +556,9 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 }
 #include "wallet_request_owner_checks.h"
 #include "wallet_request_dispatch_checks.h"
+#include "vault_retained_withdrawal_checks.h"
+#include "vault_dispatch_lifetime_checks.h"
+#include "vault_payment_binding_checks.h"
 
 }
+#include "vault_reservation_metrics_checks.h"

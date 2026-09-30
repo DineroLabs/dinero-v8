@@ -412,8 +412,10 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
             vault_cfg.block_hash_at_height = dinero::vault::MakeChainstateBlockHashClosure(ctx);
             vault_cfg.tx_included_at = dinero::vault::MakeChainstateTxIncludedClosure(ctx);
             vault_cfg.capture_tip = dinero::vault::MakeChainstateVaultSnapshotClosure(ctx);
-            dinero::vault::InitializeVaultRuntime(std::move(vault_cfg));
-            dinero::g_logger.info("[RPC Context] ✅ Liquidity Vault runtime initialised (Track C)");
+            const bool vault_running=dinero::vault::InitializeVaultRuntime(std::move(vault_cfg));
+            dinero::g_logger.info(vault_running
+                ? "[RPC Context] Liquidity Vault runtime initialised"
+                : "[RPC Context] Liquidity Vault disabled by configuration");
             if (ctx.wallet) {
                 if (auto wallet_service =
                         std::dynamic_pointer_cast<dinero::WalletService>(ctx.wallet)) {

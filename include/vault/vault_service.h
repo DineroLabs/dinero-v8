@@ -19,8 +19,10 @@
 #include "vault/ledger.h"
 #include "vault/reorg_watcher.h"
 #include "vault/signing_backend.h"
+#include "vault/state_owner.h"
 #include "vault/vault_types.h"
 #include "vault/withdrawal_queue.h"
+#include "vault/withdrawal_dispatch.h"
 
 #include <array>
 #include <cstdint>
@@ -88,6 +90,8 @@ using VaultTipSnapshotFn = std::function<VaultTipSnapshot(
 /// one mutex for thread-safety. Every public verb is idempotent on
 /// its natural identity (outpoint for deposits, request_id for
 /// withdrawals).
+struct VaultStateSnapshot;
+
 class VaultService {
    public:
     using BlockHashAtHeightFn = ReorgWatcher::BlockHashAtHeightFn;
@@ -123,6 +127,12 @@ class VaultService {
     WithdrawalId enqueueWithdrawal(const AccountId& account, UnaAmount amount,
                                    const std::vector<uint8_t>& destination_script_pub_key);
 
+    // Explicit terms are retained in the same authenticated state transaction
+    // as the new request. Requires a durable wallet owner; no historical terms
+    // are inferred by this overload.
+    WithdrawalId enqueueWithdrawal(const AccountId&, UnaAmount,
+        const std::vector<uint8_t>&, const WithdrawalPaymentTerms&);
+
     /// Driver for the withdrawal queue's signing path. Caller (a
     /// vault main loop or per-tip task) calls this on a cadence; one
     /// call advances at most one pending withdrawal.
@@ -135,6 +145,9 @@ class VaultService {
 
     // ----- introspection (used by RPC handlers) -----
 
+    // Durable Pending/Signing reservations reduce spendable and contribute to
+    // locked. Retained payments already have a ledger lock and count once.
+    // These are captured live metrics, not a chain/readiness certificate.
     [[nodiscard]] VaultAccountMetrics accountMetrics(const AccountId& account);
     [[nodiscard]] VaultMetrics metrics();
 
@@ -155,13 +168,34 @@ class VaultService {
 
     [[nodiscard]] WithdrawalState withdrawalState(const WithdrawalId& id);
 
+    // Capture all present service fields under one mutex. Returned bytes/state
+    // are not authenticated ownership, deletion completeness or readiness.
+    // No chain, wallet, SQL or signing callback is invoked while capturing.
+    [[nodiscard]] VaultStateSnapshot captureState();
+
     /// Backend healthcheck pass-through.
     [[nodiscard]] HealthReport backendHealth();
 
    private:
+    friend class WalletVaultStateOwner;
     struct PreparedState;
     void publish(PreparedState& state) noexcept;
+    void commitAndPublish(PreparedState&, VaultStateWrite*);
+    void requireCurrentOwner(const VaultStateWrite*) const;
+    VaultStateSnapshot captureStateLocked() const;
+    static std::shared_ptr<VaultService> RestorePrepared(
+        const VaultStateSnapshot&, std::shared_ptr<const VaultStateOwner>,
+        std::unique_ptr<SigningBackend>, BlockHashAtHeightFn, TxIncludedAtFn,
+        VaultTipSnapshotFn, std::shared_ptr<VaultWithdrawalDispatcher> = {});
     void requireRevisionCapacity() const;
+    void requirePendingCapacity(const AccountId&, UnaAmount additional) const;
+    UnaAmount pendingReservedLocked(const AccountId&, UnaAmount spendable) const;
+    VaultAccountMetrics accountMetricsLocked(const AccountId&) const;
+    std::optional<WithdrawalId> processDurableWithdrawal();
+    // Immutable after construction; the wallet transaction is always acquired
+    // before mu_. Ordinary injected services retain their in-memory behavior.
+    std::shared_ptr<const VaultStateOwner> state_owner_;
+    std::shared_ptr<VaultWithdrawalDispatcher> withdrawal_dispatcher_;
     std::mutex mu_;
     uint64_t revision_{0};
     VaultTipSnapshotFn capture_tip_;

@@ -113,6 +113,8 @@ void NotifyVaultTipConnected(uint64_t /*height*/) {
     // no-op: real impl in vault_runtime.cpp drives the VaultService
 }
 
+VaultWalletOutputObserver CaptureVaultWalletOutputObserver() { return {}; }
+
 void ObserveWalletOutput(const std::array<uint8_t, 32>& /*txid_raw*/,
                          uint32_t /*vout*/,
                          const std::vector<uint8_t>& /*script_pub_key*/,

@@ -346,7 +346,8 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
         std::ofstream(path + ".exited") << height << '\n';
     }
 
-    const auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
+    const auto vault_observer = dinero::vault::CaptureVaultWalletOutputObserver();
+    auto database_lease = wallet_manager_ ? wallet_manager_->AcquireDatabaseLease() : nullptr;
     CheckWalletJobSession(database_lease.get(), session);
     if (wallet_manager_) {
         std::string shielded_error;
@@ -573,18 +574,26 @@ void WalletWorker::ProcessConnect(uint32_t height, const std::string& hash,
 
         }); // Index commits first. A subsequent wallet commit failure requires ordered replay.
         wallet_transaction.Commit();
-        // Neither height nor external observations acknowledge an uncommitted wallet.
-        for (const auto& output : observed_outputs) {
-            std::array<uint8_t, 32> txid_raw{};
-            std::memcpy(txid_raw.data(), output.txid.AsUint256().begin(), 32);
-            dinero::vault::ObserveWalletOutput(txid_raw, output.vout, output.spk,
-                output.value.GetUna(), height, hash);
-        }
-
-        // ✅ CRITICAL FIX: Update wallet's blockchain height for correct confirmation calculation
+        // Publish height while the original wallet/session remains pinned.
         if (wallet_manager_) {
             wallet_manager_->setBlockchainHeight(height);
-            std::cerr << "[WalletWorker] 📏 Updated wallet blockchain height to " << height << std::endl;
+            std::cerr << "[WalletWorker] Updated wallet blockchain height to " << height << std::endl;
+        }
+        // Commit cleared WalletBlockTransaction's connection. Release the
+        // wallet lifecycle/SQLite owner before the callback reads chainstate.
+        // No WalletManager access follows this release.
+        database_lease.reset();
+        if (vault_observer) for (const auto& output : observed_outputs) {
+            std::array<uint8_t,32> txid_raw{};
+            std::memcpy(txid_raw.data(),output.txid.AsUint256().begin(),32);
+            try {
+                vault_observer(txid_raw,output.vout,output.spk,
+                    output.value.GetUna(),height,hash);
+            } catch (const std::exception& e) {
+                // Wallet durability is complete. This legacy notification is
+                // still best-effort and does not acknowledge vault delivery.
+                std::cerr << "[WalletWorker] Vault observation failed: " << e.what() << std::endl;
+            }
         }
 
         auto end = std::chrono::steady_clock::now();

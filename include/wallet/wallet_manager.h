@@ -312,6 +312,11 @@ public:
         // Authenticate the full retained owner and exact request payload in a
         // checked transaction. No signing, coin selection, writes or submission.
         // Missing returns nullopt; malformed/unavailable/conflicting data throws.
+        // Authenticate present payments using this lease/seed and an already
+        // active caller transaction. Never begins, commits, rolls back or writes.
+        // The caller retains the lease/seed through its own checked completion.
+        [[nodiscard]] std::vector<PendingPayment> ReadPendingPaymentsInTransaction(
+            const RecoverySeed&);
         [[nodiscard]] std::optional<PendingPayment> FindPaymentRequest(
             const RecoverySeed&, const PendingPaymentIntent&);
     private:
@@ -1048,6 +1053,7 @@ private:
 #endif
     std::string current_;
     friend class ChainstateService;
+    friend struct WalletObservationTestAccess;
     friend struct WalletSeedReadTestAccess;
     friend struct WalletSeedWriteTestAccess;
     friend struct WalletInitialOwnerTestAccess;

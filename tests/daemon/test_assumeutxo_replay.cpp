@@ -736,3 +736,9 @@ int main(int argc, char** argv) {
 #include "vault_rpc_input_checks.h"
 #include "vault_ledger_read_checks.h"
 #include "vault_ledger_append_checks.h"
+
+#include "vault_wallet_observation_checks.h"
+#include "vault_runtime_restore_guard_checks.h"
+
+#include "vault_state_snapshot_checks.h"
+#include "vault_state_store_checks.h"

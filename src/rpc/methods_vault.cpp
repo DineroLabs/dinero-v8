@@ -224,11 +224,21 @@ Json rpc_vault_withdraw(const ExecutionContext& /*ctx*/, const Json& params) {
         }
     }
     try {
-        dinero::vault::WithdrawalId id = svc->enqueueWithdrawal(account, amount, spk);
+        std::optional<dinero::vault::WithdrawalPaymentTerms> terms;
+        if(obj.isMember("fee_rate_hint") || obj.isMember("maximum_fee_una") || obj.isMember("audit_context")) {
+            uint64_t rate=0,maximum=0;
+            if(!unsignedInteger(obj["fee_rate_hint"],rate) || !unsignedInteger(obj["maximum_fee_una"],maximum) || !obj["audit_context"].isString())
+                return errorObj("durable withdrawal requires explicit integer fees and string audit_context");
+            terms=dinero::vault::WithdrawalPaymentTerms{rate,maximum,obj["audit_context"].asString()};
+            dinero::vault::ValidateWithdrawalPaymentTerms(*terms);
+        }
+        dinero::vault::WithdrawalId id = terms?svc->enqueueWithdrawal(account, amount, spk,*terms):svc->enqueueWithdrawal(account, amount, spk);
         result["request_id"] = arrayToHex16(id);
         result["status"] = "pending";
     } catch (const dinero::vault::WithdrawalQueueError& e) {
         return errorObj(std::string("withdrawal_queue: ") + e.what());
+    } catch (const std::exception& e) {
+        return errorObj(std::string("withdrawal owner: ") + e.what());
     }
     return result;
 }
@@ -283,6 +293,12 @@ Json rpc_vault_withdrawal_status(const ExecutionContext& /*ctx*/, const Json& pa
                reverted != nullptr) {
         result["state"] = "reverted";
         result["txid"] = arrayToHex(reverted->txid);
+    } else if (auto* retained = std::get_if<dinero::vault::WithdrawalPaymentRetained>(&state); retained != nullptr) {
+        result["state"] = "payment_retained";
+        auto display=retained->txid;std::reverse(display.begin(),display.end());
+        result["txid"] = arrayToHex(display);
+        result["vout"] = static_cast<Json::UInt64>(retained->vout);
+        result["fee_una"] = static_cast<Json::UInt64>(retained->fee_una);
     } else if (auto* failed = std::get_if<dinero::vault::WithdrawalFailed>(&state); failed != nullptr) {
         result["state"] = "failed";
         result["reason"] = failed->reason;

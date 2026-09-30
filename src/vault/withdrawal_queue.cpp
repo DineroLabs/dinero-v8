@@ -8,6 +8,8 @@
 #include "vault/ledger_account.h"
 #include "vault/ledger_entry.h"
 #include "vault/signing_backend.h"
+#include "primitives/amount.h"
+#include "consensus/limits.h"
 
 #include <openssl/rand.h>
 
@@ -19,6 +21,14 @@
 #include <vector>
 
 namespace dinero::vault {
+
+void ValidateWithdrawalPaymentTerms(const WithdrawalPaymentTerms& terms) {
+    if(terms.fee_rate_hint==0 ||
+       terms.fee_rate_hint>MAX_SUPPLY_UNA_CONST/consensus::MAX_BLOCK_WEIGHT ||
+       terms.maximum_fee_una==0 || terms.maximum_fee_una>MAX_SUPPLY_UNA_CONST ||
+       terms.audit_context.size()>4096 || terms.audit_context.find('\0')!=std::string::npos)
+        throw std::runtime_error("invalid explicit vault withdrawal payment terms");
+}
 
 WithdrawalId WithdrawalQueue::GenerateRequestId() {
     WithdrawalId id{};
@@ -39,7 +49,8 @@ LedgerTimestamp WithdrawalQueue::now() {
 bool WithdrawalQueue::isOutstanding(const WithdrawalState& s) const {
     return std::holds_alternative<WithdrawalPending>(s) ||
            std::holds_alternative<WithdrawalSigning>(s) ||
-           std::holds_alternative<WithdrawalBroadcast>(s);
+           std::holds_alternative<WithdrawalBroadcast>(s) ||
+           std::holds_alternative<WithdrawalPaymentRetained>(s);
 }
 
 WithdrawalId WithdrawalQueue::enqueue(const AccountId& account, UnaAmount amount,
@@ -219,6 +230,9 @@ void WithdrawalQueue::revert(const WithdrawalId& id) {
     if (req_it == requests_.end()) {
         throw WithdrawalQueueError(WithdrawalQueueError::Kind::UNKNOWN_REQUEST, "unknown");
     }
+    if (std::holds_alternative<WithdrawalPaymentRetained>(state_it->second))
+        throw WithdrawalQueueError(WithdrawalQueueError::Kind::LIFECYCLE_VIOLATION,
+                                   "retained wallet payment requires canonical reconciliation");
     std::array<uint8_t, 32> txid{};
     bool has_onchain = false;
     if (auto* bc = std::get_if<WithdrawalBroadcast>(&state_it->second); bc != nullptr) {

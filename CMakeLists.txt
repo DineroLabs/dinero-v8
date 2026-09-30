@@ -751,6 +751,10 @@ add_library(dinero_rpc_handlers STATIC
   src/vault/withdrawal_queue.cpp
   src/vault/signing_backend.cpp
   src/vault/vault_service.cpp
+  src/vault/state_snapshot.cpp
+  src/vault/state_validation.cpp
+  src/vault/state_store.cpp
+  src/vault/wallet_withdrawal_dispatch.cpp
   src/vault/ledger_store.cpp
   src/vault/vault_runtime.cpp
   src/vault/wallet_signing_backend.cpp

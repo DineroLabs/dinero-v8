@@ -1,3 +1,4 @@
+#include "rpc/wallet_request_dispatch.h"
 /**
  * Wallet RPC Methods - Context-Aware (Week 2 Migration)
  *
@@ -3234,7 +3235,9 @@ din::Json rpc_context_wallet_sendtoaddress(const ExecutionContext& ctx, const di
  *
  * Phase 33.4: Batch payments support
  */
-din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Json& params) {
+static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din::Json& params,
+    const std::shared_ptr<dinero::WalletService>& required_service,
+    const dinero::WalletSigningIdentity* required_identity) {
     din::Json result;
     if (RefuseIfSafeMode(ctx, result)) return result;  // spec Fatal §3
 
@@ -3257,13 +3260,18 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    if (wallet_service->get().isWalletLocked()) {
-        result["error"] = "Wallet is locked. Use wallet.unlock first.";
-        return result;
-    }
-
     try {
-        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
+        if(required_identity && (!required_service || required_service!=wallet_service || !requested))
+            throw std::runtime_error("Bound payment wallet service or request format changed");
+        // Retain the actual manager through all synchronous callbacks. This
+        // lifetime owner holds no wallet database/key or selected-chain lock.
+        const auto wallet_use=dinero::WalletService::AcquireWalletUse(wallet_service);
+        if(wallet_use->Wallet().isWalletLocked())
+            throw std::runtime_error("Wallet is locked. Use wallet.unlock first.");
+        const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_use->Wallet(),ctx.walletName);
+        if(required_identity && (required_identity->session==0 || required_identity->name.empty() ||
+            signing_identity.name!=required_identity->name || signing_identity.session!=required_identity->session))
+            throw std::runtime_error("Bound payment selected wallet session changed");
         din::Json recipients_obj = requested ? din::Json() : params[0];
         double fee_rate = 1.0;
         std::optional<dinero::PendingPaymentRequest> request_binding;
@@ -3626,6 +3634,15 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
     }
 
     return result;
+}
+
+din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx,const din::Json& params) {
+    return SendManyWithWalletOwner(ctx,params,{},nullptr);
+}
+
+din::Json dinero::DispatchBoundWalletRequest(const ExecutionContext& ctx,const din::Json& params,
+    const std::shared_ptr<WalletService>& service,const WalletSigningIdentity& identity) {
+    return SendManyWithWalletOwner(ctx,params,service,&identity);
 }
 
 /**

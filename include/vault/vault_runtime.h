@@ -76,8 +76,12 @@ struct VaultRuntimeConfig {
 };
 
 /// Initialise the singleton VaultService + register it with RPC.
-/// Idempotent — second call is a no-op.
-void InitializeVaultRuntime(VaultRuntimeConfig config);
+/// Returns false only when disabled; an already published runtime returns true.
+/// Enabled initialization failures throw before publication. Nonempty legacy
+/// ledger/idempotency files refuse: those files cannot restore complete vault
+/// state and must never be silently replaced by an empty runtime. This legacy
+/// initializer is not the authenticated wallet-state recovery attachment.
+bool InitializeVaultRuntime(VaultRuntimeConfig config);
 
 /// Tear down the singleton (daemon shutdown).
 void ShutdownVaultRuntime();
@@ -112,6 +116,16 @@ struct OperatorBinding {
     std::string account;
 };
 OperatorBinding GetVaultOperator();
+
+/// Capture service, operator script/account and chain-service lifetime before
+/// acquiring a wallet database lease. Invoke after wallet/index commits and
+/// release of that lease. A detached runtime or changed binding cannot retarget
+/// this captured delivery. Empty means no observer configured at capture time.
+/// This is a retained callback, not a durable acknowledgement or readiness.
+using VaultWalletOutputObserver = std::function<void(
+    const std::array<uint8_t,32>&, uint32_t, const std::vector<uint8_t>&,
+    uint64_t, uint64_t, const std::string&)>;
+VaultWalletOutputObserver CaptureVaultWalletOutputObserver();
 
 /// Wallet-side hook: a UTXO with `script_pub_key` matching our
 /// configured operator address landed at (txid, vout) in the block

@@ -29,12 +29,25 @@ namespace dinero::vault {
 /// signing call.
 using WithdrawalId = std::array<uint8_t, 16>;
 
+// Terms are supplied explicitly when authorizing a new durable withdrawal.
+// Absence on historical requests is preserved and never filled from defaults,
+// account labels or the current operator configuration.
+struct WithdrawalPaymentTerms {
+    uint64_t fee_rate_hint{0};
+    uint64_t maximum_fee_una{0};
+    std::string audit_context;
+    bool operator==(const WithdrawalPaymentTerms&) const = default;
+};
+void ValidateWithdrawalPaymentTerms(const WithdrawalPaymentTerms&);
+
 struct WithdrawalRequest {
     WithdrawalId request_id{};
     AccountId account;
     UnaAmount amount{0};
     std::vector<uint8_t> destination_script_pub_key;
     LedgerTimestamp created_at{0};
+    std::optional<WithdrawalPaymentTerms> payment_terms;
+    bool operator==(const WithdrawalRequest&) const = default;
 };
 
 struct WithdrawalPending {
@@ -62,13 +75,24 @@ struct WithdrawalFailed {
     std::string reason;
     bool operator==(const WithdrawalFailed&) const = default;
 };
+// The exact signed payment remains owned by the wallet, with its inputs
+// reserved. This state says nothing about admission, relay or confirmation.
+// The output index comes from the authenticated body, never an assumed zero.
+struct WithdrawalPaymentRetained {
+    std::array<uint8_t,32> txid{};
+    uint32_t vout{0};
+    std::array<uint8_t,32> body_sha256{};
+    uint64_t fee_una{0};
+    bool operator==(const WithdrawalPaymentRetained&) const = default;
+};
 using WithdrawalState = std::variant<
     WithdrawalPending,
     WithdrawalSigning,
     WithdrawalBroadcast,
     WithdrawalSettledOnChain,
     WithdrawalRevertedOnChain,
-    WithdrawalFailed
+    WithdrawalFailed,
+    WithdrawalPaymentRetained
 >;
 
 struct WithdrawalCaps {

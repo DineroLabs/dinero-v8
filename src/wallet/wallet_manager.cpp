@@ -3674,6 +3674,15 @@ std::vector<PendingPayment> WalletManager::getPendingPayments() const {
     auto records=ReadPendingPaymentsOwned(pin->Bytes());transaction.Commit();return records;
 }
 
+std::vector<PendingPayment> WalletManager::DatabaseLease::ReadPendingPaymentsInTransaction(
+    const RecoverySeed& pin) {
+    if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
+       !db_ || db_!=owner_.db_ || session_!=owner_.database_session_ || owner_.recovery_seeds_!=1 ||
+       sqlite3_get_autocommit(db_))
+        throw std::runtime_error("Payment inventory requires the caller's active wallet owner");
+    return owner_.ReadPendingPaymentsOwned(pin.Bytes());
+}
+
 std::optional<PendingPayment> WalletManager::DatabaseLease::FindPaymentRequest(
     const RecoverySeed& pin, const PendingPaymentIntent& intent) {
     if(thread_!=std::this_thread::get_id() || pin.thread_!=thread_ || &pin.owner_!=&owner_ ||
