@@ -166,6 +166,9 @@ public:
     bool incrementPayoutRetry(uint64_t payout_id, int64_t retry_time, const std::string& error = "");
 
     // Get payouts for block
+    // All four payout readers below capture explicit typed columns through
+    // SQLITE_DONE or throw without a partial result. Borrowed reads remain
+    // caller-owned. Present records alone do not certify payment eligibility.
     std::vector<Payout> getPayoutsForBlock(uint64_t block_id);
 
     // Get payouts for worker

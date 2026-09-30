@@ -2544,6 +2544,22 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require complete payout reads and batch amount preflight
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolPayoutInventory$' --show-only=json-v1 > orchard-pool-payout-inventory-inventory.json
+          python3 - <<'PYROUND'
+          import json
+          tests=json.load(open('orchard-pool-payout-inventory-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolPayoutInventory'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYROUND
+          ctest --test-dir build-orchard-root -R '^PoolPayoutInventory$' --verbose --no-tests=error --output-log orchard-pool-payout-inventory-execution.log
+          python3 - <<'PYROUND'
+          from pathlib import Path
+          log=Path('orchard-pool-payout-inventory-execution.log').read_text()
+          for case in ['ExactColumnsSelectionAndReopen','MalformedLaterRowsRefuseAllSelectedViews','ReadAndEofFailureBeforeAnyCallbackOrWrite','BorrowedReadsAndWholeBatchAmountPreflight']:
+              assert log.count('[       OK ] PoolPayoutInventory.'+case+' (')==1
+          PYROUND
       - name: Require pool payment callback lifetime ownership
         run: |
           ctest --test-dir build-orchard-root -R '^PoolPaymentLifetime$' --show-only=json-v1 > orchard-pool-payment-lifetime-inventory.json
@@ -3452,11 +3468,13 @@ jobs:
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
+            orchard-pool-payout-inventory-inventory.json
             orchard-pool-payment-lifetime-inventory.json
             orchard-pool-calculation-arithmetic-inventory.json
             orchard-pool-calculation-inputs-inventory.json
             orchard-pool-allocation-inventory.json
             orchard-pool-round-inventory.json
+            orchard-pool-payout-inventory-execution.log
             orchard-pool-payment-lifetime-execution.log
             orchard-pool-calculation-arithmetic-execution.log
             orchard-pool-calculation-inputs-execution.log

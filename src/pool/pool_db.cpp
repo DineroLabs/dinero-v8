@@ -177,6 +177,31 @@ Share ReadCalculationShare(OrphanStatement& row) {
     return s;
 }
 
+// Complete present-row decoding shared by all payout views. Initialization
+// establishes retry columns; a missing column is unavailable data, never zero.
+Payout ReadPayout(OrphanStatement& row) {
+    Payout p;p.payout_id=row.nonnegative(0);p.block_id=row.nonnegative(1);
+    if (!p.payout_id) throw std::runtime_error("missing pool payout identity");
+    p.worker_id=row.textColumn(2);p.wallet_address=row.textColumn(3);
+    p.amount=row.nonnegative(4);p.share_percent=row.realColumn(5);
+    p.share_count=row.nonnegative(6);p.difficulty_sum=row.realColumn(7);
+    const auto status=row.nonnegative(8);
+    if (status>static_cast<int>(PayoutStatus::FAILED)) throw std::runtime_error("invalid pool payout status");
+    p.status=static_cast<PayoutStatus>(status);
+    p.txid=CalculationText(row,9,true);p.error_message=CalculationText(row,10,true);
+    p.calculated_at=row.nonnegative(11);p.paid_at=row.nonnegative(12);
+    const auto retry=row.nonnegative(13);
+    if (retry>std::numeric_limits<uint32_t>::max()) throw std::runtime_error("pool payout retry range");
+    p.retry_count=static_cast<uint32_t>(retry);p.last_retry_at=row.nonnegative(14);
+    return p;
+}
+std::vector<Payout> CompletePayoutRead(OrphanStatement& rows) {
+    std::vector<Payout> payouts;int rc;
+    while ((rc=sqlite3_step(rows.get()))==SQLITE_ROW) payouts.push_back(ReadPayout(rows));
+    if (rc!=SQLITE_DONE) throw std::runtime_error("pool payout capture incomplete");
+    return payouts;
+}
+
 class OrphanTransaction {
 public:
     explicit OrphanTransaction(sqlite3* db):db_(db) {
@@ -1708,164 +1733,35 @@ std::vector<Share> PoolDB::getSharesInRange(int64_t start_time, int64_t end_time
 
 std::vector<Payout> PoolDB::getPendingPayouts() {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<Payout> payouts;
-    const char* sql = "SELECT * FROM payouts WHERE status IN (0, 3) ORDER BY calculated_at ASC";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
-    }
-    sqlite3_finalize(stmt);
-    return payouts;
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE status IN (0, 3) ORDER BY calculated_at ASC");
+    return CompletePayoutRead(rows);
 }
 
 std::vector<Payout> PoolDB::getWorkerPayouts(const std::string& worker_id,
                                              uint32_t limit) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<Payout> payouts;
-    const char* sql = R"(
-        SELECT * FROM payouts
-        WHERE worker_id = ?
-        ORDER BY calculated_at DESC
-        LIMIT ?;
-    )";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
-    sqlite3_bind_text(stmt, 1, worker_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 2, static_cast<int>(limit));
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
-    }
-    sqlite3_finalize(stmt);
-    return payouts;
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    if (worker_id.empty() || worker_id.find('\0')!=std::string::npos) throw std::runtime_error("invalid pool payout worker");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE worker_id=? ORDER BY calculated_at DESC LIMIT ?");
+    rows.text(1,worker_id);rows.integer(2,limit);
+    return CompletePayoutRead(rows);
 }
 
 std::vector<Payout> PoolDB::getPayoutsForBlock(uint64_t block_id) {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<Payout> payouts;
-    const char* sql = R"(
-        SELECT * FROM payouts
-        WHERE block_id = ?
-        ORDER BY amount DESC, payout_id ASC;
-    )";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
-    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(block_id));
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
-    }
-    sqlite3_finalize(stmt);
-    return payouts;
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    if (block_id>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max())) throw std::runtime_error("invalid pool payout block");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE block_id=? ORDER BY amount DESC, payout_id ASC");
+    rows.integer(1,static_cast<sqlite3_int64>(block_id));
+    return CompletePayoutRead(rows);
 }
 
 std::vector<Payout> PoolDB::getPayoutsReadyToSend() {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    std::vector<Payout> payouts;
-    // Get payouts where block is confirmed (status = CONFIRMED = 1)
-    const char* sql = "SELECT * FROM payouts WHERE status = 1 ORDER BY calculated_at ASC";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return payouts;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        const int column_count = sqlite3_column_count(stmt);
-        Payout payout;
-        payout.payout_id = sqlite3_column_int64(stmt, 0);
-        payout.block_id = sqlite3_column_int64(stmt, 1);
-        payout.worker_id = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        payout.wallet_address = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
-        payout.amount = sqlite3_column_int64(stmt, 4);
-        payout.share_percent = sqlite3_column_double(stmt, 5);
-        payout.share_count = sqlite3_column_int64(stmt, 6);
-        payout.difficulty_sum = sqlite3_column_double(stmt, 7);
-        payout.status = static_cast<PayoutStatus>(sqlite3_column_int(stmt, 8));
-        if (sqlite3_column_text(stmt, 9)) {
-            payout.txid = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
-        }
-        if (sqlite3_column_text(stmt, 10)) {
-            payout.error_message = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
-        }
-        payout.calculated_at = sqlite3_column_int64(stmt, 11);
-        payout.paid_at = sqlite3_column_int64(stmt, 12);
-        payout.retry_count = column_count > 13 ? static_cast<uint32_t>(sqlite3_column_int(stmt, 13)) : 0;
-        payout.last_retry_at = column_count > 14 ? sqlite3_column_int64(stmt, 14) : 0;
-        payouts.push_back(payout);
-    }
-    sqlite3_finalize(stmt);
-    return payouts;
+    if (!db_) throw std::runtime_error("pool payout database unavailable");
+    OrphanStatement rows(db_,"SELECT payout_id,block_id,worker_id,wallet_address,amount,share_percent,share_count,difficulty_sum,status,txid,error_message,calculated_at,paid_at,retry_count,last_retry_at FROM payouts WHERE status=1 ORDER BY calculated_at ASC");
+    return CompletePayoutRead(rows);
 }
 
 bool PoolDB::reconcileOrphanedBlock(const std::string& block_hash, OrphanResult& result) {

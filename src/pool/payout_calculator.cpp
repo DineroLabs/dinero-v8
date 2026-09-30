@@ -472,13 +472,25 @@ uint32_t PayoutProcessor::processPendingPayouts() {
         by_address[payout.wallet_address].push_back(&payout);
     }
 
+    // Validate EVERY selected group before any callback or accounting write.
+    // Amounts must remain representable by the existing SQLite accounting owner.
+    std::map<std::string, uint64_t> totals;
+    const auto maximum=static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
+    if (payouts.size()>std::numeric_limits<uint32_t>::max())
+        throw std::runtime_error("pool payout batch count range");
+    for (const auto& [address, payout_ptrs] : by_address) {
+        uint64_t total=0;
+        for (const auto* p : payout_ptrs) {
+            if (!p->amount || p->amount>maximum-total)
+                throw std::runtime_error("pool payout batch amount range");
+            total+=p->amount;
+        }
+        totals.emplace(address,total);
+    }
+
     // Process each address
     for (auto& [address, payout_ptrs] : by_address) {
-        // Calculate total for this address
-        uint64_t total = 0;
-        for (auto* p : payout_ptrs) {
-            total += p->amount;
-        }
+        const auto total=totals.at(address);
 
         // Send payment
         std::string txid;
