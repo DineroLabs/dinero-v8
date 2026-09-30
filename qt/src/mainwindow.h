@@ -3,6 +3,7 @@
 #include <QMainWindow>
 
 #include "daemonstartuppolicy.h"
+#include "chaintiming.h"
 #include <QMap>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -179,6 +180,7 @@ private:
   bool maybeShowP2PNetworkNotice();
   void updateStatus(const QJsonObject& info);
   void updateEconomics(const QJsonObject& economics);
+  void refreshTimingText();
   void updateWallet(const QString& address);
   void updateExplorer(const QJsonValue& block);
   void displayAddressResult(const QJsonObject& result);
@@ -389,6 +391,7 @@ private:
   QLineEdit* edtRecoveryPubkey_ = nullptr;      // Recovery key for conditional vault
   class QSpinBox* spnTimelockDuration_ = nullptr;
   class QComboBox* cmbTimelockUnit_ = nullptr;
+  ChainTiming chainTiming_;
   QTableWidget* tblPayrollRecipients_ = nullptr;
   QLabel* lblPayrollTotal_ = nullptr;
   QLineEdit* edtCustomScript_ = nullptr;

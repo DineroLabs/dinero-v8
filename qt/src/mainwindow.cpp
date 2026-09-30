@@ -3364,7 +3364,7 @@ void MainWindow::setupUI() {
     cmbTimelockUnit_->addItem("blocks", "blocks");
     cmbTimelockUnit_->addItem("hours (estimated)", "hours");
     cmbTimelockUnit_->addItem("days (estimated)", "days");
-    cmbTimelockUnit_->setToolTip("Uses the 2-minute block target. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
+    cmbTimelockUnit_->setToolTip("Estimated from the network's current block time. The lock starts at funding confirmation and is enforced in blocks, not wall-clock time.");
     timelockPageLayout->addWidget(cmbTimelockUnit_);
     timelockPageLayout->addStretch();
     contractTemplateStack_->addWidget(contractTimelockPage_);
@@ -8403,7 +8403,23 @@ void MainWindow::updateStatus(const QJsonObject& info) {
   }
 }
 
+void MainWindow::refreshTimingText() {
+  // Block targets stay fixed; only the time estimates follow the node's block time.
+  if (cmbFeePreset_ && cmbFeePreset_->count() >= 3) {
+    cmbFeePreset_->setItemText(0, QString("Low (25+ blocks, %1)").arg(chainTiming_.approxDuration(25)));
+    cmbFeePreset_->setItemText(1, QString("Normal (6 blocks, %1)").arg(chainTiming_.approxDuration(6)));
+    cmbFeePreset_->setItemText(2, QString("High (2 blocks, %1)").arg(chainTiming_.approxDuration(2)));
+  }
+  if (cmbTimelockUnit_) {
+    cmbTimelockUnit_->setToolTip(QString("Estimated from the network's current block time (%1 s). "
+                                         "The lock starts at funding confirmation and is enforced in "
+                                         "blocks, not wall-clock time.").arg(chainTiming_.blockSeconds));
+  }
+}
+
 void MainWindow::updateEconomics(const QJsonObject& economics) {
+  chainTiming_ = ChainTiming::fromEconomics(economics);
+  refreshTimingText();
   // Update Overview tab labels
   if (lblPhase_) {
     // Use halving epoch instead of non-existent "phase"
@@ -11179,9 +11195,9 @@ void MainWindow::updateUTXOTable(const QJsonArray& utxos) {
     auto *maturityItem = new QTableWidgetItem(maturityStatus);
     if (isCoinbase && !isMature) {
       maturityItem->setForeground(QBrush(QColor("#fab005"))); // Orange for immature
-      maturityItem->setToolTip(QString("Coinbase requires 100 confirmations. %1 blocks remaining (~%2 minutes)")
+      maturityItem->setToolTip(QString("Coinbase requires 100 confirmations. %1 blocks remaining (%2)")
         .arg(maturityRemaining)
-        .arg(maturityRemaining * 3)); // Assuming 3 minute block time
+        .arg(chainTiming_.approxDuration(maturityRemaining)));
     } else if (isCoinbase && isMature) {
       maturityItem->setForeground(QBrush(QColor("#51cf66"))); // Green for mature
       maturityItem->setToolTip("Coinbase output is fully mature and spendable");
@@ -15036,7 +15052,7 @@ void MainWindow::onSendTransaction() {
       templateLabel = "Timelock";
       int delay = spnTimelockDuration_ ? spnTimelockDuration_->value() : 144;
       const QString unit = cmbTimelockUnit_ ? cmbTimelockUnit_->currentData().toString() : "blocks";
-      delay = CovenantFormPolicy::delayBlocks(delay, unit);
+      delay = CovenantFormPolicy::delayBlocks(delay, unit, chainTiming_.blockSeconds);
       if (delay <= 0 || delay > 65535) {
         lblSendStatus_->setText("\xe2\x9d\x8c Relative timelock must be between 1 and 65,535 blocks.");
         btnSend_->setEnabled(true); updateSendModeUi(); return;

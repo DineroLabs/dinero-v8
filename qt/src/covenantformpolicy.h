@@ -13,10 +13,14 @@ inline bool appendAmount(const QString& text, qint64& total, qint64& value) {
     total += value;
     return true;
 }
-inline int delayBlocks(int duration, const QString& unit) {
-    // All current networks target 120 seconds. Wall-clock durations are estimates;
-    // consensus enforces the resulting block count from funding confirmation.
-    const int multiplier = unit == "blocks" ? 1 : unit == "hours" ? 30 : unit == "days" ? 720 : 0;
+inline int delayBlocks(int duration, const QString& unit, int blockSeconds) {
+    // Wall-clock durations are estimates converted with the node's current block
+    // time; consensus enforces the resulting block count from funding confirmation.
+    if (blockSeconds <= 0) blockSeconds = 120;
+    int multiplier = 0;
+    if (unit == "blocks") multiplier = 1;
+    else if (unit == "hours") multiplier = qMax(1, 3600 / blockSeconds);
+    else if (unit == "days") multiplier = qMax(1, 86400 / blockSeconds);
     if (multiplier == 0 || duration <= 0 || duration > 65535 / multiplier) return 0;
     return duration * multiplier;
 }
