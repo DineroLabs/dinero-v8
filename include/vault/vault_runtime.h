@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "vault/vault_service.h"
+
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -41,9 +43,9 @@ struct VaultRuntimeConfig {
     /// (writes deposit_observed but never opens credits). Stage 0
     /// rollouts.
     bool shadow_mode{false};
-    /// Optional persistence path. When set, a FileLedgerStore is
-    /// created and replayed at startup; appends are tee'd into
-    /// the file.
+    /// Legacy ledger-file path. The current runtime opens/reads this store,
+    /// but its rows do not restore complete service state and live service
+    /// transitions are not durably appended here. This is not a recovery owner.
     std::string persistence_path;
     /// Bech32m operator address (e.g. "din1p..."). Decoded once at
     /// init; the resulting scriptPubKey is the observer's match
@@ -59,6 +61,10 @@ struct VaultRuntimeConfig {
     uint64_t k_observe{1};
     uint64_t k_credit{10};
     uint64_t k_settle{20};
+    /// Whole-tip reader used by production daemon wiring. This captures all
+    /// tracked deposits under one selected-chain owner, outside service locks.
+    VaultTipSnapshotFn capture_tip;
+    /// Narrow per-deposit readers retained for existing injected components.
     /// Chain-query closures wired by the daemon.
     std::function<std::array<uint8_t, 32>(uint64_t)> block_hash_at_height;
     /// Caller looks up whether `(outpoint)` is included in the block
@@ -148,5 +154,9 @@ MakeChainstateBlockHashClosure(::DaemonContext& ctx);
 /// The watcher must retain its prior observation if this call throws.
 std::function<bool(const std::array<uint8_t,32>&,uint32_t,uint64_t,const std::array<uint8_t,32>&)>
 MakeChainstateTxIncludedClosure(::DaemonContext& ctx);
+
+/// One selected observation of the exact requested tip and all queries.
+/// Throws on unavailable storage, changed tip or incomplete body reads.
+VaultTipSnapshotFn MakeChainstateVaultSnapshotClosure(::DaemonContext& ctx);
 
 }  // namespace dinero::vault

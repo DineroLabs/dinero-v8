@@ -384,29 +384,15 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
         RegisterAllRPCMethods(ctx);
         dinero::g_logger.info("[RPC Context] ✅ CPU stats & resource monitoring handlers registered (Phase E.3.1)");
 
-        // Track C: Liquidity Vault runtime. Disabled by default —
-        // operator flips `enabled = true` in this block once they're
-        // ready to start observing deposits. Stage 0 shadow rollouts
-        // set `shadow_mode = true` so deposit_observed entries flow
-        // but no credits open. Chain-query closures point at
-        // chainstate-backed lookups; the include-by-default policy
-        // for tx_included_at avoids false reorg reports under
-        // transient block-fetch failures.
+        // Liquidity Vault runtime. Configuration below enables it by default;
+        // an empty operator address keeps the automatic deposit observer idle.
+        // Canonical readers refuse unavailable source data. The selected-tip
+        // reader captures the complete requested observation under one owner.
         {
             dinero::vault::VaultRuntimeConfig vault_cfg;
-            // Operator gates. Defaults stay safe (disabled). Flip with
-            //   -vault=1            in dinero.conf or on the cli to start
-            //                       the runtime.
-            //   -vault.shadow=0     to leave shadow mode and open real
-            //                       credits (only after Stage 0 / 1).
-            //   -vault.ledgerpath=  override the JSON-line persistence
-            //                       location (default <datadir>/vault/
-            //                       ledger.jsonl).
-            // Vault on by default. Operators who don't want it pass
-            // `-vault=0` (e.g. headless seed nodes that have no
-            // custodial role). Shadow mode is now off by default
-            // (v2.1.29): the deposit flow opens real credits as soon
-            // as a deposit reaches k_credit confirmations.
+            // Operators can disable the runtime with -vault=0 or use shadow
+            // mode to observe deposits without opening credits. The legacy
+            // ledger path is not a complete durable VaultService state owner.
             vault_cfg.enabled = ctx.config->GetBool("vault", true);
             vault_cfg.shadow_mode = ctx.config->GetBool("vault.shadow", false);
             vault_cfg.persistence_path = ctx.config->GetString(
@@ -420,16 +406,12 @@ bool WireRpcContext(DaemonContext& ctx, HttpRpcServer* http_server) {
             vault_cfg.k_observe = static_cast<uint64_t>(ctx.config->GetInt("vault.k_observe", 1));
             vault_cfg.k_credit = static_cast<uint64_t>(ctx.config->GetInt("vault.k_credit", 10));
             vault_cfg.k_settle = static_cast<uint64_t>(ctx.config->GetInt("vault.k_settle", 20));
-            // Real chainstate-backed closures (Track C, C.6).
-            // ChainDB::getBlockHashByHeight gives the canonical
-            // active-chain hash; ChainDB::getBlock + tx walk gives
-            // tx inclusion at a specific block hash. Both are
-            // conservative on failure (zero-array → UNKNOWN for the
-            // hash query; true → RE_MINED_SAME_TXID for the inclusion
-            // query) so transient lookup hiccups never trigger a
-            // false compensating-debit cascade.
+            // Capture actual chainstate ownership. Incomplete storage never
+            // becomes positive inclusion; full tip transitions use one captured
+            // source and recheck the vault publication revision.
             vault_cfg.block_hash_at_height = dinero::vault::MakeChainstateBlockHashClosure(ctx);
             vault_cfg.tx_included_at = dinero::vault::MakeChainstateTxIncludedClosure(ctx);
+            vault_cfg.capture_tip = dinero::vault::MakeChainstateVaultSnapshotClosure(ctx);
             dinero::vault::InitializeVaultRuntime(std::move(vault_cfg));
             dinero::g_logger.info("[RPC Context] ✅ Liquidity Vault runtime initialised (Track C)");
             if (ctx.wallet) {

@@ -237,7 +237,8 @@ void InitializeVaultRuntime(VaultRuntimeConfig config) {
 
     g_service = std::make_shared<VaultService>(
         std::move(backend), service_config,
-        std::move(block_hash_for_watcher), std::move(tx_included_for_watcher));
+        std::move(block_hash_for_watcher), std::move(tx_included_for_watcher),
+        std::move(config.capture_tip));
 
     // Replay persisted entries through the live ledger.
     if (g_store) {
@@ -528,6 +529,44 @@ MakeChainstateTxIncludedClosure(::DaemonContext& ctx) {
         if (!observed.ok() || observed->block_hash!=arrayToUint256(expected_hash))
             throw std::runtime_error("Vault canonical inclusion observation unavailable or changed");
         return observed->included;
+    };
+}
+
+
+VaultTipSnapshotFn MakeChainstateVaultSnapshotClosure(::DaemonContext& ctx) {
+    return [source=ctx.chainstate](uint64_t height,
+              const std::vector<VaultDepositQuery>& queries) -> VaultTipSnapshot {
+        if (!source || height > uint64_t(std::numeric_limits<uint32_t>::max()))
+            throw std::runtime_error("vault selected source unavailable");
+        const auto lifetime = ChainstateService::AcquireWalletIndexUse(source);
+        const auto selected = source->AcquireBlockIngressActivationLock();
+        auto* db = source->GetChainDB();
+        if (!db) throw std::runtime_error("vault selected database unavailable");
+        const auto tip = db->getTip();
+        if (!tip.ok() || tip->height < 0 || uint64_t(tip->height) != height)
+            throw std::runtime_error("vault requested tip changed or unavailable");
+        const auto canonical = source->getCanonicalBlockHash(static_cast<uint32_t>(height));
+        if (!canonical.ok() || *canonical != tip->hash)
+            throw std::runtime_error("vault selected tip is incoherent");
+        VaultTipSnapshot snapshot{height, uint256ToArray(*canonical), {}};
+        snapshot.deposits.reserve(queries.size());
+        for (const auto& query : queries) {
+            if (query.height > height) {
+                // The selected tip is complete, so this height is absent.
+                snapshot.deposits.push_back({query, std::nullopt, false});
+                continue;
+            }
+            const auto output = source->getCanonicalOutputInclusion(
+                arrayToUint256(query.outpoint.txid_raw), query.outpoint.vout,
+                static_cast<uint32_t>(query.height));
+            if (!output.ok())
+                throw std::runtime_error("vault canonical deposit read unavailable");
+            if (output->included && (!output->transparent_amount ||
+                *output->transparent_amount != query.amount))
+                throw std::runtime_error("vault canonical deposit amount mismatch");
+            snapshot.deposits.push_back({query, uint256ToArray(output->block_hash), output->included});
+        }
+        return snapshot;
     };
 }
 

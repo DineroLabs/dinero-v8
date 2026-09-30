@@ -15,6 +15,8 @@
 #include <utility>
 #include <type_traits>
 #include <stdexcept>
+#include <limits>
+#include <algorithm>
 
 namespace dinero::vault {
 
@@ -33,6 +35,7 @@ struct VaultService::PreparedState {
               [&owner](const OutpointId& op, uint64_t h, const std::array<uint8_t, 32>& hash) {
                   return owner.reorg_watcher_.tx_included_at_(op, h, hash);
               }), withdrawals(owner.withdrawals_) {
+        owner.requireRevisionCapacity();
         deposits.ledger_ = &ledger;
         watcher.deposit_block_hashes_ = owner.reorg_watcher_.deposit_block_hashes_;
         withdrawals.ledger_ = &ledger;
@@ -55,11 +58,18 @@ void VaultService::publish(PreparedState& state) noexcept {
     reorg_watcher_.deposit_block_hashes_.swap(state.watcher.deposit_block_hashes_);
     withdrawals_.requests_.swap(state.withdrawals.requests_);
     withdrawals_.states_.swap(state.withdrawals.states_);
+    ++revision_;
+}
+
+void VaultService::requireRevisionCapacity() const {
+    if (revision_ == std::numeric_limits<uint64_t>::max())
+        throw std::runtime_error("vault state revision exhausted");
 }
 
 VaultService::VaultService(std::unique_ptr<SigningBackend> backend, VaultServiceConfig config,
-                           BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at)
-    : backend_{std::move(backend)},
+                           BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at,
+                           VaultTipSnapshotFn capture_tip)
+    : capture_tip_(std::move(capture_tip)), backend_{std::move(backend)},
       ledger_{config.ledger_caps},
       deposit_flow_{&ledger_, std::move(config.confirmation_policy), config.shadow_mode},
       reorg_watcher_{&deposit_flow_, std::move(block_hash_at_height), std::move(tx_included_at)},
@@ -89,13 +99,58 @@ void VaultService::recordDeposit(const std::array<uint8_t, 32>& txid, uint32_t v
 }
 
 void VaultService::tipChanged(uint64_t height) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_);
+    if (!capture_tip_) {
+        PreparedState state(*this);
+        state.watcher.reconcileTracked();
+        state.deposits.tipChanged(height);
+        state.withdrawals.tipChanged(height);
+        publish(state);
+        return;
+    }
+    const auto captured_revision = revision_;
+    std::vector<VaultDepositQuery> queries;
+    queries.reserve(deposit_flow_.tracked().size());
+    for (const auto& [outpoint, dep] : deposit_flow_.tracked()) {
+        if (dep.stage != DepositStage::REVERTED)
+            queries.push_back({outpoint, dep.deposit_height, dep.amount});
+    }
+    // Never acquire selected-chain ownership while holding the vault mutex.
+    // The reader is immutable after construction and this method's caller
+    // retains the service throughout this operation.
+    lock.unlock();
+    const auto captured = capture_tip_(height, queries);
+    lock.lock();
+    if (revision_ != captured_revision)
+        throw std::runtime_error("vault state changed during canonical observation");
+    const auto nonzero = [](const auto& hash) {
+        return std::any_of(hash.begin(), hash.end(), [](uint8_t b) { return b != 0; });
+    };
+    if (captured.height != height || !nonzero(captured.block_hash) ||
+        captured.deposits.size() != queries.size())
+        throw std::runtime_error("incomplete vault canonical snapshot");
+    // Validate every result before staging. Ordered exact input binding also
+    // refuses missing, duplicate, foreign or reordered observation results.
+    for (size_t i=0; i<queries.size(); ++i) {
+        const auto& item = captured.deposits[i];
+        if (item.query != queries[i] ||
+            (item.block_hash && !nonzero(*item.block_hash)) ||
+            (item.query.height <= height && !item.block_hash) ||
+            (item.query.height > height && (item.block_hash || item.included)))
+            throw std::runtime_error("vault canonical observation binding mismatch");
+    }
     PreparedState state(*this);
-    // Reconcile before opening or settling credits. Any unavailable/throwing
-    // observation leaves the live ledger, hashes and all queue states intact.
-    state.watcher.reconcileTracked();
-    state.deposits.tipChanged(height);
-    state.withdrawals.tipChanged(height);
+    for (const auto& item : captured.deposits) {
+        const auto& dep = state.deposits.tracked_.at(item.query.outpoint);
+        auto& recorded = state.watcher.deposit_block_hashes_.at(item.query.outpoint);
+        if (item.included) {
+            recorded = *item.block_hash;
+        } else {
+            state.deposits.revert(item.query.outpoint, state.watcher.unrecoverableLoss(dep));
+        }
+    }
+    state.deposits.tipChanged(captured.height);
+    state.withdrawals.tipChanged(captured.height);
     publish(state);
 }
 
@@ -110,6 +165,10 @@ WithdrawalId VaultService::enqueueWithdrawal(const AccountId& account, UnaAmount
 
 std::optional<WithdrawalId> VaultService::processNextWithdrawal() {
     std::lock_guard<std::mutex> lock(mu_);
+    // This existing externally-effectful path may mutate before throwing.
+    // Invalidate captured observations before entering it in either case.
+    requireRevisionCapacity();
+    ++revision_;
     return withdrawals_.processNext();
 }
 

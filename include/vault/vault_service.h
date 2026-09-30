@@ -62,6 +62,28 @@ struct VaultMetrics {
     bool operator==(const VaultMetrics&) const = default;
 };
 
+/// Inputs and results for one selected-chain observation. Included outputs
+/// must bind the exact outpoint, height and transparent amount. An absent
+/// block hash denotes a height above the completely observed selected tip.
+struct VaultDepositQuery {
+    OutpointId outpoint;
+    uint64_t height{0};
+    UnaAmount amount{0};
+    bool operator==(const VaultDepositQuery&) const = default;
+};
+struct VaultDepositObservation {
+    VaultDepositQuery query;
+    std::optional<std::array<uint8_t,32>> block_hash;
+    bool included{false};
+};
+struct VaultTipSnapshot {
+    uint64_t height{0};
+    std::array<uint8_t,32> block_hash{};
+    std::vector<VaultDepositObservation> deposits;
+};
+using VaultTipSnapshotFn = std::function<VaultTipSnapshot(
+    uint64_t, const std::vector<VaultDepositQuery>&)>;
+
 /// Single-actor orchestrator. The vault service serializes through
 /// one mutex for thread-safety. Every public verb is idempotent on
 /// its natural identity (outpoint for deposits, request_id for
@@ -72,7 +94,8 @@ class VaultService {
     using TxIncludedAtFn = ReorgWatcher::TxIncludedAtFn;
 
     VaultService(std::unique_ptr<SigningBackend> backend, VaultServiceConfig config,
-                 BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at);
+                 BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at,
+                 VaultTipSnapshotFn capture_tip = {});
 
     /// Chainstate-side: a confirmed UTXO with `txid:vout` belongs to
     /// `account`. Idempotent. The caller (typically a wallet hook
@@ -90,6 +113,9 @@ class VaultService {
     /// Unknown chain observations and lifecycle/cap errors propagate without
     /// changing the prior state.
     void tipChanged(uint64_t height);
+    // A configured snapshot reader runs outside mu_. Publication refuses if
+    // any service mutation occurred during the read. Legacy injected readers
+    // retain their narrower per-deposit behavior.
 
     /// RPC-side: enqueue a withdrawal for `account`. Returns the
     /// stable request id. Throws WithdrawalQueueError on validation
@@ -135,7 +161,10 @@ class VaultService {
    private:
     struct PreparedState;
     void publish(PreparedState& state) noexcept;
+    void requireRevisionCapacity() const;
     std::mutex mu_;
+    uint64_t revision_{0};
+    VaultTipSnapshotFn capture_tip_;
     std::unique_ptr<SigningBackend> backend_;
     Ledger ledger_;
     DepositFlowMachine deposit_flow_;

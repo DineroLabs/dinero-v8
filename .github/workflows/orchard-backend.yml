@@ -1120,6 +1120,26 @@ jobs:
           assert '100% tests passed, 0 tests failed out of 3' in log
           PYTEST
 
+      - name: Capture one selected source for complete vault tip transitions
+        run: |
+          cmake --build build-orchard-root --target test_assumeutxo_replay test_vault_state_machines test_vault_service --parallel 4 -- -k 0
+          ctest --test-dir build-orchard-root -R '^(VaultService|VaultSelectedSnapshot|VaultStateMachines)$' --show-only=json-v1 > vault-selected-snapshot-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('vault-selected-snapshot-inventory.json'))['tests']
+          assert sorted(t['name'] for t in tests)==['VaultSelectedSnapshot','VaultService','VaultStateMachines']
+          assert {t['name']:next(p['value'] for p in t['properties'] if p['name']=='TIMEOUT') for t in tests}=={'VaultService':30,'VaultSelectedSnapshot':120,'VaultStateMachines':30}
+          assert not any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[]))
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^(VaultService|VaultSelectedSnapshot|VaultStateMachines)$' --verbose --no-tests=error --output-log vault-selected-snapshot-execution.log
+          python3 - <<'PYTEST'
+          from pathlib import Path
+          log=Path('vault-selected-snapshot-execution.log').read_text()
+          for case in ['OneCapturePublishesCompleteDepositSet', 'InterveningPublicationRequiresFreshCapture', 'IncompleteOrMismatchedCapturePreservesPublishedState', 'ActualSelectedHistoricalAndTypedOutputsShareTip', 'ActualRuntimeRefusesUnavailableAndStaleTips']:
+              assert log.count('[       OK ] VaultSelectedSnapshot.'+case+' (')==1
+          assert '100% tests passed, 0 tests failed out of 3' in log
+          PYTEST
+
       - name: Check typed canonical block announcement handoff
         run: |
           cmake --build build-orchard-root --target test_assumeutxo_replay --parallel 4 -- -k 0
@@ -2704,6 +2724,8 @@ jobs:
             vault-canonical-observation-execution.log
             vault-runtime-owner-execution.log
             vault-staged-state-execution.log
+            vault-selected-snapshot-inventory.json
+            vault-selected-snapshot-execution.log
             wallet-service-owner-execution.log
             orchard-block-relay-inventory.json
             orchard-block-relay-execution.log
