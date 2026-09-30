@@ -27,6 +27,13 @@ Rules:
   absent.
 - The notice is advisory. Consensus is enforced by the node.
 
+Publishing rule: wallets read the notice from the release GitHub marks as
+"latest" (prereleases are skipped). Attach the current `network-upgrade.json`
+to **every** normal release from the moment it is first published until a newer
+notice replaces it, including hotfix releases such as `v8.1.13-windows1` if they
+are published as normal releases. A release without the asset looks like "no
+upgrade pending" to older wallets and silences their warning.
+
 The height above is an example. Publish the real activation height only once
 it is fixed in the release's chain parameters.
 

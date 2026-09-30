@@ -1,6 +1,7 @@
 #pragma once
 #include <QJsonObject>
 #include <QObject>
+#include <QNetworkRequest>
 #include <QUrl>
 #include <functional>
 
@@ -16,6 +17,8 @@ class UpdateChecker : public QObject {
 public:
     static QUrl defaultReleaseUrl();
     static QUrl defaultNoticeUrl();
+    // No cookies are loaded or saved, so checks cannot be linked to each other.
+    static QNetworkRequest makeRequest(const QUrl& url);
     UpdateChecker(QNetworkAccessManager* nam, QUrl releaseUrl = defaultReleaseUrl(),
                   QUrl noticeUrl = defaultNoticeUrl(), QObject* parent = nullptr);
     void checkNow();

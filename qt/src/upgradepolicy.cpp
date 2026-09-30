@@ -3,7 +3,7 @@
 
 namespace UpgradePolicy {
 Version parseVersion(const QString& s) {
-    static const QRegularExpression re(QStringLiteral("^v?(\\d+)\\.(\\d+)\\.(\\d+)(?:[-+].*)?$"));
+    static const QRegularExpression re(QStringLiteral("^v?(\\d+)\\.(\\d+)\\.(\\d+)(?:[-+.].*)?$"));
     const auto m = re.match(s.trimmed());
     if (!m.hasMatch()) return {};
     return {m.captured(1).toInt(), m.captured(2).toInt(), m.captured(3).toInt()};
@@ -35,6 +35,7 @@ Result evaluate(const QString& appVersion, const QString& latestTag, const Notic
                 quint32 tip, std::optional<quint32> nodeReleaseHeight, bool compareLatestTag) {
     const Version app = parseVersion(appVersion);
     if (!app.valid()) return {};  // development builds never nag
+    if (tip == 0) return {};      // chain height not known yet: a countdown would be wrong
     if (notice.present && compare(app, parseVersion(notice.minVersion)) < 0) {
         const qint64 left = qint64(notice.activationHeight) - qint64(tip);
         return left > 0 ? Result{State::UpdateRequired, left} : Result{State::RequiredOverdue, 0};
@@ -46,6 +47,14 @@ Result evaluate(const QString& appVersion, const QString& latestTag, const Notic
     if (compareLatestTag && !latestTag.isEmpty() && compare(app, parseVersion(latestTag)) < 0)
         return {State::UpdateAvailable, -1};
     return {};
+}
+
+std::optional<quint32> parseReleaseActivationHeight(const QJsonObject& consensusInfo) {
+    const QJsonValue v = consensusInfo.value(QStringLiteral("release_activation_height"));
+    if (!v.isDouble()) return std::nullopt;
+    const double h = v.toDouble();
+    if (!(h >= 1 && h < 4294967295.0)) return std::nullopt;
+    return quint32(h);
 }
 
 QString stateName(State s) {

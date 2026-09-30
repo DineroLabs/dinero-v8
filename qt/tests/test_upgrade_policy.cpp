@@ -16,16 +16,27 @@ private Q_SLOTS:
         QVERIFY(!UpgradePolicy::parseVersion("8.x.1").valid());
         QCOMPARE(UpgradePolicy::compare(UpgradePolicy::parseVersion("8.1.9"), UpgradePolicy::parseVersion("8.1.12")), -1);
     }
+    void nodeReleaseHeightParsing() {
+        QCOMPARE(UpgradePolicy::parseReleaseActivationHeight(QJsonObject{{"release_activation_height", 125000}}),
+                 std::optional<quint32>(125000));
+        QCOMPARE(UpgradePolicy::parseReleaseActivationHeight(QJsonObject{{"release_activation_height", 4294967295.0}}),
+                 std::optional<quint32>());  // node's "unset" sentinel
+        QCOMPARE(UpgradePolicy::parseReleaseActivationHeight(QJsonObject{{"release_activation_height", 0}}),
+                 std::optional<quint32>());
+        QCOMPARE(UpgradePolicy::parseReleaseActivationHeight(QJsonObject{{"release_activation_height", "125000"}}),
+                 std::optional<quint32>());
+        QCOMPARE(UpgradePolicy::parseReleaseActivationHeight(QJsonObject{}), std::optional<quint32>());
+    }
     void sharedVectors() {
         QFile f(QStringLiteral(UPGRADE_VECTORS));
         QVERIFY(f.open(QIODevice::ReadOnly));
         const QByteArray bytes = f.readAll();
         // Must equal the DineroDPI copy (DineroDPI/test-vectors/network_upgrade_policy_v1.json).
         QCOMPARE(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
-                 QByteArray("2791fbd9800cac94ab80898578f11ceea8564527506d5d21f1e9642339b31dec"));
+                 QByteArray("b31290b411150f565f57e712f912ba0ffbc5b536f8ccc4f29286af7b86696ac5"));
         const auto root = QJsonDocument::fromJson(bytes).object();
         const auto cases = root["cases"].toArray();
-        QVERIFY(cases.size() >= 16);
+        QVERIFY(cases.size() >= 19);
         for (const auto& cv : cases) {
             const auto c = cv.toObject();
             const auto notice = c["notice"].isObject()

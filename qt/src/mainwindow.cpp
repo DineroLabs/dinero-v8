@@ -6107,10 +6107,7 @@ void MainWindow::onRpcResult(const QString& method, const QJsonValue& result) {
     }
   }
   else if (method == "getconsensusinfo") {
-    const QJsonValue h = result.toObject().value("release_activation_height");
-    nodeReleaseHeight_.reset();
-    if (h.isDouble() && h.toDouble() >= 1 && h.toDouble() <= 4294967295.0)
-      nodeReleaseHeight_ = quint32(h.toDouble());
+    nodeReleaseHeight_ = UpgradePolicy::parseReleaseActivationHeight(result.toObject());
     evaluateUpgradeBanner();
   }
   else if (method == "blockchain.getinfo") {
@@ -8464,13 +8461,8 @@ void MainWindow::startUpdateChecks() {
 void MainWindow::evaluateUpgradeBanner() {
   if (!upgradeBanner_) return;
   const quint32 tip = quint32(qMax(0, cachedHeight_));
-  auto r = UpgradePolicy::evaluate(QStringLiteral(DINERO_QT_VERSION), latestReleaseTag_, upgradeNotice_, tip,
-                                   nodeReleaseHeight_);
-  // If peers have been gone for 10 minutes while an upgrade is required, the
-  // network has most likely moved on without this version.
-  const bool peersGone = zeroPeersSinceMs_ > 0 &&
-                         QDateTime::currentMSecsSinceEpoch() - zeroPeersSinceMs_ >= 10LL * 60 * 1000;
-  if (r.state == UpgradePolicy::State::UpdateRequired && peersGone) r = {UpgradePolicy::State::RequiredOverdue, 0};
+  const auto r = UpgradePolicy::evaluate(QStringLiteral(DINERO_QT_VERSION), latestReleaseTag_, upgradeNotice_, tip,
+                                         nodeReleaseHeight_);
   quint32 activation = upgradeNotice_.present ? upgradeNotice_.activationHeight
                                               : (nodeReleaseHeight_ ? *nodeReleaseHeight_ : 0);
   if (r.state == UpgradePolicy::State::ScheduledReady && nodeReleaseHeight_) activation = *nodeReleaseHeight_;
@@ -16084,8 +16076,6 @@ void MainWindow::updateNetworkInfo(const QJsonObject& networkInfo) {
   cachedNetworkInfo_ = networkInfo;
 
   const int connections = networkInfo["connections"].toInt(0);
-  if (connections > 0) zeroPeersSinceMs_ = 0;
-  else if (zeroPeersSinceMs_ == 0) zeroPeersSinceMs_ = QDateTime::currentMSecsSinceEpoch();
   const int inbound = networkInfo["connections_in"].toInt(0);
   const int outbound = networkInfo["connections_out"].toInt(0);
   const bool networkActive = networkInfo["networkactive"].toBool(false);

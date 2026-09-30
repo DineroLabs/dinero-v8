@@ -17,13 +17,19 @@ QUrl UpdateChecker::defaultNoticeUrl() {
 UpdateChecker::UpdateChecker(QNetworkAccessManager* nam, QUrl releaseUrl, QUrl noticeUrl, QObject* parent)
     : QObject(parent), nam_(nam), releaseUrl_(std::move(releaseUrl)), noticeUrl_(std::move(noticeUrl)) {}
 
-void UpdateChecker::fetchJson(const QUrl& url, std::function<void(const QJsonDocument&)> done) {
+QNetworkRequest UpdateChecker::makeRequest(const QUrl& url) {
     QNetworkRequest req(url);
     req.setRawHeader("Accept", "application/vnd.github+json");
     req.setRawHeader("User-Agent", "dinero-qt");
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    req.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
+    req.setAttribute(QNetworkRequest::CookieSaveControlAttribute, QNetworkRequest::Manual);
     req.setTransferTimeout(10000);
-    QNetworkReply* reply = nam_->get(req);
+    return req;
+}
+
+void UpdateChecker::fetchJson(const QUrl& url, std::function<void(const QJsonDocument&)> done) {
+    QNetworkReply* reply = nam_->get(makeRequest(url));
     connect(reply, &QNetworkReply::finished, this, [reply, done]() {
         reply->deleteLater();
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();

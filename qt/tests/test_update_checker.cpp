@@ -2,6 +2,7 @@
 #include <QNetworkAccessManager>
 #include <QTemporaryDir>
 #include <QSignalSpy>
+#include <QNetworkRequest>
 #include "updatechecker.h"
 
 namespace {
@@ -37,6 +38,12 @@ private Q_SLOTS:
         QVERIFY(spy.wait(5000));
         QCOMPARE(spy.at(0).at(0).toString(), QString("v8.1.12"));
         QVERIFY(spy.at(0).at(1).toJsonObject().isEmpty());
+    }
+    void requestsCarryNoCookiesOrIdentity() {
+        const QNetworkRequest req = UpdateChecker::makeRequest(QUrl("https://example.invalid/x.json"));
+        QCOMPARE(req.attribute(QNetworkRequest::CookieLoadControlAttribute).toInt(), int(QNetworkRequest::Manual));
+        QCOMPARE(req.attribute(QNetworkRequest::CookieSaveControlAttribute).toInt(), int(QNetworkRequest::Manual));
+        QCOMPARE(req.rawHeader("User-Agent"), QByteArray("dinero-qt"));
     }
     void garbageEverywhereGivesNothing() {
         QTemporaryDir dir;

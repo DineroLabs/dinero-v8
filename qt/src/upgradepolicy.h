@@ -13,7 +13,7 @@ struct Version {
     int major = -1, minor = -1, patch = -1;
     bool valid() const { return major >= 0; }
 };
-Version parseVersion(const QString& s);           // "v8.1.12-metal-fix1" → 8.1.12; "unknown" → invalid
+Version parseVersion(const QString& s);           // "v8.1.12-metal-fix1" / "8.1.12.1" → 8.1.12; "unknown" → invalid
 int compare(const Version& a, const Version& b);  // -1/0/1; an invalid side compares equal (never nags)
 
 enum class State { None, UpdateAvailable, UpdateRequired, RequiredOverdue, ScheduledReady };
@@ -32,4 +32,8 @@ Result evaluate(const QString& appVersion, const QString& latestTag /* empty = u
                 const Notice& notice, quint32 tip, std::optional<quint32> nodeReleaseHeight,
                 bool compareLatestTag = true);
 QString stateName(State s);
+
+// getconsensusinfo.release_activation_height; nullopt when absent, malformed,
+// zero or the node's "unset" sentinel (4294967295).
+std::optional<quint32> parseReleaseActivationHeight(const QJsonObject& consensusInfo);
 }  // namespace UpgradePolicy

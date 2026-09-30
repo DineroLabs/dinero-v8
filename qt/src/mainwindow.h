@@ -401,7 +401,6 @@ private:
   QString latestReleaseTag_;
   UpgradePolicy::Notice upgradeNotice_;
   std::optional<quint32> nodeReleaseHeight_;
-  qint64 zeroPeersSinceMs_ = 0;
   QTableWidget* tblPayrollRecipients_ = nullptr;
   QLabel* lblPayrollTotal_ = nullptr;
   QLineEdit* edtCustomScript_ = nullptr;
