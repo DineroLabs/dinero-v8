@@ -15,9 +15,9 @@ class ChainstateService;
 class WalletService;
 
 // Replays durable source work; wakeups contain no event or acknowledgment.
-// This is the wallet/readmission consumer only. It is deliberately not a
-// RuntimeBlockNotifications provider and is not installed by DaemonApp until
-// the remaining configured consumers have their own delivery owners.
+// This is the wallet/readmission consumer only, started by DaemonApp after
+// core recovery. It is not the production RuntimeBlockNotifications provider;
+// all remaining configured consumers still require their own delivery owners.
 class RuntimeDeliveryWorker final {
     struct WakeState;
 public:

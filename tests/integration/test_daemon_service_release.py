@@ -34,6 +34,13 @@ try:
             print(output[-20000:], flush=True)
             raise RuntimeError(f"{mode} daemon release failed: exit {result.returncode}")
         assert " real daemon services released" in output, "missing release assertion"
+        assert "PASS actual daemon initial durable scan without fabricated progress" in output
+        assert "PASS actual daemon delivery worker drained before dependency release" in output
+        assert output.count("Runtime delivery worker started; recovery remains asynchronous") == 1
+        assert output.count("phase=runtime_delivery_stopped") == 1
+        assert output.index("Runtime delivery worker started; recovery remains asynchronous") < output.index("Startup recovery complete; starting external listeners")
+        assert output.index("phase=runtime_delivery_stopped") < output.index("[DaemonApp] Stopping services...")
+        print("\n".join(line for line in output.splitlines() if line.startswith("PASS actual daemon ")), flush=True)
         print(f"PASS {mode} daemon ownership and repeated Stop", flush=True)
     success = True
 finally:

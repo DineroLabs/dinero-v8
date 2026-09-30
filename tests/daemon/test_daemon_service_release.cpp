@@ -1,4 +1,7 @@
 #include "daemon/daemon_app.h"
+#include "daemon/runtime_delivery_worker.h"
+#include <chrono>
+#include <thread>
 #include "daemon/services/chainstate_service.h"
 #include "daemon/config.h"
 #include "consensus/chainparams.h"
@@ -8,6 +11,13 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+namespace dinero {
+// Narrow inspection only; lifecycle is exercised exclusively through DaemonApp.
+struct RuntimeDeliveryStartupTestAccess {
+    static RuntimeDeliveryWorker* Worker(DaemonApp& app) {return app.runtime_delivery_worker_.get();}
+};
+}
 
 // The production entry point initializes this before DaemonApp::Init.
 namespace p2p { uint32_t g_magic = 0; }
@@ -58,7 +68,22 @@ int main(int argc, char** argv) try {
         watch("block_relay", ctx.block_relay);
         watch("tx_relay", ctx.tx_relay);
         if (observed.size() < 20) throw std::runtime_error("daemon graph was not initialized");
+        if (dinero::RuntimeDeliveryStartupTestAccess::Worker(app))
+            throw std::runtime_error("delivery worker started before daemon Start");
         if (!app.Start()) throw std::runtime_error("daemon Start failed");
+        auto* delivery=dinero::RuntimeDeliveryStartupTestAccess::Worker(app);
+        if (!delivery)throw std::runtime_error("daemon omitted delivery worker");
+        auto wake=delivery->CaptureWakeHandle();
+        const auto end=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+        auto report=delivery->Snapshot();
+        while (report.slices==0 && std::chrono::steady_clock::now()<end) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));report=delivery->Snapshot();
+        }
+        if (!wake.Running() || !report.running || !report.slices)
+            throw std::runtime_error("daemon worker did not perform its initial durable scan");
+        if (report.wallet_head || report.reorg_head || report.intents || report.admission_attempts)
+            throw std::runtime_error("fresh daemon invented runtime recovery progress");
+        std::cout << "PASS actual daemon initial durable scan without fabricated progress\n";
         {
             auto index=dinero::ChainstateService::AcquireWalletIndexUse(ctx.chainstate);
             if (&index->Index()!=ctx.chainstate->utxoIndex())
@@ -68,6 +93,11 @@ int main(int argc, char** argv) try {
             if (!refused) throw std::runtime_error("owned wallet index did not prevent same-thread shutdown");
         }
         app.Stop();
+        if (dinero::RuntimeDeliveryStartupTestAccess::Worker(app) || wake.Running())
+            throw std::runtime_error("daemon retained running delivery worker after Stop");
+        wake.RequestReplay(); // A retained mailbox cannot restart a stopped worker.
+        if (wake.Running())throw std::runtime_error("stopped delivery mailbox restarted worker");
+        std::cout << "PASS actual daemon delivery worker drained before dependency release\n";
         bool stopped=false;
         try { auto index=dinero::ChainstateService::AcquireWalletIndexUse(ctx.chainstate); }
         catch (const std::runtime_error&) { stopped=true; }

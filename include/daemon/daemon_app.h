@@ -22,6 +22,8 @@ class WatchRegistrationServer;  // Phase 9.3: Watch registration server
 }
 class ChainDB;
 class TxOrphanPool;
+class RuntimeDeliveryWorker;
+struct RuntimeDeliveryStartupTestAccess;
 }
 
 namespace dinero {
@@ -75,6 +77,7 @@ public:
     DaemonContext& GetContext() { return ctx_; }
 
 private:
+    friend struct RuntimeDeliveryStartupTestAccess;
     DaemonContext ctx_;
     std::vector<std::shared_ptr<IService>> services_;
     bool started_ = false;
@@ -119,6 +122,10 @@ private:
 
     // Transaction orphan pool (lifetime owned by DaemonApp)
     std::unique_ptr<TxOrphanPool> orphan_pool_owned_;
+
+    // Started after core recovery and joined before any dependency teardown.
+    // This worker observes durable prefixes; it is not all-consumer readiness.
+    std::unique_ptr<RuntimeDeliveryWorker> runtime_delivery_worker_;
 
     // Pool accounting runtime (optional)
     std::shared_ptr<pool::PoolManager> pool_manager_runtime_;

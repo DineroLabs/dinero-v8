@@ -4,6 +4,7 @@
 #include "daemon/utreexo_tx_payload.h"
 #include "consensus/csn_replay_data.h"
 #include "daemon/daemon_app.h"
+#include "daemon/runtime_delivery_worker.h"
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
@@ -7232,6 +7233,22 @@ bool DaemonApp::Start() {
     }
 
     started_ = true;
+    // No selected-chain, wallet, pool or runtime owner is held here. Startup
+    // always scans durable work; a missing callback cannot suppress recovery.
+    // Missing keys/baselines remain deferred and never authorize enrollment.
+    try {
+        runtime_delivery_worker_=std::make_unique<RuntimeDeliveryWorker>(ctx_.chainstate,ctx_.wallet);
+        runtime_delivery_worker_->Start();
+        std::cout << "[DaemonApp] Runtime delivery worker started; recovery remains asynchronous" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "[DaemonApp] Runtime delivery worker startup failed: " << e.what() << std::endl;
+        Stop();
+        return false;
+    } catch (...) {
+        std::cerr << "[DaemonApp] Runtime delivery worker startup failed" << std::endl;
+        Stop();
+        return false;
+    }
     std::cout << "[DaemonApp] Startup recovery complete; starting external listeners..." << std::endl;
 
     if (ctx_.rpc) {
@@ -7404,6 +7421,15 @@ void DaemonApp::Stop() {
 
     const auto shutdown_start = ShutdownClock::now();
     LogShutdownPhase("interrupting", shutdown_start, "DaemonApp::Stop entered");
+
+    // Stop and release the worker while its source, wallet and admission
+    // dependencies are alive. Join outside all consumer and selected owners.
+    // Prepared notification handoffs own only a stopped wake mailbox.
+    if (runtime_delivery_worker_) {
+        runtime_delivery_worker_->Stop();
+        runtime_delivery_worker_.reset();
+        LogShutdownPhase("runtime_delivery_stopped", shutdown_start, "durable delivery worker joined");
+    }
 
     // Close/drain raw-context vault dispatch while every daemon dependency is
     // still alive. No wallet/chain/service owner is held here. A reentrant

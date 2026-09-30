@@ -578,6 +578,13 @@ jobs:
           if sorted(re.findall(r'Test\s+#\d+:\s+(\S+)\s+\.+\s+Passed',log))!=sorted(expected):
               raise SystemExit('Daemon mempool lifecycle cases did not complete')
           PYTEST
+          python3 - <<'PYDELIVERY'
+          from pathlib import Path
+          text=Path('orchard-daemon-mempool-jobs-execution.log').read_text()
+          for marker in ['PASS actual daemon initial durable scan without fabricated progress',
+                         'PASS actual daemon delivery worker drained before dependency release']:
+              assert text.count(marker)==2, (marker,text.count(marker))
+          PYDELIVERY
       - name: Require and execute mempool service operation ownership
         run: |
           ctest --test-dir build-orchard-root -R '^MempoolServiceOwner$' --show-only=json-v1 > orchard-mempool-service-owner-inventory.json
