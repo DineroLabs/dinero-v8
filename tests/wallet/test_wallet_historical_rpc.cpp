@@ -564,3 +564,5 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
 #include "vault_reservation_metrics_checks.h"
 
 #include "wallet_pool_request_checks.h"
+
+#include "wallet_pool_origin_checks.h"

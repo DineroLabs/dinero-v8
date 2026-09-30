@@ -2656,6 +2656,24 @@ jobs:
           for case in ['RecordedRoundWinsOverUnrelatedMatchingBlockNumber','MissingForeignAndDuplicateRoundRefuseBeforeAllocationWrites','CompleteTypedContributionsAndReadErrors','CallerTransactionAndCommitRefusalPreserveOwners']:
               assert log.count('[       OK ] PoolRoundOwner.'+case+' (')==1
           PYROUND
+      - name: Require retained pool allocation references
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletPoolOrigins$' --show-only=json-v1 > orchard-pool-origins-inventory.json
+          python3 - <<'PYPOOLREFS'
+          import json
+          tests=json.load(open('orchard-pool-origins-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='WalletPoolOrigins'
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYPOOLREFS
+          ctest --test-dir build-orchard-root -R '^WalletPoolOrigins$' --verbose --no-tests=error --output-log orchard-pool-origins-execution.log
+          python3 - <<'PYPOOLREFS'
+          from pathlib import Path
+          log=Path('orchard-pool-origins-execution.log').read_text()
+          for case in ['WalletPoolOriginsOwner.ExactBatchReferencesAndReopen', 'WalletPoolOriginsOwner.RegroupedOrMalformedReferencesRefuse', 'WalletPoolOriginsDispatch.UnknownOutcomeAndRegroupRefusal', 'WalletPoolOriginsDispatch.StrictReferenceJsonHasNoPaymentEffects']:
+              assert log.count('[       OK ] '+case+' (')==1
+          PYPOOLREFS
+
       - name: Require retained pool payment request domain
         run: |
           ctest --test-dir build-orchard-root -R '^WalletPoolRequest$' --show-only=json-v1 > orchard-pool-request-inventory.json
@@ -3500,6 +3518,8 @@ jobs:
             orchard-pool-round-execution.log
             orchard-pool-request-inventory.json
             orchard-pool-request-execution.log
+            orchard-pool-origins-inventory.json
+            orchard-pool-origins-execution.log
             orchard-request-owner-inventory.json
             orchard-request-owner-execution.log
             orchard-request-dispatch-inventory.json

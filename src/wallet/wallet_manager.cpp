@@ -3499,6 +3499,14 @@ void ValidatePaymentRequest(const PendingPaymentIntent& intent) {
         request.audit_context.size() > 4096 || request.audit_context.find('\0') != std::string::npos ||
         intent.label.find('\0') != std::string::npos)
         throw std::runtime_error("Payment request binding invalid");
+    if (request.pool_origins.size()>256 ||
+        (!request.pool_origins.empty() && request.domain!=PendingPaymentRequestDomain::PoolPayout))
+        throw std::runtime_error("Pool allocation reference domain or capacity invalid");
+    for(size_t i=0;i<request.pool_origins.size();++i) {
+        if(!nonzero(request.pool_origins[i]) ||
+           (i && !(request.pool_origins[i-1]<request.pool_origins[i])))
+            throw std::runtime_error("Pool allocation references must be nonzero, sorted and unique");
+    }
     for (const auto& recipient : PaymentRecipients(intent)) (void)PaymentScript(recipient.address);
     (void)PaymentIntentTotal(intent);
 }
@@ -3515,7 +3523,24 @@ std::optional<PendingPayment> FindPaymentRequestInRecords(
     std::optional<PendingPayment> found;
     const auto identity = PaymentRequestIdentity(*intent.request);
     for (const auto& record : records) {
-        if (!record.intent.request || PaymentRequestIdentity(*record.intent.request) != identity) continue;
+        if (!record.intent.request) continue;
+        const auto& prior=*record.intent.request;
+        const bool same=PaymentRequestIdentity(prior)==identity;
+        if(intent.request->domain==PendingPaymentRequestDomain::PoolPayout &&
+           prior.domain==PendingPaymentRequestDomain::PoolPayout) {
+            // Both vectors are canonical. A new request ID, owner or batch
+            // cannot turn an already-retained allocation into a new payment.
+            const auto& incoming=intent.request->pool_origins;
+            const auto& existing=prior.pool_origins;
+            size_t i=0,j=0;bool overlap=false;
+            while(i<incoming.size() && j<existing.size()) {
+                if(incoming[i]==existing[j]) {overlap=true;break;}
+                if(incoming[i]<existing[j])++i;else ++j;
+            }
+            if(overlap && (!same || record.intent!=intent))
+                throw std::runtime_error("Pool allocation already belongs to a retained payment");
+        }
+        if(!same)continue;
         if (found || record.intent != intent)
             throw std::runtime_error("Retained payment request conflicts with supplied intent");
         found = record;
@@ -3565,8 +3590,12 @@ std::string EncodePayments(const std::string& identity,const std::vector<Pending
     const bool requests = std::any_of(records.begin(), records.end(), [](const auto& p) {
         return p.intent.request.has_value();
     });
-    std::string out=requests?"DNPP03":(batch?"DNPP02":"DNPP01");PaymentField(out,identity);PaymentU64(out,records.size());
+    const bool origins=std::any_of(records.begin(),records.end(),[](const auto& p) {
+        return p.intent.request && !p.intent.request->pool_origins.empty();
+    });
+    std::string out=origins?"DNPP04":(requests?"DNPP03":(batch?"DNPP02":"DNPP01"));PaymentField(out,identity);PaymentU64(out,records.size());
     std::set<std::string> txids,reservations,request_ids;
+    std::set<std::array<uint8_t,32>> retained_origins;
     for(const auto& p:records) {
         ValidatePayment(p);
         if(!txids.insert(p.txid).second)throw std::runtime_error("Duplicate payment body");
@@ -3589,6 +3618,14 @@ std::string EncodePayments(const std::string& identity,const std::vector<Pending
                 PaymentField(out, std::string_view(reinterpret_cast<const char*>(request.id.data()), request.id.size()));
                 PaymentU64(out, request.fee_rate_hint);PaymentU64(out, request.maximum_fee_una);
                 PaymentField(out, request.audit_context);
+                if(origins) {
+                    PaymentU64(out,request.pool_origins.size());
+                    for(const auto& origin:request.pool_origins) {
+                        if(!retained_origins.insert(origin).second)
+                            throw std::runtime_error("Pool allocation retained more than once");
+                        PaymentField(out,std::string_view(reinterpret_cast<const char*>(origin.data()),origin.size()));
+                    }
+                }
             }
         }
         PaymentU64(out,p.fee_una);
@@ -3603,7 +3640,8 @@ std::string EncodePayments(const std::string& identity,const std::vector<Pending
     return out;
 }
 std::vector<PendingPayment> DecodePayments(const std::string& plain,const std::string& identity) {
-    const bool requests = plain.substr(0,6)=="DNPP03";
+    const bool origins = plain.substr(0,6)=="DNPP04";
+    const bool requests = origins || plain.substr(0,6)=="DNPP03";
     const bool batch = requests || plain.substr(0,6)=="DNPP02";
     if(plain.size()>kPaymentBytes || (!batch && plain.substr(0,6)!="DNPP01"))throw std::runtime_error("Payment format invalid");
     PaymentReader r{std::string_view(plain).substr(6)};
@@ -3630,7 +3668,17 @@ std::vector<PendingPayment> DecodePayments(const std::string& plain,const std::s
                 std::copy(owner.begin(), owner.end(), request.owner.begin());
                 std::copy(id.begin(), id.end(), request.id.begin());
                 request.fee_rate_hint = r.U64();request.maximum_fee_una = r.U64();
-                request.audit_context = r.Field();p.intent.request = std::move(request);
+                request.audit_context = r.Field();
+                if(origins) {
+                    const auto count=r.U64();
+                    if(count>256)throw std::runtime_error("Pool allocation reference capacity exceeded");
+                    for(uint64_t j=0;j<count;++j) {
+                        const auto bytes=r.Field();std::array<uint8_t,32> origin{};
+                        if(bytes.size()!=origin.size())throw std::runtime_error("Pool allocation reference framing invalid");
+                        std::copy(bytes.begin(),bytes.end(),origin.begin());request.pool_origins.push_back(origin);
+                    }
+                }
+                p.intent.request = std::move(request);
             }
         }
         p.fee_una=r.U64();

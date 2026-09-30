@@ -3291,7 +3291,9 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             };
             fields(params,{"recipients","request"});
             const auto& binding=params["request"];
-            fields(binding,{"domain","owner","id","fee_rate_hint","maximum_fee_una","audit_context"});
+            std::vector<std::string> request_fields={"domain","owner","id","fee_rate_hint","maximum_fee_una","audit_context"};
+            if(binding.isMember("pool_origins"))request_fields.push_back("pool_origins");
+            fields(binding,request_fields);
             if(!binding["domain"].isString() ||
                (binding["domain"].asString()!="vault_withdrawal" && binding["domain"].asString()!="pool_payout") ||
                !binding["owner"].isString() || !binding["id"].isString() || !binding["audit_context"].isString())
@@ -3308,6 +3310,19 @@ static din::Json SendManyWithWalletOwner(const ExecutionContext& ctx, const din:
             request.fee_rate_hint=integer(binding["fee_rate_hint"]);
             request.maximum_fee_una=integer(binding["maximum_fee_una"]);
             request.audit_context=binding["audit_context"].asString();
+            if(binding.isMember("pool_origins")) {
+                const auto& origins=binding["pool_origins"];
+                if(request.domain!=dinero::PendingPaymentRequestDomain::PoolPayout ||
+                   !origins.isArray() || origins.empty() || origins.size()>256)
+                    throw std::runtime_error("Pool allocation reference list invalid");
+                for(const auto& value:origins) {
+                    std::vector<uint8_t> bytes;std::array<uint8_t,32> origin{};
+                    if(!value.isString() || value.asString().size()!=64 ||
+                       !util::unhex(value.asString(),bytes) || bytes.size()!=origin.size())
+                        throw std::runtime_error("Pool allocation reference encoding invalid");
+                    std::copy(bytes.begin(),bytes.end(),origin.begin());request.pool_origins.push_back(origin);
+                }
+            }
             fee_rate=static_cast<double>(request.fee_rate_hint ? request.fee_rate_hint : 1);
             request_binding=std::move(request);
             if(!params["recipients"].isArray() || params["recipients"].empty() || params["recipients"].size()>4096)
@@ -7900,6 +7915,11 @@ din::Json rpc_context_wallet_listpendingpayments(const ExecutionContext& ctx,con
                 binding["fee_rate_hint"] = static_cast<din::Json::UInt64>(request.fee_rate_hint);
                 binding["maximum_fee_una"] = static_cast<din::Json::UInt64>(request.maximum_fee_una);
                 binding["audit_context"] = request.audit_context;
+                if(!request.pool_origins.empty()) {
+                    binding["pool_origins"]=din::Json(Json::arrayValue);
+                    for(const auto& origin:request.pool_origins)
+                        binding["pool_origins"].append(util::hex(std::vector<uint8_t>(origin.begin(),origin.end())));
+                }
                 row["request"] = std::move(binding);
             }
             row["label"]=p.intent.label;row["created_at"]=static_cast<din::Json::Int64>(p.created_at);row["state"]="retained";

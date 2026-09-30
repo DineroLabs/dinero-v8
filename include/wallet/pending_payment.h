@@ -17,6 +17,11 @@ struct PendingPaymentRequest {
     uint64_t fee_rate_hint = 0;
     uint64_t maximum_fee_una = 0;
     std::string audit_context;
+    // Sorted, unique, nonzero allocation references for a PoolPayout batch.
+    // These bind an already-established caller operation to the retained body;
+    // they do not certify a pool allocation or authorize creating missing IDs.
+    // Empty retains the historical request format and narrower contract.
+    std::vector<std::array<uint8_t,32>> pool_origins;
     bool operator==(const PendingPaymentRequest&) const = default;
 };
 // Intent supplied by a wallet-created payment RPC, not arbitrary raw signing.
