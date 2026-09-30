@@ -185,8 +185,14 @@ public:
     // Get current round
     std::optional<MiningRound> getCurrentRound();
 
-    // Get round by ID
+    // Capture the round and all contribution rows in one checked read snapshot.
+    // Missing returns nullopt; malformed/incomplete reads throw. A caller-owned
+    // transaction is read without being committed or rolled back.
     std::optional<MiningRound> getRound(uint64_t round_id);
+
+    // Resolve the existing rounds.block_id association and capture its complete
+    // round in that same read snapshot. Multiple associated rounds refuse.
+    std::optional<MiningRound> getRoundForBlock(uint64_t block_id);
 
     // Add difficulty to worker in round
     bool addWorkerDifficultyToRound(uint64_t round_id,

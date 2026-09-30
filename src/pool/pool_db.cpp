@@ -11,6 +11,7 @@
 #include <sstream>
 #include <ctime>
 #include <limits>
+#include <cmath>
 #include <stdexcept>
 
 namespace dinero {
@@ -2089,40 +2090,111 @@ std::vector<WorkerStats> PoolDB::getWorkersWithPendingBalance(uint64_t min_balan
 }
 
 std::optional<MiningRound> PoolDB::getRound(uint64_t round_id) {
-    std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
-    const char* sql = "SELECT * FROM rounds WHERE round_id = ?";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return std::nullopt;
-    }
-    sqlite3_bind_int64(stmt, 1, round_id);
-
-    std::optional<MiningRound> result;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        MiningRound round;
-        round.round_id = sqlite3_column_int64(stmt, 0);
-        round.block_id = sqlite3_column_int64(stmt, 1);
-        round.total_shares = sqlite3_column_int64(stmt, 2);
-        round.total_difficulty = sqlite3_column_double(stmt, 3);
-        round.started_at = sqlite3_column_int64(stmt, 4);
-        round.ended_at = sqlite3_column_int64(stmt, 5);
-        result = round;
-
-        // Load worker difficulties from round_shares table
-        const char* shares_sql = "SELECT worker_id, difficulty_sum FROM round_shares WHERE round_id = ?";
-        sqlite3_stmt* shares_stmt;
-        if (sqlite3_prepare_v2(db_, shares_sql, -1, &shares_stmt, nullptr) == SQLITE_OK) {
-            sqlite3_bind_int64(shares_stmt, 1, round_id);
-            while (sqlite3_step(shares_stmt) == SQLITE_ROW) {
-                std::string worker_id = reinterpret_cast<const char*>(sqlite3_column_text(shares_stmt, 0));
-                double diff = sqlite3_column_double(shares_stmt, 1);
-                result->worker_difficulty[worker_id] = diff;
-            }
-            sqlite3_finalize(shares_stmt);
+    std::lock_guard<std::recursive_mutex> connection_lock(connection_mutex_);
+    if(!db_ || !round_id || round_id>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max()))
+        throw std::runtime_error("Invalid pool round identity");
+    const auto exec=[&](const char* sql) {
+        if(sqlite3_exec(db_,sql,nullptr,nullptr,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("Pool round read transaction unavailable");
+    };
+    const bool owns=sqlite3_get_autocommit(db_)!=0;
+    if(owns)exec("BEGIN");
+    try {
+        const auto prepare=[&](const char* sql) {
+            sqlite3_stmt* raw=nullptr;
+            const int rc=sqlite3_prepare_v2(db_,sql,-1,&raw,nullptr);
+            std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> stmt(raw,sqlite3_finalize);
+            if(rc!=SQLITE_OK || sqlite3_bind_int64(raw,1,static_cast<sqlite3_int64>(round_id))!=SQLITE_OK)
+                throw std::runtime_error("Pool round statement unavailable");
+            return stmt;
+        };
+        const auto integer=[](sqlite3_stmt* q,int column) -> uint64_t {
+            if(sqlite3_column_type(q,column)!=SQLITE_INTEGER || sqlite3_column_int64(q,column)<0)
+                throw std::runtime_error("Invalid pool round integer");
+            return static_cast<uint64_t>(sqlite3_column_int64(q,column));
+        };
+        const auto number=[](sqlite3_stmt* q,int column) {
+            const int type=sqlite3_column_type(q,column);const double value=sqlite3_column_double(q,column);
+            if((type!=SQLITE_FLOAT && type!=SQLITE_INTEGER) || !std::isfinite(value) || value<0)
+                throw std::runtime_error("Invalid pool round difficulty");
+            return value;
+        };
+        std::optional<MiningRound> result;
+        {
+            auto q=prepare("SELECT round_id,block_id,total_shares,total_difficulty,started_at,ended_at FROM rounds WHERE round_id=?");
+            const int rc=sqlite3_step(q.get());
+            if(rc==SQLITE_ROW) {
+                MiningRound round;round.round_id=integer(q.get(),0);round.block_id=integer(q.get(),1);
+                round.total_shares=integer(q.get(),2);round.total_difficulty=number(q.get(),3);
+                round.started_at=static_cast<int64_t>(integer(q.get(),4));round.ended_at=static_cast<int64_t>(integer(q.get(),5));
+                if(round.round_id!=round_id || sqlite3_step(q.get())!=SQLITE_DONE)
+                    throw std::runtime_error("Incomplete pool round header");
+                result=std::move(round);
+            } else if(rc!=SQLITE_DONE)throw std::runtime_error("Pool round header read failed");
         }
+        if(result) {
+            auto q=prepare("SELECT worker_id,difficulty_sum FROM round_shares WHERE round_id=? ORDER BY worker_id");int rc;
+            while((rc=sqlite3_step(q.get()))==SQLITE_ROW) {
+                if(sqlite3_column_type(q.get(),0)!=SQLITE_TEXT)throw std::runtime_error("Invalid pool round worker type");
+                const auto* data=sqlite3_column_text(q.get(),0);const int size=sqlite3_column_bytes(q.get(),0);
+                if(!data || size<=0)throw std::runtime_error("Missing pool round worker");
+                std::string worker(reinterpret_cast<const char*>(data),static_cast<size_t>(size));
+                if(worker.find('\0')!=std::string::npos || !result->worker_difficulty.emplace(worker,number(q.get(),1)).second)
+                    throw std::runtime_error("Invalid pool round worker identity");
+            }
+            if(rc!=SQLITE_DONE)throw std::runtime_error("Incomplete pool round contributions");
+        }
+        if(owns)exec("COMMIT");
+        return result;
+    } catch(...) {
+        if(owns && !sqlite3_get_autocommit(db_) &&
+           sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db_))std::terminate();
+        throw;
     }
-    sqlite3_finalize(stmt);
-    return result;
+}
+
+std::optional<MiningRound> PoolDB::getRoundForBlock(uint64_t block_id) {
+    std::lock_guard<std::recursive_mutex> connection_lock(connection_mutex_);
+    if(!db_ || !block_id || block_id>static_cast<uint64_t>(std::numeric_limits<sqlite3_int64>::max()))
+        throw std::runtime_error("Invalid pool block identity for round capture");
+    const auto exec=[&](const char* sql) {
+        if(sqlite3_exec(db_,sql,nullptr,nullptr,nullptr)!=SQLITE_OK)
+            throw std::runtime_error("Pool block-round read transaction unavailable");
+    };
+    const bool owns=sqlite3_get_autocommit(db_)!=0;
+    if(owns)exec("BEGIN");
+    try {
+        std::optional<uint64_t> id;
+        {
+            sqlite3_stmt* raw=nullptr;
+            const int rc=sqlite3_prepare_v2(db_,"SELECT round_id FROM rounds WHERE block_id=? ORDER BY round_id",-1,&raw,nullptr);
+            std::unique_ptr<sqlite3_stmt,decltype(&sqlite3_finalize)> q(raw,sqlite3_finalize);
+            if(rc!=SQLITE_OK || sqlite3_bind_int64(raw,1,static_cast<sqlite3_int64>(block_id))!=SQLITE_OK)
+                throw std::runtime_error("Pool block-round association unreadable");
+            const int step=sqlite3_step(raw);
+            if(step==SQLITE_ROW) {
+                if(sqlite3_column_type(raw,0)!=SQLITE_INTEGER || sqlite3_column_int64(raw,0)<=0)
+                    throw std::runtime_error("Invalid pool block-round association");
+                id=static_cast<uint64_t>(sqlite3_column_int64(raw,0));
+                if(sqlite3_step(raw)!=SQLITE_DONE)
+                    throw std::runtime_error("Duplicate or incomplete pool block-round association");
+            } else if(step!=SQLITE_DONE)throw std::runtime_error("Pool block-round association read failed");
+        }
+        std::optional<MiningRound> result;
+        if(id) {
+            // getRound participates in this existing transaction; it cannot
+            // publish a round from a different SQLite snapshot.
+            result=getRound(*id);
+            if(!result || result->round_id!=*id || result->block_id!=block_id)
+                throw std::runtime_error("Pool block-round owner changed during capture");
+        }
+        if(owns)exec("COMMIT");
+        return result;
+    } catch(...) {
+        if(owns && !sqlite3_get_autocommit(db_) &&
+           sqlite3_exec(db_,"ROLLBACK",nullptr,nullptr,nullptr)!=SQLITE_OK && !sqlite3_get_autocommit(db_))std::terminate();
+        throw;
+    }
 }
 
 } // namespace pool

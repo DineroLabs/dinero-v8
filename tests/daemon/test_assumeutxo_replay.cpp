@@ -751,3 +751,5 @@ int main(int argc, char** argv) {
 #include "vault_creation_anchor_checks.h"
 
 #include "pool_orphan_accounting_checks.h"
+
+#include "pool_round_owner_checks.h"

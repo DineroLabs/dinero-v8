@@ -43,10 +43,11 @@ std::vector<Payout> PayoutCalculator::calculatePROP(const PoolBlock& block) {
     std::vector<Payout> payouts;
 
     // Get the round associated with this block
-    auto round = db_.getRound(block.block_id);
-    if (!round) {
-        return payouts;  // No round data
-    }
+    if (!block.block_id)
+        throw std::runtime_error("PROP payout has no recorded block owner");
+    auto round = db_.getRoundForBlock(block.block_id);
+    if (!round || round->block_id != block.block_id)
+        throw std::runtime_error("PROP payout has no unique associated round");
 
     // Get distributable amount (after pool fee)
     uint64_t distributable = getDistributable(block.total_reward);

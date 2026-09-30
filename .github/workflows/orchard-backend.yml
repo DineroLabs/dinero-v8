@@ -2543,6 +2543,22 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require exact pool round ownership and complete contributions
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolRoundOwner$' --show-only=json-v1 > orchard-pool-round-inventory.json
+          python3 - <<'PYROUND'
+          import json
+          tests=json.load(open('orchard-pool-round-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolRoundOwner'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYROUND
+          ctest --test-dir build-orchard-root -R '^PoolRoundOwner$' --verbose --no-tests=error --output-log orchard-pool-round-execution.log
+          python3 - <<'PYROUND'
+          from pathlib import Path
+          log=Path('orchard-pool-round-execution.log').read_text()
+          for case in ['RecordedRoundWinsOverUnrelatedMatchingBlockNumber','MissingForeignAndDuplicateRoundRefuseBeforeAllocationWrites','CompleteTypedContributionsAndReadErrors','CallerTransactionAndCommitRefusalPreserveOwners']:
+              assert log.count('[       OK ] PoolRoundOwner.'+case+' (')==1
+          PYROUND
       - name: Require retained pool payment request domain
         run: |
           ctest --test-dir build-orchard-root -R '^WalletPoolRequest$' --show-only=json-v1 > orchard-pool-request-inventory.json
@@ -3371,6 +3387,8 @@ jobs:
             orchard-reservation-balance-execution.log
             orchard-pending-payment-inventory.json
             orchard-pending-payment-execution.log
+            orchard-pool-round-inventory.json
+            orchard-pool-round-execution.log
             orchard-pool-request-inventory.json
             orchard-pool-request-execution.log
             orchard-request-owner-inventory.json
