@@ -17,7 +17,7 @@ WalletSigningIdentity CaptureWalletSigningIdentity(WalletManager& wallet,const s
 }
 namespace {
 SignResult SignWalletTransactionOwned(WalletManager& manager,const WalletSigningIdentity& identity,
-                                     const UnsignedTransaction& input,const PendingPaymentIntent* payment) {
+                                     const UnsignedTransaction& input,const PendingPaymentIntent* payment,bool retain) {
     SignResult result;
     try {
         if(input.tx.vin.empty() || input.tx.vin.size()!=input.selected_utxos.size())
@@ -36,6 +36,8 @@ SignResult SignWalletTransactionOwned(WalletManager& manager,const WalletSigning
         auto pin=lease->CopyRecoverySeed(identity.session);
         if (payment && payment->request && lease->FindPaymentRequest(*pin, *payment))
             throw std::runtime_error("Payment request already retained; resolve its existing body");
+        if(payment && payment->request && input.fee>payment->request->maximum_fee_una)
+            throw std::runtime_error("Payment exceeds explicit request fee limit");
         auto transaction=input;
         wallet::WalletKeyProvider::Config config;
         struct ClearConfig {wallet::WalletKeyProvider::Config& c;~ClearConfig(){OPENSSL_cleanse(c.master_key.data(),c.master_key.size());}} clear_config{config};
@@ -68,7 +70,7 @@ SignResult SignWalletTransactionOwned(WalletManager& manager,const WalletSigning
             result.error=std::move(signed_result.error);
             return result;
         }
-        if(payment)lease->StagePayment(*pin,transaction,signed_result.signed_tx.tx,*payment);
+        if(payment && retain)lease->StagePayment(*pin,transaction,signed_result.signed_tx.tx,*payment);
         return signed_result;
     } catch(const std::exception& e) {
         result.error=e.what();return result;
@@ -77,7 +79,12 @@ SignResult SignWalletTransactionOwned(WalletManager& manager,const WalletSigning
 } // namespace
 SignResult SignWalletTransaction(WalletManager& manager,const WalletSigningIdentity& identity,
                                  const UnsignedTransaction& input) {
-    return SignWalletTransactionOwned(manager,identity,input,nullptr);
+    return SignWalletTransactionOwned(manager,identity,input,nullptr,false);
+}
+SignResult SignWalletRequestPreview(WalletManager& manager,const WalletSigningIdentity& identity,
+                                   const UnsignedTransaction& input,const PendingPaymentIntent& payment) {
+    if(!payment.request) {SignResult result;result.error="Explicit payment request required";return result;}
+    return SignWalletTransactionOwned(manager,identity,input,&payment,false);
 }
 std::optional<PendingPayment> FindRetainedWalletPayment(
     WalletManager& manager, const WalletSigningIdentity& identity, const PendingPaymentIntent& intent) {
@@ -90,6 +97,6 @@ std::optional<PendingPayment> FindRetainedWalletPayment(
 }
 SignResult SignAndStageWalletPayment(WalletManager& manager,const WalletSigningIdentity& identity,
                                      const UnsignedTransaction& input,const PendingPaymentIntent& payment) {
-    return SignWalletTransactionOwned(manager,identity,input,&payment);
+    return SignWalletTransactionOwned(manager,identity,input,&payment,true);
 }
 }

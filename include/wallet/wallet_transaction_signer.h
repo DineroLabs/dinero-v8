@@ -17,6 +17,11 @@ SignResult SignWalletTransaction(WalletManager&,const WalletSigningIdentity&,con
 // selected-wallet session throws. This API never generates another transaction.
 std::optional<PendingPayment> FindRetainedWalletPayment(
     WalletManager&, const WalletSigningIdentity&, const PendingPaymentIntent&);
+// Internal preflight signing for an explicit request. Rechecks absence under
+// the same key owner before signing and enforces its fee limit; no persistence
+// or submission occurs. Final staging must still recheck and commit the request.
+SignResult SignWalletRequestPreview(WalletManager&,const WalletSigningIdentity&,
+                                   const UnsignedTransaction&,const PendingPaymentIntent&);
 // A successful return requires the signed body and payment reservations to have
 // committed under the same signing owner, before any external submission.
 SignResult SignAndStageWalletPayment(WalletManager&,const WalletSigningIdentity&,

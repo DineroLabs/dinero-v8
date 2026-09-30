@@ -3240,7 +3240,8 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
 
     // params[0] = { "address1": amount1, "address2": amount2, ... }
     // params[1] = optional fee_rate
-    if (!params.isArray() || params.empty() || !params[0].isObject()) {
+    const bool requested = params.isObject();
+    if (!requested && (!params.isArray() || params.empty() || !params[0].isObject())) {
         result["error"] = "Usage: wallet.sendmany {\"address1\": amount1, \"address2\": amount2, ...} [fee_rate]";
         return result;
     }
@@ -3261,23 +3262,52 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         return result;
     }
 
-    if (!ctx.daemon->chainstate) {
-        result["error"] = "Chainstate service not available";
-        return result;
-    }
-
-    auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
-    if (!chainstate_service || !chainstate_service->utxoIndex()) {
-        result["error"] = "UTXO index not available";
-        return result;
-    }
-
     try {
         const auto signing_identity=dinero::CaptureWalletSigningIdentity(wallet_service->get(),ctx.walletName);
-        din::Json recipients_obj = params[0];
+        din::Json recipients_obj = requested ? din::Json() : params[0];
         double fee_rate = 1.0;
+        std::optional<dinero::PendingPaymentRequest> request_binding;
+        if (requested) {
+            const auto fields = [](const din::Json& object, std::vector<std::string> expected) {
+                if (!object.isObject()) throw std::runtime_error("Payment request requires an object");
+                auto actual = object.getMemberNames();std::sort(actual.begin(),actual.end());std::sort(expected.begin(),expected.end());
+                if (actual != expected) throw std::runtime_error("Payment request fields are incomplete or unknown");
+            };
+            const auto integer = [](const din::Json& value) -> uint64_t {
+                if ((value.type()!=::Json::intValue && value.type()!=::Json::uintValue) ||
+                    (value.type()==::Json::intValue && value.asInt64()<0))
+                    throw std::runtime_error("Payment request requires unsigned integer amounts and fees");
+                const auto amount=value.asUInt64();
+                if(amount>dinero::MAX_SUPPLY_UNA_CONST)throw std::runtime_error("Payment request integer exceeds supply");
+                return amount;
+            };
+            fields(params,{"recipients","request"});
+            const auto& binding=params["request"];
+            fields(binding,{"domain","owner","id","fee_rate_hint","maximum_fee_una","audit_context"});
+            if(!binding["domain"].isString() || binding["domain"].asString()!="vault_withdrawal" ||
+               !binding["owner"].isString() || !binding["id"].isString() || !binding["audit_context"].isString())
+                throw std::runtime_error("Payment request domain or identity type invalid");
+            dinero::PendingPaymentRequest request;
+            std::vector<uint8_t> owner,id;
+            const auto owner_hex=binding["owner"].asString(),id_hex=binding["id"].asString();
+            if(owner_hex.size()!=64 || id_hex.size()!=32 || !util::unhex(owner_hex,owner) || !util::unhex(id_hex,id) || owner.size()!=32 || id.size()!=16)
+                throw std::runtime_error("Payment request identity encoding invalid");
+            std::copy(owner.begin(),owner.end(),request.owner.begin());std::copy(id.begin(),id.end(),request.id.begin());
+            request.fee_rate_hint=integer(binding["fee_rate_hint"]);
+            request.maximum_fee_una=integer(binding["maximum_fee_una"]);
+            request.audit_context=binding["audit_context"].asString();
+            fee_rate=static_cast<double>(request.fee_rate_hint ? request.fee_rate_hint : 1);
+            request_binding=std::move(request);
+            if(!params["recipients"].isArray() || params["recipients"].empty() || params["recipients"].size()>4096)
+                throw std::runtime_error("Payment recipient list invalid");
+            for(const auto& recipient:params["recipients"]) {
+                fields(recipient,{"address","amount_una"});
+                if(!recipient["address"].isString())throw std::runtime_error("Payment recipient address type invalid");
+                (void)integer(recipient["amount_una"]);
+            }
+        }
 
-        if (params.size() >= 2) {
+        if (!requested && params.size() >= 2) {
             if (!params[1].isNumeric()) { result["error"] = "Invalid fee rate"; return result; }
             fee_rate = params[1].asDouble();
         }
@@ -3292,6 +3322,15 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
         std::vector<dinero::TransactionBuilder::Recipient> recipients;
         int64_t total_amount = 0;
 
+        if (requested) {
+            for (const auto& row : params["recipients"]) {
+                const auto amount=row["amount_una"].asUInt64();
+                if(!amount || amount>dinero::MAX_SUPPLY_UNA_CONST-static_cast<uint64_t>(total_amount))
+                    throw std::runtime_error("Payment recipient amount invalid");
+                recipients.push_back({row["address"].asString(),static_cast<int64_t>(amount)});
+                total_amount+=static_cast<int64_t>(amount);
+            }
+        } else {
         auto member_names = recipients_obj.getMemberNames();
         if (member_names.size() > 4096) { result["error"] = "Payment recipient capacity exceeded"; return result; }
         for (const auto& address : member_names) {
@@ -3304,9 +3343,39 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
             recipients.push_back({address, static_cast<int64_t>(amount_una)});
             total_amount += static_cast<int64_t>(amount_una);
         }
+        }
 
         if (recipients.empty()) {
             result["error"] = "No recipients specified";
+            return result;
+        }
+
+        dinero::PendingPaymentIntent intent{recipients.front().address, static_cast<uint64_t>(recipients.front().amount), ""};
+        for (size_t i = 1; i < recipients.size(); ++i)
+            intent.additional_recipients.push_back({recipients[i].address, static_cast<uint64_t>(recipients[i].amount)});
+        intent.request=request_binding;
+        if (intent.request) {
+            // Resolve the exact retained origin before chain access, new coin
+            // selection, address issuance, signing or transaction ingress.
+            const auto retained=dinero::FindRetainedWalletPayment(wallet_service->get(),signing_identity,intent);
+            if(retained) {
+                result["txid"]=retained->txid;result["hex"]=util::hex(retained->signed_body);
+                result["payment_retained"]=true;result["status"]="retained_request";
+                result["submitted_this_call"]=false;result["submission_status"]="not_attempted";
+                result["total_amount_una"]=static_cast<din::Json::UInt64>(total_amount);
+                result["fee_paid_una"]=static_cast<din::Json::UInt64>(retained->fee_una);
+                return result;
+            }
+        }
+
+        if (!ctx.daemon->chainstate) {
+            result["error"] = "Chainstate service not available";
+            return result;
+        }
+
+        auto chainstate_service = std::dynamic_pointer_cast<dinero::ChainstateService>(ctx.daemon->chainstate);
+        if (!chainstate_service || !chainstate_service->utxoIndex()) {
+            result["error"] = "UTXO index not available";
             return result;
         }
 
@@ -3480,7 +3549,12 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
             unsigned_tx.selected_utxos=build_result.selected_utxos;
             unsigned_tx.fee=build_result.fee;unsigned_tx.change_amount=build_result.change_amount;
             unsigned_tx.change_address=build_result.change_address;unsigned_tx.signals_rbf=build_result.is_rbf_enabled;
-            auto signed_result=dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
+            if(intent.request && static_cast<uint64_t>(unsigned_tx.fee)>intent.request->maximum_fee_una) {
+                result["error"]="Payment exceeds explicit request fee limit";return result;
+            }
+            auto signed_result=intent.request
+                ? dinero::SignWalletRequestPreview(wallet_service->get(),signing_identity,unsigned_tx,intent)
+                : dinero::SignWalletTransaction(wallet_service->get(),signing_identity,unsigned_tx);
             if(!signed_result.success){result["error"]="Transaction signing failed: "+signed_result.error;return result;}
             build_result.transaction=std::move(signed_result.signed_tx.tx);
 
@@ -3511,18 +3585,22 @@ din::Json rpc_context_wallet_sendmany(const ExecutionContext& ctx, const din::Js
             effective_fee_rate = std::max(effective_fee_rate * 2.0, effective_fee_rate + 1.0);
         }
 
-        dinero::PendingPaymentIntent intent{recipients.front().address, static_cast<uint64_t>(recipients.front().amount), ""};
-        for (size_t i = 1; i < recipients.size(); ++i)
-            intent.additional_recipients.push_back({recipients[i].address, static_cast<uint64_t>(recipients[i].amount)});
         auto retained = dinero::SignAndStageWalletPayment(wallet_service->get(), signing_identity, unsigned_tx, intent);
         if (!retained.success) { result["error"] = "Payment retention failed: " + retained.error; return result; }
         build_result.transaction = std::move(retained.signed_tx.tx);
         const std::string txid = build_result.transaction.GetTxid().AsUint256().GetHex();
         result["txid"] = txid;
         result["payment_retained"] = true;
+        if(intent.request) {
+            result["submitted_this_call"]=true;
+            result["submission_status"]="outcome_unknown";
+            result["total_amount_una"]=static_cast<din::Json::UInt64>(total_amount);
+            result["fee_paid_una"]=static_cast<din::Json::UInt64>(retained.signed_tx.fee);
+        }
         // Actual admission occurs exactly once, after durable ownership. A
         // concurrent policy/chain change cannot trigger another exposed body.
         const auto submitted = ctx.daemon->tx_ingress->Submit(build_result.transaction, dinero::TxOrigin::WALLET);
+        if(intent.request) result["submission_status"]=submitted.rejected()?"rejected":"accepted";
         if (submitted.rejected()) {
             result["error"] = "Retained payment rejected by mempool";
             result["reject_code"] = TxRejectCodeToString(submitted.code);

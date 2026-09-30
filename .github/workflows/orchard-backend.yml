@@ -2165,6 +2165,25 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletRequestOwner\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require and execute retained wallet request dispatch
+        run: |
+          ctest --test-dir build-orchard-root -R '^WalletRequestDispatch$' --show-only=json-v1 > orchard-request-dispatch-inventory.json
+          python3 - <<'PYTEST'
+          import json
+          tests=json.load(open('orchard-request-dispatch-inventory.json'))['tests']
+          if [t['name'] for t in tests]!=['WalletRequestDispatch'] or any(p['name']=='DISABLED' and p['value'] for t in tests for p in t.get('properties',[])):
+              raise SystemExit('Pending payment owner test missing or disabled')
+          if next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT') != 120:
+              raise SystemExit('Request owner deadline changed')
+          PYTEST
+          ctest --test-dir build-orchard-root -R '^WalletRequestDispatch$' --verbose --no-tests=error --output-log orchard-request-dispatch-execution.log
+          python3 - <<'PYTEST'
+          import re
+          log=open('orchard-request-dispatch-execution.log').read()
+          expected=['RetainOnceAndResolveWithoutChainOrIngress', 'RejectedSubmissionRetryRetainsSameBody', 'UnknownSubmissionRetryAndChangedPayloadRefuse', 'MalformedRequestAndFeeLimitHaveNoPaymentEffects', 'GuardedPreflightAndSelectedSessionRemainRequired']
+          if sorted(re.findall(r'\[       OK \] WalletRequestDispatch\.(\w+)',log))!=sorted(expected):
+              raise SystemExit('Pending payment owner cases did not complete exactly once')
+          PYTEST
       - name: Require and execute selected-wallet owned transaction signing
         run: |
           ctest --test-dir build-orchard-root -R '^WalletOwnedSigning$' --show-only=json-v1 > orchard-owned-signing-inventory.json
@@ -2885,6 +2904,8 @@ jobs:
             orchard-pending-payment-execution.log
             orchard-request-owner-inventory.json
             orchard-request-owner-execution.log
+            orchard-request-dispatch-inventory.json
+            orchard-request-dispatch-execution.log
             orchard-owned-signing-inventory.json
             orchard-owned-signing-execution.log
             orchard-peer-header-progress-inventory.json

@@ -551,5 +551,6 @@ TEST_F(WalletBatchRpc, SuccessfulSubmissionAndInvalidInputBeforeEffects) {
     result=rpc_context_wallet_sendmany(ctx,p);EXPECT_FALSE(result.isMember("error"))<<result.toStyledString();EXPECT_TRUE(result["payment_retained"].asBool());EXPECT_EQ(result["recipients"].asInt(),2);EXPECT_EQ(ingress->tests,1);EXPECT_EQ(ingress->submits,1);EXPECT_EQ(service->get().getPendingPayments().size(),1u);
 }
 #include "wallet_request_owner_checks.h"
+#include "wallet_request_dispatch_checks.h"
 
 }
