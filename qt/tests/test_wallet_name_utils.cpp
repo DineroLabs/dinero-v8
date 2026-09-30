@@ -64,6 +64,10 @@ void WalletNameUtilsTest::restoreErrorClassify() {
            RestoreErrorKind::NameExists);
   QCOMPARE(classifyRestoreError(QStringLiteral("Invalid BIP39 mnemonic (checksum failed)")), RestoreErrorKind::Other);
   QCOMPARE(classifyRestoreError(QString()), RestoreErrorKind::None);
+  // Recorded from a PR #813 daemon: same name with different capitals collides on
+  // case-insensitive disks and surfaces as a file error.
+  QCOMPARE(classifyRestoreError(QStringLiteral("Wallet restoration failed: Wallet database file already exists: /data/wallets/wallet_PROBE.db")),
+           RestoreErrorKind::NameExists);
 }
 
 QTEST_GUILESS_MAIN(WalletNameUtilsTest)

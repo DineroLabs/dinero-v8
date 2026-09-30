@@ -98,7 +98,8 @@ RestoreErrorKind classifyRestoreError(const QString& error) {
   const QString e = error.trimmed();
   if (e.isEmpty()) return RestoreErrorKind::None;
   if (e.startsWith(QStringLiteral("Wallet already exists"), Qt::CaseInsensitive) ||
-      e.contains(QStringLiteral("cannot be overwritten"), Qt::CaseInsensitive)) {
+      e.contains(QStringLiteral("cannot be overwritten"), Qt::CaseInsensitive) ||
+      e.contains(QStringLiteral("database file already exists"), Qt::CaseInsensitive)) {
     return RestoreErrorKind::NameExists;
   }
   return RestoreErrorKind::Other;
