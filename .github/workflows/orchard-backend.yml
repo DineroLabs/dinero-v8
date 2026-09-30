@@ -2544,6 +2544,22 @@ jobs:
           if sorted(re.findall(r'\[       OK \] WalletPendingPayment\.(\w+)',log))!=sorted(expected):
               raise SystemExit('Pending payment owner cases did not complete exactly once')
           PYTEST
+      - name: Require explicit pool funding settings and actual RPC owner
+        run: |
+          ctest --test-dir build-orchard-root -R '^PoolPaymentFunding$' --show-only=json-v1 > orchard-pool-payment-funding-inventory.json
+          python3 - <<'PYROUND'
+          import json
+          tests=json.load(open('orchard-pool-payment-funding-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='PoolPaymentFunding'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          PYROUND
+          ctest --test-dir build-orchard-root -R '^PoolPaymentFunding$' --verbose --no-tests=error --output-log orchard-pool-payment-funding-execution.log
+          python3 - <<'PYROUND'
+          from pathlib import Path
+          log=Path('orchard-pool-payment-funding-execution.log').read_text()
+          for case in ['ExplicitPolicyRoundTripAndClearWithoutDefaults', 'PartialMalformedAndIncompleteSettingsRefuse', 'RequiredWritesCommitAndInvalidValuesPreservePolicy', 'ActualRpcSetClearAndStrictPolicyFields', 'ActualRpcCommitRefusalAndStaleUpdatePreserveLiveState', 'ActualRpcMalformedOtherSettingsHaveNoEffects']:
+              assert log.count('[       OK ] PoolPaymentFunding.'+case+' (')==1
+          PYROUND
       - name: Require atomic fresh pool allocation references
         run: |
           ctest --test-dir build-orchard-root -R '^PoolAllocationOrigins$' --show-only=json-v1 > orchard-pool-allocation-origins-inventory.json
@@ -3528,6 +3544,8 @@ jobs:
             orchard-pool-config-owner-execution.log
             orchard-pool-allocation-origins-inventory.json
             orchard-pool-allocation-origins-execution.log
+            orchard-pool-payment-funding-inventory.json
+            orchard-pool-payment-funding-execution.log
             orchard-pool-payout-inventory-execution.log
             orchard-pool-payment-lifetime-execution.log
             orchard-pool-calculation-arithmetic-execution.log

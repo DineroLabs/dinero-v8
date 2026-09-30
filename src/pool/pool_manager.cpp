@@ -525,6 +525,16 @@ PoolConfig PoolManager::getConfig() {
 
 bool PoolManager::setConfig(const PoolConfig& config) {
     std::lock_guard<std::mutex> lock(mutex_);
+    return setConfigOwned(config);
+}
+
+bool PoolManager::compareAndSetConfig(const PoolConfig& expected, const PoolConfig& config) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(!(config_==expected)) return false;
+    return setConfigOwned(config);
+}
+
+bool PoolManager::setConfigOwned(const PoolConfig& config) {
     try {
         PoolConfig prepared=config;
         auto calculator=std::make_unique<PayoutCalculator>(*db_,prepared);

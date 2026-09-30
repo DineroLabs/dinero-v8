@@ -12,6 +12,9 @@
 #include "pool/pool_db.h"
 #include "pool/pool_manager.h"
 #include "pool/pool_types.h"
+#include "primitives/amount.h"
+#include <cmath>
+#include <stdexcept>
 #include "pool/payout_calculator.h"
 #include "common/logger.h"
 #include <algorithm>
@@ -657,6 +660,13 @@ void registerPoolMethods() {
             result["max_payout_retries"] = static_cast<int>(config.max_payout_retries);
             result["required_confirmations"] = static_cast<int>(config.required_confirmations);
             result["new_round_on_block"] = config.new_round_on_block;
+            result["payment_funding"]=din::Json();
+            if(config.payment_funding) {
+                const auto& funding=*config.payment_funding;
+                result["payment_funding"]["wallet"]=funding.wallet_name;
+                result["payment_funding"]["fee_rate_hint"]=din::Json::UInt64(funding.fee_rate_hint);
+                result["payment_funding"]["maximum_fee_una"]=din::Json::UInt64(funding.maximum_fee_una);
+            }
 
             return result;
         })
@@ -666,6 +676,7 @@ void registerPoolMethods() {
 
     RPC_METHOD("pool.setconfig", "pool")
         .description("Update pool configuration")
+        .param("payment_funding", "object|null", "Explicit named funding wallet, fee-rate hint and maximum transaction fee in una; null clears this policy", false)
         .param("payout_mode", "string", "Payout mode: PROP, PPLNS, PPS, or SOLO", false)
         .param("pool_fee_percent", "number", "Pool fee percentage (0-100)", false)
         .param("min_payout", "number", "Minimum payout threshold in DIN", false)
@@ -677,45 +688,69 @@ void registerPoolMethods() {
         .result("object", "Updated configuration")
         .handler([](const ExecutionContext& ctx, const din::Json& params) {
             din::Json result = din::obj();
-            std::shared_ptr<dinero::pool::PoolDB> pool_db;
-            if (!resolvePoolDb(pool_db, result)) {
-                return result;
-            }
+            // One captured runtime owner for the complete settings transition.
+            const auto runtime=snapshotPoolRuntime();
+            if(!runtime.enabled)return makePoolError(-32021,runtime.disabled_reason);
+            if(!runtime.manager || !runtime.manager->isRunning())
+                return makePoolError(-32023,"Pool manager is not initialized");
 
             if (!params.isNull() && !params.isObject()) {
                 return makePoolError(-32602, "Invalid parameter: object payload expected");
             }
 
-            auto config = pool_db->getConfig();
+            const auto original_config = runtime.manager->getConfig();
+            auto config = original_config;
+            try {
+                const auto integer=[](const din::Json& value,uint64_t limit) {
+                    if((value.type()!=::Json::intValue && value.type()!=::Json::uintValue) ||
+                       (value.type()==::Json::intValue && value.asInt64()<0))
+                        throw std::runtime_error("Unsigned integer configuration value required");
+                    const auto parsed=value.asUInt64();
+                    if(parsed>limit)throw std::runtime_error("Configuration integer exceeds range");
+                    return parsed;
+                };
+                const auto coin_amount=[](const din::Json& value) {
+                    if(!value.isNumeric())throw std::runtime_error("Numeric DIN amount required");
+                    const double amount=value.asDouble()*100000000.0;
+                    if(!std::isfinite(amount) || amount<0 || amount>=std::ldexp(1.0,63))
+                        throw std::runtime_error("Configuration amount exceeds storage range");
+                    return static_cast<uint64_t>(amount);
+                };
+                if(params.isMember("payout_mode")) {
+                    if(!params["payout_mode"].isString())throw std::runtime_error("Payout mode requires a string");
+                    const auto mode=params["payout_mode"].asString();
+                    if(mode!="PROP" && mode!="PPLNS" && mode!="PPS" && mode!="SOLO")throw std::runtime_error("Unknown payout mode");
+                    config.payout_mode=dinero::pool::StringToPayoutMode(mode);
+                }
+                if(params.isMember("pool_fee_percent")) {
+                    if(!params["pool_fee_percent"].isNumeric())throw std::runtime_error("Numeric pool fee required");
+                    config.pool_fee_percent=params["pool_fee_percent"].asDouble();
+                }
+                if(params.isMember("min_payout"))config.min_payout=coin_amount(params["min_payout"]);
+                if(params.isMember("min_auto_payout"))config.min_auto_payout=coin_amount(params["min_auto_payout"]);
+                if(params.isMember("pplns_window"))config.pplns_window=integer(params["pplns_window"],INT64_MAX);
+                if(params.isMember("required_confirmations"))config.required_confirmations=static_cast<uint32_t>(integer(params["required_confirmations"],UINT32_MAX));
+                if(params.isMember("max_payout_retries"))config.max_payout_retries=static_cast<uint32_t>(integer(params["max_payout_retries"],UINT32_MAX));
+                if(params.isMember("new_round_on_block")) {
+                    if(!params["new_round_on_block"].isBool())throw std::runtime_error("Boolean round policy required");
+                    config.new_round_on_block=params["new_round_on_block"].asBool();
+                }
+                if(params.isMember("payment_funding")) {
+                    const auto& funding=params["payment_funding"];
+                    if(funding.isNull())config.payment_funding.reset();
+                    else {
+                        if(!funding.isObject())throw std::runtime_error("Funding policy requires an object or null");
+                        auto fields=funding.getMemberNames();std::sort(fields.begin(),fields.end());
+                        if(fields!=std::vector<std::string>{"fee_rate_hint","maximum_fee_una","wallet"} || !funding["wallet"].isString())
+                            throw std::runtime_error("Funding wallet and both fee fields are required");
+                        config.payment_funding=dinero::pool::PoolPaymentFunding{funding["wallet"].asString(),
+                            integer(funding["fee_rate_hint"],dinero::MAX_SUPPLY_UNA_CONST),
+                            integer(funding["maximum_fee_una"],dinero::MAX_SUPPLY_UNA_CONST)};
+                    }
+                }
+            } catch(const std::exception& e) {return makePoolError(-32602,e.what());}
 
-            // Update fields if provided (using JsonCpp API)
-            if (params.isMember("payout_mode")) {
-                config.payout_mode = dinero::pool::StringToPayoutMode(params["payout_mode"].asString());
-            }
-            if (params.isMember("pool_fee_percent")) {
-                config.pool_fee_percent = params["pool_fee_percent"].asDouble();
-            }
-            if (params.isMember("min_payout")) {
-                // Convert DIN to una
-                config.min_payout = static_cast<uint64_t>(params["min_payout"].asDouble() * 100000000);
-            }
-            if (params.isMember("min_auto_payout")) {
-                config.min_auto_payout = static_cast<uint64_t>(params["min_auto_payout"].asDouble() * 100000000);
-            }
-            if (params.isMember("pplns_window")) {
-                config.pplns_window = static_cast<uint64_t>(params["pplns_window"].asInt64());
-            }
-            if (params.isMember("required_confirmations")) {
-                config.required_confirmations = static_cast<uint32_t>(params["required_confirmations"].asUInt());
-            }
-            if (params.isMember("new_round_on_block")) {
-                config.new_round_on_block = params["new_round_on_block"].asBool();
-            }
-            if (params.isMember("max_payout_retries")) {
-                config.max_payout_retries = static_cast<uint32_t>(params["max_payout_retries"].asUInt());
-            }
-
-            if (pool_db->updateConfig(config)) {
+            if (runtime.manager->compareAndSetConfig(original_config,config)) {
                 result["success"] = true;
                 result["message"] = "Configuration updated";
             } else {

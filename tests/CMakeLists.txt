@@ -5076,6 +5076,7 @@ endif()
 if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   add_executable(test_assumeutxo_replay
     tests/daemon/test_assumeutxo_replay.cpp
+    src/rpc/methods_pool.cpp
     src/rpc/wallet_raw_transaction_rpc.cpp
     src/rpc/methods_blockchain_context.cpp
     src/rpc/methods_utxoset.cpp
@@ -5149,6 +5150,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/daemon/test_assumeutxo_replay.cpp)
   set_tests_properties(OrchardTypedSelection PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
   add_test(NAME OrchardMiningTemplate COMMAND test_assumeutxo_replay --gtest_filter=OrchardMiningTemplate.*)
   set_tests_properties(OrchardMiningTemplate PROPERTIES LABELS "daemon;orchard;mining;mandatory" TIMEOUT 120)
+  add_test(NAME PoolPaymentFunding COMMAND test_assumeutxo_replay --gtest_filter=PoolPaymentFunding.*)
+  set_tests_properties(PoolPaymentFunding PROPERTIES TIMEOUT 90 LABELS "pool;storage;rpc;mandatory")
   add_test(NAME PoolAllocationOrigins COMMAND test_assumeutxo_replay --gtest_filter=PoolAllocationOrigins.*)
   set_tests_properties(PoolAllocationOrigins PROPERTIES TIMEOUT 90 LABELS "pool;storage;mandatory")
   add_test(NAME PoolConfigOwner COMMAND test_assumeutxo_replay --gtest_filter=PoolConfigOwner.*)

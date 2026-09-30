@@ -212,6 +212,9 @@ public:
      * Update pool configuration
      */
     bool setConfig(const PoolConfig& config);
+    // A partial RPC update is prepared outside this owner. Refuse a stale base
+    // rather than overwrite settings changed since the caller captured it.
+    bool compareAndSetConfig(const PoolConfig& expected, const PoolConfig& config);
 
     /**
      * Get worker statistics
@@ -263,6 +266,7 @@ private:
 
 
     // Internal helpers
+    bool setConfigOwned(const PoolConfig& config); // mutex_ held by caller
     std::string buildShareDedupeKey(const std::string& worker_id,
                                     const std::string& job_id,
                                     double difficulty,

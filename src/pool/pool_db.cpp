@@ -5,6 +5,7 @@
  */
 
 #include "pool/pool_db.h"
+#include "primitives/amount.h"
 #include <charconv>
 #include <iomanip>
 #include <locale>
@@ -1483,6 +1484,12 @@ double PoolDB::calculateLuck(int64_t period_seconds) {
 
 namespace {
 void ValidatePoolSettings(const PoolConfig& config) {
+    if(config.payment_funding) {
+        const auto& funding=*config.payment_funding;
+        if(funding.wallet_name.empty() || funding.wallet_name.size()>256 || funding.wallet_name.find('\0')!=std::string::npos ||
+           funding.fee_rate_hint>MAX_SUPPLY_UNA_CONST || funding.maximum_fee_una>MAX_SUPPLY_UNA_CONST)
+            throw std::runtime_error("invalid pool payment funding policy");
+    }
     switch(config.payout_mode) {
         case PayoutMode::PROP: case PayoutMode::PPLNS: case PayoutMode::PPS: case PayoutMode::SOLO: break;
         default: throw std::runtime_error("invalid pool configuration mode");
@@ -1523,6 +1530,7 @@ PoolConfig PoolDB::getConfig() {
     std::lock_guard<std::recursive_mutex> connection_owner(connection_mutex_);
     if(!db_)throw std::runtime_error("pool configuration database unavailable");
     PoolConfig config;OrphanStatement rows(db_,"SELECT key,value FROM config ORDER BY key");
+    std::map<std::string,std::string> funding;
     const auto max=static_cast<uint64_t>(std::numeric_limits<int64_t>::max());int rc;
     while((rc=sqlite3_step(rows.get()))==SQLITE_ROW) {
         const auto key=rows.textColumn(0);const auto value=CalculationText(rows,1);
@@ -1538,6 +1546,8 @@ PoolConfig PoolDB::getConfig() {
         else if(key=="min_auto_payout")config.min_auto_payout=SettingsInteger(value,max);
         else if(key=="max_payout_retries")config.max_payout_retries=static_cast<uint32_t>(SettingsInteger(value,UINT32_MAX));
         else if(key=="required_confirmations")config.required_confirmations=static_cast<uint32_t>(SettingsInteger(value,UINT32_MAX));
+        else if(key=="payment_funding_state" || key=="payment_funding_wallet" ||
+                key=="payment_fee_rate_hint" || key=="payment_maximum_fee_una") funding.emplace(key,value);
         else if(key=="new_round_on_block") {
             if(value=="1" || value=="true" || value=="TRUE")config.new_round_on_block=true;
             else if(value=="0" || value=="false" || value=="FALSE")config.new_round_on_block=false;
@@ -1545,6 +1555,18 @@ PoolConfig PoolDB::getConfig() {
         }
     }
     if(rc!=SQLITE_DONE)throw std::runtime_error("pool configuration capture incomplete");
+    if(!funding.empty()) {
+        if(funding.size()!=4)throw std::runtime_error("partial pool payment funding policy");
+        const auto& state=funding.at("payment_funding_state");
+        if(state=="unset") {
+            if(!funding.at("payment_funding_wallet").empty() || !funding.at("payment_fee_rate_hint").empty() ||
+               !funding.at("payment_maximum_fee_una").empty())throw std::runtime_error("conflicting unset pool payment funding policy");
+        } else if(state=="configured") {
+            config.payment_funding=PoolPaymentFunding{funding.at("payment_funding_wallet"),
+                SettingsInteger(funding.at("payment_fee_rate_hint"),MAX_SUPPLY_UNA_CONST),
+                SettingsInteger(funding.at("payment_maximum_fee_una"),MAX_SUPPLY_UNA_CONST)};
+        } else throw std::runtime_error("unknown pool payment funding policy state");
+    }
     ValidatePoolSettings(config);return config;
 }
 
@@ -1565,7 +1587,11 @@ bool PoolDB::updateConfig(const PoolConfig& config) {
             {"min_auto_payout",std::to_string(config.min_auto_payout)},
             {"max_payout_retries",std::to_string(config.max_payout_retries)},
             {"required_confirmations",std::to_string(config.required_confirmations)},
-            {"new_round_on_block",config.new_round_on_block?"1":"0"}
+            {"new_round_on_block",config.new_round_on_block?"1":"0"},
+            {"payment_funding_state",config.payment_funding?"configured":"unset"},
+            {"payment_funding_wallet",config.payment_funding?config.payment_funding->wallet_name:""},
+            {"payment_fee_rate_hint",config.payment_funding?std::to_string(config.payment_funding->fee_rate_hint):""},
+            {"payment_maximum_fee_una",config.payment_funding?std::to_string(config.payment_funding->maximum_fee_una):""}
         };
         OrphanTransaction transaction(db_);
         for(const auto& [key,value]:values) {

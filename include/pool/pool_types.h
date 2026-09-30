@@ -218,7 +218,19 @@ struct Payout {
 /**
  * Pool configuration
  */
+// Explicit operator policy; values do not certify an existing wallet or authorize
+// an allocation. A payment attempt must bind the actual persistent wallet owner.
+struct PoolPaymentFunding {
+    std::string wallet_name;
+    uint64_t fee_rate_hint=0;
+    uint64_t maximum_fee_una=0;
+    bool operator==(const PoolPaymentFunding&) const = default;
+};
+
 struct PoolConfig {
+    bool operator==(const PoolConfig&) const = default;
+    // No implicit UI-selected wallet or invented transaction fee ceiling.
+    std::optional<PoolPaymentFunding> payment_funding;
     // Payout mode
     PayoutMode payout_mode;
 
