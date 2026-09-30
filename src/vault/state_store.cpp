@@ -224,7 +224,7 @@ std::vector<VaultStateSummary> VaultStateTransaction::ListExisting(
     std::vector<VaultStateSummary> result;result.reserve(identities.size());
     for(const auto& id:identities) {
         p->SelectIdentity(id);p->Read();
-        result.push_back({id,p->current.state.revision,p->current.state.config.operator_binding});
+        result.push_back({id,p->current.state.revision,p->current.state.config.operator_binding,p->current.state.config.creation_anchor});
     }
     // No prefix is returned for a late row failure or unsuccessful commit.
     Exec(p->db,"COMMIT");p->owns=false;p->committed=true;return result;
@@ -236,6 +236,9 @@ void VaultStateTransaction::Stage(const VaultStateSnapshot& successor) {
     // Ordinary state updates cannot add, remove or relabel routing authority.
     // In particular an older unbound snapshot is not permission to infer it.
     Check(successor.config.operator_binding==p.current.state.config.operator_binding);
+    // A historical owner cannot acquire or move a creation boundary through
+    // an ordinary successor, including when it is otherwise still empty.
+    Check(successor.config.creation_anchor==p.current.state.config.creation_anchor);
     (void)ReplayVaultStateLedger(successor);p.ValidateRetainedPayments(successor);
     StoredVaultState prepared;prepared.identity=p.current.identity;prepared.predecessor=p.current.digest;prepared.state=successor;
     Sensitive plain;plain.bytes=EncodeVaultState(successor);auto aad=Associated(p.domain,p.wallet,prepared.identity,successor.revision,prepared.predecessor);auto sealed=Seal(p.key,aad,plain.bytes);prepared.digest=Hash(sealed);

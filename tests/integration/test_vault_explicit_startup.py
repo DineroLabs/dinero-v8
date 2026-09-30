@@ -148,6 +148,15 @@ try:
               "per_withdrawal_cap_una": 500, "per_account_outstanding_cap_una": 1000, "max_queue_depth": 10}
     first = rpc("vault.create", [policy])
     assert first["created"] is True and first["attached"] is False and first["wallet"] == wallet
+    genesis = rpc("getblockhash", [0])
+    assert first["creation_height"] == 0 and first["creation_block_hash"] == genesis
+    creation_anchor = {"creation_anchor_present": True, "creation_height": 0, "creation_block_hash": genesis}
+    def assert_creation_anchors():
+        current = rpc("vault.list")
+        assert current["historical_completeness_verified"] is False
+        assert current["vaults"]
+        for row in current["vaults"]:
+            assert {key: row[key] for key in creation_anchor} == creation_anchor
     first_id = first["vault_id"]
     assert len(first_id) == 64 and int(first_id, 16) != 0
     detached()
@@ -165,6 +174,7 @@ try:
     rpc("vault.open", [{"vault_id": second_id}], expect_error=True)
     assert rpc("vault.getoperator")["account"] == "owned-account"
     assert {v["vault_id"] for v in rpc("vault.list")["vaults"]} == {first_id, second_id}
+    assert_creation_anchors()
     # Refusal is checked only on this patched daemon. Both parameter forms and
     # the legacy string override must preserve all existing owner records.
     refuse_existing_creation(wallet)
@@ -195,6 +205,7 @@ try:
     assert rpc("wallet.unlock", [password, 3600])["success"] is True
     detached()
     assert {v["vault_id"] for v in rpc("vault.list")["vaults"]} == {first_id, second_id}
+    assert_creation_anchors()
     assert rpc("vault.open", [{"vault_id": first_id}])["attached"] is True
     assert rpc("vault.getoperator")["account"] == "owned-account"
     stop()
@@ -216,12 +227,14 @@ try:
     assert rpc("wallet.unlock", [password, 3600])["success"] is True
     detached()
     assert {v["vault_id"] for v in rpc("vault.list")["vaults"]} == {first_id, second_id}
+    assert_creation_anchors()
     stop()
     assert all(path.read_bytes() == data for path, data in originals.items())
     assert owner_rows(db_path) == original
     text = (root / "legacy-config.log").read_text(errors="replace")
     assert "Legacy automatic-start settings do not attach a vault" in text
     print("PASS legacy enable settings and files cannot initialize or overwrite a vault", flush=True)
+    print("PASS canonical creation anchor survives actual daemon restarts without delivery claim", flush=True)
     print("PASS explicit vault startup HTTP lifecycle and clean shutdown", flush=True)
     success = True
 finally:

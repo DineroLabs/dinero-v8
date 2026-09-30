@@ -1350,6 +1350,24 @@ jobs:
           for suite,cases in {'VaultStateSnapshot': ['ActualServiceCaptureAndLedgerReplay', 'ExactFormatAllVariantsAndCanonicalInventory', 'IncompleteDuplicateAndTerminalInputRefuse', 'SavedLifecycleAndEveryLedgerBindingRequired', 'ObservedAndDetectedReversionKeepExistingLedgerShape'], 'VaultStateStore': ['ExplicitCreationAndAuthenticatedServiceReopen', 'RequiredWriteAndCommitRefusalPreserveLiveAndDurableState', 'MissingCorruptAndForeignDomainsNeverCreateReplacement', 'DeniedReadsAndBorrowedTransactionRetainCallerAndOwner']}.items():
               for case in cases: assert log.count('[       OK ] '+suite+'.'+case+' (')==1
           PYCODE
+      - name: Authenticate immutable vault creation anchor
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^VaultCreationAnchor$' --show-only=json-v1 > vault-creation-anchor-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('vault-creation-anchor-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='VaultCreationAnchor'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==120
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^VaultCreationAnchor$' --verbose --no-tests=error --output-log vault-creation-anchor-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('vault-creation-anchor-execution.log').read_text()
+          for case in ['ExactCodecAndHistoricalFormatsPreserveAbsence', 'ImmutableSuccessorsAndAuthenticatedReopen', 'MissingAndUnselectedSourceRefuseBeforeWalletWrites', 'ActualSelectedRpcAndCommitRefusalPreserveCreationBoundary']:
+              assert log.count('[       OK ] VaultCreationAnchor.'+case+' (')==1
+          PYCODE
       - name: Explicitly create and authenticate present wallet vault inventory
         shell: bash
         run: |
@@ -2071,7 +2089,7 @@ jobs:
           python3 - <<'PYCHECK'
           from pathlib import Path
           log=Path('orchard-vault-explicit-startup-execution.log').read_text()
-          expected=['PASS default daemon startup leaves vault detached', 'PASS encrypted wallet explicitly creates lists and attaches authenticated vault', 'PASS new owner never replaces attached or existing vaults', 'PASS restart requires explicit attachment and preserves exact owner rows', 'PASS legacy enable settings and files cannot initialize or overwrite a vault', 'PASS explicit vault startup HTTP lifecycle and clean shutdown', 'PASS wallet creation requires new name and preserves every existing owner row']
+          expected=['PASS default daemon startup leaves vault detached', 'PASS encrypted wallet explicitly creates lists and attaches authenticated vault', 'PASS new owner never replaces attached or existing vaults', 'PASS restart requires explicit attachment and preserves exact owner rows', 'PASS legacy enable settings and files cannot initialize or overwrite a vault', 'PASS canonical creation anchor survives actual daemon restarts without delivery claim', 'PASS explicit vault startup HTTP lifecycle and clean shutdown', 'PASS wallet creation requires new name and preserves every existing owner row']
           assert all(log.count(marker)==1 for marker in expected)
           PYCHECK
       - name: Require and execute all root Orchard lanes
@@ -3150,6 +3168,8 @@ jobs:
             vault-retained-withdrawal-execution.log
             vault-state-store-inventory.json
             vault-state-store-execution.log
+            vault-creation-anchor-inventory.json
+            vault-creation-anchor-execution.log
             vault-explicit-creation-inventory.json
             vault-explicit-creation-execution.log
             vault-runtime-attachment-inventory.json

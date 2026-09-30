@@ -23,6 +23,7 @@ struct VaultStateSummary {
     VaultIdentity identity{};
     uint64_t revision{0};
     std::optional<VaultOperatorBinding> operator_binding;
+    std::optional<VaultCreationAnchor> creation_anchor;
 };
 
 // One wallet-bound FULL SQLite transaction with the selected session and

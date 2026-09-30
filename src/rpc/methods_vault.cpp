@@ -6,12 +6,16 @@
 
 #include "address/addr_codec.h"
 #include "consensus/chainparams.h"
+#include "consensus/block_index.h"
+#include "consensus/block_lifecycle.h"
 #include "primitives/uint256.h"
 #include "common/logger.h"
 #include "din_json.h"
 #include "rpc/rpc_registry.h"
 #include "daemon/daemon_context.h"
 #include "daemon/services/wallet_service.h"
+#include "daemon/services/chainstate_service.h"
+#include "storage/chain_db.h"
 #include "wallet/wallet_transaction_signer.h"
 #include "vault/ledger_entry.h"
 #include "vault/vault_runtime.h"
@@ -152,15 +156,65 @@ Json rpc_vault_create(const ExecutionContext& ctx,const Json& params) {
         if(config.ledger_caps.per_deposit>config.ledger_caps.per_user || config.ledger_caps.per_user>config.ledger_caps.global ||
            config.withdrawal_caps.per_request>config.withdrawal_caps.per_account_outstanding)
             return errorObj("capacity limits are inconsistent");
+        // Canonical selection precedes wallet/SQLite ownership and remains
+        // stable through the first sealed-state commit. Empty vault state does
+        // not justify guessing the creation point from a later process tip.
+        const auto source=ctx.daemon->chainstate;
+        const auto source_use=dinero::ChainstateService::AcquireWalletIndexUse(source);
+        const auto chain_owner=source->AcquireBlockIngressActivationLock();
+        const auto domain=selectedVaultDomain();
+        auto* db=source->GetChainDB();
+        if(!db)throw std::runtime_error("vault creation chain source unavailable");
+        const auto tip=db->getTip();
+        if(!tip.ok() || tip->height<0 || uint64_t(tip->height)>uint64_t(INT32_MAX))
+            throw std::runtime_error("vault creation selected tip unavailable");
+        if(!source->IsStarted() || source->IsInSafeMode())
+            throw std::runtime_error("vault creation selected source not started or in safe mode");
+        const auto canonical=db->getBlockHashByHeight(tip->height);
+        const auto genesis=db->getBlockHashByHeight(0);
+        const auto recorded_height=db->getBlockHeight(tip->hash);
+        const auto header=db->getHeader(tip->hash);
+        dinero::uint256 expected_genesis;std::copy(domain.genesis.begin(),domain.genesis.end(),expected_genesis.begin());
+        if(!canonical.ok() || *canonical!=tip->hash || !genesis.ok() || *genesis!=expected_genesis ||
+           !recorded_height.ok() || *recorded_height!=tip->height ||
+           !header.ok() || header->GetHash()!=tip->hash)
+            throw std::runtime_error("vault creation durable canonical position mismatch");
+        {
+            // This is a creation POSITION, not an unspentness or delivery
+            // certificate. Ordinary startup does not write validated_tip.
+            // Match the real selected active ancestry to durable indexes,
+            // without fabricating that stronger validation/recovery marker.
+            std::lock_guard<std::recursive_mutex> graph(dinero::g_block_index_mutex);
+            const auto* active=source->GetActiveTip();
+            if(!active || active->hash!=tip->hash || active->height!=uint32_t(tip->height))
+                throw std::runtime_error("vault creation live canonical position mismatch");
+            const auto* ancestor=active;
+            while(ancestor->height>0) {
+                if((ancestor->status&(dinero::BLOCK_FAILED_VALID|dinero::BLOCK_FAILED_CHILD)) ||
+                   !ancestor->pprev || ancestor->pprev->height!=ancestor->height-1 ||
+                   ancestor->prev_hash!=ancestor->pprev->hash)
+                    throw std::runtime_error("vault creation selected ancestry incomplete");
+                ancestor=ancestor->pprev;
+            }
+            if(ancestor->hash!=expected_genesis || ancestor->pprev || !ancestor->prev_hash.IsNull() ||
+               (ancestor->status&(dinero::BLOCK_FAILED_VALID|dinero::BLOCK_FAILED_CHILD)))
+                throw std::runtime_error("vault creation selected genesis mismatch");
+        }
+        dinero::vault::VaultCreationAnchor anchor;anchor.height=static_cast<uint32_t>(tip->height);
+        std::copy(canonical->begin(),canonical->end(),anchor.block_hash.begin());
+        dinero::vault::ValidateVaultCreationAnchor(anchor);config.creation_anchor=anchor;
         auto wallet=std::dynamic_pointer_cast<dinero::WalletService>(ctx.daemon->wallet);
         auto use=dinero::WalletService::AcquireWalletUse(wallet);
         const auto selected=dinero::CaptureWalletSigningIdentity(use->Wallet(),ctx.walletName);
         auto transaction=dinero::vault::VaultStateTransaction::CreateNewOwned(
-            use->Wallet(),selected.session,selectedVaultDomain(),config);
-        // Allocate the reply before checked commit. No runtime attachment,
-        // source observation, coin selection, signing or submission occurs.
+            use->Wallet(),selected.session,domain,config);
+        // Allocate the reply before checked commit. The anchor is creation
+        // metadata, not a delivery checkpoint or permission to credit history.
+        // No runtime attachment, coin selection, signing or submission occurs.
         Json result;result["created"]=true;result["attached"]=false;
         result["vault_id"]=arrayToHex(transaction->Current().identity);result["wallet"]=selected.name;
+        result["creation_height"]=static_cast<Json::UInt64>(anchor.height);
+        result["creation_block_hash"]=canonical->ToString();
         transaction->Commit();return result;
     } catch(const std::exception& e) {return errorObj(e.what());}
 }
@@ -178,6 +232,12 @@ Json rpc_vault_list(const ExecutionContext& ctx,const Json& params) {
         for(const auto& summary:summaries) {
             Json row;row["vault_id"]=arrayToHex(summary.identity);row["revision"]=static_cast<Json::UInt64>(summary.revision);
             row["operator_bound"]=summary.operator_binding.has_value();
+            row["creation_anchor_present"]=summary.creation_anchor.has_value();
+            if(summary.creation_anchor) {
+                dinero::uint256 hash;std::copy(summary.creation_anchor->block_hash.begin(),summary.creation_anchor->block_hash.end(),hash.begin());
+                row["creation_height"]=static_cast<Json::UInt64>(summary.creation_anchor->height);
+                row["creation_block_hash"]=hash.ToString();
+            }
             if(summary.operator_binding) {
                 row["operator_script_pub_key"]=bytesToHex(summary.operator_binding->script_pub_key);
                 row["account_id"]=summary.operator_binding->account;

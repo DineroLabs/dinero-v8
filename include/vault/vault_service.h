@@ -46,6 +46,16 @@ struct VaultOperatorBinding {
 };
 void ValidateVaultOperatorBinding(const VaultOperatorBinding&);
 
+// Exact selected-chain position held through an explicit new vault's first
+// authenticated commit. This is a creation boundary, never an applied-delivery
+// receipt, historical balance certificate or permission to reset an old owner.
+struct VaultCreationAnchor {
+    uint32_t height{0};
+    std::array<uint8_t,32> block_hash{};
+    bool operator==(const VaultCreationAnchor&) const = default;
+};
+void ValidateVaultCreationAnchor(const VaultCreationAnchor&);
+
 /// Settings the service accepts at construction. All fields have
 /// safe defaults so a deployment can spin up an instance without
 /// pre-configuring anything except the signing backend.
@@ -59,6 +69,7 @@ struct VaultServiceConfig {
     /// production behaviour). Stage 0 deployments override.
     bool shadow_mode{false};
     std::optional<VaultOperatorBinding> operator_binding;
+    std::optional<VaultCreationAnchor> creation_anchor;
 };
 
 /// Immutable metrics captured under one service lock. These describe one
@@ -211,6 +222,7 @@ class VaultService {
     std::shared_ptr<const VaultStateOwner> state_owner_;
     std::shared_ptr<VaultWithdrawalDispatcher> withdrawal_dispatcher_;
     const std::optional<VaultOperatorBinding> operator_binding_;
+    const std::optional<VaultCreationAnchor> creation_anchor_;
     std::mutex mu_;
     uint64_t revision_{0};
     VaultTipSnapshotFn capture_tip_;

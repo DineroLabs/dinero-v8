@@ -746,3 +746,4 @@ int main(int argc, char** argv) {
 #include "vault_runtime_attachment_checks.h"
 
 #include "vault_explicit_creation_checks.h"
+#include "vault_creation_anchor_checks.h"

@@ -146,13 +146,22 @@ void ValidateVaultOperatorBinding(const VaultOperatorBinding& binding) {
             binding.account.find('\0')==std::string::npos);
 }
 
+void ValidateVaultCreationAnchor(const VaultCreationAnchor& anchor) {
+    Require(anchor.height<=uint32_t(INT32_MAX) && Nonzero(anchor.block_hash));
+}
+
 std::vector<uint8_t> EncodeVaultState(const VaultStateSnapshot& state) {
     Writer w;const std::array<uint8_t,6> magic{'D','N','V','S','0',
-        static_cast<uint8_t>(state.config.operator_binding?'3':'2')};
+        static_cast<uint8_t>(state.config.creation_anchor?'4':state.config.operator_binding?'3':'2')};
     w.Raw(magic);w.U64(state.revision);PutConfig(w,state.config);
     if(state.config.operator_binding) {
         const auto& binding=*state.config.operator_binding;ValidateVaultOperatorBinding(binding);
         w.Raw(binding.script_pub_key);w.Text(binding.account);
+    }
+    if(state.config.creation_anchor) {
+        Require(state.config.operator_binding.has_value());
+        const auto& anchor=*state.config.creation_anchor;ValidateVaultCreationAnchor(anchor);
+        w.U64(anchor.height);w.Raw(anchor.block_hash);
     }
     CheckEntryOrder(state.entries);w.Count(state.entries.size());for(const auto& e:state.entries)PutEntry(w,e);
     auto deposits=state.deposits;std::sort(deposits.begin(),deposits.end(),[](const auto& a,const auto& b){return LessOutpoint(a.deposit.outpoint,b.deposit.outpoint);});
@@ -178,7 +187,8 @@ std::vector<uint8_t> EncodeVaultState(const VaultStateSnapshot& state) {
 }
 VaultStateSnapshot DecodeVaultState(std::span<const uint8_t> bytes) {
     Require(bytes.size()<=MaxBytes);Reader r{bytes};const auto magic=r.Fixed<6>();
-    const bool version3=magic==std::array<uint8_t,6>{'D','N','V','S','0','3'};
+    const bool version4=magic==std::array<uint8_t,6>{'D','N','V','S','0','4'};
+    const bool version3=version4 || magic==std::array<uint8_t,6>{'D','N','V','S','0','3'};
     const bool version2=version3 || magic==std::array<uint8_t,6>{'D','N','V','S','0','2'};
     Require(version2 || magic==std::array<uint8_t,6>{'D','N','V','S','0','1'});
     VaultStateSnapshot out;out.revision=r.U64();out.config=GetConfig(r);
@@ -186,6 +196,10 @@ VaultStateSnapshot DecodeVaultState(std::span<const uint8_t> bytes) {
         VaultOperatorBinding binding;auto script=r.Raw(34);
         binding.script_pub_key.assign(script.begin(),script.end());binding.account=r.Text();
         ValidateVaultOperatorBinding(binding);out.config.operator_binding=std::move(binding);
+    }
+    if(version4) {
+        VaultCreationAnchor anchor;anchor.height=r.U32();anchor.block_hash=r.Fixed<32>();
+        ValidateVaultCreationAnchor(anchor);out.config.creation_anchor=anchor;
     }
     const auto entries=r.Count();out.entries.reserve(entries);for(size_t i=0;i<entries;++i)out.entries.push_back(GetEntry(r));CheckEntryOrder(out.entries);
     const auto deposits=r.Count();out.deposits.reserve(deposits);

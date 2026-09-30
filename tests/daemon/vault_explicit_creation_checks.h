@@ -1,5 +1,6 @@
 #pragma once
 #include "vault_runtime_attachment_checks.h"
+#include "daemon/genesis_init.hpp"
 namespace dinero {
 namespace {
 struct VaultExplicitCreationFixture : VaultRuntimeAttachmentFixture {
@@ -28,6 +29,39 @@ struct VaultExplicitCreationFixture : VaultRuntimeAttachmentFixture {
         v["per_deposit_cap_una"]=1000;v["per_account_cap_una"]=2000;v["global_cap_una"]=3000;
         v["per_withdrawal_cap_una"]=500;v["per_account_outstanding_cap_una"]=1000;v["max_queue_depth"]=10;
         args.append(v);return args;
+    }
+};
+// The RPC needs a real selected canonical source, not a copied process height.
+// This fixture starts the actual isolated regtest ChainstateService at genesis.
+struct VaultExplicitChainCreationFixture : VaultExplicitCreationFixture {
+    OperatorStatusGraph graph;
+    WalletIndexOwnerFixture chain;
+    VaultExplicitChainCreationFixture() {
+        // Keep unrelated component-test block indexes outside this isolated
+        // startup and provide the same durable genesis body owner as a daemon.
+        // Init is intentionally single-use. Close the initialization-only
+        // fixture source, then create a fresh owner with archival dependencies
+        // present before its first Init; never replace an existing live index.
+        chain.source->Stop();chain.context.chainstate.reset();chain.source.reset();
+        chain.source=std::make_shared<ChainstateService>();chain.context.chainstate=chain.source;
+        chain.source->setChainDB(&chain.db);
+        chain.context.block_storage=std::make_shared<BlockStorage>();
+        if(chain.context.block_storage->init(chain.root)!=Status::Ok ||
+           !InitializeGenesis(&chain.db,chain.context.block_storage.get(),nullptr) ||
+           !chain.source->Init(chain.context))
+            throw std::runtime_error("fixture actual archival genesis initialization");
+        if(!chain.source->Start())throw std::runtime_error("fixture actual chainstate Start");
+        const auto genesis=chain.db.getBlockHashByHeight(0);
+        const auto* selected=chain.source->GetActiveTip();
+        if(!chain.source->IsStarted() || !genesis.ok() || genesis->ToString()!=Params().genesis_hash ||
+           !selected || selected->height!=0 || selected->hash!=*genesis)
+            throw std::runtime_error("fixture selected canonical genesis");
+        f->wallet.context.chainstate=chain.source;
+    }
+    ~VaultExplicitChainCreationFixture() {
+        vault::ShutdownVaultRuntime();f->wallet.context.chainstate.reset();
+        chain.source->Stop();chain.context.chainstate.reset();chain.source.reset();
+        chain.context.block_storage.reset();
     }
 };
 }
@@ -119,7 +153,7 @@ TEST(VaultExplicitCreation, MissingIdentityDeniedReadAndCallerTransactionNeverEn
     EXPECT_TRUE(sqlite3_get_autocommit(db));EXPECT_EQ(sqlite3_total_changes(db),changes);EXPECT_EQ(f.Rows(),rows);
 }
 TEST(VaultExplicitCreation, ActualCreateAndListRpcKeepRuntimeAndExistingOwnersSeparate) {
-    VaultRuntimeReset reset;VaultExplicitCreationFixture fixture;auto& f=*fixture.f;
+    VaultRuntimeReset reset;VaultExplicitChainCreationFixture fixture;auto& f=*fixture.f;
     auto request=fixture.Request();din::Json empty(::Json::arrayValue);
     EXPECT_TRUE(din::rpc_vault_list(fixture.Context(),empty).isMember("error"));
     auto wrong=fixture.Context();wrong.walletName="wrong-wallet";

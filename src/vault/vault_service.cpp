@@ -71,12 +71,17 @@ VaultService::VaultService(std::unique_ptr<SigningBackend> backend, VaultService
                            BlockHashAtHeightFn block_hash_at_height, TxIncludedAtFn tx_included_at,
                            VaultTipSnapshotFn capture_tip)
     : operator_binding_(std::move(config.operator_binding)),
+      creation_anchor_(std::move(config.creation_anchor)),
       capture_tip_(std::move(capture_tip)), backend_{std::move(backend)},
       ledger_{config.ledger_caps},
       deposit_flow_{&ledger_, std::move(config.confirmation_policy), config.shadow_mode},
       reorg_watcher_{&deposit_flow_, std::move(block_hash_at_height), std::move(tx_included_at)},
       withdrawals_{&ledger_, backend_.get(), config.withdrawal_caps, config.withdrawal_policy} {
     if (operator_binding_) ValidateVaultOperatorBinding(*operator_binding_);
+    if (creation_anchor_) {
+        if (!operator_binding_) throw std::runtime_error("vault creation anchor requires operator binding");
+        ValidateVaultCreationAnchor(*creation_anchor_);
+    }
 }
 
 std::optional<VaultOperatorBinding> VaultService::operatorBinding() const {
@@ -92,6 +97,7 @@ VaultStateSnapshot VaultService::captureStateLocked() const {
     VaultStateSnapshot result;
     result.revision = revision_;
     result.config.operator_binding = operator_binding_;
+    result.config.creation_anchor = creation_anchor_;
     result.config.ledger_caps = ledger_.caps();
     result.config.confirmation_policy = deposit_flow_.policy_;
     result.config.shadow_mode = deposit_flow_.shadow_mode_;
@@ -134,6 +140,7 @@ void VaultService::commitAndPublish(PreparedState& state, VaultStateWrite* trans
         VaultStateSnapshot saved;
         saved.revision=revision_+1;
         saved.config.operator_binding=operator_binding_;
+        saved.config.creation_anchor=creation_anchor_;
         saved.config.ledger_caps=state.ledger.caps();
         saved.config.confirmation_policy=state.deposits.policy_;
         saved.config.shadow_mode=state.deposits.shadow_mode_;
