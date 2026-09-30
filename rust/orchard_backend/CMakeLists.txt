@@ -135,6 +135,8 @@ if(TARGET dinero_chainstate)
   target_link_libraries(dinero_orchard_runtime_reader PUBLIC dinero_orchard_block_reader dinero_orchard_header dinero_chainstate)
   if(TARGET dinero_core)
     target_link_libraries(dinero_core PUBLIC dinero_orchard_runtime_reader)
+    set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/runtime_delivery_worker.cpp"
+      DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
     set_property(SOURCE "${ORCHARD_HOST_ROOT}/src/daemon/services/chainstate_service.cpp"
       DIRECTORY "${ORCHARD_HOST_ROOT}" APPEND PROPERTY COMPILE_DEFINITIONS DINERO_HAS_ORCHARD_RUNTIME_READER=1)
     # Advertise Orchard only with the real typed relay/download/runtime graph.

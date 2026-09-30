@@ -1350,6 +1350,24 @@ jobs:
           for suite,cases in {'VaultStateSnapshot': ['ActualServiceCaptureAndLedgerReplay', 'ExactFormatAllVariantsAndCanonicalInventory', 'IncompleteDuplicateAndTerminalInputRefuse', 'SavedLifecycleAndEveryLedgerBindingRequired', 'ObservedAndDetectedReversionKeepExistingLedgerShape'], 'VaultStateStore': ['ExplicitCreationAndAuthenticatedServiceReopen', 'RequiredWriteAndCommitRefusalPreserveLiveAndDurableState', 'MissingCorruptAndForeignDomainsNeverCreateReplacement', 'DeniedReadsAndBorrowedTransactionRetainCallerAndOwner']}.items():
               for case in cases: assert log.count('[       OK ] '+suite+'.'+case+' (')==1
           PYCODE
+      - name: Recover retained wallet and reorg work without callback acknowledgment
+        shell: bash
+        run: |
+          ctest --test-dir build-orchard-root -R '^RuntimeDeliveryWorker$' --show-only=json-v1 > runtime-delivery-worker-inventory.json
+          python3 - <<'PYCODE'
+          import json
+          tests=json.load(open('runtime-delivery-worker-inventory.json'))['tests']
+          assert len(tests)==1 and tests[0]['name']=='RuntimeDeliveryWorker'
+          assert not any(p['name']=='DISABLED' and p['value'] for p in tests[0].get('properties',[]))
+          assert next(p['value'] for p in tests[0]['properties'] if p['name']=='TIMEOUT')==180
+          PYCODE
+          ctest --test-dir build-orchard-root -R '^RuntimeDeliveryWorker$' --verbose --no-tests=error --output-log runtime-delivery-worker-execution.log
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          log=Path('runtime-delivery-worker-execution.log').read_text()
+          for case in ['RequiredOwnersLimitsAndActualUnavailableSource', 'HistoricalWalletNoLogAndStoppedOwnerRemainDistinct', 'StartupAndRestartRecoverEncryptedEarnedWalletPrefix', 'MissingBaselineRemainsDeferredWithoutEnrollment', 'BoundedSlicesDrainRetainedPlansWithoutCallbackAndRestartFromOrigin', 'LaterCommittedPrefixIsRevisitedAfterWake']:
+              assert log.count('[       OK ] RuntimeDeliveryWorker.'+case+' (')==1
+          PYCODE
       - name: Authenticate immutable vault creation anchor
         shell: bash
         run: |
@@ -3168,6 +3186,8 @@ jobs:
             vault-retained-withdrawal-execution.log
             vault-state-store-inventory.json
             vault-state-store-execution.log
+            runtime-delivery-worker-inventory.json
+            runtime-delivery-worker-execution.log
             vault-creation-anchor-inventory.json
             vault-creation-anchor-execution.log
             vault-explicit-creation-inventory.json

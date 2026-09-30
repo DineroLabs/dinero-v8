@@ -727,6 +727,7 @@ int main(int argc, char** argv) {
 #include "chainstate_wallet_index_owner_checks.h"
 
 #include "wallet_canonical_recovery_checks.h"
+#include "runtime_delivery_worker_checks.h"
 #include "vault_canonical_observation_checks.h"
 
 #include "vault_runtime_owner_checks.h"
